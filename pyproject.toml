@@ -52,51 +52,48 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 # --- import-linter ----------------------------------------------------------
-# 全体計画書 §3.3（パッケージ間依存）と §3.2 / §4.3（クリーンアーキテクチャの層）を
-# 機械検査可能な契約として表現したもの（ADR-0004）。
+# D01 v2 §6 の契約をそのまま採用する（ADR-0004）。契約名は CI 出力で参照するため変更しない。
+# 契約の追加・緩和は D01 の改訂を伴う（D01 §12）。
 
 [tool.importlinter]
 root_packages = ["odyssey_fx"]
 include_external_packages = true
 
-# (L1) パッケージ間の依存方向
+# (L1) パッケージ間の依存方向。container 付き相対レイヤ・exhaustive で
+#      未宣言のトップレベルサブパッケージの追加を検出する。
 [[tool.importlinter.contracts]]
 name = "L1: package layers (app > evaluation > backtest > strategy > marketdata > common)"
 type = "layers"
-layers = [
-    "odyssey_fx.app",
-    "odyssey_fx.evaluation",
-    "odyssey_fx.backtest",
-    "odyssey_fx.strategy",
-    "odyssey_fx.marketdata",
-    "odyssey_fx.common",
-]
+containers = ["odyssey_fx"]
+layers = ["app", "evaluation", "backtest", "strategy", "marketdata", "common"]
+exhaustive = true
 
-# (L2) パッケージ内の層
+# (L2) パッケージ内の層。`|` は独立（相互 import 禁止）、`:` は相互 import 許可なので使わない。
 [[tool.importlinter.contracts]]
 name = "L2a: clean architecture layers inside marketdata / evaluation"
 type = "layers"
-layers = ["adapters", "application", "domain"]
 containers = ["odyssey_fx.marketdata", "odyssey_fx.evaluation"]
+layers = ["adapters", "application", "domain"]
+exhaustive = true
 
 [[tool.importlinter.contracts]]
 name = "L2b: strategy layers (runtime > compiler > catalog > records > declarations)"
 type = "layers"
-layers = ["runtime", "compiler", "catalog", "records", "declarations"]
 containers = ["odyssey_fx.strategy"]
+layers = ["runtime", "compiler", "catalog", "records", "declarations"]
+exhaustive = true
 
 [[tool.importlinter.contracts]]
 name = "L2c: backtest layers (application > engine > admission|execution|portfolio|trace > domain)"
 type = "layers"
-# `|` は「同一段だが相互 import を禁止（独立）」。`:` は相互 import を許可してしまい、
-# 4層の独立性を検査できないため使わない。
+containers = ["odyssey_fx.backtest"]
 layers = [
     "application",
     "engine",
     "admission | execution | portfolio | trace",
     "domain",
 ]
-containers = ["odyssey_fx.backtest"]
+exhaustive = true
 
 # (F1) adapters は app と同じパッケージ内の上位層からのみ参照できる
 [[tool.importlinter.contracts]]
@@ -121,7 +118,7 @@ source_modules = [
 ]
 forbidden_modules = ["odyssey_fx.evaluation.adapters"]
 
-# (F2) strategy は marketdata の domain のみ参照できる
+# (F2) strategy は marketdata.domain のみ参照できる
 [[tool.importlinter.contracts]]
 name = "F2: strategy may use marketdata.domain only"
 type = "forbidden"
@@ -135,9 +132,9 @@ type = "forbidden"
 source_modules = ["odyssey_fx.backtest"]
 forbidden_modules = ["odyssey_fx.strategy.catalog"]
 
-# (F4) evaluation は backtest の domain / trace / application のみ参照できる
+# (F4) evaluation は backtest の domain / trace のみ参照できる（実行は BacktestRunner ポート経由）
 [[tool.importlinter.contracts]]
-name = "F4: evaluation may use backtest.domain / trace / application only"
+name = "F4: evaluation may use backtest.domain / trace only"
 type = "forbidden"
 source_modules = ["odyssey_fx.evaluation"]
 forbidden_modules = [
@@ -145,6 +142,7 @@ forbidden_modules = [
     "odyssey_fx.backtest.admission",
     "odyssey_fx.backtest.execution",
     "odyssey_fx.backtest.portfolio",
+    "odyssey_fx.backtest.application",
 ]
 
 # (F5) 外部ライブラリは adapters と app に限定する
@@ -178,3 +176,24 @@ source_modules = [
     "odyssey_fx.evaluation.application",
 ]
 forbidden_modules = ["numpy"]
+
+# (F6) backtest は marketdata.domain のみ参照できる（フィード・執行系列・カレンダーはポート経由）
+[[tool.importlinter.contracts]]
+name = "F6: backtest may use marketdata.domain only"
+type = "forbidden"
+source_modules = ["odyssey_fx.backtest"]
+forbidden_modules = ["odyssey_fx.marketdata.application"]
+
+# (F7) evaluation は marketdata.domain のみ参照できる（snapshot 取得は SnapshotCatalog ポート経由）
+[[tool.importlinter.contracts]]
+name = "F7: evaluation may use marketdata.domain only"
+type = "forbidden"
+source_modules = ["odyssey_fx.evaluation"]
+forbidden_modules = ["odyssey_fx.marketdata.application"]
+
+# (F8) evaluation は strategy の declarations / records / compiler のみ参照できる
+[[tool.importlinter.contracts]]
+name = "F8: evaluation may use strategy.declarations / records / compiler only"
+type = "forbidden"
+source_modules = ["odyssey_fx.evaluation"]
+forbidden_modules = ["odyssey_fx.strategy.runtime", "odyssey_fx.strategy.catalog"]
