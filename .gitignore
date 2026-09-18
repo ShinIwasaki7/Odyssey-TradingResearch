@@ -1,0 +1,37 @@
+# --- データ（ADR-0013） -----------------------------------------------------
+# 原データ・snapshot 実体・実行成果物は git 管理外。
+# snapshot manifest だけは追跡する（再包含規則の順序に注意:
+# 親ディレクトリ自体を除外すると中身を再包含できないため、
+# `data/snapshots/*/*` の形で「中身」を除外してから manifest を許可する）。
+data/raw/
+data/snapshots/*/*
+!data/snapshots/*/manifest.json
+runs/
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# --- ツールキャッシュ -------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.importlinter_cache/
+
+# --- エディタ・OS -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+
+# --- Claude Code ------------------------------------------------------------
+.claude/worktrees/
