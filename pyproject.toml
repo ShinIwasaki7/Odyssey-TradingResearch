@@ -88,10 +88,12 @@ containers = ["odyssey_fx.strategy"]
 [[tool.importlinter.contracts]]
 name = "L2c: backtest layers (application > engine > admission|execution|portfolio|trace > domain)"
 type = "layers"
+# `|` は「同一段だが相互 import を禁止（独立）」。`:` は相互 import を許可してしまい、
+# 4層の独立性を検査できないため使わない。
 layers = [
     "application",
     "engine",
-    "admission : execution : portfolio : trace",
+    "admission | execution | portfolio | trace",
     "domain",
 ]
 containers = ["odyssey_fx.backtest"]

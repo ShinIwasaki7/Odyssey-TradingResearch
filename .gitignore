@@ -4,7 +4,6 @@
 # 親ディレクトリ自体を除外すると中身を再包含できないため、
 # `data/snapshots/*/*` の形で「中身」を除外してから manifest を許可する）。
 data/raw/
-data/market/
 data/snapshots/*/*
 !data/snapshots/*/manifest.json
 runs/
