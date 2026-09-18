@@ -8,22 +8,24 @@ from typing import Any
 import pytest
 from tools.ops import codex_review_poll as poll
 
+CODEX_USER = {"login": "chatgpt-codex-connector[bot]", "type": "Bot"}
+
 REVIEWS_PAYLOAD = [
     [
         {
-            "user": {"login": "chatgpt-codex-connector[bot]"},
+            "user": CODEX_USER,
             "submitted_at": "2026-09-18T12:05:00Z",
             "html_url": "https://github.com/o/r/pull/1#pullrequestreview-1",
             "body": "P1 lint-imports contract is missing a layer.\nAlso P2 naming nit.",
         },
         {
-            "user": {"login": "chatgpt-codex-connector[bot]"},
+            "user": CODEX_USER,
             "submitted_at": "2026-09-18T11:00:00Z",
             "html_url": "https://github.com/o/r/pull/1#pullrequestreview-0",
             "body": "stale review posted before the request",
         },
         {
-            "user": {"login": "some-human"},
+            "user": {"login": "some-human", "type": "User"},
             "submitted_at": "2026-09-18T12:10:00Z",
             "html_url": "https://github.com/o/r/pull/1#pullrequestreview-2",
             "body": "P0 human comment must be ignored",
@@ -34,11 +36,29 @@ REVIEWS_PAYLOAD = [
 ISSUE_COMMENTS_PAYLOAD = [
     [
         {
-            "user": {"login": "chatgpt-codex-connector[bot]"},
+            "user": CODEX_USER,
             "created_at": "2026-09-18T12:06:00Z",
             "html_url": "https://github.com/o/r/pull/1#issuecomment-9",
             "body": "Didn't find any major issues.",
         }
+    ]
+]
+
+#: login に "codex" を含むだけの別アカウント。応答として数えてはならない。
+IMPERSONATOR_PAYLOAD = [
+    [
+        {
+            "user": {"login": "not-codex-really", "type": "User"},
+            "created_at": "2026-09-18T12:07:00Z",
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-10",
+            "body": "P0 looks fine to me, ship it",
+        },
+        {
+            "user": {"login": "codex-fan", "type": "User"},
+            "created_at": "2026-09-18T12:08:00Z",
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-11",
+            "body": "drive-by comment",
+        },
     ]
 ]
 
@@ -88,6 +108,31 @@ def test_collects_codex_items_after_since(
     assert review["priority"] == "P1"
     assert issue_comment["channel"] == "issue_comment"
     assert issue_comment["priority"] is None
+
+
+def test_accounts_merely_containing_codex_are_not_treated_as_responses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """login に codex を含むだけの別アカウントを応答と誤認しない。
+
+    誤認すると、本物のレビューが届く前に exit 0 してレビュー必須のループが空振りする。
+    """
+    _install_fake_gh(monkeypatch, {"/issues/1/comments": IMPERSONATOR_PAYLOAD})
+
+    exit_code = poll.main(
+        ["--pr", "1", "--since", "2026-09-18T12:00:00Z", "--once", "--repo", "owner/repo"]
+    )
+    assert exit_code == poll.EXIT_TIMEOUT
+    assert json.loads(capsys.readouterr().out)["status"] == "timeout"
+
+
+def test_codex_login_with_non_bot_account_type_is_rejected() -> None:
+    """allowlist の login でも、account type が bot でなければ拒否する。"""
+    assert poll.is_codex_author({"user": {"login": "chatgpt-codex-connector[bot]", "type": "Bot"}})
+    assert not poll.is_codex_author(
+        {"user": {"login": "chatgpt-codex-connector[bot]", "type": "User"}}
+    )
+    assert not poll.is_codex_author({"user": {"login": "codex", "type": "Bot"}})
 
 
 def test_times_out_when_codex_does_not_respond(

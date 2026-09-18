@@ -23,8 +23,21 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-#: Codex の投稿とみなす author login の判定（bot 名の揺れを吸収するため部分一致）。
-CODEX_LOGIN_MARKER = "codex"
+#: Codex の投稿とみなす author login の allowlist（完全一致・小文字で比較）。
+#:
+#: 部分一致（`"codex" in login`）にしてはいけない。login に codex を含む任意の
+#: アカウントが依頼後にコメントしただけで「レビュー応答あり」と誤判定し、
+#: 本物のレビューが届く前に exit 0 してレビュー必須のループを空振りさせるため。
+CODEX_LOGINS: frozenset[str] = frozenset(
+    {
+        "chatgpt-codex-connector[bot]",
+        "chatgpt-codex-connector",
+    }
+)
+
+#: allowlist に加えて要求する account type（GitHub App / bot であること）。
+#: 同名の人間アカウントによるなりすましを防ぐ。
+CODEX_ACCOUNT_TYPE = "bot"
 
 #: 本文から P0 / P1 / P2 タグを抽出する。最も重い（数字の小さい）ものを採る。
 PRIORITY_PATTERN = re.compile(r"\bP([012])\b")
@@ -116,9 +129,19 @@ def extract_priority(body: str) -> str | None:
 
 
 def is_codex_author(entry: dict[str, Any]) -> bool:
+    """投稿者が Codex の GitHub App 本体かを判定する。
+
+    login の完全一致（allowlist）と account type の両方を要求する。部分一致にすると、
+    login に codex を含む別アカウントの投稿を応答と誤認し、本物のレビューを待たずに
+    exit 0 してしまう。
+    """
     user = entry.get("user") or {}
-    login = str(user.get("login") or "")
-    return CODEX_LOGIN_MARKER in login.lower()
+    login = str(user.get("login") or "").lower()
+    if login not in CODEX_LOGINS:
+        return False
+    account_type = str(user.get("type") or "").lower()
+    # type が取得できない応答も許容するが、値があるときは bot でなければ拒否する。
+    return account_type in ("", CODEX_ACCOUNT_TYPE)
 
 
 def collect_items(
