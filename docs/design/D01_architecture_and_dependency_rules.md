@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -25,6 +25,7 @@
 |---|---|---|
 | 1 | ポート設計（利用側が Protocol を定義し `app` が注入）に合わせ、他パッケージの `application` への直接依存を閉じる | 第1節の公開範囲、第2節 application 層の許可依存、第3.2節の許可表、第4節、第6節 F4/F6/F7/F8 |
 | 2 | 許可表と機械検査の不一致（`evaluation → strategy.runtime/catalog` が検出されない、layers 契約が非 exhaustive） | 第6節: L1 を container 付き相対レイヤ契約にし L1〜L2c を `exhaustive = true`、F8 追加 |
+| 4（v2.1） | PR #2 の Codex 指摘: `app.cli` / `app.composition` が Pydantic・YAML を import しても F5a が検出しない | 第6節: F5c を追加し、`app.config` だけを例外にする。pyproject への反映は別 PR |
 | 3 | application 層の外部ライブラリ禁止と `strategy.catalog` の NumPy 許可の不整合 | 第2節の層定義、第5節の NumPy 使用条件 |
 | — | 仮置き4件（B-6、B-9、hatchling、NumPy）の確定 | 第5節、第10.1節、第11節、第14節 |
 
@@ -172,7 +173,7 @@ app → evaluation → backtest → strategy → marketdata → common
 
 ## 6. import-linter 契約（確定）
 
-第3節と第5節を次の契約として `pyproject.toml` に記述し、CI と `tests/architecture/` の両方で検査する（ADR-0004）。`include_external_packages = true` とする。layers 契約はすべて `exhaustive = true` とし、未宣言のサブパッケージの追加を検出する。契約名（L1、L2a〜L2c、F1a〜F8）は CI の出力で参照するため変更しない。
+第3節と第5節を次の契約として `pyproject.toml` に記述し、CI と `tests/architecture/` の両方で検査する（ADR-0004）。`include_external_packages = true` とする。layers 契約はすべて `exhaustive = true` とし、未宣言のサブパッケージの追加を検出する。契約名（L1、L2a〜L2c、F1a〜F8、F5c）は CI の出力で参照するため変更しない。
 
 ```toml
 [tool.importlinter]
@@ -279,6 +280,13 @@ source_modules = [
     "odyssey_fx.evaluation.application",
 ]
 forbidden_modules = ["pandas", "polars", "pyarrow", "pydantic", "yaml", "duckdb"]
+
+# (F5c) 設定解析ライブラリは app.config だけ（app.cli / app.composition からも不可）
+[[tool.importlinter.contracts]]
+name = "F5c: config parsers only in app.config"
+type = "forbidden"
+source_modules = ["odyssey_fx.app.cli", "odyssey_fx.app.composition"]
+forbidden_modules = ["pydantic", "yaml"]
 
 [[tool.importlinter.contracts]]
 name = "F5b: no numpy outside adapters, app and strategy.catalog"
