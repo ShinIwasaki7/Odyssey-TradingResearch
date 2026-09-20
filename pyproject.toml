@@ -9,7 +9,9 @@ description = "FX strategy research platform (strategy / backtest / evaluation f
 requires-python = ">=3.12,<3.13"
 readme = "README.md"
 # ランタイム依存はなし。必要な依存は後続の設計文書（D01〜）の承認後に追加する。
-dependencies = []
+dependencies = [
+    "polars>=1.44.2",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/odyssey_fx"]
