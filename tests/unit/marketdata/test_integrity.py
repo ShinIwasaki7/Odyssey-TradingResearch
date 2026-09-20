@@ -23,6 +23,7 @@ from odyssey_fx.marketdata.application.integrity import (
     severity_counts,
 )
 from odyssey_fx.marketdata.domain.bar import Bar, ProvenanceKind
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar, WeeklyMoment
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
@@ -347,3 +348,128 @@ def test_a_series_under_check_rejects_a_foreign_bar() -> None:
             timeframe_def=market.TF_1H,
             bars=(market.make_bar(other, interval),),
         )
+
+
+# --- 区間の両端を比較する（D03 §3.9 の IRREGULAR_INTERVAL）------------------
+
+
+def test_a_bar_with_the_wrong_end_is_an_error() -> None:
+    """開始は整列に合うが終端が違う足は重大な違反（隣の足と重なる）。
+
+    開始だけを比較していると、この足が検査を通り抜けて履歴窓の本数や集約の構成足を
+    狂わせる。
+    """
+    long_bar = Interval(
+        start=UtcTime.parse("2026-01-14T10:00:00Z"),
+        end=UtcTime.parse("2026-01-14T12:00:00Z"),  # 1時間足なのに2時間ある
+    )
+    results = check_series(_target([market.make_bar(HOURLY, long_bar)]), CALENDAR)
+    irregular = [result for result in results if result.kind is CheckKind.IRREGULAR_INTERVAL]
+    assert len(irregular) == 1
+    assert irregular[0].severity is Severity.ERROR
+    assert dict(irregular[0].detail)["reason"] == "bar_end_off_alignment"
+
+
+def test_a_bar_that_is_too_short_is_an_error() -> None:
+    short_bar = Interval(
+        start=UtcTime.parse("2026-01-14T10:00:00Z"),
+        end=UtcTime.parse("2026-01-14T10:30:00Z"),
+    )
+    results = check_series(_target([market.make_bar(HOURLY, short_bar)]), CALENDAR)
+    assert any(result.kind is CheckKind.IRREGULAR_INTERVAL for result in results)
+
+
+def test_a_correctly_aligned_bar_is_not_reported() -> None:
+    """整列どおりの足は報告しない（検査が正しい足まで落とさないことの確認）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    results = check_series(_target(bars), CALENDAR)
+    assert not [result for result in results if result.kind is CheckKind.IRREGULAR_INTERVAL]
+
+
+def test_a_shortened_session_bar_is_not_reported_as_irregular() -> None:
+    """短縮セッションで切り詰められた足は、期待区間と一致するので違反ではない。"""
+    calendar = market.calendar(
+        closures=(market.closure(date(2026, 1, 16), time(13, 0), time(17, 0)),)
+    )
+    daily = market.series(timeframe_id="1d_ny17")
+    expected = market.TF_1D_NY17.expected_interval(calendar, UtcTime.parse("2026-01-15T22:00:00Z"))
+    assert expected is not None
+    target = SeriesUnderCheck(
+        series=daily,
+        timeframe_def=market.TF_1D_NY17,
+        bars=(market.make_bar(daily, expected),),
+    )
+    results = check_series(target, calendar)
+    assert not [result for result in results if result.kind is CheckKind.IRREGULAR_INTERVAL]
+
+
+def test_an_irregular_bar_is_not_also_reported_as_a_dst_anomaly() -> None:
+    """区間の食い違いは重大な違反の担当。夏時間の記録と二重に報告しない。"""
+    long_bar = Interval(
+        start=UtcTime.parse("2026-01-14T10:00:00Z"),
+        end=UtcTime.parse("2026-01-14T12:00:00Z"),
+    )
+    results = check_series(_target([market.make_bar(HOURLY, long_bar)]), CALENDAR)
+    assert not [result for result in results if result.kind is CheckKind.DST_BOUNDARY_ANOMALY]
+
+
+def _always_open_calendar() -> TradingCalendar:
+    """常時開場のカレンダー（週の開始と終了が同じ曜日・時刻なので週が途切れない）。
+
+    ニューヨーク 17 時基準の実カレンダーでは、米国の夏時間の切替が日曜未明に起きるため、
+    切替に掛かる足は必ず週末休場の中に入り、取引される足としては現れない。夏時間の記録
+    （`DST_BOUNDARY_ANOMALY`）が実際に出る条件を確かめるには、週末を持たないカレンダーが要る。
+    """
+    return TradingCalendar(
+        id="always_open",
+        version=1,
+        tz=market.NEW_YORK,
+        weekly_open=WeeklyMoment(weekday=6, at=time(0, 0)),
+        weekly_close=WeeklyMoment(weekday=6, at=time(0, 0)),
+    )
+
+
+def test_a_dst_switch_bar_is_recorded_as_an_anomaly() -> None:
+    """区間は正しいが名目長と長さが違う足を、記録（警告）として残す（D03 §3.9）。
+
+    2026-11-01 の秋の切替に掛かる 4時間足は 5 時間になる。
+    """
+    calendar = _always_open_calendar()
+    four_hour = market.series(timeframe_id="4h_ny17")
+    expected = market.TF_4H_NY17.expected_interval(calendar, UtcTime.parse("2026-11-01T06:00:00Z"))
+    assert expected is not None
+    assert expected.duration.total_seconds() == 5 * 3600
+
+    target = SeriesUnderCheck(
+        series=four_hour,
+        timeframe_def=market.TF_4H_NY17,
+        bars=(market.make_bar(four_hour, expected),),
+    )
+    results = check_series(target, calendar)
+    anomalies = [result for result in results if result.kind is CheckKind.DST_BOUNDARY_ANOMALY]
+    assert len(anomalies) == 1
+    assert anomalies[0].severity is Severity.WARN
+    assert dict(anomalies[0].detail) == {
+        "bar_duration_seconds": str(5 * 3600),
+        "nominal_length_seconds": str(4 * 3600),
+    }
+    # 区間は正しいので、重大な違反としては報告されない。
+    assert not [result for result in results if result.kind is CheckKind.IRREGULAR_INTERVAL]
+
+
+def test_a_normal_length_bar_is_not_a_dst_anomaly() -> None:
+    """切替に掛からない足は記録しない。"""
+    calendar = _always_open_calendar()
+    four_hour = market.series(timeframe_id="4h_ny17")
+    expected = market.TF_4H_NY17.expected_interval(calendar, UtcTime.parse("2026-06-10T10:00:00Z"))
+    assert expected is not None
+    target = SeriesUnderCheck(
+        series=four_hour,
+        timeframe_def=market.TF_4H_NY17,
+        bars=(market.make_bar(four_hour, expected),),
+    )
+    assert not [
+        result
+        for result in check_series(target, calendar)
+        if result.kind is CheckKind.DST_BOUNDARY_ANOMALY
+    ]

@@ -75,28 +75,44 @@ def _duplicate_findings(target: SeriesUnderCheck) -> list[CheckResult]:
     return findings
 
 
-def _alignment_findings(target: SeriesUnderCheck) -> list[CheckResult]:
+def _alignment_findings(target: SeriesUnderCheck, calendar: TradingCalendar) -> list[CheckResult]:
     """定義の整列に合わない足を報告する（`IRREGULAR_INTERVAL`）。
 
-    足の開始が整列上の境界と一致しない場合と、区間の終端が整列上の終端でも期待区間の
-    終端でもない場合の両方を対象にする。DST 切替日の長短は整列規則が織り込んでいるので、
-    名目長との一致は要求しない（D03 §3.2）。
+    **区間の両端**を比較する。開始だけを見ていると、開始は整列に合うのに終端が違う足
+    （隣の足と重なる、名目より長い・短い）を見逃す。そうした足は履歴窓の本数や集約の
+    構成足を狂わせるので、重大な違反として扱う。
+
+    比較する相手は、その足が取るべき期待区間（`expected_interval`、短縮セッションで切り
+    詰め済み）である。カレンダー上その時間帯に足が存在しない場合（休場帯）は、期待区間が
+    無いので整列上の区間（`boundaries`）と比較する。「休場帯に足がある」こと自体は
+    `UNEXPECTED_BAR` が別に報告するので、ここでは区間の形だけを見る。
+
+    DST 切替日の長短は整列規則と期待区間が織り込んでいるので、名目長との一致は要求しない
+    （D03 §3.2）。
     """
     findings: list[CheckResult] = []
     for bar in target.bars:
-        aligned = target.timeframe_def.boundaries(bar.bar_start)
-        if aligned.start != bar.bar_start:
-            findings.append(
-                CheckResult.create(
-                    CheckKind.IRREGULAR_INTERVAL,
-                    target.series,
-                    bar.interval,
-                    detail={
-                        "aligned_start": str(aligned.start),
-                        "reason": "bar_start_off_alignment",
-                    },
-                )
+        expected = target.timeframe_def.expected_interval(calendar, bar.bar_start)
+        if expected is None:
+            expected = target.timeframe_def.boundaries(bar.bar_start)
+            reason = "outside_sessions_and_off_alignment"
+        elif expected.start != bar.bar_start:
+            reason = "bar_start_off_alignment"
+        else:
+            reason = "bar_end_off_alignment"
+        if expected == bar.interval:
+            continue
+        findings.append(
+            CheckResult.create(
+                CheckKind.IRREGULAR_INTERVAL,
+                target.series,
+                bar.interval,
+                detail={
+                    "expected_interval": str(expected),
+                    "reason": reason,
+                },
             )
+        )
     return findings
 
 
@@ -157,31 +173,37 @@ def _calendar_findings(target: SeriesUnderCheck, calendar: TradingCalendar) -> l
 
 
 def _dst_findings(target: SeriesUnderCheck, calendar: TradingCalendar) -> list[CheckResult]:
-    """DST 切替週の足の長さが整列規則の期待と食い違う場合に報告する。
+    """夏時間の切替に掛かり、名目長と長さが違う足を記録する（`DST_BOUNDARY_ANOMALY`）。
 
-    `DST_BOUNDARY_ANOMALY` は「切替週の足数・境界が期待と異なる」ことを表す（D03 §3.9）。
-    整列規則が計算した期待区間と足の区間が一致しない足のうち、名目長と実際の長さが異なる
-    もの（＝切替に掛かる足）を対象にする。整列そのもののずれは `IRREGULAR_INTERVAL` が
-    別に報告するので、ここでは重複して報告しない。
+    D03 §3.9 は「切替週の足数・境界が期待と異なる」ことを表す種別としている。区間が期待と
+    **食い違う**足は `IRREGULAR_INTERVAL`（重大な違反）がすべて拾うので、この検査は
+    「区間は正しいが、名目長と実際の長さが違う足」——つまり切替日の 23時間・25時間の日足、
+    3時間・5時間の 4時間足——を人間が確認できるように残す役割に絞る。
+
+    区間の正しさとは別に記録を残すのは、切替週の足数・長さが設定どおりかを目視で確かめ
+    たいという運用上の要請があるためで、受入れの合否には影響しない警告である。整列に合う
+    足だけを対象にするので、`IRREGULAR_INTERVAL` と二重に報告することはない。
     """
     findings: list[CheckResult] = []
     for bar in target.bars:
         expected = target.timeframe_def.expected_interval(calendar, bar.bar_start)
-        if expected is None or expected == bar.interval:
-            continue
+        if expected is None or expected != bar.interval:
+            continue  # 区間の食い違いは IRREGULAR_INTERVAL の担当。
         aligned = target.timeframe_def.boundaries(bar.bar_start)
-        if aligned.start != bar.bar_start:
-            continue  # 整列ずれは IRREGULAR_INTERVAL の担当。
         if aligned.duration == target.timeframe_def.nominal_length:
             continue  # 切替に掛かっていない足は対象外。
+        if bar.interval.duration == target.timeframe_def.nominal_length:
+            continue  # 短縮セッションで名目長どおりに切り詰められた足は対象外。
         findings.append(
             CheckResult.create(
                 CheckKind.DST_BOUNDARY_ANOMALY,
                 target.series,
                 bar.interval,
                 detail={
-                    "expected_end": str(expected.end),
-                    "aligned_duration_seconds": str(int(aligned.duration.total_seconds())),
+                    "bar_duration_seconds": str(int(bar.interval.duration.total_seconds())),
+                    "nominal_length_seconds": str(
+                        int(target.timeframe_def.nominal_length.total_seconds())
+                    ),
                 },
             )
         )
@@ -266,7 +288,7 @@ def check_series(target: SeriesUnderCheck, calendar: TradingCalendar) -> tuple[C
     findings: list[CheckResult] = []
     findings.extend(_duplicate_findings(target))
     findings.extend(_ohlc_findings(target))
-    findings.extend(_alignment_findings(target))
+    findings.extend(_alignment_findings(target, calendar))
     findings.extend(_calendar_findings(target, calendar))
     findings.extend(_dst_findings(target, calendar))
     findings.extend(_source_transition_findings(target))
