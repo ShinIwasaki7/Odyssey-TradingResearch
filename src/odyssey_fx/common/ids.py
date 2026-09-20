@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Final, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Final, Self, TypeVar
 
 from odyssey_fx.common.errors import KernelValueError
 
@@ -150,8 +150,11 @@ class SequentialId:
         return str(self)
 
     @classmethod
-    def parse(cls, text: str) -> SequentialId:
-        """`KIND:00000042` 形式を読む。種別が一致しない文字列は拒否する（D02 §7.2）。"""
+    def parse(cls, text: str) -> Self:
+        """`KIND:00000042` 形式を読む。種別が一致しない文字列は拒否する（D02 §7.2）。
+
+        戻り値は呼び出した具体型（`OrderId.parse(...)` なら `OrderId`）になる。
+        """
         if not isinstance(text, str):
             raise KernelValueError(f"invalid {cls.__name__} literal: {text!r}")
         match = _SEQUENTIAL_PATTERN.match(text)

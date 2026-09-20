@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import assert_type
+
 import pytest
 
 from odyssey_fx.common.errors import KernelValueError
@@ -92,6 +94,13 @@ def test_sequential_ids_carry_their_kind(id_type: type[SequentialId], kind: str)
 def test_sequential_id_str_parse_roundtrip(id_type: type[SequentialId], kind: str) -> None:
     value = id_type(8)
     assert id_type.parse(str(value)) == value
+
+
+def test_parse_returns_the_concrete_id_type() -> None:
+    """`OrderId.parse(...)` は基底型ではなく `OrderId` として返る（型検査・実行時とも）。"""
+    parsed = OrderId.parse("ORD:00000008")
+    assert_type(parsed, OrderId)
+    assert type(parsed) is OrderId
 
 
 def test_sequential_id_parse_rejects_another_kind() -> None:

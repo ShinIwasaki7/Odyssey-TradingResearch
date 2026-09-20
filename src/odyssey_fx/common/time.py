@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Final, overload
+from typing import Final, Self, overload
 from zoneinfo import ZoneInfo
 
 from odyssey_fx.common.errors import KernelValueError
@@ -65,12 +65,12 @@ class UtcTime:
         minute: int = 0,
         second: int = 0,
         microsecond: int = 0,
-    ) -> UtcTime:
+    ) -> Self:
         """暦要素から UTC 時刻を作る。"""
         return cls(datetime(year, month, day, hour, minute, second, microsecond, tzinfo=UTC))
 
     @classmethod
-    def from_local(cls, naive: datetime, tz: ZoneInfo, *, fold: int | None = None) -> UtcTime:
+    def from_local(cls, naive: datetime, tz: ZoneInfo, *, fold: int | None = None) -> Self:
         """地域時刻（naive）とタイムゾーンから UTC 時刻を作る（D02 §3.1）。
 
         夏時間（DST）の切替により、同じ地域時刻が2回現れる「曖昧な時刻」と、1度も現れない
@@ -108,7 +108,7 @@ class UtcTime:
         return cls(chosen.astimezone(UTC))
 
     @classmethod
-    def parse(cls, text: str) -> UtcTime:
+    def parse(cls, text: str) -> Self:
         """`YYYY-MM-DDTHH:MM:SS[.ffffff]Z` または `+00:00` 形式を読む（D02 §3.1）。
 
         naive な文字列や 0 以外のオフセットは拒否する。
@@ -255,7 +255,8 @@ class PhaseSet:
     """run 内で使うフェーズ集合（D02 §3.3 の一意性）。
 
     `rank` と `name` はそれぞれ集合内で一意（rank ↔ name は全単射）でなければならない。
-    同じ `rank` に異なる `name`、同じ `name` に異なる `rank` を含む集合は構築時に拒否する。
+    同じ `rank` や同じ `name` が2度現れる集合は、名前が一致していても構築時に拒否する
+    （同一要素の重複も一意性の違反であり、フェーズ数が実際と食い違う原因になる）。
     `ProcessingPoint` の全順序はこの一意性を前提とし、集合の定義は run manifest に記録する。
     実際のフェーズ一覧は `backtest.engine`（D06）が固定の tuple として定義する。
     """
@@ -267,23 +268,23 @@ class PhaseSet:
             raise KernelValueError("PhaseSet.phases must be a tuple")
         if not self.phases:
             raise KernelValueError("PhaseSet must not be empty")
-        by_rank: dict[int, str] = {}
-        by_name: dict[str, int] = {}
+        seen_ranks: dict[int, str] = {}
+        seen_names: dict[str, int] = {}
         for phase in self.phases:
             if not isinstance(phase, PhaseRank):
                 raise KernelValueError("PhaseSet.phases must contain PhaseRank values")
-            existing_name = by_rank.get(phase.rank)
-            if existing_name is not None and existing_name != phase.name:
+            if phase.rank in seen_ranks:
                 raise KernelValueError(
-                    f"rank {phase.rank} maps to both {existing_name!r} and {phase.name!r}"
+                    f"rank {phase.rank} appears more than once"
+                    f" (as {seen_ranks[phase.rank]!r} and {phase.name!r})"
                 )
-            existing_rank = by_name.get(phase.name)
-            if existing_rank is not None and existing_rank != phase.rank:
+            if phase.name in seen_names:
                 raise KernelValueError(
-                    f"name {phase.name!r} maps to both rank {existing_rank} and {phase.rank}"
+                    f"name {phase.name!r} appears more than once"
+                    f" (at rank {seen_names[phase.name]} and {phase.rank})"
                 )
-            by_rank[phase.rank] = phase.name
-            by_name[phase.name] = phase.rank
+            seen_ranks[phase.rank] = phase.name
+            seen_names[phase.name] = phase.rank
 
     def by_name(self, name: str) -> PhaseRank:
         """名前からフェーズを引く。未登録の名前は `KernelValueError`。"""
@@ -300,9 +301,12 @@ class PhaseSet:
         raise KernelValueError(f"unknown phase rank: {rank!r}")
 
     def ordered(self) -> tuple[PhaseRank, ...]:
-        """`rank` の昇順に整列した重複なしのフェーズ列。"""
-        unique = {phase.rank: phase for phase in self.phases}
-        return tuple(unique[rank] for rank in sorted(unique))
+        """`rank` の昇順に整列したフェーズ列。
+
+        構築時に重複を拒否しているので、長さは `phases` と常に一致する（並べ替えるだけで、
+        要素を捨てない）。
+        """
+        return tuple(sorted(self.phases, key=lambda phase: phase.rank))
 
 
 @dataclass(frozen=True, slots=True)

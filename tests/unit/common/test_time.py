@@ -229,14 +229,27 @@ def test_phase_set_accepts_a_bijective_set() -> None:
     assert [phase.name for phase in phases.ordered()] == ["ADMISSION", "EXECUTION"]
 
 
+def test_phase_set_ordered_keeps_every_entry() -> None:
+    """重複を構築時に拒否するので、`ordered()` は並べ替えるだけで要素を捨てない。"""
+    phases = PhaseSet((PhaseRank(2, "TRACE"), PhaseRank(0, "ADMISSION"), PhaseRank(1, "EXECUTION")))
+    assert len(phases.ordered()) == len(phases.phases)
+    assert [phase.rank for phase in phases.ordered()] == [0, 1, 2]
+
+
 def test_phase_set_rejects_one_rank_with_two_names() -> None:
-    with pytest.raises(KernelValueError, match="rank 0 maps to both"):
+    with pytest.raises(KernelValueError, match="rank 0 appears more than once"):
         PhaseSet((PhaseRank(0, "ADMISSION"), PhaseRank(0, "EXECUTION")))
 
 
 def test_phase_set_rejects_one_name_with_two_ranks() -> None:
-    with pytest.raises(KernelValueError, match="maps to both rank"):
+    with pytest.raises(KernelValueError, match="appears more than once"):
         PhaseSet((PhaseRank(0, "ADMISSION"), PhaseRank(1, "ADMISSION")))
+
+
+def test_phase_set_rejects_an_exact_duplicate() -> None:
+    """順位も名前も同じ要素の重複も一意性の違反として拒否する（D02 §3.3）。"""
+    with pytest.raises(KernelValueError, match="rank 0 appears more than once"):
+        PhaseSet((PhaseRank(0, "ADMISSION"), PhaseRank(0, "ADMISSION")))
 
 
 def test_phase_set_rejects_an_empty_set() -> None:

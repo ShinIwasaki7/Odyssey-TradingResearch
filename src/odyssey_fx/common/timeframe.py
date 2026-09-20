@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Self
 
 from odyssey_fx.common.errors import KernelValueError
 
@@ -44,7 +44,7 @@ class TimeframeRef:
         return str(self)
 
     @classmethod
-    def parse(cls, text: str) -> TimeframeRef:
+    def parse(cls, text: str) -> Self:
         """`<id>@v<version>` 形式を読む。"""
         if not isinstance(text, str) or "@v" not in text:
             raise KernelValueError(f"invalid TimeframeRef literal: {text!r}")

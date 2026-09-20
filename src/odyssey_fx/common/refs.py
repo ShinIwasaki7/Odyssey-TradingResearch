@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Self
 
 from odyssey_fx.common import canonical
 from odyssey_fx.common.errors import KernelValueError
@@ -63,14 +63,18 @@ class ContentDigest:
             )
 
     def __str__(self) -> str:
-        return self.hex
+        """人間向けの表示。16進 64 文字だけを返す。
 
-    def canonical_str(self) -> str:
-        """正規化エンコードでの表現（ダイジェストは 16進文字列で表す）。"""
+        正規化エンコード（D02 §9.3）はこの文字列を使わない。§9.3 が `__str__` で符号化すると
+        定めるのは `UtcTime`・ID 型・`Symbol`・`CurrencyCode`・`TimeframeRef` だけであり、
+        `ContentDigest` はそれ以外の dataclass として `{"algorithm": …, "hex": …}` の
+        mapping に符号化される。`algorithm` を落とすと、manifest からダイジェストを再計算する
+        外部ツールと結果が食い違うため、`canonical_str()` は定義しない。
+        """
         return self.hex
 
     @classmethod
-    def sha256(cls, hex_value: str) -> ContentDigest:
+    def sha256(cls, hex_value: str) -> Self:
         """16進 64 文字から sha256 のダイジェストを作る。"""
         return cls(algorithm="sha256", hex=hex_value)
 
@@ -194,7 +198,7 @@ class CodeDigest:
         _require_digest(self.digest, "CodeDigest.digest")
 
     @classmethod
-    def from_package_dir(cls, package_dir: Path) -> CodeDigest:
+    def from_package_dir(cls, package_dir: Path) -> Self:
         """import されたパッケージディレクトリ配下の `.py` からダイジェストを作る。
 
         `package_dir` には `odyssey_fx.__file__` が解決するディレクトリ（editable install
@@ -214,7 +218,7 @@ class LockDigest:
         _require_digest(self.digest, "LockDigest.digest")
 
     @classmethod
-    def from_lock_file(cls, lock_path: Path) -> LockDigest:
+    def from_lock_file(cls, lock_path: Path) -> Self:
         """リポジトリ直下の `uv.lock` からダイジェストを作る。
 
         `uv.lock` が `pyproject.toml` と整合しない場合に run を開始しない判断は `app` の
@@ -246,7 +250,7 @@ class EnvDigest:
         sys_platform: str,
         machine: str,
         distributions: Mapping[str, str],
-    ) -> EnvDigest:
+    ) -> Self:
         """環境情報の mapping からダイジェストを作る（D02 §9.4）。"""
         payload = canonical.env_digest_input(
             python_implementation=python_implementation,

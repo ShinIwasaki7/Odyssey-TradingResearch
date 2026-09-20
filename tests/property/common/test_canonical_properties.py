@@ -6,10 +6,12 @@ hypothesis で多数の値を生成し、次を確かめる。
 - `Decimal` の表現が正規化されること（`150.00` と `150` が同じ）と厳密であること
   （精度 28 を超える桁数の異なる2値が異なる表現になり、コンテキスト精度を変えても表現が
   変わらず、巨大な指数の値でも桁へ展開しないこと）。
+- 文字列の符号化が標準の JSON エンコーダと一致し、出力が JSON として読み戻せること。
 """
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal, localcontext
 
 from hypothesis import assume, given, settings
@@ -112,6 +114,25 @@ def test_trailing_zero_digits_do_not_change_the_representation(digits: int, zero
     padded = Decimal(f"{digits}{'0' * zeros}").scaleb(-zeros)
     assert padded == value
     assert canonical.encode_decimal(padded) == canonical.encode_decimal(value)
+
+
+# --- 文字列の符号化 ---------------------------------------------------------
+
+
+@given(st.text())
+def test_string_encoding_matches_the_standard_json_encoder(text: str) -> None:
+    """文字列は標準の JSON エンコーダと1バイトも違わないこと（D02 §9.3）。
+
+    manifest からダイジェストを再計算する外部ツールが、標準の JSON エンコーダで同じバイト列
+    に到達できる必要がある。制御文字・引用符・逆斜線・非 ASCII のいずれでも一致させる。
+    """
+    assert canonical.encode(text) == json.dumps(text, ensure_ascii=False).encode("utf-8")
+
+
+@given(st.dictionaries(st.text(max_size=8), st.text(max_size=8), max_size=5))
+def test_mapping_of_strings_parses_back_as_the_same_mapping(payload: dict[str, str]) -> None:
+    """正規化エンコードは JSON として読み戻せる（D02 §9.3 の「JSON 互換のテキスト」）。"""
+    assert json.loads(canonical.encode(payload).decode("utf-8")) == payload
 
 
 def test_precision_28_boundary_is_exact() -> None:

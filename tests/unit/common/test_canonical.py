@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
@@ -124,6 +125,18 @@ def test_encode_strings_keeps_non_ascii_and_escapes_controls() -> None:
     assert canonical.encode("\x00") == b'"\\u0000"'
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["", "abc", "円", 'a"b', "a\\b", "a\nb", "a\tb", "a\rb", "a\bb", "a\fb", "\x00", "\x7f", "🙂"],
+)
+def test_string_encoding_matches_the_standard_json_encoder(text: str) -> None:
+    """外部ツールが manifest から再計算できるよう、標準の JSON エンコーダと一致させる。
+
+    自前のエスケープ処理では `\\b`・`\\f`・`0x7f` の扱いが標準と食い違っていた。
+    """
+    assert canonical.encode(text) == json.dumps(text, ensure_ascii=False).encode("utf-8")
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
 def test_encode_rejects_non_finite_floats(value: float) -> None:
     with pytest.raises(KernelValueError, match="non-finite float"):
@@ -204,6 +217,36 @@ def test_ids_symbols_currencies_and_timeframes_encode_as_their_strings() -> None
     assert canonical.encode(CurrencyCode("JPY")) == b'"JPY"'
     assert canonical.encode(TimeframeRef("15m", 1)) == b'"15m@v1"'
     assert canonical.encode(RunId(ContentDigest.sha256("a" * 64))) == b'"' + b"a" * 64 + b'"'
+
+
+def test_content_digest_encodes_as_a_field_mapping() -> None:
+    """`ContentDigest` は D02 §9.3 の `__str__` 一覧に無いので、通常の dataclass として扱う。
+
+    16進文字列だけに符号化すると `algorithm` が落ち、manifest からダイジェストを再計算する
+    外部ツールと結果が食い違う。
+    """
+    digest = ContentDigest.sha256("a" * 64)
+    assert canonical.encode(digest) == (b'{"algorithm":"sha256","hex":"' + b"a" * 64 + b'"}')
+
+
+def test_references_embed_the_digest_as_a_nested_mapping() -> None:
+    """`ContractRef` などは入れ子の mapping として符号化される（D02 §9.3）。"""
+    from odyssey_fx.common.refs import CompiledStrategyRef, ContractRef
+
+    hex_value = "b" * 64
+    digest = ContentDigest.sha256(hex_value)
+    nested = b'{"algorithm":"sha256","hex":"' + hex_value.encode() + b'"}'
+
+    assert canonical.encode(CompiledStrategyRef(digest)) == b'{"digest":' + nested + b"}"
+    assert canonical.encode(ContractRef("ema", 2, digest)) == (
+        b'{"component_id":"ema","digest":' + nested + b',"version":2}'
+    )
+
+
+def test_a_digest_id_and_a_bare_content_digest_encode_differently() -> None:
+    """ID 型は `__str__`（16進のみ）、`ContentDigest` は mapping で、取り違えが起きない。"""
+    digest = ContentDigest.sha256("c" * 64)
+    assert canonical.encode(RunId(digest)) != canonical.encode(digest)
 
 
 # --- digest -----------------------------------------------------------------

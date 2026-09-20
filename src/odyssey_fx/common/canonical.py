@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
@@ -118,25 +119,13 @@ def _encode_float(value: float) -> str:
 
 
 def _encode_str(value: str) -> str:
-    """JSON 文字列リテラル。`ensure_ascii=False` 相当で非 ASCII をそのまま残す。"""
-    out = ['"']
-    for char in value:
-        if char == '"':
-            out.append('\\"')
-        elif char == "\\":
-            out.append("\\\\")
-        elif char == "\n":
-            out.append("\\n")
-        elif char == "\r":
-            out.append("\\r")
-        elif char == "\t":
-            out.append("\\t")
-        elif char < " " or char == "\x7f":
-            out.append(f"\\u{ord(char):04x}")
-        else:
-            out.append(char)
-    out.append('"')
-    return "".join(out)
+    """JSON 文字列リテラル（`ensure_ascii=False` で非 ASCII をそのまま残す）。
+
+    エスケープ規則を自前で書くと標準の JSON エンコーダと細部（`\\b`・`\\f`・`0x7f` の扱い）
+    が食い違い、manifest から外部ツールがダイジェストを再計算したときに一致しなくなる。
+    D02 §9.3 が求める「JSON 互換のテキスト」を保証するため、標準ライブラリに委ねる。
+    """
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _encode_mapping(value: Mapping[Any, Any]) -> str:
