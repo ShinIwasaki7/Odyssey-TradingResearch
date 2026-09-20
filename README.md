@@ -38,7 +38,7 @@ src/odyssey_fx/   common / marketdata / strategy / backtest / evaluation / app
 tests/            unit / semantics / property / golden / architecture / fixtures
 tools/ops/        リポジトリ運用スクリプト（Codex review poller）
 docs/             設計文書・決定記録
-data/             原データと snapshot（実体は git 管理外。manifest のみ追跡）
+data/             原データと snapshot（実体は git 管理外。manifest.json と access_log.jsonl を追跡）
 runs/             実行成果物（git 管理外）
 ```
 
@@ -46,14 +46,10 @@ runs/             実行成果物（git 管理外）
 
 実装の前に設計文書を書き、人間の合意を得る（CLAUDE.md）。
 
-| 場所 | 内容 | 状態 |
-|---|---|---|
-| `docs/design/fx_research_platform_greenfield_design.md` | 上位設計書（要件と意味論） | **未コミット** |
-| `docs/design/fx_research_platform_overall_plan.md` | 全体構築計画書（アーキテクチャ・構成・段階計画） | **未コミット** |
-| `docs/design/D01_architecture_and_dependency_rules.md` | アーキテクチャ・依存規則・ディレクトリ構成（確定版） | **未コミット** |
-| `docs/decisions/` | ADR。技術選定・構成の決定を1件1ファイルで記録 | **未コミット** |
-| [docs/pr_review_policy.md](docs/pr_review_policy.md) | PR レビュー方針（Codex review の運用、指摘の分類） | 追跡済み |
-
-「未コミット」の文書は作業ツリーには存在するが、まだ git に追跡されていない
-（段階−1 の PR はツール・骨格のみを対象とし、設計文書は別途コミットする）。
-追跡された時点でリンクに置き換える。
+| 場所 | 内容 |
+|---|---|
+| [docs/design/fx_research_platform_greenfield_design.md](docs/design/fx_research_platform_greenfield_design.md) | 上位設計書（要件と意味論） |
+| [docs/design/fx_research_platform_overall_plan.md](docs/design/fx_research_platform_overall_plan.md) | 全体構築計画書（アーキテクチャ・構成・段階計画） |
+| [docs/design/D01_architecture_and_dependency_rules.md](docs/design/D01_architecture_and_dependency_rules.md) | アーキテクチャ・依存規則・ディレクトリ構成（承認 2026-09-19） |
+| [docs/decisions/](docs/decisions/README.md) | ADR。技術選定・構成・運用の決定を1件1ファイルで記録 |
+| [docs/pr_review_policy.md](docs/pr_review_policy.md) | PR レビュー方針（Codex review の運用、指摘の分類） |
