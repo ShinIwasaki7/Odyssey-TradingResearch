@@ -371,3 +371,76 @@ def test_float_conversion_validates_its_fields() -> None:
             direction=valid.direction,
             result=valid.result,
         )
+
+
+# --- FloatConversion の内部整合（Codex レビュー round 1 指摘3）---------------
+#
+# `FloatConversion` は根拠記録（`EvidenceRef` の対象）として保存されるので、後から読んだ
+# ときに矛盾した記録が存在してはならない。`price_from_float` を通さず直接組み立てた値も、
+# 構築時に4つのフィールドの整合を検査する。
+
+
+def test_float_conversion_rejects_an_exact_that_does_not_match_raw() -> None:
+    valid = price_from_float(150.12345, tick=D("0.001"), direction=RoundingDirection.DOWN)
+    with pytest.raises(KernelValueError, match=r"exact must be Decimal\(repr\(raw\)\)"):
+        FloatConversion(
+            raw=valid.raw,
+            exact=D("999.999"),
+            tick=valid.tick,
+            direction=valid.direction,
+            result=valid.result,
+        )
+
+
+def test_float_conversion_rejects_a_result_that_does_not_match_the_rounding() -> None:
+    valid = price_from_float(150.12345, tick=D("0.001"), direction=RoundingDirection.DOWN)
+    with pytest.raises(KernelValueError, match="result must be"):
+        FloatConversion(
+            raw=valid.raw,
+            exact=valid.exact,
+            tick=valid.tick,
+            direction=valid.direction,
+            result=Price(D("999.999")),
+        )
+
+
+def test_float_conversion_rejects_a_result_rounded_the_other_way() -> None:
+    """方向だけを差し替えた記録も、丸め結果と食い違うので拒否する。"""
+    down = price_from_float(150.12345, tick=D("0.001"), direction=RoundingDirection.DOWN)
+    assert down.result.value == D("150.123")
+    with pytest.raises(KernelValueError, match="result must be"):
+        FloatConversion(
+            raw=down.raw,
+            exact=down.exact,
+            tick=down.tick,
+            direction=RoundingDirection.UP,
+            result=down.result,
+        )
+
+
+def test_float_conversion_rejects_a_mismatched_tick() -> None:
+    valid = price_from_float(150.12345, tick=D("0.001"), direction=RoundingDirection.DOWN)
+    with pytest.raises(KernelValueError, match="result must be"):
+        FloatConversion(
+            raw=valid.raw,
+            exact=valid.exact,
+            tick=D("0.01"),
+            direction=valid.direction,
+            result=valid.result,
+        )
+
+
+@pytest.mark.parametrize("direction", list(RoundingDirection))
+def test_a_record_built_by_price_from_float_is_always_consistent(
+    direction: RoundingDirection,
+) -> None:
+    """`price_from_float` が作る記録は、そのまま再構築しても検査を通る。"""
+    made = price_from_float(150.12345, tick=D("0.001"), direction=direction)
+    rebuilt = FloatConversion(
+        raw=made.raw,
+        exact=made.exact,
+        tick=made.tick,
+        direction=made.direction,
+        result=made.result,
+    )
+    assert rebuilt == made

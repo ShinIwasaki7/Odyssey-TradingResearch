@@ -38,6 +38,8 @@ __all__ = [
 ]
 
 #: `ContentDigest.hex` の形式（D02 §9.1: 64 文字小文字16進）。
+#: 照合は必ず `fullmatch` で行う。正規表現の `$` は末尾の改行1文字を許すため、`match` だと
+#: `"a" * 64 + "\n"` のような 65 文字の値を取り込んでしまう。以降の各パターンも同様。
 _HEX_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
 #: 初版で許可するハッシュ関数（D02 §9.1）。
@@ -57,7 +59,7 @@ class ContentDigest:
                 f"ContentDigest.algorithm must be one of"
                 f" {sorted(_ALLOWED_ALGORITHMS)}, got {self.algorithm!r}"
             )
-        if not isinstance(self.hex, str) or not _HEX_PATTERN.match(self.hex):
+        if not isinstance(self.hex, str) or not _HEX_PATTERN.fullmatch(self.hex):
             raise KernelValueError(
                 f"ContentDigest.hex must be 64 lowercase hex characters, got {self.hex!r}"
             )

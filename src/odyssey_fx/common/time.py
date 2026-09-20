@@ -23,7 +23,7 @@ __all__ = [
     "UtcTime",
 ]
 
-#: `PhaseRank.name` に許す字種（D02 §3.3）。
+#: `PhaseRank.name` に許す字種（D02 §3.3）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _PHASE_NAME_PATTERN: Final = re.compile(r"^[A-Z_]+$")
 
 #: `UtcTime.__str__` の秒までの書式（D02 §3.1）。
@@ -243,7 +243,7 @@ class PhaseRank:
             raise KernelValueError(f"PhaseRank.rank must be an int, got {self.rank!r}")
         if self.rank < 0:
             raise KernelValueError(f"PhaseRank.rank must be >= 0, got {self.rank}")
-        if not isinstance(self.name, str) or not _PHASE_NAME_PATTERN.match(self.name):
+        if not isinstance(self.name, str) or not _PHASE_NAME_PATTERN.fullmatch(self.name):
             raise KernelValueError(f"PhaseRank.name must match ^[A-Z_]+$, got {self.name!r}")
 
     def __str__(self) -> str:

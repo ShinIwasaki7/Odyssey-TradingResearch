@@ -49,6 +49,7 @@ __all__ = [
 ]
 
 #: 連番 ID の文字列形式（D02 §7.2、承認事項3）。
+#: 照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _SEQUENTIAL_PATTERN: Final = re.compile(r"^(?P<kind>[A-Z]+):(?P<seq>\d{8,})$")
 
 #: 連番 ID の桁数（`ORD:00000042`）。9 桁以上になった場合は桁を伸ばす。
@@ -157,7 +158,7 @@ class SequentialId:
         """
         if not isinstance(text, str):
             raise KernelValueError(f"invalid {cls.__name__} literal: {text!r}")
-        match = _SEQUENTIAL_PATTERN.match(text)
+        match = _SEQUENTIAL_PATTERN.fullmatch(text)
         if match is None:
             raise KernelValueError(f"invalid {cls.__name__} literal: {text!r}")
         kind = match.group("kind")

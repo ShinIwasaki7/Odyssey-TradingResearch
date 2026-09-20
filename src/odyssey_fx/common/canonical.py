@@ -268,11 +268,24 @@ def env_digest_input(
     統一）にし、その順に整列した `"名前==版"` の列にする。`odyssey_fx` 自身は `CodeDigest`
     が識別するため呼び出し側（`app`）が除外する。実際の値の収集は `app` が行い、
     `common` は構造だけを与える。
+
+    正規化後に同じ名前になる配布物が2つ以上あるとき（例: `foo_bar` と `foo-bar`）は
+    `KernelValueError` を送出する。黙って一方を捨てると、`distributions` の並び順という
+    本来無関係なものに `EnvDigest`（ひいては `RunId`）が左右され、決定論が崩れるため。
     """
-    normalized = {
-        _normalize_distribution_name(name): version for name, version in distributions.items()
-    }
-    entries = tuple(f"{name}=={normalized[name]}" for name in sorted(normalized))
+    normalized: dict[str, tuple[str, str]] = {}
+    for raw_name, version in distributions.items():
+        key = _normalize_distribution_name(raw_name)
+        existing = normalized.get(key)
+        if existing is not None:
+            existing_raw, existing_version = existing
+            raise KernelValueError(
+                f"distribution names {existing_raw!r} and {raw_name!r} both normalize to"
+                f" {key!r} (versions {existing_version!r} and {version!r});"
+                " resolve the collision before building the environment digest"
+            )
+        normalized[key] = (raw_name, version)
+    entries = tuple(f"{name}=={normalized[name][1]}" for name in sorted(normalized))
     return {
         "distributions": entries,
         "machine": machine,

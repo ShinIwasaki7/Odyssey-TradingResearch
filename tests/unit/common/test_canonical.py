@@ -353,6 +353,48 @@ def test_env_digest_input_normalizes_and_sorts_distribution_names() -> None:
     assert payload["python_version"] == "3.12.13"
 
 
+def test_env_digest_input_rejects_names_that_normalize_alike() -> None:
+    """正規化して同じ名前になる配布物は拒否する（Codex レビュー round 1 指摘2）。
+
+    黙って一方を捨てると、`distributions` の並び順という本来無関係なものに `EnvDigest`
+    （ひいては `RunId`）が左右され、決定論が崩れる。
+    """
+    with pytest.raises(KernelValueError, match="both normalize to"):
+        canonical.env_digest_input(
+            python_implementation="CPython",
+            python_version="3.12.13",
+            sys_platform="darwin",
+            machine="arm64",
+            distributions={"foo_bar": "1.0", "foo-bar": "2.0"},
+        )
+
+
+def test_the_collision_message_names_both_raw_distributions() -> None:
+    with pytest.raises(KernelValueError) as caught:
+        canonical.env_digest_input(
+            python_implementation="CPython",
+            python_version="3.12.13",
+            sys_platform="darwin",
+            machine="arm64",
+            distributions={"Foo.Bar": "1.0", "foo_bar": "2.0"},
+        )
+    message = str(caught.value)
+    assert "'Foo.Bar'" in message
+    assert "'foo_bar'" in message
+    assert "'foo-bar'" in message
+
+
+def test_env_digest_input_allows_distinct_names_after_normalization() -> None:
+    payload = canonical.env_digest_input(
+        python_implementation="CPython",
+        python_version="3.12.13",
+        sys_platform="darwin",
+        machine="arm64",
+        distributions={"foo_bar": "1.0", "foo_baz": "2.0"},
+    )
+    assert payload["distributions"] == ("foo-bar==1.0", "foo-baz==2.0")
+
+
 def test_env_digest_input_is_independent_of_distribution_order() -> None:
     kwargs = {
         "python_implementation": "CPython",

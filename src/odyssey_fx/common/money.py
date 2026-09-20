@@ -58,10 +58,11 @@ KERNEL_DECIMAL_CONTEXT: Final = Context(
     traps=[InvalidOperation, DivisionByZero, Overflow],
 )
 
-#: `CurrencyCode.code` に許す字種（D02 §4.2）。
+#: `CurrencyCode.code` に許す字種（D02 §4.2）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _CURRENCY_PATTERN: Final = re.compile(r"^[A-Z]{3}$")
 
 #: `decimal_from_str` が受け付ける十進リテラル（指数表記を含む。特殊値は拒否）。
+#: 照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _DECIMAL_LITERAL_PATTERN: Final = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
 
 
@@ -97,7 +98,7 @@ def decimal_from_str(text: str) -> Decimal:
     """
     if not isinstance(text, str):
         raise KernelValueError(f"decimal_from_str requires a str, got {type(text).__name__}")
-    if not _DECIMAL_LITERAL_PATTERN.match(text):
+    if not _DECIMAL_LITERAL_PATTERN.fullmatch(text):
         raise KernelValueError(f"invalid decimal literal: {text!r}")
     try:
         value = Decimal(text)
@@ -144,7 +145,7 @@ class CurrencyCode:
     code: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.code, str) or not _CURRENCY_PATTERN.match(self.code):
+        if not isinstance(self.code, str) or not _CURRENCY_PATTERN.fullmatch(self.code):
             raise KernelValueError(f"CurrencyCode must match ^[A-Z]{{3}}$, got {self.code!r}")
 
     def __str__(self) -> str:
@@ -531,6 +532,22 @@ class FloatConversion:
             raise KernelValueError("FloatConversion.direction must be a RoundingDirection")
         if not isinstance(self.result, Price):
             raise KernelValueError("FloatConversion.result must be a Price")
+
+        # 4つのフィールドは互いに整合していなければならない。根拠記録（`EvidenceRef` の
+        # 対象）として保存される以上、後から読んだときに矛盾した記録が存在してはならず、
+        # `price_from_float` を通さずに組み立てた値もここで弾く。
+        expected_exact = Decimal(repr(self.raw))
+        if self.exact != expected_exact:
+            raise KernelValueError(
+                f"FloatConversion.exact must be Decimal(repr(raw)) = {expected_exact},"
+                f" got {self.exact}"
+            )
+        expected_result = _quantize_to_step(self.exact, self.tick, self.direction)
+        if self.result.value != expected_result:
+            raise KernelValueError(
+                f"FloatConversion.result must be {self.exact} rounded to tick {self.tick}"
+                f" ({self.direction.value}) = {expected_result}, got {self.result.value}"
+            )
 
 
 def price_from_float(raw: float, *, tick: Decimal, direction: RoundingDirection) -> FloatConversion:

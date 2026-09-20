@@ -14,7 +14,7 @@ from odyssey_fx.common.errors import KernelValueError
 
 __all__ = ["TimeframeRef"]
 
-#: `TimeframeRef.id` に許す字種（D02 §6）。
+#: `TimeframeRef.id` に許す字種（D02 §6）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _TIMEFRAME_ID_PATTERN: Final = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -29,7 +29,7 @@ class TimeframeRef:
     version: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.id, str) or not _TIMEFRAME_ID_PATTERN.match(self.id):
+        if not isinstance(self.id, str) or not _TIMEFRAME_ID_PATTERN.fullmatch(self.id):
             raise KernelValueError(f"TimeframeRef.id must match ^[a-z0-9_]+$, got {self.id!r}")
         if isinstance(self.version, bool) or not isinstance(self.version, int):
             raise KernelValueError(f"TimeframeRef.version must be an int, got {self.version!r}")

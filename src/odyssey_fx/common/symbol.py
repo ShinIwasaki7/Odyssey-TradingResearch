@@ -20,7 +20,7 @@ from odyssey_fx.common.refs import ContentDigest
 
 __all__ = ["Symbol", "SymbolSpec", "SymbolSpecRef"]
 
-#: `Symbol.code` に許す字種（D02 §5.1）。
+#: `Symbol.code` に許す字種（D02 §5.1）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _SYMBOL_PATTERN: Final = re.compile(r"^[A-Z]{6}$")
 
 
@@ -31,7 +31,7 @@ class Symbol:
     code: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.code, str) or not _SYMBOL_PATTERN.match(self.code):
+        if not isinstance(self.code, str) or not _SYMBOL_PATTERN.fullmatch(self.code):
             raise KernelValueError(f"Symbol must match ^[A-Z]{{6}}$, got {self.code!r}")
 
     @property
