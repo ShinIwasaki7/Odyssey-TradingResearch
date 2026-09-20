@@ -29,4 +29,5 @@ runs/                       実行結果。git 管理外
 | 2026-09-18 | 初版承認 |
 | 2026-09-20 | ADR-0014 の消費遷移直列化に伴い、`access_log.jsonl` を git 管理対象に追加 |
 | 2026-09-20 | D03 v1.3 に伴い、確定 snapshot の `integrity_report.json` を git 管理対象に追加。検査報告は manifest のダイジェスト対象であり承認・読み取り関門が必要とするため、追跡しなければ別クローンで Parquet を復元しても snapshot を検証できない。報告には価格や封印期間の統計値を含めず、検査種別・系列・区間・重大度・構造的な詳細だけを保存する。`_pending/` 配下は引き続き git 管理外 |
+- 検査報告の追跡（2026-09-20 改訂）に伴う `.gitignore` の再包含規則（`!data/snapshots/*/integrity_report.json`）と `tests/architecture/test_gitignore_layout.py` の更新は、D03 v1.3 の実装 PR（分類形式の変更と同じ PR）で行う。それまでは検査報告は追跡されない（既存の確定 snapshot は存在しない）。
 - DVC / LFS は初版では使わない。

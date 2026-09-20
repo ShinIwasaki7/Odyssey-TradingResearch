@@ -200,9 +200,9 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検�
 5. 分類の範囲を広げても、報告されていない警告を捏造しない（分類が警告を増やすことはない。除外規則で足が減っても警告は再検査で導く）。
 6. `SnapshotId` には正規化した分類内容（第3.7.1節の整列鍵）を含める。同じ警告集合に対する同じ分類は、記入の仕方によらず同じ `snapshot_id` になる。
 
-**再実行の入力**（v1.3、確定）。カレンダー新版を伴う分類では、暫定 snapshot の partition から読み戻した原系列の足（出所が `AGGREGATED` でないもの）を再利用し、原ファイルは読み直さない。再利用の前に、検査報告の実ダイジェストが暫定 manifest の `integrity_report_ref` と一致すること、全 partition の系列・件数・区間・内容ダイジェストが暫定 manifest の記録と一致することを検証し、不一致なら何も書かずに失敗する。`sources`・コード版・時刻規約・集約規則の版・`created_at` は引き継ぎ、カレンダーの識別と版だけを置き換える。時間足定義は id と版まで暫定 snapshot の系列と一致しなければ失敗。分類の突き合わせは元の報告（人間が見た報告）に対して行い、再実行後の報告に残る分類対象の警告がすべて分類に含まれることも検査する。
+**再実行の入力**（v1.3、確定）。カレンダー新版を伴う分類では、暫定 snapshot の partition から読み戻した原系列の足（出所が `AGGREGATED` でないもの）を再利用し、原ファイルは読み直さない。再利用の前に、検査報告の実ダイジェストが暫定 manifest の `integrity_report_ref` と一致すること、全 partition の系列・件数・区間・内容ダイジェストが暫定 manifest の記録と一致することを検証し、不一致なら何も書かずに失敗する。`sources`・コード版・時刻規約・集約規則の版・`created_at` は引き継ぎ、カレンダーの識別と版だけを置き換える。時間足定義は id と版まで暫定 snapshot の系列と一致しなければ失敗。分類の突き合わせは**元の報告と再実行後の報告の和集合**に対して行う: 各分類は元の報告または再実行後の報告のいずれかの分類対象の警告に対応しなければならず（どちらにも対応しない分類は拒否）、元の報告の分類対象の警告と再実行後の報告に残る分類対象の警告はすべて分類済みでなければならない。カレンダーの修正が**新たな警告を生む**ことがある（例: ある系列の休場を追加すると別系列の足が「休場帯の足」になる。営業例外を追加すると別系列に欠落が現れる）。その場合、確定は「再実行後に未分類の警告が残る」として失敗し、新たな警告を表示する。人間はそれらの分類を追記して同じ暫定 snapshot に対して確定を再実行する（**反復的な分類**。暫定 snapshot は失敗時に変更されない）。
 
-**セッション外データ異常の除外規則**（v1.3、確定）。`UNEXPECTED_BAR` を `OUT_OF_SESSION_DATA` と分類した区間の足は、確定段階の 6〜7 再実行時に原系列から除外し partition に含めない。上位足は除外後の原系列から再生成する。除外は WARN 対象の足に限る（ERROR に関与する足は既に受入れ失敗している）。除外した足の件数と区間は分類記録（`note` ではなく構造的な `excluded_bar_count`）に残し、`sources` の行数は原ファイルの行数のまま変えない。除外後に「存在すべき足の欠落」が新たに生じることはない（休場帯の足だから）。
+**セッション外データ異常の除外規則**（v1.3、確定）。`UNEXPECTED_BAR` を `OUT_OF_SESSION_DATA` と分類した区間の足は、確定段階の再実行時に原系列から除外し partition に含めない。**この分類が 1 件でもあれば、カレンダー変更の有無にかかわらず 5〜7 を再実行する**（除外後の原系列に対してカレンダー照合・上位足の生成・partition 分けをやり直す。再実行の入力と検証は上記「再実行の入力」と同じ）。上位足は除外後の原系列から再生成する。除外は WARN 対象の足に限る（ERROR に関与する足は既に受入れ失敗している）。除外した足の件数と区間は分類記録（`note` ではなく構造的な `excluded_bar_count`）に残し、`sources` の行数は原ファイルの行数のまま変えない。除外後に「存在すべき足の欠落」が新たに生じることはない（休場帯の足だから）。
 
 - 受入れは決定論的。同じ原ファイル・設定・コード版・分類なら同じ最終 `snapshot_id` になる（`created_at` は識別に含めない）。
 - 受入れ自体は封印区分の価格を読むが、出力（partition 実体）は gate の外に置かれ、報告には価格統計を含めない（第3.9節）。
@@ -315,7 +315,7 @@ run 区間内の全系列について、`available_at` 順に次を生成する�
 | コマンド | 入力 | 出力・効果 |
 |---|---|---|
 | `odyssey-fx data accept --datasource <yaml> --calendar <yaml> --timeframes <yaml> --symbols <dir> --out data/snapshots/` | 原ファイルと設定 | 第4節 1〜8 を実行し、`data/snapshots/_pending/<provisional_id>/` に暫定 manifest・検査結果・partition を書く。`provisional_id` を表示 |
-| `odyssey-fx data classify --pending <provisional_id> --decisions <yaml> --timeframes <yaml> --out data/snapshots/` | 分類対象の警告の分類（第4節 9 の形式）と、必要ならカレンダーの新版 | 暫定 snapshot の実体を内容照合してから `closure_decisions` を記入し、カレンダー変更があれば暫定 snapshot の原系列の足から 5〜7 を再実行（原ファイルは読み直さない）。最終 `snapshot_id` を計算して `data/snapshots/<snapshot_id>/` へ確定。分類対象の警告が未分類、競合する分類、対応する警告のない分類、内容不一致、既に確定済みのディレクトリがある場合は失敗 |
+| `odyssey-fx data classify --pending <provisional_id> --decisions <yaml> --timeframes <yaml> --out data/snapshots/` | 分類対象の警告の分類（第4節 9 の形式）と、必要ならカレンダーの新版 | 暫定 snapshot の実体を内容照合してから `closure_decisions` を記入し、カレンダー変更またはセッション外データ異常の分類があれば暫定 snapshot の原系列の足から 5〜7 を再実行（原ファイルは読み直さない）。再実行が新たな分類対象の警告を生んだ場合は失敗して表示し、人間が分類を追記して再度実行する。最終 `snapshot_id` を計算して `data/snapshots/<snapshot_id>/` へ確定。分類対象の警告が未分類、競合する分類、対応する警告のない分類、内容不一致、既に確定済みのディレクトリがある場合は失敗 |
 | `odyssey-fx data approve --snapshot <snapshot_id> --by <name> --comment <text>` | 確定済み snapshot | `approval` と `declaration_record` を記入。暫定 snapshot は承認できない |
 
 承認前の snapshot はどのコマンド・ポートからも読み取り対象にならない（第3.7.1節 3）。
