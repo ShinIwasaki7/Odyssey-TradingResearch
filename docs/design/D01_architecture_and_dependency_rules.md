@@ -1,9 +1,9 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
-上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021](../decisions/README.md)
+上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021, 0026](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
 
 ## 0. 本書の位置付け
@@ -27,6 +27,7 @@
 | 2 | 許可表と機械検査の不一致（`evaluation → strategy.runtime/catalog` が検出されない、layers 契約が非 exhaustive） | 第6節: L1 を container 付き相対レイヤ契約にし L1〜L2c を `exhaustive = true`、F8 追加 |
 | 4（v2.1） | PR #2 の Codex 指摘: `app.cli` / `app.composition` が Pydantic・YAML を import しても F5a が検出しない | 第6節: F5c を追加し、`app.config` だけを例外にする。pyproject への反映は別 PR |
 | 5（v2.1） | PR #2 の Codex 指摘（round 2）: F5c が `app.cli → app.config → yaml` の間接経路まで禁止し、正当な設定読込が失敗する | F5c に `allow_indirect_imports = true` を付け、直接 import だけを禁止する |
+| 6（v2.3） | PR #4 の Codex 指摘: F5c の source が `app.cli` / `app.composition` の列挙のため、`app/__init__.py` や将来 `app` 直下に追加するモジュールが YAML / Pydantic を直接 import しても検出しない | 第6節: F5c の source を `odyssey_fx.app` 全体にし、`app.config`（とその配下）からの import だけを `ignore_imports` で許可する（ADR-0026） |
 | 3 | application 層の外部ライブラリ禁止と `strategy.catalog` の NumPy 許可の不整合 | 第2節の層定義、第5節の NumPy 使用条件 |
 | — | 仮置き4件（B-6、B-9、hatchling、NumPy）の確定 | 第5節、第10.1節、第11節、第14節 |
 
@@ -282,14 +283,23 @@ source_modules = [
 ]
 forbidden_modules = ["pandas", "polars", "pyarrow", "pydantic", "yaml", "duckdb"]
 
-# (F5c) 設定解析ライブラリは app.config だけ（app.cli / app.composition からも不可）
+# (F5c) 設定解析ライブラリは app.config だけ（app 配下の他のすべてのモジュールから不可）
 [[tool.importlinter.contracts]]
 name = "F5c: config parsers only in app.config"
 type = "forbidden"
-source_modules = ["odyssey_fx.app.cli", "odyssey_fx.app.composition"]
+source_modules = ["odyssey_fx.app"]
 forbidden_modules = ["pydantic", "yaml"]
+# app.config とその配下だけが設定解析ライブラリを直接 import できる
+ignore_imports = [
+    "odyssey_fx.app.config -> pydantic",
+    "odyssey_fx.app.config.** -> pydantic",
+    "odyssey_fx.app.config -> yaml",
+    "odyssey_fx.app.config.** -> yaml",
+]
 # app.cli -> app.config -> yaml の間接経路は正当なので、直接 import だけを禁止する
 allow_indirect_imports = true
+# app.config が設定解析ライブラリを import するまでは ignore_imports が未使用になるため、エラーにせず警告に留める
+unmatched_ignore_imports_alerting = "warn"
 
 [[tool.importlinter.contracts]]
 name = "F5b: no numpy outside adapters, app and strategy.catalog"

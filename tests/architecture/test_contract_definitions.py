@@ -12,10 +12,11 @@
 - 全 layers 契約が `exhaustive = true` であること。
   未宣言のサブパッケージを追加したときに検出できなくなるため。
 - F1a〜F8 の forbidden 契約がすべて存在すること。契約が消えても lint-imports は成功する。
-- F5c（設定解析ライブラリの app.config 集約）の source / forbidden / `allow_indirect_imports`
-  が D01 §6 のとおりであること。`allow_indirect_imports` を落とすと
-  app.cli -> app.config -> yaml の正当な間接経路まで違反になり、逆に source_modules を
-  広げすぎると app.config 自身が検査対象に入って契約が成立しなくなる。
+- F5c（設定解析ライブラリの app.config 集約）の source / forbidden / `ignore_imports` /
+  `allow_indirect_imports` が D01 §6・ADR-0026 のとおりであること。source は `app` 全体で、
+  app.config だけを `ignore_imports` で除外する。`ignore_imports` が欠けると app.config 自身が
+  違反になり、source_modules を列挙式に戻すと新設される app 配下のモジュールが検査から漏れる。
+  `allow_indirect_imports` を落とすと app.cli -> app.config -> yaml の正当な間接経路まで違反になる。
 """
 
 from __future__ import annotations
@@ -100,17 +101,27 @@ def test_all_forbidden_contracts_are_present() -> None:
 
 
 def test_config_parser_contract_is_scoped_to_app_config() -> None:
-    """F5c は app.cli / app.composition の直接 import だけを禁じる（D01 §6）。"""
+    """F5c は app 全体を source とし、app.config だけを除外する（D01 §6・ADR-0026）。"""
     contract = _contract_by_name_prefix("F5c:")
 
     assert contract["type"] == "forbidden"
-    assert contract["source_modules"] == [
-        "odyssey_fx.app.cli",
-        "odyssey_fx.app.composition",
-    ], "app.config を source に入れると、設定解析を許す唯一の境界まで禁止してしまう"
+    assert contract["source_modules"] == ["odyssey_fx.app"], (
+        "source を app 配下の個別モジュール列挙に戻すと、"
+        "新設される app 配下のモジュールが検査対象から漏れる"
+    )
     assert sorted(contract["forbidden_modules"]) == ["pydantic", "yaml"]
+    assert sorted(contract["ignore_imports"]) == [
+        "odyssey_fx.app.config -> pydantic",
+        "odyssey_fx.app.config -> yaml",
+        "odyssey_fx.app.config.** -> pydantic",
+        "odyssey_fx.app.config.** -> yaml",
+    ], "設定解析を許す唯一の境界は app.config とその配下だけ（D01 §6・ADR-0026）"
     assert contract.get("allow_indirect_imports") is True, (
         "app.cli -> app.config -> yaml の間接経路は正当なので、直接 import だけを禁止する"
+    )
+    assert contract.get("unmatched_ignore_imports_alerting") == "warn", (
+        "app.config が設定解析ライブラリを import するまで ignore_imports は未使用になるため、"
+        "エラーではなく警告に留める"
     )
 
 

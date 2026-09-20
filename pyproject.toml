@@ -160,14 +160,23 @@ source_modules = [
 ]
 forbidden_modules = ["pandas", "polars", "pyarrow", "pydantic", "yaml", "duckdb"]
 
-# (F5c) 設定解析ライブラリは app.config だけ（app.cli / app.composition からも不可）
+# (F5c) 設定解析ライブラリは app.config だけ（app 配下の他のすべてのモジュールから不可）
 [[tool.importlinter.contracts]]
 name = "F5c: config parsers only in app.config"
 type = "forbidden"
-source_modules = ["odyssey_fx.app.cli", "odyssey_fx.app.composition"]
+source_modules = ["odyssey_fx.app"]
 forbidden_modules = ["pydantic", "yaml"]
+# app.config とその配下だけが設定解析ライブラリを直接 import できる
+ignore_imports = [
+    "odyssey_fx.app.config -> pydantic",
+    "odyssey_fx.app.config.** -> pydantic",
+    "odyssey_fx.app.config -> yaml",
+    "odyssey_fx.app.config.** -> yaml",
+]
 # app.cli -> app.config -> yaml の間接経路は正当なので、直接 import だけを禁止する
 allow_indirect_imports = true
+# app.config が設定解析ライブラリを import するまでは ignore_imports が未使用になるため、エラーにせず警告に留める
+unmatched_ignore_imports_alerting = "warn"
 
 [[tool.importlinter.contracts]]
 name = "F5b: no numpy outside adapters, app and strategy.catalog"
