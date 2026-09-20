@@ -11,9 +11,17 @@ readme = "README.md"
 # ランタイム依存は、それを使う設計文書の承認後に追加する（D01 §5・§12）。
 # polars: 原 CSV の読込と snapshot の Parquet 入出力に使う表形式ライブラリ（ADR-0025）。
 # 使用は marketdata.adapters / evaluation.adapters / app に限り、契約 F5a が機械検査する。
+# pydantic / pyyaml: 設定ファイルの検証と安全な読込（ADR-0018）。使用は app.config だけで、
+# 契約 F5c が app 配下全体からの直接 import を禁じて機械検査する（ADR-0026）。
 dependencies = [
     "polars>=1.44.2",
+    "pydantic>=2.13.5",
+    "pyyaml>=6.0.3",
 ]
+
+# CLI の入口（D03 §10）。3コマンド（data accept / classify / approve）を提供する。
+[project.scripts]
+odyssey-fx = "odyssey_fx.app.cli.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/odyssey_fx"]
@@ -25,6 +33,7 @@ dev = [
     "pytest>=8.3",
     "hypothesis>=6.112",
     "import-linter>=2.1",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 # --- ruff -------------------------------------------------------------------
