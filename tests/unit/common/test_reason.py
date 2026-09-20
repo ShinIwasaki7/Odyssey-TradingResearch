@@ -1,0 +1,221 @@
+"""`odyssey_fx.common.reason` の単体テスト（D02 §8・§11）。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import ClassVar
+
+import pytest
+
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.ids import OrderId, PositionId
+from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
+from odyssey_fx.common.reason import (
+    CarryNotAllowedDetail,
+    DataErrorDetail,
+    ExpiryDetail,
+    MissingInputReason,
+    NoCandidateDetail,
+    PositionClosedDetail,
+    Reason,
+    ReasonCode,
+    ReasonDetail,
+    RiskRejectionDetail,
+    RunEndDetail,
+)
+from odyssey_fx.common.symbol import Symbol
+from odyssey_fx.common.time import Interval, PhaseRank, ProcessingPoint, UtcTime
+from odyssey_fx.common.timeframe import TimeframeRef
+
+D = decimal_from_str
+JPY = CurrencyCode("JPY")
+USD = CurrencyCode("USD")
+MOMENT = UtcTime.from_components(2026, 3, 1, 12)
+POINT = ProcessingPoint(MOMENT, PhaseRank(1, "ADMISSION"), 0)
+
+
+# --- 語彙 -------------------------------------------------------------------
+
+
+def test_reason_code_vocabulary_matches_the_design() -> None:
+    assert {code.value for code in ReasonCode} == {
+        "RISK",
+        "NO_CANDIDATE",
+        "RUN_END",
+        "DATA_ERROR",
+        "EXPIRED",
+        "CARRY_NOT_ALLOWED",
+        "POSITION_CLOSED",
+    }
+
+
+def test_missing_input_reason_vocabulary_matches_the_design() -> None:
+    assert {reason.value for reason in MissingInputReason} == {
+        "WARMUP_INSUFFICIENT",
+        "INPUT_MISSING_OR_INVALID",
+        "LATEST_BAR_UNAVAILABLE",
+        "MAX_AGE_EXCEEDED",
+    }
+
+
+def test_missing_input_reason_is_separate_from_reason_code() -> None:
+    """評価見送りの理由は受付拒否の理由とは別の enum（D02 §8.3）。"""
+    assert not isinstance(MissingInputReason.WARMUP_INSUFFICIENT, ReasonCode)
+    assert MissingInputReason.WARMUP_INSUFFICIENT != ReasonCode.RISK  # type: ignore[comparison-overlap]
+
+
+# --- Reason と詳細の対応 ----------------------------------------------------
+
+
+def test_reason_accepts_a_matching_detail() -> None:
+    reason = Reason(ReasonCode.RUN_END, RunEndDetail(run_end=MOMENT))
+    assert reason.code is ReasonCode.RUN_END
+    assert str(reason) == "RUN_END"
+
+
+def test_reason_allows_no_detail() -> None:
+    assert Reason(ReasonCode.RISK).detail is None
+
+
+def test_reason_rejects_a_mismatched_detail() -> None:
+    with pytest.raises(KernelValueError, match="carries RUN_END, but the reason is RISK"):
+        Reason(ReasonCode.RISK, RunEndDetail(run_end=MOMENT))
+
+
+def test_reason_rejects_a_detail_without_a_reason_code() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _Bogus:
+        note: str
+
+    with pytest.raises(KernelValueError, match="ReasonDetail"):
+        Reason(ReasonCode.RISK, _Bogus("x"))  # type: ignore[arg-type]
+
+
+def test_reason_rejects_a_non_reason_code() -> None:
+    with pytest.raises(KernelValueError, match="ReasonCode"):
+        Reason("RISK")  # type: ignore[arg-type]
+
+
+def test_domains_may_add_their_own_detail_types() -> None:
+    """`ReasonDetail` は Protocol なので、各 domain が詳細型を追加できる（承認事項6）。"""
+
+    @dataclass(frozen=True, slots=True)
+    class _ExecutionDetail:
+        code: ClassVar[ReasonCode] = ReasonCode.DATA_ERROR
+        note: str
+
+    detail = _ExecutionDetail("gap")
+    assert isinstance(detail, ReasonDetail)
+    assert Reason(ReasonCode.DATA_ERROR, detail).detail is detail
+
+
+# --- 各詳細型 ---------------------------------------------------------------
+
+
+def test_data_error_detail() -> None:
+    detail = DataErrorDetail(
+        symbol=Symbol("USDJPY"),
+        timeframe=TimeframeRef("15m", 1),
+        field="close",
+        expected_interval=Interval(MOMENT, MOMENT + timedelta(hours=1)),
+        observed_interval=None,
+        cause="missing bar",
+    )
+    assert DataErrorDetail.code is ReasonCode.DATA_ERROR
+    assert Reason(ReasonCode.DATA_ERROR, detail).detail is detail
+
+
+def test_data_error_detail_validates_its_fields() -> None:
+    common = {
+        "symbol": Symbol("USDJPY"),
+        "timeframe": TimeframeRef("15m", 1),
+        "expected_interval": None,
+        "observed_interval": None,
+    }
+    with pytest.raises(KernelValueError, match="field"):
+        DataErrorDetail(field="", cause="c", **common)  # type: ignore[arg-type]
+    with pytest.raises(KernelValueError, match="cause"):
+        DataErrorDetail(field="close", cause="", **common)  # type: ignore[arg-type]
+    with pytest.raises(KernelValueError, match="Symbol"):
+        DataErrorDetail(
+            symbol="USDJPY",  # type: ignore[arg-type]
+            timeframe=TimeframeRef("15m", 1),
+            field="close",
+            expected_interval=None,
+            observed_interval=None,
+            cause="c",
+        )
+    with pytest.raises(KernelValueError, match="expected_interval"):
+        DataErrorDetail(
+            symbol=Symbol("USDJPY"),
+            timeframe=TimeframeRef("15m", 1),
+            field="close",
+            expected_interval=MOMENT,  # type: ignore[arg-type]
+            observed_interval=None,
+            cause="c",
+        )
+
+
+def test_expiry_detail() -> None:
+    detail = ExpiryDetail(expires_at=MOMENT, observed_at=POINT)
+    assert ExpiryDetail.code is ReasonCode.EXPIRED
+    assert Reason(ReasonCode.EXPIRED, detail).detail is detail
+    with pytest.raises(KernelValueError, match="ProcessingPoint"):
+        ExpiryDetail(expires_at=MOMENT, observed_at=MOMENT)  # type: ignore[arg-type]
+
+
+def test_no_candidate_detail_allows_an_absent_candidate() -> None:
+    assert NoCandidateDetail(expires_at=MOMENT, earliest_candidate=None).earliest_candidate is None
+    assert NoCandidateDetail(expires_at=MOMENT, earliest_candidate=MOMENT).earliest_candidate
+    with pytest.raises(KernelValueError, match="earliest_candidate"):
+        NoCandidateDetail(expires_at=MOMENT, earliest_candidate=POINT)  # type: ignore[arg-type]
+
+
+def test_run_end_detail() -> None:
+    assert RunEndDetail.code is ReasonCode.RUN_END
+    with pytest.raises(KernelValueError, match="UtcTime"):
+        RunEndDetail(run_end=POINT)  # type: ignore[arg-type]
+
+
+def test_carry_not_allowed_detail() -> None:
+    detail = CarryNotAllowedDetail(next_candidate=MOMENT, session_close=MOMENT)
+    assert CarryNotAllowedDetail.code is ReasonCode.CARRY_NOT_ALLOWED
+    assert Reason(ReasonCode.CARRY_NOT_ALLOWED, detail).detail is detail
+    with pytest.raises(KernelValueError, match="session_close"):
+        CarryNotAllowedDetail(next_candidate=MOMENT, session_close=POINT)  # type: ignore[arg-type]
+
+
+def test_position_closed_detail() -> None:
+    detail = PositionClosedDetail(position_id=PositionId(1), closed_at=POINT)
+    assert PositionClosedDetail.code is ReasonCode.POSITION_CLOSED
+    assert Reason(ReasonCode.POSITION_CLOSED, detail).detail is detail
+    with pytest.raises(KernelValueError, match="PositionId"):
+        PositionClosedDetail(position_id=OrderId(1), closed_at=POINT)  # type: ignore[arg-type]
+
+
+def test_risk_rejection_detail_accepts_money_and_decimal_pairs() -> None:
+    money_detail = RiskRejectionDetail(
+        check="max_total_risk", limit=Money(D("10000"), JPY), observed=Money(D("12000"), JPY)
+    )
+    ratio_detail = RiskRejectionDetail(check="max_risk_ratio", limit=D("0.02"), observed=D("0.03"))
+    assert RiskRejectionDetail.code is ReasonCode.RISK
+    assert Reason(ReasonCode.RISK, money_detail).detail is money_detail
+    assert Reason(ReasonCode.RISK, ratio_detail).detail is ratio_detail
+
+
+def test_risk_rejection_detail_requires_matching_kinds() -> None:
+    with pytest.raises(KernelValueError, match="same type"):
+        RiskRejectionDetail(check="c", limit=Money(D("1"), JPY), observed=D("1"))
+
+
+def test_risk_rejection_detail_requires_one_currency() -> None:
+    with pytest.raises(KernelValueError, match="share a currency"):
+        RiskRejectionDetail(check="c", limit=Money(D("1"), JPY), observed=Money(D("1"), USD))
+
+
+def test_risk_rejection_detail_validates_check_and_values() -> None:
+    with pytest.raises(KernelValueError, match="check"):
+        RiskRejectionDetail(check="", limit=D("1"), observed=D("2"))
+    with pytest.raises(KernelValueError, match="must be a Money or a Decimal"):
+        RiskRejectionDetail(check="c", limit=1, observed=2)  # type: ignore[arg-type]
