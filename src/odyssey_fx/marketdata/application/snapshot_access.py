@@ -23,12 +23,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
     MarketDataValueError,
+    PartitionContentMismatch,
     SnapshotNotApproved,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -70,15 +72,72 @@ def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
         )
 
 
+def _require_matching_content(
+    manifest: SnapshotManifest,
+    partition_id: PartitionId,
+    bars: Sequence[Bar],
+) -> None:
+    """渡された足が manifest の記録どおりであることを確かめる（D03 §3.7.1）。
+
+    partition の**鍵**が合っているだけでは、その足が本当にその snapshot のものかは分から
+    ない。暫定 snapshot や別 snapshot の足を同じ鍵で渡せば、承認済み manifest の内容として
+    読めてしまう。manifest は partition ごとに足数・区間・内容ダイジェストを記録している
+    ので、4点すべてを照合する。
+
+    1. 各足の系列が partition の系列と一致する。
+    2. 足数が記録と一致する。
+    3. 区間（最初の足の開始と最後の足の終了）が記録と一致する。
+    4. 内容ダイジェストが記録と一致する。
+    """
+    record = manifest.partition_record(partition_id)
+    if record is None:  # pragma: no cover - 呼び出し前に検査済み
+        raise MarketDataValueError(
+            f"partition {partition_id} is not recorded in the snapshot manifest"
+        )
+
+    for bar in bars:
+        if bar.series != partition_id.series:
+            raise PartitionContentMismatch(
+                f"partition {partition_id} was given a bar of {bar.series};"
+                " the supplied bars do not belong to this partition (D03 §3.7.1)"
+            )
+    if len(bars) != record.bar_count:
+        raise PartitionContentMismatch(
+            f"partition {partition_id} holds {len(bars)} bar(s) but the manifest records"
+            f" {record.bar_count}; the supplied bars are not this snapshot's content"
+            " (D03 §3.7.1)"
+        )
+    if not bars:
+        return
+
+    ordered = sorted(bars, key=lambda bar: bar.bar_start.value)
+    covered = Interval(start=ordered[0].bar_start, end=ordered[-1].bar_end)
+    if covered != record.interval:
+        raise PartitionContentMismatch(
+            f"partition {partition_id} covers {covered} but the manifest records"
+            f" {record.interval} (D03 §3.7.1)"
+        )
+    digest_hex = partition_digest_hex(ordered)
+    if digest_hex != record.digest.hex:
+        raise PartitionContentMismatch(
+            f"partition {partition_id} does not match the digest recorded in the manifest;"
+            " the supplied bars are not this snapshot's content (D03 §3.7.1)"
+        )
+
+
 def require_readable_snapshot(
     manifest: SnapshotManifest,
     allowed_partitions: frozenset[PartitionId],
     *,
     label: str,
+    partition_bars: Mapping[PartitionId, Sequence[Bar]] | None = None,
 ) -> None:
     """snapshot と許可 partition が読み取りの条件を満たすことを確かめる。
 
     `label` は失敗時のメッセージに載せる呼び出し側の名前（`AsOfView` など）。
+    `partition_bars` を渡すと、許可された partition の足が manifest の記録（足数・区間・
+    内容ダイジェスト）と一致することまで確かめる。渡さない場合は鍵の検査だけになるので、
+    実際に足を読む経路は必ず渡すこと。
     """
     if not isinstance(manifest, SnapshotManifest):
         raise MarketDataValueError(f"{label}.manifest must be a SnapshotManifest")
@@ -93,6 +152,10 @@ def require_readable_snapshot(
         if manifest.partition_record(partition_id) is None:
             raise MarketDataValueError(
                 f"partition {partition_id} is not recorded in the snapshot manifest"
+            )
+        if partition_bars is not None:
+            _require_matching_content(
+                manifest, partition_id, tuple(partition_bars.get(partition_id, ()))
             )
 
 

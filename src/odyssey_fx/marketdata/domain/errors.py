@@ -22,6 +22,7 @@ __all__ = [
     "IntegrityCheckFailed",
     "MarketDataError",
     "MarketDataValueError",
+    "PartitionContentMismatch",
     "SnapshotNotApproved",
     "UnsupportedCapability",
 ]
@@ -56,6 +57,15 @@ class IntegrityCheckFailed(MarketDataValueError):
     重複した開始時刻、OHLC の整合違反、タイムゾーン違反、整列に合わない開始時刻は、
     いずれも構造的に無効なデータである。これらを残したまま snapshot を確定・承認できる
     経路を作らないため、暫定 manifest の生成と確定の両方で送出する。
+    """
+
+
+class PartitionContentMismatch(MarketDataValueError):
+    """渡された足が manifest の記録と一致しない（D03 §3.7.1）。
+
+    partition の鍵が合っていても、足数・区間・内容ダイジェストのいずれかが manifest の
+    記録と違えば、その足はこの snapshot の内容ではない。暫定 snapshot や別 snapshot の足を
+    承認済み snapshot の内容として読ませないための検査である。
     """
 
 

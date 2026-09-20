@@ -19,7 +19,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.asof import AsOfView, BarsWindow, MissingInput
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
-from odyssey_fx.marketdata.domain.snapshot import PartitionId, SeriesManifest
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -34,25 +34,15 @@ EXTENDED = Interval(
     start=UtcTime.parse("2026-01-12T22:00:00Z"), end=UtcTime.parse("2026-01-16T22:00:00Z")
 )
 
-MANIFEST = snapshots.approved(
-    series_records=(
-        SeriesManifest(
-            series_id=HOURLY,
-            covered_interval=snapshots.COVERED,
-            bar_count=100,
-            partitions=(PARTITION,),
-        ),
-    ),
-    partitions=(snapshots.partition(HOURLY, AccessClass.RESEARCH_HISTORY),),
-)
-
 
 def _view(window: Interval) -> AsOfView:
+    """その窓の足を持つビュー。manifest はその足から作る（D03 §3.7.1 の照合を通すため）。"""
+    partition_bars = {PARTITION: market.make_bars(HOURLY, market.TF_1H, CALENDAR, window)}
     return AsOfView(
-        manifest=MANIFEST,
+        manifest=snapshots.approved_for(partition_bars),
         allowed_partitions=frozenset({PARTITION}),
         schedules=SCHEDULES,
-        partition_bars={PARTITION: market.make_bars(HOURLY, market.TF_1H, CALENDAR, window)},
+        partition_bars=partition_bars,
     )
 
 

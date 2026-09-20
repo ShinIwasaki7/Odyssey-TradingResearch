@@ -78,7 +78,7 @@ def _context(
     """
     partition_bars = {PARTITION_OF[series]: bars for series, bars in bars_by_series.items()}
     allowed = frozenset(partition_bars)
-    return snapshots.approved_for(sorted(allowed, key=str)), allowed, partition_bars
+    return snapshots.approved_for(partition_bars), allowed, partition_bars
 
 
 # --- 同時刻の順序（D03 §7.1）------------------------------------------------
@@ -376,14 +376,14 @@ def test_a_partition_missing_from_the_manifest_is_refused() -> None:
 
 def test_bars_of_an_unallowed_partition_are_not_published() -> None:
     """許可外の partition に足を置いても、公開イベントには現れない（D03 §6.1）。"""
-    manifest = snapshots.approved_for((HOURLY_PARTITION, FIFTEEN_PARTITION))
+    partition_bars = {
+        HOURLY_PARTITION: _bars(HOURLY, market.TF_1H),
+        FIFTEEN_PARTITION: _bars(FIFTEEN, market.TF_15M),
+    }
     feed = build_feed(
-        manifest,
+        snapshots.approved_for(partition_bars),
         frozenset({HOURLY_PARTITION}),  # 15分足は許可しない。
-        {
-            HOURLY_PARTITION: _bars(HOURLY, market.TF_1H),
-            FIFTEEN_PARTITION: _bars(FIFTEEN, market.TF_15M),
-        },
+        partition_bars,
         SCHEDULES,
         WINDOW,
     )

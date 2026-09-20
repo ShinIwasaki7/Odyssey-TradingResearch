@@ -30,6 +30,11 @@ from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.application.partition_digest import (
+    PARTITION_COLUMNS,
+    partition_digest_hex,
+    partition_row,
+)
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.integrity import (
@@ -68,12 +73,6 @@ _INTEGRITY_FILE = "integrity_report.json"
 
 #: `manifest.json` のファイル名。
 _MANIFEST_FILE = "manifest.json"
-
-#: partition のダイジェストで列を区切る ASCII の unit separator（0x1F）。
-_UNIT_SEPARATOR = "\x1f"
-
-#: partition のダイジェストで行を区切る ASCII の record separator（0x1E）。
-_RECORD_SEPARATOR = b"\x1e"
 
 
 def _dumps(payload: Any) -> str:
@@ -374,45 +373,19 @@ class ParquetSnapshotStore:
         target = self._snapshot_path(snapshot_dir) / partition_id.directory
         target.mkdir(parents=True, exist_ok=True)
         ordered = sorted(bars, key=lambda bar: bar.bar_start.value)
+        rows = [partition_row(bar) for bar in ordered]
         frame = pl.DataFrame(
             {
-                "bar_start": [str(bar.bar_start) for bar in ordered],
-                "bar_end": [str(bar.bar_end) for bar in ordered],
-                "open": [str(bar.open.value) for bar in ordered],
-                "high": [str(bar.high.value) for bar in ordered],
-                "low": [str(bar.low.value) for bar in ordered],
-                "close": [str(bar.close.value) for bar in ordered],
-                "volume": [str(bar.volume) for bar in ordered],
-                "available_at": [str(bar.available_at) for bar in ordered],
-                "provenance_kind": [bar.provenance.kind.value for bar in ordered],
-                "provenance_ref": [bar.provenance.source_ref for bar in ordered],
+                column: [row[index] for row in rows]
+                for index, column in enumerate(PARTITION_COLUMNS)
             },
-            schema={
-                "bar_start": pl.String,
-                "bar_end": pl.String,
-                "open": pl.String,
-                "high": pl.String,
-                "low": pl.String,
-                "close": pl.String,
-                "volume": pl.String,
-                "available_at": pl.String,
-                "provenance_kind": pl.String,
-                "provenance_ref": pl.String,
-            },
+            schema=dict.fromkeys(PARTITION_COLUMNS, pl.String),
         )
-        path = target / _PARTITION_FILE
-        frame.write_parquet(path)
+        frame.write_parquet(target / _PARTITION_FILE)
 
-        # ダイジェストは Parquet のバイト列ではなく、論理的な内容から取る。圧縮設定や
-        # ライブラリの版が変わっても同じ内容なら同じ値になるようにするため（D03 §3.7.1
-        # の決定論）。
-        # 区切りには ASCII の unit separator（0x1F）と record separator（0x1E）を使う。
-        # 価格・時刻の文字列には現れない制御文字なので、値の境界が曖昧にならない。
-        hasher = hashlib.sha256()
-        for row in frame.iter_rows():
-            hasher.update(_UNIT_SEPARATOR.join(row).encode("utf-8"))
-            hasher.update(_RECORD_SEPARATOR)
-        return hasher.hexdigest()
+        # ダイジェストは Parquet のバイト列ではなく論理的な内容から取る（D03 §3.7.1）。
+        # 算法は application にあり、読み取り側が同じ値を再計算して照合できる。
+        return partition_digest_hex(ordered)
 
     def read_partition(self, snapshot_dir: str, partition_id: PartitionId) -> Sequence[Bar]:
         """partition の足を開始時刻の昇順で読む。"""
