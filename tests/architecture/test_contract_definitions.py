@@ -12,6 +12,10 @@
 - 全 layers 契約が `exhaustive = true` であること。
   未宣言のサブパッケージを追加したときに検出できなくなるため。
 - F1a〜F8 の forbidden 契約がすべて存在すること。契約が消えても lint-imports は成功する。
+- F5c（設定解析ライブラリの app.config 集約）の source / forbidden / `allow_indirect_imports`
+  が D01 §6 のとおりであること。`allow_indirect_imports` を落とすと
+  app.cli -> app.config -> yaml の正当な間接経路まで違反になり、逆に source_modules を
+  広げすぎると app.config 自身が検査対象に入って契約が成立しなくなる。
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ EXPECTED_FORBIDDEN_CONTRACTS = [
     "F3: backtest does not depend on the strategy component catalog",
     "F4: evaluation may use backtest.domain / trace only",
     "F5a: no dataframe / serialization libraries outside adapters and app",
+    "F5c: config parsers only in app.config",
     "F5b: no numpy outside adapters, app and strategy.catalog",
     "F6: backtest may use marketdata.domain only",
     "F7: evaluation may use marketdata.domain only",
@@ -92,6 +97,21 @@ def test_all_forbidden_contracts_are_present() -> None:
 
     missing = [name for name in EXPECTED_FORBIDDEN_CONTRACTS if name not in actual]
     assert not missing, f"missing forbidden contracts: {missing}"
+
+
+def test_config_parser_contract_is_scoped_to_app_config() -> None:
+    """F5c は app.cli / app.composition の直接 import だけを禁じる（D01 §6）。"""
+    contract = _contract_by_name_prefix("F5c:")
+
+    assert contract["type"] == "forbidden"
+    assert contract["source_modules"] == [
+        "odyssey_fx.app.cli",
+        "odyssey_fx.app.composition",
+    ], "app.config を source に入れると、設定解析を許す唯一の境界まで禁止してしまう"
+    assert sorted(contract["forbidden_modules"]) == ["pydantic", "yaml"]
+    assert contract.get("allow_indirect_imports") is True, (
+        "app.cli -> app.config -> yaml の間接経路は正当なので、直接 import だけを禁止する"
+    )
 
 
 def test_external_packages_are_analysed() -> None:
