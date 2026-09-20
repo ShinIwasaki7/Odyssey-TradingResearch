@@ -241,7 +241,12 @@ def build_publication_log(
     足は as-of ビューと同じ関門を通した読み取り面から取る（D03 §3.7.1・§6.1）。承認前の
     snapshot と許可されていない partition は、公開の記録にも入れない。
     """
-    require_readable_snapshot(manifest, allowed_partitions, label="build_publication_log")
+    require_readable_snapshot(
+        manifest,
+        allowed_partitions,
+        label="build_publication_log",
+        partition_bars=partition_bars,
+    )
     readable = PartitionedBars(partition_bars, allowed_partitions)
 
     records: list[PublicationRecord] = []
@@ -302,7 +307,9 @@ def build_feed(
     """
     if not isinstance(run_interval, Interval):
         raise MarketDataValueError("build_feed requires an Interval run_interval")
-    require_readable_snapshot(manifest, allowed_partitions, label="build_feed")
+    require_readable_snapshot(
+        manifest, allowed_partitions, label="build_feed", partition_bars=partition_bars
+    )
     readable = PartitionedBars(partition_bars, allowed_partitions)
 
     events: list[PublicationEvent] = []
