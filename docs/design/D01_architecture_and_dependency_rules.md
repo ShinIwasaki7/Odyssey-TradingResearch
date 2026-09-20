@@ -26,6 +26,7 @@
 | 1 | ポート設計（利用側が Protocol を定義し `app` が注入）に合わせ、他パッケージの `application` への直接依存を閉じる | 第1節の公開範囲、第2節 application 層の許可依存、第3.2節の許可表、第4節、第6節 F4/F6/F7/F8 |
 | 2 | 許可表と機械検査の不一致（`evaluation → strategy.runtime/catalog` が検出されない、layers 契約が非 exhaustive） | 第6節: L1 を container 付き相対レイヤ契約にし L1〜L2c を `exhaustive = true`、F8 追加 |
 | 4（v2.1） | PR #2 の Codex 指摘: `app.cli` / `app.composition` が Pydantic・YAML を import しても F5a が検出しない | 第6節: F5c を追加し、`app.config` だけを例外にする。pyproject への反映は別 PR |
+| 5（v2.1） | PR #2 の Codex 指摘（round 2）: F5c が `app.cli → app.config → yaml` の間接経路まで禁止し、正当な設定読込が失敗する | F5c に `allow_indirect_imports = true` を付け、直接 import だけを禁止する |
 | 3 | application 層の外部ライブラリ禁止と `strategy.catalog` の NumPy 許可の不整合 | 第2節の層定義、第5節の NumPy 使用条件 |
 | — | 仮置き4件（B-6、B-9、hatchling、NumPy）の確定 | 第5節、第10.1節、第11節、第14節 |
 
@@ -287,6 +288,8 @@ name = "F5c: config parsers only in app.config"
 type = "forbidden"
 source_modules = ["odyssey_fx.app.cli", "odyssey_fx.app.composition"]
 forbidden_modules = ["pydantic", "yaml"]
+# app.cli -> app.config -> yaml の間接経路は正当なので、直接 import だけを禁止する
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "F5b: no numpy outside adapters, app and strategy.catalog"

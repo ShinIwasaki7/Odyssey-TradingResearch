@@ -133,7 +133,7 @@ FX 戦略研究のための基盤を新規構築する。基盤は次の3つの�
 | 関心事 | 配置 | 根拠 |
 |---|---|---|
 | 時刻・因果順序 | `common.time`（`ProcessingPoint(time, phase, sequence)`、半開区間）。フェーズの列挙は `backtest.engine` が定義し、`common` は「時刻＋段階＋連番」の構造だけを持つ | 上位文書第4.7.15節 |
-| ID | `common.ids`。用途別の不透明型。`RunId` は解決済み設定の正規化内容のダイジェスト、run 内の各 ID は `RunId`＋種別＋決定論的連番。UUID4 は使わない（第6節 A-6、決定済み） | 再現性・照合 |
+| ID | `common.ids`。用途別の不透明型。`RunId = digest(ConfigDigest, CodeDigest, LockDigest)`（ADR-0006、2026-09-20 改訂）、run 内の各 ID は `RunId`＋種別＋決定論的連番。UUID4 は使わない（第6節 A-6、決定済み） | 再現性・照合 |
 | 理由コード | `common.reason`。`ReasonCode` 列挙と型付き詳細。使用箇所ごとの許可組合せは各 domain が検証 | 上位文書第4.7.14節 |
 | 根拠参照・ポリシー参照 | `common.refs`（`EvidenceRef`、`PolicyRef`、`ContractRef`、`ImplementationRef`） | 上位文書第4.7.15節 |
 | 記録（trace） | 記録の**型**は各 domain、記録の**書き出し先**は application のポート、実装は adapters | 記録が業務ロジックに依存し、逆はない |
