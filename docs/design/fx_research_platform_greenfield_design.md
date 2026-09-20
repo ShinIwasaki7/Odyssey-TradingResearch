@@ -728,6 +728,8 @@ Trigger の出力は単なる真偽値ではなく、少なくとも ID・発生
 | `MARKET_STATE_INVALIDATED` | `REQUIRE_UNTIL_ORDER_REQUEST` の条件が成立しなくなって終端（ADR-0031）。復活させない |
 | `SUPERSEDED` | 新しいTriggerを優先する設定により終端（ADR-0032）。内容の上書きではなく終端＋新規生成 |
 
+**要決定（2026-09-20 時点、未解決）**: `on_order_accepted` に「ある注文が受け付けられたら他の取引機会を終了する」規則を書いた場合の終端状態が、上の一覧にない。`SUPERSEDED` は新しい Trigger を優先する場合に限っており、`EXPIRED` も `MARKET_STATE_INVALIDATED` も意味が合わない。専用の状態・理由コードを追加するか、`SUPERSEDED` の意味を受付起因の終了まで広げるかを D05 で決める。決めるまでこの遷移の状態名を仮置きしない。
+
 `SUPERSEDED` は取引機会の終端であり、第4.3.14節の評価要求に対する「追い越し（supersession）」とは対象が異なる。D05 で語彙を区別して定義する。
 
 要決定として残るのは、発火時に凍結する値と随時更新する値の具体的な列挙（`Opportunity.reference_values` のスキーマ宣言と合わせて D04 で確定する）。
