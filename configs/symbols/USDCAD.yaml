@@ -1,0 +1,21 @@
+# 銘柄仕様 USDCAD（D02 §5.2、D03 §9）
+#
+# price_tick は価格の刻み、pip_size は 1 pip の大きさ（price_tick の整数倍）。
+# quantity_step は数量の刻み、min_quantity は最小数量（quantity_step の整数倍）。
+# lot_size は表示・換算のための補助であり、計算の正本にはしない（D02 §5.2）。
+#
+# spread・許容不利約定幅・費用はここではなく実行ポリシー（D06）に置く。
+#
+# 数値は文字列で書く。YAML の浮動小数として読むと二進浮動小数の誤差が入り、Decimal の
+# 厳密さが失われるため（ADR-0012）。app.config が文字列から Decimal を構築する。
+
+schema_version: 1
+
+symbol: USDCAD
+version: 1
+
+price_tick: "0.00001"
+pip_size: "0.0001"
+quantity_step: "1000"
+min_quantity: "1000"
+lot_size: "100000"

@@ -1,0 +1,56 @@
+# 旧基盤から移管した結合済み CSV の列対応（D03 §4 の 2、§9）
+#
+# 原ファイルは `data/raw/market/<SYMBOL>_{15m,1h}_merged.csv`（10 ペア × 2 時間足、計20）。
+# 先頭列は列名を持たない時刻列なので、読込時に time_column の名前を与える。
+#
+# **時刻の規約は宣言する**（上位設計書 §3.2）。値の見た目からタイムゾーンを推測しない。
+# explicit_offset_utc は「オフセットが明示された UTC」を意味し、`+00:00` のない値、
+# UTC 以外のオフセットの値はいずれも受入れで拒否する（D03 §3.9 の NAIVE_OR_FOREIGN_TZ）。
+#
+# **価格基準は検証済みの事実ではなく人間の宣言**（D03 §2）。ファイルから検証できないため、
+# manifest には `verified: false` を添えて記録し、宣言者・宣言日時は識別子の計算対象外の
+# 別記録に分ける（D03 §3.7.1）。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+id: legacy_merged_csv
+version: 1
+
+root: data/raw/market
+
+# ファイル名から銘柄と時間足を取り出す規則。
+# 例: USDJPY_1h_merged.csv -> symbol=USDJPY, timeframe=1h
+filename_pattern: "{symbol}_{timeframe}_merged.csv"
+timeframes:
+  - 15m
+  - 1h
+
+time_convention: explicit_offset_utc
+
+# 足の時刻ラベルは足の**開始**（D03 §2）。終了ラベルとして解釈しない。
+time_label: bar_start
+
+columns:
+  # 先頭の無名列に与える名前。
+  time: timestamp
+  open: open
+  high: high
+  low: low
+  close: close
+  volume: volume
+  source: source
+
+# 価格基準の宣言（検証済みの事実ではない）。
+basis_declaration:
+  value: bid
+  verified: false
+
+# source 列に現れてよい値。これ以外の値は受入れで拒否する。
+allowed_sources:
+  - histdata
+  - dukascopy
+
+# 出来高の注記: HistData 由来の volume は 0。真の市場出来高として解釈しない（D03 §2）。
+volume_note: histdata_rows_report_zero_volume
