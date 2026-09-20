@@ -22,7 +22,11 @@ as-of ビュー（D03 §6）と公開フィード（D03 §7）は、どちらも
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from types import MappingProxyType
 
+from odyssey_fx.common.ids import SnapshotId
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.domain.access import AccessClass
@@ -37,9 +41,68 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 
 __all__ = [
+    "PENDING_DIRECTORY",
     "PartitionedBars",
+    "ReadableSnapshot",
+    "freeze_partition_bars",
     "require_readable_snapshot",
 ]
+
+#: 暫定 snapshot を置くディレクトリ名（D03 §3.7.1 の 1）。この配下の snapshot は承認の
+#: 対象にならず、常に読めない。
+PENDING_DIRECTORY = "_pending"
+
+
+@dataclass(frozen=True, slots=True)
+class ReadableSnapshot:
+    """読み取りが許された snapshot（D03 §3.7.1 の3）。
+
+    D03 §3.7.1 は「承認前は読めない」だけでなく、**暫定段階（`_pending/`）の snapshot は
+    承認の対象にならず常に読めない**、確定した snapshot は**最終 `snapshot_id` ディレクトリ
+    にある**と定める。承認の有無だけを見ていると、暫定 manifest に承認を付けたものや、
+    別の識別子のディレクトリに置いた manifest を読めてしまう。
+
+    構築時に3点を確かめる。
+
+    1. `directory_name` が暫定ディレクトリ（`_pending`）配下でない。
+    2. `directory_name` が manifest から再計算した `snapshot_id` と一致する（＝確定段階を
+       経ており、内容とディレクトリ名が食い違っていない）。
+    3. 承認が記入されている。
+
+    読み取り経路（as-of ビュー・執行系列ビュー・公開フィード）は `SnapshotManifest` では
+    なくこの型を受け取るので、検査を通っていない manifest は構造的に渡せない。
+    """
+
+    manifest: SnapshotManifest
+    directory_name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest, SnapshotManifest):
+            raise MarketDataValueError("ReadableSnapshot.manifest must be a SnapshotManifest")
+        if not isinstance(self.directory_name, str) or not self.directory_name:
+            raise MarketDataValueError("ReadableSnapshot.directory_name must be a non-empty str")
+
+        parts = PurePosixPath(self.directory_name).parts
+        if PENDING_DIRECTORY in parts:
+            raise SnapshotNotApproved(
+                f"{self.directory_name!r} is a provisional snapshot;"
+                " provisional snapshots are never approved and never readable"
+                " (D03 §3.7.1 の 1・3)"
+            )
+
+        expected = str(self.manifest.snapshot_id())
+        if parts[-1] != expected:
+            raise MarketDataValueError(
+                f"snapshot directory {self.directory_name!r} does not match the manifest's"
+                f" snapshot id {expected}; a readable snapshot lives in the directory named"
+                " by its final id (D03 §3.7.1 の 2)"
+            )
+        _require_approved(self.manifest)
+
+    @property
+    def snapshot_id(self) -> SnapshotId:
+        """この snapshot の最終識別子。"""
+        return self.manifest.snapshot_id()
 
 
 def _require_approved(manifest: SnapshotManifest) -> None:
@@ -126,46 +189,74 @@ def _require_matching_content(
 
 
 def require_readable_snapshot(
-    manifest: SnapshotManifest,
+    snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
     *,
     label: str,
-    partition_bars: Mapping[PartitionId, Sequence[Bar]] | None = None,
-) -> None:
-    """snapshot と許可 partition が読み取りの条件を満たすことを確かめる。
+    partition_bars: Mapping[PartitionId, Sequence[Bar]],
+) -> Mapping[PartitionId, tuple[Bar, ...]]:
+    """許可 partition と足が読み取りの条件を満たすことを確かめ、足の写しを返す。
+
+    `snapshot` は既に承認・ディレクトリ名・識別子の検査を通った型なので、ここでは許可
+    partition と足の内容だけを見る。
+
+    返すのは**後から変更できない写し**である。呼び出し元の可変な列をそのまま保持すると、
+    構築時の照合をすり抜けた後で中身を差し替えられる（D03 §6.1）。呼び出し側はこの返り値
+    だけを読むこと。
 
     `label` は失敗時のメッセージに載せる呼び出し側の名前（`AsOfView` など）。
-    `partition_bars` を渡すと、許可された partition の足が manifest の記録（足数・区間・
-    内容ダイジェスト）と一致することまで確かめる。渡さない場合は鍵の検査だけになるので、
-    実際に足を読む経路は必ず渡すこと。
     """
-    if not isinstance(manifest, SnapshotManifest):
-        raise MarketDataValueError(f"{label}.manifest must be a SnapshotManifest")
+    if not isinstance(snapshot, ReadableSnapshot):
+        raise MarketDataValueError(f"{label}.snapshot must be a ReadableSnapshot")
     if not isinstance(allowed_partitions, frozenset):
         raise MarketDataValueError(f"{label}.allowed_partitions must be a frozenset")
     for partition_id in allowed_partitions:
         if not isinstance(partition_id, PartitionId):
             raise MarketDataValueError(f"{label}.allowed_partitions must contain PartitionId")
-    _require_approved(manifest)
+
+    # 先に写し取る。以降の照合も読み取りも、この写しだけを見る。
+    frozen = freeze_partition_bars(partition_bars)
+
+    manifest = snapshot.manifest
     _reject_quarantined(allowed_partitions)
     for partition_id in sorted(allowed_partitions, key=str):
         if manifest.partition_record(partition_id) is None:
             raise MarketDataValueError(
                 f"partition {partition_id} is not recorded in the snapshot manifest"
             )
-        if partition_bars is not None:
-            _require_matching_content(
-                manifest, partition_id, tuple(partition_bars.get(partition_id, ()))
-            )
+        _require_matching_content(manifest, partition_id, frozen.get(partition_id, ()))
+    return frozen
+
+
+def freeze_partition_bars(
+    partition_bars: Mapping[PartitionId, Sequence[Bar]],
+) -> Mapping[PartitionId, tuple[Bar, ...]]:
+    """渡された足を、後から変更できない形へ写し取る（D03 §6.1）。
+
+    呼び出し元の可変な `list` / `dict` をそのまま保持すると、**構築時の照合をすり抜けた
+    後で中身を差し替えられる**。実際に、研究期間の足だけを記録した manifest でビューを
+    作ったあと同じ `list` に封印期間の足を追記すると、その足が読めてしまう。照合は構築時の
+    一度きりなので、読むのは必ずその時点で固定した写しでなければならない。
+
+    `MappingProxyType` と `tuple` の組で返すので、返り値自体も書き換えられない。
+    """
+    frozen = {
+        partition_id: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
+        for partition_id, bars in partition_bars.items()
+    }
+    return MappingProxyType(frozen)
 
 
 class PartitionedBars:
     """許可された partition の足だけを保持する読み取り面（D03 §6.1）。
 
-    partition の集合を構築時に固定し、そこにない系列・区間を読もうとしたら
+    partition の集合と**足そのもの**を構築時に固定し、そこにない系列・区間を読もうとしたら
     `HoldoutAccessViolation` を送出する。「許可されていないものは返さない」ではなく
     「要求そのものを構造エラーにする」ことで、封印期間の読み取りが静かな欠損に化けない
     ようにする。
+
+    足は `tuple` へ写し取るので、呼び出し元が元の列を後から変更しても、この読み取り面が
+    返す内容は変わらない。
     """
 
     __slots__ = ("_by_series",)

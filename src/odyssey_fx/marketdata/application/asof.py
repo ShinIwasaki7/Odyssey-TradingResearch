@@ -27,6 +27,7 @@ from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.application.snapshot_access import (
     PartitionedBars,
+    ReadableSnapshot,
     require_readable_snapshot,
 )
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
@@ -101,7 +102,7 @@ class AsOfView:
     `MarketDataView`（`strategy.runtime.ports`）を構造的に満たす。
     """
 
-    manifest: SnapshotManifest
+    snapshot: ReadableSnapshot
     allowed_partitions: frozenset[PartitionId]
     schedules: Mapping[SeriesId, SeriesSchedule]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
@@ -110,20 +111,29 @@ class AsOfView:
     def __post_init__(self) -> None:
         if not isinstance(self.publication_log, PublicationLog):
             raise MarketDataValueError("AsOfView.publication_log must be a PublicationLog")
-        require_readable_snapshot(
-            self.manifest,
+        frozen = require_readable_snapshot(
+            self.snapshot,
             self.allowed_partitions,
             label="AsOfView",
             partition_bars=self.partition_bars,
         )
+        # 呼び出し元が渡した可変な列を保持したままにすると、構築時の照合をすり抜けた後で
+        # 中身を差し替えられる（D03 §6.1）。検査を通した写しへ置き換える。
+        object.__setattr__(self, "partition_bars", frozen)
+
+    @property
+    def manifest(self) -> SnapshotManifest:
+        """読んでいる snapshot の manifest。"""
+        return self.snapshot.manifest
 
     # --- 内部 ---------------------------------------------------------------
 
     def _bars(self) -> PartitionedBars:
         """許可された partition の読み取り面。
 
-        frozen dataclass なので構築時にキャッシュせず、呼ばれるたびに組み立てる。
-        （`slots=True` と frozen の組合せでは後からの属性代入ができないため。）
+        `partition_bars` は構築時に不変な写しへ置き換えてあるので、ここで組み立て直しても
+        外部の変更は入らない。frozen dataclass かつ `slots=True` なので、読み取り面そのもの
+        をキャッシュする属性は持てない。
         """
         return PartitionedBars(self.partition_bars, self.allowed_partitions)
 
@@ -373,7 +383,7 @@ class ExecutionSeriesView:
     ため戦略側には渡さない。
     """
 
-    manifest: SnapshotManifest
+    snapshot: ReadableSnapshot
     series: SeriesId
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
@@ -383,12 +393,18 @@ class ExecutionSeriesView:
             raise MarketDataValueError("ExecutionSeriesView.series must be a SeriesId")
         # 戦略側のビューと同じ関門を通す。執行系列だけ検査が緩いと、manifest に無い
         # partition を渡して未記録のデータを読む経路が残ってしまう。
-        require_readable_snapshot(
-            self.manifest,
+        frozen = require_readable_snapshot(
+            self.snapshot,
             self.allowed_partitions,
             label="ExecutionSeriesView",
             partition_bars=self.partition_bars,
         )
+        object.__setattr__(self, "partition_bars", frozen)
+
+    @property
+    def manifest(self) -> SnapshotManifest:
+        """読んでいる snapshot の manifest。"""
+        return self.snapshot.manifest
 
     def _bars(self) -> tuple[Bar, ...]:
         return PartitionedBars(self.partition_bars, self.allowed_partitions).require_series(
