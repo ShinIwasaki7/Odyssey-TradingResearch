@@ -30,9 +30,10 @@ from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
     MarketDataValueError,
+    PartitionContentMismatch,
     SnapshotNotApproved,
 )
-from odyssey_fx.marketdata.domain.publication_log import PublicationLog
+from odyssey_fx.marketdata.domain.publication_log import PublicationLog, PublicationRecord
 from odyssey_fx.marketdata.domain.schedule import (
     DelayScenario,
     FixedSeriesDelay,
@@ -72,24 +73,19 @@ def _bars(
     return market.make_bars(series, timeframe_def, CALENDAR, WINDOW, skip_starts=skip_starts)
 
 
+#: partition ごとの既定の足。読み取り側は渡された足が manifest の記録どおりかを照合する
+#: （D03 §3.7.1）ので、manifest はこの足から作る。
+DEFAULT_PARTITION_BARS: dict[PartitionId, tuple[Bar, ...]] = {}
+
+
 def _manifest(*partition_ids: PartitionId) -> SnapshotManifest:
-    records = tuple(
-        snapshots.partition(partition_id.series, partition_id.access_class)
-        for partition_id in partition_ids
+    """指定した partition を記録した承認済み manifest（既定の足の内容で作る）。"""
+    return snapshots.approved_for(
+        {
+            partition_id: DEFAULT_PARTITION_BARS.get(partition_id, ())
+            for partition_id in partition_ids
+        }
     )
-    by_series: dict[SeriesId, list[PartitionId]] = {}
-    for record in records:
-        by_series.setdefault(record.series_id, []).append(record.partition_id)
-    series_records = tuple(
-        SeriesManifest(
-            series_id=series,
-            covered_interval=snapshots.COVERED,
-            bar_count=100,
-            partitions=tuple(ids),
-        )
-        for series, ids in by_series.items()
-    )
-    return snapshots.approved(series_records=series_records, partitions=records)
 
 
 def _view(
@@ -99,15 +95,15 @@ def _view(
     publication_log: PublicationLog | None = None,
     approved: bool = True,
 ) -> AsOfView:
-    manifest = _manifest(HOURLY_PARTITION, DAILY_PARTITION)
-    if not approved:
-        manifest = snapshots.manifest(
-            series_records=manifest.series, partitions=manifest.partitions
-        )
     partition_bars: dict[PartitionId, Sequence[Bar]] = {
         HOURLY_PARTITION: _bars(HOURLY, market.TF_1H, skip_starts=hourly_skip),
         DAILY_PARTITION: _bars(DAILY, market.TF_1D_NY17),
     }
+    manifest = snapshots.approved_for(partition_bars)
+    if not approved:
+        manifest = snapshots.manifest(
+            series_records=manifest.series, partitions=manifest.partitions
+        )
     return AsOfView(
         manifest=manifest,
         allowed_partitions=frozenset(allowed),
@@ -155,7 +151,7 @@ def test_injecting_a_delay_moves_only_the_availability_not_the_ohlc() -> None:
         rules=(FixedSeriesDelay(series=DAILY, delay=timedelta(seconds=2)),),
     )
     log = build_publication_log(
-        _manifest(DAILY_PARTITION),
+        snapshots.approved_for({DAILY_PARTITION: bars}),
         frozenset({DAILY_PARTITION}),
         {DAILY_PARTITION: bars},
         SCHEDULES,
@@ -288,9 +284,8 @@ def test_the_bar_right_after_the_readable_range_is_a_structural_error() -> None:
     )
     assert research_bars[-1].bar_end == UtcTime.parse("2023-12-31T23:00:00Z")
 
-    manifest = _manifest(HOURLY_PARTITION)
     view = AsOfView(
-        manifest=manifest,
+        manifest=snapshots.approved_for({HOURLY_PARTITION: research_bars}),
         allowed_partitions=frozenset({HOURLY_PARTITION}),
         schedules={HOURLY: SCHEDULES[HOURLY]},
         partition_bars={HOURLY_PARTITION: research_bars},
@@ -356,11 +351,12 @@ def test_the_execution_view_refuses_a_partition_missing_from_the_manifest() -> N
 
 def test_the_execution_view_accepts_a_recorded_partition() -> None:
     """記録されている partition なら執行系列のビューを作れる。"""
+    bars = _bars(HOURLY, market.TF_1H)
     view = ExecutionSeriesView(
-        manifest=_manifest(HOURLY_PARTITION),
+        manifest=snapshots.approved_for({HOURLY_PARTITION: bars}),
         series=HOURLY,
         allowed_partitions=frozenset({HOURLY_PARTITION}),
-        partition_bars={HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+        partition_bars={HOURLY_PARTITION: bars},
     )
     key = view.next_bar_key_after(UtcTime.parse("2026-01-14T09:30:00Z"))
     assert key is not None
@@ -370,26 +366,15 @@ def test_the_execution_view_accepts_a_recorded_partition() -> None:
 def test_a_holdout_partition_may_still_be_granted() -> None:
     """封印期間は、解除の手続きを通れば許可されうる（拒否されるのは隔離期間だけ）。"""
     holdout = PartitionId(series=HOURLY, access_class=AccessClass.LEGACY_HOLDOUT)
-    records = (
-        snapshots.partition(HOURLY, AccessClass.RESEARCH_HISTORY),
-        snapshots.partition(HOURLY, AccessClass.LEGACY_HOLDOUT),
-    )
-    manifest = snapshots.approved(
-        series_records=(
-            SeriesManifest(
-                series_id=HOURLY,
-                covered_interval=snapshots.COVERED,
-                bar_count=200,
-                partitions=tuple(record.partition_id for record in records),
-            ),
-        ),
-        partitions=records,
-    )
+    partition_bars: dict[PartitionId, Sequence[Bar]] = {
+        HOURLY_PARTITION: _bars(HOURLY, market.TF_1H),
+        holdout: (),
+    }
     view = AsOfView(
-        manifest=manifest,
+        manifest=snapshots.approved_for(partition_bars),
         allowed_partitions=frozenset({HOURLY_PARTITION, holdout}),
         schedules={HOURLY: SCHEDULES[HOURLY]},
-        partition_bars={HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+        partition_bars=partition_bars,
     )
     assert holdout in view.allowed_partitions
 
@@ -416,3 +401,192 @@ def test_the_freshness_reference_of_a_confirmed_bar_is_its_end() -> None:
     )
     assert not isinstance(bar, MissingInput)
     assert view.freshness(HOURLY, bar) == bar.bar_end
+
+
+# --- 通常の公開遅延（D03 §3.5・§6.2）---------------------------------------
+
+
+def test_a_normal_publication_delay_hides_the_bar_until_its_scheduled_time() -> None:
+    """通常遅延のある系列は、足の終了と同時には見えない（D03 §3.5）。
+
+    正規化の段階では足の `available_at` が足の終了時刻に置かれる。それをそのまま使うと、
+    公開フィードは予定どおり遅らせるのに as-of ビューだけが先に見せてしまい、その差の窓で
+    先読みが起きる（D03 §6.2 の「未来参照は構造的に不可能」に反する）。
+    """
+    delay = timedelta(minutes=2)
+    delayed_schedule = SeriesSchedule(
+        series=HOURLY,
+        timeframe_def=market.TF_1H,
+        calendar=CALENDAR,
+        normal_publication_delay=delay,
+    )
+    bars = _bars(HOURLY, market.TF_1H)
+    view = AsOfView(
+        manifest=snapshots.approved_for({HOURLY_PARTITION: bars}),
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        schedules={HOURLY: delayed_schedule},
+        partition_bars={HOURLY_PARTITION: bars},
+    )
+
+    bar_end = UtcTime.parse("2026-01-14T11:00:00Z")
+    # 足の終了ちょうどでは、まだ公開予定に達していない。
+    at_end = view.latest_available(HOURLY, bar_end)
+    assert isinstance(at_end, MissingInput)
+    assert at_end.reason is MissingInputReason.LATEST_BAR_UNAVAILABLE
+
+    # 公開予定の直前もまだ見えない。
+    just_before = view.latest_available(HOURLY, bar_end + delay - timedelta(seconds=1))
+    assert isinstance(just_before, MissingInput)
+
+    # 公開予定に達したら見える。
+    at_scheduled = view.latest_available(HOURLY, bar_end + delay)
+    assert not isinstance(at_scheduled, MissingInput)
+    assert at_scheduled.bar_end == bar_end
+
+
+def test_a_normal_publication_delay_also_hides_the_bar_from_history() -> None:
+    """履歴窓も通常遅延に従う（最新の1本が未公開なら窓は揃わない）。"""
+    delay = timedelta(minutes=2)
+    delayed_schedule = SeriesSchedule(
+        series=HOURLY,
+        timeframe_def=market.TF_1H,
+        calendar=CALENDAR,
+        normal_publication_delay=delay,
+    )
+    bars = _bars(HOURLY, market.TF_1H)
+    view = AsOfView(
+        manifest=snapshots.approved_for({HOURLY_PARTITION: bars}),
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        schedules={HOURLY: delayed_schedule},
+        partition_bars={HOURLY_PARTITION: bars},
+    )
+    bar_end = UtcTime.parse("2026-01-14T11:00:00Z")
+    assert isinstance(view.history(HOURLY, BarsWindow(count=2), bar_end), MissingInput)
+    history = view.history(HOURLY, BarsWindow(count=2), bar_end + delay)
+    assert not isinstance(history, MissingInput)
+    assert history[-1].bar_end == bar_end
+
+
+def test_a_publication_log_earlier_than_the_schedule_is_refused() -> None:
+    """記録が通常の公開予定を下回るのは設定の誤り（遅延は非負、D03 §3.6）。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    target = bars[10]
+    early = PublicationLog(
+        records=(
+            PublicationRecord(
+                bar_key=target.key,
+                bar_end=target.bar_end,
+                scheduled_at=target.bar_end,
+                available_at=target.bar_end,
+            ),
+        )
+    )
+    view = AsOfView(
+        manifest=snapshots.approved_for({HOURLY_PARTITION: bars}),
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        schedules={
+            HOURLY: SeriesSchedule(
+                series=HOURLY,
+                timeframe_def=market.TF_1H,
+                calendar=CALENDAR,
+                normal_publication_delay=timedelta(minutes=5),
+            )
+        },
+        partition_bars={HOURLY_PARTITION: bars},
+        publication_log=early,
+    )
+    with pytest.raises(MarketDataValueError, match="before its scheduled time"):
+        view.bar(HOURLY, target.bar_start, target.bar_end + timedelta(hours=1))
+
+
+# --- 足が manifest の記録どおりか（D03 §3.7.1）-----------------------------
+
+
+def test_a_replaced_bar_is_refused() -> None:
+    """足を1本差し替えると、内容ダイジェストが合わず拒否される。
+
+    partition の鍵が合っているだけでは、その足が本当にその snapshot のものかは分からない。
+    暫定 snapshot や別 snapshot の足を同じ鍵で渡す経路を塞ぐ（D03 §3.7.1）。
+    """
+    bars = list(_bars(HOURLY, market.TF_1H))
+    manifest = snapshots.approved_for({HOURLY_PARTITION: tuple(bars)})
+    tampered = market.make_bar(HOURLY, bars[5].interval, volume="999")
+    bars[5] = tampered
+    with pytest.raises(PartitionContentMismatch, match="does not match the digest"):
+        AsOfView(
+            manifest=manifest,
+            allowed_partitions=frozenset({HOURLY_PARTITION}),
+            schedules={HOURLY: SCHEDULES[HOURLY]},
+            partition_bars={HOURLY_PARTITION: tuple(bars)},
+        )
+
+
+def test_a_removed_bar_is_refused() -> None:
+    """足を1本削ると、足数が合わず拒否される。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    manifest = snapshots.approved_for({HOURLY_PARTITION: bars})
+    with pytest.raises(PartitionContentMismatch, match="bar\\(s\\) but the manifest records"):
+        AsOfView(
+            manifest=manifest,
+            allowed_partitions=frozenset({HOURLY_PARTITION}),
+            schedules={HOURLY: SCHEDULES[HOURLY]},
+            partition_bars={HOURLY_PARTITION: bars[:-1]},
+        )
+
+
+def test_bars_of_another_series_are_refused() -> None:
+    """別の系列の足を入れると拒否される。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    manifest = snapshots.approved_for({HOURLY_PARTITION: bars})
+    foreign = market.make_bars(market.series(symbol=market.EURUSD), market.TF_1H, CALENDAR, WINDOW)
+    with pytest.raises(PartitionContentMismatch, match="was given a bar of"):
+        AsOfView(
+            manifest=manifest,
+            allowed_partitions=frozenset({HOURLY_PARTITION}),
+            schedules={HOURLY: SCHEDULES[HOURLY]},
+            partition_bars={HOURLY_PARTITION: foreign},
+        )
+
+
+def test_bars_from_another_window_are_refused() -> None:
+    """区間の違う足（別 snapshot の同じ partition）は拒否される。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    manifest = snapshots.approved_for({HOURLY_PARTITION: bars})
+    other_window = Interval(
+        start=UtcTime.parse("2026-02-09T22:00:00Z"),
+        end=UtcTime.parse("2026-02-13T22:00:00Z"),
+    )
+    other = market.make_bars(HOURLY, market.TF_1H, CALENDAR, other_window)
+    with pytest.raises(PartitionContentMismatch):
+        AsOfView(
+            manifest=manifest,
+            allowed_partitions=frozenset({HOURLY_PARTITION}),
+            schedules={HOURLY: SCHEDULES[HOURLY]},
+            partition_bars={HOURLY_PARTITION: other},
+        )
+
+
+def test_the_execution_view_also_binds_its_bars_to_the_manifest() -> None:
+    """執行系列のビューも同じ照合を行う（D03 §3.7.1）。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    manifest = snapshots.approved_for({HOURLY_PARTITION: bars})
+    with pytest.raises(PartitionContentMismatch):
+        ExecutionSeriesView(
+            manifest=manifest,
+            series=HOURLY,
+            allowed_partitions=frozenset({HOURLY_PARTITION}),
+            partition_bars={HOURLY_PARTITION: bars[:-1]},
+        )
+
+
+def test_matching_bars_are_accepted() -> None:
+    """記録どおりの足なら通る（照合が正しい内容まで拒否しないことの確認）。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    view = AsOfView(
+        manifest=snapshots.approved_for({HOURLY_PARTITION: bars}),
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        schedules={HOURLY: SCHEDULES[HOURLY]},
+        partition_bars={HOURLY_PARTITION: bars},
+    )
+    latest = view.latest_available(HOURLY, UtcTime.parse("2026-01-14T12:00:00Z"))
+    assert not isinstance(latest, MissingInput)

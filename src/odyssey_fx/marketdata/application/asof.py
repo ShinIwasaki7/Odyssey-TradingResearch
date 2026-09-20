@@ -110,7 +110,12 @@ class AsOfView:
     def __post_init__(self) -> None:
         if not isinstance(self.publication_log, PublicationLog):
             raise MarketDataValueError("AsOfView.publication_log must be a PublicationLog")
-        require_readable_snapshot(self.manifest, self.allowed_partitions, label="AsOfView")
+        require_readable_snapshot(
+            self.manifest,
+            self.allowed_partitions,
+            label="AsOfView",
+            partition_bars=self.partition_bars,
+        )
 
     # --- 内部 ---------------------------------------------------------------
 
@@ -129,13 +134,28 @@ class AsOfView:
         return schedule
 
     def _available_at(self, bar: Bar) -> UtcTime:
-        """その足が実際に利用可能になる時刻。
+        """その足が実際に利用可能になる時刻（D03 §3.5・§6.2）。
 
-        実現した公開記録（`PublicationLog`）があればそれを使い、なければ足自身の
-        `available_at` を使う。どちらも `bar_end` 以上であることは構築時に保証されている。
+        下限は**通常の公開予定** `bar_end + normal_publication_delay`（D03 §3.5）である。
+        正規化の段階では足自身の `available_at` を足の終了時刻に置くので、これを下限に
+        しないと、通常遅延のある系列を「足の終了と同時に見える」と扱ってしまう。公開
+        フィードは予定どおり遅らせるため、その差の窓で as-of ビューだけが先を読むことに
+        なる（D03 §6.2 の「未来参照は構造的に不可能」に反する）。
+
+        実現した公開記録（`PublicationLog`）があればそれを使う。記録は遅延シナリオの適用
+        結果であり、遅延は非負なので（D03 §3.6）通常の公開予定を下回らない。下回る記録は
+        設定の誤りなので構造エラーで拒否する。
         """
+        scheduled = self._schedule(bar.series).scheduled_at(bar.bar_end)
         recorded = self.publication_log.available_at(bar.key)
-        return recorded if recorded is not None else bar.available_at
+        if recorded is None:
+            return max(bar.available_at, scheduled, key=lambda value: value.value)
+        if recorded < scheduled:
+            raise MarketDataValueError(
+                f"the publication log makes {bar.key} available at {recorded}, before its"
+                f" scheduled time {scheduled}; delays are non-negative (D03 §3.5・§3.6)"
+            )
+        return recorded
 
     def _visible_bars(self, series: SeriesId, at: UtcTime) -> tuple[Bar, ...]:
         """`at` の時点で見えている足（`available_at <= at`）。"""
@@ -364,7 +384,10 @@ class ExecutionSeriesView:
         # 戦略側のビューと同じ関門を通す。執行系列だけ検査が緩いと、manifest に無い
         # partition を渡して未記録のデータを読む経路が残ってしまう。
         require_readable_snapshot(
-            self.manifest, self.allowed_partitions, label="ExecutionSeriesView"
+            self.manifest,
+            self.allowed_partitions,
+            label="ExecutionSeriesView",
+            partition_bars=self.partition_bars,
         )
 
     def _bars(self) -> tuple[Bar, ...]:
