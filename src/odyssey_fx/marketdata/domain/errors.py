@@ -9,6 +9,7 @@
 - `HoldoutAccessViolation`: 許可されていない partition への読み取り要求（D03 §6.1）。
   入力欠損ではなく構造エラーであり、`MissingInput` に読み替えない。
 - `SnapshotNotApproved`: 承認前・暫定の snapshot を読もうとした（D03 §3.7.1 の3）。
+- `IntegrityCheckFailed`: 完全性検査に重大な違反があり受入れを中止した（D03 §4 の 4）。
 - `UnsupportedCapability`: 初版が受け付けない能力の要求（D03 §3.6 の `SeededRandomDelay`）。
 """
 
@@ -18,6 +19,7 @@ from odyssey_fx.common.errors import KernelValueError
 
 __all__ = [
     "HoldoutAccessViolation",
+    "IntegrityCheckFailed",
     "MarketDataError",
     "MarketDataValueError",
     "SnapshotNotApproved",
@@ -45,6 +47,15 @@ class SnapshotNotApproved(MarketDataError):
 
     暫定 snapshot（`_pending/`）と、最終ディレクトリにあるが `approval` が未記入の
     snapshot の両方がこれに当たる。
+    """
+
+
+class IntegrityCheckFailed(MarketDataValueError):
+    """完全性検査に重大な違反があり、受入れを中止した（D03 §4 の 4）。
+
+    重複した開始時刻、OHLC の整合違反、タイムゾーン違反、整列に合わない開始時刻は、
+    いずれも構造的に無効なデータである。これらを残したまま snapshot を確定・承認できる
+    経路を作らないため、暫定 manifest の生成と確定の両方で送出する。
     """
 
 

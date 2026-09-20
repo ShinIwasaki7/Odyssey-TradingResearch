@@ -44,15 +44,14 @@ from odyssey_fx.marketdata.application.ports import RawRow
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError
-from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
+from odyssey_fx.marketdata.domain.integrity import CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     BasisDeclaration,
     ClosureDecision,
     ConversionRecord,
     LegacyAccessRecord,
-    LegacyObservation,
     PartitionId,
     PartitionRecord,
     SeriesManifest,
@@ -68,7 +67,6 @@ __all__ = [
     "build_pending_snapshot",
     "classify_partitions",
     "finalize",
-    "initial_holdout_observation",
     "normalize_rows",
     "provisional_id",
 ]
@@ -285,6 +283,44 @@ class PendingSnapshot:
         return self.manifest.snapshot_id()
 
 
+def _merge_findings(report: IntegrityReport, extra: Sequence[CheckResult]) -> IntegrityReport:
+    """報告に追加の結果を統合する（D03 §4 の 5〜6）。
+
+    同じ結果（D03 §3.7.1 の整列鍵が等しいもの）は1件にまとめる。上位足の生成と
+    カレンダー照合が同じ欠落を別々に報告しても、記録は1件になる。並びは
+    `IntegrityReport` が正規順序へ整えるので、統合の順序はダイジェストに影響しない。
+    """
+    merged: dict[tuple[str, str, str, str], CheckResult] = {
+        result.sort_key(): result for result in report.results
+    }
+    for result in extra:
+        if not isinstance(result, CheckResult):
+            raise MarketDataValueError(
+                f"aggregated_findings must contain CheckResult values, got {type(result).__name__}"
+            )
+        merged.setdefault(result.sort_key(), result)
+    return IntegrityReport(results=tuple(merged.values()))
+
+
+def _require_no_integrity_errors(report: IntegrityReport) -> None:
+    """重大な違反が1件でもあれば受入れを中止する（D03 §4 の 4）。
+
+    件数と種別をメッセージに含め、どの検査で落ちたかが実行ログだけで分かるようにする。
+    価格は含めない（D03 §3.9）。
+    """
+    errors = report.errors
+    if not errors:
+        return
+    counts: dict[str, int] = {}
+    for result in errors:
+        counts[result.kind.value] = counts.get(result.kind.value, 0) + 1
+    summary = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
+    raise IntegrityCheckFailed(
+        f"the integrity check reported {len(errors)} error(s) ({summary});"
+        " acceptance fails and no snapshot is produced (D03 §4 の 4)"
+    )
+
+
 def provisional_id(manifest: SnapshotManifest) -> SnapshotId:
     """分類が空の manifest から暫定の識別子を計算する（D03 §3.7.1 の 1）。"""
     if manifest.closure_decisions:
@@ -303,7 +339,12 @@ def finalize(
 
     分類が確定した後の識別子が最終の `snapshot_id`。分類が異なれば別 snapshot である。
     未分類の警告が残っている場合は失敗させる（D03 §10 の `classify` コマンド）。
+
+    重大な違反の検査もここで重ねて行う（D03 §4 の 4）。暫定段階で中断しているので通常は
+    到達しないが、`PendingSnapshot` を別経路で組み立てた場合に、構造的に無効なデータが
+    確定・承認へ進む抜け道を残さないため。
     """
+    _require_no_integrity_errors(pending.report)
     decided = {(str(decision.series_id), str(decision.interval.start)) for decision in decisions}
     undecided = [
         result
@@ -332,6 +373,7 @@ def build_pending_snapshot(
     partition_digests: Mapping[PartitionId, str],
     integrity_report_digest: ContentDigest,
     aggregated_bars: Mapping[SeriesId, tuple[Bar, ...]] | None = None,
+    aggregated_findings: Sequence[CheckResult] = (),
     legacy_access: Sequence[LegacyAccessRecord] = (),
 ) -> PendingSnapshot:
     """暫定 manifest を組み立てる（D03 §4 の 1〜8）。
@@ -342,6 +384,16 @@ def build_pending_snapshot(
 
     `bars_by_file` は原ファイルのパスごとの正規化済み足、`aggregated_bars` は生成した
     上位足（D03 §5）。どちらもアクセス分類ごとの partition へ分けて記録する。
+
+    `aggregated_findings` は上位足の生成が返した報告（構成足が欠けて生成できなかった区間の
+    `MISSING_EXPECTED_BAR`、D03 §5.2）。これを渡さないと、端の不完全な区間が報告から消え、
+    「生成されなかった」という事実が記録に残らない。構造検査・カレンダー照合の結果と
+    統合して1つの報告にする。
+
+    **重大な違反があれば受入れを失敗させる**（D03 §4 の 4）。重複した開始時刻、OHLC の
+    整合違反、整列に合わない開始時刻が1件でもあれば `IntegrityCheckFailed` で中断し、
+    暫定 manifest を作らない。作ってしまうと、構造的に無効なデータがそのまま確定・承認
+    できてしまう。
     """
     if not isinstance(created_at, UtcTime):
         raise MarketDataValueError("build_pending_snapshot requires a UtcTime created_at")
@@ -375,7 +427,8 @@ def build_pending_snapshot(
         )
         for checked_series, checked_bars in bars_by_series.items()
     ]
-    report = check_all(targets, calendar)
+    report = _merge_findings(check_all(targets, calendar), aggregated_findings)
+    _require_no_integrity_errors(report)
 
     series_manifests: list[SeriesManifest] = []
     partitions: list[PartitionRecord] = []
@@ -434,19 +487,6 @@ def _timeframe_def_for(
     return definition
 
 
-def initial_holdout_observation(
-    partition_id: PartitionId, legacy_access: Sequence[LegacyAccessRecord]
-) -> LegacyObservation:
-    """封印期間 partition の初期の観測状態を旧基盤の履歴から導く（ADR-0014）。
-
-    未観測と確認できた記録が partition を覆っている場合だけ `NOT_OBSERVED`。記録がない、
-    または1件でも観測済み・不明が混ざる場合は `UNKNOWN` 側に倒す（fail-closed）。
-    """
-    relevant = [record for record in legacy_access if record.series_id == partition_id.series]
-    if not relevant:
-        return LegacyObservation.UNKNOWN
-    if any(record.observation is LegacyObservation.OBSERVED for record in relevant):
-        return LegacyObservation.OBSERVED
-    if all(record.observation is LegacyObservation.NOT_OBSERVED for record in relevant):
-        return LegacyObservation.NOT_OBSERVED
-    return LegacyObservation.UNKNOWN
+# 封印期間 partition の初期状態の判定は `application.access_log.initial_holdout_state` に
+# 一本化した。以前ここにあった同趣旨の関数は、系列が一致するだけで「未観測」と判定し、
+# partition の区間を完全に覆っているかを見ていなかった（ADR-0014 の fail-closed 違反）。

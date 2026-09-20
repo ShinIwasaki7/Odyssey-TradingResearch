@@ -10,18 +10,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from typing import cast
+
 import pytest
 
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
+    RawFile,
     build_pending_snapshot,
+    classify_partitions,
     finalize,
     provisional_id,
 )
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError
-from odyssey_fx.marketdata.domain.snapshot import ClosureDecision, ClosureDecisionKind
+from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
+from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
+from odyssey_fx.marketdata.domain.snapshot import (
+    ClosureDecision,
+    ClosureDecisionKind,
+    PartitionId,
+)
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -34,10 +45,19 @@ DROPPED = UtcTime.parse("2022-01-06T10:00:00Z")
 RAW_FILE = snapshots.source("data/raw/market/USDJPY_1h_merged.csv")
 
 
-def _build(created_at: UtcTime, *, skip_starts=(DROPPED,)) -> PendingSnapshot:  # type: ignore[no-untyped-def]
-    from odyssey_fx.marketdata.application.acceptance import RawFile
-
-    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=skip_starts)
+def _build(
+    created_at: UtcTime,
+    *,
+    skip_starts: Iterable[UtcTime] = (DROPPED,),
+    bars: Sequence[Bar] | None = None,
+    aggregated_findings: Sequence[CheckResult] = (),
+) -> PendingSnapshot:
+    """暫定 snapshot を組み立てる（テスト用の最小の受入れ）。"""
+    source_bars = (
+        tuple(bars)
+        if bars is not None
+        else market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=skip_starts)
+    )
     raw_file = RawFile(
         path=RAW_FILE.path,
         sha256=RAW_FILE.sha256,
@@ -46,10 +66,7 @@ def _build(created_at: UtcTime, *, skip_starts=(DROPPED,)) -> PendingSnapshot:  
         declared_basis=RAW_FILE.declared_basis,
     )
     # partition のダイジェストは adapters が返す値。テストでは内容から決まる固定値を使う。
-    from odyssey_fx.marketdata.application.acceptance import classify_partitions
-    from odyssey_fx.marketdata.domain.snapshot import PartitionId
-
-    grouped = classify_partitions(bars, INITIAL_ACCESS_BOUNDARIES)
+    grouped = classify_partitions(source_bars, INITIAL_ACCESS_BOUNDARIES)
     digests = {
         PartitionId(series=HOURLY, access_class=access): snapshots.digest_for(access.value).hex
         for access in grouped
@@ -57,7 +74,7 @@ def _build(created_at: UtcTime, *, skip_starts=(DROPPED,)) -> PendingSnapshot:  
     return build_pending_snapshot(
         created_at=created_at,
         raw_files=(raw_file,),
-        bars_by_file={raw_file.path: bars},
+        bars_by_file={raw_file.path: source_bars},
         timeframe_defs=market.TIMEFRAME_DEFS,
         calendar=CALENDAR,
         boundaries=INITIAL_ACCESS_BOUNDARIES,
@@ -65,6 +82,7 @@ def _build(created_at: UtcTime, *, skip_starts=(DROPPED,)) -> PendingSnapshot:  
         conversion=snapshots.CONVERSION,
         partition_digests=digests,
         integrity_report_digest=snapshots.REPORT_DIGEST,
+        aggregated_findings=aggregated_findings,
     )
 
 
@@ -166,3 +184,144 @@ def test_the_pending_snapshot_records_one_partition_per_access_class() -> None:
     (partition_id,) = pending.partition_bars
     assert partition_id.access_class.value == "RESEARCH_HISTORY"
     assert pending.manifest.partition_record(partition_id) is not None
+
+
+# --- 重大な違反は受入れを失敗させる（D03 §4 の 4）--------------------------
+
+
+def _duplicated_bars() -> tuple[Bar, ...]:
+    """同じ開始時刻の足を2本含む列（重複時刻の重大な違反）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    return (*bars, bars[0])
+
+
+def _misaligned_bars() -> tuple[Bar, ...]:
+    """整列に合わない開始時刻の足を含む列。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    offset = Interval(
+        start=UtcTime.parse("2022-01-06T10:30:00Z"),
+        end=UtcTime.parse("2022-01-06T11:00:00Z"),
+    )
+    return (*bars, market.make_bar(HOURLY, offset))
+
+
+def test_a_duplicate_timestamp_stops_the_acceptance() -> None:
+    """重大な違反があれば暫定 manifest を作らない（D03 §4 の 4）。
+
+    作ってしまうと、構造的に無効なデータがそのまま確定・承認できてしまう。
+    """
+    with pytest.raises(IntegrityCheckFailed, match="DUPLICATE_TIMESTAMP"):
+        _build(UtcTime.parse("2026-09-20T09:00:00Z"), bars=_duplicated_bars())
+
+
+def test_a_misaligned_bar_start_stops_the_acceptance() -> None:
+    with pytest.raises(IntegrityCheckFailed, match="IRREGULAR_INTERVAL"):
+        _build(UtcTime.parse("2026-09-20T09:00:00Z"), bars=_misaligned_bars())
+
+
+def test_the_failure_message_reports_the_count_and_kinds() -> None:
+    """どの検査で何件落ちたかが、実行ログだけで分かる。"""
+    with pytest.raises(IntegrityCheckFailed) as raised:
+        _build(UtcTime.parse("2026-09-20T09:00:00Z"), bars=_duplicated_bars())
+    message = str(raised.value)
+    assert "1 error(s)" in message
+    assert "DUPLICATE_TIMESTAMP=1" in message
+    # 価格は報告に含めない（D03 §3.9）。
+    assert "150" not in message
+
+
+def test_finalize_also_refuses_a_report_carrying_errors() -> None:
+    """確定の段階でも重ねて検査する（別経路で組み立てた場合の抜け道を塞ぐ）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    broken = PendingSnapshot(
+        manifest=pending.manifest,
+        report=IntegrityReport(
+            results=(
+                CheckResult.create(
+                    CheckKind.DUPLICATE_TIMESTAMP,
+                    HOURLY,
+                    Interval(start=DROPPED, end=DROPPED + market.TF_1H.nominal_length),
+                ),
+            )
+        ),
+        partition_bars=pending.partition_bars,
+    )
+    with pytest.raises(IntegrityCheckFailed, match="DUPLICATE_TIMESTAMP"):
+        finalize(broken, ())
+
+
+def test_a_warning_alone_does_not_stop_the_acceptance() -> None:
+    """人間の判断を要する警告は受入れを止めない（分類の対象、D03 §4 の 9）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    assert pending.report.warnings
+    assert not pending.report.has_errors()
+
+
+# --- 上位足の報告を取り込む（D03 §5.2）-------------------------------------
+
+
+def _aggregate_finding() -> CheckResult:
+    """上位足が生成できなかった区間の報告（構成足が欠けた区間）。"""
+    return CheckResult.create(
+        CheckKind.MISSING_EXPECTED_BAR,
+        market.series(timeframe_id="4h_ny17"),
+        Interval(
+            start=UtcTime.parse("2022-01-06T06:00:00Z"),
+            end=UtcTime.parse("2022-01-06T10:00:00Z"),
+        ),
+        detail={"reason": "incomplete_aggregate"},
+    )
+
+
+def test_the_aggregation_findings_are_kept_in_the_report() -> None:
+    """不完全な上位足の報告が消えない（D03 §5.2）。
+
+    これを取り込まないと、端の不完全な区間が「生成されなかった」という事実ごと記録から
+    消えてしまう。
+    """
+    finding = _aggregate_finding()
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), aggregated_findings=(finding,))
+    assert finding in pending.report.results
+
+
+def test_a_duplicate_finding_is_recorded_only_once() -> None:
+    """同じ結果を2度渡しても記録は1件（同一の整列鍵で1つにまとめる）。"""
+    finding = _aggregate_finding()
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), aggregated_findings=(finding, finding))
+    matching = [
+        result for result in pending.report.results if result.sort_key() == finding.sort_key()
+    ]
+    assert len(matching) == 1
+
+
+def test_the_aggregation_findings_reach_the_report() -> None:
+    """取り込んだぶんだけ警告が増える（報告まで届いていることの確認）。"""
+    plain = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    with_finding = _build(
+        UtcTime.parse("2026-09-20T09:00:00Z"), aggregated_findings=(_aggregate_finding(),)
+    )
+    assert len(with_finding.report.warnings) == len(plain.report.warnings) + 1
+
+
+def test_the_report_order_is_unaffected_by_the_findings_order() -> None:
+    """統合の順序は報告の並びに影響しない（D03 §3.7.1 の正規順序）。"""
+    first = _aggregate_finding()
+    second = CheckResult.create(
+        CheckKind.MISSING_EXPECTED_BAR,
+        market.series(timeframe_id="1d_ny17"),
+        Interval(
+            start=UtcTime.parse("2022-01-05T22:00:00Z"),
+            end=UtcTime.parse("2022-01-06T22:00:00Z"),
+        ),
+    )
+    forward = _build(UtcTime.parse("2026-09-20T09:00:00Z"), aggregated_findings=(first, second))
+    backward = _build(UtcTime.parse("2026-09-20T09:00:00Z"), aggregated_findings=(second, first))
+    assert forward.report.results == backward.report.results
+
+
+def test_a_non_check_result_in_the_findings_is_refused() -> None:
+    with pytest.raises(MarketDataValueError, match="must contain CheckResult"):
+        _build(
+            UtcTime.parse("2026-09-20T09:00:00Z"),
+            aggregated_findings=cast("Sequence[CheckResult]", ("not a finding",)),
+        )
