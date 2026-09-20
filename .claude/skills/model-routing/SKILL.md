@@ -58,6 +58,8 @@ description: Use this skill whenever work is delegated to a subagent, a child se
 
 ## 5. Agent 呼び出しの型
 
+コミットを生む作業（実装・修正・文書更新など）:
+
 ```
 Agent(
   subagent_type="general-purpose",
@@ -67,6 +69,18 @@ Agent(
 )
 ```
 
+read-only の作業（調査・分析・指摘の分類・相談）:
+
+```
+Agent(
+  subagent_type="general-purpose",
+  model="sonnet" | "haiku",            # §1 の表に従う
+  # isolation は渡さない（現ディレクトリのまま。CLAUDE.md の二択に従う）
+  prompt=<目的1行 + 読むべきファイルの場所 + 完了条件 + §4 の報告様式>
+)
+```
+
+- **`isolation="worktree"` を無条件に渡さない**。CLAUDE.md の判断は二択（コミットを生む→隔離 / read-only→現ディレクトリのまま）。read-only の作業役を隔離すると、いま作業中の worktree の未コミット状態が見えず、`origin/main` の新しい基点に対して調査結果を返してしまう。
 - `effortLevel` は司令塔の既定（high）を作業役に継承させない。Haiku / Sonnet の機械作業は low〜medium で足りる。
 - Workflow ツールを使うのは、人間が明示的に「workflow で」と言った場合のみ。
 
