@@ -203,10 +203,10 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 2. rank 1: 1 で生じた約定を台帳へ適用する（第8.1節）。
 3. rank 2: `expires_at <= T` の PENDING 注文を EXPIRED にする。
 4. rank 3: `available_at = T` の `Publication` と、`bar_end = T` の `ScheduledBoundary` から `PublicationBatch` を組み立てる（第4.3節）。
-5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。戻り値の `RuntimeStepResult` から `outputs` を `OutputSink` 経由で trace へ、`evaluations` と `transitions` を trace へ渡す。**`evaluations` に `Failed` が1件でもあれば、ここで run を止める**（下記）。無ければ `proposals` と `management_requests` を rank 10 へ渡す。
+5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。`evaluations` と `transitions` を trace へ渡す。**`evaluations` に `Failed` が1件でもあれば、ここで run を止める**（下記）。無ければ `proposals` と `management_requests` を rank 10 へ渡す。
 6. rank 10: 要求組立から受付までを行い、`AttemptDecision` と `AdmissionNotice` を作る（第6節）。
 7. rank 11: 執行系列の始値処理を行う（第7.1節）。
-8. rank 12: 6 の `AdmissionNotice` と 7 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。**第1回と同じく `outputs` / `evaluations` / `transitions` をすべて trace へ渡す**（第2回で出る固定リスクリワード比の評価記録と、受付通知による取引機会の終端の遷移は、ここで保存しないと表2・表3から落ちる）。`management_requests` のうち保護水準の更新は建玉へ適用し（第8.3節）、全数量決済は rank 13 へ渡す。通知が1件もなければ呼ばない。
+8. rank 12: 6 の `AdmissionNotice` と 7 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。**第1回と同じく `evaluations` と `transitions` を trace へ渡す**（第2回で出る固定リスクリワード比の評価記録と、受付通知による取引機会の終端の遷移は、ここで保存しないと表2・表3から落ちる）。`management_requests` のうち保護水準の更新は建玉へ適用し（第8.3節）、全数量決済は rank 13 へ渡す。通知が1件もなければ呼ばない。
 9. rank 13: 8 の `management_requests` のうち全数量決済を要求へ組み立て、第6節と同じ手順で受け付ける。要求が1件も無ければ何もしない。
 10. run_end の判断時点だけ rank 14 を行う（第10節）。
 
@@ -227,6 +227,8 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 どちらの場合も、その判断時点で止めて第10.4節の実行失敗として扱う（未約定注文を `CANCELED` / `DATA_ERROR`、`status = FAILED_DATA_ERROR`）。第2回で失敗した建玉は**初期の利確を持たないまま**残るが、その状態のまま最終 snapshot に保存し、架空の利確水準を埋めない。
 
 **不採用**: 失敗した使用箇所だけを飛ばして続ける案（D05 が「以降の評価を行わない」と決めた範囲をエンジンが広げ直すことになる）、判断時点の末尾まで進めてから止める案（失敗後に受け付けた注文が約定し、失敗した run の成果物に取引が含まれる）。
+
+**出力記録（`OutputRecord`）は `OutputSink` から受け取った分だけを表1へ書き、`RuntimeStepResult.outputs` を再送しない**【提案】。D05 §6.2 の手順7 はランタイム自身が `OutputSink.emit` を呼んでから結果を返すと定めており【合意済み】、戻り値をもう一度書き出すと同じ `output_id` の行が二重に入り、主キーが重複して出力件数が水増しになる。エンジンは `OutputSink` の実装（D01 §4）として受け取った時点で表1へ書き、戻り値の `outputs` は後続の処理と件数の検算にだけ使う。
 
 **戦略ランタイムを1つの判断時点で最大2回（run_end では最大3回）呼ぶ**【提案】。D05 §6.1 は同じ `batch_id` での再呼び出しを `KernelValueError` で拒むため、2回目は**新しい `EventId` を持つ別の `PublicationBatch`** として渡す。`decision_time` は同じ T、`available_bars` と `scheduled_closes` は空、`runtime_events` と `admissions` に通知を入れる。**不採用**: 受付結果を次の判断時点まで持ち越す案（取引機会が `ORDER_PENDING` のまま次の足へ渡り、同時保持上限の数え方が判断時点をまたいで変わる）、受付結果用に別のポート操作を足す案（D05 §6.1 の `StrategyRuntime` は `step` 1操作であり、入口が2つになると呼び出し順の規則がもう1本要る）。
 
@@ -257,11 +259,14 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 
 | 確定単位 | 含める変更 |
 |---|---|
-| 受付（第6.5節） | `OrderRequest` ／ `AttemptDecision` ／ `AcceptedOrder` ／ `OrderEvent(None → PENDING)` ＋ そこから投影した `OrderState` ／ `RiskReservation` ＋ `ReservationState(HELD)` ／ `processed_event_ids` への `event_id` の追加 |
+| **エントリーの受付**（第6.5節） | `OrderRequest` ／ `AttemptDecision` ／ `AcceptedOrder` ／ `OrderEvent(None → PENDING)` ＋ そこから投影した `OrderState` ／ `RiskReservation` ＋ `ReservationState(HELD)` ／ `processed_event_ids` への `event_id` の追加 |
+| **決済の受付**（第6.5節） | `OrderRequest` ／ `AttemptDecision`（`assessment_ref` は `None`）／ `AcceptedOrder`（`AcceptedCloseTerms`）／ `OrderEvent(None → PENDING)` ＋ `OrderState` ／ `processed_event_ids` への追加。**予約は作らない**（`AcceptedCloseTerms` は予約 ID を持たず、決済は新規予約を作らない【合意済み】上位 §4.7.15 B）。既存建玉の割当は決済の約定まで保持する |
 | エントリー約定（第7.1節） | `FillRecord` ／ `Position`（作成、初期損切り有効化）／ `OrderEvent(PENDING → FILLED, fill_id)` ＋ `OrderState` ／ `ReservationState(TRANSFERRED)` ＋ `PositionRiskAllocation` ／ `RiskMeasurement` ／ `processed_event_ids` への追加 |
 | 決済約定（第7.3節） | `FillRecord` ／ `Position`（終了）／ `OrderEvent(PENDING → FILLED, fill_id)` ＋ `OrderState` ／ 実現損益・費用・balance ／ `PositionRiskAllocation`（解放）／ `processed_event_ids` への追加 |
+| **エンジン生成の即時決済**（第7.3節・第7.5節） | 上の「決済の受付」と「決済約定」を**1つの差し替えにまとめる**。`OrderRequest` ／ `AttemptDecision` ／ `AcceptedOrder`（`eligibility` は `ProtectionHit` または `ImmediateAfterFill`）／ `OrderEvent(None → PENDING)` と `OrderEvent(PENDING → FILLED, fill_id)` の2件 ／ `FillRecord` ／ `Position`（終了）／ 実現損益・費用・balance ／ `PositionRiskAllocation`（解放）／ `processed_event_ids` への追加 |
 | 終端（期限・取消） | `OrderEvent(PENDING → EXPIRED \| CANCELED, reason)` ＋ そこから投影した `OrderState`（`terminal_reason` を含む）／ `ReservationState(RELEASED)` ／ `processed_event_ids` への追加 |
 
+- **エンジンが生成する即時決済は、受付と約定を1つの確定単位にまとめる**【提案】。保護水準の到達（第7.3節）と約定直後の緊急決済（第7.5節）は候補の始値を待たず、受付と約定が同じ処理点で確定する【合意済み】上位 §4.7.15 B。受付の単位と約定の単位を順に適用すると、その間で失敗したときに「即時に約定するはずのエンジン注文が `PENDING` のまま残る」状態が保存されてしまう。
 - 受付前拒否は台帳を変えない。`OrderRequest` と `AttemptRejected` を trace へ残す【合意済み】上位 §4.7.15 A（「受付前拒否もこの記録に紐付く」）。**`RiskAssessment` を残すのは、審査に実際に入れた拒否のときだけ**とする【提案】。期限内に候補が無い（`NO_CANDIDATE`）・末尾（`RUN_END`）・参照価格が取れない（`DATA_ERROR`）のように第6.4節の手順3より前で終わる拒否では、`ReferenceQuote` も丸め前後の価格も換算率も存在しないため、行を作れば架空の値を書くことになる。その場合 `AttemptRejected.assessment_ref` は `None` とし、拒否の理由は `Reason` だけが持つ。
 - 同じ `event_id` が2度来たら、`processed_event_ids` に含まれることを見て**何もしない**（確定単位を実行しない）。異なる `event_id` で同じ終端効果を要求されたら、注文状態の検査（終端状態からの遷移は表に無い）で拒否する【合意済み】上位 §4.7.13 A。
 - 確定単位の内部で検査に失敗した場合は、**差し替えを行わず** run を失敗させ、直前の整合状態と失敗診断を保存する【合意済み】上位 §4.7.13 A・C。部分的に約定した状態で継続しない。
@@ -655,7 +660,14 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | 6 | 残存建玉は未決済のまま MTM 評価して最終 snapshot を保存する。建玉割当も解放しない | `RUN_END`（rank 14） |
 
 - 手順4の拒否も `AdmissionNotice(accepted=False, reason=RUN_END)` として `POST_FILL_EVALUATION` で配送し、取引機会を `ORDER_ATTEMPT_REJECTED` で終端させる【提案】。末尾でだけ通知経路を変えない。
-- 手順3で生成された管理要求は記録するが**適用しない**。適用しない理由は `RUN_END` で残す【合意済み】同節。
+- 手順3で生成された管理要求は、**種類で分ける**【提案】。
+
+| 管理要求 | 末尾での扱い |
+|---|---|
+| 保護水準の更新（`SetTakeProfit`、段階3の `UPDATE_STOP`） | 記録するが**適用しない**。適用しない理由は `RUN_END`【合意済み】上位 §4.7.13 D |
+| 全数量決済（`ClosePosition`） | `CloseRequest` へ組み立て、`AttemptRejected(RUN_END)` として**受付前拒否を記録する**。注文と予約は作らない |
+
+全数量決済だけ要求まで作るのは、上位 §4.7.13 D の手順4 が「新規エントリーだけでなく戦略の決済注文も末尾で約定させない」「注文を生成してから取り消す方式にはしない」と定めており、**受付前拒否として試行の連鎖に残る**のが決済注文の正しい終わり方だからである。適用しない記録に畳むと、表4・表5 に試行が現れず、機会 → 試行の連鎖から末尾の決済意図が消える。
 - 終了だから未公開情報を解禁することはしない【合意済み】同節。
 
 ### 10.2 残存した取引機会の終端【要決定】（Q2）
