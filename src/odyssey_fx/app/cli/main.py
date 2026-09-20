@@ -47,6 +47,7 @@ from odyssey_fx.marketdata.application.ports import SnapshotStore
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import (
     PENDING_DIRECTORY,
+    classification_mismatch,
     require_matching_partition_content,
 )
 from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
@@ -250,7 +251,6 @@ def _reacceptance_paths(args: argparse.Namespace) -> None:
 
 def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
     """分類を記入して snapshot を確定する（D03 §4 の 9、§10 の `classify`）。"""
-    decisions_file = load_closure_decisions(args.decisions)
     store = composition.snapshot_store(args.out)
     pending_directory = f"{PENDING_DIRECTORY}/{args.pending}"
 
@@ -261,6 +261,13 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             f"{pending_directory} の manifest は暫定の識別子 {manifest.snapshot_id()} を"
             f" 表しており、指定された {args.pending} と一致しない（D03 §3.7.1）"
         )
+
+    # 分類の系列は、暫定 snapshot が実際に持つ系列から解決する。分類ファイルの系列表記
+    # （`USDJPY/1h/bid`）には時間足の版が含まれないので、版を決め打つと版 2 以降の定義を
+    # 使った snapshot で記録が食い違う（D03 §3.1）。
+    decisions_file = load_closure_decisions(
+        args.decisions, [record.series_id for record in manifest.series]
+    )
 
     if decisions_file.calendar_path is not None:
         # カレンダーを変える分類は、受入れの 5〜7（カレンダー照合・上位足の生成・
@@ -286,8 +293,14 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             for timeframe_id in datasource.timeframes
         ]
         pending = service.accept(targets, created_at=manifest.created_at)
-        manifest, report = pending.manifest, pending.report
+        # 分類の正当性は**元の報告**（人間が見た報告）に対して判定する。新しいカレンダーが
+        # 休場として説明した欠落は、再受入れ後の報告から正当に消えるためである
+        # （D03 §4 の 9）。突き合わせの2段階は application 側が行う。
+        original_report: IntegrityReport | None = report
+        resolved = len(report.warnings) - len(pending.report.warnings)
+        out.line(f"新しいカレンダーで説明が付いた警告: {resolved} 件")
     else:
+        original_report = None
         pending = PendingSnapshot(
             manifest=manifest,
             report=report,
@@ -299,8 +312,22 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             },
         )
 
-    finalized: FinalizedSnapshot = finalize(pending, decisions_file.decisions)
+    finalized: FinalizedSnapshot = finalize(
+        pending, decisions_file.decisions, original_report=original_report
+    )
     final_id = str(finalized.snapshot_id)
+
+    # 既に確定済みの snapshot は**上書きしない**。同じ原ファイル・設定・分類なら同じ最終
+    # 識別子になるので、確定をもう一度走らせると同じディレクトリを指す。そこには既に
+    # 承認（`approval`）と価格基準の宣言記録（`declaration_record`）が入っているかもしれず、
+    # 書き直すとそれらが消える。承認は人間の確認の記録なので、黙って失わせない。
+    if (args.out / final_id / "manifest.json").is_file():
+        raise ConfigError(
+            f"{args.out / final_id} は既に確定済みである。承認と価格基準の宣言記録を"
+            " 保持するため上書きしない。確定し直す場合は、先に確定済みの snapshot を"
+            f" 移動または削除すること（暫定 snapshot は {pending_directory} に残している）"
+        )
+
     _write_snapshot(store, final_id, pending, finalized.manifest)
 
     # 実体を最終ディレクトリへ書き終えてから暫定ディレクトリを畳む。先に消すと、
@@ -384,18 +411,21 @@ def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
     _require_recorded_content(store, args.snapshot, manifest, report)
 
     approved_at = composition.now_utc()
-    # 確定段階を経た snapshot だけが承認できる形にする。`FinalizedSnapshot` は未分類の
-    # 警告が残る manifest を受け付けないので、分類を飛ばした承認は構造的にできない。
-    finalized = FinalizedSnapshot(
-        manifest=finalize(
-            PendingSnapshot(
-                manifest=manifest.with_closure_decisions(()),
-                report=report,
-                partition_bars={},
-            ),
-            manifest.closure_decisions,
-        ).manifest
-    )
+    # 確定段階を経た snapshot だけが承認できる形にする。分類を飛ばした承認を防ぐため、
+    # **未分類の警告が残っていないこと**をここでも確かめる。
+    #
+    # 見るのは未分類の警告だけで、対応する警告の無い分類（余分な分類）は見ない。読み取りの
+    # 関門と同じ判断にするためである。カレンダーを変えた分類（D03 §4 の 9）では、休場と
+    # して説明が付いた区間の警告が再受入れ後の報告から正当に消えるので、その分類を余分と
+    # 見なすと、設計の主たる用途で作った snapshot を承認できなくなる。分類が正当かどうかの
+    # 判定は確定（`acceptance.finalize`）が「人間が見た報告」に対して行っている。
+    undecided, _ = classification_mismatch(report, manifest.closure_decisions)
+    if undecided:
+        raise ConfigError(
+            f"{args.snapshot} には未分類の警告が {len(undecided)} 件残っている:"
+            f" {list(undecided)}。分類を済ませてから承認すること（D03 §4 の 9）"
+        )
+    finalized = FinalizedSnapshot(manifest=manifest)
     approved = approve(
         finalized,
         Approval(approved_by=args.by, approved_at=approved_at, comment=args.comment),

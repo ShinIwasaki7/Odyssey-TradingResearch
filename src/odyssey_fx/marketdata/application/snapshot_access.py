@@ -97,7 +97,10 @@ class ReadableSnapshot:
     4. 報告が manifest の記録どおりである（再計算したダイジェストが
        `integrity_report_ref` と一致する）。
     5. 報告に**重大な違反（ERROR）が無い**（D03 §4 の 4）。
-    6. 報告の**すべての警告が分類されている**（D03 §4 の 9）。
+    6. 報告の**すべての警告が分類されている**（D03 §4 の 9）。対応する警告の無い分類
+       （余分な分類）はここでは拒否しない。カレンダーを変えた分類では、休場として説明が
+       付いた区間の警告が再受入れ後の報告から正当に消えるためである。余分な分類の拒否は
+       確定（`acceptance.finalize`）が担う。
 
     4点目以降を manifest だけでは確かめられないので、報告（`report`）も併せて受け取る。
     検査は**この型の中で完結させる**。呼び出し側（`ParquetSnapshotStore.open_readable`）に
@@ -164,19 +167,22 @@ class ReadableSnapshot:
 
         # 確定段階を経ていれば、報告の警告はすべて分類されている（D03 §4 の 9）。
         # 経ていない manifest はここで止まる。
-        undecided, extraneous = classification_mismatch(
-            self.report, self.manifest.closure_decisions
-        )
+        #
+        # **読み取りの関門が見るのは「未分類の警告が無いこと」だけ**である。報告に対応する
+        # 警告の無い分類（余分な分類）は、ここでは拒否しない。カレンダーを変えた分類
+        # （D03 §4 の 9）では、「休場だった」と判断してカレンダーへ追加し版を上げた区間の
+        # 警告が、再受入れ後の報告から**正当に消える**ためである。その分類を余分と見なして
+        # 拒否すると、設計が定める主たる用途で作った snapshot が読めなくなる。
+        #
+        # 余分な分類の拒否は確定（`acceptance.finalize`）の検査として残してある。分類が
+        # 正当かどうかは「人間が見た報告」に対して判定すべきもので、再受入れ後の報告に
+        # 対して判定するものではない。
+        undecided, _ = classification_mismatch(self.report, self.manifest.closure_decisions)
         if undecided:
             raise SnapshotNotApproved(
                 f"{len(undecided)} warning(s) in this snapshot's integrity report are still"
                 f" unclassified: {list(undecided)}; it has not been through the classification"
                 " stage and cannot be read (D03 §3.7.1 の 2、§4 の 9)"
-            )
-        if extraneous:
-            raise MarketDataValueError(
-                f"{len(extraneous)} closure decision(s) do not correspond to any warning in"
-                f" this snapshot's integrity report: {list(extraneous)} (D03 §4 の 9)"
             )
 
     @property

@@ -27,8 +27,11 @@ decisions:
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from pydantic import Field
 
@@ -37,18 +40,25 @@ from odyssey_fx.app.config.models import StrictModel, require_schema_version, va
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import ClosureDecision, ClosureDecisionKind
 
-__all__ = ["ClosureDecisionFile", "load_closure_decisions", "parse_series_id"]
+__all__ = [
+    "ClosureDecisionFile",
+    "load_closure_decisions",
+    "parse_series_id",
+    "resolve_series_id",
+]
 
 #: この実装が読む設定ファイルの形式版。未知の版は拒否する（D01 §10.1）。
 DECISIONS_SCHEMA_VERSION = 1
 
 #: 系列の文字列表記の要素数（`USDJPY/1h/bid`）。
 _SERIES_PARTS = 3
+
+#: 時間足の `id` に許す字種（`common.TimeframeRef` と同じ）。
+_TIMEFRAME_ID_PATTERN: Final = re.compile(r"^[a-z0-9_]+$")
 
 
 class _IntervalModel(StrictModel):
@@ -87,12 +97,17 @@ class ClosureDecisionFile:
     calendar_path: Path | None = None
 
 
-def parse_series_id(text: str, label: str) -> SeriesId:
-    """`USDJPY/1h/bid` 形式の系列表記を読む（`SeriesId.__str__` の逆）。
+def parse_series_id(text: str, label: str) -> tuple[Symbol, str, PriceBasis]:
+    """`USDJPY/1h/bid` 形式の系列表記を分解する（`SeriesId.__str__` の逆）。
 
-    時間足は `id` だけを書く（版は snapshot の `conversion` と `series` が別に持つ、
-    D03 §3.1）ので、版は初版の 1 とする。分類の対象は検査の報告に現れた系列であり、
-    報告の系列表記もこの形なので、突き合わせは文字列として一致する。
+    返すのは **`SeriesId` そのものではなく分解した要素**（銘柄、時間足の `id`、価格基準）
+    である。系列の表記には時間足の**版が含まれない**（`SeriesId.__str__` は `id` だけを
+    書く、D03 §3.1）ので、文字列だけからは版を決められない。版を 1 と決め打つと、版 2
+    以降の時間足定義を使った snapshot で、分類の系列が報告・系列記録と食い違ったまま
+    manifest に記録され、識別子の計算に入ってしまう。
+
+    実際の `SeriesId` は `resolve_series_id` が snapshot の系列一覧から文字列一致で解決
+    する。
     """
     if not isinstance(text, str):
         raise ConfigError(f"{label} は `<銘柄>/<時間足>/<価格基準>` の文字列で書くこと")
@@ -105,9 +120,10 @@ def parse_series_id(text: str, label: str) -> SeriesId:
     raw_symbol, raw_timeframe, raw_basis = parts
     try:
         symbol = Symbol(raw_symbol)
-        timeframe = TimeframeRef(id=raw_timeframe, version=1)
     except KernelValueError as exc:
-        raise ConfigError(f"{label}: {text!r} は系列として読めない: {exc}") from exc
+        raise ConfigError(f"{label}: 銘柄 {raw_symbol!r} が読めない: {exc}") from exc
+    if not _TIMEFRAME_ID_PATTERN.fullmatch(raw_timeframe):
+        raise ConfigError(f"{label}: 時間足 {raw_timeframe!r} が読めない（小文字・数字・下線のみ）")
     try:
         basis = PriceBasis(raw_basis)
     except ValueError as exc:
@@ -115,10 +131,32 @@ def parse_series_id(text: str, label: str) -> SeriesId:
             f"{label}: 価格基準 {raw_basis!r} は受けない"
             f"（{[member.value for member in PriceBasis]} のいずれか）"
         ) from exc
-    try:
-        return SeriesId(symbol=symbol, timeframe=timeframe, basis=basis)
-    except MarketDataValueError as exc:  # pragma: no cover - 要素はここまでで検査済み
-        raise ConfigError(f"{label}: {text!r} は系列として成立しない: {exc}") from exc
+    return symbol, raw_timeframe, basis
+
+
+def resolve_series_id(text: str, known: Sequence[SeriesId], label: str) -> SeriesId:
+    """系列の表記を、snapshot が実際に持つ系列へ解決する（D03 §3.1・§4 の 9）。
+
+    `known` は暫定 manifest に記録された系列（`SnapshotManifest.series`）。突き合わせは
+    **系列の文字列表記**（`USDJPY/1h/bid`）で行う。検査の報告もこの表記を使うので、人間が
+    報告を見て書いた分類はそのまま一致する。
+
+    こうすることで、時間足の版は**snapshot が使った定義の版**になる。分類ファイルに版を
+    書かせる必要がなく、かつ版が食い違ったまま記録されることもない。
+
+    知らない系列は失敗させる。分類は識別子の計算対象なので、snapshot に無い系列の分類を
+    受け入れると、実在しない系列の記録を含む snapshot ができてしまう。
+    """
+    # 表記として成立するかを先に確かめる（綴り誤りと「未知の系列」を区別するため）。
+    parse_series_id(text, label)
+
+    for series in known:
+        if str(series) == text:
+            return series
+    raise ConfigError(
+        f"{label}: 系列 {text!r} はこの snapshot にない。"
+        f" ある系列は {sorted(str(series) for series in known)}"
+    )
 
 
 def _interval(model: _IntervalModel, label: str) -> Interval:
@@ -132,8 +170,10 @@ def _interval(model: _IntervalModel, label: str) -> Interval:
         raise ConfigError(f"{label}: 区間として成立しない: {exc}") from exc
 
 
-def _decision(model: _DecisionModel, path: Path, index: int) -> ClosureDecision:
-    """分類1件をドメインの型へ変換する。"""
+def _decision(
+    model: _DecisionModel, path: Path, index: int, known: Sequence[SeriesId]
+) -> ClosureDecision:
+    """分類1件をドメインの型へ変換する。系列は snapshot の系列一覧から解決する。"""
     label = f"{path}: decisions[{index}]"
     try:
         kind = ClosureDecisionKind(model.kind)
@@ -145,7 +185,7 @@ def _decision(model: _DecisionModel, path: Path, index: int) -> ClosureDecision:
         ) from exc
     try:
         return ClosureDecision(
-            series_id=parse_series_id(model.series, f"{label}.series"),
+            series_id=resolve_series_id(model.series, known, f"{label}.series"),
             interval=_interval(model.interval, f"{label}.interval"),
             kind=kind,
             note=model.note,
@@ -154,8 +194,11 @@ def _decision(model: _DecisionModel, path: Path, index: int) -> ClosureDecision:
         raise ConfigError(f"{label}: 分類として成立しない: {exc}") from exc
 
 
-def load_closure_decisions(path: Path) -> ClosureDecisionFile:
+def load_closure_decisions(path: Path, known_series: Sequence[SeriesId]) -> ClosureDecisionFile:
     """欠落区間の分類を読む（D03 §4 の 9・§10 の `classify`）。
+
+    `known_series` は暫定 snapshot が持つ系列の一覧。分類の系列表記はここから解決するので、
+    時間足の版は snapshot が実際に使った定義の版になる（版を 1 と決め打たない）。
 
     同じ系列・同じ区間の分類が2度現れる設定は拒否する。分類は最終の識別子の計算対象
     なので、どちらを採るかが宣言から決まらない状態を残せない（D03 §3.7.1）。
@@ -167,7 +210,7 @@ def load_closure_decisions(path: Path) -> ClosureDecisionFile:
     decisions: list[ClosureDecision] = []
     seen: set[tuple[str, str]] = set()
     for index, entry in enumerate(model.decisions):
-        decision = _decision(entry, path, index)
+        decision = _decision(entry, path, index, known_series)
         # 突き合わせの鍵は**区間全体**にする。開始時刻だけで見ると、終端の違う分類
         # （別の足を指す分類）が重複と誤判定される（`snapshot_access` の突き合わせと同じ）。
         key = (str(decision.series_id), str(decision.interval))

@@ -68,12 +68,19 @@ def workspace(tmp_path: Path) -> Path:
     return repo
 
 
+#: 間引く15分足。1時間足の欠落と**同じ1時間**を覆う4本。こうしておくと、その1時間を
+#: 休場として宣言する新しいカレンダーが、全系列の欠落をまとめて説明できる（D03 §4 の 9）。
+DROPPED_QUARTERS = tuple(
+    UtcTime.parse(f"2022-01-06T10:{minute:02d}:00Z") for minute in (0, 15, 30, 45)
+)
+
+
 def _bars(
     definition: TimeframeDefinition, timeframe_id: str, calendar: TradingCalendar
 ) -> tuple[Bar, ...]:
-    """1系列ぶんの足を作る。1時間足は1本だけ間引いて欠落を作る。"""
+    """1系列ぶんの足を作る。同じ1時間を1時間足・15分足の両方から間引いて欠落を作る。"""
     series = market.series(market.USDJPY, timeframe_id)
-    skip = (DROPPED,) if timeframe_id == "1h" else ()
+    skip = (DROPPED,) if timeframe_id == "1h" else DROPPED_QUARTERS
     return market.make_bars(series, definition, calendar, WINDOW, skip_starts=skip)
 
 
@@ -438,3 +445,164 @@ def test_an_unaltered_snapshot_is_still_approvable(workspace: Path) -> None:
     store, final = _settled(workspace)
     assert _approve(workspace, final) == 0
     assert store.read_manifest(final).approval is not None
+
+
+# --- カレンダーを変える分類（D03 §4 の 9）-----------------------------------
+#
+# 設計が定める主たる用途である。検査が「存在すべき足が無い」と報告した区間を、人間が
+# 「休場だった」と判断したら、カレンダーへ追加して版を上げ、受入れの 5〜7 を再実行する。
+# そのとき、休場として説明が付いた欠落は**新しい報告から消える**。消えた警告に対応する
+# 分類を「余分」として拒否すると、この用途そのものが成立しない。
+
+
+def _calendar_v2(workspace: Path) -> Path:
+    """間引いた1時間を休場として宣言した、版 2 のカレンダーを書く。
+
+    ニューヨーク現地 05:00〜06:00 は、この期間（冬時間）の 10:00〜11:00Z にあたる。
+    """
+    source = workspace / "configs/calendars/fx_ny17_v1.yaml"
+    text = source.read_text(encoding="utf-8").replace("\nversion: 1\n", "\nversion: 2\n")
+    text = text.replace(
+        "closures: []",
+        'closures:\n  - local_date: "2022-01-06"\n'
+        '    start: "05:00:00"\n'
+        '    end: "06:00:00"\n'
+        "    note: 分類で休場と判断した区間",
+    )
+    target = workspace / "configs/calendars/fx_ny17_v2.yaml"
+    target.write_text(text, encoding="utf-8")
+    return target
+
+
+def _decisions_with_calendar(
+    workspace: Path, store: ParquetSnapshotStore, pending: str, calendar: Path
+) -> Path:
+    """元の報告の全警告を「休場」と分類し、新しいカレンダーを指すファイルを書く。"""
+    report = store.read_integrity_report(f"_pending/{pending}")
+    lines = ["schema_version: 1", f"calendar: {calendar}", "decisions:"]
+    for series_text, start, end in sorted(
+        {
+            (str(result.series), str(result.interval.start), str(result.interval.end))
+            for result in report.warnings
+        }
+    ):
+        lines += [
+            f"  - series: {series_text}",
+            "    interval:",
+            f'      start: "{start}"',
+            f'      end: "{end}"',
+            "    kind: CLOSURE",
+            "    note: 新しいカレンダーで休場と宣言",
+        ]
+    path = workspace / "decisions_calendar_v2.yaml"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _classify_with_calendar(workspace: Path, pending: str, decisions: Path) -> int:
+    """カレンダーを変える分類は、再受入れに必要な設定も渡す。"""
+    configs = workspace / "configs"
+    return main(
+        [
+            "data",
+            "classify",
+            "--pending",
+            pending,
+            "--decisions",
+            str(decisions),
+            "--out",
+            str(workspace / "data/snapshots"),
+            "--datasource",
+            str(configs / "datasources/legacy_merged_csv_v1.yaml"),
+            "--timeframes",
+            str(configs / "calendars/timeframes_v1.yaml"),
+            "--symbols",
+            str(configs / "symbols"),
+            "--repo-root",
+            str(workspace),
+        ]
+    )
+
+
+def test_a_closure_declared_in_a_new_calendar_version_settles_and_reads(
+    workspace: Path,
+) -> None:
+    """休場としての分類 → 新カレンダー版 → 確定 → 承認 → 読める、が通る。
+
+    D03 §4 の 9 の主たる用途である。新しいカレンダーが説明した欠落の警告は再受入れ後の
+    報告から消えるが、その分類は元の報告に対して正当なので確定できなければならない。
+    """
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+
+    original = store.read_integrity_report(f"_pending/{pending}")
+    assert original.warnings, "この試験は警告のある状態を前提にしている"
+    # 分類は「系列 × 区間」ごとに1件（同じ区間に対する重複した報告は1件にまとめる）。
+    expected_decisions = len({(str(r.series), str(r.interval)) for r in original.warnings})
+
+    decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
+    assert _classify_with_calendar(workspace, pending, decisions) == 0
+
+    final = _final_id(workspace)
+    manifest = store.read_manifest(final)
+    # 新しいカレンダーの版が記録される（識別子の計算対象、D03 §3.7.1）。
+    assert manifest.conversion.calendar_version == 2
+    # 休場として説明が付いたので、確定後の報告に警告は残らない。
+    assert not store.read_integrity_report(final).warnings
+    # 分類そのものは manifest に残る（人間の判断の記録）。
+    assert len(manifest.closure_decisions) == expected_decisions
+
+    # 承認でき、読み取りの関門も通る（余分な分類で拒否されない）。
+    assert _approve(workspace, final) == 0
+    readable = store.open_readable(final)
+    assert str(readable.snapshot_id) == final
+
+
+def test_a_gap_the_new_calendar_does_not_explain_still_blocks_settling(
+    workspace: Path,
+) -> None:
+    """新しいカレンダーでも説明できない欠落が残れば、確定させない。
+
+    2段階の突き合わせの後半（再受入れ後の報告に残る警告は分類に含まれていること）が
+    効いていることの確認。ここでは分類を1件も書かずに新カレンダーだけを指す。
+    """
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    calendar = _calendar_v2(workspace)
+    empty = workspace / "empty_with_calendar.yaml"
+    empty.write_text(f"schema_version: 1\ncalendar: {calendar}\ndecisions: []\n", encoding="utf-8")
+    # 元の報告に未分類の警告が残るので、段階1で止まる。
+    assert _classify_with_calendar(workspace, pending, empty) == 1
+
+
+# --- 確定済み snapshot の上書き防止（D03 §3.7.1）----------------------------
+
+
+def test_classify_does_not_overwrite_a_settled_snapshot(workspace: Path) -> None:
+    """同じ入力・同じ分類で確定し直しても、確定済みディレクトリを上書きしない。
+
+    同じ原ファイル・設定・分類なら同じ最終識別子になるので、確定をもう一度走らせると
+    同じディレクトリを指す。そこには承認（`approval`）と価格基準の宣言記録が入っている
+    かもしれず、書き直すと人間の確認の記録が消える。
+    """
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    assert _classify(workspace, pending, decisions) == 0
+    final = _final_id(workspace)
+    assert _approve(workspace, final) == 0
+
+    # もう一度受入れて、同じ分類で確定しようとする。
+    assert _accept(workspace) == 0
+    pending_again = _pending_id(workspace)
+    assert _classify(workspace, pending_again, decisions) == 1
+
+    # 承認と宣言の記録は残っている。
+    manifest = store.read_manifest(final)
+    assert manifest.approval is not None
+    assert manifest.approval.approved_by == "レビュー担当"
+    assert manifest.declaration_record is not None
+    # 暫定ディレクトリはそのまま残る（やり直せるように）。
+    assert (workspace / "data/snapshots/_pending" / pending_again).is_dir()

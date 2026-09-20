@@ -389,22 +389,43 @@ def approve(finalized: FinalizedSnapshot, approval: Approval) -> SnapshotManifes
 def finalize(
     pending: PendingSnapshot,
     decisions: Sequence[ClosureDecision],
+    *,
+    original_report: IntegrityReport | None = None,
 ) -> FinalizedSnapshot:
     """人間の分類を記入して最終の manifest を作る（D03 §3.7.1 の 2、§4 の 9）。
 
     分類が確定した後の識別子が最終の `snapshot_id`。分類が異なれば別 snapshot である。
     未分類の警告が残っている場合は失敗させる（D03 §10 の `classify` コマンド）。
 
+    **カレンダーを変えた分類**（D03 §4 の 9）では `original_report` に暫定段階の報告を
+    渡す。分類で「休場だった」と判断してカレンダーへ追加し版を上げると、その欠落は新しい
+    カレンダーの下では欠落でなくなるため、**再受入れした報告からは警告が消える**。消えた
+    警告に対する分類を「対応する警告がない」と拒否すると、D03 §4 の 9 が定める主たる用途
+    （休場 → カレンダーへ追加して版を上げる）がそもそも成立しない。
+
+    そこで突き合わせを2段階にする。
+
+    1. **元の報告**に対して、未分類の警告が無く、余分な分類も無いことを確かめる。分類は
+       元の報告を見て人間が書いたものなので、正当性はここで判定する。
+    2. **再受入れ後の報告**に対して、残っている警告がすべて分類に含まれることを確かめる。
+       新しいカレンダーでも説明できない欠落を見落とさないため。こちらでは「余分な分類」を
+       許容する（段階1で正当と確かめた分類だから）。
+
+    `original_report` を渡さない通常の確定では、従来どおり1つの報告に対して両方を見る。
+
     重大な違反の検査もここで重ねて行う（D03 §4 の 4）。暫定段階で中断しているので通常は
     到達しないが、`PendingSnapshot` を別経路で組み立てた場合に、構造的に無効なデータが
     確定・承認へ進む抜け道を残さないため。
     """
     _require_no_integrity_errors(pending.report)
+    if original_report is not None:
+        _require_no_integrity_errors(original_report)
 
     # 分類と警告の対応は**区間全体**で取る。突き合わせの規則は読み取りの関門と共有する
     # （`classification_mismatch`）。片方だけが検査していると、確定を経ずに組み立てた
     # manifest が読み取り側をすり抜ける。
-    undecided, extraneous = classification_mismatch(pending.report, decisions)
+    basis = pending.report if original_report is None else original_report
+    undecided, extraneous = classification_mismatch(basis, decisions)
     if undecided:
         raise MarketDataValueError(
             f"{len(undecided)} warning(s) are still unclassified;"
@@ -420,6 +441,18 @@ def finalize(
             f" warning: {list(extraneous)}; classify only the intervals the integrity check"
             " reported (D03 §4 の 9)"
         )
+
+    if original_report is not None:
+        # 再受入れ後も残る警告は、新しいカレンダーでも説明できない欠落である。分類から
+        # 漏れていれば確定させない。余分な分類はここでは見ない（段階1で確かめてある）。
+        still_undecided, _ = classification_mismatch(pending.report, decisions)
+        if still_undecided:
+            raise MarketDataValueError(
+                f"{len(still_undecided)} warning(s) remain after re-running the acceptance"
+                " with the new calendar and are still unclassified; the new calendar does not"
+                f" explain them (D03 §4 の 9): {list(still_undecided)}"
+            )
+
     return FinalizedSnapshot(manifest=pending.manifest.with_closure_decisions(tuple(decisions)))
 
 

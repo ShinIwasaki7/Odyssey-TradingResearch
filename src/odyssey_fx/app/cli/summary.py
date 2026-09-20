@@ -16,6 +16,7 @@ from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 
 __all__ = [
+    "classifiable_intervals",
     "findings_lines",
     "merged_warning_spans",
     "partition_lines",
@@ -83,40 +84,69 @@ def findings_lines(report: IntegrityReport) -> list[str]:
 
 
 def merged_warning_spans(report: IntegrityReport, kind_value: str) -> int:
-    """同じ系列で隣り合う警告の区間をつないだときの区間数を数える。
+    """同じ系列で隣り合う・重なる警告の区間をつないだときの区間数を数える。
 
     「存在すべき足の欠落が何件あり、連続する区間にまとめると何区間か」を人間へ伝える
     ための数え上げである。分類（休場か欠損か）の判断そのものは人間が行うので、ここでは
     事実だけを数える（D03 §4 の 9）。
+
+    数える前に**同じ系列・同じ区間を1件にまとめる**。報告は同じ区間でも詳細（`detail`）が
+    違えば別の記録になる（D03 §3.7.1 の整列鍵に詳細が入る）ので、上位足の欠落は
+    カレンダー照合と上位足の生成が同じ区間に対して2件報告する。重複を残したまま数えると、
+    同じ1区間が2区間として数えられてしまう。
+
+    隣り合う区間（前の終わりと次の始まりが一致）だけでなく、**重なる区間**も1つにまとめる。
+    分類は区間ごとに記入するので、人間が見積もりたいのは「いくつの連続した塊があるか」で
+    ある。
     """
-    by_series: dict[str, list[tuple[str, str]]] = {}
+    by_series: dict[str, set[tuple[str, str]]] = {}
     for result in report.results:
         if result.kind.value != kind_value:
             continue
-        by_series.setdefault(str(result.series), []).append(
+        # 集合に入れることで、同じ系列・同じ区間の重複を落とす。
+        by_series.setdefault(str(result.series), set()).add(
             (str(result.interval.start), str(result.interval.end))
         )
 
     spans = 0
     for intervals in by_series.values():
-        ordered = sorted(intervals)
+        # 時刻は ISO 8601 の固定長表記なので、文字列の順序が時刻の順序に一致する。
         previous_end: str | None = None
-        for start, end in ordered:
-            if previous_end is None or start != previous_end:
+        for interval_start, interval_end in sorted(intervals):
+            if previous_end is None or interval_start > previous_end:
+                # 直前の塊と隣接も重複もしない = 新しい塊。
                 spans += 1
-            previous_end = max(previous_end or end, end)
+            previous_end = interval_end if previous_end is None else max(previous_end, interval_end)
     return spans
 
 
+def classifiable_intervals(report: IntegrityReport, kind_value: str) -> int:
+    """分類の記入が必要な「系列 × 区間」の数を返す。
+
+    報告の件数そのものではない。同じ系列・同じ区間に対する警告は、詳細が違えば別の記録に
+    なる（上位足の欠落はカレンダー照合と上位足の生成が1件ずつ報告する）が、分類との
+    突き合わせは区間全体で取るので、**記入するのは区間ごとに1件**である。人間が作業量を
+    見積もれるよう、記入が必要な数を出す。
+    """
+    return len(
+        {
+            (str(result.series), str(result.interval))
+            for result in report.results
+            if result.kind.value == kind_value
+        }
+    )
+
+
 def warning_summary_lines(report: IntegrityReport, kinds: Sequence[str]) -> list[str]:
-    """警告の件数規模を示す行（件数と、連続する区間にまとめたときの区間数）。"""
+    """警告の件数規模を示す行（報告の件数、記入が必要な区間数、連続する塊の数）。"""
     lines: list[str] = []
     for kind_value in kinds:
-        count = sum(1 for result in report.results if result.kind.value == kind_value)
-        if not count:
+        reported = sum(1 for result in report.results if result.kind.value == kind_value)
+        if not reported:
             continue
         lines.append(
-            f"  {kind_value}: {count} 件"
-            f"（連続する区間にまとめると {merged_warning_spans(report, kind_value)} 区間）"
+            f"  {kind_value}: 報告 {reported} 件"
+            f" / 分類の記入が必要な区間 {classifiable_intervals(report, kind_value)} 件"
+            f" / 連続する区間にまとめると {merged_warning_spans(report, kind_value)} 区間"
         )
     return lines

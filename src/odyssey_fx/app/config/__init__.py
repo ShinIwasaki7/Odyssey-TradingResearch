@@ -19,6 +19,10 @@
 | `load_datasource` | `configs/datasources/legacy_merged_csv_v1.yaml` | `DataSourceConfig` |
 | `load_symbol_specs` | `configs/symbols/` | `Symbol` → `SymbolSpec` |
 | `load_closure_decisions` | 利用者が指定する分類ファイル | `ClosureDecisionFile` |
+
+分類ファイルの系列表記（`USDJPY/1h/bid`）は時間足の版を含まないので、`load_closure_decisions`
+には暫定 snapshot の系列一覧を渡し、そこから文字列一致で解決する。版を決め打つと、版 2 以降の
+時間足定義を使った snapshot で分類の系列が記録と食い違う。
 """
 
 from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
@@ -27,6 +31,7 @@ from odyssey_fx.app.config.decisions import (
     ClosureDecisionFile,
     load_closure_decisions,
     parse_series_id,
+    resolve_series_id,
 )
 from odyssey_fx.app.config.loader import ConfigError
 from odyssey_fx.app.config.symbols import load_symbol_spec, load_symbol_specs
@@ -43,4 +48,5 @@ __all__ = [
     "load_timeframes",
     "parse_file_name",
     "parse_series_id",
+    "resolve_series_id",
 ]
