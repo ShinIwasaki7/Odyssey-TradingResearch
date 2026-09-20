@@ -345,17 +345,28 @@ def finalize(
     確定・承認へ進む抜け道を残さないため。
     """
     _require_no_integrity_errors(pending.report)
-    decided = {(str(decision.series_id), str(decision.interval.start)) for decision in decisions}
-    undecided = [
-        result
-        for result in pending.report.warnings
-        if (str(result.series), str(result.interval.start)) not in decided
-    ]
+
+    # 分類と警告の対応は**区間全体**で取る。開始時刻だけで突き合わせると、終端の違う分類
+    # （別の足を指す分類）が対応済みとして通ってしまう。
+    warned = {(str(result.series), str(result.interval)) for result in pending.report.warnings}
+    decided = {(str(decision.series_id), str(decision.interval)) for decision in decisions}
+
+    undecided = sorted(warned - decided)
     if undecided:
         raise MarketDataValueError(
             f"{len(undecided)} warning(s) are still unclassified;"
             " every warning must be recorded as a closure or a data gap before the snapshot"
-            " can be finalized (D03 §4 の 9)"
+            f" can be finalized (D03 §4 の 9): {undecided}"
+        )
+
+    # 対応する警告のない分類も拒否する。余分な分類は識別子（`snapshot_id`）を変えるので、
+    # 検査が見つけていない区間を人間が書き足せば、内容の同じ snapshot が別物になってしまう。
+    extraneous = sorted(decided - warned)
+    if extraneous:
+        raise MarketDataValueError(
+            f"{len(extraneous)} closure decision(s) do not correspond to any reported"
+            f" warning: {extraneous}; classify only the intervals the integrity check"
+            " reported (D03 §4 の 9)"
         )
     return pending.manifest.with_closure_decisions(tuple(decisions))
 

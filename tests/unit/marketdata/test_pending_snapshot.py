@@ -325,3 +325,82 @@ def test_a_non_check_result_in_the_findings_is_refused() -> None:
             UtcTime.parse("2026-09-20T09:00:00Z"),
             aggregated_findings=cast("Sequence[CheckResult]", ("not a finding",)),
         )
+
+
+# --- 分類と警告の対応（D03 §4 の 9）-----------------------------------------
+
+
+def _warned_interval() -> Interval:
+    """検査が報告した欠落区間（分類の対象）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    (warning,) = pending.report.warnings
+    return warning.interval
+
+
+def test_a_decision_with_the_wrong_end_leaves_the_warning_unclassified() -> None:
+    """分類の対応は区間**全体**で取る（D03 §4 の 9）。
+
+    開始時刻だけで突き合わせると、終端の違う分類（別の足を指す分類）が対応済みとして
+    通ってしまう。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    warned = _warned_interval()
+    wrong_end = ClosureDecision(
+        series_id=HOURLY,
+        interval=Interval(start=warned.start, end=warned.end + market.TF_1H.nominal_length),
+        kind=ClosureDecisionKind.DATA_GAP,
+    )
+    with pytest.raises(MarketDataValueError, match="still unclassified"):
+        finalize(pending, (wrong_end,))
+
+
+def test_a_decision_without_a_matching_warning_is_refused() -> None:
+    """検査が報告していない区間の分類は拒否する。
+
+    余分な分類は識別子を変えるので、放置すると内容の同じ snapshot が別物として記録される。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    extra = ClosureDecision(
+        series_id=HOURLY,
+        interval=Interval(
+            start=UtcTime.parse("2022-01-06T20:00:00Z"),
+            end=UtcTime.parse("2022-01-06T21:00:00Z"),
+        ),
+        kind=ClosureDecisionKind.CLOSURE,
+    )
+    with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
+        finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP), extra))
+
+
+def test_a_decision_for_another_series_is_refused() -> None:
+    """系列の違う分類は、区間が同じでも対応する警告がないので拒否される。
+
+    本物の警告には正しい分類を添え、系列だけが違う分類を1件足して確かめる。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    warned = _warned_interval()
+    correct = ClosureDecision(series_id=HOURLY, interval=warned, kind=ClosureDecisionKind.DATA_GAP)
+    foreign = ClosureDecision(
+        series_id=market.series(symbol=market.EURUSD),
+        interval=warned,
+        kind=ClosureDecisionKind.DATA_GAP,
+    )
+    with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
+        finalize(pending, (correct, foreign))
+
+
+def test_a_decision_matching_the_full_interval_is_accepted() -> None:
+    """区間が完全に一致する分類は受理される。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    warned = _warned_interval()
+    decision = ClosureDecision(series_id=HOURLY, interval=warned, kind=ClosureDecisionKind.DATA_GAP)
+    final = finalize(pending, (decision,))
+    assert final.closure_decisions == (decision,)
+
+
+def test_a_clean_report_refuses_any_decision() -> None:
+    """警告が1件も無ければ、分類も1件も受け付けない。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    assert pending.report.warnings == ()
+    with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
+        finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
