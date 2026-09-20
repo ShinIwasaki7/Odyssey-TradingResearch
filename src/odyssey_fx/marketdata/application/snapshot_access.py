@@ -52,6 +52,7 @@ __all__ = [
     "ReadableSnapshot",
     "classification_mismatch",
     "freeze_partition_bars",
+    "require_matching_partition_content",
     "require_readable_snapshot",
 ]
 
@@ -214,7 +215,7 @@ def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
         )
 
 
-def _require_matching_content(
+def require_matching_partition_content(
     manifest: SnapshotManifest,
     partition_id: PartitionId,
     bars: Sequence[Bar],
@@ -225,6 +226,10 @@ def _require_matching_content(
     ない。暫定 snapshot や別 snapshot の足を同じ鍵で渡せば、承認済み manifest の内容として
     読めてしまう。manifest は partition ごとに足数・区間・内容ダイジェストを記録している
     ので、4点すべてを照合する。
+
+    読み取りの関門（`require_readable_snapshot`）と**承認の関門**（`app.cli` の
+    `data approve`）が共有する。承認のときにも同じ照合をするのは、実体が manifest と
+    食い違ったまま承認すると「承認済みなのに読めない snapshot」ができてしまうためである。
 
     1. 各足の系列が partition の系列と一致する。
     2. 足数が記録と一致する。
@@ -303,7 +308,7 @@ def require_readable_snapshot(
             raise MarketDataValueError(
                 f"partition {partition_id} is not recorded in the snapshot manifest"
             )
-        _require_matching_content(manifest, partition_id, frozen.get(partition_id, ()))
+        require_matching_partition_content(manifest, partition_id, frozen.get(partition_id, ()))
     return frozen
 
 

@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,46 @@ def _resolve_local(local_date: date, moment: time, tz: ZoneInfo) -> UtcTime:
         raise MarketDataValueError(  # pragma: no cover - DST の飛びは高々数時間
             f"no existing local instant at or after {naive.isoformat()} in {tz.key}"
         ) from None
+
+
+#: 週の開場区間の覚え書きの大きさ。1銘柄10年ぶんで約 540 週、10銘柄でも同じ週を共有する
+#: ので、数千件あれば受入れ全体を覆える。上限を設けるのは、長期運用で際限なく増えない
+#: ようにするためで、溢れても計算結果は変わらない（単に計算し直すだけ）。
+_SESSION_CACHE_SIZE = 8192
+
+
+@lru_cache(maxsize=_SESSION_CACHE_SIZE)
+def _weekly_session(
+    tz_key: str,
+    open_weekday: int,
+    open_at: time,
+    close_weekday: int,
+    close_at: time,
+    open_day: date,
+) -> Interval | None:
+    """週の開始日1つぶんの開場区間を求める（休場は未適用）。
+
+    **純粋関数**である。同じ引数なら常に同じ結果を返すので、結果を覚えておける。現地時刻
+    から UTC への変換（`_resolve_local`）は夏時間の解決を含んで重く、受入れでは同じ週が
+    何万回も引かれるため、ここで覚えることで受入れ全体の時間が実用的になる。
+
+    引数を `TradingCalendar` そのものではなく**ハッシュ可能な値に分解して**受けるのは、
+    覚え書きをカレンダーの外に置くためである。カレンダーは不変の値型（D02 §3）であり、
+    正規化エンコード（D02 §9.3）は全フィールドを符号化するので、覚え書きをフィールドに
+    すると正規形が問い合わせの有無で変わってしまう。
+
+    `closures`（宣言した休場）は鍵に含めない。本関数が返すのは休場を**適用する前**の週の
+    開場区間であり、休場の取り除きは `sessions()` が別に行うためである。休場が違うだけの
+    カレンダーどうしは同じ週の開場区間を持つので、覚え書きを共有してよい。
+    """
+    tz = ZoneInfo(tz_key)
+    open_moment = _resolve_local(open_day, open_at, tz)
+    # 週の開始曜日から終了曜日までの日数（同じ曜日なら7日後）。
+    delta = (close_weekday - open_weekday) % 7
+    close_moment = _resolve_local(open_day + timedelta(days=delta or 7), close_at, tz)
+    if close_moment <= open_moment:  # pragma: no cover - 構築時の曜日組合せで排除される
+        return None
+    return Interval(start=open_moment, end=close_moment)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,14 +190,6 @@ class TradingCalendar:
     weekly_close: WeeklyMoment
     closures: tuple[ClosureRule, ...] = ()
 
-    #: 週の開始日（現地日付）から開場区間への覚え書き。**値の一部ではない**ので、
-    #: 同値比較・ダイジェスト・記録の対象から外す（`compare=False`、`repr=False`）。
-    #: 中身は純粋関数の結果でしかなく、あってもなくても計算結果は変わらない。
-    #: 区間が作れない開始日も「作れなかった」ことを覚えるため、1要素の組で包んで持つ。
-    _session_cache: dict[date, tuple[Interval | None]] = field(
-        default_factory=dict, compare=False, repr=False, hash=False
-    )
-
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id:
             raise MarketDataValueError(
@@ -191,28 +224,21 @@ class TradingCalendar:
     def _session_for_open_day(self, open_day: date) -> Interval | None:
         """週の開始日（現地日付）1つぶんの開場区間を返す（休場は未適用）。
 
-        カレンダーは frozen なので、開始日が同じならこの区間は常に同じである。現地時刻
-        から UTC への変換（`_resolve_local`）は夏時間の解決を含んで重く、受入れでは同じ
-        週が何万回も引かれるため、**開始日を鍵に覚えておく**。
-
-        覚えるのは「開始日 → 区間」だけで、窓との重なり判定はしない。判定を含めて覚えると
-        窓ごとに別の値になり、覚えた意味がなくなるうえ、窓の与え方で結果が変わりうる。
-        区間そのものは窓に依存しないので、この形なら計算結果は memo の有無で変わらない。
+        計算そのものはモジュールレベルの純粋関数（`_weekly_session`）が行い、その関数が
+        結果を覚えている。覚え書きを**カレンダーの中に持たない**のは、`TradingCalendar`
+        が不変の値型だからである（D02 §3）。フィールドとして持つと、(1) 構築時に外から
+        細工した覚え書きを渡せてしまい、(2) 正規化エンコード（D02 §9.3）が全フィールドを
+        符号化するため、同じ宣言のカレンダーでも「問い合わせ済みかどうか」で正規形が
+        変わってしまう。
         """
-        cached = self._session_cache.get(open_day)
-        if cached is not None:
-            return cached[0]
-        open_at = _resolve_local(open_day, self.weekly_open.at, self.tz)
-        close_day = open_day + timedelta(days=self._days_to_close())
-        close_at = _resolve_local(close_day, self.weekly_close.at, self.tz)
-        session = (
-            None
-            # pragma: no cover - 構築時の曜日組合せで排除される
-            if close_at <= open_at
-            else Interval(start=open_at, end=close_at)
+        return _weekly_session(
+            self.tz.key,
+            self.weekly_open.weekday,
+            self.weekly_open.at,
+            self.weekly_close.weekday,
+            self.weekly_close.at,
+            open_day,
         )
-        self._session_cache[open_day] = (session,)
-        return session
 
     def _weekly_sessions(self, window: Interval) -> list[Interval]:
         """`window` と重なる「週の開場区間」を昇順で返す（休場は未適用）。
@@ -243,11 +269,6 @@ class TradingCalendar:
                 sessions.append(session)
             day += timedelta(days=7)
         return sorted(sessions, key=lambda interval: interval.start.value)
-
-    def _days_to_close(self) -> int:
-        """週の開始曜日から終了曜日までの日数（同じ曜日なら7日後）。"""
-        delta = (self.weekly_close.weekday - self.weekly_open.weekday) % 7
-        return delta if delta else 7
 
     def _closure_intervals(self, window: Interval) -> list[Interval]:
         """`window` と重なる宣言済み休場を返す。"""

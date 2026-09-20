@@ -132,6 +132,28 @@ class AcceptanceService:
     timeframe_defs: Mapping[str, TimeframeDefinition]
     boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES
 
+    def timeframe_definition(self, timeframe_id: str) -> TimeframeDefinition:
+        """設定から時間足定義を引く。定義の無い時間足は拒否する（D03 §3.2）。
+
+        後段で引けずに失敗するより、どの時間足が足りないかが分かる位置で止める。
+        """
+        definition = self.timeframe_defs.get(timeframe_id)
+        if definition is None:
+            raise MarketDataValueError(
+                f"時間足 {timeframe_id!r} の定義が設定に無い（D03 §3.2）。"
+                f" 設定にあるのは {sorted(self.timeframe_defs)}"
+            )
+        return definition
+
+    def timeframe_ref(self, timeframe_id: str) -> TimeframeRef:
+        """時間足の参照を設定の定義から作る（D03 §3.2）。
+
+        **版は設定ファイルが宣言したもの**を使う。ここで版を固定すると、時間足定義の版を
+        上げても系列の参照が古い版のままになり、manifest に記録した系列と実際に使った
+        定義が食い違う。
+        """
+        return self.timeframe_definition(timeframe_id).ref
+
     def raw_file(self, symbol: Symbol, timeframe_id: str) -> RawFile:
         """1件の原ファイルの登録を作る（D03 §4 の 1）。
 
@@ -143,7 +165,7 @@ class AcceptanceService:
             path=f"{self.datasource.root}/{name}",
             sha256=self.source.file_sha256(name),
             symbol=symbol,
-            timeframe=TimeframeRef(id=timeframe_id, version=1),
+            timeframe=self.timeframe_ref(timeframe_id),
             declared_basis=self.datasource.basis_declaration.value,
         )
 
@@ -162,16 +184,11 @@ class AcceptanceService:
                     f"（{sorted(self.datasource.allowed_sources)}）。"
                     " 宣言していない出所の行は受け入れない（D03 §4 の 2）"
                 )
-        definition = self.timeframe_defs.get(raw_file.timeframe.id)
-        if definition is None:
-            raise MarketDataValueError(
-                f"時間足 {raw_file.timeframe.id!r} の定義が設定に無い（D03 §3.2）"
-            )
         return normalize_rows(
             raw_file,
             rows,
             self.datasource.mapping,
-            definition,
+            self.timeframe_definition(raw_file.timeframe.id),
             self.calendar,
         )
 
@@ -186,12 +203,8 @@ class AcceptanceService:
         generated: dict[SeriesId, tuple[Bar, ...]] = {}
         findings: list[CheckResult] = []
         for source_id, target_id in AGGREGATION_TARGETS:
-            source_def = self.timeframe_defs.get(source_id)
-            target_def = self.timeframe_defs.get(target_id)
-            if source_def is None or target_def is None:
-                raise MarketDataValueError(
-                    f"上位足の生成に必要な時間足定義が設定に無い（{source_id} → {target_id}）"
-                )
+            source_def = self.timeframe_definition(source_id)
+            target_def = self.timeframe_definition(target_id)
             for series, bars in sorted(bars_by_series.items(), key=lambda pair: str(pair[0])):
                 if series.timeframe.id != source_id:
                     continue

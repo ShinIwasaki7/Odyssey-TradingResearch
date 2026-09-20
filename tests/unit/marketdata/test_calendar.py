@@ -10,12 +10,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, time
+from typing import Any
 
 import pytest
 
+from odyssey_fx.common import canonical
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.marketdata.domain.calendar import ClosureRule, WeeklyMoment
+from odyssey_fx.marketdata.domain.calendar import (
+    ClosureRule,
+    TradingCalendar,
+    WeeklyMoment,
+)
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from tests.fixtures.synthetic import market
 
@@ -177,7 +184,7 @@ def test_the_weekday_must_be_in_range() -> None:
 
 
 def test_the_weekly_session_cache_is_not_part_of_the_calendar_value() -> None:
-    """覚え書きの有無で同値性・ハッシュが変わらない。
+    """覚え書きの有無で同値性・ハッシュ・表示が変わらない。
 
     取引カレンダーは snapshot の識別子の一部（版として）であり、比較・ハッシュの対象に
     なる。覚え書きが値の一部になると、「同じ宣言なのに問い合わせたかどうかで別物」に
@@ -190,6 +197,75 @@ def test_the_weekly_session_cache_is_not_part_of_the_calendar_value() -> None:
     assert warmed == fresh
     assert hash(warmed) == hash(fresh)
     assert repr(warmed) == repr(fresh)
+
+
+def test_the_calendar_has_no_cache_field() -> None:
+    """覚え書きはカレンダーの**フィールドではない**（D02 §3 の不変型、D02 §9.3）。
+
+    正規化エンコードは dataclass の全フィールドを符号化するので、覚え書きをフィールドに
+    すると正規形が「問い合わせ済みかどうか」で変わる。宣言したフィールドだけを持つことを
+    直接確かめる。
+    """
+    names = [field.name for field in dataclasses.fields(TradingCalendar)]
+    assert names == ["id", "version", "tz", "weekly_open", "weekly_close", "closures"]
+
+
+def test_the_calendar_rejects_an_extra_constructor_argument() -> None:
+    """覚え書きを外から注入できない。
+
+    覚え書きをフィールドに持たせると、細工した中身を構築時に渡してセッションの計算結果を
+    変えられてしまう（実際に、週の開場区間を差し替えると、平日の昼が「休場」と判定
+    できた）。フィールドが無ければ、その経路は構造的に存在しない。
+
+    構築子を型の付かない呼び出し可能オブジェクトとして呼ぶのは、型検査で止まる書き方でも
+    **実行時に必ず拒否される**ことを確かめるためである。型検査を抑制するコメントは使わない。
+    """
+    construct: Any = TradingCalendar
+    common = {
+        "id": "fx_ny17",
+        "version": 1,
+        "tz": market.NEW_YORK,
+        "weekly_open": WeeklyMoment(weekday=6, at=time(17, 0)),
+        "weekly_close": WeeklyMoment(weekday=4, at=time(17, 0)),
+        "closures": (),
+    }
+    # 宣言どおりの引数だけなら構築できる（この検査自体が空虚でないことの確認）。
+    assert isinstance(construct(**common), TradingCalendar)
+
+    with pytest.raises(TypeError):
+        construct(**common, _session_cache={})
+
+
+def test_the_canonical_form_does_not_depend_on_past_queries() -> None:
+    """正規化エンコードの対象が、セッション計算の前後で変わらない（D02 §9.3）。
+
+    取引カレンダーは時間帯（`ZoneInfo`）を持つため、そのままでは正規化エンコードに
+    掛けられない。ここで確かめたいのは「符号化の対象になるフィールドの値が、問い合わせを
+    したかどうかで変わらない」ことなので、時間帯を名前に置き換えた写像を符号化して
+    突き合わせる。覚え書きがフィールドにあった頃は、この写像に現地日付を鍵とする辞書が
+    現れて符号化が失敗し、かつ状態によって内容が変わっていた。
+    """
+
+    def encodable(calendar: TradingCalendar) -> dict[str, object]:
+        """符号化できる素の値だけに写す（時間帯と現地時刻は文字列にする）。"""
+        payload: dict[str, object] = {}
+        for field in dataclasses.fields(calendar):
+            value = getattr(calendar, field.name)
+            if field.name == "tz":
+                payload[field.name] = value.key
+            elif field.name in ("weekly_open", "weekly_close"):
+                payload[field.name] = f"{value.weekday}@{value.at.isoformat()}"
+            elif field.name == "closures":
+                payload[field.name] = tuple("/".join(rule.sort_key()) for rule in value)
+            else:
+                payload[field.name] = value
+        return payload
+
+    warmed = market.calendar()
+    warmed.sessions(WEEK)
+    warmed.expected_bar_starts(market.TF_1H, WEEK)
+
+    assert canonical.encode(encodable(warmed)) == canonical.encode(encodable(market.calendar()))
 
 
 def test_repeated_queries_return_the_same_sessions() -> None:

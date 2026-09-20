@@ -44,8 +44,12 @@ from odyssey_fx.marketdata.application.acceptance import (
     finalize,
 )
 from odyssey_fx.marketdata.application.ports import SnapshotStore
-from odyssey_fx.marketdata.application.snapshot_access import PENDING_DIRECTORY
-from odyssey_fx.marketdata.domain.integrity import CheckKind
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
+from odyssey_fx.marketdata.application.snapshot_access import (
+    PENDING_DIRECTORY,
+    require_matching_partition_content,
+)
+from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
@@ -318,6 +322,39 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
 # --- approve ----------------------------------------------------------------
 
 
+def _require_recorded_content(
+    store: SnapshotStore,
+    snapshot_dir: str,
+    manifest: SnapshotManifest,
+    report: IntegrityReport,
+) -> None:
+    """実体と検査報告が manifest の記録どおりであることを確かめる（D03 §3.7.1）。
+
+    承認の前に行う。承認は「この内容でよい」という人間の確認であり、確認した内容と保存
+    されている内容が食い違ったまま承認を記入すると、**承認済みなのに読み取りの関門で
+    拒否される snapshot** ができてしまう。
+
+    確かめるのは2つ。
+
+    1. 検査報告の内容から再計算したダイジェストが、manifest の `integrity_report_ref` と
+       一致する（報告が差し替えられていない）。
+    2. partition ごとの実体が manifest の記録どおりである（系列・足数・区間・内容
+       ダイジェストの4点）。照合の規則は読み取りの関門と同じ関数を使う。
+    """
+    recomputed = integrity_report_digest_hex(report)
+    if recomputed != manifest.integrity_report_ref.hex:
+        raise ConfigError(
+            f"{snapshot_dir} の検査報告は {recomputed} になるが、manifest は"
+            f" {manifest.integrity_report_ref.hex} を記録している。報告が manifest と"
+            " 食い違ったまま承認すると、承認済みでも読めない snapshot になる"
+            "（D03 §3.7.1）"
+        )
+
+    for record in manifest.partitions:
+        bars = store.read_partition(snapshot_dir, record.partition_id)
+        require_matching_partition_content(manifest, record.partition_id, bars)
+
+
 def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
     """承認と価格基準の宣言記録を記入する（D03 §3.7.1 の 2、§10 の `approve`）。"""
     if PENDING_DIRECTORY in Path(args.snapshot).parts:
@@ -340,6 +377,11 @@ def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
             f"{args.snapshot} は既に承認されている"
             f"（承認者 {manifest.approval.approved_by if manifest.approval else ''}）"
         )
+
+    # 承認は「この内容でよい」という人間の確認なので、**承認の時点で**内容が manifest の
+    # 記録どおりであることを確かめる。読み取りの関門でも同じ検査をするが、そこで初めて
+    # 気づく形だと「承認済みなのに読めない snapshot」ができてしまう（D03 §3.7.1）。
+    _require_recorded_content(store, args.snapshot, manifest, report)
 
     approved_at = composition.now_utc()
     # 確定段階を経た snapshot だけが承認できる形にする。`FinalizedSnapshot` は未分類の

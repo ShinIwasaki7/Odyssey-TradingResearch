@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -372,3 +373,68 @@ def test_a_snapshot_cannot_be_approved_twice(workspace: Path) -> None:
 def test_an_unknown_snapshot_fails_cleanly(workspace: Path) -> None:
     """存在しない識別子は、traceback ではなく1行の失敗として返る。"""
     assert _approve(workspace, "0" * 64) == 1
+
+
+# --- 承認時の内容照合（D03 §3.7.1）------------------------------------------
+#
+# 承認は「この内容でよい」という人間の確認である。確認した内容と保存されている内容が
+# 食い違ったまま承認を記入すると、**承認済みなのに読み取りの関門で拒否される snapshot**
+# ができてしまう。承認の時点で照合することで、その状態を作れないようにする。
+
+
+def _settled(workspace: Path) -> tuple[ParquetSnapshotStore, str]:
+    """受入れから確定までを済ませ、承認だけが残った状態を作る。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    assert _classify(workspace, pending, decisions) == 0
+    return store, _final_id(workspace)
+
+
+def test_a_snapshot_whose_report_was_altered_cannot_be_approved(workspace: Path) -> None:
+    """検査報告を書き換えた snapshot は承認できない。
+
+    報告を差し替えると manifest の記録（`integrity_report_ref`）と食い違う。承認を通して
+    しまうと、読み取りの関門で初めて拒否される「承認済みなのに読めない snapshot」に
+    なる。
+    """
+    store, final = _settled(workspace)
+    report_path = workspace / "data/snapshots" / final / "integrity_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["results"] = payload["results"][:-1]  # 1件削って内容を変える
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert _approve(workspace, final) == 1
+    # 承認が記入されていないので、manifest は承認前のままである。
+    assert store.read_manifest(final).approval is None
+
+
+def test_a_snapshot_whose_partition_was_altered_cannot_be_approved(workspace: Path) -> None:
+    """partition の実体を書き換えた snapshot は承認できない。
+
+    足数・区間・内容ダイジェストのいずれかが manifest の記録と食い違えば、読み取りの
+    関門は拒否する。承認の時点で同じ照合をして、食い違ったまま承認できないようにする。
+    """
+    store, final = _settled(workspace)
+    manifest = store.read_manifest(final)
+    target = next(
+        record.partition_id
+        for record in manifest.partitions
+        if record.bar_count > 1 and record.partition_id.series.timeframe.id == "1h"
+    )
+    bars = list(store.read_partition(final, target))
+    store.write_partition(final, target, bars[:-1])  # 1本減らす
+
+    assert _approve(workspace, final) == 1
+    assert store.read_manifest(final).approval is None
+
+
+def test_an_unaltered_snapshot_is_still_approvable(workspace: Path) -> None:
+    """照合を足したことで、正しい snapshot まで承認できなくなっていないこと。
+
+    上の2件が「何をしても失敗する」ために通っているのではないことを確かめる。
+    """
+    store, final = _settled(workspace)
+    assert _approve(workspace, final) == 0
+    assert store.read_manifest(final).approval is not None
