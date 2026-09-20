@@ -1,6 +1,6 @@
 # ADR-0014: 期間はアクセス状態で三分類し、LEGACY_HOLDOUT は SEALED / CONSUMED の状態を持つ
 
-- 状態: 承認（2026-09-18。2026-09-20 に HoldoutState を追加改訂）
+- 状態: 承認（2026-09-18。2026-09-20 に HoldoutState を追加改訂、同日 消費遷移の直列化を追加）
 - 決定者: ユーザー
 - 関連: [全体計画書](../design/fx_research_platform_overall_plan.md) 第6節 C-2、[D03](../design/D03_marketdata_and_time.md) §3.8、[D01](../design/D01_architecture_and_dependency_rules.md) §10.2、PR #2 の Codex 指摘（CONSUMED が状態モデルに未定義）
 
@@ -48,6 +48,16 @@
 
 消費記録の永続化が確認できる前にデータを返さない。許可発行だけで記録がない状態、記録があるのに公開されない状態はいずれも「読めない」に倒す。
 
+### 消費遷移の直列化（2026-09-20 追加）
+
+複数のクローンやプロセスが同じコミット済み manifest から `SEALED` を導出し、それぞれローカルで `CONSUMED` を追記して同じ holdout を公開することを防ぐため、**origin への push を compare-and-set とする**（PR #2 Codex round 3 指摘）。
+
+- access log は manifest 内ではなく独立ファイル `data/snapshots/<snapshot_id>/access_log.jsonl`（追記専用、git 管理）に置く。`HoldoutState` はこのファイルから導出する。
+- 消費の手順: (1) `git fetch origin` し、origin の既定ブランチ上の access log に自分の知らない追記がないことを確認する（あれば状態を再導出し、既に `CONSUMED` なら拒否）。(2) 消費記録を追記してコミットする。(3) origin の既定ブランチへ push する。(4) push が成功した後にだけデータを公開する。
+- push が non-fast-forward で拒否された場合は、状態を再導出して拒否する。再試行は人間の判断による。
+- origin に到達できない環境では `SEALED` partition を読めない（fail-closed）。ローカルだけの記録で公開することは許可しない。
+- 正本は origin の既定ブランチ上の access log であり、ローカルの作業ツリーやクローンの状態ではない。
+
 ## 影響
 
 - D03 §3.8（partition の状態）、§6.1（as-of ビューの許可 partition）に反映する。
@@ -60,3 +70,4 @@
 |---|---|
 | 2026-09-18 | 初版承認（三分類） |
 | 2026-09-20 | `HoldoutState`（SEALED / CONSUMED）、初期状態の判定、不可逆遷移、opt-in と manifest 記録、fail-closed 手順、access log からの導出を追加 |
+| 2026-09-20 | 消費遷移の直列化: access log を独立ファイルにし、origin への push を compare-and-set とする |

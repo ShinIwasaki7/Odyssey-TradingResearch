@@ -133,7 +133,7 @@ FX 戦略研究のための基盤を新規構築する。基盤は次の3つの�
 | 関心事 | 配置 | 根拠 |
 |---|---|---|
 | 時刻・因果順序 | `common.time`（`ProcessingPoint(time, phase, sequence)`、半開区間）。フェーズの列挙は `backtest.engine` が定義し、`common` は「時刻＋段階＋連番」の構造だけを持つ | 上位文書第4.7.15節 |
-| ID | `common.ids`。用途別の不透明型。`RunId = digest(ConfigDigest, CodeDigest, LockDigest)`（ADR-0006、2026-09-20 改訂）、run 内の各 ID は `RunId`＋種別＋決定論的連番。UUID4 は使わない（第6節 A-6、決定済み） | 再現性・照合 |
+| ID | `common.ids`。用途別の不透明型。`RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`（ADR-0006、2026-09-20 改訂）、run 内の各 ID は `RunId`＋種別＋決定論的連番。UUID4 は使わない（第6節 A-6、決定済み） | 再現性・照合 |
 | 理由コード | `common.reason`。`ReasonCode` 列挙と型付き詳細。使用箇所ごとの許可組合せは各 domain が検証 | 上位文書第4.7.14節 |
 | 根拠参照・ポリシー参照 | `common.refs`（`EvidenceRef`、`PolicyRef`、`ContractRef`、`ImplementationRef`） | 上位文書第4.7.15節 |
 | 記録（trace） | 記録の**型**は各 domain、記録の**書き出し先**は application のポート、実装は adapters | 記録が業務ロジックに依存し、逆はない |
@@ -495,7 +495,7 @@ src/odyssey_fx/
 | A-3 | 戦略ランタイムの所属 | `strategy` に置く。部品評価・WAIT・追い越し・機会管理は `strategy`、時刻進行・フェーズ順・注文処理は `backtest` | 責務の切り方は下記 | [ADR-0003](../decisions/0003-strategy-runtime-ownership.md) |
 | A-4 | 依存規則の機械検査 | `import-linter` を CI 必須にする。循環依存・逆依存・adapters 直接参照を検出 | 第4.3節 | [ADR-0004](../decisions/0004-import-linter-in-ci.md) |
 | A-5 | レイアウトとパッケージ名 | `src/` レイアウト。配布名 `odyssey-trading-research`、import 名 `odyssey_fx`、ソースは `src/odyssey_fx/` | 下記「パッケージ名」 | [ADR-0005](../decisions/0005-src-layout-and-package-name.md) |
-| A-6 | ID 生成規則 | 決定論的 ID。UUID4 は使わない。RunId は `ConfigDigest`＋`CodeDigest`＋`LockDigest`（2026-09-20 改訂） | 規則は下記 | [ADR-0006](../decisions/0006-deterministic-ids.md) |
+| A-6 | ID 生成規則 | 決定論的 ID。UUID4 は使わない。RunId は `ConfigDigest`＋`CodeDigest`＋`LockDigest`＋`EnvDigest`（2026-09-20 改訂） | 規則は下記 | [ADR-0006](../decisions/0006-deterministic-ids.md) |
 | A-7 | エンジン内部方式 | 単一スレッドのイベント駆動参照実装を先に作る。決定論的な優先キューで処理し、非同期メッセージ基盤は使わない | 高速化版は参照実装との同値性検証を条件とする | [ADR-0007](../decisions/0007-event-driven-reference-engine.md) |
 | A-8 | 部品実装の形 | 純粋関数＋明示状態。部品クラス内部に可変状態を隠さない | 形式は下記 | [ADR-0008](../decisions/0008-pure-function-components.md) |
 
@@ -519,8 +519,8 @@ backtest
 **A-6 の ID 規則**（2026-09-20 改訂、ADR-0006）
 
 - `ConfigDigest`: 解決済み run 設定（snapshot・戦略・ポリシー・区間・遅延シナリオ・seed）の正規化内容のダイジェスト。設定だけの同一性を表す。
-- `RunId = digest(ConfigDigest, CodeDigest, LockDigest)`。`CodeDigest` は実行したソースコードの内容、`LockDigest` は `uv.lock` の内容。
-- git commit・dirty 状態・Python バージョン等は manifest に記録する（識別子には含めない）。
+- `RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`。`CodeDigest` は実行したソースコードの内容、`LockDigest` は `uv.lock` の内容、`EnvDigest` はインタプリタ・プラットフォーム・インストール済み配布物（同じ lock でも環境で wheel と数値結果が変わりうるため）。
+- git commit・dirty 状態は manifest に記録する（識別子には含めない）。
 - 同一の完全入力による再実行は同じ `RunId`。既存成果物は無条件に上書きせず、置換は明示的な指示でのみ行う。
 - run 内の各 ID: `RunId` ＋ 種別 ＋ 決定論的連番。内容ハッシュだけをイベント ID にしない。再配送される同一通知は同じ `EventId`。
 - `RunAttemptId` は、再実行履歴の保存が必要になった場合のみ追加する（初版では持たない）。
@@ -593,7 +593,7 @@ runs/
 
 2026年分が未観測だったことを確認できた場合だけ、別 ADR で sealed holdout へ割り当てる。確認できない場合は研究履歴として扱い、将来取得するデータを新しい prospective holdout にする。元 CSV は期間をまたいでいるため、物理分離は raw CSV の移動ではなく、受入れ処理で生成する snapshot partition に対して行う。
 
-`LEGACY_HOLDOUT` の partition だけが `HoldoutState`（`SEALED` / `CONSUMED`）を持つ（2026-09-20 改訂、ADR-0014）。`SEALED` は旧基盤で未観測と確認できた partition だけで、holdout_gate を通る最終評価で読むと不可逆に `CONSUMED` へ遷移する。`CONSUMED` は holdout としての再選定・最終評価に永久に使用禁止で、研究用途では明示的な opt-in がある場合のみ読め、利用の事実と目的を run manifest に記録し、結果を holdout 成績として扱わない。状態は追記専用の access log から導出し、許可発行・消費記録・公開を fail-closed で行う。
+`LEGACY_HOLDOUT` の partition だけが `HoldoutState`（`SEALED` / `CONSUMED`）を持つ（2026-09-20 改訂、ADR-0014）。`SEALED` は旧基盤で未観測と確認できた partition だけで、holdout_gate を通る最終評価で読むと不可逆に `CONSUMED` へ遷移する。`CONSUMED` は holdout としての再選定・最終評価に永久に使用禁止で、研究用途では明示的な opt-in がある場合のみ読め、利用の事実と目的を run manifest に記録し、結果を holdout 成績として扱わない。状態は追記専用の access log（`access_log.jsonl`、git 管理）から導出し、許可発行・消費記録・公開を fail-closed で行う。消費遷移は origin への push を compare-and-set として直列化し、push 成功前にデータを公開しない。
 
 ### D. プロセス
 
