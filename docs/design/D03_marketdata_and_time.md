@@ -119,19 +119,21 @@
 | `conversion` | 変換コード版、時刻規約（`explicit_offset_utc`）、集約規則の版、カレンダー版 |
 | `series` | `SeriesManifest(series_id, covered_interval, bar_count, partitions)` の列 |
 | `partitions` | `PartitionRecord(partition_id, series_id, access_class, interval, bar_count, digest)` |
-| `integrity_report_ref` | 検査結果ファイルの参照とダイジェスト |
-| `closure_decisions` | 検査で見つかった警告に対する人間の分類の列（v1.3: `ClassificationDecision` の列。フィールド名は互換のため据え置く）。1 件は `kind`（分類対象の検査種別）、`interval`（区間）、`series`（対象系列の**解決済み**明示集合。確定時に「全系列」を snapshot 内の具体的な `SeriesId` 集合へ解決して保存する）、`outcome`（分類結果。第3.9節の種別ごとの語彙）、`note`（根拠・注記）、`calendar_ref`（参照するカレンダー新版。任意）を持つ |
+| `integrity_report_ref` | 最終の検査報告（`integrity_report.json`）のダイジェスト |
+| `provisional_report_ref` | 暫定段階の検査報告（人間が分類の根拠にした報告）のダイジェスト（v1.3）。確定段階で 5〜7 を再実行しなかった場合は `integrity_report_ref` と同じ値。異なる場合は暫定報告を `integrity_report_provisional.json` として同ディレクトリに保存し git 管理する（再実行で消えた警告に対する分類の根拠を別クローンでも検証できるようにする） |
+| `closure_decisions` | 検査で見つかった警告に対する人間の分類の列（v1.3: `ClassificationDecision` の列。フィールド名は互換のため据え置く）。1 件は `kind`（分類対象の検査種別）、`interval`（区間）、`series`（対象系列の**解決済み**明示集合。確定時に「全系列」を snapshot 内の具体的な `SeriesId` 集合へ解決して保存する）、`outcome`（分類結果。第3.9節の種別ごとの語彙）、`note`（根拠・注記）、`calendar_ref`（参照するカレンダー新版。任意）を持つ。**記入されたままの分類は監査用の記録であり `snapshot_id` の計算対象外**（同じ警告集合を 1 件の広い区間で書いても複数の狭い区間で書いても識別子が変わらないようにするため） |
+| `resolved_classifications` | 分類を警告 1 件ごとに解決した列（v1.3）。要素は `(kind, series_id, warning interval, outcome, excluded_bar_count)`。確定時に `closure_decisions` を暫定報告と最終報告の分類対象の警告に適用して導き、`snapshot_id` の計算対象にする。**分類の正規化内容とはこの列を指す** |
 | `legacy_access` | 旧基盤から引き継いだ閲覧・使用履歴（`LEGACY_HOLDOUT` の `CONSUMED` 判定の根拠） |
 | `access_log` | manifest 内には持たない。独立ファイル `access_log.jsonl`（追記専用、git 管理）に置き、`HoldoutState` はそこから導出する。`snapshot_id` の計算対象外 |
 | `approval` | 人間の受入れ承認（承認者・日時・コメント）。`snapshot_id` の計算対象外 |
 
-manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検査報告 `integrity_report.json` と閲覧記録 `access_log.jsonl` も同ディレクトリで git 管理する（v1.3、ADR-0013 改訂）。検査報告は manifest のダイジェスト対象であり承認・読み取り関門が必要とするため、追跡しなければ別クローンで Parquet を復元しても snapshot を検証できない。検査報告には価格や封印期間の統計値を含めず、検査種別・系列・区間・重大度・構造的な詳細だけを保存する（第3.9節）。実体（partition の Parquet）と `_pending/` 配下の暫定成果物は git 管理外のまま。
+manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）と閲覧記録 `access_log.jsonl` も同ディレクトリで git 管理する（v1.3、ADR-0013 改訂）。検査報告は manifest のダイジェスト対象であり承認・読み取り関門が必要とするため、追跡しなければ別クローンで Parquet を復元しても snapshot を検証できない。検査報告には価格や封印期間の統計値を含めず、検査種別・系列・区間・重大度・構造的な詳細だけを保存する（第3.9節）。実体（partition の Parquet）と `_pending/` 配下の暫定成果物は git 管理外のまま。
 
 #### 3.7.1 `SnapshotId` の対象と二段階フロー（確定）
 
-`SnapshotId` の対象: `sources`、`conversion`（カレンダー版を含む）、`basis_declaration`（値と `verified` のみ）、`series`、`partitions`、`integrity_report_ref`、`closure_decisions`、`legacy_access`。対象外: `created_at`、`declaration_record`、`access_log`、`approval`。対象はすべて決定論的な内容であり、実行時刻・操作者・承認者は含めない。
+`SnapshotId` の対象: `sources`、`conversion`（カレンダー版を含む）、`basis_declaration`（値と `verified` のみ）、`series`、`partitions`、`integrity_report_ref`、`provisional_report_ref`、`resolved_classifications`、`legacy_access`。対象外: `created_at`、`declaration_record`、`closure_decisions`（記入されたままの分類。v1.3 で対象外に変更）、`access_log`、`approval`。対象はすべて決定論的な内容であり、実行時刻・操作者・承認者は含めない。
 
-**列の正規順序**（確定）: ダイジェスト対象の列は、ファイルシステムの列挙順や検査の実行順に依存しないよう、符号化前に次の鍵で整列する。`sources` は `path`（POSIX 相対パス、コードポイント順）。`series` は `SeriesId` の文字列。`partitions` は `(series_id 文字列, access_class, interval.start)`。`legacy_access` は `(series_id 文字列, interval.start)`。`closure_decisions` は v1.3 から `(kind, interval.start, interval.end, series 文字列の整列済み列, outcome)`（`series` は解決済みの明示集合を文字列のコードポイント順に並べた列）。分類は正規化した内容（解決済み系列集合を含む）で `SnapshotId` に入るため、同じ分類を「全系列」と書いても明示集合で書いても同じ `snapshot_id` になる。完全性検査の報告（`integrity_report_ref` の対象ファイル）は `CheckResult` を `(series_id 文字列, kind, interval.start, detail の正規化表現)` で整列して符号化する。manifest の保存形式も同じ順序で書く。
+**列の正規順序**（確定）: ダイジェスト対象の列は、ファイルシステムの列挙順や検査の実行順に依存しないよう、符号化前に次の鍵で整列する。`sources` は `path`（POSIX 相対パス、コードポイント順）。`series` は `SeriesId` の文字列。`partitions` は `(series_id 文字列, access_class, interval.start)`。`legacy_access` は `(series_id 文字列, interval.start)`。`resolved_classifications` は `(kind, series_id 文字列, interval.start, outcome)`（v1.3）。`closure_decisions` は保存時に `(kind, interval.start, interval.end, series 文字列の整列済み列, outcome)` で整列するが `SnapshotId` には入らない。識別子に入るのは警告 1 件ごとに解決した分類なので、同じ警告集合に同じ結果を与える分類は、区間のまとめ方や「全系列」か明示集合かによらず同じ `snapshot_id` になる。完全性検査の報告（`integrity_report_ref` の対象ファイル）は `CheckResult` を `(series_id 文字列, kind, interval.start, detail の正規化表現)` で整列して符号化する。manifest の保存形式も同じ順序で書く。
 
 受入れは二段階で行う。
 
@@ -198,9 +200,9 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検�
 3. 対応する警告が 1 件もない分類を拒否する（分類は報告された警告に対してのみ行う）。
 4. 「全系列」は確定時に snapshot 内の具体的な `SeriesId` 集合へ解決して保存する。保存後の分類は明示集合だけを持つ。
 5. 分類の範囲を広げても、報告されていない警告を捏造しない（分類が警告を増やすことはない。除外規則で足が減っても警告は再検査で導く）。
-6. `SnapshotId` には正規化した分類内容（第3.7.1節の整列鍵）を含める。同じ警告集合に対する同じ分類は、記入の仕方によらず同じ `snapshot_id` になる。
+6. `SnapshotId` には分類を警告 1 件ごとに解決した `resolved_classifications`（第3.7節）を含め、記入されたままの `closure_decisions` は含めない。同じ警告集合に対する同じ分類結果は、区間のまとめ方によらず同じ `snapshot_id` になる。
 
-**再実行の入力**（v1.3、確定）。カレンダー新版を伴う分類では、暫定 snapshot の partition から読み戻した原系列の足（出所が `AGGREGATED` でないもの）を再利用し、原ファイルは読み直さない。再利用の前に、検査報告の実ダイジェストが暫定 manifest の `integrity_report_ref` と一致すること、全 partition の系列・件数・区間・内容ダイジェストが暫定 manifest の記録と一致することを検証し、不一致なら何も書かずに失敗する。`sources`・コード版・時刻規約・集約規則の版・`created_at` は引き継ぎ、カレンダーの識別と版だけを置き換える。時間足定義は id と版まで暫定 snapshot の系列と一致しなければ失敗。分類の突き合わせは**元の報告と再実行後の報告の和集合**に対して行う: 各分類は元の報告または再実行後の報告のいずれかの分類対象の警告に対応しなければならず（どちらにも対応しない分類は拒否）、元の報告の分類対象の警告と再実行後の報告に残る分類対象の警告はすべて分類済みでなければならない。カレンダーの修正が**新たな警告を生む**ことがある（例: ある系列の休場を追加すると別系列の足が「休場帯の足」になる。営業例外を追加すると別系列に欠落が現れる）。その場合、確定は「再実行後に未分類の警告が残る」として失敗し、新たな警告を表示する。人間はそれらの分類を追記して同じ暫定 snapshot に対して確定を再実行する（**反復的な分類**。暫定 snapshot は失敗時に変更されない）。
+**再実行の入力**（v1.3、確定）。カレンダー新版を伴う分類では、暫定 snapshot の partition から読み戻した原系列の足（出所が `AGGREGATED` でないもの）を再利用し、原ファイルは読み直さない。再利用の前に、検査報告の実ダイジェストが暫定 manifest の `integrity_report_ref` と一致すること、全 partition の系列・件数・区間・内容ダイジェストが暫定 manifest の記録と一致することを検証し、不一致なら何も書かずに失敗する。`sources`・コード版・時刻規約・集約規則の版・`created_at` は引き継ぎ、カレンダーの識別と版だけを置き換える。時間足定義は id と版まで暫定 snapshot の系列と一致しなければ失敗。分類の突き合わせは**暫定報告（人間が分類の根拠にした報告）と最終の再実行後の報告の和集合**に対して行う: 各分類は暫定報告または最終報告のいずれかの分類対象の警告に対応しなければならず（どちらにも対応しない分類は拒否し、失敗時に列挙する）、暫定報告の分類対象の警告と最終報告に残る分類対象の警告はすべて分類済みでなければならない。カレンダーの修正が**新たな警告を生む**ことがある（例: ある系列の休場を追加すると別系列の足が「休場帯の足」になる。営業例外を追加すると別系列に欠落が現れる）。その場合、確定は「再実行後に未分類の警告が残る」として失敗し、新たな警告を表示する。人間はそれらの分類を追記して同じ暫定 snapshot に対して確定を再実行する（**反復的な分類**。暫定 snapshot は失敗時に変更されない）。反復の途中の版（例: カレンダー v2）でだけ現れ、最終の版（v3）で消えた警告に対する分類は「対応なし」として列挙されるので、人間はそれを分類ファイルから削除して再実行する。中間の報告は保存も検証もしない（最終 snapshot の根拠は暫定報告と最終報告の 2 つで閉じる）。確定した snapshot には、暫定報告を `integrity_report_provisional.json`、最終報告を `integrity_report.json` として保存し、両方のダイジェストを manifest に記録する（第3.7節）。読み取り関門は両方の報告を検証し、`closure_decisions` が両報告の和集合の警告に対応すること、`resolved_classifications` が両報告の分類対象の警告と一致することを確かめる。
 
 **セッション外データ異常の除外規則**（v1.3、確定）。`UNEXPECTED_BAR` を `OUT_OF_SESSION_DATA` と分類した区間の足は、確定段階の再実行時に原系列から除外し partition に含めない。**この分類が 1 件でもあれば、カレンダー変更の有無にかかわらず 5〜7 を再実行する**（除外後の原系列に対してカレンダー照合・上位足の生成・partition 分けをやり直す。再実行の入力と検証は上記「再実行の入力」と同じ）。上位足は除外後の原系列から再生成する。除外は WARN 対象の足に限る（ERROR に関与する足は既に受入れ失敗している）。除外した足の件数と区間は分類記録（`note` ではなく構造的な `excluded_bar_count`）に残し、`sources` の行数は原ファイルの行数のまま変えない。除外後に「存在すべき足の欠落」が新たに生じることはない（休場帯の足だから）。
 

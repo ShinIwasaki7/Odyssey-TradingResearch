@@ -476,7 +476,8 @@ data/
     ├── manifest.json               # git 管理。digest・出所・銘柄・価格基準・期間・行数・変換コード版・
     │                               # partition ごとのアクセス分類
     ├── integrity_report.json       # git 管理。完全性検査の報告（検査種別・系列・区間・重大度・構造的な詳細のみ。
-    │                               # 価格統計を含めない）。manifest のダイジェスト対象（D03 v1.3、ADR-0013 改訂）
+    │                               # 価格統計を含めない）。manifest のダイジェスト対象（D03 v1.3、ADR-0013 改訂）。
+    │                               # 確定段階で再実行した snapshot は integrity_report_provisional.json も git 管理
     ├── access_log.jsonl            # git 管理。追記専用の閲覧・消費記録。HoldoutState はここから導出（ADR-0014）
     └── <partition>/…               # 実体。git 管理外。アクセス分類（RESEARCH_HISTORY /
                                     # LEGACY_HOLDOUT / QUARANTINED_UNASSIGNED）ごとに分ける
