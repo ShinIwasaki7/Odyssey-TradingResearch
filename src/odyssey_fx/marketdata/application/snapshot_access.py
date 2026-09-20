@@ -29,6 +29,7 @@ from types import MappingProxyType
 from odyssey_fx.common.ids import SnapshotId
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
@@ -92,13 +93,16 @@ class ReadableSnapshot:
     2. `directory_name` が manifest から再計算した `snapshot_id` と一致する（＝確定段階を
        経ており、内容とディレクトリ名が食い違っていない）。
     3. 承認が記入されている。
-    4. 完全性検査の報告の**すべての警告が分類されている**（D03 §4 の 9）。
+    4. 報告が manifest の記録どおりである（再計算したダイジェストが
+       `integrity_report_ref` と一致する）。
+    5. 報告に**重大な違反（ERROR）が無い**（D03 §4 の 4）。
+    6. 報告の**すべての警告が分類されている**（D03 §4 の 9）。
 
-    4点目を manifest だけでは確かめられないので、報告（`report`）も併せて受け取る。
-    ディレクトリ名と承認だけを見ていると、確定段階（`finalize`）を経ずに組み立てた
-    manifest——未分類の警告が残ったまま承認を付けたもの——が、最終識別子の名前で置くだけで
-    読めてしまう。報告そのものが manifest の記録どおりであること（ダイジェストの一致）は、
-    報告を読む側（`ParquetSnapshotStore.open_readable`）が確かめる。
+    4点目以降を manifest だけでは確かめられないので、報告（`report`）も併せて受け取る。
+    検査は**この型の中で完結させる**。呼び出し側（`ParquetSnapshotStore.open_readable`）に
+    だけ検査を置くと、型を直接組み立てる経路——別の読み取り実装や試験用の組み立て——が
+    素通りしてしまう。5点目が要るのは、重大な違反を含む報告をダイジェストごと保存すれば、
+    構造的に無効なデータの snapshot が読めてしまうためである。
 
     読み取り経路（as-of ビュー・執行系列ビュー・公開フィード）は `SnapshotManifest` では
     なくこの型を受け取るので、検査を通っていない manifest は構造的に渡せない。
@@ -132,6 +136,30 @@ class ReadableSnapshot:
                 " by its final id (D03 §3.7.1 の 2)"
             )
         _require_approved(self.manifest)
+
+        # 報告が manifest の記録どおりであることを、この型の中で確かめる（D03 §3.7.1）。
+        # 呼び出し側にだけ検査を置くと、型を直接組み立てる経路が素通りする。
+        recomputed = integrity_report_digest_hex(self.report)
+        if recomputed != self.manifest.integrity_report_ref.hex:
+            raise MarketDataValueError(
+                f"the supplied integrity report hashes to {recomputed} but the manifest"
+                f" records {self.manifest.integrity_report_ref.hex}; it is not this"
+                " snapshot's report (D03 §3.7.1)"
+            )
+
+        # 重大な違反を含む報告の snapshot は読めない（D03 §4 の 4）。受入れが中断している
+        # はずだが、報告ごと保存された snapshot を読む経路を残さない。
+        errors = self.report.errors
+        if errors:
+            counts: dict[str, int] = {}
+            for result in errors:
+                counts[result.kind.value] = counts.get(result.kind.value, 0) + 1
+            summary = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
+            raise SnapshotNotApproved(
+                f"this snapshot's integrity report carries {len(errors)} error(s)"
+                f" ({summary}); acceptance should have failed and it must not be read"
+                " (D03 §4 の 4)"
+            )
 
         # 確定段階を経ていれば、報告の警告はすべて分類されている（D03 §4 の 9）。
         # 経ていない manifest はここで止まる。

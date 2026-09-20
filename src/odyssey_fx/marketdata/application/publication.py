@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 
 from odyssey_fx.common.time import Interval, PhaseRank, UtcTime
 from odyssey_fx.marketdata.application.snapshot_access import (
@@ -308,6 +309,9 @@ def build_publication_log(
         partition_bars=partition_bars,
     )
     readable = PartitionedBars(frozen, allowed_partitions)
+    # 公開予定も写し取る。この関数は記録を作って返すだけなので呼び出し中に差し替えられる
+    # 余地は小さいが、`AsOfView` と同じ扱いにして経路ごとの差をなくす（D03 §3.5）。
+    schedules = MappingProxyType(dict(schedules))
 
     records: list[PublicationRecord] = []
     for series in readable.series():
@@ -375,6 +379,7 @@ def build_feed(
         snapshot, allowed_partitions, label="build_feed", partition_bars=partition_bars
     )
     readable = PartitionedBars(frozen, allowed_partitions)
+    schedules = MappingProxyType(dict(schedules))
     boundary_series = _require_run_interval_inside_allowed(
         snapshot, allowed_partitions, run_interval
     )

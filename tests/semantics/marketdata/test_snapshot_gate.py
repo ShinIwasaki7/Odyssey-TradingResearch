@@ -11,15 +11,23 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
+from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
+from odyssey_fx.marketdata.application.asof import (
+    AsOfView,
+    ExecutionSeriesView,
+    MissingInput,
+)
 from odyssey_fx.marketdata.application.publication import (
     PublicationKind,
     build_feed,
     build_publication_log,
 )
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import (
     ReadableSnapshot,
     classification_mismatch,
@@ -33,10 +41,12 @@ from odyssey_fx.marketdata.domain.errors import (
 )
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     ClosureDecision,
     ClosureDecisionKind,
     PartitionId,
+    SnapshotManifest,
 )
 from tests.fixtures.synthetic import market, snapshots
 
@@ -315,11 +325,11 @@ def test_an_unclassified_warning_makes_the_snapshot_unreadable() -> None:
     確定段階（`finalize`）を飛ばして承認だけ付けた manifest がここで止まる（D03 §3.7.1 の2）。
     """
     report = _warned_report()
-    approved = snapshots.approved_for({RESEARCH: _research_bars()})
+    manifest = _manifest_for(report)
     with pytest.raises(SnapshotNotApproved, match="still unclassified"):
         ReadableSnapshot(
-            manifest=approved,
-            directory_name=str(approved.snapshot_id()),
+            manifest=manifest,
+            directory_name=str(manifest.snapshot_id()),
             report=report,
         )
 
@@ -327,9 +337,7 @@ def test_an_unclassified_warning_makes_the_snapshot_unreadable() -> None:
 def test_a_classified_warning_makes_the_snapshot_readable() -> None:
     """分類が記入されていれば読める（関門が正しいものまで拒まないことの確認）。"""
     report = _warned_report()
-    decided = snapshots.approved_for({RESEARCH: _research_bars()}).with_closure_decisions(
-        (_decision_for(report),)
-    )
+    decided = _manifest_for(report, (_decision_for(report),))
     readable = ReadableSnapshot(
         manifest=decided, directory_name=str(decided.snapshot_id()), report=report
     )
@@ -368,3 +376,168 @@ def test_the_matching_rule_is_shared_with_finalize() -> None:
     # 区間が完全に一致すれば対応する。
     undecided, extraneous = classification_mismatch(report, (_decision_for(report),))
     assert not undecided and not extraneous
+
+
+def _manifest_for(
+    report: IntegrityReport, decisions: tuple[ClosureDecision, ...] = ()
+) -> SnapshotManifest:
+    """その報告を参照する承認済み manifest（ダイジェストを報告から作る）。
+
+    `ReadableSnapshot` は報告のダイジェストが manifest の記録と一致することを要求する
+    （D03 §3.7.1）ので、テストの manifest も報告から作る。
+    """
+    base = snapshots.approved_for({RESEARCH: _research_bars()})
+    return SnapshotManifest(
+        created_at=base.created_at,
+        basis_declaration=base.basis_declaration,
+        sources=base.sources,
+        conversion=base.conversion,
+        series=base.series,
+        partitions=base.partitions,
+        integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
+        closure_decisions=decisions,
+        approval=base.approval,
+    )
+
+
+# --- 重大な違反を含む報告は読めない（D03 §4 の 4）--------------------------
+
+
+def test_a_report_carrying_an_error_makes_the_snapshot_unreadable() -> None:
+    """重大な違反を含む報告の snapshot は読めない。
+
+    受入れは重大な違反で中断するが、報告ごと保存された snapshot を読む経路が残っていると、
+    構造的に無効なデータがバックテストの入力になりうる。
+    """
+    report = IntegrityReport(
+        results=(CheckResult.create(CheckKind.DUPLICATE_TIMESTAMP, HOURLY, RESEARCH_WINDOW),)
+    )
+    manifest = _manifest_for(report)
+    with pytest.raises(SnapshotNotApproved, match="DUPLICATE_TIMESTAMP=1"):
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+        )
+
+
+def test_the_error_message_reports_the_count_and_kinds() -> None:
+    """どの検査で何件落ちたかが分かる（価格は含めない）。"""
+    report = IntegrityReport(
+        results=(
+            CheckResult.create(CheckKind.DUPLICATE_TIMESTAMP, HOURLY, RESEARCH_WINDOW),
+            CheckResult.create(CheckKind.IRREGULAR_INTERVAL, HOURLY, HOLDOUT_WINDOW),
+        )
+    )
+    manifest = _manifest_for(report)
+    with pytest.raises(SnapshotNotApproved) as raised:
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+        )
+    message = str(raised.value)
+    assert "2 error(s)" in message
+    assert "DUPLICATE_TIMESTAMP=1" in message
+    assert "IRREGULAR_INTERVAL=1" in message
+    assert "150" not in message
+
+
+def test_an_information_only_report_is_readable() -> None:
+    """記録のみの結果（INFO）は読み取りを妨げない。"""
+    report = IntegrityReport(
+        results=(CheckResult.create(CheckKind.SOURCE_TRANSITION, HOURLY, RESEARCH_WINDOW),)
+    )
+    manifest = _manifest_for(report)
+    readable = ReadableSnapshot(
+        manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+    )
+    assert readable.report == report
+
+
+# --- 報告のダイジェストは型の中で検査する（D03 §3.7.1）--------------------
+
+
+def test_a_report_that_is_not_this_snapshots_is_refused() -> None:
+    """manifest が参照していない報告を直接渡しても拒否される。
+
+    検査を呼び出し側（`open_readable`）にだけ置くと、型を直接組み立てる経路が素通りする。
+    """
+    manifest = snapshots.approved_for({RESEARCH: _research_bars()})
+    other = IntegrityReport(
+        results=(CheckResult.create(CheckKind.ZERO_VOLUME_SPAN, HOURLY, RESEARCH_WINDOW),)
+    )
+    with pytest.raises(MarketDataValueError, match="not this snapshot's report"):
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=other
+        )
+
+
+# --- 公開予定も差し替えられない（D03 §3.5・§6.2）---------------------------
+
+
+def _delayed_schedule(minutes: int) -> SeriesSchedule:
+    return SeriesSchedule(
+        series=HOURLY,
+        timeframe_def=market.TF_1H,
+        calendar=CALENDAR,
+        normal_publication_delay=timedelta(minutes=minutes),
+    )
+
+
+def test_swapping_the_schedule_does_not_change_the_as_of_view() -> None:
+    """ビューを作った後に公開予定を差し替えても、読み取り結果は変わらない。
+
+    通常遅延 5 分の予定で作ったビューの辞書を遅延 0 の予定へ差し替えると、足の終了と同時に
+    その足が見えてしまう——先読み（D03 §6.2）。
+    """
+    research = _research_bars()
+    mutable: dict[SeriesId, SeriesSchedule] = {HOURLY: _delayed_schedule(5)}
+    view = AsOfView(
+        snapshot=snapshots.readable_for({RESEARCH: research}),
+        allowed_partitions=frozenset({RESEARCH}),
+        schedules=mutable,
+        partition_bars={RESEARCH: research},
+    )
+    bar_end = UtcTime.parse("2023-06-01T03:00:00Z")
+    before = view.latest_available(HOURLY, bar_end)
+    assert isinstance(before, MissingInput)  # 5 分遅れなのでまだ見えない。
+
+    mutable[HOURLY] = _delayed_schedule(0)
+
+    after = view.latest_available(HOURLY, bar_end)
+    assert isinstance(after, MissingInput), "差し替えで先読みが起きてはいけない"
+    # 本来の公開予定に達すれば見える。
+    later = view.latest_available(HOURLY, bar_end + timedelta(minutes=5))
+    assert not isinstance(later, MissingInput)
+
+
+def test_the_view_exposes_its_schedules_as_immutable() -> None:
+    """ビューが持つ公開予定の写しそのものも書き換えられない。"""
+    research = _research_bars()
+    view = AsOfView(
+        snapshot=snapshots.readable_for({RESEARCH: research}),
+        allowed_partitions=frozenset({RESEARCH}),
+        schedules={HOURLY: _delayed_schedule(5)},
+        partition_bars={RESEARCH: research},
+    )
+    with pytest.raises(TypeError):
+        view.schedules[HOURLY] = _delayed_schedule(0)  # type: ignore[index]
+
+
+def test_swapping_the_schedule_does_not_change_the_publication_feed() -> None:
+    """公開フィードも同じ。構築中に差し替えても結果は変わらない。"""
+    research = _research_bars()
+    mutable: dict[SeriesId, SeriesSchedule] = {HOURLY: _delayed_schedule(5)}
+    readable = snapshots.readable_for({RESEARCH: research})
+    feed = build_feed(
+        readable,
+        frozenset({RESEARCH}),
+        {RESEARCH: research},
+        mutable,
+        RESEARCH_WINDOW,
+    )
+    delayed_times = sorted(str(event.at) for event in feed.of_kind(PublicationKind.PUBLICATION))
+
+    mutable[HOURLY] = _delayed_schedule(0)
+
+    assert (
+        sorted(str(event.at) for event in feed.of_kind(PublicationKind.PUBLICATION))
+        == delayed_times
+    )

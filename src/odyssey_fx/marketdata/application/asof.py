@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
+from types import MappingProxyType
 
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
@@ -117,9 +118,15 @@ class AsOfView:
             label="AsOfView",
             partition_bars=self.partition_bars,
         )
-        # 呼び出し元が渡した可変な列を保持したままにすると、構築時の照合をすり抜けた後で
-        # 中身を差し替えられる（D03 §6.1）。検査を通した写しへ置き換える。
+        # 呼び出し元が渡した可変な mapping を保持したままにすると、構築時の照合をすり抜けた
+        # 後で中身を差し替えられる（D03 §6.1）。不変な写しへ置き換える。
+        #
+        # 公開予定も同じ。通常遅延 5 分の予定でビューを作ったあと、元の辞書を遅延 0 の
+        # 予定へ差し替えると、足の終了と同時にその足が見えてしまう（D03 §3.5・§6.2 の
+        # 先読み禁止に反する）。`SeriesSchedule` 自体は frozen なので、値の差し替えだけを
+        # 防げばよい。
         object.__setattr__(self, "partition_bars", frozen)
+        object.__setattr__(self, "schedules", MappingProxyType(dict(self.schedules)))
 
     @property
     def manifest(self) -> SnapshotManifest:
