@@ -344,19 +344,49 @@ def test_a_classified_warning_makes_the_snapshot_readable() -> None:
     assert readable.snapshot_id == decided.snapshot_id()
 
 
-def test_a_decision_without_a_matching_warning_makes_it_unreadable() -> None:
-    """報告に無い区間の分類が付いた manifest も拒否する（`finalize` と同じ規則）。"""
+def test_a_decision_without_a_matching_warning_does_not_block_reading() -> None:
+    """報告に対応する警告の無い分類があっても、読み取りは拒否しない。
+
+    **読み取りの関門が見るのは「未分類の警告が無いこと」だけ**である（D03 §4 の 9）。
+    余分な分類を読み取りで拒否すると、設計が定める主たる用途が成立しない。分類で
+    「休場だった」と判断してカレンダーへ追加し版を上げると、その区間の警告は再受入れ後の
+    報告から**正当に消える**。消えた警告に対応する分類を余分と見なせば、その snapshot が
+    読めなくなってしまう。
+
+    分類が正当かどうかは「人間が見た報告」に対して判定すべきもので、その検査は確定
+    （`acceptance.finalize`）が担っている（`test_pending_snapshot.py`）。
+    """
     extra = ClosureDecision(
         series_id=HOURLY,
         interval=HOLDOUT_WINDOW,
         kind=ClosureDecisionKind.CLOSURE,
     )
     decided = snapshots.approved_for({RESEARCH: _research_bars()}).with_closure_decisions((extra,))
-    with pytest.raises(MarketDataValueError, match="do not correspond to any warning"):
+    readable = ReadableSnapshot(
+        manifest=decided,
+        directory_name=str(decided.snapshot_id()),
+        report=IntegrityReport(),
+    )
+    assert readable.snapshot_id == decided.snapshot_id()
+
+
+def test_an_unclassified_warning_still_blocks_reading_even_with_extra_decisions() -> None:
+    """余分な分類を許しても、**未分類の警告**は引き続き読み取りを止める。
+
+    上の緩和が「分類の検査そのものを無くした」のではないことを確かめる。
+    """
+    report = _warned_report()
+    extra = ClosureDecision(
+        series_id=HOURLY,
+        interval=HOLDOUT_WINDOW,
+        kind=ClosureDecisionKind.CLOSURE,
+    )
+    manifest = _manifest_for(report, (extra,))
+    with pytest.raises(SnapshotNotApproved, match="still unclassified"):
         ReadableSnapshot(
-            manifest=decided,
-            directory_name=str(decided.snapshot_id()),
-            report=IntegrityReport(),
+            manifest=manifest,
+            directory_name=str(manifest.snapshot_id()),
+            report=report,
         )
 
 

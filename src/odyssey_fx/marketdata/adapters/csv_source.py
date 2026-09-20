@@ -1,7 +1,9 @@
 """原 CSV の読込（D03 §8、ADR-0025）。
 
-`RawBarSource`（`marketdata.application.ports`）を実装する。ポート定義は import せず、
-構造的に満たす（D01 §2.2 規則7）。
+`RawBarSource`（`marketdata.application.ports`）を実装する。**ポートの Protocol 定義そのものは
+import せず、構造的に満たす**（D01 §2.2 規則7）。読込結果の型（`RawFileContent`）だけは、
+application と同じ値を受け渡すために import する（`parquet_store` が partition の算法を
+import するのと同じ扱い）。
 
 **値を解釈しない**のがこの adapters の約束である（D03 §8）。polars で CSV を読むが、
 全列を文字列として読み、時刻も価格も文字列のまま application へ渡す。Decimal 化と時刻の
@@ -16,11 +18,13 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
+
+from odyssey_fx.marketdata.application.ports import RawFileContent, RawRow
 
 __all__ = ["CsvRawBarSource"]
 
@@ -37,6 +41,10 @@ class CsvRawBarSource:
 
     `time_column` は、無名の先頭列に与える名前。列対応の宣言（`ColumnMapping.time_column`）
     と同じ値を渡す。
+
+    読込は `read_file` の1つだけで、**内容のダイジェストと行を同じバイト列から**作る
+    （D03 §3.7.1 の「同じ原ファイルなら同じ識別子」を、読込の間のファイル差し替えに対しても
+    保つため）。
     """
 
     root: Path
@@ -52,33 +60,26 @@ class CsvRawBarSource:
             raise FileNotFoundError(f"raw file not found: {candidate}")
         return candidate
 
-    def read_rows(self, path: str) -> Sequence[dict[str, str]]:
-        """1ファイルの全行を、列名から文字列への mapping として読む。
+    def read_file(self, path: str) -> RawFileContent:
+        """1ファイルを**1回だけ**読み、内容の sha256 と全行を同時に返す。
+
+        バイト列を読んでからダイジェストを取り、同じバイト列を polars へ渡す。ダイジェストと
+        行を別々の読込から作ると、その間にファイルが差し替わったときに manifest の出所の
+        記録が実データと食い違い、「記録どおりでない snapshot」ができてしまう。
 
         全列を文字列として読む（`infer_schema=False`）。数値へ推論させると、価格が
         二進浮動小数を経由して Decimal の厳密さを失うため（ADR-0012）。
         """
-        resolved = self._resolve(path)
-        frame = pl.read_csv(resolved, infer_schema=False, has_header=True)
+        content = self._resolve(path).read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+
+        frame = pl.read_csv(io.BytesIO(content), infer_schema=False, has_header=True)
         if _UNNAMED_FIRST_COLUMN in frame.columns:
             frame = frame.rename({_UNNAMED_FIRST_COLUMN: self.time_column})
-        rows: list[dict[str, str]] = []
+        rows: list[RawRow] = []
         for record in frame.iter_rows(named=True):
             rows.append(
                 {name: "" if value is None else str(value) for name, value in record.items()}
             )
         # DataFrame はここで捨てる。外へ出すのは Python の組込み型だけ（D01 §2.2 規則1）。
-        return rows
-
-    def file_sha256(self, path: str) -> str:
-        """ファイル内容の sha256（16進 64 文字）。
-
-        manifest の `sources` に記録し、同じ原ファイルなら同じ snapshot 識別子になる
-        ことを保証する（D03 §3.7.1）。
-        """
-        resolved = self._resolve(path)
-        hasher = hashlib.sha256()
-        with resolved.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        return RawFileContent(sha256=digest, rows=tuple(rows))
