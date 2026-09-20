@@ -41,7 +41,7 @@
 | `ConversionPolicy` | `pivot_currency=USD` / `max_observation_skew=15分` | D06 §8.5.1（Q7・Q9） |
 | 遅延シナリオ | 経路4 以外は遅延なし | D03 §7・D06 §9.3 |
 
-`ask = bid + 0.02` とする（D06 §7.2）。決済通貨（JPY）と口座通貨（JPY）が一致するため、換算は率1の恒等換算であり `ConversionPath.legs` は1本、`skew=0` である（D06 §8.5.1）。
+`ask = bid + 0.02` とする（D06 §7.2）。決済通貨（JPY）と口座通貨（JPY）が一致するため、換算は率1の恒等換算であり `ConversionPath` は `legs=()`・`rate=1`・`skew=0` の経路になる（D06 §8.5.1 の規則1）。恒等換算に参照する市場系列は無いため、`ConversionLeg` を1本も作らない。
 
 ### 1.3 戦略の宣言と使用箇所
 
@@ -96,9 +96,9 @@ D06 §4.1 の15フェーズ（rank 0〜14）を、判断時刻 T = **2026-01-06T
 | 4 | `OPPORTUNITY_LIFECYCLE` | 有効な機会なし。`bindings=()` のため再検査なし | 記録なし（D05 §7.3） |
 | 5 | `P1_FEATURE` | `breakout_level` と `stop_level` を評価 | `EvaluationRecord(request_id=RequestId 00000001, evaluation_id=EvaluationId 00000001, instance_id="breakout_level", trigger_names=("h1",), decision_time=09:00Z, target_interval=Interval[08:00,09:00), opportunity_id=None, position_id=None, outcome=Evaluated((OutputId 00000001,)))` → 表2。出力は `OutputRecord(output_id=00000001, evaluation_id=00000001, producer=("breakout_level","level"), payload=Price(150.000), decision_time=09:00Z, available_at=09:00Z, sequence=0)` → 表1。`stop_level` も同様に `Price(149.500)`（`EvaluationId 00000002` / `OutputId 00000002`） |
 | 6 | `P2_MARKET_STATE` | 宣言なし | 記録なし |
-| 7 | `P3_TRIGGER` | `entry_trigger` が `150.040 > 150.000` で発火。直前状態 `ConditionState(False)` から成立へ変わったため `EDGE` が通る | 部品は `OpportunityContent(direction=LONG, reference_values={"breakout_level": Price(150.000)})` を返す。ランタイムが `Opportunity(opportunity_id=OpportunityId 00000001, symbol=USDJPY, signal_interval=Interval[08:00,09:00), direction=LONG, reference_values={...})` を組み立てる（D05 §4.2）。有効な機会数 0 < `max_active`=1 → 遷移1。`OpportunityTransition(opportunity_id=00000001, from_state=None, to_state=OPEN, at=ProcessingPoint(09:00Z, P3_TRIGGER, 4), phase=P3_TRIGGER, reason=None, counterpart=None, attempt_id=None)` → 表3。新しい状態 `ConditionState(True)` |
+| 7 | `P3_TRIGGER` | `entry_trigger` が `150.040 > 150.000` で発火。直前状態 `ConditionState(False)` から成立へ変わったため `EDGE` が通る | 部品は `OpportunityContent(direction=LONG, reference_values={"breakout_level": Price(150.000)})` を返す。ランタイムが `Opportunity(opportunity_id=OpportunityId 00000001, symbol=USDJPY, signal_interval=Interval[08:00,09:00), direction=LONG, reference_values={...})` を組み立てる（D05 §4.2）。有効な機会数 0 < `max_active`=1 → 遷移1。`OpportunityTransition(opportunity_id=00000001, from_state=None, to_state=OPEN, at=ProcessingPoint(09:00Z, P3_TRIGGER, 4), phase=P3_TRIGGER, reason=None, counterpart=None, attempt_id=None)` → 表3。`OutputRecord(output_id=00000003, producer=("entry_trigger","opportunity"), payload=Opportunity(…))` → 表1。新しい状態 `ConditionState(True)` |
 | 8 | `P4_CONFIRMATION` | 宣言なし | 記録なし |
-| 9 | `P5_ORDER_INTENT` | `entry_order` と `initial_stop` が同じ機会の配送で起動 | `OrderIntent(symbol=USDJPY, direction=LONG, order_type=MARKET, price_condition=None, expiry=None)` と `ProtectionLevels(stop_loss=Price(149.500), take_profit=None)`。役割出力が揃い `EntryProposal(opportunity_id=00000001, order_intent=…, protection=…, decision_time=09:00Z)` を1件返す。遷移4: `OPEN → ORDER_PENDING`（`at=ProcessingPoint(09:00Z, P5_ORDER_INTENT, 7)`）→ 表3 |
+| 9 | `P5_ORDER_INTENT` | `entry_order` と `initial_stop` が同じ機会の配送で起動 | `OutputRecord(output_id=00000004, producer=("entry_order","intent"), payload=OrderIntent(symbol=USDJPY, direction=LONG, order_type=MARKET, price_condition=None, expiry=None))` と `OutputRecord(output_id=00000005, producer=("initial_stop","protection"), payload=ProtectionLevels(stop_loss=Price(149.500), take_profit=None))` → 表1。役割出力が揃い `EntryProposal(opportunity_id=00000001, order_intent=…, protection=…, decision_time=09:00Z)` を1件返す。遷移4: `OPEN → ORDER_PENDING`（`at=ProcessingPoint(09:00Z, P5_ORDER_INTENT, 7)`）→ 表3 |
 | 10 | `ADMISSION` | 要求組立 → 全順序化 → 審査 → 予約 → 受付（D06 §6） | 第2.3節 |
 | 11 | `EXECUTION_OPEN` | `[09:00,09:15)` の始値で約定 | 第2.4節 |
 | 12 | `POST_FILL_EVALUATION` | 第2回の `step`。受付通知と `POSITION_OPENED` | 第2.5節 |
@@ -110,9 +110,11 @@ D06 §4.1 の15フェーズ（rank 0〜14）を、判断時刻 T = **2026-01-06T
 
 `AdmissionKey = (decision_time=09:00Z, request_class=ENTRY(1), strategy_priority=0, origin_seq=opportunity_id.seq=1, attempt_seq)` の昇順（D06 §6.3）。要求は1件なので順序は自明。並べてから `AttemptId 00000001` を採番する。
 
+**この表の2つのフィールドは、D05 の改訂が済むまで埋められない**。`EntryRequest.intent_output_id` と `InitialProtectionPlan.source_output_id` の値は、`EntryProposal` がどの出力から作られたかを指すが、現在の D05 §3 の `EntryProposal` は `opportunity_id` / `order_intent` / `protection` / `decision_time` の4項目しか持たず、エンジンはこの2つを受け取れない。保存済みの出力記録（表1）から推測しても、同じ判断時点に同じ役割の出力が複数出た場合に一意に決まらない（D06 §6.1）。下表の `OutputId 00000004` / `00000005` は**改訂後の値**であり、改訂前は正常経路でも `OrderRequest` を組み立てられない。D06 §15 に阻害要因（blocking）として明記した。
+
 | 手順 | 値 | 型とフィールド |
 |---|---|---|
-| 要求組立 | — | `OrderRequest(run_id=run-A, attempt_id=00000001, previous_attempt_id=None, account_id=ACC1, strategy_id=S1, created_at=ProcessingPoint(09:00Z, ADMISSION, 0), origin=STRATEGY, payload=EntryRequest(opportunity_id=00000001, symbol=USDJPY, side=BUY, order_type=MARKET, protection=InitialProtectionPlan(stop_loss=Price(149.500), take_profit=None, source_output_id=OutputId 00000004), exit_plan_ref=ExitPlanRef(compiled_ref=CS1, exit_instance_id="take_profit"), valid_for=20分, intent_output_id=OutputId 00000003), evidence_ref=EvidenceRef(EvidenceId 00000001))` → 表4 |
+| 要求組立 | — | `OrderRequest(run_id=run-A, attempt_id=00000001, previous_attempt_id=None, account_id=ACC1, strategy_id=S1, created_at=ProcessingPoint(09:00Z, ADMISSION, 0), origin=STRATEGY, payload=EntryRequest(opportunity_id=00000001, symbol=USDJPY, side=BUY, order_type=MARKET, protection=InitialProtectionPlan(stop_loss=Price(149.500), take_profit=None, source_output_id=OutputId 00000005), exit_plan_ref=ExitPlanRef(compiled_ref=CS1, exit_instance_id="take_profit"), valid_for=20分, intent_output_id=OutputId 00000004), evidence_ref=EvidenceRef(EvidenceId 00000001))` → 表4 |
 | 1. balance | `B = Money(1000000, JPY)` | `AdmissionBudget.balance` |
 | 2. 予算 | `trial_budget = 20000`、`U = 0`、`account_remaining = 200000`、`admission_budget = min(20000, 200000) = 20000` | `AdmissionBudget` の各項目 |
 | 3. 参照価格 | 執行系列の最新確定足 `15m 08:45Z` の `close=150.040`（bid）→ 買いは ask なので `150.040 + 0.020 = 150.060` | `ReferenceQuote(price=Price(150.060), basis=ASK, observed_at=09:00Z, source_bar=BarKey(USDJPY/15m/bid, 08:45Z), derived_from_spread=True)` |
@@ -120,7 +122,7 @@ D06 §4.1 の15フェーズ（rank 0〜14）を、判断時刻 T = **2026-01-06T
 | 5. 丸めと予約式 | `S = 149.500`（`price_tick=0.001` に整列済み、買いは `DOWN`）。`Δ = 0.050`（値幅を広げない向きに丸め済み）。`P_limit = 150.060 + 0.050 = 150.110`。`d × (P_limit − S) = 0.610 > 0` | `RiskAssessment.stop_before_rounding = stop_after_rounding = Price(149.500)`、`adverse_fill_limit = Price(150.110)` |
 | 6. 数量 | `C(Q) = (往復手数料 0.001×2 + 損切り決済の slippage 0.010) × Q = 0.012 Q`。`R(Q) = 0.610 Q + 0.012 Q = 0.622 Q ≤ 20000` → `Q ≤ 32154.3…` → 数量刻み 1000 で**切り下げ** → `Q = 32000` | `Quantity(32000)`、`quantity_step=Decimal("1000")` |
 | 7. 再検査 | `R(32000) = 0.622 × 32000 = 19904` 円 ≤ 20000。同時保持枠（未終端のエントリー注文0 ＋ 開いている建玉0 < 1）も合格 | `RiskCheckResult(check="admission_budget", passed=True, limit=Money(20000,JPY), observed=Money(19904,JPY))`、`RiskCheckResult(check="position_slot", passed=True, limit=Decimal("1"), observed=Decimal("0"))` |
-| 8. 記録 | `RiskAssessment(assessment_id=EvidenceId 00000002, attempt_id=00000001, policy_ref=RP1, budget=…, reference_quote=…, adverse_fill_limit=Price(150.110), stop_before_rounding=Price(149.500), stop_after_rounding=Price(149.500), quantity_step=Decimal("1000"), quantity=Quantity(32000), conversion=ConversionRate(JPY, JPY, 1, 09:00Z, EvidenceRef(…)), cost_budget=Money(384,JPY), reservation_amount=Money(19904,JPY), checks=(…))` → 表6 |
+| 8. 記録 | `RiskAssessment(assessment_id=EvidenceId 00000002, attempt_id=00000001, policy_ref=RP1, budget=…, reference_quote=…, adverse_fill_limit=Price(150.110), stop_before_rounding=Price(149.500), stop_after_rounding=Price(149.500), quantity_step=Decimal("1000"), quantity=Quantity(32000), conversion=ConversionRate(JPY, JPY, 1, 09:00Z, EvidenceRef(EvidenceId 00000002)), cost_budget=Money(384,JPY), reservation_amount=Money(19904,JPY), checks=(…))` → 表6。換算の経路そのものは `EvidenceRecord(evidence_id=00000002, …, conversion_paths=(ConversionPath(legs=(), rate=1, observed_at=09:00Z, skew=0分),))` として表15 に残す（D06 §8.5.1 の規則8） |
 
 受付の確定単位（D06 §4.4）で次を1回の差し替えにまとめる。
 
@@ -163,7 +165,7 @@ D06 §7.5 の6手順の順で処理する。
 |---|---|---|
 | 1 | 入口で受付通知を適用（D05 §7.2 の遷移5） | `OpportunityTransition(00000001, ORDER_PENDING → TERMINATED, at=ProcessingPoint(09:00Z, POST_FILL_EVALUATION, 0), reason=Reason(FULFILLED_BY_ORDER_ACCEPTANCE), attempt_id=00000001)` → 表3 |
 | 2 | `POSITION_OPENED` で `take_profit` を起動。入力は `RuntimeContextView.position_context(09:00Z, PositionId 00000001)` | `PositionContext(position_id=00000001, symbol=USDJPY, direction=LONG, quantity=Quantity(32000), entry_price=Price(150.080), effective_stop_loss=Price(149.500), effective_take_profit=None, opened_at=ProcessingPoint(09:00Z, EXECUTION_OPEN, 0))`（D06 §8.4） |
-| 3 | 部品が `risk = 150.080 − 149.500 = 0.580` から `SetTakeProfit(Price(151.240))` を返す（`reward_risk=2.0`。丸めは D06 の責務） | `ManagementRequest(position_id=00000001, action=SetTakeProfit(Price(151.240)), decision_time=09:00Z)`、`EvaluationRecord(… position_id=00000001, outcome=Evaluated((OutputId 00000005,)))` → 表2 |
+| 3 | 部品が `risk = 150.080 − 149.500 = 0.580` から `SetTakeProfit(Price(151.240))` を返す（`reward_risk=2.0`。丸めは D06 の責務） | `ManagementRequest(position_id=00000001, action=SetTakeProfit(Price(151.240)), decision_time=09:00Z)`、`EvaluationRecord(… position_id=00000001, outcome=Evaluated((OutputId 00000006,)))` → 表2 |
 | 4 | エンジンが丸めて建玉へ適用（買いは `DOWN`。`151.240` は刻みに整列済み）。検査 `entry 150.080 < take_profit 151.240` 合格 | `ProtectionState(version=2, stop_loss=Price(149.500), take_profit=Price(151.240), effective_from=BarKey(…, 09:00Z), owner_instance_id="take_profit")`。**初期の利確なので `effective_from` は約定した足**（D06 §8.3） |
 | 5 | 適用結果を記録。丸め後の実リスクリワード比 `(151.240 − 150.080) / (150.080 − 149.500) = 1.160 / 0.580 = 2.0` | 表12（`MANAGEMENT_APPLICATIONS`、主キー `(position_id, at)`） |
 
@@ -242,12 +244,31 @@ run 開始前の適合検査（D06 §7.4 の検査1〜5）:
 
 ## 5. 経路4: 受付前拒否（`PROTECTION_INVALID`）
 
-遅延シナリオで**執行系列だけが遅れる**構成（D03 §7・D06 §9.3 の `delay_scenario_ref`）。T = 09:00Z に `USDJPY/15m/bid` の `08:45Z` 足がまだ公開されておらず、`MarketDataView.latest_available(USDJPY/15m/bid, 09:00Z)` が返すのは `08:30Z` 足（`close=149.400`）である。評価系列（1時間足）は遅れていないため、rank 5〜9 は経路1 と同じに進み `EntryProposal` が1件出る。
+### 5.1 検証戦略 A の宣言ではこの経路が起きないこと
+
+紙上で追おうとして、**検証戦略 A の宣言からは保護水準の妥当性違反が構造的に作れない**ことが分かった。
+
+- `initial_stop`（`level_stop_loss`）が返す損切りは `stop_level` の出力、すなわち**当該足を除く過去 N 本の安値の最小**である。
+- 取引機会が生まれる条件は、`entry_trigger` が「当該足の終値 > `breakout_level` の出力（当該足を除く過去 M 本の高値の最大）」を満たすことである。
+- どちらの窓も「当該足を除く直前の連続した足」であり、**一方が他方の部分集合**になる。したがって「高値の最大」はどちらの窓に属する足の安値よりも大きく、`stop_level ≤ breakout_level < 終値` が常に成り立つ。
+- 判断時の bid（直前に完了した執行足の終値）は、同じ足から集約された1時間足の終値と一致する（D03 §3.3 の集約）。よって**買いの損切りは常に判断時の bid より下**であり、検査は必ず合格する。
+
+当初の版は「執行系列だけが遅れて古い足が参照価格になる」構成でこの経路を作ろうとしたが、これも成立しない。理由は2つある。
+
+1. 戦略向けのビュー `MarketDataView.latest_available` は、期待される最新足が未到着なら `LATEST_BAR_UNAVAILABLE` を返し、**古い足へ黙って戻らない**（D03 §6.2）。古い足が参照価格になる経路がそもそも無い。
+2. エンジンの参照価格は戦略向けのビューではなく、**エンジンが rank 0 で処理し終えた最新の執行足**から引く（D06 §6.4 の手順3）。執行用データの可用性は戦略向けの公開遅延とは別である【合意済み】上位 §4.7.12。
+
+したがってこの理由コードは、**損切りを別の出どころから計算する部品**（段階3 の ATR 型、距離型、固定価格パラメータ）や、宣言の誤りに対する防御として意味を持つ。段階2 の検証は単体テストで行う。
+
+### 5.2 単体テストで追う場合のフィールド
+
+`EntryProposal(opportunity_id=00000001, order_intent=OrderIntent(USDJPY, LONG, MARKET, None, None), protection=ProtectionLevels(stop_loss=Price(150.500), take_profit=None), decision_time=09:00Z)` を受付へ直接与える（判断時 bid は経路1 と同じ `150.040`）。
 
 | 手順 | 値 |
 |---|---|
-| 3. 参照価格 | 執行系列の最新確定足 `15m 08:30Z` の `close=149.400`（bid）→ ask `149.420`。`ReferenceQuote(price=Price(149.420), basis=ASK, observed_at=08:45Z, source_bar=BarKey(USDJPY/15m/bid, 08:30Z), derived_from_spread=True)` |
-| 4. 保護水準の妥当性 | 買いの損切り `149.500` は判断時 bid `149.400` **以上** → 違反（上位 §4.7.9 B） |
+| 3. 参照価格 | 直前に完了した執行足 `15m 08:45Z` の `close=150.040`（bid）→ ask `150.060`。`ReferenceQuote(price=Price(150.060), basis=ASK, observed_at=09:00Z, source_bar=BarKey(USDJPY/15m/bid, 08:45Z), derived_from_spread=True)` |
+| 4. 保護水準の妥当性 | 買いの損切り `150.500` は判断時 bid `150.040` **以上** → 違反（上位 §4.7.9 B） |
+| `RiskCheckResult` | `(check="protection_direction", passed=False, limit=Decimal("150.040"), observed=Decimal("150.500"))` |
 | 拒否 | `AttemptRejected(attempt_id=00000001, reason=Reason(PROTECTION_INVALID), assessment_ref=RiskAssessmentRef(EvidenceId 00000002))` → 表5。審査に実際に入っている（手順3 を通過している）ため `RiskAssessment` は残す（D06 §4.4） |
 | 台帳 | 変化なし。注文も予約も作らない |
 | 通知 | `AdmissionNotice(opportunity_id=00000001, attempt_id=00000001, accepted=False, reason=Reason(PROTECTION_INVALID))` を rank 12 で配送 |
@@ -255,9 +276,11 @@ run 開始前の適合検査（D06 §7.4 の検査1〜5）:
 
 **追えた要点**: 拒否理由（`PROTECTION_INVALID`、エンジン側）と機会の終端理由（`ORDER_ATTEMPT_REJECTED`、戦略側）が別の語であり、表5 と表3 で別々に集計できる。受付前拒否でも `OrderRequest`（表4）が残るため、機会 → 試行の連鎖が切れない。
 
-**この経路が Q10 の決定に依存すること**: 参照価格を評価系列（1時間足の `close=150.040`）から取る案（Q10 の選択肢2）では、同じ人工データで**受け付けられて約定する**。参照価格の出どころは判断履歴だけでなく**取引の有無そのもの**を変えるため、Q10 は数値の好みではなく契約の選択である。
+### 5.3 参照価格の出どころ（Q10）が観測できる段階
 
-**仮置き**: 参照価格に鮮度の上限（`max_age`）は置かない。古い参照価格は保護水準の妥当性検査と約定ずれの判定で顕在化し、そのどちらも記録に残るためである。上限を置くかどうかは、複数系列を混ぜる段階3 で改めて判断する。
+段階2 では、評価系列（1時間足）と執行系列（15分足）の終値が判断時点で一致するため、Q10 のどの選択肢でも参照価格の値は同じであり**結果は変わらない**。差が出るのは評価系列が粗くなる段階3（日足で判断し15分足で執行する検証戦略 B）であり、そこでは評価系列を採る案の参照価格が最大1日古くなる。Q10 は段階2 の数値の好みではなく、段階3 で効く契約の選択である。
+
+**仮置き**: 参照価格に鮮度の上限（`max_age`）は置かない。直前に完了した執行足に限るため、鮮度は構造的に執行足1本分以内に収まるからである（D06 §6.4 の手順3）。
 
 ## 6. 経路5: 同時保持上限と建玉枠
 
@@ -402,7 +425,7 @@ D06 §9.2 の15表のうち、経路1 の1取引で行が入るのは次のと�
 
 | # | 表 | 行数 | 主キーの値 |
 |---|---|---|---|
-| 1 | `OUTPUTS` | 5 | `OutputId 00000001`〜`00000005` |
+| 1 | `OUTPUTS` | 6 | `OutputId 00000001`〜`00000006`（水準2件・取引機会・注文意図・保護水準・管理要求） |
 | 2 | `EVALUATIONS` | 6 | `EvaluationId 00000001`〜`00000006` |
 | 3 | `OPPORTUNITY_TRANSITIONS` | 3 | `(00000001, P3_TRIGGER)` / `(00000001, P5_ORDER_INTENT)` / `(00000001, POST_FILL_EVALUATION)` |
 | 4 | `ORDER_REQUESTS` | 2 | `AttemptId 00000001`（エントリー）/ `00000002`（利確の決済） |
@@ -478,9 +501,15 @@ D06 §9.2 の15表のうち、経路1 の1取引で行が入るのは次のと�
 | 10 | 規則の欠落 | 銘柄別の実行ポリシー（許容不利約定幅）に対象銘柄が無い場合の扱いが無い | 経路1 | D06 §7.1.1・§10.5 で実行前のデータ能力検査に含めた |
 | 11 | 型の不整合 | `RiskPolicy.cost_budget: Money`（固定額）では、数量に比例する費用予算 `C(Q)` を表せない | 経路1 の手順6 | D06 §3・§6.4 で `RiskPolicy` から固定額の項目を外し、`C(Q)` は `CostModel` から計算すると明記 |
 | 12 | 未決の差し戻し | 候補の始値が run 末尾以降になる注文を受け付けるか拒否するか（上位 §4.7.13 F が詳細設計対象としたまま） | 経路8 | D06 §5.3 に本書の読み方を書き、**Q11** として差し戻し |
-| 13 | 仮置き | 参照価格に鮮度の上限を置くかどうか | 経路4 | 段階2 は置かない（理由は第5節）。段階3 で再判断 |
+| 13 | 仮置き | 参照価格に鮮度の上限を置くかどうか | 経路4 | 段階2 は置かない（理由は第5.3節）。段階3 で再判断 |
+| 14 | 規則の欠落 | 参照価格を**どのポートから**引くかが無い。戦略向けビューの `latest_available` は期待足が未到着なら古い足へ戻らない（D03 §6.2）ため、そこからは引けない | 経路1・経路4 | D06 §6.4 の手順3 に「エンジンが rank 0 で処理し終えた最新の執行足を `ExecutionSeries.bar` で引く」と明記 |
+| 15 | 到達不能の明示 | 6件の受付前拒否の理由コードのうち、検証戦略 A の実行で起きるのは3件だけであることが書かれていない | 経路4〜8 | D06 §5.2 に理由コードごとの到達可否と検証の仕方の表を新設 |
+| 16 | 型の不足 | 換算の経路（各 leg の系列・率・観測時点・ずれ）を保存する場所が15表のどこにも無い。`ConversionRate` は合成後の率しか持たない | 経路1（恒等換算）・Q7 の規則 | D06 の `EvidenceRecord` に `conversion_paths` を追加し、§8.5.1 に規則8 として明記 |
+| 17 | 型の表現 | 恒等換算（JPY→JPY）では参照する市場系列が無く、`series` / `bar_key` / `observed_at` が必須の `ConversionLeg` を1本も作れない | 経路1 | `ConversionPath.legs` を「0本＝恒等 / 1本＝直接 / 2本＝基軸通貨経由」とし、恒等換算を空の経路で表すことにした |
+| 18 | 保存形式の欠落 | 可変長の入れ子（レコードの `tuple`）を平坦化して Parquet へ保存する規則が無い | 経路1（`checks` / `market_refs` / `conversion_paths`） | D06 §9.1 に「要素ごとに正規化エンコード文字列にし、その文字列の `list` 列として保存する」を追加 |
+| 19 | 阻害要因 | `EntryProposal` に根拠の出力 ID が無く、**正常経路でも `OrderRequest` を組み立てられない** | 経路1 の要求組立 | D06 §6.1・§15 で「後で足せばよい項目」ではなく阻害要因であることを明記し、本書の承認と同時に D05 §3・§6.2 を改訂することを求める |
 
-分類の内訳: 規則の欠落6件（#1・#7・#8・#9・#10・#4）、型の不足・不整合2件（#5・#11）、規則の重複1件（#2）、順序の欠落1件（#6）、到達不能な遷移の明示1件（#3）、未決として差し戻し2件（#12 と #1 の一部＝Q10・Q11）、仮置き1件（#13）。
+分類の内訳: 規則の欠落7件（#1・#4・#7・#8・#9・#10・#14）、型の不足・不整合・表現4件（#5・#11・#16・#17）、規則の重複1件（#2）、順序・保存形式の欠落2件（#6・#18）、到達不能の明示2件（#3・#15）、未決として差し戻し2件（Q10・Q11＝#1 の一部と #12）、阻害要因1件（#19）、仮置き1件（#13）。
 
 ## 14. 本書の後続版
 

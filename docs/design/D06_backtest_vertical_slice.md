@@ -101,7 +101,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `ExecutionPolicy` | `domain.policies` | レコード | `entry_delay_bars: int` / `adverse_fill_limits: Mapping[Symbol, PriceOffset]` / `entry_valid_for: timedelta` / `close_valid_for: timedelta` / `resolution_hierarchy: ResolutionHierarchy` / `reference_quote_source: ReferenceQuoteSource` | §7.1・§7.1.1・§7.4・§6.4 |
 | `ReferenceQuoteSource` | `domain.policies` | enum | `EXECUTION_SERIES_LAST_CLOSE`（段階2の値。Q10 が未決の間の仮置き） | §6.4・Q10 |
 | `ConversionPolicy` | `domain.policies` | レコード | `pivot_currency: CurrencyCode` / `max_observation_skew: timedelta` | §8.5・Q7・Q9 |
-| `ConversionPath` | `portfolio.conversion` | レコード | `legs: tuple[ConversionLeg, ...]`（1本または2本）/ `rate: Decimal`（各 leg の積）/ `observed_at: UtcTime`（各 leg の `observed_at` の**最も古いもの**）/ `skew: timedelta` | §8.5 |
+| `ConversionPath` | `portfolio.conversion` | レコード | `legs: tuple[ConversionLeg, ...]`（**0本＝恒等換算 / 1本＝直接 / 2本＝基軸通貨経由**）/ `rate: Decimal`（各 leg の積。0本なら1）/ `observed_at: UtcTime`（各 leg の `observed_at` の**最も古いもの**。0本なら判断時刻）/ `skew: timedelta`（0本・1本なら0） | §8.5 |
 | `ConversionLeg` | `portfolio.conversion` | レコード | `series: SeriesId` / `bar_key: BarKey` / `rate: Decimal` / `observed_at: UtcTime` / `inverted: bool` | §8.5 |
 | `CostModel` | `domain.policies` | レコード | `commission_per_unit: Money` / `entry_slippage: PriceOffset` / `close_slippage: PriceOffset` / `spread_model: SpreadModel` / `swap_modeled: bool`（段階2は常に `False`） | §7.6 |
 | `SpreadModel` | `domain.policies` | union | `FixedSpread(offset: PriceOffset)`（段階2の唯一の値） | §7.2 |
@@ -135,7 +135,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `ResolutionMethod` | `execution` | enum | `SINGLE_HIT` / `RESOLVED_BY_CHILD` / `UNRESOLVED_SL_PRIORITY` | §7.4 |
 | `EvidenceKind` | `trace.recorder` | enum | `ORDER_REQUEST` / `ADMISSION` / `FILL` / `PROTECTION_UPDATE` | §9.2 |
 | `MarketObservationRef` | `trace.recorder` | レコード | `snapshot_ref: SnapshotRef` / `series: SeriesId` / `interval: Interval` / `field: MarketDataField`（D04 §5 の市場データ項目） | §9.2 |
-| `EvidenceRecord` | `trace.recorder` | レコード | `evidence_id: EvidenceId` / `at: ProcessingPoint` / `kind: EvidenceKind` / `output_ids: tuple[OutputId, ...]` / `evaluation_ids: tuple[EvaluationId, ...]` / `attempt_id: AttemptId \| None` / `position_id: PositionId \| None` / `market_refs: tuple[MarketObservationRef, ...]` / `ledger_snapshot_at: ProcessingPoint \| None` / `policy_refs: tuple[PolicyRef, ...]` | §9.2 |
+| `EvidenceRecord` | `trace.recorder` | レコード | `evidence_id: EvidenceId` / `at: ProcessingPoint` / `kind: EvidenceKind` / `output_ids: tuple[OutputId, ...]` / `evaluation_ids: tuple[EvaluationId, ...]` / `attempt_id: AttemptId \| None` / `position_id: PositionId \| None` / `market_refs: tuple[MarketObservationRef, ...]` / `conversion_paths: tuple[ConversionPath, ...]` / `ledger_snapshot_at: ProcessingPoint \| None` / `policy_refs: tuple[PolicyRef, ...]` | §9.2・§8.5.1 |
 | `IntrabarResolution` | `execution` | レコード | `position_id: PositionId` / `parent_bar_key: BarKey` / `method: ResolutionMethod` / `series_used: tuple[SeriesId, ...]` / `resolved_child_bar_key: BarKey \| None` / `verdict: CloseCause` / `fill_id: FillId` | §7.4 |
 | `ProtectionState` | `domain.positions` | レコード | `version: int` / `stop_loss: Price` / `take_profit: Price \| None` / `effective_from: BarKey` / `owner_instance_id: str \| None` | §8.3 |
 | `PositionStatus` | `domain.positions` | enum | `OPEN` / `CLOSED` | §8.2 |
@@ -314,6 +314,17 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 - `AttemptId` は要求組立で採番し、1つの `OrderRequest` に1つ対応する【合意済み】上位 §4.7.15 A。
 - 拒否は `AttemptRejected(attempt_id, reason, assessment_ref)` として記録し、注文も予約も作らない。同じ `attempt_id` で再試行しない【合意済み】同節。
 - 段階2で使う拒否の理由コードは `RISK` / `NO_CANDIDATE` / `RUN_END` / `DATA_ERROR` / `CARRY_NOT_ALLOWED` / **`PROTECTION_INVALID`** の6件である【合意済み】D02 §8.1。最後の1件は**保護水準の妥当性違反**（買いの損切りが判断時の売却側価格以上など、上位 §4.7.9 B）のために 2026-09-21 の Q6 決定（選択肢1）で加えた語で、上位設計書 §4.7.14 と D02 §8.1 を同じ PR で改訂済みである。損切りの向きの違反は戦略の宣言の誤りであり、口座のリスク上限の違反（`RISK`）と原因も対処も違うため集計で分ける。**不採用**: `RISK` に畳んで詳細で区別する案（リスク上限の違反率に設計ミスが混ざる）、`DATA_ERROR` を使う案（データの問題と宣言の問題が区別できなくなる）。
+- **6件のうち、検証戦略 A の宣言から実行中に起きるのは3件だけ**である【提案】（[T01](T01_paper_trace.md) 経路4〜8）。残り3件は単体テストで検証する。これを書かないと、意味論テストで再現できない理由コードが表に残る。
+
+| 理由コード | 検証戦略 A の実行で起きるか | 検証の仕方 |
+|---|---|---|
+| `RISK` | 起きる（建玉枠に当たる2件目のエントリー） | 意味論テスト |
+| `CARRY_NOT_ALLOWED` | 起きる（週の終わりの判断時点） | 意味論テスト |
+| `RUN_END` | 起きる（末尾の判断時点） | 意味論テスト |
+| `NO_CANDIDATE` | **代表理由としては現れない**。`entry_delay_bars=0` では候補が判断時点と同じ執行足の始値になり、有効時間20分の内側に必ず入る。唯一これが成立するのは週末境界だが、そこでは `CARRY_NOT_ALLOWED` が代表理由になる（下の順位表） | 単体テスト（`entry_delay_bars=1` と短い有効時間を与えた受付） |
+| `PROTECTION_INVALID` | 起きない。検証戦略 A の損切りは直近 N 本の安値の最小であり、突破の成立条件（終値が直近 N 本の高値の最大を上回る）から**常に判断時の bid より下**になる（窓はどちらも当該足を除く過去の足で、一方が他方の部分集合になる） | 単体テスト（損切りを判断時 bid 以上に置いた `EntryProposal` を直接与える） |
+| `DATA_ERROR` | 起きない。参照価格は直前に完了した執行足から引け、執行足が欠けていればそれは実行失敗になる（第10.4節） | 単体テスト |
+
 - **同じ試行に2つ以上の拒否理由が同時に成立したときの代表理由**を次の順で決める【提案】。上位 §4.7.14 は「複数理由が成立した場合の代表理由と診断一覧の扱い」を後続の具体化に委ねており、T01 で週末持ち越し禁止と候補なしが同時成立する経路が見つかったため（[T01](T01_paper_trace.md) 経路7）ここで固定する。
 
 | 順位 | 理由コード | 先に判定する理由 |
@@ -358,7 +369,14 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 
 `EntryRequest` の各項目は `EntryProposal` から次のとおり埋める。`symbol` と `side` は `OrderIntent`、`protection.stop_loss` は `ProtectionLevels.stop_loss`、`exit_plan_ref` は `ExitPlanRef(compiled.compiled_ref, compiled.roles.exit の instance_id)`、`valid_for` は `OrderIntent.expiry` が `None` なら `ExecutionPolicy.entry_valid_for`。
 
-**根拠の出力 ID をどこから取るかが、現在は解決できない**【提案】。上位 §4.7.8 は「注文意図・SL 算定について、使った出力 ID を記録する」と要求するが、D05 §3 の `EntryProposal` は `opportunity_id` / `order_intent` / `protection` / `decision_time` の4項目だけで `OutputId` を持たない。本書は `EntryRequest.intent_output_id` と `InitialProtectionPlan.source_output_id` を持つ形で設計し、**D05 に `EntryProposal` と `ManagementRequest` へ出力 ID を足す改訂を依頼する**（第15節）。**不採用**: trace の評価記録と出力記録を後から突き合わせて復元する案（同じ判断時点に同じ役割の出力が2件出た場合、機会 ID だけでは一意に決まらず、「名前だけ同じ指標の最新値を後から読み直して根拠を再構成しない」（上位 §4.7.8）に反する）。
+**根拠の出力 ID をどこから取るかが、現在は解決できない**【提案】。上位 §4.7.8 は「注文意図・SL 算定について、使った出力 ID を記録する」と要求するが、D05 §3 の `EntryProposal` は `opportunity_id` / `order_intent` / `protection` / `decision_time` の4項目だけで `OutputId` を持たない。本書は `EntryRequest.intent_output_id` と `InitialProtectionPlan.source_output_id` を持つ形で設計し、**D05 に `EntryProposal` と `ManagementRequest` へ出力 ID を足す改訂を依頼する**（第15節）。
+
+**この依頼は段階2の実装にとって阻害要因（blocking）である**【提案】。改訂前の D05 §3 の `EntryProposal` は `opportunity_id` / `order_intent` / `protection` / `decision_time` の4項目しか持たないため、**エンジンは正常経路でも `OrderRequest` を組み立てられない**（[T01](T01_paper_trace.md) 経路1 で確認）。したがって次のいずれかが要る。
+
+1. （推奨）D05 §3・§6.2 の改訂を本書の承認と同時に行い、`EntryProposal` に `intent_output_id` / `protection_output_id`、`ManagementRequest` に `source_output_id` を足す。
+2. 改訂が済むまで、段階2の実装で受付の経路を「完了済み」として扱わない。
+
+本書は他文書の本体を改訂しないという原則（第15節）に従い、改訂そのものは行わない。ただし**「後で足せばよい項目」ではなく「無ければ受付が実装できない項目」である**ことを、第15節の依頼に明記する。**不採用**: trace の評価記録と出力記録を後から突き合わせて復元する案（同じ判断時点に同じ役割の出力が2件出た場合、機会 ID だけでは一意に決まらず、「名前だけ同じ指標の最新値を後から読み直して根拠を再構成しない」（上位 §4.7.8）に反する）。
 
 ### 6.2 段階2で組み立てる要求の種類【提案】
 
@@ -398,7 +416,17 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 
 1. 受付判断時の `balance` を読む。`B <= 0` または口座状態を検証できなければ拒否（`RISK`）。
 2. `trial_budget = B × 0.02`、`account_remaining = max(0, B × 0.20 − U)`、`admission_budget = min(...)`。`U` は HELD 予約額と未解放の建玉割当額の合計（`TRANSFERRED` の予約は加算しない）。
-3. 参照価格を固定する。買いは ask、売りは bid。初版データは bid のみのため、ask は `SpreadModel` から導き、`ReferenceQuote.derived_from_spread=True` を立てる【合意済み】上位 §4.7.9 C。**どの足から bid を取るかは `ExecutionPolicy.reference_quote_source` が決め、段階2は `EXECUTION_SERIES_LAST_CLOSE`（執行系列の、判断時点で利用可能な最新の確定足の終値）とする**【提案】＋【要決定】（Q10）。上位 §4.7.9 B は「利用可能な観測または明示した発注判断時の参照価格を使う」とだけ定めており、系列と項目を特定していなかった（[T01](T01_paper_trace.md) 経路1 で判明）。執行系列を採るのは、約定の判定に使う価格と同じ系列から参照価格を取れば、参照価格と約定価格の差（約定ずれ）が系列差を含まなくなるためである。`ReferenceQuote.source_bar` にその足の `BarKey`、`observed_at` にその足の `available_at` を入れる。取れなければ `DATA_ERROR` で拒否する（手順3より前の拒否として `RiskAssessment` を作らない）。**参照価格に鮮度の上限は置かない**【提案】（段階2の仮置き）。執行系列が遅れて古い足が参照価格になった場合は、手順4 の保護水準の妥当性検査か第7.1節の約定ずれの判定のどちらかで顕在化し、そのどちらも記録に残るためである（[T01](T01_paper_trace.md) 経路4）。上限を置くかどうかは、複数系列を混ぜる段階3 で改めて判断する。**不採用**: 戦略が判断に使った評価系列の終値を使う案（評価系列と執行系列の粒度が違うと、約定ずれに系列差が混ざる）、判断時点の執行足の始値を使う案（rank 11 はまだ処理していないため先読みになる）。
+3. 参照価格を固定する。買いは ask、売りは bid。初版データは bid のみのため、ask は `SpreadModel` から導き、`ReferenceQuote.derived_from_spread=True` を立てる【合意済み】上位 §4.7.9 C。**どの足から bid を取るかは `ExecutionPolicy.reference_quote_source` が決め、段階2は `EXECUTION_SERIES_LAST_CLOSE` とする**【提案】＋【要決定】（Q10）。上位 §4.7.9 B は「利用可能な観測または明示した発注判断時の参照価格を使う」とだけ定めており、系列と項目を特定していなかった（[T01](T01_paper_trace.md) 経路1 で判明）。執行系列を採るのは、約定の判定に使う価格と同じ系列から参照価格を取れば、参照価格と約定価格の差（約定ずれ）が系列差を含まなくなるためである。
+
+`EXECUTION_SERIES_LAST_CLOSE` の具体的な引き方を次のとおり固定する【提案】。
+
+| 事項 | 規則 |
+|---|---|
+| どの足か | **エンジンがその判断時点までに rank 0（`EXECUTION_BAR_COMPLETE`）で処理し終えた最新の執行足**。エンジンは `ExecutionBarComplete` を受けた `BarKey` を保持しており、`ExecutionSeries.bar(bar_key)`（D03 §6.3）で足を引ける |
+| なぜ `MarketDataView` を使わないか | `MarketDataView.latest_available` は**戦略向け**のビューであり、期待足が未到着なら `LATEST_BAR_UNAVAILABLE` を返して古い足へ戻らない（D03 §6.2）。エンジンの参照価格は戦略向けの公開遅延とは別の可用性に従う【合意済み】上位 §4.7.12（「執行用データの可用性と戦略向け公開遅延の区別」） |
+| 鮮度 | 直前に完了した執行足に限られるため、鮮度は**構造的に執行足1本分以内**に収まる。別の鮮度上限を置かない【提案】 |
+| 記録 | `ReferenceQuote.source_bar` にその足の `BarKey`、`observed_at` にその足の `interval.end` を入れる |
+| 取れない場合 | 完了した執行足が1本も無い判断時点（run の先頭）では参照価格を構築できないため `DATA_ERROR` で受付前拒否する（手順3より前の拒否として `RiskAssessment` を作らない）。執行足のデータ自体が欠損していた場合は受付の問題ではなく**実行失敗**である（第10.4節） |**不採用**: 戦略が判断に使った評価系列の終値を使う案（評価系列と執行系列の粒度が違うと、約定ずれに系列差が混ざる）、判断時点の執行足の始値を使う案（rank 11 はまだ処理していないため先読みになる）。
 4. 保護水準の妥当性を検査する。買いの損切りは判断時の bid より下、売りは ask より上。違反・不正数値・価格情報の不足は `PROTECTION_INVALID` で拒否する（Q6 決定、選択肢1）。ここでいう判断時の bid / ask は手順3で固定した `ReferenceQuote` と同じ足から取り、買いの検査には bid（売却側）、売りの検査には ask（購入側）を使う。
 5. 損切りを価格刻みで丸める（第6.5節）。`P_limit = P_ref + d × Δ`、`R(Q) = d × (P_limit − S) × Q × X + C(Q)`。`d × (P_limit − S) > 0` を要求する。`C(Q)` は `CostModel` から計算した数量比例の費用予算である（第7.6節）。
 6. `R(Q) <= admission_budget` を満たす最大の数量を数量刻みで**切り下げ**て求める。最小数量未満なら拒否（`RISK`）。切り上げない。
@@ -625,17 +653,18 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 
 | # | 規則 |
 |---|---|
-| 1 | **経路の選び方は決定論的に固定する**。(a) 決済通貨と口座通貨が同じなら恒等換算（`legs=()` 相当の1本、率1）、(b) 直接のペア（`Symbol(from+to)` またはその逆）が snapshot にあればそれを1本使う、(c) 無ければ `pivot_currency` を経由する2本を使う、(d) それも無ければ換算不可として拒否する。同じ通貨対に対して常に同じ経路を選ぶ（先に見つかった方を使う、といった探索順依存にしない） |
+| 1 | **経路の選び方は決定論的に固定する**。(a) 決済通貨と口座通貨が同じなら**恒等換算**（`legs=()`、`rate=1`、`observed_at=判断時刻`、`skew=0`）、(b) 直接のペア（`Symbol(from+to)` またはその逆）が snapshot にあればそれを1本使う、(c) 無ければ `pivot_currency` を経由する2本を使う、(d) それも無ければ換算不可として拒否する。同じ通貨対に対して常に同じ経路を選ぶ（先に見つかった方を使う、といった探索順依存にしない）。**恒等換算を `legs` が空の経路で表す**のは、`ConversionLeg` が `series` / `bar_key` / `observed_at` を必須にしており、参照する市場系列が存在しない恒等換算では架空の観測を書くことになるためである |
 | 2 | **各ホップは判断時点で利用可能な最新の確定足から取る**。系列・足・項目の選び方は参照価格と同じ規則（第6.4節の手順3、`ExecutionPolicy.reference_quote_source`）に従う。将来の足を使わない【合意済み】全体計画 §5.4.4 |
 | 3 | **逆向きのペアは逆数を取り、`ConversionLeg.inverted=True` を立てる**。逆数化は丸めずに `Decimal` のまま保持し、丸めは最終的な `Money` への換算時に1回だけ行う（D02 §4.1 のカーネル精度で計算する） |
 | 4 | **合成した換算率の観測時点は、各ホップの `observed_at` のうち最も古いもの**とする。換算率はいちばん古い脚と同じだけしか新しくないためであり、新しい方を採ると、古い脚の情報が「その時点で観測された」と読める記録になる |
 | 5 | **ずれの大きさを `ConversionPath.skew`（各ホップの `observed_at` の最大差）として必ず記録する**。1ホップなら0。この値は根拠記録（表15）と `RiskAssessment` / `CostEntry` から辿れる |
 | 6 | **ずれが `ConversionPolicy.max_observation_skew` を超えたら換算不可とし、その用途に応じて拒否する**。受付時（予約額の計算）なら `DATA_ERROR` で受付前拒否、費用の計上と MTM 評価なら run の失敗（第10.4節）。初版値は**執行足1本分（15分）**とする【提案】。**この上限値と置き場所は第16節 Q9 で確定させる** |
-| 7 | **`ConversionRate`（D02 §4.5）は1本の率として持ち、経路は `ConversionPath` が持つ**。`ConversionRate(from_currency, to_currency, rate, observed_at, evidence)` の `rate` に合成後の率、`observed_at` に規則4の値、`evidence` に `ConversionPath` を含む根拠記録への参照を入れる。D02 の型は改訂しない |
+| 7 | **`ConversionRate`（D02 §4.5）は1本の率として持ち、経路は `ConversionPath` が持つ**。`ConversionRate(from_currency, to_currency, rate, observed_at, evidence)` の `rate` に合成後の率、`observed_at` に規則4の値、`evidence` に根拠記録への参照を入れる。D02 の型は改訂しない |
+| 8 | **経路そのものは根拠記録に永続化する**。`EvidenceRecord.conversion_paths` に、その処理点で使ったすべての `ConversionPath`（各 leg の系列・足・率・観測時点・逆数化の有無を含む）を入れ、表15（`EVIDENCE`）として保存する。`ConversionRate` は合成後の1つの率しか持たないため、これを入れないと**規則4・5 が要求する情報が15表のどこにも残らず**、`RiskAssessment` と `CostEntry` から経路を再現できない |
 
 **不採用**: 直接のペアだけを許す案（Q7 の選択肢1。実装は最小だが扱えるペアが狭く、段階3以降で JPY 以外の口座を試すたびに設計へ戻ることになる）、経路を実験設定で明示宣言させる案（Q7 の選択肢3。意図しない経路は避けられるが、段階2で使わない宣言型が増える）、3ホップ以上を許す案（ずれの合成が経路の本数だけ増え、上限の意味が経路ごとに変わる）、新しい方の観測時点を採る案（規則4の逆。記録が実態より新しく見える）。
 
-段階2の実装では、(a) の恒等換算だけを通す経路を作り、(b)(c) の分岐と規則3〜6 は段階3で JPY 以外の口座を扱うときに使う。ただし `ConversionPath` と `ConversionLeg` の型、および規則4・5 の記録項目は段階2から置く（恒等換算でも `skew=0` の1本として記録し、段階3で項目が増えないようにする）。
+段階2の実装では、(a) の恒等換算だけを通す経路を作り、(b)(c) の分岐と規則3〜6 は段階3で JPY 以外の口座を扱うときに使う。ただし `ConversionPath` と `ConversionLeg` の型、および規則4・5・8 の記録項目は段階2から置く（恒等換算でも `legs=()`・`skew=0` の経路として表15 に記録し、段階3で項目が増えないようにする）。
 
 ## 9. 記録（`trace`）
 
@@ -644,6 +673,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 - 表形式データは Parquet、manifest は JSON【合意済み】ADR-0027。保存先は `runs/<run_id>/`。
 - 書き出しは `TraceSink`（`backtest.application.ports`）経由で、実装は `evaluation.adapters` または `app` が持つ【合意済み】D01 §4。`backtest` は polars も Parquet も直接触らない。
 - **行は平坦化して保存する**【提案】。各表の列は本書・D05 の型のフィールドに1対1で対応させ、入れ子の値は次の規則で開く。`ProcessingPoint` は `*_time` / `*_phase` / `*_sequence` の3列、`Reason` は `*_reason_code` と `*_reason_detail`（正規化エンコード文字列、D02 §9.3）の2列、`Money` は `*_amount`（文字列）と `*_currency`、`Decimal` と `Price` と `Quantity` は文字列、`UtcTime` は D02 §3.1 の文字列、ID 型は `__str__`。Decimal を浮動小数として保存すると再現性が壊れるため文字列にする【合意済み】ADR-0012。
+- **可変長の入れ子（`market_refs` / `conversion_paths` / `checks` / `hierarchy_checks` など、レコードの `tuple`）は、要素ごとに D02 §9.3 の正規化エンコード文字列にし、その文字列の `list` 列として保存する**【提案】。要素数が行ごとに変わるため固定の列へ開けず、かといって落とすと診断の実値が消える。ID の `tuple`（`output_ids` など）は `__str__` の `list` 列とする。正規化エンコードを使うのは、同じ内容から常に同じ文字列が出て再現性の比較ができるためである。**不採用**: 子表へ分ける案（表が15を超え、D07 が開く表が増える）、JSON 文字列にする案（`Decimal` の表現が正規化エンコードと二重になる）。
 - 全行が `run_id` を持つ【合意済み】上位 §4.7.15。
 
 ### 9.2 trace の行の種類【提案】
@@ -666,7 +696,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 | 12 | `MANAGEMENT_APPLICATIONS` | `ManagementRequest`（D05 §3）＋ 適用結果 | `(position_id, at)` | `position_id` / 元の `output_id` |
 | 13 | `INTRABAR_RESOLUTIONS` | `IntrabarResolution` | `fill_id` | `position_id` / `parent_bar_key` |
 | 14 | `LEDGER_SNAPSHOTS` | `LedgerSnapshot` | `at` | `open_position_ids` |
-| 15 | `EVIDENCE` | `EvidenceRecord` | `evidence_id` | `output_ids` / `evaluation_ids` / `attempt_id` / `position_id` / `market_refs` |
+| 15 | `EVIDENCE` | `EvidenceRecord` | `evidence_id` | `output_ids` / `evaluation_ids` / `attempt_id` / `position_id` / `market_refs` / `conversion_paths` |
 
 **ID 連鎖で辿れること**（機会 → 試行 → 注文 → 約定 → 建玉 → 管理要求、および予約）を、表3・4・7・9・11・12・10 の外部キーで満たす。**受付前拒否でも連鎖が切れない**のは、`OrderRequest` を表4として必ず保存するためである（上位 §4.7.15 A が「受付前拒否もこの記録に紐付く」と定めている）。`AttemptRejected` は `AcceptedOrder` を作らないため、発端の取引機会は表4の `opportunity_id` からだけ辿れる【合意済み】全体計画 §5.4.5。**根拠記録は表15 `EVIDENCE` に置く**【提案】。`EvidenceRef`（D02 §9.2）は `evidence_id: EvidenceId` だけを持ち、表1・2・4 の主キーは `OutputId` / `EvaluationId` / `AttemptId` であるため、`EvidenceRef` から直接それらの行を引くことはできない。そこで上位 §4.7.15 が定める根拠記録の内容（入力の出力 ID、市場データの snapshot・系列・区間・項目、読取時点、口座 snapshot、使用した設定の版）を `EvidenceRecord` として型付きで保持し、**そこから表1・2・4・12・14 へ自然キーで辿る**。`EvidenceId` の採番は `backtest.trace`【合意済み】D02 §7.1。`RiskAssessment.assessment_id` も同じ `EvidenceId` の採番列から取り、審査記録それ自体が1件の根拠記録であることを表す。**不採用**: 表1・2 の行に `EvidenceId` を足す案（`OutputRecord` と `EvaluationRecord` は D05 が正本であり、記録の都合で戦略側の型にエンジン側の識別子を足すことになる）、自由記述のログにする案（型付きで辿れない記録が増え、上位 §4.7.15 の「説明文だけのログではない」に反する）。
 
@@ -864,7 +894,7 @@ Q1・Q2・Q6 の決定に伴う改訂は**本 PR で実施済み**である。�
 | 宛先 | 依頼 |
 |---|---|
 | D04 §5 | `position_context@v1` の例示に**有効な損切り水準**を足す（第13節の2。D05 §12 が既に依頼済みの項目を、本書が項目表として確定させた） |
-| D05 §3・§6.2 | `EntryProposal` に `intent_output_id` / `protection_output_id`、`ManagementRequest` に `source_output_id` を足す（第6.1節）。根拠の ID 連鎖（上位 §4.7.8）を満たすために要る |
+| D05 §3・§6.2 | **（阻害要因。本書の承認と同時に行う必要がある）** `EntryProposal` に `intent_output_id` / `protection_output_id`、`ManagementRequest` に `source_output_id` を足す（第6.1節）。根拠の ID 連鎖（上位 §4.7.8）を満たすために要るだけでなく、**無ければ正常経路でも `OrderRequest` を組み立てられない** |
 | 上位設計書 §4.7.12 | 受付の全順序の鍵に決済要求を含める一般化（第13節の1）を追記する |
 | 上位設計書 §4.7.14 | 受付前拒否で複数の理由が同時に成立したときの代表理由の順位（第5.2節、第13節の7）を、同節が「後続で具体化する」としている箇所へ追記する |
 
@@ -899,9 +929,9 @@ Q1・Q2・Q6 の決定に伴う改訂は**本 PR で実施済み**である。�
 推奨理由: ずれの許容量は「約定の意味」でも「リスク上限」でもなく換算固有の設定であり、実行ポリシーやリスクポリシーに混ぜると、換算を変えたい実験が約定やリスクの版まで動かすことになる。初版値を執行足1本分にするのは、それより大きいずれは執行足1本分の値動きを見落とすことと同じだからである。
 
 **Q10. 受付時の参照価格をどの足から取るか**
-影響: 予約額・数量・約定ずれの判定がすべてこの価格を起点にする。判断履歴の `ReferenceQuote.source_bar` に何が入るかも決まる。紙上トレース T01 の経路1 で、本書が系列と項目を特定していないことが判明したため追加した。
-1. （推奨）執行系列の、判断時点で利用可能な最新の確定足の終値（bid）。ask は spread モデルで導く — 影響: 参照価格と約定価格が同じ系列から出るため、約定ずれに系列差が混ざらない。段階2は評価系列（1時間足）と執行系列（15分足）の終値が同じ時刻に確定するため、値は評価系列の終値と一致する。
-2. 戦略が判断に使った評価系列の最新の確定足の終値 — 影響: 戦略の判断と参照価格の出どころが揃うが、評価系列が粗い構成（段階3の日足）では参照価格が最大1日古くなる。
+影響: 予約額・数量・約定ずれの判定がすべてこの価格を起点にする。判断履歴の `ReferenceQuote.source_bar` に何が入るかも決まる。紙上トレース T01 の経路1 で、本書が系列と項目を特定していないことが判明したため追加した。**段階2（評価系列が1時間足、執行系列が15分足）では、判断時点で両方の終値が一致するため結果は変わらない**。差が出るのは評価系列が粗くなる段階3（日足で判断し15分足で執行する検証戦略 B）である。
+1. （推奨）直前に完了した執行足の終値（bid）。ask は spread モデルで導く — 影響: 参照価格と約定価格が同じ系列から出るため、約定ずれに系列差が混ざらない。参照価格の鮮度が執行足1本分以内に収まる。
+2. 戦略が判断に使った評価系列の最新の確定足の終値 — 影響: 戦略の判断と参照価格の出どころが揃うが、評価系列が粗い構成では参照価格が最大1日古くなり、その古さが約定ずれの数値に入り込む。
 3. 実験設定で参照価格の系列を明示指定する — 影響: 意図しない系列が使われないが、段階2で使わない設定が1つ増え、執行系列と食い違う組み合わせを作れてしまう。
 推奨理由: 参照価格は「約定がどれだけ不利にずれたか」を測る基準であり（上位設計書 §4.7.9 C）、測る対象と同じ系列から取らないと、ずれの中に系列の粒度差が入り込む。
 
@@ -930,6 +960,12 @@ Q1・Q2・Q6 の決定に伴う改訂は**本 PR で実施済み**である。�
 | 10 | run 末尾の3つの処理（注文の取消・機会の終端・最終 snapshot）の順序が書かれていない | 手順5〜7 としてこの順に行うことと、その理由を書いた | §10.1 |
 | 11 | spread の価格反映分を記録する費用区分が無い（執行モデルの滑りと提示価格の幅を分けて集計できない） | 費用区分に `SPREAD_IN_PRICE` を足した | §3、§7.6 |
 | 12 | リスクポリシーの費用予算が固定額（`Money`）で、数量に比例する費用予算 `C(Q)` を表せない | リスクポリシーから固定額の項目を外し、`C(Q)` は費用モデルから計算すると明記した | §3、§6.4 の手順5、§7.6 |
-| 13 | 参照価格に鮮度の上限を置くかどうか（仮置き） | 段階2は置かない。古い参照価格は保護水準の妥当性検査と約定ずれの判定で顕在化し、どちらも記録に残るため。段階3で再判断する | §6.4 の手順3、T01 §5 |
+| 13 | 参照価格に鮮度の上限を置くかどうか（仮置き） | 段階2は置かない。直前に完了した執行足に限るため鮮度が構造的に1本分以内に収まる。段階3で再判断する | §6.4 の手順3、T01 §5.3 |
+| 14 | 参照価格を**どのポートから**引くかが書かれていない（戦略向けビューは期待足が未到着なら古い足へ戻らない） | エンジンが rank 0 で処理し終えた最新の執行足を `ExecutionSeries.bar` で引くと明記した | §6.4 の手順3 |
+| 15 | 6件の受付前拒否の理由コードのうち、検証戦略 A の実行で起きるのは3件だけであることが書かれていない | 理由コードごとの到達可否と検証の仕方の表を新設した | §5.2 |
+| 16 | 換算の経路（各 leg の系列・率・観測時点・ずれ）を保存する場所が15表のどこにも無い | `EvidenceRecord` に `conversion_paths` を足し、規則8 として明記した | §3、§8.5.1、§9.2 |
+| 17 | 恒等換算では参照する市場系列が無く、`ConversionLeg` を1本も作れない | `ConversionPath.legs` を0本（恒等）・1本（直接）・2本（基軸通貨経由）とした | §3、§8.5.1 の規則1 |
+| 18 | 可変長の入れ子（レコードの `tuple`）を Parquet へ保存する規則が無い | 要素ごとに正規化エンコード文字列にし、その `list` 列として保存すると明記した | §9.1 |
+| 19 | `EntryProposal` に根拠の出力 ID が無く、正常経路でも `OrderRequest` を組み立てられない（阻害要因） | D05 §3・§6.2 の改訂を本書の承認と同時に行う必要があることを明記した | §6.1、§15 |
 
 T01 が「本書の範囲では追えない」と記録したもの（検証戦略 B の後続確認・待機、複数建玉の台帳など）は、いずれも第1.2節の第4列または第12節で担当と時期が決まっているものであり、本書 v0.2 では埋めない。
