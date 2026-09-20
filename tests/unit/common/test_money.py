@@ -7,6 +7,7 @@ from decimal import Context, Decimal, getcontext, localcontext
 
 import pytest
 
+from odyssey_fx.common import money
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import EvidenceId
 from odyssey_fx.common.money import (
@@ -373,6 +374,96 @@ def test_float_conversion_validates_its_fields() -> None:
         )
 
 
+# --- 精度を超える桁数での丸め方向（Codex レビュー round 3 指摘）-------------
+#
+# 刻みへの丸めを `value / step` から始めると、有効桁が精度（28桁）を超える値では商が先に
+# 半偶数丸めされ、指定した丸め方向が失われる。切り捨てのつもりが切り上がると、損切り水準や
+# 発注数量が意図と逆に動くため、整数演算で厳密に計算する。
+
+#: 1 のすぐ下（9が40個）。精度28では 1 に丸められてしまう。
+_JUST_BELOW_ONE = "0." + "9" * 40
+
+#: 1 のすぐ上（1 のあと 0 が39個と 1）。精度28では 1 に丸められてしまう。
+_JUST_ABOVE_ONE = "1." + "0" * 39 + "1"
+
+
+def test_round_down_keeps_a_value_just_below_the_grid_below_it() -> None:
+    """`1.999…9` の切り捨ては 1。商を先に丸めると 2 になってしまっていた。"""
+    rounded = Price(D("1." + "9" * 40)).round_to_tick(D("1"), RoundingDirection.DOWN)
+    assert rounded.value == D("1")
+
+
+def test_a_quantity_just_below_one_step_rounds_down_to_nothing() -> None:
+    """刻み未満の数量は `None`。商を先に丸めると 1 単位が生まれてしまっていた。"""
+    assert Quantity(D(_JUST_BELOW_ONE)).round_down_to_step(D("1")) is None
+
+
+def test_round_up_keeps_a_value_just_above_the_grid_above_it() -> None:
+    """`1.000…01` の切り上げは 2。商を先に丸めると 1 になってしまっていた。"""
+    rounded = Price(D(_JUST_ABOVE_ONE)).round_to_tick(D("1"), RoundingDirection.UP)
+    assert rounded.value == D("2")
+
+
+def test_round_up_does_not_move_a_value_already_on_the_grid() -> None:
+    assert Price(D("2")).round_to_tick(D("1"), RoundingDirection.UP).value == D("2")
+    assert Price(D("2.000")).round_to_tick(D("0.001"), RoundingDirection.UP).value == D("2.000")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0.5", "0"),  # 同点 → 偶数側の 0
+        ("1.5", "2"),  # 同点 → 偶数側の 2
+        ("2.5", "2"),  # 同点 → 偶数側の 2
+        ("3.5", "4"),  # 同点 → 偶数側の 4
+        ("0.5000000000000000000000000000001", "1"),  # 半分より上（精度28を超える桁で決まる）
+        ("1.4999999999999999999999999999999", "1"),  # 半分より下
+    ],
+)
+def test_half_even_ties_and_near_ties(raw: str, expected: str) -> None:
+    """同点は偶数側へ。精度を超える桁で決まる僅差も正しく判定する。"""
+    money = Money(D(raw), JPY).round_to(D("1"), RoundingDirection.NEAREST_HALF_EVEN)
+    assert money.amount == D(expected)
+
+
+@pytest.mark.parametrize(
+    ("raw", "direction", "expected"),
+    [
+        ("-100.567", RoundingDirection.DOWN, "-100.57"),  # 数直線の下側
+        ("-100.567", RoundingDirection.UP, "-100.56"),  # 数直線の上側
+        ("-100.565", RoundingDirection.NEAREST_HALF_EVEN, "-100.56"),
+        ("-1." + "9" * 40, RoundingDirection.DOWN, "-2"),
+        ("-1." + "9" * 40, RoundingDirection.UP, "-1"),
+    ],
+)
+def test_negative_amounts_keep_floor_and_ceiling_semantics(
+    raw: str, direction: RoundingDirection, expected: str
+) -> None:
+    """負の金額でも DOWN は数直線の下側、UP は上側（D02 §4.3）。"""
+    step = D("1") if "9" * 40 in raw else D("0.01")
+    assert Money(D(raw), JPY).round_to(step, direction).amount == D(expected)
+
+
+def test_rounding_keeps_the_step_exponent() -> None:
+    """結果は刻みの指数をそのまま持つ（表示上の桁が刻みと一致する）。"""
+    assert str(Price(D("150.1234")).round_to_tick(D("0.001"), RoundingDirection.DOWN)) == "150.123"
+    assert str(Money(D("100.567"), JPY).round_to(D("0.01"), RoundingDirection.DOWN)) == (
+        "100.56 JPY"
+    )
+
+
+def test_rounding_handles_a_step_larger_than_one() -> None:
+    assert Quantity(D("2500")).round_down_to_step(D("1000")) == Quantity(D("2000"))
+    assert Price(D("2500")).round_to_tick(D("1000"), RoundingDirection.UP).value == D("3000")
+
+
+def test_rounding_is_exact_far_beyond_the_kernel_precision() -> None:
+    """60 桁の値でも、刻みに載った厳密な結果を返す。"""
+    raw = "1" + "0" * 40 + "." + "5" * 20
+    rounded = Price(D(raw)).round_to_tick(D("0.0000000001"), RoundingDirection.DOWN)
+    assert rounded.value == D("1" + "0" * 40 + ".5555555555")
+
+
 # --- 呼び出し側のコンテキストからの独立（Codex レビュー round 2 指摘D）-------
 #
 # `Decimal` の演算は「現在のコンテキスト」の精度で丸められる。カーネルの算術が呼び出し側の
@@ -429,6 +520,31 @@ def test_price_arithmetic_ignores_the_ambient_context() -> None:
         assert (price - Price(D("0.000000000000000000000000001"))).value == D(
             "1.234567890123456789012345677"
         )
+
+
+def test_mutating_the_exported_context_does_not_change_the_arithmetic() -> None:
+    """公開されたコンテキストを書き換えても計算は変わらない（round 3 指摘）。
+
+    `Context` は可変オブジェクトなので、1つを使い回していると `.prec` を書き換えただけで
+    以後の台帳計算がすべて低精度になってしまう。算術のたびに不変な設定から作り直す。
+    """
+    original = money.KERNEL_DECIMAL_CONTEXT.prec
+    try:
+        money.KERNEL_DECIMAL_CONTEXT.prec = 3
+        total = Money(D(_LONG_MANTISSA), JPY) + Money(D("0"), JPY)
+        assert total.amount == D(_LONG_MANTISSA)
+    finally:
+        money.KERNEL_DECIMAL_CONTEXT.prec = original
+    assert money.KERNEL_DECIMAL_CONTEXT.prec == 28
+
+
+def test_kernel_context_hands_out_a_fresh_object_each_time() -> None:
+    first = money.kernel_context()
+    second = money.kernel_context()
+    assert first is not second
+    assert (first.prec, first.rounding) == (28, "ROUND_HALF_EVEN")
+    first.prec = 3
+    assert money.kernel_context().prec == 28
 
 
 def test_the_ambient_context_is_left_untouched() -> None:

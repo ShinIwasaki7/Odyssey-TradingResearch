@@ -6,12 +6,17 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Context, Decimal, localcontext
 
 from hypothesis import given
 from hypothesis import strategies as st
 
-from odyssey_fx.common.money import RoundingDirection, decimal_from_str, price_from_float
+from odyssey_fx.common.money import (
+    RoundingDirection,
+    _quantize_to_step,
+    decimal_from_str,
+    price_from_float,
+)
 
 #: 実運用にある価格刻み。
 _TICKS = [decimal_from_str(text) for text in ("0.00001", "0.0001", "0.001", "0.01", "0.1", "1")]
@@ -112,3 +117,114 @@ def test_a_value_already_on_the_grid_is_unchanged(
     on_grid = price_from_float(raw, tick=tick, direction=RoundingDirection.DOWN).result
     again = price_from_float(float(on_grid.value), tick=tick, direction=direction)
     assert again.result == on_grid
+
+
+# --- 刻みへの丸めの厳密性（Codex レビュー round 3 指摘）---------------------
+#
+# 十進コンテキストの精度（28桁）を超える値でも、丸め方向の意味が保たれることを確かめる。
+# 桁数の多い `Decimal` を直に生成し、`_quantize_to_step` の不変条件を検査する。
+
+#: 最大 60 桁の有限 `Decimal`（符号つき）。精度 28 を大きく超える。
+_wide_decimals = st.decimals(
+    allow_nan=False,
+    allow_infinity=False,
+    places=None,
+    min_value=Decimal("-1e20"),
+    max_value=Decimal("1e20"),
+)
+
+#: 正の刻み。桁の位置をいろいろに散らす。
+_steps = st.sampled_from(
+    [
+        decimal_from_str(text)
+        for text in ("0.0000000001", "0.001", "0.01", "0.1", "1", "5", "1000", "1E+3")
+    ]
+)
+
+
+def _scaled(value: Decimal, exponent: int) -> int:
+    """`value` を指数 `exponent` を単位とする整数にする。
+
+    検証側も十進コンテキストの精度に左右されないよう、比較はすべて Python の整数で行う。
+    `result + step` のような `Decimal` 演算をそのまま書くと、28桁を超える場面では**検証式の
+    ほうが**丸められてしまい、正しい結果を誤判定する。
+    """
+    sign, digits, value_exponent = value.as_tuple()
+    assert isinstance(value_exponent, int)
+    mantissa = int("".join(str(digit) for digit in digits) or "0")
+    if sign:
+        mantissa = -mantissa
+    scale: int = 10 ** (value_exponent - exponent)
+    return mantissa * scale
+
+
+def _common_exponent(*values: Decimal) -> int:
+    exponents = []
+    for value in values:
+        _, _, exponent = value.as_tuple()
+        assert isinstance(exponent, int)
+        exponents.append(exponent)
+    return min(exponents)
+
+
+@given(_wide_decimals, _steps)
+def test_down_brackets_the_value_from_below(value: Decimal, step: Decimal) -> None:
+    """切り捨ての定義: 結果 <= 値 < 結果 + 刻み。"""
+    result = _quantize_to_step(value, step, RoundingDirection.DOWN)
+    unit = _common_exponent(value, step, result)
+    scaled_value = _scaled(value, unit)
+    scaled_result = _scaled(result, unit)
+    assert scaled_result <= scaled_value
+    assert scaled_value < scaled_result + _scaled(step, unit)
+
+
+@given(_wide_decimals, _steps)
+def test_up_brackets_the_value_from_above(value: Decimal, step: Decimal) -> None:
+    """切り上げの定義: 結果 - 刻み < 値 <= 結果。"""
+    result = _quantize_to_step(value, step, RoundingDirection.UP)
+    unit = _common_exponent(value, step, result)
+    scaled_value = _scaled(value, unit)
+    scaled_result = _scaled(result, unit)
+    assert scaled_value <= scaled_result
+    assert scaled_result - _scaled(step, unit) < scaled_value
+
+
+@given(_wide_decimals, _steps, _directions)
+def test_the_result_is_always_an_exact_multiple_of_the_step(
+    value: Decimal, step: Decimal, direction: RoundingDirection
+) -> None:
+    result = _quantize_to_step(value, step, direction)
+    unit = _common_exponent(step, result)
+    assert _scaled(result, unit) % _scaled(step, unit) == 0
+
+
+@given(_wide_decimals, _steps)
+def test_half_even_never_moves_further_than_half_a_step(value: Decimal, step: Decimal) -> None:
+    result = _quantize_to_step(value, step, RoundingDirection.NEAREST_HALF_EVEN)
+    unit = _common_exponent(value, step, result)
+    distance = abs(_scaled(result, unit) - _scaled(value, unit))
+    assert 2 * distance <= _scaled(step, unit)
+
+
+@given(_wide_decimals, _steps)
+def test_down_and_up_agree_exactly_on_grid_values(value: Decimal, step: Decimal) -> None:
+    """切り捨てと切り上げが一致するのは、値がちょうど刻みに載っているときだけ。"""
+    down = _quantize_to_step(value, step, RoundingDirection.DOWN)
+    up = _quantize_to_step(value, step, RoundingDirection.UP)
+    unit = _common_exponent(value, step, down, up)
+    scaled_down = _scaled(down, unit)
+    scaled_up = _scaled(up, unit)
+    if scaled_down == scaled_up:
+        assert _scaled(value, unit) == scaled_down
+    else:
+        assert scaled_up - scaled_down == _scaled(step, unit)
+
+
+@given(_wide_decimals, _steps, _directions)
+def test_rounding_does_not_depend_on_the_ambient_context(
+    value: Decimal, step: Decimal, direction: RoundingDirection
+) -> None:
+    """呼び出し側が精度の低いコンテキストを使っていても結果は変わらない。"""
+    baseline = _quantize_to_step(value, step, direction)
+    with localcontext(Context(prec=5)):
+        assert _quantize_to_step(value, step, direction) == baseline

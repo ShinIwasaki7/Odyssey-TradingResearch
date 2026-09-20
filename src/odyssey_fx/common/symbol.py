@@ -15,7 +15,7 @@ from decimal import Decimal, localcontext
 from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.money import KERNEL_DECIMAL_CONTEXT, CurrencyCode
+from odyssey_fx.common.money import CurrencyCode, kernel_context
 from odyssey_fx.common.refs import ContentDigest
 
 __all__ = ["Symbol", "SymbolSpec", "SymbolSpecRef"]
@@ -65,7 +65,7 @@ def _require_positive(value: Decimal, label: str) -> Decimal:
 
 def _is_integral_multiple(value: Decimal, unit: Decimal) -> bool:
     """`value` が `unit` の整数倍かを判定する。"""
-    with localcontext(KERNEL_DECIMAL_CONTEXT):
+    with localcontext(kernel_context()):
         return value % unit == 0
 
 

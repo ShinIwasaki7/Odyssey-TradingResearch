@@ -131,6 +131,115 @@ def test_a_mutable_detail_really_could_have_changed_after_the_fact() -> None:
         Reason(ReasonCode.RISK, detail)
 
 
+# --- 詳細の中身も再帰的に不変であること（Codex レビュー round 3 指摘）-------
+#
+# frozen dataclass でも `notes: list[str]` のような可変フィールドを持てば、記録したあとで
+# 中身を書き換えられてしまう。根拠として保存する以上、葉まで不変でなければならない。
+
+
+def test_reason_rejects_a_detail_holding_a_list() -> None:
+    @dataclass(frozen=True)
+    class _WithList:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        notes: list[str]
+
+    with pytest.raises(KernelValueError, match=r"Reason\.detail\.notes must be immutable"):
+        Reason(ReasonCode.RISK, _WithList(["a"]))
+
+
+@pytest.mark.parametrize(
+    ("factory", "label"),
+    [
+        (lambda: {"k": 1}, "dict"),
+        (lambda: {1, 2}, "set"),
+        (lambda: bytearray(b"x"), "bytearray"),
+    ],
+    ids=["dict", "set", "bytearray"],
+)
+def test_reason_rejects_other_mutable_field_values(factory: object, label: str) -> None:
+    @dataclass(frozen=True)
+    class _WithMutable:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        payload: object
+
+    with pytest.raises(KernelValueError, match="must be immutable"):
+        Reason(ReasonCode.RISK, _WithMutable(factory()))  # type: ignore[operator]
+
+
+def test_reason_rejects_a_mutable_value_nested_inside_a_tuple() -> None:
+    """検査は葉まで届く。エラーには問題のある位置が示される。"""
+
+    @dataclass(frozen=True)
+    class _WithTuple:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        items: tuple[object, ...]
+
+    with pytest.raises(KernelValueError, match=r"Reason\.detail\.items\[1\] must be immutable"):
+        Reason(ReasonCode.RISK, _WithTuple(("ok", ["bad"])))
+
+
+def test_reason_rejects_a_mutable_dataclass_nested_inside_a_frozen_one() -> None:
+    @dataclass
+    class _MutableInner:
+        value: int = 1
+
+    @dataclass(frozen=True)
+    class _WithInner:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        inner: object
+
+    with pytest.raises(KernelValueError, match=r"Reason\.detail\.inner must be a frozen"):
+        Reason(ReasonCode.RISK, _WithInner(_MutableInner()))
+
+
+def test_reason_accepts_a_nested_tuple_of_frozen_dataclasses() -> None:
+    @dataclass(frozen=True)
+    class _Inner:
+        value: int
+
+    @dataclass(frozen=True)
+    class _WithTuple:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        items: tuple[_Inner, ...]
+
+    detail = _WithTuple((_Inner(1), _Inner(2)))
+    assert Reason(ReasonCode.RISK, detail).detail is detail
+
+
+def test_reason_accepts_immutable_leaf_values() -> None:
+    """`None`・数値・文字列・列挙・十進数・時刻は葉としてそのまま通る。"""
+
+    @dataclass(frozen=True)
+    class _Leaves:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        nothing: object
+        flag: bool
+        count: int
+        ratio: float
+        text: str
+        amount: object
+        enumerated: object
+        moment: object
+
+    detail = _Leaves(None, True, 1, 0.5, "x", D("1.5"), MissingInputReason.MAX_AGE_EXCEEDED, MOMENT)
+    assert Reason(ReasonCode.RISK, detail).detail is detail
+
+
+def test_a_list_field_really_could_have_changed_after_the_fact() -> None:
+    """拒否する理由の実証: 可変フィールドは記録後に中身を書き換えられる。"""
+
+    @dataclass(frozen=True)
+    class _WithList:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        notes: list[str]
+
+    detail = _WithList(["before"])
+    detail.notes.append("after")
+    assert detail.notes == ["before", "after"]
+    with pytest.raises(KernelValueError, match="must be immutable"):
+        Reason(ReasonCode.RISK, detail)
+
+
 def test_reason_still_accepts_every_detail_type_common_defines() -> None:
     """`common` の詳細型はすべて frozen dataclass なので、検査を通る。"""
     accepted = [

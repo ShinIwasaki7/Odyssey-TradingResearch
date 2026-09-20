@@ -10,10 +10,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
+from datetime import date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
 from enum import Enum
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import ClassVar, Final, Protocol, runtime_checkable
 
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import PositionId
@@ -233,6 +234,67 @@ class RiskRejectionDetail:
                 )
 
 
+#: 値としてそのまま許す不変な型（D02 §1 規則2）。
+#: `bool` は `int` の派生なので個別に挙げなくてよい。`Enum` と frozen dataclass は
+#: `_require_immutable` が型ではなく性質で判定する。
+#: `datetime` 系は標準ライブラリの不変型で、`UtcTime.value` などが直接保持する。
+_IMMUTABLE_LEAF_TYPES: Final = (
+    bool,
+    int,
+    float,
+    str,
+    bytes,
+    Decimal,
+    datetime,
+    date,
+    time,
+    timedelta,
+    tzinfo,
+)
+
+#: 明示的に拒否する可変コンテナ。`tuple` 以外のコレクションは受け付けない。
+_MUTABLE_CONTAINERS: Final = (list, dict, set, bytearray, frozenset)
+
+
+def _require_frozen_dataclass(value: object, path: str) -> None:
+    """`value` が frozen dataclass のインスタンスであることを確かめる。"""
+    value_type = type(value)
+    if not is_dataclass(value_type):
+        raise KernelValueError(f"{path} must be a frozen dataclass, got {value_type.__name__}")
+    params = getattr(value_type, "__dataclass_params__", None)
+    if params is None or not params.frozen:
+        raise KernelValueError(
+            f"{path} must be a frozen dataclass, but {value_type.__name__} is mutable"
+        )
+
+
+def _require_immutable(value: object, path: str) -> None:
+    """`value` とその内部が再帰的に不変であることを確かめる（D02 §1 規則2・§8.2）。
+
+    frozen dataclass であっても、`notes: list[str]` のような可変なフィールドを持てば中身は
+    後から書き換えられる。根拠として保存した理由が実行後に変わらないよう、葉まで検査する。
+
+    許す葉: `None`、`bool` / `int` / `float` / `str` / `bytes` / `Decimal`、`Enum` の要素、
+    frozen dataclass（そのフィールドを再帰的に検査）。コンテナは `tuple` だけを許し、
+    要素を再帰的に検査する。`list` / `dict` / `set` / `bytearray` は拒否する。
+    """
+    if value is None or isinstance(value, Enum) or isinstance(value, _IMMUTABLE_LEAF_TYPES):
+        return
+    if isinstance(value, _MUTABLE_CONTAINERS):
+        raise KernelValueError(
+            f"{path} must be immutable, but it holds a {type(value).__name__};"
+            " use a tuple of immutable values instead"
+        )
+    if isinstance(value, tuple):
+        for index, item in enumerate(value):
+            _require_immutable(item, f"{path}[{index}]")
+        return
+    # 残るのは frozen dataclass だけ（`common` の値型はすべてこれに当たる）。
+    _require_frozen_dataclass(value, path)
+    for field in fields(value):  # type: ignore[arg-type]
+        _require_immutable(getattr(value, field.name), f"{path}.{field.name}")
+
+
 @dataclass(frozen=True, slots=True)
 class Reason:
     """理由コードと、任意の型付き詳細の組（D02 §8.2）。
@@ -250,18 +312,11 @@ class Reason:
             return
 
         detail_type = type(self.detail)
-        # 詳細型は frozen dataclass でなければならない（D02 §1 規則2・§8.2）。
-        # `code` を持つだけの任意のオブジェクトを受けると、`Reason` が不変でも中身が後から
-        # 書き換わり、記録した理由が実行後に変わってしまう。
-        if not is_dataclass(detail_type):
-            raise KernelValueError(
-                f"Reason.detail must be a frozen dataclass, got {detail_type.__name__}"
-            )
-        params = getattr(detail_type, "__dataclass_params__", None)
-        if params is None or not params.frozen:
-            raise KernelValueError(
-                f"Reason.detail must be a frozen dataclass, but {detail_type.__name__} is mutable"
-            )
+        # 詳細型は frozen dataclass であり、その中身も再帰的に不変でなければならない
+        # （D02 §1 規則2・§8.2）。`code` を持つだけの任意のオブジェクトや、可変な
+        # フィールドを持つ詳細を受けると、`Reason` が不変でも記録した理由が実行後に
+        # 書き換わってしまう。
+        _require_immutable(self.detail, "Reason.detail")
 
         detail_code = getattr(detail_type, "code", None)
         if not isinstance(detail_code, ReasonCode):

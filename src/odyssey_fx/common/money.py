@@ -16,8 +16,6 @@ import math
 import re
 from dataclasses import dataclass
 from decimal import (
-    ROUND_CEILING,
-    ROUND_FLOOR,
     ROUND_HALF_EVEN,
     Context,
     Decimal,
@@ -46,17 +44,37 @@ __all__ = [
     "convert",
     "decimal_from_int",
     "decimal_from_str",
+    "kernel_context",
     "price_from_float",
 ]
 
-#: カーネルの算術に使う Decimal コンテキスト（D02 §4.1）。
-#: プロセス全体のコンテキスト（`decimal.getcontext()`）は変更せず、
-#: 算術のたびに `with localcontext(KERNEL_DECIMAL_CONTEXT)` で持ち込む。
-KERNEL_DECIMAL_CONTEXT: Final = Context(
-    prec=28,
-    rounding=ROUND_HALF_EVEN,
-    traps=[InvalidOperation, DivisionByZero, Overflow],
-)
+#: カーネルの算術の設定（D02 §4.1）。ここが唯一の正本で、以後変更されない。
+_KERNEL_PRECISION: Final = 28
+_KERNEL_ROUNDING: Final = ROUND_HALF_EVEN
+_KERNEL_TRAPS: Final = (InvalidOperation, DivisionByZero, Overflow)
+
+
+def kernel_context() -> Context:
+    """カーネルの算術に使う Decimal コンテキストを新しく作る（D02 §4.1）。
+
+    `Context` は可変オブジェクトなので、1つを使い回して公開すると、誰かが `.prec` を
+    書き換えただけで以後のカーネルの計算がすべて変わってしまう。算術のたびに上の不変な
+    設定から作り直すことで、外部からの書き換えが計算に影響しないようにする。
+
+    `common` 内で Decimal の算術を行うモジュール（`symbol` など）はこれを使う。
+    """
+    return Context(
+        prec=_KERNEL_PRECISION,
+        rounding=_KERNEL_ROUNDING,
+        traps=list(_KERNEL_TRAPS),
+    )
+
+
+#: カーネルの算術に使う Decimal コンテキスト（D02 §4.1 が名前を定める公開値）。
+#: **設定の参照用**であり、実際の算術には使わない（この値を書き換えても計算は変わらない）。
+#: プロセス全体のコンテキスト（`decimal.getcontext()`）も変更せず、算術のたびに
+#: `with localcontext(kernel_context())` で新しいコンテキストを持ち込む。
+KERNEL_DECIMAL_CONTEXT: Final = kernel_context()
 
 #: `CurrencyCode.code` に許す字種（D02 §4.2）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
 _CURRENCY_PATTERN: Final = re.compile(r"^[A-Z]{3}$")
@@ -78,13 +96,9 @@ class RoundingDirection(Enum):
     NEAREST_HALF_EVEN = "NEAREST_HALF_EVEN"
 
 
-#: 丸め方向と `decimal` の丸めモードの対応。
-#: `ROUND_FLOOR` / `ROUND_CEILING` は負の値でも数直線上の下側／上側へ丸める。
-_ROUNDING_MODES: Final = {
-    RoundingDirection.DOWN: ROUND_FLOOR,
-    RoundingDirection.UP: ROUND_CEILING,
-    RoundingDirection.NEAREST_HALF_EVEN: ROUND_HALF_EVEN,
-}
+# `decimal` の丸めモード（`ROUND_FLOOR` / `ROUND_CEILING`）との対応表は持たない。
+# 刻みへの丸めは `_quantize_to_step` が整数演算で行うため、コンテキストの丸めモードに
+# 依存しない（依存させると精度を超えた値で方向が失われる）。
 
 
 # --- Decimal の構築 ---------------------------------------------------------
@@ -123,16 +137,74 @@ def _require_finite_decimal(value: Any, label: str) -> Decimal:
     return value
 
 
+def _as_scaled_int(value: Decimal, exponent: int) -> int:
+    """`value` を「指数 `exponent` を単位とする整数」として表す。
+
+    `value` の指数は `exponent` 以上でなければならない（呼び出し側が小さいほうの指数に
+    そろえる）。整数演算なので、桁数がいくら多くても丸めは起きない。
+    """
+    sign, digits, value_exponent = value.as_tuple()
+    if not isinstance(value_exponent, int):  # pragma: no cover - 呼び出し前に有限性を検査済み
+        raise KernelValueError(f"cannot scale a special Decimal: {value!r}")
+    mantissa = 0
+    for digit in digits:
+        mantissa = mantissa * 10 + digit
+    if sign:
+        mantissa = -mantissa
+    scale: int = 10 ** (value_exponent - exponent)
+    return mantissa * scale
+
+
 def _quantize_to_step(value: Decimal, step: Decimal, direction: RoundingDirection) -> Decimal:
-    """`step` の整数倍へ丸める。`step` は有限かつ正であること。"""
+    """`step` の整数倍へ丸める（D02 §4.3・§4.4）。`step` は有限かつ正であること。
+
+    十進コンテキストの精度に依存しない**厳密な整数演算**で計算する。`value / step` を
+    コンテキスト内で先に求めると、有効桁が精度（28桁）を超える値では商が先に半偶数丸めされ、
+    指定した丸め方向が失われる。例えば `0.999…9`（9が40個）を刻み 1 で切り捨てると、商が
+    先に 1 へ丸められてしまい 1 が返る（正しくは 0）。
+
+    手順: 両者の指数の小さいほうへそろえて整数（仮数）にし、整数の商と余りから
+    切り捨て・切り上げ・半偶数丸めを決め、結果は `Decimal((sign, digits, exponent))` で
+    厳密に組み立てる。最後の掛け算もコンテキスト内で行うと再び丸められるため、整数のまま
+    行う。
+    """
+    _require_finite_decimal(value, "value")
     _require_finite_decimal(step, "step")
     if step <= 0:
         raise KernelValueError(f"step must be > 0, got {step}")
     if not isinstance(direction, RoundingDirection):
         raise KernelValueError(f"direction must be a RoundingDirection, got {direction!r}")
-    with localcontext(KERNEL_DECIMAL_CONTEXT):
-        multiples = (value / step).to_integral_value(rounding=_ROUNDING_MODES[direction])
-        return multiples * step
+
+    _, _, value_exponent = value.as_tuple()
+    _, _, step_exponent = step.as_tuple()
+    if not isinstance(value_exponent, int) or not isinstance(step_exponent, int):
+        # pragma: no cover - 有限性は上で検査済み
+        raise KernelValueError("cannot quantize a special Decimal")
+
+    # 小さいほうの指数へそろえると、両者とも整数（仮数）で表せる。
+    exponent = min(value_exponent, step_exponent)
+    scaled_value = _as_scaled_int(value, exponent)
+    scaled_step = _as_scaled_int(step, exponent)
+
+    # Python の `//` と `%` は除数が正なら常に床（floor）方向なので、負の値でも
+    # 数直線の下側へ丸まる（D02 §4.3 が定める DOWN / UP の意味に一致する）。
+    quotient, remainder = divmod(scaled_value, scaled_step)
+    if remainder:
+        if direction is RoundingDirection.UP:
+            quotient += 1
+        elif direction is RoundingDirection.NEAREST_HALF_EVEN:
+            # 余りの2倍と除数を比べる。ちょうど半分なら偶数側へ寄せる。
+            doubled = 2 * remainder
+            if doubled > scaled_step or (doubled == scaled_step and quotient % 2):
+                quotient += 1
+
+    # 結果 = quotient × step。step の仮数を整数で掛け、指数は step の指数をそのまま使う。
+    # ここでコンテキスト内の乗算を使うと再び丸められるので、整数のまま組み立てる。
+    step_mantissa = _as_scaled_int(step, step_exponent)
+    product = quotient * step_mantissa
+    sign = 1 if product < 0 else 0
+    digits = tuple(int(char) for char in str(abs(product)))
+    return Decimal((sign, digits, step_exponent))
 
 
 # --- 通貨 -------------------------------------------------------------------
@@ -174,29 +246,29 @@ class PriceOffset:
     def __add__(self, other: PriceOffset) -> PriceOffset:
         if not isinstance(other, PriceOffset):
             return NotImplemented
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return PriceOffset(self.value + other.value)
 
     def __sub__(self, other: PriceOffset) -> PriceOffset:
         if not isinstance(other, PriceOffset):
             return NotImplemented
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return PriceOffset(self.value - other.value)
 
     def __neg__(self) -> PriceOffset:
         # 単項演算子もコンテキストの精度で丸められるため、カーネルのコンテキストで行う。
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return PriceOffset(-self.value)
 
     def __abs__(self) -> PriceOffset:
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return PriceOffset(abs(self.value))
 
     def __mul__(self, factor: Decimal) -> PriceOffset:
         if not isinstance(factor, Decimal):
             return NotImplemented
         _require_finite_decimal(factor, "factor")
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return PriceOffset(self.value * factor)
 
     def __rmul__(self, factor: Decimal) -> PriceOffset:
@@ -243,7 +315,7 @@ class Price:
     def __add__(self, other: PriceOffset) -> Price:
         if not isinstance(other, PriceOffset):
             return NotImplemented
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             result = self.value + other.value
         if result <= 0:
             raise KernelValueError(f"Price + PriceOffset must stay > 0, got {result}")
@@ -261,10 +333,10 @@ class Price:
     def __sub__(self, other: Price | PriceOffset) -> PriceOffset | Price:
         """`Price - Price` は価格差、`Price - PriceOffset` は価格（D02 §4.3）。"""
         if isinstance(other, Price):
-            with localcontext(KERNEL_DECIMAL_CONTEXT):
+            with localcontext(kernel_context()):
                 return PriceOffset(self.value - other.value)
         if isinstance(other, PriceOffset):
-            with localcontext(KERNEL_DECIMAL_CONTEXT):
+            with localcontext(kernel_context()):
                 result = self.value - other.value
             if result <= 0:
                 raise KernelValueError(f"Price - PriceOffset must stay > 0, got {result}")
@@ -307,7 +379,7 @@ class Price:
         _require_finite_decimal(tick, "tick")
         if tick <= 0:
             raise KernelValueError(f"tick must be > 0, got {tick}")
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return self.value % tick == 0
 
 
@@ -391,30 +463,30 @@ class Money:
         if not isinstance(other, Money):
             return NotImplemented
         self._require_same_currency(other, "add")
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return Money(self.amount + other.amount, self.currency)
 
     def __sub__(self, other: Money) -> Money:
         if not isinstance(other, Money):
             return NotImplemented
         self._require_same_currency(other, "subtract")
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return Money(self.amount - other.amount, self.currency)
 
     def __neg__(self) -> Money:
         # 単項演算子もコンテキストの精度で丸められるため、カーネルのコンテキストで行う。
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return Money(-self.amount, self.currency)
 
     def __abs__(self) -> Money:
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return Money(abs(self.amount), self.currency)
 
     def __mul__(self, factor: Decimal) -> Money:
         if not isinstance(factor, Decimal):
             return NotImplemented
         _require_finite_decimal(factor, "factor")
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return Money(self.amount * factor, self.currency)
 
     def __rmul__(self, factor: Decimal) -> Money:
@@ -426,7 +498,7 @@ class Money:
         _require_finite_decimal(divisor, "divisor")
         if divisor == 0:
             raise KernelValueError("cannot divide Money by zero")
-        with localcontext(KERNEL_DECIMAL_CONTEXT):
+        with localcontext(kernel_context()):
             return Money(self.amount / divisor, self.currency)
 
     def _compare(self, other: Money, operation: str) -> None:
@@ -503,7 +575,7 @@ def convert(money: Money, rate: ConversionRate) -> Money:
             f"conversion rate is {rate.from_currency}->{rate.to_currency},"
             f" but the amount is in {money.currency}"
         )
-    with localcontext(KERNEL_DECIMAL_CONTEXT):
+    with localcontext(kernel_context()):
         return Money(money.amount * rate.rate, rate.to_currency)
 
 
