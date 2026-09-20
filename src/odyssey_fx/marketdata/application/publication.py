@@ -209,6 +209,18 @@ class PublicationFeed:
         return len(self.events)
 
 
+def _boundary_search_window(schedule: SeriesSchedule, run_interval: Interval) -> Interval:
+    """予定境界を探すための窓（D03 §7.1）。
+
+    実行区間の中で**終わる**足を拾いたいので、区間の開始より手前から始まる足も候補に入れる
+    必要がある。手前に取る幅は名目長の2倍（夏時間の切替で足が名目より長くなっても足りる）。
+    """
+    return Interval(
+        start=run_interval.start - schedule.timeframe_def.nominal_length * 2,
+        end=run_interval.end,
+    )
+
+
 def build_publication_log(
     bars_by_series: Mapping[SeriesId, Sequence[Bar]],
     schedules: Mapping[SeriesId, SeriesSchedule],
@@ -253,9 +265,17 @@ def build_feed(
 ) -> PublicationFeed:
     """実行区間内の公開イベント列を組み立てる（D03 §7.1）。
 
-    `execution_series` に挙げた系列だけが執行系列のイベント（`ExecutionOpen` /
-    `ExecutionBarComplete`）を生む。`publication_log` を渡すとその実現時刻を使い、
-    渡さなければ通常の公開予定（足の終了時刻＋通常遅延）を使う。
+    **予定境界（`ScheduledBoundary`）はデータ到着と独立**に生成する（D03 §7.1）。実在する
+    足からではなく、公開予定（時間足定義とカレンダー）が「存在すべき」とする足すべてに
+    ついて出す。足が欠損・遅延していても予定時点で評価を起動できるようにするためで、これが
+    なければ欠損した系列の評価が黙って飛ばされ、見送り・待機・過去値使用・失敗の区別
+    （`on_missing`）が働かない（D03 §7.2、上位設計書 §4.3.13）。
+
+    残る3種類（`Publication` / `ExecutionOpen` / `ExecutionBarComplete`）は、実際に存在する
+    足からのみ生成する。データが無ければ公開も足内約定の解決も起きないためである。
+
+    `execution_series` に挙げた系列だけが執行系列のイベントを生む。`publication_log` を
+    渡すとその実現時刻を使い、渡さなければ通常の公開予定（足の終了時刻＋通常遅延）を使う。
 
     並びは `(発生時刻, イベント種別の固定順, 系列順)`。同じ時刻に複数の系列・種別が並んでも
     順序が一意に決まる。
@@ -264,6 +284,29 @@ def build_feed(
         raise MarketDataValueError("build_feed requires an Interval run_interval")
 
     events: list[PublicationEvent] = []
+
+    # 予定境界は公開予定から導く（データ到着と独立、D03 §7.1）。実行区間に足の終了時刻が
+    # 入るものを拾うため、区間の開始より1本ぶん手前から期待足を数える。
+    for series, scheduled_series in schedules.items():
+        for bar_start in scheduled_series.calendar.expected_bar_starts(
+            scheduled_series.timeframe_def,
+            _boundary_search_window(scheduled_series, run_interval),
+        ):
+            expected = scheduled_series.timeframe_def.expected_interval(
+                scheduled_series.calendar, bar_start
+            )
+            if expected is None:  # pragma: no cover - expected_bar_starts が除いている
+                continue
+            if not run_interval.contains(expected.end):
+                continue
+            events.append(
+                ScheduledBoundary(
+                    series=series,
+                    bar_key=BarKey(series=series, bar_start=expected.start),
+                    bar_end=expected.end,
+                )
+            )
+
     for series, bars in bars_by_series.items():
         schedule = schedules.get(series)
         if schedule is None:
@@ -273,14 +316,10 @@ def build_feed(
             recorded = None if publication_log is None else publication_log.available_at(bar.key)
             available = recorded if recorded is not None else schedule.scheduled_at(bar.bar_end)
 
-            if run_interval.contains(bar.bar_end):
+            if is_execution and run_interval.contains(bar.bar_end):
                 events.append(
-                    ScheduledBoundary(series=series, bar_key=bar.key, bar_end=bar.bar_end)
+                    ExecutionBarComplete(series=series, bar_key=bar.key, bar_end=bar.bar_end)
                 )
-                if is_execution:
-                    events.append(
-                        ExecutionBarComplete(series=series, bar_key=bar.key, bar_end=bar.bar_end)
-                    )
             if run_interval.contains(available):
                 events.append(Publication(series=series, bar_key=bar.key, available_at=available))
             if is_execution and run_interval.contains(bar.bar_start):

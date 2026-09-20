@@ -67,8 +67,14 @@ def test_the_fixed_same_instant_order_is_the_one_d03_specifies() -> None:
 
 
 def test_events_at_the_same_instant_follow_the_fixed_order() -> None:
+    """同じ時刻・同じ系列のイベントは D03 §7.1 の固定順に並ぶ。
+
+    予定境界は公開予定を持つ全系列に出るので、順序の確認は1つの系列に絞る。
+    """
     bars = {FIFTEEN: _bars(FIFTEEN, market.TF_15M)}
-    feed = build_feed(bars, SCHEDULES, WINDOW, execution_series=frozenset({FIFTEEN}))
+    feed = build_feed(
+        bars, {FIFTEEN: SCHEDULES[FIFTEEN]}, WINDOW, execution_series=frozenset({FIFTEEN})
+    )
     boundary = UtcTime.parse("2026-01-14T12:00:00Z")
     at_boundary = [event for event in feed if event.at == boundary]
     assert [event.kind for event in at_boundary] == [
@@ -96,6 +102,52 @@ def test_the_longer_timeframe_is_delivered_first_at_the_same_instant() -> None:
 
 
 # --- 予定通知はデータ到着と独立（D03 §7.1・§7.2）---------------------------
+
+
+def test_a_missing_bar_still_produces_its_scheduled_boundary() -> None:
+    """欠損した足にも予定境界が出る（D03 §7.1「データ到着とは独立」）。
+
+    これがないと、欠損した系列の評価が黙って飛ばされ、見送り・待機・過去値使用・失敗の
+    区別（`on_missing`）が働かない（D03 §7.2）。
+    """
+    missing = UtcTime.parse("2026-01-14T10:00:00Z")
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=(missing,))
+    feed = build_feed({HOURLY: bars}, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+
+    boundaries = {
+        event.bar_key.bar_start for event in feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY)
+    }
+    publications = {event.bar_key.bar_start for event in feed.of_kind(PublicationKind.PUBLICATION)}
+    assert missing in boundaries, "存在すべき足には、データが無くても予定境界が出る"
+    assert missing not in publications, "データが無い足は公開されない"
+
+
+def test_the_scheduled_boundaries_cover_every_expected_bar() -> None:
+    """予定境界の集合は、実行区間内で**終わる**期待足の集合と一致する。
+
+    区間の開始より前に始まって区間内で終わる足も対象なので、期待値は区間より手前から
+    数える。
+    """
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    feed = build_feed({HOURLY: bars}, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+    boundaries = sorted(str(event.at) for event in feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY))
+    search = Interval(start=WINDOW.start - timedelta(hours=2), end=WINDOW.end)
+    expected = sorted(
+        str(interval.end)
+        for start in CALENDAR.expected_bar_starts(market.TF_1H, search)
+        if (interval := market.TF_1H.expected_interval(CALENDAR, start)) is not None
+        and WINDOW.contains(interval.end)
+    )
+    assert boundaries == expected
+    # 区間の開始ちょうどで終わる足の境界も含まれる（半開区間の下端は区間内）。
+    assert str(WINDOW.start) in boundaries
+
+
+def test_a_series_with_no_bars_at_all_still_gets_its_boundaries() -> None:
+    """データが1本も無い系列にも、公開予定があれば予定境界が出る（D03 §7.1）。"""
+    feed = build_feed({}, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+    assert feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY)
+    assert not feed.of_kind(PublicationKind.PUBLICATION)
 
 
 def test_the_scheduled_boundary_fires_even_when_the_data_is_delayed() -> None:
