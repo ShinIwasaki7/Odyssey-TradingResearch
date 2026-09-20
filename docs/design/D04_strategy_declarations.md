@@ -1,7 +1,7 @@
 # D04: 戦略宣言モデル設計（`odyssey_fx.strategy.declarations`）
 
 作成日: 2026-09-20
-状態: **草案 v0.1。承認待ち**。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。
+状態: **草案 v0.1。承認待ち**。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。PR #14 の Codex 指摘3件を反映済み（ダイジェスト対象から実装参照を分離: 第13.2節・Q2、状態の初期値宣言を追加: 第9.1節、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く: 第7節）。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.2〜§4.3.11・§4.3.15・§4.5・§4.6・§4.7.1、[全体計画書](fx_research_platform_overall_plan.md) §5.3.1〜§5.3.4・§7.3 前半、[D01](D01_architecture_and_dependency_rules.md) §2・§3・§5・§7.2・§8・§10.1、[D02](D02_common_kernel.md)、[D03](D03_marketdata_and_time.md) §3.1〜§3.3・§6・§7、ADR-0011（frozen dataclass）、ADR-0016（実装開始条件）、ADR-0018（設定は YAML）、ADR-0021（NumPy の許可範囲）、ADR-0031（確認待ち中の条件再検査）、ADR-0032（再発火と複数取引機会）、ADR-0033（評価要求の追い越しの改名）
 対応段階: 段階2で実装。ADR-0016 条件2 のうち D04 を充足する。
 
@@ -122,7 +122,7 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 | `NumericBounds` | `minimum` / `maximum`（いずれも `None` 可）、`minimum_inclusive: bool`、`maximum_inclusive: bool` | 【提案】 |
 | `UnitRef` | `PIPS` / `PRICE` / `RATIO` / `BARS` / `DURATION` の enum | 【提案】初版はこの5値 |
 
-`Decimal` を直接パラメータ型に入れない【提案】: 価格は `Price`（D02 §4.3）へ `app.config` が変換し、部品パラメータとしては `FLOAT` ＋ 単位で宣言する。境界での丸めは D06 の責務。省略時の既定値を使った場合も、実行前に有効値を確定して記録する【合意済み】§4.3.5。
+`Decimal` と `Price` をパラメータ値の型に入れない【提案】: `ParameterValue` は上位設計書 §4.3.5 が確定した4区分（`bool` / `int` / `float` / `str`）のままとし、価格・pips・比率は `FLOAT` ＋ `unit` で宣言する。`app.config` は有限 float として読み込み、`ComponentInstance.parameters` にもコンパイル後もその値のまま保持する。`Price`（D02 §4.3）への変換と価格刻みでの丸めは、銘柄仕様と丸め方向を持つ D06 の境界で行い、`declarations` と `app.config` では行わない。省略時の既定値を使った場合も、実行前に有効値を確定して記録する【合意済み】§4.3.5。
 
 ## 8. 評価スケジュール【提案】
 
@@ -141,7 +141,11 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 ### 9.1 `StateSpec`【提案】＋【要決定 Q3】
 
-`StateSpec(state_type: DataTypeRef, reset_on: tuple[ResetTrigger, ...])`。`ResetTrigger` は初版 `RUN_START` のみ。状態を持たない部品は `state_spec=None`【合意済み】。契約と実装の状態型を二重定義せず、`catalog` の登録時に実装の状態型と `state_type` の一致を検査する【合意済み】§4.3.7。保存・復元の詳細は D05。段階2でどこまで状態を許すかは Q3。
+`StateSpec(state_type: DataTypeRef, initial: StateInitializer, reset_on: tuple[ResetTrigger, ...])`。状態を持たない部品は `state_spec=None`【合意済み】。契約と実装の状態型を二重定義せず、`catalog` の登録時に実装の状態型と `state_type` の一致を検査する【合意済み】§4.3.7。保存・復元の詳細は D05。段階2でどこまで状態を許すかは Q3。
+
+- `StateInitializer`【提案】: `kind` タグ付きで、初版は `LiteralInitialState(values: Mapping[str, ParameterValue])` の1区分のみ。初期値を宣言に書き切り、実装側の既定値に委ねない。高値突破 Trigger の再武装（Q4）であれば「起動時は発火可能（armed）か否か」をここで宣言する。
+- `ResetTrigger` は初版 `RUN_START` のみ。リセットは `initial` と同じ値へ戻すことと定義し、「リセット時だけ別の値」を持たせない。
+- これにより、同じ宣言からは同じ初期状態になり、段階2の完了条件「同一入力の再実行で trace が一致」（全体計画 §8.2）が実装に依存しなくなる。
 
 ### 9.2 `TemporalConstraints`【提案】
 
@@ -217,7 +221,15 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 ### 13.2 内容ハッシュ【提案】＋【要決定 Q2】
 
-D02 §9.3 の `canonical.digest` をそのまま使う。`ContractRef.digest` は `ComponentContract` 全体、`StrategyRef.digest` は `StrategyDefinition` 全体、`CompiledStrategyRef.digest` は解決済み設定（具体値へ解決したパラメータと評価順を含む）とする。`strategy_id` / `version` が同じでもパラメータ割当が違えば別の実行として扱う【合意済み】§4.3.5。実装コードのダイジェストをどこまで含めるかは Q2。
+D02 §9.3 の `canonical.digest` をそのまま使う。ダイジェスト対象の構造（何を含めるか）を決めるのは各設計文書の責務であり（D02 §9.4 末尾）、本書は `strategy` の3つの参照について次を定める。
+
+| 参照 | ダイジェスト対象【提案】 |
+|---|---|
+| `ContractRef.digest` | `ComponentContract` のうち **`implementation_ref` を除いた**全フィールド。契約の「受け口・出し口・評価条件・状態・時刻制約」の同一性を表す |
+| `StrategyRef.digest` | `StrategyDefinition` 全体。各 `ComponentInstance` は `contract_ref` を通じて上記の契約ダイジェストを含むため、**実装コードの同一性は含まない** |
+| `CompiledStrategyRef.digest` | 解決済み設定（具体値へ解決したパラメータ、評価順）に加え、使用する各部品の `ImplementationRef`（ID ＋内容ハッシュ）を含む |
+
+`strategy_id` / `version` が同じでもパラメータ割当が違えば別の実行として扱う【合意済み】§4.3.5。この3行の切り分けを採るかどうかが Q2 であり、Q2 で別案を採る場合は上表も合わせて変える。
 
 ## 14. 段階2の最小範囲（検証戦略 A）と T01
 
@@ -287,7 +299,7 @@ T01（紙上トレース）では、この宣言から D06 の注文・約定、
 | 引き渡し先 | 項目 |
 |---|---|
 | D05 | `WAIT_FOR_INPUT` / `USE_PREVIOUS` のフィールド、取引機会の非終端の状態名と遷移、再検査の起動点、同時刻の複数起動条件の配送・評価回数、合成部品の契約、初版カタログの指標一覧と計算規則、NumPy を実際に使う部品の特定（ADR-0021）、状態の保存・復元、依存グラフ構築とハッシュ計算の実装、`MarketDataView` の引数名の整合 |
-| D06 | `OrderIntent` / `ProtectionLevels` / `ManagementAction` を受け取ってからの注文状態・執行意味論、`RuntimeInputRef(POSITION/ACCOUNT)` として供給する情報の具体、`ConfigDigest` に戦略の digest をどう含めるか |
+| D06 | `OrderIntent` / `ProtectionLevels` / `ManagementAction` を受け取ってからの注文状態・執行意味論、`RuntimeInputRef(POSITION/ACCOUNT)` として供給する情報の具体、`ConfigDigest` に戦略の digest をどう含めるか、単位付き float パラメータから `Price` への変換と価格刻みの丸め方向（第7節） |
 | D07 | `CompiledStrategyRef` を実験 manifest に固定する方法、評価側から見た戦略の同一性 |
 | D01（次回改訂） | §7.2 のモジュール一覧へ `opportunity.py` を追記 |
 
@@ -303,12 +315,12 @@ T01（紙上トレース）では、この宣言から D06 の注文・約定、
 3. `CompiledStrategy` にだけ記録する — 宣言の同一性と保存形式の版が分離する。
 推奨理由: 段階2の完了条件が「同一入力の再実行で trace が一致」であり、解釈規則の版が同一性に含まれる方が安全。
 
-**Q2 戦略定義の内容ハッシュに実装コードのダイジェストを含めるか**
-決めること: `StrategyRef.digest` と `CompiledStrategyRef.digest` の対象に `ImplementationRef.digest` を含めるか。
+**Q2 実装コードの同一性を戦略のダイジェストのどこに入れるか**
+決めること: `ImplementationRef` を契約ダイジェスト（`ContractRef.digest`）に含めるか、解決済み設定のダイジェスト（`CompiledStrategyRef.digest`）にだけ含めるか。契約ダイジェストは `StrategyRef.digest` に入れ子で入るため、ここに含めると実装変更が戦略の digest まで波及する。
 影響: 部品の実装だけを変更したときに、同じ戦略を別物として扱うかどうかが決まる。
-1.（推奨）`CompiledStrategyRef` にだけ含める — 人間が管理する戦略の版は安定し、実行の同一性は実装差を検出する。
-2. 両方に含める — 実装変更のたびに戦略の digest が変わる。
-3. どちらにも含めず `RunId` の `CodeDigest` に任せる — 戦略単位では実装差を検出できない。
+1.（推奨）契約ダイジェストから `implementation_ref` を除き、解決済み設定のダイジェストにだけ含める — 人間が管理する戦略の版は安定し、実行の同一性だけが実装差を検出する。
+2. 契約ダイジェストに含める（第13.2節の表を変更） — 実装変更のたびに契約と戦略の digest が変わり、再現性の差は早く出るが戦略の版が不安定になる。
+3. どちらにも含めず `RunId` の `CodeDigest` に任せる — 戦略単位・部品単位では実装差を検出できない。
 推奨理由: 上位設計書 §4.3.5 の「人間が管理する戦略の版と、各評価の解決済み設定の識別を分ける」に一致する。
 
 **Q3 段階2で状態を持つ部品をどこまで許すか**
