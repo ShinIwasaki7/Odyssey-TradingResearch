@@ -122,7 +122,7 @@ D06 §4.1 の15フェーズ（rank 0〜14）を、判断時刻 T = **2026-01-06T
 | 5. 丸めと予約式 | `S = 149.500`（`price_tick=0.001` に整列済み、買いは `DOWN`）。`Δ = 0.050`（値幅を広げない向きに丸め済み）。`P_limit = 150.060 + 0.050 = 150.110`。`d × (P_limit − S) = 0.610 > 0` | `RiskAssessment.stop_before_rounding = stop_after_rounding = Price(149.500)`、`adverse_fill_limit = Price(150.110)` |
 | 6. 数量 | `C(Q) = (往復手数料 0.001×2 + 損切り決済の slippage 0.010) × Q = 0.012 Q`。`R(Q) = 0.610 Q + 0.012 Q = 0.622 Q ≤ 20000` → `Q ≤ 32154.3…` → 数量刻み 1000 で**切り下げ** → `Q = 32000` | `Quantity(32000)`、`quantity_step=Decimal("1000")` |
 | 7. 再検査 | `R(32000) = 0.622 × 32000 = 19904` 円 ≤ 20000。同時保持枠（未終端のエントリー注文0 ＋ 開いている建玉0 < 1）も合格 | `RiskCheckResult(check="admission_budget", passed=True, limit=Money(20000,JPY), observed=Money(19904,JPY))`、`RiskCheckResult(check="position_slot", passed=True, limit=Decimal("1"), observed=Decimal("0"))` |
-| 8. 記録 | `RiskAssessment(assessment_id=EvidenceId 00000002, attempt_id=00000001, policy_ref=RP1, budget=…, reference_quote=…, adverse_fill_limit=Price(150.110), stop_before_rounding=Price(149.500), stop_after_rounding=Price(149.500), quantity_step=Decimal("1000"), quantity=Quantity(32000), conversion=ConversionRate(JPY, JPY, 1, 09:00Z, EvidenceRef(EvidenceId 00000002)), cost_budget=Money(384,JPY), reservation_amount=Money(19904,JPY), checks=(…))` → 表6。換算の経路そのものは `EvidenceRecord(evidence_id=00000002, …, conversion_paths=(ConversionPath(legs=(), rate=1, observed_at=09:00Z, skew=0分),))` として表15 に残す（D06 §8.5.1 の規則8） |
+| 8. 記録 | `RiskAssessment(assessment_id=EvidenceId 00000002, attempt_id=00000001, policy_ref=RP1, reached_step=8, budget=…, reference_quote=…, adverse_fill_limit=Price(150.110), stop_before_rounding=Price(149.500), stop_after_rounding=Price(149.500), quantity_step=Decimal("1000"), quantity=Quantity(32000), conversion=ConversionRate(JPY, JPY, 1, 09:00Z, EvidenceRef(EvidenceId 00000002)), cost_budget=Money(384,JPY), reservation_amount=Money(19904,JPY), checks=(…))` → 表6。換算の経路そのものは `EvidenceRecord(evidence_id=00000002, …, conversion_paths=(ConversionPath(legs=(), rate=1, observed_at=09:00Z, skew=0分),))` として表15 に残す（D06 §8.5.1 の規則8） |
 
 受付の確定単位（D06 §4.4）で次を1回の差し替えにまとめる。
 
@@ -264,7 +264,8 @@ rank 5〜9 は経路1 と同じに進み、`EntryProposal(opportunity_id=0000000
 | 3. 参照価格 | 直前に完了した執行足 `15m 08:45Z` の `close=149.980`（bid）→ ask `150.000`。`ReferenceQuote(price=Price(150.000), basis=ASK, observed_at=09:00Z, source_bar=BarKey(USDJPY/15m/bid, 08:45Z), derived_from_spread=True)` |
 | 4. 保護水準の妥当性 | 買いの損切り `149.990` は判断時 bid `149.980` **以上** → 違反（上位 §4.7.9 B） |
 | `RiskCheckResult` | `(check="protection_direction", passed=False, limit=Decimal("149.980"), observed=Decimal("149.990"))` |
-| 拒否 | `AttemptRejected(attempt_id=00000001, reason=Reason(PROTECTION_INVALID), assessment_ref=RiskAssessmentRef(EvidenceId 00000002))` → 表5。審査に実際に入っている（手順3 を通過している）ため `RiskAssessment` は残す（D06 §4.4） |
+| 審査記録 | 手順4 で拒否したため手順5〜7 へ進まない。`RiskAssessment(assessment_id=EvidenceId 00000002, attempt_id=00000001, policy_ref=RP1, reached_step=4, budget=AdmissionBudget(balance=Money(1000000,JPY), trial_budget=Money(20000,JPY), account_remaining=Money(200000,JPY), admission_budget=Money(20000,JPY), consumed=Money(0,JPY)), reference_quote=…, stop_before_rounding=Price(149.990), stop_after_rounding=None, adverse_fill_limit=None, quantity_step=None, quantity=None, conversion=None, cost_budget=None, reservation_amount=None, checks=(RiskCheckResult("protection_direction", False, …),))` → 表6。**到達しなかった手順の項目は `None`** であり、`reached_step` がどこで止まったかを示す（D06 §6.4 の手順8） |
+| 拒否 | `AttemptRejected(attempt_id=00000001, reason=Reason(PROTECTION_INVALID), assessment_ref=RiskAssessmentRef(EvidenceId 00000002))` → 表5。手順3 まで到達しているため `RiskAssessment` を残す（D06 §4.4） |
 | 台帳 | 変化なし。注文も予約も作らない |
 | 通知 | `AdmissionNotice(opportunity_id=00000001, attempt_id=00000001, accepted=False, reason=Reason(PROTECTION_INVALID))` を rank 12 で配送 |
 | 機会 | 遷移6: `ORDER_PENDING → TERMINATED`、`reason=Reason(ORDER_ATTEMPT_REJECTED)`（D05 §7.2）。エンジンの拒否理由を機会の終端理由に読み替えない |
@@ -514,7 +515,9 @@ D06 §9.2 の15表のうち、経路1 の1取引で行が入るのは次のと�
 | 18 | 保存形式の欠落 | 可変長の入れ子（レコードの `tuple`）を平坦化して Parquet へ保存する規則が無い | 経路1（`checks` / `market_refs` / `conversion_paths`） | D06 §9.1 に「要素ごとに正規化エンコード文字列にし、その文字列の `list` 列として保存する」を追加 |
 | 19 | 阻害要因 | `EntryProposal` に根拠の出力 ID が無く、**正常経路でも `OrderRequest` を組み立てられない** | 経路1 の要求組立 | D06 §6.1・§15 で「後で足せばよい項目」ではなく阻害要因であることを明記し、本書の承認と同時に D05 §3・§6.2 を改訂することを求める |
 
-分類の内訳: 規則の欠落8件（#1・#4・#7・#8・#9・#10・#14・#20）、型の不足・不整合・表現4件（#5・#11・#16・#17）、規則の重複1件（#2）、順序・保存形式の欠落2件（#6・#18）、到達可否の明示2件（#3・#15）、未決として差し戻し2件（Q10・Q11＝#1 の一部と #12）、阻害要因1件（#19）、仮置き1件（#13）。合計20件。
+| 21 | 型の不整合 | 審査の途中（手順4 の保護水準の妥当性など）で拒否すると、`RiskAssessment` の必須項目（許容不利価格・丸め後の損切り・換算率・費用予算）を構築できない | 経路4 | どこまで進んだかを示す `reached_step` を足し、手順5 以降が作る項目を省略可能にした。審査記録を残す条件も「手順3 まで到達した試行」に一般化した |
+
+分類の内訳: 規則の欠落8件（#1・#4・#7・#8・#9・#10・#14・#20）、型の不足・不整合・表現5件（#5・#11・#16・#17・#21）、規則の重複1件（#2）、順序・保存形式の欠落2件（#6・#18）、到達可否の明示2件（#3・#15）、未決として差し戻し2件（Q10・Q11＝#1 の一部と #12）、阻害要因1件（#19）、仮置き1件（#13）。合計21件。
 
 ## 14. 本書の後続版
 
