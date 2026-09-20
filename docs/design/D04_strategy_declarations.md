@@ -1,7 +1,7 @@
 # D04: 戦略宣言モデル設計（`odyssey_fx.strategy.declarations`）
 
 作成日: 2026-09-20
-状態: **承認（2026-09-20、PR #14）**。v1.0: 第19節の要決定 Q1〜Q9 をユーザーが決定し本文へ反映済み（Q3 は選択肢2「任意の部品で状態を許す」、他の8件は推奨案）。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。Codex 指摘7件（1巡目3件・2巡目4件）も反映済み。1巡目: ダイジェスト対象から実装参照を分離（第13.2節）、状態の初期値宣言を追加（第9.1節）、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く（第7節）。2巡目: 建玉・口座を読む入力の許可組合せを表で明示（第6.1節）、約定通知で評価を起動する区分を追加（第8節）、使用箇所の一覧を識別子順に正規化（第3節）、銘柄をグラフ上で伝播させて一致検査を実装可能にした（第5節）。ADR-0016 条件2 のうち D04 を本書で充足する。
+状態: **承認（2026-09-20、PR #14）**。v1.0: 第19節の要決定 Q1〜Q9 をユーザーが決定し本文へ反映済み（Q3 は選択肢2「任意の部品で状態を許す」、他の8件は推奨案）。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。Codex 指摘7件（1巡目3件・2巡目4件）も反映済み。1巡目: ダイジェスト対象から実装参照を分離（第13.2節）、状態の初期値宣言を追加（第9.1節）、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く（第7節）。2巡目: 建玉・口座を読む入力の許可組合せを表で明示（第6.1節）、約定通知で評価を起動する区分を追加（第8節）、使用箇所の一覧を識別子順に正規化（第3節）、銘柄をグラフ上で伝播させて一致検査を実装可能にした（第5節）。v1.1（同日）: Codex 3巡目の指摘4件を反映（取引機会を必ず記録する規則: 第10.3節、再武装モードの置き場所を出力仕様に確定: 第4.1節・第10.4節、許可する起動条件の型と検証意味論を定義: 第8節、データ型レジストリから実行時クラスの対応を外す: 第5節）。**未決の1点**: 同時保持上限に達して有効化せず終端した取引機会の終端理由の名前（第19節 Q10）。ADR-0032 の語彙の改訂を伴うため人間の決定待ちで、段階2の実装着手はこの1点の決定後とする。ADR-0016 条件2 のうち D04 を本書で充足する。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.2〜§4.3.11・§4.3.15・§4.5・§4.6・§4.7.1、[全体計画書](fx_research_platform_overall_plan.md) §5.3.1〜§5.3.4・§7.3 前半、[D01](D01_architecture_and_dependency_rules.md) §2・§3・§5・§7.2・§8・§10.1、[D02](D02_common_kernel.md)、[D03](D03_marketdata_and_time.md) §3.1〜§3.3・§6・§7、ADR-0011（frozen dataclass）、ADR-0016（実装開始条件）、ADR-0018（設定は YAML）、ADR-0021（NumPy の許可範囲）、ADR-0031（確認待ち中の条件再検査）、ADR-0032（再発火と複数取引機会）、ADR-0033（評価要求の追い越しの改名）
 対応段階: 段階2で実装。ADR-0016 条件2 のうち D04 を充足する。
 
@@ -62,7 +62,7 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 | 型 | フィールド |
 |---|---|
 | `InputSpec` | `data_type: DataTypeRef`、`kind: PortKind`、`arity: InputArity`、`read_spec: InputReadSpec` |
-| `OutputSpec` | `data_type: DataTypeRef`、`kind: PortKind`、`reference_schema: Mapping[str, DataTypeRef]`（第11.1節。取引機会を出す出力以外は空） |
+| `OutputSpec` | `data_type: DataTypeRef`、`kind: PortKind`、`reference_schema: Mapping[str, DataTypeRef]`（第11.1節。取引機会を出す出力以外は空）、`retrigger_mode: RetriggerMode \| None`（第10.4節。取引機会を出す出力でのみ必須、他は `None`） |
 | `InputBinding` | `sources: tuple[InputSourceRef, ...]` |
 | `InputArity` | `min_count: int`（`>= 1`）、`max_count: int \| None`（`None` は上限なし、指定時は `>= min_count`） |
 
@@ -86,7 +86,9 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 登録制とし、Python のクラス名を動的読込しない【合意済み】。`DataTypeRef(type_id: str, version: int)`、`__str__` は `"<type_id>@v<version>"`（D02 §6 の `TimeframeRef` に合わせる）【提案】。
 
-初版の登録【提案】: `price`、`price_offset`、`ratio`、`condition_state`、`market_permission`、`opportunity`、`confirmation_result`、`order_intent`、`protection_levels`、`management_action`（すべて version 1）。各登録は「正規化エンコード可能な payload 構造」と「対応する `records` の型」を持ち、レジストリは `declarations` 内の静的テーブルとする（実行時の登録 API を持たない）。
+初版の登録【提案】: `price`、`price_offset`、`ratio`、`condition_state`、`market_permission`、`opportunity`、`confirmation_result`、`order_intent`、`protection_levels`、`management_action`（すべて version 1）。レジストリは `declarations` 内の静的テーブルとし、実行時の登録 API を持たない。
+
+**レジストリが持つのは正規化エンコード可能な payload の構造だけ**【提案】。`records` の実行時クラスへの対応は `declarations` に置かない。`declarations` は `strategy` の最下層で `records` を参照できず（D01 §3.3、本書第1節）、クラスを直接持てば禁止された上向き import になり、クラス名の文字列で持てば検査できない対応表になるためである。データ型識別子と実行時クラスの対応、およびその一致検査は `records`（型の側）と `catalog`（部品登録時）に置き、D05 で確定する。
 
 接続検証【提案】: 接続元 `OutputSpec` と接続先 `InputSpec` で `(type_id, version)` が一致すること。単位は `ParameterSpec` 側（第7節）が持ち、データ型には持たせない。
 
@@ -143,11 +145,13 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 | 型 | フィールド |
 |---|---|
-| `EvaluationSpec` | `allowed: tuple[AllowedTrigger, ...]`、`fixed: bool`（契約が評価条件を固定するか）、`required_inputs: Mapping[str, tuple[str, ...]]`（起動条件名 → 必須入力名） |
+| `EvaluationSpec` | `allowed: tuple[AllowedTrigger, ...]`（1件以上）、`fixed: bool`（契約が評価条件を固定するか）、`required_inputs: Mapping[str, tuple[str, ...]]`（起動条件名 → 必須入力名） |
+| `AllowedTrigger` | `kind` タグ付き。`AllowedBarClose(timeframes: tuple[TimeframeRef, ...] \| None)` / `AllowedInputEvent(input_names: tuple[str, ...])` / `AllowedRuntimeEvent(events: tuple[RuntimeEventKind, ...])` |
 | `EvaluationSchedule` | `triggers: tuple[EvaluationTrigger, ...]`（1件以上） |
 | `EvaluationTrigger` | `kind` タグ付き。`OnBarClose(name: str, series: SeriesId)` / `OnInputEvent(name: str, input_name: str)` / `OnRuntimeEvent(name: str, event: RuntimeEventKind)` |
 
 - 起動条件に名前（`name`）を付け、`required_inputs` と対応付ける【提案】。これがないと「どの起動条件でどの入力が必須か」を宣言できない（上位設計書 §4.3.9 の残項目）。
+- `AllowedTrigger` の検証意味論【提案】: 使用箇所の各 `EvaluationTrigger` は、区分が一致する `AllowedTrigger` が `allowed` に1件以上あり、かつその制約を満たすときだけ有効。`AllowedBarClose.timeframes` は許可する時間足の一覧で、`None` は「任意の時間足を許す」。銘柄は制約せず第5節の銘柄伝播で検査する。`AllowedInputEvent.input_names` は `DeliveredEvent` を読む入力名に限り、契約の `inputs` に存在しなければ構築時に拒否する。`AllowedRuntimeEvent.events` は許可する実行時イベントの一覧。`fixed=True` の契約では `allowed` がちょうど1件で、その1件が制約まで一意に定まる（`timeframes` が `None` でなく1件、など）ことを構築時に要求し、使用箇所は同じ内容の起動条件しか書けない。`required_inputs` のキー集合は、使用箇所の起動条件名の集合と一致しなければならない。
 - `OnBarClose` は D03 §7.2 の `ScheduledBoundary` に結び付く【合意済み】D03。
 - `OnRuntimeEvent`【提案】: 上位設計書 §4.3.5 が `EvaluationSchedule` の対象に挙げている「約定通知」を表す区分。`RuntimeEventKind` は段階2では `POSITION_OPENED` の1値のみとし、それ以外（決済通知・保護水準の更新通知など）は段階3で追加する。これがないと、検証戦略 A の「約定価格から固定リスクリワード比の利確水準を決める Exit 部品」を約定時点で評価できず、次の足まで初期の利確水準が付かない。イベントの供給元は `backtest.engine`（`RuntimeContextView` ポート）で、フェーズ順序と供給の詳細は D06。
 - 同時刻に複数の起動条件が成立した場合の配送・評価回数は D05【合意済み】全体計画 §7.3。
@@ -203,16 +207,25 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 | フィールド | 型・値 | 意味 |
 |---|---|---|
 | `max_active` | `int`（`>= 1`） | 同時に保持できる有効な取引機会の上限。上限に達している状態で新しい発火があったときの扱いは `on_new_trigger` が決める |
-| `on_new_trigger` | `KEEP_EXISTING` / `SUPERSEDE_EXISTING` | 既存を残して新規を捨てるか、既存を `SUPERSEDED` で終端して新規を生成するか。いずれの場合も既存の内容を上書きしない【合意済み】ADR-0032 |
+| `on_new_trigger` | `KEEP_EXISTING` / `SUPERSEDE_EXISTING` | `max_active` に達している状態で新しい発火があったとき、既存を残すか、既存を `SUPERSEDED` で終端して新しい機会を有効にするか。いずれの場合も既存の内容を上書きしない【合意済み】ADR-0032 |
 | `on_order_accepted` | `KEEP_OTHERS` / `CLOSE_OTHERS` | ある注文が受け付けられたとき、他の取引機会を `CLOSED_BY_ORDER_ACCEPTANCE` で終端するか残すか。規則を書かない限り暗黙に終端させない【合意済み】ADR-0032 |
 
 ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_active` に畳んでいる。**不採用**: `on_order_accepted` だけを持つ案（段階3で形が変わる）、4論点に1フィールドずつ置く案（段階2で使わない設定が増える）。
+
+**発火は必ず取引機会として記録する**【提案】。ADR-0032 は「Trigger の各発火は固有の `opportunity_id` を持つ不変の取引機会を生成する」「異なる Trigger イベントは内容が同じでも別の市場事実として記録する」と定めている。したがって `KEEP_EXISTING` でも新しい発火を黙って捨てず、**新しい `opportunity_id` を持つ取引機会を生成したうえで、有効にせずその場で終端する**。段階2の設定（`max_active=1`、`KEEP_EXISTING`）でも、2本目以降の発火は判断履歴（trace）に残る。
+
+「新しい機会を生成して即座に終端する」という規則そのものは ADR-0032 から導かれるため本書で確定する。決まっていないのは**その終端理由の名前**だけで、ADR-0032 が確定した4語彙のいずれにも当てはまらない（`SUPERSEDED` は逆向き、つまり新しい発火を優先して既存を終わらせる場合の語である）。第19節 Q10【要決定】で名前を決め、ADR-0032 の改訂として記録する。段階2の実装は Q10 の決定後に着手する。
 
 ### 10.4 Trigger の再武装【提案】＋【合意済み】（Q4 決定、選択肢1）
 
 条件が true であり続ける場合に再発火とするかどうかは Trigger 部品の契約と状態が持つ【合意済み】ADR-0032。
 
-`ComponentContract.parameters` ではなく契約の固定属性として `retrigger_mode` を置き、次の2値を取る（Q4 決定）。**段階2では両方を許可する**。
+`ComponentContract.parameters`（使用箇所が値を選べる設定）ではなく、契約が固定する属性として `retrigger_mode` を置く（Q4 決定）。**置き場所は取引機会を出す出力の `OutputSpec`**（第4.1節）とする。理由は次の2つ。
+
+- 再武装は「取引機会を出す出力の発火の仕方」であり、部品全体の性質ではない。`data_type` が `opportunity` でない出力には意味を持たない。
+- `ComponentContract` のトップレベルのフィールド構成は上位設計書 §4.3.5 が正本で、本書が追加するのは `schema_version` だけである（第3節）。`OutputSpec` に置けば正本を変えずに済み、`ContractRef` の内容ハッシュにも入る（第13.2節）。
+
+`OutputSpec.retrigger_mode: RetriggerMode | None`。`data_type` が `opportunity` の出力では必須（`None` を拒否）、それ以外の出力では `None` でなければならない。値は次の2つで、**段階2では両方を許可する**。
 
 | 値 | 意味 |
 |---|---|
@@ -246,9 +259,10 @@ ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_a
 | 1 | 参照の存在: `OutputRef` の `instance_id` / `output_name`、`ContractRef` の版と digest（D02 §9.2） |
 | 2 | 型の整合: `(type_id, version)` 一致、`price` 系の銘柄一致、`arity`、`PortKind` × `InputReadSpec` の組合せ（第6.1節） |
 | 3 | パラメータ: 名前・型・範囲・列挙値、`ParameterRef` の具体値への解決 |
-| 4 | 評価スケジュールが `EvaluationSpec.allowed` の範囲内で、`fixed=True` の契約を上書きしていないこと、`required_inputs` の入力が接続済みであること |
+| 4 | 評価スケジュールが `EvaluationSpec.allowed` の範囲内（第8節の検証意味論）で、`fixed=True` の契約を上書きしていないこと、`required_inputs` のキー集合が起動条件名の集合と一致し、その入力が接続済みであること |
 | 5 | 役割フィールドの型要求（`trigger`→`opportunity`、`order`→`order_intent`、`protection`→`protection_levels`、`exit`→`management_action`、`market_state`→`market_permission`、`execution_filter`→`confirmation_result`）と、`execution_filter` の有無と `entry_policy` モードの整合、`opportunity_validity` の各 `ValidityBinding` が指す出力の存在と型 |
 | 6 | 依存グラフの循環検出と評価順の導出（時間足から順序を推測しない） |
+| 6b | 出力仕様の付随条件: `data_type` が `opportunity` の出力は `retrigger_mode` が必須で `reference_schema` を持て、それ以外の出力は `retrigger_mode=None` かつ `reference_schema` が空であること（第4.1節） |
 | 7 | 能力検査（下表） |
 
 段階2で拒否する構成【提案】: `RuntimeInputRef(PENDING_ORDER)`、`AwaitConfirmation`、`execution_filter` が `None` でない戦略、`MissingInputPolicy` の `WAIT_FOR_INPUT` / `USE_PREVIOUS`、`POSITION_OPENED` 以外の `RuntimeEventKind`、複数銘柄に跨る使用箇所（第5節）、15m より細かい足、距離型 SL、指値、`UPDATE_STOP`。`state_spec` が `None` でないことは拒否の理由にしない（第9.1節、Q3 決定）。拒否は `ReasonCode`（D02 §8.1）付きの構造エラーとし、黙って無視しない。
@@ -280,7 +294,7 @@ D02 §9.3 の `canonical.digest` をそのまま使う。ダイジェスト対�
 | 必要な宣言 | 使う型 |
 |---|---|
 | 直近 N 本高値（当該足を除く） | `MarketDataRef(USDJPY/1h/bid, HIGH)` ＋ `HistoryWindow(BarsWindow(N), exclude_latest_bars=1)` |
-| 高値突破 Trigger | `OnBarClose(1h)` 起動、出力 `opportunity`、`OutputSpec.reference_schema` に突破水準、`retrigger_mode=EDGE`（直前の成立を `StateSpec` で保持） |
+| 高値突破 Trigger | `OnBarClose(1h)` 起動、出力 `opportunity`、その `OutputSpec` に突破水準の `reference_schema` と `retrigger_mode=EDGE`（直前の成立を `StateSpec` で保持） |
 | 成行注文意図 | `OnInputEvent(取引機会)` 起動、出力 `order_intent` |
 | 初期 SL | 確定情報から絶対価格、出力 `protection_levels` |
 | 固定 RR の TP | `OnRuntimeEvent(POSITION_OPENED)` 起動、`RuntimeInputRef(POSITION)` ＋ `CurrentContext` 入力、出力 `management_action`（`SET_TAKE_PROFIT`） |
@@ -343,7 +357,7 @@ T01（紙上トレース）では、この宣言から D06 の注文・約定、
 
 | 引き渡し先 | 項目 |
 |---|---|
-| D05 | `WAIT_FOR_INPUT` / `USE_PREVIOUS` のフィールド、取引機会の非終端の状態名と遷移、再検査の起動点、同時刻の複数起動条件の配送・評価回数、合成部品の契約、初版カタログの指標一覧と計算規則、NumPy を実際に使う部品の特定（ADR-0021）、**状態を持つ部品の計算規則と状態の保存・復元**（「状態を持てる部品の範囲」は Q3 で決着済みで引き渡さない）、依存グラフ構築とハッシュ計算の実装、部品カタログの構成、`MarketDataView` の引数名の整合 |
+| D05 | `WAIT_FOR_INPUT` / `USE_PREVIOUS` のフィールド、取引機会の非終端の状態名と遷移、再検査の起動点、同時刻の複数起動条件の配送・評価回数、合成部品の契約、初版カタログの指標一覧と計算規則、NumPy を実際に使う部品の特定（ADR-0021）、**状態を持つ部品の計算規則と状態の保存・復元**（「状態を持てる部品の範囲」は Q3 で決着済みで引き渡さない）、依存グラフ構築とハッシュ計算の実装、部品カタログの構成、データ型識別子と `records` の実行時クラスの対応表とその一致検査（第5節）、`MarketDataView` の引数名の整合 |
 | D06 | `OrderIntent` / `ProtectionLevels` / `ManagementAction` を受け取ってからの注文状態・執行意味論、`RuntimeInputRef(POSITION/ACCOUNT)` として供給する情報の具体、`ConfigDigest` に戦略の digest をどう含めるか、単位付き float パラメータから `Price` への変換と価格刻みの丸め方向（第7節）、`POSITION_OPENED` イベントの発生フェーズと供給方法（第8節） |
 | D07 | `CompiledStrategyRef` を実験 manifest に固定する方法、評価側から見た戦略の同一性 |
 | D01（次回改訂） | §7.2 のモジュール一覧へ `opportunity.py` を追記 |
@@ -365,6 +379,20 @@ T01（紙上トレース）では、この宣言から D06 の注文・約定、
 | Q9 | 部品カタログとコンパイラ実装の担当文書 | **選択肢1（推奨）**: D05 のままとし、全体計画書 §8.1 の記載を §7.3 に合わせて改める | §17、全体計画書 §8.1 |
 
 各項目で採らなかった案は、本文の該当節に「不採用」として1行ずつ残してある。
+
+### 19.0 Q10（未決。ADR-0032 の改訂を伴う）
+
+Codex レビュー3巡目で判明した1点。Q1〜Q9 とは別に決定が要る。
+
+**Q10 同時保持上限に達して有効化されなかった取引機会の終端理由の名前**
+決めること: `on_new_trigger=KEEP_EXISTING` の設定で上限に達しているときに発火した取引機会を、どの終端理由で記録するか。
+影響: 判断履歴（trace）で「上限で見送った発火」を他の終端（期限切れ・新しい発火に置き換えられた・他の注文が通った）と集計上区別できるかどうかが決まる。ADR-0032 が確定した4語彙の改訂を伴う。
+1.（推奨）新しい終端理由 `CONCURRENCY_LIMIT_REACHED` を加える — 上限で見送った発火だけを集計でき、既存4語彙の意味を変えない。
+2. 既存の `SUPERSEDED` を双方向の意味へ広げる — 語彙は増えないが、新旧どちらが終わったのか trace から読めなくなる。
+3. 終端理由を持たせず、発火を取引機会として生成しない — 記録は簡素になるが、ADR-0032 の「異なる Trigger イベントは別の市場事実として記録する」に反する。
+推奨理由: ADR-0032 が受付起因の終了に専用理由（`CLOSED_BY_ORDER_ACCEPTANCE`）を与えた判断と同じ考え方で、集計上の区別を保てる。
+
+なお「新しい機会を生成して即座に終端する」という規則そのものは ADR-0032 から導かれるため第10.3節で確定しており、Q10 で決めるのは理由の名前だけである。
 
 ### 19.1 Q3（任意の部品で状態を許す）が他の決定に与える影響
 
