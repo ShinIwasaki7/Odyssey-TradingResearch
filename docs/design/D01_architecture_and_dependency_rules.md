@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -374,7 +374,9 @@ odyssey_fx/
 │   ├── symbol.py                 # Symbol, SymbolSpec
 │   ├── timeframe.py              # TimeframeRef
 │   ├── reason.py                 # ReasonCode, 型付き詳細
-│   └── refs.py                   # PolicyRef, EvidenceRef, ContractRef, ImplementationRef
+│   ├── refs.py                   # PolicyRef, EvidenceRef, ContractRef, ImplementationRef, ConfigDigest 等
+│   ├── canonical.py              # 正規化エンコードとダイジェスト（D02 §9）
+│   └── errors.py                 # KernelValueError（D02 §10）
 ├── marketdata/
 │   ├── domain/                   # bar, series, calendar, schedule, snapshot, delay, aggregation, integrity
 │   ├── application/              # ports, acceptance, aggregation, asof, publication, integrity
@@ -442,7 +444,8 @@ configs/
 ├── experiments/    # ExperimentSpec
 ├── policies/       # research / risk / execution / cost（版付き）
 ├── symbols/        # SymbolSpec
-└── calendars/      # 取引カレンダー・時間足定義・公開スケジュール
+├── calendars/      # 取引カレンダー・時間足定義・公開スケジュール
+└── datasources/    # 原データの列対応・時刻規約・宣言する価格基準（D03 §9）
 ```
 
 YAML の読込条件（`app.config` が強制する）:

@@ -51,5 +51,7 @@ runs/             実行成果物（git 管理外）
 | [docs/design/fx_research_platform_greenfield_design.md](docs/design/fx_research_platform_greenfield_design.md) | 上位設計書（要件と意味論） |
 | [docs/design/fx_research_platform_overall_plan.md](docs/design/fx_research_platform_overall_plan.md) | 全体構築計画書（アーキテクチャ・構成・段階計画） |
 | [docs/design/D01_architecture_and_dependency_rules.md](docs/design/D01_architecture_and_dependency_rules.md) | アーキテクチャ・依存規則・ディレクトリ構成（承認 2026-09-19） |
+| [docs/design/D02_common_kernel.md](docs/design/D02_common_kernel.md) | 共通カーネル型設計（承認 2026-09-20） |
+| [docs/design/D03_marketdata_and_time.md](docs/design/D03_marketdata_and_time.md) | 市場データ・時刻基盤設計（承認 2026-09-20） |
 | [docs/decisions/](docs/decisions/README.md) | ADR。技術選定・構成・運用の決定を1件1ファイルで記録 |
 | [docs/pr_review_policy.md](docs/pr_review_policy.md) | PR レビュー方針（Codex review の運用、指摘の分類） |
