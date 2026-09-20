@@ -397,7 +397,7 @@ src/odyssey_fx/
 | 待機（WAIT_FOR_INPUT） | 問いの固定（対象区間・受信済み機会の内容）、有限期限、不足入力到着時のみ再開、現在状態は再開時の `decision_time` で読む | §4.3.14 |
 | 追い越し（supersession、`REQUEST_SUPERSEDED`） | Trigger は失効、確認は対象足を進めて新要求を発行。開始足 ID と期限は維持。取引機会の `SUPERSEDED` とは対象が異なるため語を分ける（2026-09-20 改訂、ADR-0033） | §4.3.14 |
 | 取引機会の管理 | 保持・確認・期限・失効・重複防止。複数の有効な取引機会を同時に保持できること。再発火は常に新しい `opportunity_id` を生成し、内容の上書き（置換）は禁止。確認待ち中の条件再検査は `OpportunityValiditySpec`、複数機会の関係は `OpportunityConcurrencySpec`（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
-| 取引機会の終端理由 | `EXPIRED` / `MARKET_STATE_INVALIDATED`（継続要求条件の不成立、復活なし） / `SUPERSEDED`（新Trigger優先設定） / `CLOSED_BY_ORDER_ACCEPTANCE`（`on_order_accepted` による受付起因の終了）。確定したのは終端理由であり、非終端の状態名と遷移を含む完全な状態機械は D05 で設計する（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
+| 取引機会の終端理由 | `EXPIRED` / `MARKET_STATE_INVALIDATED`（継続要求条件の不成立、復活なし） / `SUPERSEDED`（新Trigger優先設定） / `CLOSED_BY_ORDER_ACCEPTANCE`（`on_order_accepted` による受付起因の終了） / `CONCURRENCY_LIMIT_REACHED`（同時保持上限に達しており、記録はするが有効にしない。2026-09-20 改訂、ADR-0032 補足3）。確定したのは終端理由であり、非終端の状態名と遷移を含む完全な状態機械は D05 で設計する（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
 | 出力の付番 | `OutputRecord` の共通メタデータを付与し、因果順序を記録 | §4.3.15 |
 
 ランタイムは `backtest` のフェーズ P1〜P5（Feature → MarketState → Trigger → ExecutionFilter → 注文意図）の中身を担当し、フェーズの順序・P0 の公開・P5 以降の受付/執行は `backtest.engine` が駆動する。
@@ -633,7 +633,7 @@ A〜D のどれにも属さない、戦略ランタイムと約定モデルの�
 |---|---|---|---|---|
 | E-1 | 足内の SL/TP 競合 | **決定**: 解像度階層に従い時系列順の下位足で再帰的に解決する（足内競合解決契約）。最小解像度でもなお順序が観測不能な場合だけ `UNRESOLVED` として SL 優先を適用 | 下位足は親足を完全に被覆し価格基準・足境界・利用可能時刻が整合するものだけを使う。解決方法・使用系列・解決した子足・未解決時の裁定を結果に記録。下位足の不足はデータ能力検査で実行可否を決める | [ADR-0030](../decisions/0030-sl-priority-on-intrabar-sl-tp-conflict.md) |
 | E-2 | 確認待ち中の条件の再検査 | **決定**: 固定する条件（`SNAPSHOT_AT_OPPORTUNITY`）と継続成立を要求する条件（`REQUIRE_UNTIL_ORDER_REQUEST`）を `OpportunityValiditySpec` として `StrategyDefinition` に必須指定。暗黙の既定値を設けない | 不成立は `MARKET_STATE_INVALIDATED` で終端し復活させない。欠損は `ValidityBinding` の `MissingInputPolicy` に従い、待機しても期限は延長しない。上位文書 §4.5 | [ADR-0031](../decisions/0031-opportunity-validity-spec-for-waiting-conditions.md) |
-| E-3 | 再発火と複数取引機会 | **決定**: 各発火が固有 `opportunity_id` を持つ不変の取引機会を生成する。内容の上書き（置換）は禁止。関係は `OpportunityConcurrencySpec` として必須指定 | 新しい Trigger を優先する設定でも既存は `SUPERSEDED` で終端し、新規に生成する。受付起因の終了は専用の `CLOSED_BY_ORDER_ACCEPTANCE`。評価要求側の追い越しは `REQUEST_SUPERSEDED` へ改名（ADR-0033）。同一 `event_id` の再配送は冪等性検査で除外。上位文書 §4.5 | [ADR-0032](../decisions/0032-opportunity-concurrency-spec-for-retrigger.md) |
+| E-3 | 再発火と複数取引機会 | **決定**: 各発火が固有 `opportunity_id` を持つ不変の取引機会を生成する。内容の上書き（置換）は禁止。関係は `OpportunityConcurrencySpec` として必須指定 | 新しい Trigger を優先する設定でも既存は `SUPERSEDED` で終端し、新規に生成する。受付起因の終了は専用の `CLOSED_BY_ORDER_ACCEPTANCE`、同時保持上限による見送りは専用の `CONCURRENCY_LIMIT_REACHED`（2026-09-20 改訂）。評価要求側の追い越しは `REQUEST_SUPERSEDED` へ改名（ADR-0033）。同一 `event_id` の再配送は冪等性検査で除外。上位文書 §4.5 | [ADR-0032](../decisions/0032-opportunity-concurrency-spec-for-retrigger.md) |
 
 ### パッケージ名（決定済み）
 
