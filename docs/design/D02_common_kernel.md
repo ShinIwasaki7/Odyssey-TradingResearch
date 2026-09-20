@@ -1,7 +1,7 @@
 # D02: 共通カーネル型設計（`odyssey_fx.common`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に記録。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15「共通の値型と参照」、§4.3.15、§4.7.14、[D01](D01_architecture_and_dependency_rules.md) §1・§2・§5・§7.2、ADR-0006（決定論的 ID）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）
 対応段階: 段階1で実装。以降の全パッケージが依存する。
 
@@ -84,7 +84,8 @@ D01 §7.2 の7モジュールに、ダイジェスト用の `canonical.py` と�
 ### 4.1 Decimal コンテキスト（確定）
 
 - `KERNEL_DECIMAL_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)`。トラップは `InvalidOperation`、`DivisionByZero`、`Overflow`。`Inexact` はトラップしない。
-- カーネルの算術は `with localcontext(KERNEL_DECIMAL_CONTEXT)` の中で行う。プロセス全体のコンテキスト（`decimal.getcontext()`）は変更しない。
+- カーネルの算術は `with localcontext(kernel_context())` の中で行う（v1.2: `kernel_context()` は上記設定から**毎回新しい `Context` を作って返す**関数。公開定数 `KERNEL_DECIMAL_CONTEXT` は参照用で算術には使わない。可変な `Context` オブジェクトを書き換えられても計算結果が変わらないようにするため。PR #6 の Codex 指摘）。プロセス全体のコンテキスト（`decimal.getcontext()`）は変更しない。
+- 刻みへの丸め（`round_to_tick`、`round_down_to_step`、`Money.round_to`）はコンテキストの精度に依存しない**厳密な整数演算**で行う（v1.2: `value / step` を精度 28 で先に丸めると、有効桁が 28 を超える値で丸め方向が失われるため。PR #6 の Codex 指摘）。
 - `NaN`、`Infinity` は構築時に拒否する。
 
 ### 4.2 `CurrencyCode`（確定）
