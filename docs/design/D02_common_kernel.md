@@ -1,7 +1,7 @@
 # D02: 共通カーネル型設計（`odyssey_fx.common`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。v1.3（2026-09-20）: 理由コードの表（第8.1節）が上位設計書 §4.7.14 の写しであることを明記し、ADR-0031・ADR-0032・ADR-0033 で §4.7.14 に加わった取引機会の終端理由と評価要求の追い越し（`MARKET_STATE_INVALIDATED` / `SUPERSEDED` / `CLOSED_BY_ORDER_ACCEPTANCE` / `CONCURRENCY_LIMIT_REACHED` / `REQUEST_SUPERSEDED`）を表へ反映した（D04 の PR #14）。`common` の列挙への追加は段階2 の実装で行う。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15「共通の値型と参照」、§4.3.15、§4.7.14、[D01](D01_architecture_and_dependency_rules.md) §1・§2・§5・§7.2、ADR-0006（決定論的 ID）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）
 対応段階: 段階1で実装。以降の全パッケージが依存する。
 
@@ -217,6 +217,8 @@ IdAllocator(run_id: RunId)
 
 ### 8.1 `ReasonCode`（確定。語彙は初期版）
 
+**本節の表は上位設計書 §4.7.14 の語彙の写しである**（v1.3 で明記）。正本は §4.7.14 であり、語彙を足す決定をした設計文書・ADR は、**同じ PR で §4.7.14 と本節の表の両方を更新する**。片方だけ更新すると、決定した理由を実装側の列挙で構築できなくなる。
+
 上位設計書 §4.7.14 の初期語彙に `POSITION_CLOSED`（§4.7.15 の提案）を加える。
 
 | コード | 主な使用箇所 |
@@ -225,9 +227,16 @@ IdAllocator(run_id: RunId)
 | `NO_CANDIDATE` | 期限内に適格 open がない受付前拒否 |
 | `RUN_END` | 末尾の受付前拒否、残存注文の CANCELED、管理要求の未適用 |
 | `DATA_ERROR` | 完全性検査・実行失敗、失敗に伴う残存注文の CANCELED |
-| `EXPIRED` | 期限による注文の EXPIRED |
+| `EXPIRED` | 期限による注文の EXPIRED、期限切れによる取引機会の終端（上位設計書 §4.5） |
 | `CARRY_NOT_ALLOWED` | 週末持ち越し禁止による受付前拒否 |
 | `POSITION_CLOSED` | 閉鎖済み建玉への要求の拒否、保護決済後の残存決済注文の取消 |
+| `MARKET_STATE_INVALIDATED` | 継続成立を要求した条件が崩れたことによる取引機会の終端（v1.3、ADR-0031） |
+| `SUPERSEDED` | 新しい Trigger を優先する設定による取引機会の終端（v1.3、ADR-0032） |
+| `CLOSED_BY_ORDER_ACCEPTANCE` | 別の注文が受け付けられたことによる取引機会の終端（v1.3、ADR-0032） |
+| `CONCURRENCY_LIMIT_REACHED` | 同時保持上限に達していたことによる取引機会の終端（v1.3、ADR-0032 補足3。発火は取引機会として記録したうえで有効にしない） |
+| `REQUEST_SUPERSEDED` | 同じ系列の新しい足による評価要求の追い越し（v1.3、ADR-0033 で改名。取引機会の `SUPERSEDED` と混同しない） |
+
+末尾5件は 2026-09-20 の ADR-0031・ADR-0032・ADR-0033 で上位設計書 §4.7.14 に加わった語彙であり、v1.3 で本節の表へ反映した。取引機会の終端理由の意味の正本は上位設計書 §4.5、評価要求の追い越しの正本は §4.3.14 である。`common` の `ReasonCode` 列挙への追加は、取引機会の状態機械を実装する段階2（D04・D05）で行う。
 
 語彙の追加（執行理由など）は該当設計文書（D06）で行い、本節の表を更新する。「状態と理由は別フィールド」「許可された組合せの検証は各 domain」（上位設計書 §4.7.14）。
 
