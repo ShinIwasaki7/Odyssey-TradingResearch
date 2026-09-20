@@ -38,7 +38,7 @@ src/odyssey_fx/   common / marketdata / strategy / backtest / evaluation / app
 tests/            unit / semantics / property / golden / architecture / fixtures
 tools/ops/        リポジトリ運用スクリプト（Codex review poller）
 docs/             設計文書・決定記録
-data/             原データと snapshot（実体は git 管理外。manifest のみ追跡）
+data/             原データと snapshot（実体は git 管理外。manifest.json と access_log.jsonl を追跡）
 runs/             実行成果物（git 管理外）
 ```
 

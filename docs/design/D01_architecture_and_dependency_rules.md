@@ -343,7 +343,7 @@ Odyssey-TradingResearch/
 ├── pyproject.toml                # 配布名 odyssey-trading-research、requires-python ">=3.12,<3.13"、hatchling
 ├── uv.lock
 ├── .python-version               # 3.12.13
-├── .gitignore                    # data/raw、data/snapshots の実体、runs/、.venv 等を除外。snapshot manifest は再包含
+├── .gitignore                    # data/raw、data/snapshots の実体、runs/、.venv 等を除外。snapshot の manifest.json と access_log.jsonl は再包含
 ├── .github/workflows/ci.yml
 ├── .claude/skills/pr-review/     # 本リポジトリ用に書き換えたレビュー手順
 ├── docs/
@@ -461,7 +461,8 @@ data/
 ├── raw/market/                     # 移管した20個の CSV。上書き禁止。git 管理外
 └── snapshots/<snapshot_id>/
     ├── manifest.json               # git 管理。digest・出所・銘柄・価格基準・期間・行数・変換コード版・
-    │                               # partition ごとのアクセス分類と閲覧履歴
+    │                               # partition ごとのアクセス分類
+    ├── access_log.jsonl            # git 管理。追記専用の閲覧・消費記録。HoldoutState はここから導出（ADR-0014）
     └── <partition>/…               # 実体。git 管理外。アクセス分類（RESEARCH_HISTORY /
                                     # LEGACY_HOLDOUT / QUARANTINED_UNASSIGNED）ごとに分ける
 ```
@@ -512,7 +513,7 @@ Python は `.python-version`（3.12.13）に固定する。3.13 への更新は�
 - [ ] `src/odyssey_fx/` のサブパッケージが第7.2節と一致し、ロジックを含まない
 - [ ] `import-linter` 契約が第6節と同一（契約名を含む）で、全 layers 契約が `exhaustive = true`、F1a〜F8 が存在し、`lint-imports` が通る
 - [ ] 各 forbidden 契約と L2c の独立性が、違反 import の注入で実際に BROKEN になる（レビュー時に実測）
-- [ ] `.gitignore` が `data/raw/`、`data/snapshots/` の実体、`runs/` を除外し、`data/snapshots/*/manifest.json` を再包含する（`git check-ignore -v` で確認）
+- [ ] `.gitignore` が `data/raw/`、`data/snapshots/` の実体、`runs/` を除外し、`data/snapshots/*/manifest.json` と `data/snapshots/*/access_log.jsonl` を再包含する（`git check-ignore -v` で確認）
 - [ ] `tests/` の構成が第9節と一致し、`tests/architecture/` が `lint-imports` の実行と契約定義の検査を行う
 - [ ] CI が第11節の順序で実行される
 - [ ] `docs/pr_review_policy.md`、`.claude/skills/pr-review/SKILL.md`、`tools/ops/codex_review_poll.py` が ADR-0017 の構成（旧リポジトリ固有語彙なし、参照先が実在）である

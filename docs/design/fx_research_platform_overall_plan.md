@@ -296,7 +296,7 @@ src/odyssey_fx/
 ### 4.4 設定・データ・成果物の配置規則
 
 - `configs/` は人間が編集する宣言。すべてのファイルにスキーマ版を持たせ、`app.config` が検証する。
-- `data/snapshots/<snapshot_id>/manifest.json` は git 管理し、データ実体（Parquet 等）は管理外。manifest には上位文書第3.3節の項目（digest、出所、銘柄、価格基準、期間、行数、変換コード版）を記録する。
+- `data/snapshots/<snapshot_id>/manifest.json` と `access_log.jsonl`（ADR-0014）は git 管理し、データ実体（Parquet 等）は管理外。manifest には上位文書第3.3節の項目（digest、出所、銘柄、価格基準、期間、行数、変換コード版）を記録する。
 - `runs/<run_id>/` に run manifest・trace・result を保存し、`evaluation` の実験成果物は `runs/experiments/<experiment_id>/` に置く。形式は第6節 B-7。
 - 期間は `RESEARCH_HISTORY` / `LEGACY_HOLDOUT` / `QUARANTINED_UNASSIGNED` に三分類し、受入れ処理が生成する snapshot partition の単位で物理分離する。後二者は `holdout_gate` を通らない読込経路を持たない（第6節 C-2、決定済み）。
 
@@ -575,7 +575,7 @@ data/raw/market/
   移管した20個の CSV。上書き禁止。git 管理外
 
 data/snapshots/<snapshot_id>/
-  受入れ後の正規化データ。実体は git 管理外、manifest は git 管理
+  受入れ後の正規化データ。実体は git 管理外、manifest.json と access_log.jsonl は git 管理
 
 runs/
   実行結果。git 管理外

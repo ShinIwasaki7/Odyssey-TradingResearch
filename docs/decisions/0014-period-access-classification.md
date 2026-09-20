@@ -36,7 +36,7 @@
 - `SEALED → CONSUMED` は不可逆。逆遷移は存在しない。
 - `CONSUMED` は holdout としての再選定・最終評価に**永久に使用禁止**。
 - `CONSUMED` を研究・開発用途で読む場合、run manifest に「`CONSUMED` partition を使用したこと」と「利用目的」を記録し、その結果を holdout 成績として扱うことを禁止する（評価基盤は holdout 成績としての集計を拒否する）。
-- 状態は**追記専用の access log**（snapshot manifest の `access_log`）から導出する。状態を直接書き換えるフィールドは持たない。
+- 状態は**追記専用の access log**（`data/snapshots/<snapshot_id>/access_log.jsonl`、git 管理。下記「消費遷移の直列化」）から導出する。manifest 内に状態を直接書き換えるフィールドは持たない。
 
 ### fail-closed の手順
 
@@ -52,7 +52,7 @@
 
 複数のクローンやプロセスが同じコミット済み manifest から `SEALED` を導出し、それぞれローカルで `CONSUMED` を追記して同じ holdout を公開することを防ぐため、**origin への push を compare-and-set とする**（PR #2 Codex round 3 指摘）。
 
-- access log は manifest 内ではなく独立ファイル `data/snapshots/<snapshot_id>/access_log.jsonl`（追記専用、git 管理）に置く。`HoldoutState` はこのファイルから導出する。
+- access log は manifest 内ではなく独立ファイル `data/snapshots/<snapshot_id>/access_log.jsonl`（追記専用、git 管理）に置く。`HoldoutState` はこのファイルから導出する。`.gitignore` は snapshot 実体を除外しつつ `manifest.json` と `access_log.jsonl` の両方を再包含する（ADR-0013 改訂）。追跡されていない access log への追記は「未記録」であり、gate は公開前に当該ファイルが git で追跡され origin に到達したことを検証する。
 - 消費の手順: (1) `git fetch origin` し、origin の既定ブランチ上の access log に自分の知らない追記がないことを確認する（あれば状態を再導出し、既に `CONSUMED` なら拒否）。(2) 消費記録を追記してコミットする。(3) origin の既定ブランチへ push する。(4) push が成功した後にだけデータを公開する。
 - push が non-fast-forward で拒否された場合は、状態を再導出して拒否する。再試行は人間の判断による。
 - origin に到達できない環境では `SEALED` partition を読めない（fail-closed）。ローカルだけの記録で公開することは許可しない。
@@ -62,7 +62,7 @@
 
 - D03 §3.8（partition の状態）、§6.1（as-of ビューの許可 partition）に反映する。
 - `evaluation.application.holdout_gate`（D07）が許可発行・消費記録・公開の順序と、`CONSUMED` 使用時の manifest 記録、holdout 成績としての集計拒否を実装する。
-- snapshot manifest の `access_log` は追記専用とし、`HoldoutState` はそこから導出する。
+- `access_log.jsonl` は追記専用とし、`HoldoutState` はそこから導出する。ADR-0013 と D01 §7.1・§10.2 の「manifest のみ追跡」を「manifest と access log を追跡」に改訂する。
 
 ## 改訂履歴
 
