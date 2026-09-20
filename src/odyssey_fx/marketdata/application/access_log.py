@@ -20,13 +20,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.access import AccessClass, HoldoutState
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.snapshot import (
     LegacyAccessRecord,
     LegacyObservation,
     PartitionId,
+    PartitionRecord,
 )
 
 __all__ = [
@@ -108,29 +109,65 @@ def append_entry(
     return (*entries, entry)
 
 
+def _covers_completely(interval: Interval, records: Sequence[LegacyAccessRecord]) -> bool:
+    """未観測の記録の和集合が `interval` を隙間なく覆うかを判定する（ADR-0014）。
+
+    記録を開始時刻順に並べ、覆えた末尾（`reached`）を前へ伸ばしていく。次の記録が
+    `reached` より後から始まっていれば、その間に「未観測と確認できていない時間」が残る
+    ので覆えていない。
+    """
+    reached = interval.start
+    for record in sorted(records, key=lambda item: item.interval.start.value):
+        if record.interval.end <= reached:
+            continue  # すでに覆った範囲に収まる記録。
+        if reached < record.interval.start:
+            return False  # 隙間がある。
+        reached = record.interval.end
+        if interval.end <= reached:
+            return True
+    return interval.end <= reached
+
+
 def initial_holdout_state(
-    partition_id: PartitionId, legacy_access: Sequence[LegacyAccessRecord]
+    partition: PartitionRecord, legacy_access: Sequence[LegacyAccessRecord]
 ) -> HoldoutState:
     """旧基盤の履歴から封印期間 partition の初期状態を決める（ADR-0014）。
 
-    **未観測と確認できた場合だけ** `SEALED`。記録がない、観測済み、履歴不明のいずれも
-    `CONSUMED` に倒す（fail-closed）。
+    `SEALED` にするのは、**未観測と確認できた記録が partition の区間を完全に覆う**場合
+    だけである。判定に partition の区間（`PartitionRecord.interval`）が要るので、識別子
+    だけでなく記録そのものを受け取る。
+
+    次のいずれも `CONSUMED` に倒す（fail-closed）。
+
+    - 記録が1件もない。
+    - 観測済み（`OBSERVED`）または履歴不明（`UNKNOWN`）の記録が1件でも重なる。
+    - 未観測の記録はあるが、partition の区間の一部しか覆っていない（部分被覆・隙間）。
+
+    系列が一致するだけで `SEALED` にすると、「2024年の1日だけ未観測と確認した」記録で
+    2年ぶんの封印期間が開いてしまう。ADR-0014 は未観測を確認できた範囲だけを封印扱いに
+    すると定めている。
     """
-    if partition_id.access_class is not AccessClass.LEGACY_HOLDOUT:
+    if partition.access_class is not AccessClass.LEGACY_HOLDOUT:
         raise MarketDataValueError(
             f"only LEGACY_HOLDOUT partitions carry a holdout state, got"
-            f" {partition_id.access_class.value} for {partition_id} (D03 §3.8)"
+            f" {partition.access_class.value} for {partition.partition_id} (D03 §3.8)"
         )
-    relevant = [record for record in legacy_access if record.series_id == partition_id.series]
-    if not relevant:
+    overlapping = [
+        record
+        for record in legacy_access
+        if record.series_id == partition.series_id and record.interval.overlaps(partition.interval)
+    ]
+    if not overlapping:
         return HoldoutState.CONSUMED
-    if all(record.observation is LegacyObservation.NOT_OBSERVED for record in relevant):
-        return HoldoutState.SEALED
-    return HoldoutState.CONSUMED
+    if any(record.observation is not LegacyObservation.NOT_OBSERVED for record in overlapping):
+        return HoldoutState.CONSUMED
+    if not _covers_completely(partition.interval, overlapping):
+        return HoldoutState.CONSUMED
+    return HoldoutState.SEALED
 
 
 def derive_holdout_state(
-    partition_id: PartitionId,
+    partition: PartitionRecord,
     legacy_access: Sequence[LegacyAccessRecord],
     entries: Sequence[AccessLogEntry],
 ) -> HoldoutState:
@@ -140,11 +177,11 @@ def derive_holdout_state(
     `SEALED` へ戻ることはない。許可だけが記録されていて消費が記録されていない場合は
     `SEALED` のままで、データはまだ公開されていない（fail-closed な順序、ADR-0014）。
     """
-    state = initial_holdout_state(partition_id, legacy_access)
+    state = initial_holdout_state(partition, legacy_access)
     if state is HoldoutState.CONSUMED:
         return state
     for entry in entries:
-        if entry.partition_id != partition_id:
+        if entry.partition_id != partition.partition_id:
             continue
         if entry.kind is AccessLogEntryKind.CONSUMED:
             return HoldoutState.CONSUMED
