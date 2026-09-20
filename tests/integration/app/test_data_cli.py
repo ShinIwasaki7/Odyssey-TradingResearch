@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from odyssey_fx.app.cli.main import main
@@ -670,3 +671,110 @@ def test_the_calendar_change_path_needs_only_the_timeframes(workspace: Path) -> 
         )
         == 1
     )
+
+
+# --- 暫定 snapshot の内容照合（D03 §3.7.1）----------------------------------
+#
+# 分類は暫定 partition を読み戻して最終 snapshot を組み立てる。照合せずに読み戻すと、
+# 書き換えられた足がそのまま正当な partition として記録される。しかも `sources` は元の
+# 原ファイルの sha256 を保持したままなので、**出所の記録と実データが一致しない snapshot**
+# ができ、それを承認できてしまう。分類の冒頭で、カレンダー変更の有無に関わらず照合する。
+
+
+def _tamper_with_a_provisional_partition(workspace: Path, pending: str) -> str:
+    """暫定 partition の Parquet の価格だけを書き換える（足数も時刻も変えない）。"""
+    directory = workspace / "data/snapshots/_pending" / pending
+    target = next(directory.glob("USDJPY_1h_bid/*/bars.parquet"))
+    frame = pl.read_parquet(target)
+    frame = frame.with_columns(
+        [
+            (pl.col(column).cast(pl.Float64) + 10).cast(pl.String)
+            for column in ("open", "high", "low", "close")
+        ]
+    )
+    frame.write_parquet(target)
+    return target.name
+
+
+def _tamper_with_the_provisional_report(workspace: Path, pending: str) -> None:
+    """暫定の検査報告から結果を1件落とす（manifest の記録と食い違わせる）。"""
+    path = workspace / "data/snapshots/_pending" / pending / "integrity_report.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["results"] = payload["results"][:-1]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _no_final_snapshot(workspace: Path) -> bool:
+    """最終 snapshot が1件も作られていないか。"""
+    root = workspace / "data/snapshots"
+    return [path.name for path in root.iterdir() if path.name != "_pending"] == []
+
+
+def test_a_tampered_provisional_partition_blocks_the_calendar_change_path(
+    workspace: Path,
+) -> None:
+    """(a) 暫定 partition を書き換えたら、カレンダー変更付きの分類を拒否する。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
+
+    _tamper_with_a_provisional_partition(workspace, pending)
+
+    assert _classify_with_calendar(workspace, pending, decisions) == 1
+    assert _no_final_snapshot(workspace), "拒否したのに最終 snapshot が作られている"
+
+
+def test_a_tampered_provisional_report_blocks_the_calendar_change_path(
+    workspace: Path,
+) -> None:
+    """(b) 暫定の検査報告を差し替えたら、カレンダー変更付きの分類を拒否する。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
+
+    _tamper_with_the_provisional_report(workspace, pending)
+
+    assert _classify_with_calendar(workspace, pending, decisions) == 1
+    assert _no_final_snapshot(workspace)
+
+
+def test_a_tampered_provisional_partition_blocks_the_plain_classify(workspace: Path) -> None:
+    """(c) カレンダーを変えない分類でも、書き換えられた partition を拒否する。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+
+    _tamper_with_a_provisional_partition(workspace, pending)
+
+    assert _classify(workspace, pending, decisions) == 1
+    assert _no_final_snapshot(workspace)
+
+
+def test_a_tampered_provisional_report_blocks_the_plain_classify(workspace: Path) -> None:
+    """(c) カレンダーを変えない分類でも、差し替えられた報告を拒否する。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+
+    _tamper_with_the_provisional_report(workspace, pending)
+
+    assert _classify(workspace, pending, decisions) == 1
+    assert _no_final_snapshot(workspace)
+
+
+def test_an_untouched_provisional_snapshot_still_settles(workspace: Path) -> None:
+    """照合を足したことで、正しい暫定 snapshot まで確定できなくなっていないこと。
+
+    上の4件が「何をしても失敗する」ために通っているのではないことを確かめる。
+    """
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+
+    assert _classify(workspace, pending, decisions) == 0
+    assert not _no_final_snapshot(workspace)

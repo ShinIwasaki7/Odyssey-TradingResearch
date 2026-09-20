@@ -212,6 +212,45 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
 # --- classify ---------------------------------------------------------------
 
 
+def _require_recorded_content(
+    store: SnapshotStore,
+    snapshot_dir: str,
+    manifest: SnapshotManifest,
+    report: IntegrityReport,
+) -> None:
+    """実体と検査報告が manifest の記録どおりであることを確かめる（D03 §3.7.1）。
+
+    **分類の前と承認の前**に行う。保存されている内容が manifest の記録と食い違ったまま
+    先へ進めると、次の2つが起こる。
+
+    - 分類（`classify`）: 暫定 partition を読み戻して最終 snapshot を組み立てるので、
+      書き換えられた内容がそのまま正当な partition として記録される。しかも `sources` は
+      元の原ファイルの sha256 を保持したままなので、**出所の記録と実データが一致しない
+      snapshot** ができ、それを承認できてしまう。
+    - 承認（`approve`）: 承認は「この内容でよい」という人間の確認である。食い違ったまま
+      承認を記入すると、**承認済みなのに読み取りの関門で拒否される snapshot** になる。
+
+    確かめるのは2つ。
+
+    1. 検査報告の内容から再計算したダイジェストが、manifest の `integrity_report_ref` と
+       一致する（報告が差し替えられていない）。
+    2. partition ごとの実体が manifest の記録どおりである（系列・足数・区間・内容
+       ダイジェストの4点）。照合の規則は読み取りの関門と同じ関数を使う。
+    """
+    recomputed = integrity_report_digest_hex(report)
+    if recomputed != manifest.integrity_report_ref.hex:
+        raise ConfigError(
+            f"{snapshot_dir} の検査報告は {recomputed} になるが、manifest は"
+            f" {manifest.integrity_report_ref.hex} を記録している。報告が manifest と"
+            " 食い違ったまま承認すると、承認済みでも読めない snapshot になる"
+            "（D03 §3.7.1）"
+        )
+
+    for record in manifest.partitions:
+        bars = store.read_partition(snapshot_dir, record.partition_id)
+        require_matching_partition_content(manifest, record.partition_id, bars)
+
+
 def _pending_from_store(
     store: SnapshotStore,
     snapshot_dir: str,
@@ -254,6 +293,13 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             f"{pending_directory} の manifest は暫定の識別子 {manifest.snapshot_id()} を"
             f" 表しており、指定された {args.pending} と一致しない（D03 §3.7.1）"
         )
+
+    # **暫定 snapshot の内容が記録どおりかを、何かを読み直す前に確かめる**（D03 §3.7.1）。
+    # 分類は暫定 partition を読み戻して最終 snapshot を組み立てるので、ここで照合しないと、
+    # 書き換えられた足がそのまま正当な partition として記録される。しかも `sources` は元の
+    # 原ファイルの sha256 を保持したままなので、出所の記録と実データが一致しない snapshot が
+    # できてしまう。カレンダーを変える分類かどうかに関わらず行う。
+    _require_recorded_content(store, pending_directory, manifest, report)
 
     # 分類の系列は、暫定 snapshot が実際に持つ系列から解決する。分類ファイルの系列表記
     # （`USDJPY/1h/bid`）には時間足の版が含まれないので、版を決め打つと版 2 以降の定義を
@@ -327,39 +373,6 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
 
 
 # --- approve ----------------------------------------------------------------
-
-
-def _require_recorded_content(
-    store: SnapshotStore,
-    snapshot_dir: str,
-    manifest: SnapshotManifest,
-    report: IntegrityReport,
-) -> None:
-    """実体と検査報告が manifest の記録どおりであることを確かめる（D03 §3.7.1）。
-
-    承認の前に行う。承認は「この内容でよい」という人間の確認であり、確認した内容と保存
-    されている内容が食い違ったまま承認を記入すると、**承認済みなのに読み取りの関門で
-    拒否される snapshot** ができてしまう。
-
-    確かめるのは2つ。
-
-    1. 検査報告の内容から再計算したダイジェストが、manifest の `integrity_report_ref` と
-       一致する（報告が差し替えられていない）。
-    2. partition ごとの実体が manifest の記録どおりである（系列・足数・区間・内容
-       ダイジェストの4点）。照合の規則は読み取りの関門と同じ関数を使う。
-    """
-    recomputed = integrity_report_digest_hex(report)
-    if recomputed != manifest.integrity_report_ref.hex:
-        raise ConfigError(
-            f"{snapshot_dir} の検査報告は {recomputed} になるが、manifest は"
-            f" {manifest.integrity_report_ref.hex} を記録している。報告が manifest と"
-            " 食い違ったまま承認すると、承認済みでも読めない snapshot になる"
-            "（D03 §3.7.1）"
-        )
-
-    for record in manifest.partitions:
-        bars = store.read_partition(snapshot_dir, record.partition_id)
-        require_matching_partition_content(manifest, record.partition_id, bars)
 
 
 def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
