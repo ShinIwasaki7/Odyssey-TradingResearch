@@ -57,7 +57,7 @@ D04・D05 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しな
 | 3 | 受付 | 要求組立、全順序化の鍵と優先度の向きと ID 比較規則、リスク審査と数量決定の順、**審査・予約・受付の原子性**、受付結果を戦略へ返す通知（第6節） | 戦略別リスク配分と `strategy_priority` の設定値（**D10**）、口座強制縮小の対象と優先順位（**D10**） |
 | 4 | 執行 | 候補 open の選び方、約定価格、保護水準の到達判定、**足内競合解決契約（ADR-0030）の宣言形・検査・手順・記録**、gap・約定ずれ超過・緊急決済、費用モデル（第7節） | トレーリング（`UPDATE_STOP`）の評価足と期間 Exit（**段階3・D05 v0.2 と本書 v0.2**）、約定直後以外の緊急決済の実行時点（**D10**） |
 | 5 | 口座・建玉 | 台帳、balance と equity の区別、建玉と保護水準の管理権、`position_context@v1` / `account_context@v1` の項目、通貨換算の適用時点（第8節） | 複数建玉・複数銘柄の台帳と配分（**D10**）、equity 基準の予算へ切り替える拡張（**D10**） |
-| 6 | 記録 | trace の行の種類14件とフィールド、run manifest の項目、`BacktestResult` の項目、保存形式（第9節） | 指標の算出、終端理由別・診断理由別の集計、実験 manifest への固定（**D07**）、swap 未計上をユーザーへ伝える出力の形（**D07**、ADR-0029） |
+| 6 | 記録 | trace の行の種類15件とフィールド、run manifest の項目、`BacktestResult` の項目、保存形式（第9節） | 指標の算出、終端理由別・診断理由別の集計、実験 manifest への固定（**D07**）、swap 未計上をユーザーへ伝える出力の形（**D07**、ADR-0029） |
 | 7 | run_end とデータ能力 | 末尾処理の順序、残存注文・残存取引機会・残存建玉の扱い、末尾3集計の定義、実行前のデータ能力検査と実行可否（第10節・第7.5節） | 3集計の費用区分を指標へどう使うか（**D07**）、snapshot の受入れ検査そのもの（**D03 が正本**） |
 
 前提として **D04 / D05 から受け取るもの**は次のとおりで、本書はこれらを再定義しない。
@@ -129,6 +129,9 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `CostEntry` | `domain.fills` | レコード | `kind: CostKind` / `native: Money` / `account: Money` / `conversion: ConversionRate` | §7.6 |
 | `CostKind` | `domain.fills` | enum | `COMMISSION` / `SLIPPAGE_IN_PRICE`（価格反映済みの記録用。金額は控除しない） | §7.6 |
 | `ResolutionMethod` | `execution` | enum | `SINGLE_HIT` / `RESOLVED_BY_CHILD` / `UNRESOLVED_SL_PRIORITY` | §7.4 |
+| `EvidenceKind` | `trace.recorder` | enum | `ORDER_REQUEST` / `ADMISSION` / `FILL` / `PROTECTION_UPDATE` | §9.2 |
+| `MarketObservationRef` | `trace.recorder` | レコード | `snapshot_ref: SnapshotRef` / `series: SeriesId` / `interval: Interval` / `field: MarketDataField`（D04 §5 の市場データ項目） | §9.2 |
+| `EvidenceRecord` | `trace.recorder` | レコード | `evidence_id: EvidenceId` / `at: ProcessingPoint` / `kind: EvidenceKind` / `output_ids: tuple[OutputId, ...]` / `evaluation_ids: tuple[EvaluationId, ...]` / `attempt_id: AttemptId \| None` / `position_id: PositionId \| None` / `market_refs: tuple[MarketObservationRef, ...]` / `ledger_snapshot_at: ProcessingPoint \| None` / `policy_refs: tuple[PolicyRef, ...]` | §9.2 |
 | `IntrabarResolution` | `execution` | レコード | `position_id: PositionId` / `parent_bar_key: BarKey` / `method: ResolutionMethod` / `series_used: tuple[SeriesId, ...]` / `resolved_child_bar_key: BarKey \| None` / `verdict: CloseCause` / `fill_id: FillId` | §7.4 |
 | `ProtectionState` | `domain.positions` | レコード | `version: int` / `stop_loss: Price` / `take_profit: Price \| None` / `effective_from: BarKey` / `owner_instance_id: str \| None` | §8.3 |
 | `PositionStatus` | `domain.positions` | enum | `OPEN` / `CLOSED` | §8.2 |
@@ -145,7 +148,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `RunManifest` | `trace.manifest` | レコード | 第9.3節の項目 | §9.3 |
 | `BacktestResult` | `trace.result` | レコード | 第9.4節の項目 | §9.4 |
 | `TraceSink` | `application.ports` | Protocol | `write(table: TraceTable, rows: tuple[object, ...]) -> None` | §9.1 |
-| `TraceTable` | `trace.recorder` | enum | 第9.2節の14件 | §9.2 |
+| `TraceTable` | `trace.recorder` | enum | 第9.2節の15件 | §9.2 |
 | `PublicationFeed` | `application.ports` | Protocol | `events(interval)`。要素は D03 §7.1 の4イベントの union（`marketdata.application` が実装し `app` が注入する） | §4.3 |
 | `ExecutionSeries` | `application.ports` | Protocol | D03 §6.3 の3操作（`open_of` / `bar` / `next_bar_key_after`） | §7.1 |
 | `Calendar` | `application.ports` | Protocol | `marketdata.domain` の `TradingCalendar` を受ける（D01 §4）。期限・候補 open・休場の判定に使う | §5.3 |
@@ -234,7 +237,7 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 | 決済約定（第7.3節） | `FillRecord` ／ `Position`（終了）／ `OrderState(FILLED)` ／ 実現損益・費用・balance ／ `PositionRiskAllocation`（解放）／ `event_id` |
 | 終端（期限・取消） | `OrderState(EXPIRED \| CANCELED)` ＋ `terminal_reason` ／ `ReservationState(RELEASED)` ／ `event_id` |
 
-- 受付前拒否は台帳を変えない。`OrderRequest`・`AttemptRejected`・`RiskAssessment` の3件だけを trace へ残す【合意済み】上位 §4.7.15 A（「受付前拒否もこの記録に紐付く」）。
+- 受付前拒否は台帳を変えない。`OrderRequest` と `AttemptRejected` を trace へ残す【合意済み】上位 §4.7.15 A（「受付前拒否もこの記録に紐付く」）。**`RiskAssessment` を残すのは、審査に実際に入れた拒否のときだけ**とする【提案】。期限内に候補が無い（`NO_CANDIDATE`）・末尾（`RUN_END`）・参照価格が取れない（`DATA_ERROR`）のように第6.4節の手順3より前で終わる拒否では、`ReferenceQuote` も丸め前後の価格も換算率も存在しないため、行を作れば架空の値を書くことになる。その場合 `AttemptRejected.assessment_ref` は `None` とし、拒否の理由は `Reason` だけが持つ。
 - 同じ `event_id` が2度来たら、`processed_event_ids` に含まれることを見て**何もしない**（確定単位を実行しない）。異なる `event_id` で同じ終端効果を要求されたら、注文状態の検査（終端状態からの遷移は表に無い）で拒否する【合意済み】上位 §4.7.13 A。
 - 確定単位の内部で検査に失敗した場合は、**差し替えを行わず** run を失敗させ、直前の整合状態と失敗診断を保存する【合意済み】上位 §4.7.13 A・C。部分的に約定した状態で継続しない。
 - 採番順は `ProcessingPoint` の順に一致させる【合意済み】D02 §7.3。同一入力の再実行で同じ ID 列・同じ trace になることを再現性テストで検証する。段階2の許容誤差は**完全一致**とする【提案】（Decimal 演算と決定論的採番だけで構成され、浮動小数の非決定性が入らないため）。**不採用**: 金額に許容誤差を置く案（段階2で誤差が出るなら原因は非決定性であり、閾値で隠すべきではない）。
@@ -534,7 +537,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 
 ### 9.2 trace の行の種類【提案】
 
-段階2で書き出す表は次の14件。待機記録と追い越し記録は段階3（第12節）。
+段階2で書き出す表は次の15件。待機記録と追い越し記録は段階3（第12節）。
 
 | # | `TraceTable` | 正本の型 | 主キー | 辿れる先 |
 |---|---|---|---|---|
@@ -552,8 +555,9 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 | 12 | `MANAGEMENT_APPLICATIONS` | `ManagementRequest`（D05 §3）＋ 適用結果 | `(position_id, at)` | `position_id` / 元の `output_id` |
 | 13 | `INTRABAR_RESOLUTIONS` | `IntrabarResolution` | `fill_id` | `position_id` / `parent_bar_key` |
 | 14 | `LEDGER_SNAPSHOTS` | `LedgerSnapshot` | `at` | `open_position_ids` |
+| 15 | `EVIDENCE` | `EvidenceRecord` | `evidence_id` | `output_ids` / `evaluation_ids` / `attempt_id` / `position_id` / `market_refs` |
 
-**ID 連鎖で辿れること**（機会 → 試行 → 注文 → 約定 → 建玉 → 管理要求、および予約）を、表3・4・7・9・11・12・10 の外部キーで満たす。**受付前拒否でも連鎖が切れない**のは、`OrderRequest` を表4として必ず保存するためである（上位 §4.7.15 A が「受付前拒否もこの記録に紐付く」と定めている）。`AttemptRejected` は `AcceptedOrder` を作らないため、発端の取引機会は表4の `opportunity_id` からだけ辿れる【合意済み】全体計画 §5.4.5。根拠記録（`EvidenceRef`）は表1・2・4・6 への参照で表し、別の根拠表を作らない【提案】（説明文だけのログを増やさないため。上位 §4.7.15 の `EvidenceRef` が指す内容はこれらの表に揃っている）。**不採用**: 自由形式の根拠表を作る案（型付きで辿れない記録が増える）。
+**ID 連鎖で辿れること**（機会 → 試行 → 注文 → 約定 → 建玉 → 管理要求、および予約）を、表3・4・7・9・11・12・10 の外部キーで満たす。**受付前拒否でも連鎖が切れない**のは、`OrderRequest` を表4として必ず保存するためである（上位 §4.7.15 A が「受付前拒否もこの記録に紐付く」と定めている）。`AttemptRejected` は `AcceptedOrder` を作らないため、発端の取引機会は表4の `opportunity_id` からだけ辿れる【合意済み】全体計画 §5.4.5。**根拠記録は表15 `EVIDENCE` に置く**【提案】。`EvidenceRef`（D02 §9.2）は `evidence_id: EvidenceId` だけを持ち、表1・2・4 の主キーは `OutputId` / `EvaluationId` / `AttemptId` であるため、`EvidenceRef` から直接それらの行を引くことはできない。そこで上位 §4.7.15 が定める根拠記録の内容（入力の出力 ID、市場データの snapshot・系列・区間・項目、読取時点、口座 snapshot、使用した設定の版）を `EvidenceRecord` として型付きで保持し、**そこから表1・2・4・12・14 へ自然キーで辿る**。`EvidenceId` の採番は `backtest.trace`【合意済み】D02 §7.1。`RiskAssessment.assessment_id` も同じ `EvidenceId` の採番列から取り、審査記録それ自体が1件の根拠記録であることを表す。**不採用**: 表1・2 の行に `EvidenceId` を足す案（`OutputRecord` と `EvaluationRecord` は D05 が正本であり、記録の都合で戦略側の型にエンジン側の識別子を足すことになる）、自由記述のログにする案（型付きで辿れない記録が増え、上位 §4.7.15 の「説明文だけのログではない」に反する）。
 
 ### 9.3 run manifest【提案】
 
@@ -562,14 +566,14 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | 群 | 項目 |
 |---|---|
 | 識別 | `run_id`、`config_digest`、`code_digest`、`lock_digest`、`env_digest`、git commit と dirty 状態（識別子には含めない、ADR-0006） |
-| 入力 | `snapshot_ref`、`strategy_ref`、`compiled_ref`、`run_interval`、`execution_series`、`seed` |
+| 入力 | `snapshot_ref`、`strategy_ref`、`compiled_ref`、`run_interval`、`execution_series`、`seed`、**`account`（`AccountSpec` の3項目。特に `initial_balance`）** |
 | ポリシー | `risk_policy_ref`、`execution_policy_ref`（`entry_delay_bars`・Δ・有効時間を含む）、`cost_model_ref`（`swap_modeled=False`）、`delay_scenario_ref`、`symbol_spec_ref`、`calendar_ref`、`timeframe_def_refs` |
 | 実行の構造 | `BACKTEST_PHASES` のフェーズ集合（D02 §3.3 の要求）、`IdAllocator.snapshot()`（D02 §7.3） |
 | 足内競合 | `resolution_hierarchy`、`UNRESOLVED_SL_PRIORITY` の件数と割合（ADR-0030） |
 | 能力検査 | `DataCapabilityReport` の要約 |
 | 状態 | `RunStatus`、失敗時の `Reason` |
 
-`ConfigDigest` の対象は「識別」を除く上表の**入力とポリシーの群**とする【提案】（D02 §9.2 が「項目は D06」と委ねた範囲）。`RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`【合意済み】ADR-0006。
+`ConfigDigest` の対象は「識別」を除く上表の**入力とポリシーの群**とする【提案】（D02 §9.2 が「項目は D06」と委ねた範囲）。口座仕様（`AccountSpec`）を入力群に含めるのは、初期残高だけを変えた実行は数量・損益・資産推移がすべて変わるのに、含めないと同じ `ConfigDigest` と `RunId` になり、別の結果が同じ `runs/<run_id>/` を指すためである。`RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`【合意済み】ADR-0006。
 
 ### 9.4 `BacktestResult`【提案】
 
@@ -579,9 +583,9 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 |---|---|
 | `run_id` / `manifest_ref` | run manifest への参照 |
 | `status: RunStatus` | 正常完走か失敗か |
-| `trace_tables: Mapping[TraceTable, str]` | **第9.2節の14表すべての Parquet パス**。D07 は必要な表をここから開く |
+| `trace_tables: Mapping[TraceTable, str]` | **第9.2節の15表すべての Parquet パス**。D07 は必要な表をここから開く |
 | `balance_series` / `equity_series` | `LEDGER_SNAPSHOTS` から導いた推移 |
-| `summaries: FinalSummaries` | 末尾3集計（第10.3節） |
+| `summaries: FinalSummaries \| None` | 末尾3集計（第10.3節）。**`status` が `COMPLETED` のときだけ非 `None`** |
 | `swap_modeled: bool` | 常に `False`（ADR-0029）。D07 がユーザーへの明記に使う |
 | `unresolved_intrabar_count: int` | `UNRESOLVED_SL_PRIORITY` の件数（ADR-0030） |
 | `trade_count` / `opportunity_count` | 完了取引数と生成された取引機会の総数（`status` の検証と手計算の照合に使う最小の件数） |
@@ -623,7 +627,7 @@ D05 §7.2 の遷移9 は「run 末尾に残った取引機会を `RUN_END` で�
 | `equity_with_mtm` | 終了 balance ＋ 未決済建玉の含み損益（買いは bid、売りは ask の決済側価格で評価） |
 | `hypothetical_closed` | 残存建玉を終了時の価格・費用モデルで仮に閉じた場合の損益。**計算だけ**行い、注文・約定・完了取引数・balance・リスク枠を変更しない |
 
-最終評価価格が無い場合は、正常な最終集計として扱わない（`status` を `FAILED_DATA_ERROR` にする）【合意済み】同節。費用区分を指標へどう使うかは D07（第14節）。
+最終評価価格が無い場合は、正常な最終集計として扱わない（`status` を `FAILED_DATA_ERROR` にする）【合意済み】同節。この場合は `FinalSummaries` を組み立てず、`BacktestResult.summaries` を `None` にする【提案】。含み損益を評価できないまま `equity_with_mtm` と `hypothetical_closed` を埋めると、第10.4節の「保有建玉を架空価格で閉じない」に反する。**不採用**: 3集計の各項目を省略可能にする案（どの項目が算出できたかの組み合わせが増え、D07 が状態ごとに分岐することになる）。費用区分を指標へどう使うかは D07（第14節）。
 
 ### 10.4 予期しないデータ末尾と実行失敗【提案】
 
