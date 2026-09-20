@@ -800,7 +800,7 @@ CLAUDE.md の規則に従う。
 
 第6節の A 全項目、B-1〜B-4、C-1〜C-3、D-2〜D-3、パッケージ名は 2026-09-18 に決定済み（ADR-0001〜0017）。残る事項と着手順は次のとおり。
 
-1. **段階−1 完了・D01〜D03 承認済み**（2026-09-20）。実装開始条件（ADR-0016 条件1）を満たし、段階1（`common` → `marketdata` の順に別 PR）へ進める。段階0 の残りは D04〜D08 と T01。
+1. **段階−1 完了・D01〜D03 承認済み**（2026-09-20）。設計上の実装開始条件（ADR-0016 条件1）は満たした。段階1（`common` → `marketdata` の順に別 PR）の着手は、設定パーサー集約ルール（契約 F5c）の pyproject 反映と、snapshot 閲覧記録（`access_log.jsonl`）の `.gitignore` 再包含を行う骨格 PR の merge を前提とする（閲覧記録が追跡できないと holdout の fail-closed 手順が成立しない）。段階0 の残りは D04〜D08 と T01。
 2. **段階−1（基盤整備）の着手**: `.gitignore` の書き換え（manifest 再包含）、`data/market/` → `data/raw/market/` の移動、`pyproject.toml`（`requires-python = ">=3.12,<3.13"`）、`.python-version`（3.12.13）、uv による lock、ツール設定、`src/odyssey_fx/` と `tests/` の骨格、import-linter 契約、pr-review スキルの書き換えと最小 poller。コミットを生むため worktree で行い、PR として提出する。
 3. **D01（アーキテクチャ・依存規則・ディレクトリ確定版）の作成**: 第3〜4節を決定に基づき確定し、import-linter 契約を含める。
 4. **D02、D03 の作成**: 段階1の開始条件。

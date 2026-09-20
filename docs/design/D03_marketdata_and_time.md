@@ -1,7 +1,7 @@
 # D03: 市場データ・時刻基盤設計（`odyssey_fx.marketdata`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。第13節の9項目はすべて推奨案を採用。承認条件5点（①時間足定義の `length` を `nominal_length` に統一、②価格基準の宣言者・宣言日時を `SnapshotId` の対象から外して決定論化、③`QUARANTINED_UNASSIGNED` は再分類まで読めないと明記、④承認前の snapshot を読めないようにする、⑤CLI を暫定 ID フローに合わせる）を反映済み。ADR-0016 条件1（D01〜D03）を本書で充足し、段階1の実装を開始できる。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、短縮セッションの足の不変条件をカレンダー対応の期待区間で定義（第3.2節・第3.3節・第5.2節）。第13節の9項目はすべて推奨案を採用。承認条件5点（①時間足定義の `length` を `nominal_length` に統一、②価格基準の宣言者・宣言日時を `SnapshotId` の対象から外して決定論化、③`QUARANTINED_UNASSIGNED` は再分類まで読めないと明記、④承認前の snapshot を読めないようにする、⑤CLI を暫定 ID フローに合わせる）を反映済み。ADR-0016 条件1（D01〜D03）を本書で充足し、段階1の実装を開始できる。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §3（データ前提）、§4.3.9〜4.3.10（読み方・鮮度）、§4.3.13（公開予定・遅延）、§4.7.13 C（完全性検査・カレンダー）、[全体計画書](fx_research_platform_overall_plan.md) §5.2、[D01](D01_architecture_and_dependency_rules.md) §1・§4・§10.2、[D02](D02_common_kernel.md)、ADR-0013（データ配置）、ADR-0014（期間のアクセス分類）、ADR-0015（初版の対象）
 対応段階: 段階1で実装。
 
@@ -54,7 +54,8 @@
 
 - `FixedUtcAlignment`: UTC のエポックからの `nominal_length` の整数倍に整列（15m、1h）。この整列では足の長さは常に `nominal_length` に等しい。
 - `SessionAlignment(tz: "America/New_York", anchors_local: tuple[time, ...])`: 現地時刻の起点（4h は 17:00, 21:00, 01:00, 05:00, 09:00, 13:00。1d は 17:00）から境界を作り、DST を含む `zoneinfo` 規則で UTC へ変換する（上位設計書 §3.2）。固定 UTC 時刻を埋め込まない。**足の長さは固定ではない**: DST 切替日を含む日足は 23 時間または 25 時間、4h 足は 3 時間または 5 時間になる。足の妥当性は「区間の両端が整列規則の計算した境界に一致すること」で検証し、`nominal_length` との一致は要求しない。
-- `boundaries(t: UtcTime) -> Interval`: `t` を含む足の区間を整列規則から計算する。`FixedUtcAlignment` は `nominal_length` の整数倍、`SessionAlignment` は現地起点の列から求める。
+- `boundaries(t: UtcTime) -> Interval`: `t` を含む足の**整列上の**区間を整列規則から計算する。`FixedUtcAlignment` は `nominal_length` の整数倍、`SessionAlignment` は現地起点の列から求める。カレンダーは考慮しない。
+- `expected_interval(calendar, t: UtcTime) -> Interval | None`: `boundaries(t)` をカレンダーの取引セッションで切り詰めた、**その足が実際に取るべき区間**。区間の末尾が宣言された休場・短縮の開始に掛かる場合は末尾を休場開始で切り詰め、区間全体が休場ならその足は存在しない（`None`）。足の検証と期待足の判定はこちらを使う。
 - 初版の定義 ID: `15m`、`1h`、`4h_ny17`、`1d_ny17`（すべて version 1）。`configs/calendars/timeframes_v1.yaml` に置く。
 
 ### 3.3 足 `Bar`
@@ -62,7 +63,7 @@
 | フィールド | 型 | 不変条件・意味 |
 |---|---|---|
 | `series` | `SeriesId` | — |
-| `interval` | `Interval` | `[bar_start, bar_end)`。`timeframe_def.boundaries(bar_start) == interval` であること（DST 切替日の日足・4h 足は名目より長短する）。カレンダーが宣言した短縮セッションでは、区間末尾が休場開始で切り詰められる |
+| `interval` | `Interval` | `[bar_start, bar_end)`。`timeframe_def.expected_interval(calendar, bar_start) == interval` であること。通常は整列上の区間と一致し、DST 切替日の日足・4h 足は名目より長短する。カレンダーが宣言した短縮セッションでは、期待区間の末尾が休場開始で切り詰められた区間と一致することを要求する（整列上の区間との一致は要求しない） |
 | `open` / `high` / `low` / `close` | `Price` | `low <= min(open, close)`、`max(open, close) <= high` |
 | `volume` | `Decimal` | `>= 0` |
 | `available_at` | `UtcTime` | 通常は `bar_end`。遅延シナリオ適用後は後ろへずれる |
@@ -205,7 +206,7 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。実�
 - 区間内にカレンダー上期待される構成足がすべて存在する場合だけ生成する。
 - 欠落がある区間は生成せず、集約系列の `MISSING_EXPECTED_BAR` として報告する。下流は通常の欠損規則（`on_missing`）で扱う。
 - 「一部の構成足で作った不完全足」を採用する選択肢は初版に設けない（暗黙の部分集計を避ける。上位設計書 §3.2）。
-- 短縮セッション（カレンダーが宣言）では、期待される構成足が揃えば完全とみなす。
+- 短縮セッション（カレンダーが宣言）では、集約足の区間は `expected_interval` で切り詰められた区間とし、その区間内に期待される構成足が揃えば完全とみなす。
 
 ### 5.3 旧集約の再現（第13節 C-4）
 
@@ -304,7 +305,7 @@ run 区間内の全系列について、`available_at` 順に次を生成する�
 
 | 種別 | 内容 |
 |---|---|
-| 単体 | `Bar` の不変条件、`SessionAlignment` の境界計算（DST 切替週の 4h/1d 境界を UTC で固定値と照合し、切替日の日足が 23h/25h、4h 足が 3h/5h になること）、カレンダーの週開閉、`DurationWindow` の端点、partition 所属（`bar_end` 基準）、`SnapshotId` が `created_at` に依存しないこと、分類の差で `snapshot_id` が変わること |
+| 単体 | `Bar` の不変条件（短縮セッションで切り詰められた区間が受理され、整列上の区間のままの足が拒否されること）、`SessionAlignment` の境界計算（DST 切替週の 4h/1d 境界を UTC で固定値と照合し、切替日の日足が 23h/25h、4h 足が 3h/5h になること）、カレンダーの週開閉、`DurationWindow` の端点、partition 所属（`bar_end` 基準）、`SnapshotId` が `created_at` に依存しないこと、分類の差で `snapshot_id` が変わること |
 | 意味論 | 未確定の上位足を参照できない、遅延注入で `Publication` だけが動き OHLC が変わらない、期待足未到着で古い足へ戻らない、範囲外 partition で `HoldoutAccessViolation` |
 | プロパティ | 将来の足を追加しても `at` 以前の as-of 結果が変わらない、受入れの決定論性（同じ入力で同じ `snapshot_id`）、集約の OHLC が構成足の集計と一致 |
 | golden | 人工 1h 系列から生成した 4h/1d の固定出力 |

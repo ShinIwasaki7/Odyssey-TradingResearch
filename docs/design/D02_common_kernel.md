@@ -1,7 +1,7 @@
 # D02: 共通カーネル型設計（`odyssey_fx.common`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15「共通の値型と参照」、§4.3.15、§4.7.14、[D01](D01_architecture_and_dependency_rules.md) §1・§2・§5・§7.2、ADR-0006（決定論的 ID）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）
 対応段階: 段階1で実装。以降の全パッケージが依存する。
 
@@ -280,7 +280,7 @@ Reason(code: ReasonCode, detail: ReasonDetail | None)
 エンコード規則:
 
 - JSON 互換のテキスト。キーは Unicode コードポイント順に整列、空白なし、`ensure_ascii=False`、UTF-8。
-- `Decimal`: `normalize()` した後の固定小数表記（指数表記なし）。`150.00` と `150` は同じ値として同じ表現になる。
+- `Decimal`: **Decimal コンテキストに依存しない厳密表現**。`normalize()` はコンテキストの精度で丸めるため使わない（精度 28 では `123456789012345678901234567890` と `…7900` が同じ表現になり、別の値が同じダイジェストになる）。代わりに `as_tuple()` の `(sign, digits, exponent)` から、末尾のゼロ桁だけを取り除いて指数を調整し、指数表記なしの固定小数文字列を組み立てる（`-0` は `0` に正規化）。桁数に上限を設けず、いかなるコンテキストでも同じ値は同じ表現、異なる値は異なる表現になる。`150.00` と `150` は同じ値として同じ表現になる。
 - `float`: 有限値のみ、`repr` の最短往復表現。`nan` / `inf` は拒否。
 - `UtcTime`: 第3.1節の文字列。`Interval`: `{"start":…, "end":…}`。ID 型・`Symbol`・`CurrencyCode`・`TimeframeRef`: `__str__`。
 - `Enum`: `value`。dataclass: フィールド名をキーとする mapping（型名は含めない。型はスキーマ側で決まる）。`tuple` / `list`: 配列。`Mapping`: オブジェクト。`set` は拒否（順序が定まらない）。
@@ -313,7 +313,7 @@ Reason(code: ReasonCode, detail: ReasonDetail | None)
 | 種別 | 内容 |
 |---|---|
 | 単体 | 各型の不変条件（拒否される値）、演算の型規則、`__str__` / `parse` の往復、`round_to_tick` の方向、`Money` の通貨不一致、`from_local` の DST 曖昧・不存在時刻 |
-| プロパティ | `ProcessingPoint` の全順序性、`canonical.digest` がキー順序に依存しないこと、`Decimal` 表現の正規化（`150.00` と `150`）、`price_from_float` の `exact` が `Decimal(repr(x))` と一致すること、`IdAllocator` の再現性 |
+| プロパティ | `ProcessingPoint` の全順序性、`canonical.digest` がキー順序に依存しないこと、`Decimal` 表現の正規化（`150.00` と `150`）と厳密性（精度 28 を超える桁数の異なる2値が異なる表現になり、コンテキスト精度を変えても表現が変わらないこと）、`price_from_float` の `exact` が `Decimal(repr(x))` と一致すること、`IdAllocator` の再現性 |
 | アーキテクチャ | `Decimal(` の呼び出し位置の制限（第4.6節）、`common` が標準ライブラリ以外を import しないこと（D01 F5a/F5b で機械検査済み） |
 
 ## 12. 段階1での実装範囲
