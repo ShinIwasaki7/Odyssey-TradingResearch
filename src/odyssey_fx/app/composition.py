@@ -154,29 +154,29 @@ class AcceptanceService:
         """
         return self.timeframe_definition(timeframe_id).ref
 
-    def raw_file(self, symbol: Symbol, timeframe_id: str) -> RawFile:
-        """1件の原ファイルの登録を作る（D03 §4 の 1）。
+    def read_source_file(
+        self, symbol: Symbol, timeframe_id: str
+    ) -> tuple[RawFile, tuple[Bar, ...]]:
+        """原ファイルを**1回読んで**、その登録と正規化した足を作る（D03 §4 の 1〜3）。
 
-        内容の sha256 はポート越しに読んで記録する。同じ原ファイルなら同じ snapshot の
-        識別子になることを保証するため（D03 §3.7.1）。
+        内容の sha256 と行を同じ読込から得る。別々に読むと、その間にファイルが差し替わった
+        ときに manifest の出所の記録（sha256・行数）が実データと食い違い、「記録どおりで
+        ない snapshot」ができてしまう（D03 §3.7.1）。
+
+        `source` 列の値が宣言に無ければ拒否する。宣言していない出所の行を黙って取り込むと、
+        manifest の出所の記録が実データと食い違う（D03 §3.7 の `provenance_counts`）。
         """
         name = self.datasource.file_name(symbol, timeframe_id)
-        return RawFile(
+        content = self.source.read_file(name)
+        raw_file = RawFile(
             path=f"{self.datasource.root}/{name}",
-            sha256=self.source.file_sha256(name),
+            sha256=content.sha256,
             symbol=symbol,
             timeframe=self.timeframe_ref(timeframe_id),
             declared_basis=self.datasource.basis_declaration.value,
         )
 
-    def read_bars(self, raw_file: RawFile, file_name: str) -> tuple[Bar, ...]:
-        """1件の原ファイルを読んで足へ正規化する（D03 §4 の 2〜3）。
-
-        `source` 列の値が宣言に無ければ拒否する。宣言していない出所の行を黙って取り込む
-        と、manifest の出所の記録が実データと食い違う（D03 §3.7 の `provenance_counts`）。
-        """
-        rows = self.source.read_rows(file_name)
-        for index, row in enumerate(rows):
+        for index, row in enumerate(content.rows):
             value = row.get(self.datasource.mapping.source_column, "")
             if value not in self.datasource.allowed_sources:
                 raise MarketDataValueError(
@@ -184,13 +184,15 @@ class AcceptanceService:
                     f"（{sorted(self.datasource.allowed_sources)}）。"
                     " 宣言していない出所の行は受け入れない（D03 §4 の 2）"
                 )
-        return normalize_rows(
+
+        bars = normalize_rows(
             raw_file,
-            rows,
+            content.rows,
             self.datasource.mapping,
-            self.timeframe_definition(raw_file.timeframe.id),
+            self.timeframe_definition(timeframe_id),
             self.calendar,
         )
+        return raw_file, bars
 
     def aggregate_all(
         self, bars_by_series: Mapping[SeriesId, tuple[Bar, ...]]
@@ -242,8 +244,7 @@ class AcceptanceService:
         bars_by_file: dict[str, tuple[Bar, ...]] = {}
         bars_by_series: dict[SeriesId, tuple[Bar, ...]] = {}
         for symbol, timeframe_id in targets:
-            raw_file = self.raw_file(symbol, timeframe_id)
-            bars = self.read_bars(raw_file, self.datasource.file_name(symbol, timeframe_id))
+            raw_file, bars = self.read_source_file(symbol, timeframe_id)
             raw_files.append(raw_file)
             bars_by_file[raw_file.path] = bars
             bars_by_series[raw_file.series] = bars

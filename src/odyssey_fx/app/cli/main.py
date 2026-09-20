@@ -42,6 +42,7 @@ from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
     approve,
     finalize,
+    reaccept_with_calendar,
 )
 from odyssey_fx.marketdata.application.ports import SnapshotStore
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
@@ -50,7 +51,8 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     classification_mismatch,
     require_matching_partition_content,
 )
-from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
+from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
+from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
@@ -63,12 +65,6 @@ __all__ = ["build_parser", "main"]
 #: 終了コード。0 は成功、1 は設定・データの誤り（人間が直すもの）。
 _EXIT_OK = 0
 _EXIT_FAILED = 1
-
-#: 件数規模を示す警告の種別（D03 §3.9）。人間の分類が要るのはこの2つ。
-_CLASSIFIABLE_KINDS = (
-    CheckKind.MISSING_EXPECTED_BAR.value,
-    CheckKind.UNEXPECTED_BAR.value,
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,29 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
     classify.add_argument(
         "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
     )
-    classify.add_argument(
-        "--datasource",
-        type=Path,
-        default=None,
-        help="列対応の宣言（カレンダーを変える分類で 5〜7 を再実行する場合に必要）",
-    )
+    # カレンダーを変える分類では、上位足の生成とカレンダー照合に時間足定義が要る。
+    # 原データは読み直さない（暫定 snapshot の partition を再利用する）ので、列対応の
+    # 宣言・銘柄仕様・リポジトリの位置は要らない（D03 §4 の 9）。
     classify.add_argument(
         "--timeframes",
         type=Path,
         default=None,
         help="時間足定義（カレンダーを変える分類で 5〜7 を再実行する場合に必要）",
-    )
-    classify.add_argument(
-        "--symbols",
-        type=Path,
-        default=None,
-        help="銘柄仕様のディレクトリ（カレンダーを変える分類で 5〜7 を再実行する場合に必要）",
-    )
-    classify.add_argument(
-        "--repo-root",
-        type=Path,
-        default=Path("."),
-        help="原データの基点を解決するリポジトリの位置（既定は現在のディレクトリ）",
     )
 
     approve_command = data.add_parser(
@@ -213,7 +194,7 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
     out.line("")
     out.lines(summary.findings_lines(pending.report))
 
-    warning_lines = summary.warning_summary_lines(pending.report, _CLASSIFIABLE_KINDS)
+    warning_lines = summary.warning_summary_lines(pending.report)
     if warning_lines:
         out.line("")
         out.line("人間の分類が要る警告の件数規模:")
@@ -231,21 +212,33 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
 # --- classify ---------------------------------------------------------------
 
 
-def _reacceptance_paths(args: argparse.Namespace) -> None:
-    """カレンダーを変える分類に必要な引数が揃っているか確かめる（D03 §4 の 9）。"""
-    missing = [
-        name
-        for name, value in (
-            ("--datasource", args.datasource),
-            ("--timeframes", args.timeframes),
-            ("--symbols", args.symbols),
-        )
-        if value is None
-    ]
-    if missing:
+def _pending_from_store(
+    store: SnapshotStore,
+    snapshot_dir: str,
+    manifest: SnapshotManifest,
+    report: IntegrityReport,
+) -> PendingSnapshot:
+    """保存済みの暫定 snapshot を読み戻す（manifest・報告・partition ごとの足）。"""
+    return PendingSnapshot(
+        manifest=manifest,
+        report=report,
+        partition_bars={
+            record.partition_id: tuple(store.read_partition(snapshot_dir, record.partition_id))
+            for record in manifest.partitions
+        },
+    )
+
+
+def _require_timeframes_argument(args: argparse.Namespace) -> None:
+    """カレンダーを変える分類に必要な引数が揃っているか確かめる（D03 §4 の 9）。
+
+    要るのは時間足定義だけである。上位足の生成とカレンダー照合に使う。原データは
+    読み直さないので、列対応の宣言も銘柄仕様も要らない。
+    """
+    if args.timeframes is None:
         raise ConfigError(
-            f"分類がカレンダーの新版を指しているので、受入れの 5〜7 を再実行する必要がある。"
-            f" 次の指定が足りない: {', '.join(missing)}（D03 §4 の 9）"
+            "分類がカレンダーの新版を指しているので、受入れの 5〜7 を再実行する必要がある。"
+            " 時間足定義（--timeframes）を指定すること（D03 §4 の 9）"
         )
 
 
@@ -273,26 +266,22 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
         # カレンダーを変える分類は、受入れの 5〜7（カレンダー照合・上位足の生成・
         # partition 分け）を新しいカレンダーで再実行する（D03 §4 の 9）。報告も
         # partition も変わるので、暫定段階からやり直すのと同じ手順になる。
-        _reacceptance_paths(args)
+        _require_timeframes_argument(args)
         out.line(f"分類がカレンダーの新版を指している: {decisions_file.calendar_path}")
         out.line("受入れの 5〜7 を新しいカレンダーで再実行する（D03 §4 の 9）")
-        datasource = load_datasource(args.datasource)
-        calendar = load_calendar(decisions_file.calendar_path)
-        timeframe_defs = load_timeframes(args.timeframes)
-        symbol_specs = load_symbol_specs(args.symbols)
-        service = composition.acceptance_service(
-            repo_root=args.repo_root,
-            snapshots_root=args.out,
-            datasource=datasource,
-            calendar=calendar,
-            timeframe_defs=timeframe_defs,
+        out.line("原ファイルは読み直さず、暫定 snapshot の足をそのまま使う")
+
+        # **原ファイルを読み直さない**。読み直すと、人間が分類の根拠にした報告には無かった
+        # 内容（原ファイルの差し替え・価格の書き換え・設定の変更）が最終 snapshot に
+        # 入りうる。価格だけの変更は構造検査もカレンダー照合も素通りするので、警告を1つも
+        # 出さずに別のデータへ置き換わってしまう（D03 §4 の 9 は「5〜7 を再実行」と定める）。
+        pending = reaccept_with_calendar(
+            _pending_from_store(store, pending_directory, manifest, report),
+            calendar=load_calendar(decisions_file.calendar_path),
+            timeframe_defs=load_timeframes(args.timeframes),
+            boundaries=INITIAL_ACCESS_BOUNDARIES,
+            aggregation_targets=composition.AGGREGATION_TARGETS,
         )
-        targets = [
-            (symbol, timeframe_id)
-            for symbol in sorted(symbol_specs, key=str)
-            for timeframe_id in datasource.timeframes
-        ]
-        pending = service.accept(targets, created_at=manifest.created_at)
         # 分類の正当性は**元の報告**（人間が見た報告）に対して判定する。新しいカレンダーが
         # 休場として説明した欠落は、再受入れ後の報告から正当に消えるためである
         # （D03 §4 の 9）。突き合わせの2段階は application 側が行う。
@@ -301,16 +290,7 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
         out.line(f"新しいカレンダーで説明が付いた警告: {resolved} 件")
     else:
         original_report = None
-        pending = PendingSnapshot(
-            manifest=manifest,
-            report=report,
-            partition_bars={
-                record.partition_id: tuple(
-                    store.read_partition(pending_directory, record.partition_id)
-                )
-                for record in manifest.partitions
-            },
-        )
+        pending = _pending_from_store(store, pending_directory, manifest, report)
 
     finalized: FinalizedSnapshot = finalize(
         pending, decisions_file.decisions, original_report=original_report

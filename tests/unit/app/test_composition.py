@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -19,7 +20,7 @@ from odyssey_fx.app.composition import AcceptanceService
 from odyssey_fx.app.config import load_datasource
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.timeframe import TimeframeRef
-from odyssey_fx.marketdata.application.ports import RawRow
+from odyssey_fx.marketdata.application.ports import RawFileContent, RawRow
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
@@ -39,16 +40,17 @@ TF_1H_V2 = TimeframeDefinition(
 
 
 class _StubSource:
-    """原データの読込ポートの代役。`read_rows` が返す行を差し替えられる。"""
+    """原データの読込ポートの代役。返す行と、読まれた回数を記録する。"""
 
-    def __init__(self, rows: Sequence[RawRow] = ()) -> None:
+    def __init__(self, rows: Sequence[RawRow] = (), content: bytes | None = None) -> None:
         self.rows = tuple(rows)
+        self.content = content
+        self.reads: list[str] = []
 
-    def read_rows(self, path: str) -> Sequence[RawRow]:
-        return self.rows
-
-    def file_sha256(self, path: str) -> str:
-        return "0" * 64
+    def read_file(self, path: str) -> RawFileContent:
+        self.reads.append(path)
+        digest = "0" * 64 if self.content is None else hashlib.sha256(self.content).hexdigest()
+        return RawFileContent(sha256=digest, rows=self.rows)
 
 
 class _StubStore:
@@ -77,11 +79,13 @@ class _StubStore:
 
 
 def _service(
-    timeframe_defs: dict[str, TimeframeDefinition], rows: Sequence[RawRow] = ()
+    timeframe_defs: dict[str, TimeframeDefinition],
+    rows: Sequence[RawRow] = (),
+    source: _StubSource | None = None,
 ) -> AcceptanceService:
     """代役のポートで受入れを組み立てる。"""
     return AcceptanceService(
-        source=_StubSource(rows),
+        source=_StubSource(rows) if source is None else source,
         store=_StubStore(),
         datasource=load_datasource(DATASOURCE_FILE),
         calendar=market.calendar(),
@@ -99,7 +103,7 @@ def test_the_raw_file_takes_the_timeframe_version_from_the_configuration() -> No
     manifest に記録した系列と実際に使った定義が食い違う。
     """
     service = _service({**market.TIMEFRAME_DEFS, "1h": TF_1H_V2})
-    raw_file = service.raw_file(Symbol("USDJPY"), "1h")
+    raw_file, _ = service.read_source_file(Symbol("USDJPY"), "1h")
 
     assert raw_file.timeframe == TimeframeRef("1h", 2)
     assert raw_file.timeframe.version == 2
@@ -110,7 +114,8 @@ def test_the_raw_file_takes_the_timeframe_version_from_the_configuration() -> No
 def test_the_raw_file_uses_version_one_when_the_configuration_declares_it() -> None:
     """実物の設定（版 1）ではこれまでどおり版 1 になる（振る舞いを変えていない）。"""
     service = _service(dict(market.TIMEFRAME_DEFS))
-    assert service.raw_file(Symbol("USDJPY"), "1h").timeframe == TimeframeRef("1h", 1)
+    raw_file, _ = service.read_source_file(Symbol("USDJPY"), "1h")
+    assert raw_file.timeframe == TimeframeRef("1h", 1)
 
 
 def test_an_undeclared_timeframe_is_rejected() -> None:
@@ -118,7 +123,7 @@ def test_an_undeclared_timeframe_is_rejected() -> None:
     without_hourly = {key: value for key, value in market.TIMEFRAME_DEFS.items() if key != "1h"}
     service = _service(without_hourly)
     with pytest.raises(MarketDataValueError, match="1h"):
-        service.raw_file(Symbol("USDJPY"), "1h")
+        service.read_source_file(Symbol("USDJPY"), "1h")
 
 
 def test_the_timeframe_definition_lookup_reports_what_is_available() -> None:
@@ -146,10 +151,8 @@ def test_a_row_with_an_undeclared_source_is_rejected() -> None:
         "source": "unknown_vendor",
     }
     service = _service(dict(market.TIMEFRAME_DEFS), rows=(row,))
-    raw_file = service.raw_file(Symbol("USDJPY"), "1h")
-
     with pytest.raises(MarketDataValueError, match="unknown_vendor"):
-        service.read_bars(raw_file, "USDJPY_1h_merged.csv")
+        service.read_source_file(Symbol("USDJPY"), "1h")
 
 
 def test_a_row_with_a_declared_source_is_accepted() -> None:
@@ -164,8 +167,43 @@ def test_a_row_with_a_declared_source_is_accepted() -> None:
         "source": "histdata",
     }
     service = _service(dict(market.TIMEFRAME_DEFS), rows=(row,))
-    raw_file = service.raw_file(Symbol("USDJPY"), "1h")
-
-    bars = service.read_bars(raw_file, "USDJPY_1h_merged.csv")
+    _, bars = service.read_source_file(Symbol("USDJPY"), "1h")
     assert len(bars) == 1
     assert str(bars[0].bar_start) == "2022-01-06T10:00:00Z"
+
+
+# --- 1回の読込（D03 §3.7.1）-------------------------------------------------
+
+_VALID_ROW: RawRow = {
+    "timestamp": "2022-01-06 10:00:00+00:00",
+    "open": "150.0",
+    "high": "150.5",
+    "low": "149.5",
+    "close": "150.2",
+    "volume": "0",
+    "source": "histdata",
+}
+
+
+def test_the_file_is_read_exactly_once() -> None:
+    """原ファイルの登録と足の正規化で、読込は1回だけ行う。
+
+    内容のダイジェストと行を別々の読込から作ると、その間にファイルが差し替わったときに
+    manifest の出所の記録（sha256・行数）が実データと食い違い、「記録どおりでない
+    snapshot」ができてしまう。
+    """
+    source = _StubSource((_VALID_ROW,))
+    service = _service(dict(market.TIMEFRAME_DEFS), source=source)
+
+    service.read_source_file(Symbol("USDJPY"), "1h")
+    assert source.reads == ["USDJPY_1h_merged.csv"]
+
+
+def test_the_recorded_digest_is_the_digest_of_the_bytes_that_were_read() -> None:
+    """記録する sha256 は、行を作ったのと同じバイト列のダイジェストである。"""
+    content = b",open,high,low,close,volume,source\n"
+    source = _StubSource((_VALID_ROW,), content=content)
+    service = _service(dict(market.TIMEFRAME_DEFS), source=source)
+
+    raw_file, _ = service.read_source_file(Symbol("USDJPY"), "1h")
+    assert raw_file.sha256 == hashlib.sha256(content).hexdigest()

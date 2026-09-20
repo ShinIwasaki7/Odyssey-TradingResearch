@@ -63,7 +63,7 @@ def test_the_summary_line_separates_the_three_numbers() -> None:
         _missing("2022-01-06T10:00:00Z", "2022-01-06T14:00:00Z"),
         _missing("2022-01-06T10:00:00Z", "2022-01-06T14:00:00Z", reason="incomplete_aggregate"),
     )
-    (line,) = warning_summary_lines(report, (MISSING,))
+    (line,) = warning_summary_lines(report)
     assert "報告 2 件" in line
     assert "分類の記入が必要な区間 1 件" in line
     assert "1 区間" in line
@@ -151,7 +151,7 @@ def test_another_kind_is_not_counted() -> None:
 def test_an_empty_report_counts_nothing() -> None:
     assert merged_warning_spans(IntegrityReport(), MISSING) == 0
     assert classifiable_intervals(IntegrityReport(), MISSING) == 0
-    assert warning_summary_lines(IntegrityReport(), (MISSING,)) == []
+    assert warning_summary_lines(IntegrityReport()) == []
 
 
 def test_the_price_basis_is_part_of_the_series_key() -> None:
@@ -162,3 +162,53 @@ def test_the_price_basis_is_part_of_the_series_key() -> None:
         _missing("2022-01-06T10:00:00Z", "2022-01-06T11:00:00Z", series=ask),
     )
     assert merged_warning_spans(report, MISSING) == 2
+
+
+# --- 表示と確定の対象を揃える（D03 §4 の 9）---------------------------------
+
+
+def test_every_warning_kind_appears_in_the_summary() -> None:
+    """要約は WARN の**全種類**を出す。
+
+    確定（`finalize`）は報告のすべての警告に分類を求める。表示が一部の種別だけを
+    「分類が要る」として見せると、そこに出ていない警告（銘柄間の足境界のずれ、夏時間
+    切替週の異常）で確定が失敗し、人間には理由が分からない。
+    """
+    window = Interval(
+        start=UtcTime.parse("2022-01-06T10:00:00Z"),
+        end=UtcTime.parse("2022-01-06T11:00:00Z"),
+    )
+    report = _report(
+        _missing("2022-01-06T10:00:00Z", "2022-01-06T11:00:00Z"),
+        CheckResult.create(CheckKind.UNEXPECTED_BAR, HOURLY, window),
+        CheckResult.create(CheckKind.CROSS_SYMBOL_MISALIGNMENT, HOURLY, window),
+        CheckResult.create(CheckKind.DST_BOUNDARY_ANOMALY, HOURLY, window),
+    )
+    lines = warning_summary_lines(report)
+    shown = {line.strip().split(":")[0] for line in lines}
+    assert shown == {
+        CheckKind.MISSING_EXPECTED_BAR.value,
+        CheckKind.UNEXPECTED_BAR.value,
+        CheckKind.CROSS_SYMBOL_MISALIGNMENT.value,
+        CheckKind.DST_BOUNDARY_ANOMALY.value,
+    }
+
+
+def test_informational_findings_are_not_listed_as_needing_classification() -> None:
+    """記録のみの結果（INFO）は分類の対象ではないので出さない。
+
+    確定が分類を求めるのは警告（WARN）だけである（`report.warnings`）。
+    """
+    window = Interval(
+        start=UtcTime.parse("2022-01-06T10:00:00Z"),
+        end=UtcTime.parse("2022-01-06T11:00:00Z"),
+    )
+    report = _report(
+        _missing("2022-01-06T10:00:00Z", "2022-01-06T11:00:00Z"),
+        CheckResult.create(CheckKind.SOURCE_TRANSITION, HOURLY, window),
+        CheckResult.create(CheckKind.ZERO_VOLUME_SPAN, HOURLY, window),
+    )
+    lines = warning_summary_lines(report)
+    assert len(lines) == 1
+    assert CheckKind.MISSING_EXPECTED_BAR.value in lines[0]
+    assert CheckKind.SOURCE_TRANSITION.value not in "".join(lines)

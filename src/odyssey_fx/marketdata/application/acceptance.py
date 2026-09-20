@@ -39,6 +39,7 @@ from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.application.aggregation import aggregate
 from odyssey_fx.marketdata.application.integrity import SeriesUnderCheck, check_all
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.ports import RawRow
@@ -73,6 +74,7 @@ __all__ = [
     "finalize",
     "normalize_rows",
     "provisional_id",
+    "reaccept_with_calendar",
 ]
 
 
@@ -516,6 +518,40 @@ def build_pending_snapshot(
     for aggregated_series, generated in (aggregated_bars or {}).items():
         bars_by_series.setdefault(aggregated_series, []).extend(generated)
 
+    return _assemble_pending(
+        created_at=created_at,
+        bars_by_series={series: tuple(bars) for series, bars in bars_by_series.items()},
+        sources=tuple(sources),
+        timeframe_defs=timeframe_defs,
+        calendar=calendar,
+        boundaries=boundaries,
+        basis_declaration=basis_declaration,
+        conversion=conversion,
+        aggregated_findings=aggregated_findings,
+        legacy_access=legacy_access,
+    )
+
+
+def _assemble_pending(
+    *,
+    created_at: UtcTime,
+    bars_by_series: Mapping[SeriesId, tuple[Bar, ...]],
+    sources: tuple[SourceFile, ...],
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    calendar: TradingCalendar,
+    boundaries: AccessBoundaries,
+    basis_declaration: BasisDeclaration,
+    conversion: ConversionRecord,
+    aggregated_findings: Sequence[CheckResult] = (),
+    legacy_access: Sequence[LegacyAccessRecord] = (),
+) -> PendingSnapshot:
+    """系列ごとの足から検査・partition 分け・暫定 manifest を組み立てる（D03 §4 の 4〜8）。
+
+    受入れ（`build_pending_snapshot`）と、カレンダーを変えた再実行
+    （`reaccept_with_calendar`）が共有する。どちらも「足が揃った後」の手順は同じで、違うのは
+    足をどこから得るか（原ファイルを読むか、暫定 snapshot の partition から読み戻すか）
+    だけである。1箇所にまとめることで、両者の検査・ダイジェストの算法がずれない。
+    """
     targets = [
         SeriesUnderCheck(
             series=checked_series,
@@ -560,7 +596,7 @@ def build_pending_snapshot(
     manifest = SnapshotManifest(
         created_at=created_at,
         basis_declaration=basis_declaration,
-        sources=tuple(sources),
+        sources=sources,
         conversion=conversion,
         series=tuple(series_manifests),
         partitions=tuple(partitions),
@@ -586,3 +622,156 @@ def _timeframe_def_for(
 # 封印期間 partition の初期状態の判定は `application.access_log.initial_holdout_state` に
 # 一本化した。以前ここにあった同趣旨の関数は、系列が一致するだけで「未観測」と判定し、
 # partition の区間を完全に覆っているかを見ていなかった（ADR-0014 の fail-closed 違反）。
+
+
+def reaccept_with_calendar(
+    pending: PendingSnapshot,
+    *,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    boundaries: AccessBoundaries,
+    aggregation_targets: Sequence[tuple[str, str]],
+) -> PendingSnapshot:
+    """暫定 snapshot に対して受入れの 5〜7 だけを新しいカレンダーで再実行する（D03 §4 の 9）。
+
+    分類で「休場だった」と判断してカレンダーへ追加し版を上げたとき、報告と partition を
+    作り直す必要がある。そのとき**原ファイルは読み直さない**。読み直すと、人間が分類の
+    根拠にした報告には無かった内容——原ファイルの差し替え、価格の書き換え、設定の変更——が
+    最終 snapshot に入りうる。とくに価格だけの変更は構造検査もカレンダー照合も素通りする
+    ので、警告を1つも出さずに別のデータへ置き換わってしまう。
+
+    そこで**暫定 snapshot の partition から読み戻した原系列の足を再利用**する。D03 §4 の 9
+    が「5〜7 を再実行」と定めるのはこの意味であり、1〜4（原ファイルの登録・列対応・
+    正規化・構造検査）はやり直さない。
+
+    - 原系列の足（出所が `AGGREGATED` でないもの）だけを引き継ぐ。上位足は新しい
+      カレンダーで作り直すので捨てる。
+    - `sources`（原ファイルの sha256・行数・出所件数）は暫定 manifest のものをそのまま
+      引き継ぐ。原ファイルを読まない以上、記録も変えてはならない。
+    - `conversion` はカレンダーの識別と版だけを新しいものに置き換え、コード版・時刻規約・
+      集約規則の版は引き継ぐ。
+    - `created_at` も引き継ぐ（識別には使わないが、受入れの実行時刻は1つである）。
+
+    `aggregation_targets` は上位足を作る組（`(構成足の id, 上位足の id)`）。構成に属する
+    知識なので呼び出し側が渡す。
+    """
+    if not isinstance(pending, PendingSnapshot):
+        raise MarketDataValueError("reaccept_with_calendar requires a PendingSnapshot")
+    if not isinstance(calendar, TradingCalendar):
+        raise MarketDataValueError("reaccept_with_calendar requires a TradingCalendar")
+
+    source_bars = _source_series_bars(pending)
+    if not source_bars:
+        raise MarketDataValueError(
+            "the provisional snapshot carries no source-series bars; there is nothing to"
+            " re-check with the new calendar (D03 §4 の 9)"
+        )
+    _require_timeframes_match(source_bars, timeframe_defs)
+
+    aggregated, findings = _aggregate_targets(
+        source_bars,
+        calendar=calendar,
+        timeframe_defs=timeframe_defs,
+        aggregation_targets=aggregation_targets,
+    )
+
+    manifest = pending.manifest
+    return _assemble_pending(
+        created_at=manifest.created_at,
+        bars_by_series={**source_bars, **aggregated},
+        sources=manifest.sources,
+        timeframe_defs=timeframe_defs,
+        calendar=calendar,
+        boundaries=boundaries,
+        basis_declaration=manifest.basis_declaration,
+        conversion=ConversionRecord(
+            code_version=manifest.conversion.code_version,
+            time_convention=manifest.conversion.time_convention,
+            aggregation_rule_version=manifest.conversion.aggregation_rule_version,
+            calendar_id=calendar.id,
+            calendar_version=calendar.version,
+        ),
+        aggregated_findings=findings,
+        legacy_access=manifest.legacy_access,
+    )
+
+
+def _source_series_bars(pending: PendingSnapshot) -> dict[SeriesId, tuple[Bar, ...]]:
+    """暫定 snapshot の partition から原系列の足を集める（上位足は除く）。
+
+    上位足は本基盤が生成したもの（出所が `AGGREGATED`）なので、新しいカレンダーで作り
+    直す。原系列の足だけが「原ファイルから来た事実」であり、これを引き継ぐ。
+    """
+    by_series: dict[SeriesId, list[Bar]] = {}
+    for partition_id, bars in pending.partition_bars.items():
+        for bar in bars:
+            if bar.provenance.kind is ProvenanceKind.AGGREGATED:
+                continue
+            by_series.setdefault(partition_id.series, []).append(bar)
+    return {
+        series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
+        for series, bars in by_series.items()
+    }
+
+
+def _require_timeframes_match(
+    source_bars: Mapping[SeriesId, tuple[Bar, ...]],
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+) -> None:
+    """引き継ぐ系列の時間足が、渡された定義と**版まで**一致することを確かめる。
+
+    版が違う定義で再実行すると、足の境界の決め方が変わりうるのに、系列の記録は元の版の
+    ままになる。人間が分類の根拠にした snapshot と別物になるので、その場で止める。
+    """
+    for series in sorted(source_bars, key=str):
+        definition = timeframe_defs.get(series.timeframe.id)
+        if definition is None:
+            raise MarketDataValueError(
+                f"no timeframe definition was supplied for {series.timeframe.id!r},"
+                " which the provisional snapshot uses (D03 §4 の 9)"
+            )
+        if definition.ref != series.timeframe:
+            raise MarketDataValueError(
+                f"the timeframe definition for {series.timeframe.id!r} is"
+                f" {definition.ref}, but the provisional snapshot was accepted with"
+                f" {series.timeframe}; re-running with a different definition version would"
+                " produce a snapshot the classification was not based on (D03 §4 の 9)"
+            )
+
+
+def _aggregate_targets(
+    source_bars: Mapping[SeriesId, tuple[Bar, ...]],
+    *,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    aggregation_targets: Sequence[tuple[str, str]],
+) -> tuple[dict[SeriesId, tuple[Bar, ...]], tuple[CheckResult, ...]]:
+    """引き継いだ原系列から上位足を作り直す（D03 §4 の 6、§5）。"""
+    generated: dict[SeriesId, tuple[Bar, ...]] = {}
+    findings: list[CheckResult] = []
+    for source_id, target_id in aggregation_targets:
+        source_def = timeframe_defs.get(source_id)
+        target_def = timeframe_defs.get(target_id)
+        if source_def is None or target_def is None:
+            raise MarketDataValueError(
+                f"no timeframe definition was supplied for the aggregation"
+                f" {source_id} -> {target_id} (D03 §5)"
+            )
+        for series in sorted(source_bars, key=str):
+            if series.timeframe.id != source_id:
+                continue
+            target_series = SeriesId(
+                symbol=series.symbol,
+                timeframe=target_def.ref,
+                basis=series.basis,
+            )
+            result = aggregate(
+                source_bars[series],
+                source_timeframe_def=source_def,
+                target_series=target_series,
+                target_timeframe_def=target_def,
+                calendar=calendar,
+            )
+            generated[target_series] = result.bars
+            findings.extend(result.findings)
+    return generated, tuple(findings)

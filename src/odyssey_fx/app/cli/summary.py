@@ -10,8 +10,6 @@ CLI が画面へ出す文言を作る。要約に載せるのは**構造情報�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 
@@ -137,13 +135,23 @@ def classifiable_intervals(report: IntegrityReport, kind_value: str) -> int:
     )
 
 
-def warning_summary_lines(report: IntegrityReport, kinds: Sequence[str]) -> list[str]:
-    """警告の件数規模を示す行（報告の件数、記入が必要な区間数、連続する塊の数）。"""
+def warning_summary_lines(report: IntegrityReport) -> list[str]:
+    """分類が必要な警告の件数規模を種別ごとに示す行。
+
+    対象は**報告の警告（WARN）すべて**である。確定（`acceptance.finalize`）は報告のすべての
+    警告に分類を求めるので、表示が一部の種別だけを「分類が要る」として見せると、そこに
+    出ていない警告（銘柄間の足境界のずれ、夏時間切替週の異常）で確定が失敗し、人間には
+    理由が分からない。表示と確定の対象を揃える。
+
+    分類の対象そのものを狭めるかどうかは設計上の判断なので、ここでは行わない。狭める決定が
+    出れば、`finalize` 側と合わせて別途変更する。
+
+    各行は「報告の件数」「分類の記入が必要な区間」「連続する塊」の3つを出す（同じ区間に
+    対する重複した報告があるため、3つは一致しない）。
+    """
     lines: list[str] = []
-    for kind_value in kinds:
-        reported = sum(1 for result in report.results if result.kind.value == kind_value)
-        if not reported:
-            continue
+    for kind_value in sorted({result.kind.value for result in report.warnings}):
+        reported = sum(1 for result in report.warnings if result.kind.value == kind_value)
         lines.append(
             f"  {kind_value}: 報告 {reported} 件"
             f" / 分類の記入が必要な区間 {classifiable_intervals(report, kind_value)} 件"

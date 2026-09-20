@@ -500,8 +500,7 @@ def _decisions_with_calendar(
 
 
 def _classify_with_calendar(workspace: Path, pending: str, decisions: Path) -> int:
-    """カレンダーを変える分類は、再受入れに必要な設定も渡す。"""
-    configs = workspace / "configs"
+    """カレンダーを変える分類。必要なのは時間足定義だけ（原データは読み直さない）。"""
     return main(
         [
             "data",
@@ -512,14 +511,8 @@ def _classify_with_calendar(workspace: Path, pending: str, decisions: Path) -> i
             str(decisions),
             "--out",
             str(workspace / "data/snapshots"),
-            "--datasource",
-            str(configs / "datasources/legacy_merged_csv_v1.yaml"),
             "--timeframes",
-            str(configs / "calendars/timeframes_v1.yaml"),
-            "--symbols",
-            str(configs / "symbols"),
-            "--repo-root",
-            str(workspace),
+            str(workspace / "configs/calendars/timeframes_v1.yaml"),
         ]
     )
 
@@ -606,3 +599,74 @@ def test_classify_does_not_overwrite_a_settled_snapshot(workspace: Path) -> None
     assert manifest.declaration_record is not None
     # 暫定ディレクトリはそのまま残る（やり直せるように）。
     assert (workspace / "data/snapshots/_pending" / pending_again).is_dir()
+
+
+def test_the_calendar_change_path_does_not_reread_the_raw_files(workspace: Path) -> None:
+    """受入れ後に原 CSV を書き換えても、確定した snapshot は暫定の足を保つ。
+
+    D03 §4 の 9 が定めるのは「5〜7 の再実行」である。原ファイルを読み直すと、人間が分類の
+    根拠にした報告には無かった内容が最終 snapshot に入りうる。**とくに価格だけの変更は
+    構造検査もカレンダー照合も素通りする**ので、警告を1件も出さずに別のデータへ置き換わって
+    しまう。ここではまさにその状況——受入れ後に価格だけを書き換える——を作り、partition の
+    内容ダイジェストが暫定のときと変わらないことを確かめる。
+    """
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    provisional = store.read_manifest(f"_pending/{pending}")
+    before = {str(r.partition_id): r.digest.hex for r in provisional.partitions}
+
+    # 原 CSV の価格を書き換える（行数も時刻も変えないので、検査は何も報告しない）。
+    raw = workspace / "data/raw/market/USDJPY_1h_merged.csv"
+    lines = raw.read_text(encoding="utf-8").splitlines()
+    rewritten = [lines[0]]
+    for line in lines[1:]:
+        fields = line.split(",")
+        # 始値・高値・安値・終値をまとめて動かす（OHLC の不変条件は保つ）。
+        fields[1:5] = [f"{float(value) + 10:.3f}" for value in fields[1:5]]
+        rewritten.append(",".join(fields))
+    raw.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
+    assert _classify_with_calendar(workspace, pending, decisions) == 0
+
+    final = _final_id(workspace)
+    manifest = store.read_manifest(final)
+    after = {str(r.partition_id): r.digest.hex for r in manifest.partitions}
+
+    # 原系列（15m・1h）の partition は、暫定のときと同じ内容のままでなければならない。
+    for name, digest in before.items():
+        if "_1h_bid/" in name or "_15m_bid/" in name:
+            assert after[name] == digest, f"{name} の内容が書き換えた原ファイルに置き換わった"
+
+    # 原ファイルの記録（sha256・行数）も暫定のものを引き継ぐ（読み直していないため）。
+    assert manifest.sources == provisional.sources
+
+    # 変換の記録は、カレンダーの識別と版だけが新しくなる。
+    assert manifest.conversion.calendar_version == 2
+    assert manifest.conversion.code_version == provisional.conversion.code_version
+    assert manifest.conversion.time_convention == provisional.conversion.time_convention
+
+
+def test_the_calendar_change_path_needs_only_the_timeframes(workspace: Path) -> None:
+    """時間足定義を渡さなければ、何をすべきかを述べて失敗する。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
+
+    assert (
+        main(
+            [
+                "data",
+                "classify",
+                "--pending",
+                pending,
+                "--decisions",
+                str(decisions),
+                "--out",
+                str(workspace / "data/snapshots"),
+            ]
+        )
+        == 1
+    )
