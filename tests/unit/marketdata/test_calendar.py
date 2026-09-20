@@ -166,3 +166,105 @@ def test_a_partial_closure_requires_start_before_end() -> None:
 def test_the_weekday_must_be_in_range() -> None:
     with pytest.raises(MarketDataValueError, match="0 \\(Monday\\)"):
         WeeklyMoment(weekday=7, at=time(17, 0))
+
+
+# --- 週の開場区間の覚え書き（受入れのホットパス最適化）-----------------------
+#
+# 受入れは「その時刻を含む足が存在すべきか」を足ごとに問うので、週の開場区間の計算が
+# 数百万回走る。計算は現地時刻から UTC への変換（夏時間の解決を含む）を伴って重いため、
+# 週の開始日を鍵に覚えている。覚え書きは**計算結果を変えない**ことが条件なので、
+# その点をここで確かめる。
+
+
+def test_the_weekly_session_cache_is_not_part_of_the_calendar_value() -> None:
+    """覚え書きの有無で同値性・ハッシュが変わらない。
+
+    取引カレンダーは snapshot の識別子の一部（版として）であり、比較・ハッシュの対象に
+    なる。覚え書きが値の一部になると、「同じ宣言なのに問い合わせたかどうかで別物」に
+    なってしまう。
+    """
+    warmed = market.calendar()
+    warmed.sessions(WEEK)  # 覚え書きを埋める
+    fresh = market.calendar()
+
+    assert warmed == fresh
+    assert hash(warmed) == hash(fresh)
+    assert repr(warmed) == repr(fresh)
+
+
+def test_repeated_queries_return_the_same_sessions() -> None:
+    """同じ問い合わせを繰り返しても結果が変わらない（覚え書きが答えを汚さない）。"""
+    calendar = market.calendar()
+    assert calendar.sessions(WEEK) == calendar.sessions(WEEK) == market.calendar().sessions(WEEK)
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        # 夏時間の切替を含む週（春の切り替え・秋の切り戻し）。現地時刻の解決が
+        # 特殊な経路を通るので、覚え書きの有無で差が出るならここに出る。
+        Interval(
+            start=UtcTime.parse("2026-03-06T00:00:00Z"),
+            end=UtcTime.parse("2026-03-13T00:00:00Z"),
+        ),
+        Interval(
+            start=UtcTime.parse("2025-10-29T00:00:00Z"),
+            end=UtcTime.parse("2025-11-05T00:00:00Z"),
+        ),
+        # 複数週にまたがる長い窓（探索範囲の詰め方を変えたので、端の週も拾えること）。
+        Interval(
+            start=UtcTime.parse("2026-01-01T00:00:00Z"),
+            end=UtcTime.parse("2026-02-15T00:00:00Z"),
+        ),
+        # 1日に満たない短い窓。
+        Interval(
+            start=UtcTime.parse("2026-01-14T09:00:00Z"),
+            end=UtcTime.parse("2026-01-14T10:00:00Z"),
+        ),
+    ],
+)
+def test_the_cache_does_not_change_the_sessions(window: Interval) -> None:
+    """覚え書きを持たない状態と、埋めた状態で、同じ区間が返る。
+
+    最適化の前後で意味論が変わらないことの直接の確認である。別の窓で覚え書きを埋めてから
+    問い合わせても、窓ごとに計算した場合と同じ結果でなければならない。
+    """
+    cold = market.calendar().sessions(window)
+
+    warmed = market.calendar()
+    warmed.sessions(WEEK)  # 別の窓で先に覚えさせる
+    warmed.sessions(
+        Interval(
+            start=UtcTime.parse("2020-01-01T00:00:00Z"),
+            end=UtcTime.parse("2020-03-01T00:00:00Z"),
+        )
+    )
+
+    assert warmed.sessions(window) == cold
+
+
+def test_the_cache_does_not_change_the_expected_bar_starts() -> None:
+    """存在すべき足の列も、覚え書きの有無で変わらない（D03 §3.4）。"""
+    window = Interval(
+        start=UtcTime.parse("2026-03-06T00:00:00Z"), end=UtcTime.parse("2026-03-13T00:00:00Z")
+    )
+    cold = market.calendar().expected_bar_starts(market.TF_1H, window)
+
+    warmed = market.calendar()
+    warmed.sessions(WEEK)
+    assert warmed.expected_bar_starts(market.TF_1H, window) == cold
+
+
+def test_a_declared_closure_still_applies_after_the_cache_is_warm() -> None:
+    """覚え書きは週の開場区間だけで、宣言した休場はそこから別に取り除かれる。
+
+    休場まで覚えてしまうと、休場を含む週の問い合わせが「休場前の答え」を返しうる。
+    """
+    closed_day = date(2026, 1, 14)
+    calendar = market.calendar(
+        closures=[market.closure(closed_day, time(9, 0), time(12, 0), note="短縮")]
+    )
+    calendar.sessions(WEEK)  # 先に覚えさせる
+
+    assert not calendar.is_open(UtcTime.parse("2026-01-14T15:00:00Z"))
+    assert calendar.is_open(UtcTime.parse("2026-01-14T18:00:00Z"))

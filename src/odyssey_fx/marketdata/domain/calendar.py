@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -149,6 +149,14 @@ class TradingCalendar:
     weekly_close: WeeklyMoment
     closures: tuple[ClosureRule, ...] = ()
 
+    #: 週の開始日（現地日付）から開場区間への覚え書き。**値の一部ではない**ので、
+    #: 同値比較・ダイジェスト・記録の対象から外す（`compare=False`、`repr=False`）。
+    #: 中身は純粋関数の結果でしかなく、あってもなくても計算結果は変わらない。
+    #: 区間が作れない開始日も「作れなかった」ことを覚えるため、1要素の組で包んで持つ。
+    _session_cache: dict[date, tuple[Interval | None]] = field(
+        default_factory=dict, compare=False, repr=False, hash=False
+    )
+
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id:
             raise MarketDataValueError(
@@ -180,6 +188,32 @@ class TradingCalendar:
 
     # --- 週の開閉 -----------------------------------------------------------
 
+    def _session_for_open_day(self, open_day: date) -> Interval | None:
+        """週の開始日（現地日付）1つぶんの開場区間を返す（休場は未適用）。
+
+        カレンダーは frozen なので、開始日が同じならこの区間は常に同じである。現地時刻
+        から UTC への変換（`_resolve_local`）は夏時間の解決を含んで重く、受入れでは同じ
+        週が何万回も引かれるため、**開始日を鍵に覚えておく**。
+
+        覚えるのは「開始日 → 区間」だけで、窓との重なり判定はしない。判定を含めて覚えると
+        窓ごとに別の値になり、覚えた意味がなくなるうえ、窓の与え方で結果が変わりうる。
+        区間そのものは窓に依存しないので、この形なら計算結果は memo の有無で変わらない。
+        """
+        cached = self._session_cache.get(open_day)
+        if cached is not None:
+            return cached[0]
+        open_at = _resolve_local(open_day, self.weekly_open.at, self.tz)
+        close_day = open_day + timedelta(days=self._days_to_close())
+        close_at = _resolve_local(close_day, self.weekly_close.at, self.tz)
+        session = (
+            None
+            # pragma: no cover - 構築時の曜日組合せで排除される
+            if close_at <= open_at
+            else Interval(start=open_at, end=close_at)
+        )
+        self._session_cache[open_day] = (session,)
+        return session
+
     def _weekly_sessions(self, window: Interval) -> list[Interval]:
         """`window` と重なる「週の開場区間」を昇順で返す（休場は未適用）。
 
@@ -190,22 +224,24 @@ class TradingCalendar:
 
         前後に `_WEEK_SEARCH_DAYS` の余裕を取るのは、窓の開始より前に始まって窓に掛かる
         週と、窓の終了後に終わる週の両方を拾うため。
+
+        走査する日のうち週の開始曜日に当たるものだけを見るのは以前と同じで、その1日ぶんの
+        区間の計算を `_session_for_open_day` に任せて覚えさせている。返す内容は変わらない。
         """
         local_day = window.start.value.astimezone(self.tz).date()
         window_days = int(window.duration.total_seconds() // 86400) + 1
         sessions: list[Interval] = []
-        for offset in range(-_WEEK_SEARCH_DAYS, window_days + _WEEK_SEARCH_DAYS + 1):
-            day = local_day + timedelta(days=offset)
-            if day.weekday() != self.weekly_open.weekday:
-                continue
-            open_at = _resolve_local(day, self.weekly_open.at, self.tz)
-            close_day = day + timedelta(days=self._days_to_close())
-            close_at = _resolve_local(close_day, self.weekly_close.at, self.tz)
-            if close_at <= open_at:  # pragma: no cover - 構築時の曜日組合せで排除される
-                continue
-            session = Interval(start=open_at, end=close_at)
-            if session.overlaps(window):
+        # 走査の起点を週の開始曜日へ寄せ、当たらない日を1日ずつ見る無駄を省く。範囲の
+        # 両端は以前と同じで、拾う週も同じになる。
+        first = local_day - timedelta(days=_WEEK_SEARCH_DAYS)
+        last = local_day + timedelta(days=window_days + _WEEK_SEARCH_DAYS)
+        first += timedelta(days=(self.weekly_open.weekday - first.weekday()) % 7)
+        day = first
+        while day <= last:
+            session = self._session_for_open_day(day)
+            if session is not None and session.overlaps(window):
                 sessions.append(session)
+            day += timedelta(days=7)
         return sorted(sessions, key=lambda interval: interval.start.value)
 
     def _days_to_close(self) -> int:
