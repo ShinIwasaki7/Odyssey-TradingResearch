@@ -32,14 +32,15 @@ from enum import Enum
 from odyssey_fx.common.time import Interval, PhaseRank, UtcTime
 from odyssey_fx.marketdata.application.snapshot_access import (
     PartitionedBars,
+    ReadableSnapshot,
     require_readable_snapshot,
 )
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog, PublicationRecord
 from odyssey_fx.marketdata.domain.schedule import DelayScenario, SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
 
 __all__ = [
     "EVENT_ORDER",
@@ -226,8 +227,67 @@ def _boundary_search_window(schedule: SeriesSchedule, run_interval: Interval) ->
     )
 
 
+def _allowed_coverage(
+    snapshot: ReadableSnapshot, allowed_partitions: frozenset[PartitionId]
+) -> Mapping[SeriesId, tuple[Interval, ...]]:
+    """系列ごとに、許可された partition が覆う区間を求める（D03 §6.1）。
+
+    同じ系列で複数の partition が許可されている場合、隣接・重複する区間はつなげる。
+    研究期間と封印期間が連続して許可されていれば、その全体が1つの区間になる。
+    """
+    by_series: dict[SeriesId, list[Interval]] = {}
+    for partition_id in allowed_partitions:
+        record = snapshot.manifest.partition_record(partition_id)
+        if record is None:  # pragma: no cover - 関門が先に拒否する
+            continue
+        by_series.setdefault(partition_id.series, []).append(record.interval)
+
+    coverage: dict[SeriesId, tuple[Interval, ...]] = {}
+    for series, intervals in by_series.items():
+        merged: list[Interval] = []
+        for interval in sorted(intervals, key=lambda item: item.start.value):
+            if merged and interval.start <= merged[-1].end:
+                if merged[-1].end < interval.end:
+                    merged[-1] = Interval(start=merged[-1].start, end=interval.end)
+                continue
+            merged.append(interval)
+        coverage[series] = tuple(merged)
+    return coverage
+
+
+def _require_run_interval_inside_allowed(
+    snapshot: ReadableSnapshot,
+    allowed_partitions: frozenset[PartitionId],
+    run_interval: Interval,
+) -> tuple[SeriesId, ...]:
+    """実行区間が許可 partition の区間に収まることを確かめ、境界を出す系列を返す。
+
+    予定境界はデータ到着と独立に出る（D03 §7.1）ので、許可されていない期間を実行区間に
+    含めると、禁止期間の境界で戦略評価が起動してしまう。研究期間だけを許可した状態で実行
+    区間を封印期間に取れば、封印期間の判断が動き出す。区間の検査は構築時に行い、通らない
+    要求は `HoldoutAccessViolation`（構造エラー）で止める（D03 §6.1）。
+    """
+    coverage = _allowed_coverage(snapshot, allowed_partitions)
+    if not coverage:
+        raise HoldoutAccessViolation(
+            "no partition was granted to this feed; there is no period it may cover (D03 §6.1)"
+        )
+    for series, intervals in sorted(coverage.items(), key=lambda pair: str(pair[0])):
+        if not any(
+            interval.start <= run_interval.start and run_interval.end <= interval.end
+            for interval in intervals
+        ):
+            readable = ", ".join(str(interval) for interval in intervals)
+            raise HoldoutAccessViolation(
+                f"the run interval {run_interval} is not covered by the partitions granted"
+                f" for {series} ({readable}); scheduled boundaries would fire outside the"
+                " permitted period (D03 §6.1・§7.1)"
+            )
+    return tuple(coverage)
+
+
 def build_publication_log(
-    manifest: SnapshotManifest,
+    snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
     partition_bars: Mapping[PartitionId, Sequence[Bar]],
     schedules: Mapping[SeriesId, SeriesSchedule],
@@ -241,13 +301,13 @@ def build_publication_log(
     足は as-of ビューと同じ関門を通した読み取り面から取る（D03 §3.7.1・§6.1）。承認前の
     snapshot と許可されていない partition は、公開の記録にも入れない。
     """
-    require_readable_snapshot(
-        manifest,
+    frozen = require_readable_snapshot(
+        snapshot,
         allowed_partitions,
         label="build_publication_log",
         partition_bars=partition_bars,
     )
-    readable = PartitionedBars(partition_bars, allowed_partitions)
+    readable = PartitionedBars(frozen, allowed_partitions)
 
     records: list[PublicationRecord] = []
     for series in readable.series():
@@ -273,7 +333,7 @@ def build_publication_log(
 
 
 def build_feed(
-    manifest: SnapshotManifest,
+    snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
     partition_bars: Mapping[PartitionId, Sequence[Bar]],
     schedules: Mapping[SeriesId, SeriesSchedule],
@@ -304,19 +364,30 @@ def build_feed(
     as-of ビューと同じ関門を通す。生の足を直接受け取る形にすると、暫定・未承認の snapshot
     から公開フィードを作れてしまい、「暫定 snapshot はバックテストの入力にできない」という
     設計が成り立たない。
+
+    **実行区間は許可 partition の区間に収まっていなければならない**（D03 §6.1）。予定境界は
+    データ到着と独立に出るので、許可されていない期間を実行区間に含めると、禁止期間の境界で
+    戦略評価が起動してしまう。収まらない場合は構築時に `HoldoutAccessViolation` で拒否する。
     """
     if not isinstance(run_interval, Interval):
         raise MarketDataValueError("build_feed requires an Interval run_interval")
-    require_readable_snapshot(
-        manifest, allowed_partitions, label="build_feed", partition_bars=partition_bars
+    frozen = require_readable_snapshot(
+        snapshot, allowed_partitions, label="build_feed", partition_bars=partition_bars
     )
-    readable = PartitionedBars(partition_bars, allowed_partitions)
+    readable = PartitionedBars(frozen, allowed_partitions)
+    boundary_series = _require_run_interval_inside_allowed(
+        snapshot, allowed_partitions, run_interval
+    )
 
     events: list[PublicationEvent] = []
 
-    # 予定境界は公開予定から導く（データ到着と独立、D03 §7.1）。実行区間に足の終了時刻が
-    # 入るものを拾うため、区間の開始より1本ぶん手前から期待足を数える。
-    for series, scheduled_series in schedules.items():
+    # 予定境界は公開予定から導く（データ到着と独立、D03 §7.1）。ただし出すのは**許可
+    # partition を持つ系列**に限る。実行区間に足の終了時刻が入るものを拾うため、区間の
+    # 開始より1本ぶん手前から期待足を数える。
+    for series in sorted(boundary_series, key=str):
+        scheduled_series = schedules.get(series)
+        if scheduled_series is None:
+            raise MarketDataValueError(f"no publication schedule was supplied for {series}")
         for bar_start in scheduled_series.calendar.expected_bar_starts(
             scheduled_series.timeframe_def,
             _boundary_search_window(scheduled_series, run_interval),

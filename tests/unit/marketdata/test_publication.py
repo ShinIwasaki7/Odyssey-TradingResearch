@@ -24,11 +24,13 @@ from odyssey_fx.marketdata.application.publication import (
     build_feed,
     build_publication_log,
 )
+from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
     MarketDataValueError,
+    PartitionContentMismatch,
     SnapshotNotApproved,
 )
 from odyssey_fx.marketdata.domain.schedule import (
@@ -37,7 +39,7 @@ from odyssey_fx.marketdata.domain.schedule import (
     SeriesSchedule,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from tests.fixtures.synthetic import market, snapshots
 
@@ -70,7 +72,7 @@ def _bars(series: SeriesId, timeframe_def: TimeframeDefinition) -> tuple[Bar, ..
 
 def _context(
     bars_by_series: Mapping[SeriesId, Sequence[Bar]],
-) -> tuple[SnapshotManifest, frozenset[PartitionId], dict[PartitionId, Sequence[Bar]]]:
+) -> tuple[ReadableSnapshot, frozenset[PartitionId], dict[PartitionId, Sequence[Bar]]]:
     """承認済み snapshot・許可 partition・partition ごとの足を組み立てる。
 
     公開フィードは as-of ビューと同じ関門を通るので（D03 §3.7.1・§6.1）、テストも同じ形で
@@ -78,7 +80,7 @@ def _context(
     """
     partition_bars = {PARTITION_OF[series]: bars for series, bars in bars_by_series.items()}
     allowed = frozenset(partition_bars)
-    return snapshots.approved_for(partition_bars), allowed, partition_bars
+    return snapshots.readable_for(partition_bars), allowed, partition_bars
 
 
 # --- 同時刻の順序（D03 §7.1）------------------------------------------------
@@ -179,12 +181,33 @@ def test_the_scheduled_boundaries_cover_every_expected_bar() -> None:
     assert str(WINDOW.start) in boundaries
 
 
-def test_a_series_with_no_bars_at_all_still_gets_its_boundaries() -> None:
-    """データが1本も無い系列にも、公開予定があれば予定境界が出る（D03 §7.1）。"""
-    manifest, allowed, partition_bars = _context({HOURLY: ()})
-    feed = build_feed(manifest, allowed, partition_bars, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
-    assert feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY)
-    assert not feed.of_kind(PublicationKind.PUBLICATION)
+def test_a_series_whose_bars_are_all_missing_still_gets_its_boundaries() -> None:
+    """データが届いていない系列にも、許可期間の内側なら予定境界が出る（D03 §7.1）。
+
+    許可 partition の区間が実行区間を覆っている必要はある（D03 §6.1）ので、記録は本来の
+    期間で作り、足だけをすべて落とす——公開が1件も起きない状態を作る。
+    """
+    bars = _bars(HOURLY, market.TF_1H)
+    manifest, allowed, _ = _context({HOURLY: bars})
+    # 足が1本も届いていない状態。manifest の記録は残るが、公開する足はない。
+    empty: dict[PartitionId, Sequence[Bar]] = {HOURLY_PARTITION: ()}
+    with pytest.raises(PartitionContentMismatch):
+        # 記録と食い違う足は渡せない（D03 §3.7.1）。欠損は「足が届かない」ことであって、
+        # 記録そのものを書き換えることではない。
+        build_feed(manifest, allowed, empty, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+
+    # 実際の欠損は、記録どおりの足のうち一部が届かない形で起きる。
+    missing = UtcTime.parse("2026-01-14T10:00:00Z")
+    partial_manifest, partial_allowed, partial_bars = _context(
+        {HOURLY: market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=(missing,))}
+    )
+    feed = build_feed(
+        partial_manifest, partial_allowed, partial_bars, {HOURLY: SCHEDULES[HOURLY]}, WINDOW
+    )
+    boundaries = {
+        event.bar_key.bar_start for event in feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY)
+    }
+    assert missing in boundaries
 
 
 def test_the_scheduled_boundary_fires_even_when_the_data_is_delayed() -> None:
@@ -318,39 +341,37 @@ def test_an_unapproved_snapshot_cannot_produce_a_feed() -> None:
     成り立たない。
     """
     bars = _bars(HOURLY, market.TF_1H)
-    approved_manifest = snapshots.approved_for((HOURLY_PARTITION,))
-    pending = snapshots.manifest(
-        series_records=approved_manifest.series, partitions=approved_manifest.partitions
-    )
+    approved = snapshots.approved_for({HOURLY_PARTITION: bars})
+    pending = snapshots.manifest(series_records=approved.series, partitions=approved.partitions)
+    # 公開フィードは `ReadableSnapshot` しか受け取らないので、未承認の manifest は
+    # そもそもその型を作れない段階で止まる。
     with pytest.raises(SnapshotNotApproved, match="has not been approved"):
-        build_feed(
-            pending,
-            frozenset({HOURLY_PARTITION}),
-            {HOURLY_PARTITION: bars},
-            {HOURLY: SCHEDULES[HOURLY]},
-            WINDOW,
-        )
+        ReadableSnapshot(manifest=pending, directory_name=str(pending.snapshot_id()))
 
 
-def test_an_unapproved_snapshot_cannot_produce_a_publication_log() -> None:
+def test_a_provisional_snapshot_can_never_be_opened_for_reading() -> None:
+    """暫定ディレクトリ配下の snapshot は、承認が付いていても読めない（D03 §3.7.1 の1）。"""
     bars = _bars(HOURLY, market.TF_1H)
-    approved_manifest = snapshots.approved_for((HOURLY_PARTITION,))
-    pending = snapshots.manifest(
-        series_records=approved_manifest.series, partitions=approved_manifest.partitions
-    )
-    with pytest.raises(SnapshotNotApproved, match="has not been approved"):
-        build_publication_log(
-            pending,
-            frozenset({HOURLY_PARTITION}),
-            {HOURLY_PARTITION: bars},
-            {HOURLY: SCHEDULES[HOURLY]},
+    approved = snapshots.approved_for({HOURLY_PARTITION: bars})
+    with pytest.raises(SnapshotNotApproved, match="provisional snapshot"):
+        ReadableSnapshot(
+            manifest=approved,
+            directory_name=f"_pending/{approved.snapshot_id()}",
         )
+
+
+def test_a_directory_name_that_is_not_the_snapshot_id_is_refused() -> None:
+    """ディレクトリ名は最終識別子でなければならない（D03 §3.7.1 の2）。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    approved = snapshots.approved_for({HOURLY_PARTITION: bars})
+    with pytest.raises(MarketDataValueError, match="does not match the manifest"):
+        ReadableSnapshot(manifest=approved, directory_name="some-other-directory")
 
 
 def test_a_quarantined_partition_cannot_produce_a_feed() -> None:
     """未分類の隔離期間はいかなる経路でも読めない（D03 §6.1、ADR-0014）。"""
     quarantined = PartitionId(series=HOURLY, access_class=AccessClass.QUARANTINED_UNASSIGNED)
-    manifest = snapshots.approved_for((HOURLY_PARTITION, quarantined))
+    manifest = snapshots.readable_for((HOURLY_PARTITION, quarantined))
     with pytest.raises(HoldoutAccessViolation, match="quarantined partitions"):
         build_feed(
             manifest,
@@ -363,7 +384,7 @@ def test_a_quarantined_partition_cannot_produce_a_feed() -> None:
 
 def test_a_partition_missing_from_the_manifest_is_refused() -> None:
     """manifest に記録のない partition は許可できない（何が入っているか確かめられない）。"""
-    manifest = snapshots.approved_for((HOURLY_PARTITION,))
+    manifest = snapshots.readable_for((HOURLY_PARTITION,))
     with pytest.raises(MarketDataValueError, match="not recorded in the snapshot manifest"):
         build_feed(
             manifest,
@@ -381,7 +402,7 @@ def test_bars_of_an_unallowed_partition_are_not_published() -> None:
         FIFTEEN_PARTITION: _bars(FIFTEEN, market.TF_15M),
     }
     feed = build_feed(
-        snapshots.approved_for(partition_bars),
+        snapshots.readable_for(partition_bars),
         frozenset({HOURLY_PARTITION}),  # 15分足は許可しない。
         partition_bars,
         SCHEDULES,
