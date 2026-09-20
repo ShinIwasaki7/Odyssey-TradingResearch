@@ -29,3 +29,4 @@
 | [0023](0023-adr-format.md) | ADR は1決定1ファイルで、必須項目と廃止規則を持つ | D-4 |
 | [0024](0024-no-legacy-aggregation-reproduction.md) | 上位足の集約は新規則のみとし、旧集約の再現版は作らない | C-4 |
 | [0025](0025-polars-in-adapters.md) | adapters の表形式ライブラリは polars | B-5 |
+| [0026](0026-config-parser-rule-covers-whole-app.md) | 設定解析ライブラリの禁止範囲は `app` 配下全体（`app.config` を除く） | D01 §6 F5c |

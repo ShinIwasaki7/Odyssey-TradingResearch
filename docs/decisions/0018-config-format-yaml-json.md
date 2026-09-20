@@ -23,4 +23,4 @@ YAML の読込条件（`app.config` が強制）:
 
 ## 影響
 
-- YAML パーサと Pydantic は `app.config` 以外で import 不可（D01 §5、F5a）。
+- YAML パーサと Pydantic は `app.config` 以外で import 不可（D01 §5。`app` の外は F5a、`app` の内側は F5c が検査する。ADR-0026）。
