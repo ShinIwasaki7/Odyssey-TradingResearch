@@ -140,11 +140,11 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `RiskMeasurement` | `domain.positions` | レコード | `position_id` / `at: ProcessingPoint` / `measured: Money` / `allocated: Money` / `basis: str` | §8.1 |
 | `PositionContext` | **`strategy.records.payloads`** | レコード | `position_id` / `symbol` / `direction: TradeDirection` / `quantity: Quantity` / `entry_price: Price` / `effective_stop_loss: Price` / `effective_take_profit: Price \| None` / `opened_at: ProcessingPoint` | §8.4 |
 | `AccountContext` | **`strategy.records.payloads`** | レコード | `account_id: AccountId` / `currency: CurrencyCode` / `balance: Money` / `equity: Money` / `consumed_risk: Money` | §8.4 |
-| `AccountLedger` | `domain.account` | レコード | `account_id` / `balance: Money` / `positions: Mapping[PositionId, Position]` / `allocations: Mapping[AllocationId, PositionRiskAllocation]` / `reservations: Mapping[ReservationId, RiskReservation]` / `reservation_states: Mapping[ReservationId, ReservationState]` / `order_states: Mapping[OrderId, OrderState]` / `processed_event_ids: frozenset[EventId]` | §4.4・§8.1 |
+| `AccountLedger` | `domain.account` | レコード | `account_id` / `balance: Money` / `orders: Mapping[OrderId, AcceptedOrder]` / `positions: Mapping[PositionId, Position]` / `allocations: Mapping[AllocationId, PositionRiskAllocation]` / `reservations: Mapping[ReservationId, RiskReservation]` / `reservation_states: Mapping[ReservationId, ReservationState]` / `order_states: Mapping[OrderId, OrderState]` / `processed_event_ids: frozenset[EventId]` | §4.4・§8.1 |
 | `LedgerSnapshot` | `portfolio.ledger` | レコード | `at: ProcessingPoint` / `balance: Money` / `equity: Money` / `consumed: Money` / `open_position_ids: tuple[PositionId, ...]` | §8.1・§9.2 |
 | `FinalSummaries` | `trace.result` | レコード | `realized: Money` / `equity_with_mtm: Money` / `hypothetical_closed: Money` / `cost_breakdown: Mapping[CostKind, Money]` | §10.3 |
 | `RunStatus` | `trace.result` | enum | `COMPLETED` / `FAILED_DATA_ERROR` / `FAILED_CAPABILITY` | §9.4・§10.4 |
-| `HierarchyCheckResult` | `execution` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `child_bar: BarKey \| None` / `expected_interval: Interval \| None` / `observed_interval: Interval \| None` / `expected_boundary: UtcTime \| None` / `observed_boundary: UtcTime \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
+| `HierarchyCheckResult` | `execution` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `child_bar: BarKey \| None` / `expected_interval: Interval \| None` / `child_intervals: tuple[Interval, ...]` / `coverage_gaps: tuple[Interval, ...]` / `coverage_overlaps: tuple[Interval, ...]` / `expected_boundary: UtcTime \| None` / `observed_boundary: UtcTime \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
 | `DataCapabilityReport` | `engine` | レコード | `compiled_match: bool` / `integrity: IntegrityReport` / `hierarchy_checks: tuple[HierarchyCheckResult, ...]` / `runnable: bool` / `reason: Reason \| None` | §7.5・§10.5 |
 | `RunManifest` | `trace.manifest` | レコード | 第9.3節の項目 | §9.3 |
 | `BacktestResult` | `trace.result` | レコード | 第9.4節の項目 | §9.4 |
@@ -212,10 +212,19 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 
 **評価の失敗は受付より前で run を止める**【提案】。D05 §6.2 は、部品の失敗・`on_missing=Error` の欠損・戻り値の検査違反を `Failed(Reason(DATA_ERROR, ...))` として評価記録に残し、**以降の評価を行わずに結果を返す**と定め、「run を終了させるのはエンジンの責務」と本書へ委ねている【合意済み】。そこでエンジンは、第1回・第2回のどちらの `step` でも `RuntimeStepResult.evaluations` に `Failed` があれば、次のとおり扱う。
 
+どちらの `step` でも共通に行うことが2つある。
+
 1. その `RuntimeStepResult` の `outputs` / `evaluations` / `transitions` は trace へ保存する（失敗の診断を判断履歴から消さない）。
-2. `proposals` と `management_requests` は**受付へ渡さない**。同じ `step` の中で失敗より前に生まれた提案も渡さない（どこまでが有効な判断だったかが宣言から読めないため）。
-3. rank 10 以降（受付・始値処理・第2回の `step`）を実行しない。
-4. 第10.4節の実行失敗として扱う（未約定注文を `CANCELED` / `DATA_ERROR`、`status = FAILED_DATA_ERROR`）。
+2. その `step` が返した `proposals` と `management_requests` は**一切使わない**。同じ `step` の中で失敗より前に生まれたものも使わない（どこまでが有効な判断だったかが宣言から読めないため）。
+
+その先は、**どちらの呼び出しで失敗したかで分ける**。すでに確定した処理は巻き戻さない（第4.4節の確定単位は差し替え済みであり、シミュレーションであっても確定した約定を取り消さない【合意済み】上位 §4.7.13 A）。
+
+| 失敗した呼び出し | 確定済みの処理 | 停止する範囲 |
+|---|---|---|
+| 第1回（rank 4〜9） | rank 0〜2 の内部約定・台帳更新・期限切れ | rank 10 以降をすべて実行しない（受付・始値処理・第2回の `step`・rank 13） |
+| 第2回（rank 12） | rank 0〜2 に加え、rank 10 の受付と rank 11 の約定 | rank 13 を実行しない。保護水準の更新も適用しない |
+
+どちらの場合も、その判断時点で止めて第10.4節の実行失敗として扱う（未約定注文を `CANCELED` / `DATA_ERROR`、`status = FAILED_DATA_ERROR`）。第2回で失敗した建玉は**初期の利確を持たないまま**残るが、その状態のまま最終 snapshot に保存し、架空の利確水準を埋めない。
 
 **不採用**: 失敗した使用箇所だけを飛ばして続ける案（D05 が「以降の評価を行わない」と決めた範囲をエンジンが広げ直すことになる）、判断時点の末尾まで進めてから止める案（失敗後に受け付けた注文が約定し、失敗した run の成果物に取引が含まれる）。
 
@@ -240,15 +249,18 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 「審査・予約・受付を不可分に確定する」【合意済み】上位 §4.7.4・全体計画 §5.4.2 を、frozen dataclass の設計で実現する方法を決める。
 
 - 台帳の現在状態は `AccountLedger` 1つの**不変値**で表し、エンジンは可変参照を1つだけ持つ（第1節の例外）。
+- **受付済み注文の本体（`AcceptedOrder`）も台帳が持つ**【提案】。受付と候補の始値は別の判断時点になりうるため（`entry_delay_bars=1`、遅延シナリオ、期限が次の足に及ぶ場合）、約定の時点で数量・期限・固定した候補（`ExecutionCommitment.eligibility`）・エントリー条件を引けなければならない。`OrderState` だけではこれらを復元できず、`TraceSink` は書き出し専用（第9.1節）で検索元にならない。終端した注文は `order_states` に残したまま `orders` から外さず、run 中は保持する（第9.1節の書き出しと台帳は別物）。
 - **確定単位**は「検査 → 新しい `AccountLedger` の組み立て → 参照の差し替え」の3段で行い、差し替えが起きるまで外へ公開しない。差し替えは1文であり、途中まで更新した状態は観測できない。
 - 1つの確定単位に含めるものを次のとおり固定する。`processed_event_ids` への追加を同じ単位に含めるのが冪等性の実装である【合意済み】上位 §4.7.13 A。
 
+各確定単位は `OrderEvent` そのものを含める【提案】。第5.1節は `OrderEvent` の列から `OrderState` を投影すると定めており、識別子だけを残すと `from_status` / `to_status` / 処理点 / 理由 / `fill_id` を復元できず、表8（`ORDER_EVENTS`）と注文状態が食い違う。
+
 | 確定単位 | 含める変更 |
 |---|---|
-| 受付（第6.5節） | `OrderRequest` ／ `AttemptDecision` ／ `AcceptedOrder` ／ `OrderState(PENDING)` ／ `RiskReservation` ＋ `ReservationState(HELD)` ／ `event_id` |
-| エントリー約定（第7.1節） | `FillRecord` ／ `Position`（作成、初期損切り有効化）／ `OrderState(FILLED)` ／ `ReservationState(TRANSFERRED)` ＋ `PositionRiskAllocation` ／ `RiskMeasurement` ／ `event_id` |
-| 決済約定（第7.3節） | `FillRecord` ／ `Position`（終了）／ `OrderState(FILLED)` ／ 実現損益・費用・balance ／ `PositionRiskAllocation`（解放）／ `event_id` |
-| 終端（期限・取消） | `OrderState(EXPIRED \| CANCELED)` ＋ `terminal_reason` ／ `ReservationState(RELEASED)` ／ `event_id` |
+| 受付（第6.5節） | `OrderRequest` ／ `AttemptDecision` ／ `AcceptedOrder` ／ `OrderEvent(None → PENDING)` ＋ そこから投影した `OrderState` ／ `RiskReservation` ＋ `ReservationState(HELD)` ／ `processed_event_ids` への `event_id` の追加 |
+| エントリー約定（第7.1節） | `FillRecord` ／ `Position`（作成、初期損切り有効化）／ `OrderEvent(PENDING → FILLED, fill_id)` ＋ `OrderState` ／ `ReservationState(TRANSFERRED)` ＋ `PositionRiskAllocation` ／ `RiskMeasurement` ／ `processed_event_ids` への追加 |
+| 決済約定（第7.3節） | `FillRecord` ／ `Position`（終了）／ `OrderEvent(PENDING → FILLED, fill_id)` ＋ `OrderState` ／ 実現損益・費用・balance ／ `PositionRiskAllocation`（解放）／ `processed_event_ids` への追加 |
+| 終端（期限・取消） | `OrderEvent(PENDING → EXPIRED \| CANCELED, reason)` ＋ そこから投影した `OrderState`（`terminal_reason` を含む）／ `ReservationState(RELEASED)` ／ `processed_event_ids` への追加 |
 
 - 受付前拒否は台帳を変えない。`OrderRequest` と `AttemptRejected` を trace へ残す【合意済み】上位 §4.7.15 A（「受付前拒否もこの記録に紐付く」）。**`RiskAssessment` を残すのは、審査に実際に入れた拒否のときだけ**とする【提案】。期限内に候補が無い（`NO_CANDIDATE`）・末尾（`RUN_END`）・参照価格が取れない（`DATA_ERROR`）のように第6.4節の手順3より前で終わる拒否では、`ReferenceQuote` も丸め前後の価格も換算率も存在しないため、行を作れば架空の値を書くことになる。その場合 `AttemptRejected.assessment_ref` は `None` とし、拒否の理由は `Reason` だけが持つ。
 - 同じ `event_id` が2度来たら、`processed_event_ids` に含まれることを見て**何もしない**（確定単位を実行しない）。異なる `event_id` で同じ終端効果を要求されたら、注文状態の検査（終端状態からの遷移は表に無い）で拒否する【合意済み】上位 §4.7.13 A。
@@ -304,7 +316,7 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 | `previous_attempt_id` | 段階2は常に `None`（再審査なし）【合意済み】上位 §4.3.14 |
 | `account_id` | `RunConfig.account` |
 | `strategy_id` | `CompiledStrategy.strategy_ref.strategy_id` |
-| `created_at` | `ProcessingPoint(T, ADMISSION, 連番)` |
+| `created_at` | `ProcessingPoint(T, その要求を組み立てたフェーズ, 連番)`。フェーズは第6.2節の表の「受け付けるフェーズ」と同じ（エントリーは `ADMISSION`、保護水準の到達は `EXECUTION_BAR_COMPLETE`、緊急決済は `EXECUTION_OPEN`、約定後の決済は `POST_FILL_ADMISSION`）。常に `ADMISSION` を刻むと、保護決済で「要求 rank 10・約定 rank 0」と因果順が逆転し、約定後の決済が rank 12 の評価より前に生まれたように見える |
 | `origin` | 戦略由来は `STRATEGY`、保護到達・緊急決済は `ENGINE`。戦略が `ENGINE` を自己申告する経路は作らない【合意済み】上位 §4.7.15 A |
 | `payload` | `EntryProposal` からは `EntryRequest`、`ManagementRequest(ClosePosition)` からは `CloseRequest` |
 | `evidence_ref` | trace へ保存した根拠記録の参照（第9.2節） |
@@ -437,11 +449,11 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 
 | 検査 | 埋める項目 |
 |---|---|
-| 1（被覆） | `parent_bar`、`expected_interval`（親足の区間）、`observed_interval`（子足の区間の和） |
+| 1（被覆） | `parent_bar`、`expected_interval`（親足の区間）、`child_intervals`（子足の区間を古い順に全件）、`coverage_gaps`（親の区間のうち子足が覆っていない区間）、`coverage_overlaps`（2つ以上の子足が重なった区間）。子足の区間の和は単一の半開区間にならないため、1つの `Interval` に畳まない |
 | 2（価格基準） | `expected_basis`（親の `PriceBasis`）、`observed_basis` |
 | 3（足境界） | `parent_bar`、**`child_bar`**（ずれた子足）、`expected_boundary`（親の境界時刻）、`observed_boundary`（その子足の対応する端の時刻） |
 | 4（利用可能時刻） | `parent_bar`、`child_bar`、`expected_available_at`（親の `available_at`）、`observed_available_at` |
-| 5（存在） | `parent_bar`、`expected_interval`（期待した区間）、`observed_interval`（実際に存在した区間） |
+| 5（存在） | `parent_bar`、`expected_interval`（期待した区間）、`child_intervals`（実際に存在した足の区間）、`coverage_gaps`（存在しなかった区間） |
 
 **不足時は実行不可とし、暗黙に親足の4本値へ落とさない**【合意済み】ADR-0030。検査1〜5 は「下位足が宣言されている場合」にだけ走る。階層が1段だけなら検査は5だけになる。
 
@@ -602,7 +614,7 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | ポリシー | `risk_policy_ref`、`execution_policy_ref`（`entry_delay_bars`・Δ・有効時間を含む）、`cost_model_ref`（`swap_modeled=False`）、`delay_scenario_ref`、`symbol_spec_ref`、`calendar_ref`、`timeframe_def_refs` |
 | 実行の構造 | `BACKTEST_PHASES` のフェーズ集合（D02 §3.3 の要求）、`IdAllocator.snapshot()`（D02 §7.3） |
 | 足内競合 | `resolution_hierarchy`、`UNRESOLVED_SL_PRIORITY` の件数と割合（ADR-0030） |
-| 能力検査 | `DataCapabilityReport` の要約 |
+| 能力検査 | **`DataCapabilityReport` の全体**（`compiled_match`、`IntegrityReport`、`HierarchyCheckResult` の全件、`runnable`、`reason`）。要約に畳まない |
 | 状態 | `RunStatus`、失敗時の `Reason` |
 
 `ConfigDigest` の対象は「識別」を除く上表の**入力とポリシーの群**とする【提案】（D02 §9.2 が「項目は D06」と委ねた範囲）。口座仕様（`AccountSpec`）を入力群に含めるのは、初期残高だけを変えた実行は数量・損益・資産推移がすべて変わるのに、含めないと同じ `ConfigDigest` と `RunId` になり、別の結果が同じ `runs/<run_id>/` を指すためである。`RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`【合意済み】ADR-0006。
@@ -620,6 +632,7 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | `summaries: FinalSummaries \| None` | 末尾3集計（第10.3節）。**`status` が `COMPLETED` のときだけ非 `None`** |
 | `swap_modeled: bool` | 常に `False`（ADR-0029）。D07 がユーザーへの明記に使う |
 | `unresolved_intrabar_count: int` | `UNRESOLVED_SL_PRIORITY` の件数（ADR-0030） |
+| `capability_report: DataCapabilityReport` | 能力検査の全結果。`status` が `FAILED_CAPABILITY` の run では trace 表が空になりうるため、結果 DTO からも直接読めるようにする |
 | `trade_count` / `opportunity_count` | 完了取引数と生成された取引機会の総数（`status` の検証と手計算の照合に使う最小の件数） |
 
 **集計前のレコードは `trace_tables` 経由で渡し、`BacktestResult` の中で集計しない**【提案】。取引機会の終端理由別・評価見送りの診断理由別の集計は D07 の責務であり（第1.2節の行6）、件数に畳んだ値だけを渡すと D07 が集計規則を持てず、集計が両方の文書に割れる。そのため表3（取引機会の遷移）と表2（評価記録）を含む全表のパスを公開する。**不採用**: 必要な表だけを選んで公開する案（D07 が指標を足すたびに D06 の DTO を変えることになる）。
@@ -676,6 +689,7 @@ run 開始前に必須で行い、`DataCapabilityReport` を残す【合意済�
 3. 執行系列が run 区間を覆うことを確認する。
 4. 解像度階層の適合検査（第7.4節の検査1〜5）を行う。
 5. 既知の欠損・無効値・末尾不足があれば**開始前に失敗**させる（`status = FAILED_CAPABILITY`）。検査結果は戦略へ渡さず、欠損付近だけを取引対象から外すこともしない。
+6. `DataCapabilityReport` を**全体のまま** run manifest と `BacktestResult.capability_report` に保存する（第9.3節・第9.4節）。合格・不合格のどちらでも保存し、不合格の個別結果を落とさない。
 
 公開遅延シナリオは元データの欠損とは区別する【合意済み】同節。
 
