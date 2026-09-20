@@ -1,7 +1,7 @@
 # D06: バックテスト基盤の最小縦断設計（`odyssey_fx.backtest`: engine / domain.orders / admission / execution / portfolio / trace）
 
 作成日: 2026-09-21
-状態: **v0.2 ドラフト（承認待ち）**。v0.2（2026-09-21）: 第16節の要決定 Q1〜Q8 を人間が決定し（Q7 のみ選択肢2、他の7件は提示時の推奨案である選択肢1）、本文へ反映した。決定に伴い、**同じ PR で正本を改訂した**: 処理段階の名前に数字を許す規則（D02 §3.3、v1.5）、公開バッチに run 末尾の合図を足す項目（D05 §6.1、v1.1）、保護水準の置き方が不正なときの受付前拒否の理由コード `PROTECTION_INVALID`（上位設計書 §4.7.14 と D02 §8.1、v1.5）。あわせて紙上トレース [T01](T01_paper_trace.md) を書き、そこで洗い出した未記述を本書へ反映した（第17節に一覧）。Q7 の決定（基軸通貨経由の2ホップ換算を許す）から派生した2件と、T01 が見つけた1件を新しい要決定 Q9〜Q11 として第16節に追加した。段階2（最小縦断＝戦略定義→注文→約定→単一評価）と紙上トレース T01 に必要な範囲だけを扱う。検証戦略 A（1時間足の高値突破→後続確認なしの成行→初期損切り＋固定リスクリワード比の利確、上位設計書 §7.1）が動くことを必要十分条件とする。ADR-0016 条件2 のうち「D06 の最小縦断範囲」を本書で充足する。全体計画 §6 D-2 が「骨子だけで実装へ進めない」と列挙した5点（注文状態、フェーズ順、原子性、run_end、trace 型）は、最小縦断の範囲でもすべて本書で確定させる。第16節に要決定の一覧を置く。
+状態: **v0.2 ドラフト（承認待ち）**。v0.2（2026-09-21）: 第16節の要決定 Q1〜Q8 を人間が決定し（Q7 のみ選択肢2、他の7件は提示時の推奨案である選択肢1）、本文へ反映した。決定に伴い、**同じ PR で正本を改訂した**: 処理段階の名前に数字を許す規則（D02 §3.3、v1.5）、公開バッチに run 末尾の合図を足す項目（D05 §6.1、v1.1）、保護水準の置き方が不正なときの受付前拒否の理由コード `PROTECTION_INVALID`（上位設計書 §4.7.14 と D02 §8.1、v1.5）。あわせて紙上トレース [T01](T01_paper_trace.md) を書き、そこで洗い出した未記述を本書へ反映した（第17節に一覧）。Q7 の決定（基軸通貨経由の2ホップ換算を許す）から派生した1件（Q9: 観測時点のずれの上限）と、T01 が見つけた2件（Q10: 参照価格の出どころ、Q11: 候補の始値が run 末尾以降になる注文の扱い）を、新しい要決定として第16節に追加した。段階2（最小縦断＝戦略定義→注文→約定→単一評価）と紙上トレース T01 に必要な範囲だけを扱う。検証戦略 A（1時間足の高値突破→後続確認なしの成行→初期損切り＋固定リスクリワード比の利確、上位設計書 §7.1）が動くことを必要十分条件とする。ADR-0016 条件2 のうち「D06 の最小縦断範囲」を本書で充足する。全体計画 §6 D-2 が「骨子だけで実装へ進めない」と列挙した5点（注文状態、フェーズ順、原子性、run_end、trace 型）は、最小縦断の範囲でもすべて本書で確定させる。第16節に要決定の一覧を置く。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.12・§4.5・§4.7（全節）、[全体計画書](fx_research_platform_overall_plan.md) §5.4・§6 B/C/D/E・§7.4・§8.1・§8.2、[D01](D01_architecture_and_dependency_rules.md) §3・§4・§7.2、[D02](D02_common_kernel.md) §3.3・§4・§5.2・§7・§8・§9、[D03](D03_marketdata_and_time.md) §3・§6・§7、[D04](D04_strategy_declarations.md) §1.2・§5・§11、[D05](D05_strategy_runtime.md) §1.2・§6.1・§7・§8・§11・§12、ADR-0006（決定論的 ID）、ADR-0012（Decimal / float 境界）、ADR-0015（初版の縦断実行範囲）、ADR-0016（実装開始条件）、ADR-0027（成果物は Parquet 表＋JSON マニフェスト）、ADR-0029（swap 未計上）、ADR-0030（足内競合解決契約）、ADR-0031・ADR-0032・ADR-0033（取引機会の語彙）
 対応段階: 段階2で実装。
 
@@ -97,7 +97,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `BACKTEST_PHASES` | `engine.phases` | 定数（`PhaseSet`） | 第4.1節の15フェーズ（rank 0〜14） | §4.1 |
 | `RunConfig` | `domain.policies` | レコード | `run_interval: Interval` / `snapshot_ref: SnapshotRef` / `compiled_ref: CompiledStrategyRef` / `account: AccountSpec` / `risk_policy_ref: PolicyRef` / `execution_policy_ref: PolicyRef` / `cost_model_ref: PolicyRef` / `conversion_policy_ref: PolicyRef` / `delay_scenario_ref: PolicyRef` / `execution_series: SeriesId` / `seed: int` | §4.2・§8.5・§9.3 |
 | `AccountSpec` | `domain.account` | レコード | `account_id: AccountId` / `currency: CurrencyCode` / `initial_balance: Money` | §8.1 |
-| `RiskPolicy` | `domain.policies` | レコード | `trial_risk_rate: Decimal` / `account_risk_cap: Decimal` / `cost_budget: Money` | §6.4 |
+| `RiskPolicy` | `domain.policies` | レコード | `trial_risk_rate: Decimal` / `account_risk_cap: Decimal`（費用予算 `C(Q)` は数量に比例するため `CostModel` から計算する。§7.6） | §6.4 |
 | `ExecutionPolicy` | `domain.policies` | レコード | `entry_delay_bars: int` / `adverse_fill_limits: Mapping[Symbol, PriceOffset]` / `entry_valid_for: timedelta` / `close_valid_for: timedelta` / `resolution_hierarchy: ResolutionHierarchy` / `reference_quote_source: ReferenceQuoteSource` | §7.1・§7.1.1・§7.4・§6.4 |
 | `ReferenceQuoteSource` | `domain.policies` | enum | `EXECUTION_SERIES_LAST_CLOSE`（段階2の値。Q10 が未決の間の仮置き） | §6.4・Q10 |
 | `ConversionPolicy` | `domain.policies` | レコード | `pivot_currency: CurrencyCode` / `max_observation_skew: timedelta` | §8.5・Q7・Q9 |
@@ -131,7 +131,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `ReservationState` | `domain.reservations` | レコード | `reservation_id: ReservationId` / `status: ReservationStatus` / `last_event_id: EventId` / `last_processed_at: ProcessingPoint` | §6.5 |
 | `ExecutionTime` | `domain.fills` | union | `ExactExecutionTime(time: UtcTime)` / `BarExecutionInterval(bar_key: BarKey, interval: Interval)` | §7.3 |
 | `CostEntry` | `domain.fills` | レコード | `kind: CostKind` / `native: Money` / `account: Money` / `conversion: ConversionRate` | §7.6 |
-| `CostKind` | `domain.fills` | enum | `COMMISSION` / `SLIPPAGE_IN_PRICE`（価格反映済みの記録用。金額は控除しない） | §7.6 |
+| `CostKind` | `domain.fills` | enum | `COMMISSION` / `SLIPPAGE_IN_PRICE` / `SPREAD_IN_PRICE`（後2者は価格反映済みの記録用。金額は控除しない） | §7.6 |
 | `ResolutionMethod` | `execution` | enum | `SINGLE_HIT` / `RESOLVED_BY_CHILD` / `UNRESOLVED_SL_PRIORITY` | §7.4 |
 | `EvidenceKind` | `trace.recorder` | enum | `ORDER_REQUEST` / `ADMISSION` / `FILL` / `PROTECTION_UPDATE` | §9.2 |
 | `MarketObservationRef` | `trace.recorder` | レコード | `snapshot_ref: SnapshotRef` / `series: SeriesId` / `interval: Interval` / `field: MarketDataField`（D04 §5 の市場データ項目） | §9.2 |
@@ -300,7 +300,8 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 | 5 | `PENDING` → `CANCELED` | 実行中のデータ不整合で run が失敗した | 失敗を検出したフェーズ | `DATA_ERROR` | 2 |
 | 6 | `PENDING` → `CANCELED` | 対象建玉が先に閉じた決済注文 | `EXECUTION_OPEN` ／ `EXECUTION_BAR_COMPLETE` | `POSITION_CLOSED` | 2（戦略が決済要求を出したときだけ） |
 
-- **遷移3（期限切れ）は、段階2の決定値の下では発生しない**【提案】。受付時に「期限内に候補の始値があること」を検査して候補を固定し（第5.3節）、候補足が実際に来なければ実行失敗（`DATA_ERROR`）として遷移5になるため、期限が先に到達する経路が残らない。遷移を実装しない意味ではなく、**段階2の意味論テストは期限切れを人工の実行ポリシー（候補の始値より短い有効時間、または `entry_delay_bars=1` と短い有効時間の組）で起こす**という意味である。これを書かずに「検証戦略 A では通常発生しない」とだけ書くと、テストが書けない遷移が表に残る。実運用の設定で期限切れが日常的に起きるのは、指値・週末持ち越しを入れる段階6（第12節）である。
+- **遷移3（期限切れ）は、段階2ではどの実行ポリシーの設定でも発生しない**【提案】。受付時に「期限内に候補の始値があること」を検査したうえで候補を固定するため（第5.3節）、受付が成立した時点で `open_time < expires_at` が成り立っている。候補の始値の時刻には必ず判断時点があり（D03 §7.1 の `ExecutionOpen`）、その時点では rank 2 の判定 `expires_at <= T` が成り立たないまま rank 11 で約定する。候補足が実際には無ければ実行失敗（`DATA_ERROR`、遷移5）になる。有効時間を短くしても、候補が期限外になって**受付前拒否**（`NO_CANDIDATE`）になるだけで、注文が作られないため期限切れも起きない（[T01](T01_paper_trace.md) 経路6 の表）。
+  - したがって**段階2の意味論テストは、受付を経由せずに `AcceptedOrder` を直接組み立てて状態機械だけを検証する単体テスト**として書く。実行の中で期限切れが起きるようになるのは、価格条件を待つ注文（指値・逆指値）を入れる段階6（第12節）である。「検証戦略 A では通常発生しない」とだけ書くと、どう検証すればよいか分からない遷移が表に残る。
 - **遷移4（末尾の取消）が起きるのは、約定後の受付（rank 13）で受け付けた決済注文の候補の始値が run_end と一致した場合だけ**である【提案】。理由と、候補が run_end 以降になる注文を受け付けるかどうか（第16節 Q11）は第5.3節に書く。
 - 現在状態は `AcceptedOrder` を書き換えず、`OrderEvent` の列から `OrderState` へ投影する【合意済み】上位 §4.7.15 B。
 - 終端状態からの遷移は表に無い。終端済みの注文への遷移要求は `KernelValueError` で拒否する【提案】（D05 §7.2 の取引機会と同じ扱いに揃える）。
@@ -397,9 +398,9 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 
 1. 受付判断時の `balance` を読む。`B <= 0` または口座状態を検証できなければ拒否（`RISK`）。
 2. `trial_budget = B × 0.02`、`account_remaining = max(0, B × 0.20 − U)`、`admission_budget = min(...)`。`U` は HELD 予約額と未解放の建玉割当額の合計（`TRANSFERRED` の予約は加算しない）。
-3. 参照価格を固定する。買いは ask、売りは bid。初版データは bid のみのため、ask は `SpreadModel` から導き、`ReferenceQuote.derived_from_spread=True` を立てる【合意済み】上位 §4.7.9 C。**どの足から bid を取るかは `ExecutionPolicy.reference_quote_source` が決め、段階2は `EXECUTION_SERIES_LAST_CLOSE`（執行系列の、判断時点で利用可能な最新の確定足の終値）とする**【提案】＋【要決定】（Q10）。上位 §4.7.9 B は「利用可能な観測または明示した発注判断時の参照価格を使う」とだけ定めており、系列と項目を特定していなかった（[T01](T01_paper_trace.md) 経路1 で判明）。執行系列を採るのは、約定の判定に使う価格と同じ系列から参照価格を取れば、参照価格と約定価格の差（約定ずれ）が系列差を含まなくなるためである。`ReferenceQuote.source_bar` にその足の `BarKey`、`observed_at` にその足の `available_at` を入れる。取れなければ `DATA_ERROR` で拒否する（手順3より前の拒否として `RiskAssessment` を作らない）。**不採用**: 戦略が判断に使った評価系列の終値を使う案（評価系列と執行系列の粒度が違うと、約定ずれに系列差が混ざる）、判断時点の執行足の始値を使う案（rank 11 はまだ処理していないため先読みになる）。
+3. 参照価格を固定する。買いは ask、売りは bid。初版データは bid のみのため、ask は `SpreadModel` から導き、`ReferenceQuote.derived_from_spread=True` を立てる【合意済み】上位 §4.7.9 C。**どの足から bid を取るかは `ExecutionPolicy.reference_quote_source` が決め、段階2は `EXECUTION_SERIES_LAST_CLOSE`（執行系列の、判断時点で利用可能な最新の確定足の終値）とする**【提案】＋【要決定】（Q10）。上位 §4.7.9 B は「利用可能な観測または明示した発注判断時の参照価格を使う」とだけ定めており、系列と項目を特定していなかった（[T01](T01_paper_trace.md) 経路1 で判明）。執行系列を採るのは、約定の判定に使う価格と同じ系列から参照価格を取れば、参照価格と約定価格の差（約定ずれ）が系列差を含まなくなるためである。`ReferenceQuote.source_bar` にその足の `BarKey`、`observed_at` にその足の `available_at` を入れる。取れなければ `DATA_ERROR` で拒否する（手順3より前の拒否として `RiskAssessment` を作らない）。**参照価格に鮮度の上限は置かない**【提案】（段階2の仮置き）。執行系列が遅れて古い足が参照価格になった場合は、手順4 の保護水準の妥当性検査か第7.1節の約定ずれの判定のどちらかで顕在化し、そのどちらも記録に残るためである（[T01](T01_paper_trace.md) 経路4）。上限を置くかどうかは、複数系列を混ぜる段階3 で改めて判断する。**不採用**: 戦略が判断に使った評価系列の終値を使う案（評価系列と執行系列の粒度が違うと、約定ずれに系列差が混ざる）、判断時点の執行足の始値を使う案（rank 11 はまだ処理していないため先読みになる）。
 4. 保護水準の妥当性を検査する。買いの損切りは判断時の bid より下、売りは ask より上。違反・不正数値・価格情報の不足は `PROTECTION_INVALID` で拒否する（Q6 決定、選択肢1）。ここでいう判断時の bid / ask は手順3で固定した `ReferenceQuote` と同じ足から取り、買いの検査には bid（売却側）、売りの検査には ask（購入側）を使う。
-5. 損切りを価格刻みで丸める（第6.5節）。`P_limit = P_ref + d × Δ`、`R(Q) = d × (P_limit − S) × Q × X + C(Q)`。`d × (P_limit − S) > 0` を要求する。
+5. 損切りを価格刻みで丸める（第6.5節）。`P_limit = P_ref + d × Δ`、`R(Q) = d × (P_limit − S) × Q × X + C(Q)`。`d × (P_limit − S) > 0` を要求する。`C(Q)` は `CostModel` から計算した数量比例の費用予算である（第7.6節）。
 6. `R(Q) <= admission_budget` を満たす最大の数量を数量刻みで**切り下げ**て求める。最小数量未満なら拒否（`RISK`）。切り上げない。
 7. 丸め後の数量で `R(Q)` を再計算し、口座制約（総量・数量上限）を再検査する。
 8. すべての段の入力と結果を `RiskAssessment` に残す。**手順1〜8 はエントリー要求にだけ適用する**【提案】。決済要求は新規リスク予算の審査対象ではなく（上位 §4.7.15 A）、参照価格・丸め前後の損切り・予約額といった `RiskAssessment` の必須項目がそもそも存在しない。したがって決済の受付では `AttemptAccepted.assessment_ref` を `None` とし、代わりに対象建玉の存否・数量・競合・期限・執行条件を検査する【合意済み】同節。この検査の結果は `AttemptRejected.reason` と表15 の根拠記録に残す。**不採用**: 決済用に空の `RiskAssessment` を作る案（架空の参照価格と予約額を記録することになる）、受付結果をエントリー用と決済用の2つの union 要素に分ける案（受付済み注文の側が既に `AcceptedEntryTerms` / `AcceptedCloseTerms` で目的を区別しており、試行結果まで分けると区別が2か所になる）。`assessment_id` は `IdAllocator.next(EvidenceId)` で採番し、`RiskAssessmentRef` はこの値だけを持つ（参照と実体で識別子を二重に持たない）。`attempt_id` を `RiskAssessment` 自身にも持たせるのは、拒否された試行でも審査の記録から試行へ戻れるようにするためである。`checks` には各検査の名前・上限・観測値を `RiskCheckResult` で入れる。D02 §8.2 の `RiskRejectionDetail` は `limit` と `observed` の型一致を要求するため、同じ組で作る。
@@ -535,7 +536,8 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 ### 7.6 費用モデル【提案】
 
 - `CostModel` は手数料・slippage・spread だけを扱い、**swap / rollover は計上しない**【合意済み】ADR-0029。`swap_modeled` は段階2で常に `False` とし、`BacktestResult` と run manifest に記録して、未計上であることが結果から読めるようにする。政策金利差による近似も行わない。
-- 価格に反映済みの費用（slippage・spread）を金額として二重計上しない【合意済み】全体計画 §5.4.3。記録のために `CostKind.SLIPPAGE_IN_PRICE` の `CostEntry` を残すが、`amount` は balance に反映させない参考値であることを `CostEntry` の区分で表す。
+- 価格に反映済みの費用（slippage・spread）を金額として二重計上しない【合意済み】全体計画 §5.4.3。記録のために `CostEntry` を残すが、`amount` は balance に反映させない参考値であることを `CostEntry` の区分で表す。**区分は執行モデルの滑り（`SLIPPAGE_IN_PRICE`）と提示価格の幅（`SPREAD_IN_PRICE`）に分ける**【提案】。両方を1つの区分に畳むと、D07 が「執行モデルを変えたときに動く費用」と「データの提示価格に由来する費用」を分けて集計できない（[T01](T01_paper_trace.md) 経路8 で判明）。bid のみの系列では、買い側の約定にだけ `SPREAD_IN_PRICE` が立つ。
+- **費用予算 `C(Q)` は `CostModel` から計算する**【提案】。`C(Q) = commission_per_unit × Q × 2 ＋ close_slippage × Q`（往復手数料と損切り決済の slippage）であり、数量に比例する。`RiskPolicy` に固定額の費用予算を持たせない（T01 経路1 の手順6 で、固定額では表せないことが判明した）。計算結果は `RiskAssessment.cost_budget` に `Money` として残す。**不採用**: `RiskPolicy` に固定額の上乗せを置く案（数量に比例する部分と固定額の2か所に費用予算の定義が分かれる）。
 - `CostEntry` は原通貨額・口座通貨計上額・換算根拠を持つ【合意済み】上位 §4.7.15 C。
 - 費用予算 `C(Q)`（予約に含める分）は往復手数料と損切り決済の slippage とし、Δ に含めたエントリーの slippage を重複加算しない【合意済み】上位 §4.7.9 C。
 
@@ -788,7 +790,7 @@ D05 §9 の使用箇所に対して、エンジン側で起きることを時刻
 | 時点 | フェーズ | 起きること |
 |---|---|---|
 | T（1時間足の確定） | `EXECUTION_BAR_COMPLETE` 〜 `LEDGER_UPDATE` | 直前の15分足について、開いている建玉の保護水準の到達判定。段階2の1建玉目より前は対象なし |
-| T | `ORDER_EXPIRY` | `expires_at <= T` の PENDING を EXPIRED。検証戦略 A では通常発生しない |
+| T | `ORDER_EXPIRY` | `expires_at <= T` の PENDING を EXPIRED。段階2では発生しない（理由は第5.1節） |
 | T | `PUBLICATION` 〜 `P5_ORDER_INTENT` | 第1回の `step`。取引機会1件の生成（D05 の遷移1）と `EntryProposal` 1件（遷移4） |
 | T | `ADMISSION` | `OrderRequest` を1件組み立て、参照価格を固定し、損切りを丸め、数量を決め、予約を確保して受付。`AdmissionNotice(accepted=True)` を作る |
 | T | `EXECUTION_OPEN` | `[T, T+15m)` の始値で約定。建玉を作り初期の損切りを有効化（`effective_from` はこの足） |
@@ -919,12 +921,15 @@ Q1・Q2・Q6 の決定に伴う改訂は**本 PR で実施済み**である。�
 | 1 | 受付時の参照価格をどの系列・どの足・どの項目から取るかが決まっていない | 実行ポリシーの項目（`reference_quote_source`）にし、段階2は執行系列の最新確定足の終値とした。判断が割れるため Q10 として残した | §6.4 の手順3、§3、§16.2 |
 | 2 | 台帳更新フェーズ（rank 1）の内容が、保護決済を1つの確定単位でまとめる規則（§4.4）と重複していた | rank 1 を「確定後の含み損益の再評価と台帳 snapshot の記録」に限定した | §4.1、§4.2 の手順2 |
 | 3 | 建玉が開いたことを知らせる通知の `opportunity_id` の出どころが書かれていない | 約定した注文の `EntryRequest.opportunity_id` から取ると明記し、その機会が同じ判断時点で終端していても矛盾しない理由を書いた | §4.2 |
-| 4 | 期限切れ（遷移3）と末尾の取消（遷移4）が段階2で起きる条件が書かれていない | 遷移3 は決定値の下では発生せず人工の実行ポリシーでだけ検証すること、遷移4 は約定後の受付で受け付けた決済注文の候補が run 末尾と一致した場合に起きることを明記した | §5.1、§5.3 |
+| 4 | 期限切れ（遷移3）と末尾の取消（遷移4）が段階2で起きる条件が書かれていない | 遷移3 はどの設定でも発生しないこととその原因・テストの書き方を明記し、遷移4 は約定後の受付で受け付けた決済注文の候補が run 末尾と一致した場合に起きることを明記した | §5.1、§5.3 |
 | 5 | 週末持ち越し禁止と「期限内に候補なし」が同時に成立したときの代表理由が無い | 受付前拒否の代表理由の順位表を置いた（`RUN_END` → `CARRY_NOT_ALLOWED` → `NO_CANDIDATE` → `PROTECTION_INVALID` → `RISK`） | §5.2、§13 の7 |
 | 6 | 候補の始値が run 末尾以降になる注文の扱いが未決（上位設計書 §4.7.13 F が「詳細設計対象」としたまま） | 受け付けて末尾で取り消す案を本文に書き、Q11 として残した | §5.3、§16.2 |
 | 7 | エンジンが生成する決済要求の `valid_for` に何を入れるかが書かれていない | `close_valid_for` をそのまま入れると明記した | §7.3 |
 | 8 | 利確水準の検査に失敗した場合と、管理要求が返らなかった場合の建玉の扱いが書かれていない | 前者はその要求だけ適用せず `PROTECTION_INVALID` で記録、後者は利確を持たないまま継続すると明記した | §8.3 |
 | 9 | 銘柄別の実行ポリシー（許容不利約定幅）に対象銘柄が無い場合の扱いが書かれていない | 実行前のデータ能力検査で照合し、不足は `FAILED_CAPABILITY` とした | §7.1.1、§10.5 の手順2a |
 | 10 | run 末尾の3つの処理（注文の取消・機会の終端・最終 snapshot）の順序が書かれていない | 手順5〜7 としてこの順に行うことと、その理由を書いた | §10.1 |
+| 11 | spread の価格反映分を記録する費用区分が無い（執行モデルの滑りと提示価格の幅を分けて集計できない） | 費用区分に `SPREAD_IN_PRICE` を足した | §3、§7.6 |
+| 12 | リスクポリシーの費用予算が固定額（`Money`）で、数量に比例する費用予算 `C(Q)` を表せない | リスクポリシーから固定額の項目を外し、`C(Q)` は費用モデルから計算すると明記した | §3、§6.4 の手順5、§7.6 |
+| 13 | 参照価格に鮮度の上限を置くかどうか（仮置き） | 段階2は置かない。古い参照価格は保護水準の妥当性検査と約定ずれの判定で顕在化し、どちらも記録に残るため。段階3で再判断する | §6.4 の手順3、T01 §5 |
 
 T01 が「本書の範囲では追えない」と記録したもの（検証戦略 B の後続確認・待機、複数建玉の台帳など）は、いずれも第1.2節の第4列または第12節で担当と時期が決まっているものであり、本書 v0.2 では埋めない。
