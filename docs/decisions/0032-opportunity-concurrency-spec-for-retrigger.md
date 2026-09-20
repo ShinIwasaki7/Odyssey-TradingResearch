@@ -34,16 +34,16 @@
 
 `on_order_accepted` に「ある注文が受け付けられたことを理由に他の取引機会を終了する」規則を書いた場合、その取引機会は専用の終端理由 `CLOSED_BY_ORDER_ACCEPTANCE` で終わる。`SUPERSEDED` の意味を受付起因の終了まで広げることはしない。1つにまとめると、判断履歴（trace）で「新しい Trigger に置き換わった機会」と「他の注文が通ったので終わった機会」を集計上区別できなくなるためである。理由コードにも同名の項目を追加する。
 
-**2. 評価要求側の追い越しを `REQUEST_SUPERSEDED` へ改名する**
+**2. 評価要求側の追い越しの改名**
 
-上位設計書 §4.3.14 は、同じ系列の新しい足によって**評価要求**が追い越されることを supersession と呼んで既に確定していた。本 ADR が取引機会の終端を `SUPERSEDED` と定めた結果、同じ語が別の対象を指すことになる。そこで**評価要求側を `REQUEST_SUPERSEDED` へ改名する**。取引機会側の `SUPERSEDED`（本 ADR の原文が指定）は変更しない。改名は語彙のみで、§4.3.14 で確定済みの追い越しの意味・検査時点・`on_superseded` の扱いは変えない。廃止 ADR は起こさず、本 ADR 内に記録する。
+本 ADR が取引機会の終端を `SUPERSEDED` と定めた結果、上位設計書 §4.3.14 が既に確定していた**評価要求**の追い越し（supersession）と同じ語が別の対象を指すことになった。この衝突の解消は独立した決定として [ADR-0033](0033-rename-request-side-supersession.md) に記録する（評価要求側を `REQUEST_SUPERSEDED` へ改名。取引機会側の `SUPERSEDED` は変更しない）。
 
 ## 影響
 
 - `StrategyDefinition`（上位設計書 §4.3.5）に必須フィールド `opportunity_concurrency` を追加する。省略時の既定値を持たせない。
 - 取引機会の終端理由に `SUPERSEDED` と `CLOSED_BY_ORDER_ACCEPTANCE` を追加する。非終端の状態名を含む完全な状態機械は D05 で設計する。`ACTIVE` / `CONFIRMED` は説明用の仮置きであり、本 ADR が確定した語彙ではない。
-- 上位設計書 §4.3.14 の評価要求の追い越しを `REQUEST_SUPERSEDED` へ改名する。確定済み節の語彙変更であり、意味は変えない。
-- 理由コード（上位設計書 §4.7.14）に `SUPERSEDED`、`CLOSED_BY_ORDER_ACCEPTANCE`、`REQUEST_SUPERSEDED` を追加する。
+- 理由コード（上位設計書 §4.7.14）に `SUPERSEDED` と `CLOSED_BY_ORDER_ACCEPTANCE` を追加する。
+- 本 ADR が `SUPERSEDED` を取引機会の終端理由として定めた結果、評価要求側の同名の語との衝突が生じる。その解消は [ADR-0033](0033-rename-request-side-supersession.md) が扱う。
 - 同時到達時の受付順は、上位設計書 §4.7.12 で既に確定している全順序化（`(decision_time, strategy_priority, opportunity_id, attempt_id)`）と `RiskPolicy` の審査に従う。新しい順序規則は導入しない。
 - 受付済み注文を理由に他の機会を終了させる規則は `OpportunityConcurrencySpec` の `on_order_accepted` に明示する。暗黙には終了させない。
 - 同一 `event_id` の再配送除外は、全体計画書 第5.4節で既に合意済みの冪等性検査（`event_id` と処理済み記録を状態更新と同じ確定単位に含める）を取引機会生成にも適用することを意味する。

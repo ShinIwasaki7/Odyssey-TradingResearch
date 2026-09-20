@@ -36,3 +36,4 @@
 | [0030](0030-sl-priority-on-intrabar-sl-tp-conflict.md) | 足内の SL/TP 競合は下位足で再帰的に解決し、観測不能な場合だけ SL 優先 | E-1 |
 | [0031](0031-opportunity-validity-spec-for-waiting-conditions.md) | 確認待ち中の条件は固定／継続要求に明示分類し `OpportunityValiditySpec` を必須にする | E-2 |
 | [0032](0032-opportunity-concurrency-spec-for-retrigger.md) | 再発火は常に新しい Opportunity を生成し `OpportunityConcurrencySpec` を必須にする | E-3 |
+| [0033](0033-rename-request-side-supersession.md) | 評価要求側の追い越しを `REQUEST_SUPERSEDED` へ改名する | E-3 |
