@@ -397,8 +397,10 @@ src/odyssey_fx/
 | 待機（WAIT_FOR_INPUT） | 問いの固定（対象区間・受信済み機会の内容）、有限期限、不足入力到着時のみ再開、現在状態は再開時の `decision_time` で読む | §4.3.14 |
 | 追い越し（supersession、`REQUEST_SUPERSEDED`） | Trigger は失効、確認は対象足を進めて新要求を発行。開始足 ID と期限は維持。取引機会の `SUPERSEDED` とは対象が異なるため語を分ける（2026-09-20 改訂、ADR-0033） | §4.3.14 |
 | 取引機会の管理 | 保持・確認・期限・失効・重複防止。複数の有効な取引機会を同時に保持できること。再発火は常に新しい `opportunity_id` を生成し、内容の上書き（置換）は禁止。確認待ち中の条件再検査は `OpportunityValiditySpec`、複数機会の関係は `OpportunityConcurrencySpec`（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
-| 取引機会の終端理由 | `EXPIRED` / `MARKET_STATE_INVALIDATED`（継続要求条件の不成立、復活なし） / `SUPERSEDED`（新Trigger優先設定） / `CLOSED_BY_ORDER_ACCEPTANCE`（`on_order_accepted` による受付起因の終了） / `CONCURRENCY_LIMIT_REACHED`（同時保持上限に達しており、記録はするが有効にしない。2026-09-20 改訂、ADR-0032 補足3）。確定したのは終端理由であり、非終端の状態名と遷移を含む完全な状態機械は D05 で設計する（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
+| 取引機会の終端理由 | `EXPIRED` / `MARKET_STATE_INVALIDATED`（継続要求条件の不成立、復活なし） / `SUPERSEDED`（新Trigger優先設定） / `CLOSED_BY_ORDER_ACCEPTANCE`（`on_order_accepted` による、**他の**機会の受付起因の終了） / `CONCURRENCY_LIMIT_REACHED`（同時保持上限に達しており、記録はするが有効にしない。2026-09-20 改訂、ADR-0032 補足3） / `ORDER_ATTEMPT_REJECTED`（自身の発注試行が受付前の審査で拒否された） / `FULFILLED_BY_ORDER_ACCEPTANCE`（自身の注文が受け付けられて役目を終えた）（末尾2件は 2026-09-21 改訂、ADR-0032 補足4） | §4.5 |
 | 出力の付番 | `OutputRecord` の共通メタデータを付与し、因果順序を記録 | §4.3.15 |
+
+非終端の状態名と遷移を含む完全な状態機械は、2026-09-21 に D05 §7 で確定した。非終端は `OPEN`（生成され有効）/ `CONFIRMED`（後続確認が成立した中間状態）/ `ORDER_PENDING`（注文要求を渡し受付待ち）の3つ、終端は `TERMINATED` の1つで、区別は上の終端理由が持つ。上位文書 §4.5 の `ACTIVE` / `CONFIRMED` という仮置きは `OPEN` / `CONFIRMED` に置き換えた。
 
 ランタイムは `backtest` のフェーズ P1〜P5（Feature → MarketState → Trigger → ExecutionFilter → 注文意図）の中身を担当し、フェーズの順序・P0 の公開・P5 以降の受付/執行は `backtest.engine` が駆動する。
 
@@ -633,7 +635,7 @@ A〜D のどれにも属さない、戦略ランタイムと約定モデルの�
 |---|---|---|---|---|
 | E-1 | 足内の SL/TP 競合 | **決定**: 解像度階層に従い時系列順の下位足で再帰的に解決する（足内競合解決契約）。最小解像度でもなお順序が観測不能な場合だけ `UNRESOLVED` として SL 優先を適用 | 下位足は親足を完全に被覆し価格基準・足境界・利用可能時刻が整合するものだけを使う。解決方法・使用系列・解決した子足・未解決時の裁定を結果に記録。下位足の不足はデータ能力検査で実行可否を決める | [ADR-0030](../decisions/0030-sl-priority-on-intrabar-sl-tp-conflict.md) |
 | E-2 | 確認待ち中の条件の再検査 | **決定**: 固定する条件（`SNAPSHOT_AT_OPPORTUNITY`）と継続成立を要求する条件（`REQUIRE_UNTIL_ORDER_REQUEST`）を `OpportunityValiditySpec` として `StrategyDefinition` に必須指定。暗黙の既定値を設けない | 不成立は `MARKET_STATE_INVALIDATED` で終端し復活させない。欠損は `ValidityBinding` の `MissingInputPolicy` に従い、待機しても期限は延長しない。上位文書 §4.5 | [ADR-0031](../decisions/0031-opportunity-validity-spec-for-waiting-conditions.md) |
-| E-3 | 再発火と複数取引機会 | **決定**: 各発火が固有 `opportunity_id` を持つ不変の取引機会を生成する。内容の上書き（置換）は禁止。関係は `OpportunityConcurrencySpec` として必須指定 | 新しい Trigger を優先する設定でも既存は `SUPERSEDED` で終端し、新規に生成する。受付起因の終了は専用の `CLOSED_BY_ORDER_ACCEPTANCE`、同時保持上限による見送りは専用の `CONCURRENCY_LIMIT_REACHED`（2026-09-20 改訂）。評価要求側の追い越しは `REQUEST_SUPERSEDED` へ改名（ADR-0033）。同一 `event_id` の再配送は冪等性検査で除外。上位文書 §4.5 | [ADR-0032](../decisions/0032-opportunity-concurrency-spec-for-retrigger.md) |
+| E-3 | 再発火と複数取引機会 | **決定**: 各発火が固有 `opportunity_id` を持つ不変の取引機会を生成する。内容の上書き（置換）は禁止。関係は `OpportunityConcurrencySpec` として必須指定 | 新しい Trigger を優先する設定でも既存は `SUPERSEDED` で終端し、新規に生成する。受付起因の終了は専用の `CLOSED_BY_ORDER_ACCEPTANCE`、同時保持上限による見送りは専用の `CONCURRENCY_LIMIT_REACHED`（2026-09-20 改訂）。自身の発注試行の拒否は `ORDER_ATTEMPT_REJECTED`、自身の注文の受付は `FULFILLED_BY_ORDER_ACCEPTANCE`（2026-09-21 改訂、ADR-0032 補足4）。評価要求側の追い越しは `REQUEST_SUPERSEDED` へ改名（ADR-0033）。同一 `event_id` の再配送は冪等性検査で除外。上位文書 §4.5 | [ADR-0032](../decisions/0032-opportunity-concurrency-spec-for-retrigger.md) |
 
 ### パッケージ名（決定済み）
 
@@ -692,7 +694,7 @@ source directory:  src/odyssey_fx/
 - 同時刻の複数起動条件の配送・評価回数、確認待ち状態の管理主体（ランタイム側で一元管理する案）。
 - イベント出力の複数購読の配送規則、COMMAND を加工する部品の可否。
 - 発火時に凍結する値と随時更新する値の具体的な列挙（`Opportunity.reference_values` のスキーマと合わせる）。待機中の条件再検査（ADR-0031）と再発火・複数機会（ADR-0032）は 2026-09-20 に確定済みで、D05 では `OpportunityValiditySpec` / `OpportunityConcurrencySpec` の型と再検査の起動点（確認評価時・`OrderRequest` 生成直前）、Trigger 部品の再武装規則を定める。
-- 取引機会の完全な状態機械。終端理由（ADR-0031・ADR-0032）は確定済みだが、非終端の状態名と遷移は未確定。少なくとも次を決める: 後続確認が成立した状態は終端か中間か、リスク審査で受付を拒否された後の状態、元の取引機会自身の注文が受け付けられた後の状態。上位文書 §4.5 の `ACTIVE` / `CONFIRMED` は説明用の仮置きであり正式な語彙ではない。
+- 取引機会の完全な状態機械（2026-09-21 確定、D05 §7）。非終端は `OPEN` / `CONFIRMED` / `ORDER_PENDING`、終端は `TERMINATED` の1つで、区別は終端理由が持つ。未解決だった3点も決着した: 後続確認が成立した状態は**中間**、受付前の審査で拒否された機会は `ORDER_ATTEMPT_REJECTED` で**終端**、自身の注文が受け付けられた機会は `FULFILLED_BY_ORDER_ACCEPTANCE` で**終端**。
 - Feature の鮮度伝播、複数系列 Feature の鮮度。
 - 追い越しの既定（Feature / MarketState）、複数入力の同時保留、期限切れの優先順位。
 - 再審査設定の型・配置・回数上限（初版は未実装として拒否）。
@@ -748,7 +750,7 @@ source directory:  src/odyssey_fx/
 | D02 | [共通カーネル型設計](D02_common_kernel.md)（承認 2026-09-20） | 第5.1節・第7.1節 | D01、B-4 | 段階0 |
 | D03 | [市場データ・時刻基盤設計](D03_marketdata_and_time.md)（承認 2026-09-20） | 第5.2節・第7.2節。受入れ手順と検査仕様、封印分離 | D02、C-1〜C-4 | 段階0〜1 |
 | D04 | [戦略宣言モデル詳細設計](D04_strategy_declarations.md)（承認 2026-09-20） | 第5.3.1節・第7.3節前半。補助型全フィールド、宣言から導かれるコンパイル時検査の一覧、設定ファイル表現 | D02、D03（系列定義） | 段階0 |
-| D05 | 戦略ランタイム・カタログ・コンパイラ設計 | 第5.3.2〜5.3.5節・第7.3節後半。部品カタログの構成と初版の部品、コンパイラの実装（依存グラフ構築・ハッシュ計算） | D04 | 段階0〜3 |
+| D05 | [戦略ランタイム・カタログ・コンパイラ設計](D05_strategy_runtime.md)（v1.0 承認 2026-09-21、段階2 の最小ランタイム範囲） | 第5.3.2〜5.3.5節・第7.3節後半。部品カタログの構成と初版の部品、コンパイラの実装（依存グラフ構築・ハッシュ計算）、取引機会の状態機械。待機・追い越し・後続確認は v0.2（段階3前） | D04 | 段階0〜3 |
 | D06 | バックテストエンジン設計 | 第5.4節・第7.4節。フェーズ順序、4型全フィールド、状態機械、理由コード、trace/result 形式 | D02〜D05 | 段階0〜2 |
 | D07 | 単一実行評価設計 | 第5.5.1節・第7.5節前半 | D06 | 段階2〜4 |
 | D08 | テスト戦略 | 第8.4節を具体化。意味論テスト一覧、人工データ生成仕様、golden trace | D06 | 段階1〜 |

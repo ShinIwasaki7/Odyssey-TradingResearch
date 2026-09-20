@@ -1,6 +1,6 @@
 # ADR-0031: 確認待ち中の条件は固定／継続要求に明示分類し、`OpportunityValiditySpec` を必須にする
 
-- 状態: 承認（2026-09-20）
+- 状態: 承認（2026-09-20）。最終改訂 2026-09-21（取引機会の完全な状態機械が D05 §7 で確定したことを「影響」へ反映。決定内容は変えていない）
 - 決定者: ユーザー（リポジトリ所有者）
 - 関連: [上位設計書](../design/fx_research_platform_greenfield_design.md) §4.3.14・§4.3.5・§4.5・§4.7.14、[全体計画書](../design/fx_research_platform_overall_plan.md) 第5.3節・第7.3節（D05）
 
@@ -27,7 +27,7 @@
 ## 影響
 
 - `StrategyDefinition`（上位設計書 §4.3.5）に必須フィールド `opportunity_validity` を追加する。省略時の既定値を持たせない。
-- 取引機会の終端理由に `MARKET_STATE_INVALIDATED` を追加する。復活はしない。非終端の状態名を含む完全な状態機械は D05 で設計する。
+- 取引機会の終端理由に `MARKET_STATE_INVALIDATED` を追加する。復活はしない。非終端の状態名を含む完全な状態機械は D05 §7 が 2026-09-21 に確定した（`OPEN` / `CONFIRMED` / `ORDER_PENDING` と終端 `TERMINATED`）。
 - 理由コード（上位設計書 §4.7.14）に `MARKET_STATE_INVALIDATED` を追加し、条件未成立（`ConfirmationResult` の False）・期限切れ・入力不足と区別する。
 - 再検査単位の入力参照は `ValidityBinding` として持ち、欠損時の動作は既存の `MissingInputPolicy` を再利用する。待機しても機会本来の期限は延長しない。
 - D04（宣言モデル）に `OpportunityValiditySpec` / `ValidityBinding` の型を、D05（ランタイム）に再検査の起動点（確認評価時・`OrderRequest` 生成直前）を定める。
