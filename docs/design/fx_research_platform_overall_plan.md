@@ -291,7 +291,7 @@ src/odyssey_fx/
 ### 4.3 依存規則の機械検査（A-4 決定済み）
 
 - `tests/architecture/` で、第3.3節の表を `import-linter` の契約として記述し CI で検査する。
-- 外部ライブラリ（DataFrame ライブラリ、Parquet、設定パーサ）の import を `adapters` と `app` に限定する契約も含める。Feature 計算は float で行う（B-4）ため、数値計算ライブラリを `strategy.catalog` に許可するかは D04/D05 で決める。
+- 外部ライブラリ（DataFrame ライブラリ、Parquet、設定パーサ）の import を `adapters` と `app` に限定する契約も含める。NumPy は `strategy.catalog` の部品実装内部に限り使用可（ADR-0021、D01 §5.1 の条件付き）。F5b がその境界を機械検査する。D04/D05 で決めるのは「どの部品が実際に NumPy を使うか」であり、許可の可否ではない。
 
 ### 4.4 設定・データ・成果物の配置規則
 
