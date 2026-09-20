@@ -495,7 +495,7 @@ src/odyssey_fx/
 | A-3 | 戦略ランタイムの所属 | `strategy` に置く。部品評価・WAIT・追い越し・機会管理は `strategy`、時刻進行・フェーズ順・注文処理は `backtest` | 責務の切り方は下記 | [ADR-0003](../decisions/0003-strategy-runtime-ownership.md) |
 | A-4 | 依存規則の機械検査 | `import-linter` を CI 必須にする。循環依存・逆依存・adapters 直接参照を検出 | 第4.3節 | [ADR-0004](../decisions/0004-import-linter-in-ci.md) |
 | A-5 | レイアウトとパッケージ名 | `src/` レイアウト。配布名 `odyssey-trading-research`、import 名 `odyssey_fx`、ソースは `src/odyssey_fx/` | 下記「パッケージ名」 | [ADR-0005](../decisions/0005-src-layout-and-package-name.md) |
-| A-6 | ID 生成規則 | 決定論的 ID。UUID4 は使わない | 規則は下記 | [ADR-0006](../decisions/0006-deterministic-ids.md) |
+| A-6 | ID 生成規則 | 決定論的 ID。UUID4 は使わない。RunId は `ConfigDigest`＋`CodeDigest`＋`LockDigest`（2026-09-20 改訂） | 規則は下記 | [ADR-0006](../decisions/0006-deterministic-ids.md) |
 | A-7 | エンジン内部方式 | 単一スレッドのイベント駆動参照実装を先に作る。決定論的な優先キューで処理し、非同期メッセージ基盤は使わない | 高速化版は参照実装との同値性検証を条件とする | [ADR-0007](../decisions/0007-event-driven-reference-engine.md) |
 | A-8 | 部品実装の形 | 純粋関数＋明示状態。部品クラス内部に可変状態を隠さない | 形式は下記 | [ADR-0008](../decisions/0008-pure-function-components.md) |
 
@@ -516,13 +516,14 @@ backtest
   リスク審査・受付・約定・台帳更新を行う
 ```
 
-**A-6 の ID 規則**
+**A-6 の ID 規則**（2026-09-20 改訂、ADR-0006）
 
-- `RunId`: 解決済み run 設定・snapshot・戦略・ポリシー・seed の正規化内容から作るダイジェスト。
-- run 内の各 ID: `RunId` ＋ 種別 ＋ 決定論的連番。
-- 内容ハッシュだけをイベント ID にしない。同じ内容の異なるイベントを区別できなくなるため。
-- 再配送される同一通知は、最初に発行された同じ `EventId` を使う。
-- 再実行そのものの管理が必要なら、論理的な `RunId` とは別に `RunAttemptId` を持つ。
+- `ConfigDigest`: 解決済み run 設定（snapshot・戦略・ポリシー・区間・遅延シナリオ・seed）の正規化内容のダイジェスト。設定だけの同一性を表す。
+- `RunId = digest(ConfigDigest, CodeDigest, LockDigest)`。`CodeDigest` は実行したソースコードの内容、`LockDigest` は `uv.lock` の内容。
+- git commit・dirty 状態・Python バージョン等は manifest に記録する（識別子には含めない）。
+- 同一の完全入力による再実行は同じ `RunId`。既存成果物は無条件に上書きせず、置換は明示的な指示でのみ行う。
+- run 内の各 ID: `RunId` ＋ 種別 ＋ 決定論的連番。内容ハッシュだけをイベント ID にしない。再配送される同一通知は同じ `EventId`。
+- `RunAttemptId` は、再実行履歴の保存が必要になった場合のみ追加する（初版では持たない）。
 
 **A-8 の部品実装の形式**
 
