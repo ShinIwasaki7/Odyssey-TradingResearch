@@ -37,6 +37,8 @@ SUBPACKAGES = [
     "odyssey_fx.app",
     "odyssey_fx.app.config",
     "odyssey_fx.app.cli",
+    # 構成ルート（D01 §7.2）。F5c の source_modules が参照するため段階−1 から存在する。
+    "odyssey_fx.app.composition",
 ]
 
 
