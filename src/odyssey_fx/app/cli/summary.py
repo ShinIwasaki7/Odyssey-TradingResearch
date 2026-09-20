@@ -47,6 +47,18 @@ def partition_lines(manifest: SnapshotManifest) -> list[str]:
     return lines
 
 
+def severity_totals(report: IntegrityReport) -> dict[str, int]:
+    """重大度ごとの合計件数（画面と記録で同じ数を使うため）。
+
+    重大な違反（`ERROR`）が1件でもあれば受入れは失敗しているので、ここに出る `ERROR` は
+    常に 0 である。0 であることを明示するために数えて出す（D03 §4 の 4）。
+    """
+    totals = {severity.value: 0 for severity in Severity}
+    for result in report.results:
+        totals[result.severity.value] += 1
+    return totals
+
+
 def findings_lines(report: IntegrityReport) -> list[str]:
     """検査結果の種別ごとの件数を系列ごとに並べる（D03 §3.9）。
 
@@ -63,16 +75,11 @@ def findings_lines(report: IntegrityReport) -> list[str]:
     lines = ["完全性検査（系列 × 種別の件数）:"]
     for (series, severity, kind), count in sorted(counts.items()):
         lines.append(f"  {series}  {severity:<5} {kind}: {count} 件")
-    lines.append(f"  合計: {len(report.results)} 件（重大な違反 {len(report.errors)} 件）")
+
+    totals = severity_totals(report)
+    breakdown = "、".join(f"{name} {totals[name]} 件" for name in ("ERROR", "WARN", "INFO"))
+    lines.append(f"  合計: {len(report.results)} 件（{breakdown}）")
     return lines
-
-
-def severity_totals(report: IntegrityReport) -> dict[str, int]:
-    """重大度ごとの合計件数（画面と PR 本文で同じ数を使うため）。"""
-    totals = {severity.value: 0 for severity in Severity}
-    for result in report.results:
-        totals[result.severity.value] += 1
-    return totals
 
 
 def merged_warning_spans(report: IntegrityReport, kind_value: str) -> int:
