@@ -1,7 +1,7 @@
 # D02: 共通カーネル型設計（`odyssey_fx.common`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。v1.3（2026-09-20）: 理由コードの表（第8.1節）が上位設計書 §4.7.14 の写しであることを明記し、ADR-0031・ADR-0032・ADR-0033 で §4.7.14 に加わった取引機会の終端理由と評価要求の追い越し（`MARKET_STATE_INVALIDATED` / `SUPERSEDED` / `CLOSED_BY_ORDER_ACCEPTANCE` / `CONCURRENCY_LIMIT_REACHED` / `REQUEST_SUPERSEDED`）を表へ反映した（D04 の PR #14）。`common` の列挙への追加は段階2 の実装で行う。v1.4（2026-09-21）: D05 の要決定 Q3・Q4 に対する人間の決定（PR #15）により、取引機会の終端理由に `ORDER_ATTEMPT_REJECTED`（自身の発注試行が受付前の審査で拒否された）と `FULFILLED_BY_ORDER_ACCEPTANCE`（自身の注文が受け付けられて役目を終えた）が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した（ADR-0032 補足4）。`common` の列挙への追加は引き続き段階2 の実装で行う。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。v1.3（2026-09-20）: 理由コードの表（第8.1節）が上位設計書 §4.7.14 の写しであることを明記し、ADR-0031・ADR-0032・ADR-0033 で §4.7.14 に加わった取引機会の終端理由と評価要求の追い越し（`MARKET_STATE_INVALIDATED` / `SUPERSEDED` / `CLOSED_BY_ORDER_ACCEPTANCE` / `CONCURRENCY_LIMIT_REACHED` / `REQUEST_SUPERSEDED`）を表へ反映した（D04 の PR #14）。`common` の列挙への追加は段階2 の実装で行う。v1.4（2026-09-21）: D05 の要決定 Q3・Q4 に対する人間の決定（PR #15）により、取引機会の終端理由に `ORDER_ATTEMPT_REJECTED`（自身の発注試行が受付前の審査で拒否された）と `FULFILLED_BY_ORDER_ACCEPTANCE`（自身の注文が受け付けられて役目を終えた）が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した（ADR-0032 補足4）。`common` の列挙への追加は引き続き段階2 の実装で行う。v1.5（2026-09-21）: D06 の要決定 Q1・Q6 に対する人間の決定（PR #16）を反映した。Q1（選択肢1）により、処理段階の名前の規則（第3.3節の `PhaseRank.name`）を `^[A-Z_]+$` から `^[A-Z][A-Z0-9_]*$` へ緩め、上位設計書 §4.3.12 の P0〜P5 の呼び方をそのままフェーズ名に使えるようにした。Q6（選択肢1）により、保護水準の置き方が不正であることによる受付前拒否の理由コード `PROTECTION_INVALID` が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15「共通の値型と参照」、§4.3.15、§4.7.14、[D01](D01_architecture_and_dependency_rules.md) §1・§2・§5・§7.2、ADR-0006（決定論的 ID）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）
 対応段階: 段階1で実装。以降の全パッケージが依存する。
 
@@ -71,9 +71,10 @@ D01 §7.2 の7モジュールに、ダイジェスト用の `canonical.py` と�
 
 | 型 | フィールド | 不変条件 |
 |---|---|---|
-| `PhaseRank` | `rank: int`、`name: str` | `rank >= 0`。`name` は `^[A-Z_]+$` |
+| `PhaseRank` | `rank: int`、`name: str` | `rank >= 0`。`name` は `^[A-Z][A-Z0-9_]*$`（v1.5。先頭は英大文字、2文字目以降は英大文字・数字・下線） |
 | `ProcessingPoint` | `time: UtcTime`、`phase: PhaseRank`、`sequence: int` | `sequence >= 0` |
 
+- **名前に数字を許す（v1.5、2026-09-21 の D06 の要決定 Q1 の決定）**: 正規表現を `^[A-Z_]+$` から `^[A-Z][A-Z0-9_]*$` へ緩めた。上位設計書 §4.3.12 が確定した P0〜P5 という段階の呼び方を、D05 §6.1 と D06 §4.1 が `P1_FEATURE`〜`P5_ORDER_INTENT` というフェーズ名でそのまま使うためである。改訂前の規則では数字を含む名前を構築時に拒否してしまい、ランタイムが `PhaseSet.by_name("P1_FEATURE")` でフェーズ順位を引けなかった。先頭を英大文字に限るのは、数字始まりの名前を許さないためである。
 - 全順序は `(time, phase.rank, sequence)`。同じ `time` でも phase と sequence で区別する。
 - **一意性**: run 内で使うフェーズの集合は `backtest.engine` が固定の tuple として定義し、`rank` と `name` はそれぞれ集合内で一意（rank ↔ name は全単射）。同じ `rank` に異なる `name`、同じ `name` に異なる `rank`、および同一要素の重複を含む集合は構築時に拒否する。`ProcessingPoint` の全順序はこの一意性を前提とし、フェーズ集合の定義は run manifest に記録する。
 - **`PhaseSet`（v1.2、確定）**: 上記の一意性検査は `common` の `PhaseSet(phases: tuple[PhaseRank, ...])` が構築時に行う（各パッケージでの再実装を防ぐ）。`PhaseSet` は内部のフェーズ列を **`rank` の昇順に正規化して保持**し、入力の並び順によって同値性・ハッシュ・正規化エンコード（第9.3節）・manifest の記録内容が変わらない。`by_name(name)` / `by_rank(rank)` で引け、未登録は `KernelValueError`。空集合は拒否する。具体的なフェーズ一覧の定義は引き続き `backtest.engine`（D06）が行い、`common` は構造と検査だけを持つ。
@@ -237,8 +238,11 @@ IdAllocator(run_id: RunId)
 | `ORDER_ATTEMPT_REJECTED` | 自身の発注試行が受付前の審査で拒否されたことによる取引機会の終端（v1.4、ADR-0032 補足4） |
 | `FULFILLED_BY_ORDER_ACCEPTANCE` | 自身の注文が受け付けられたことによる取引機会の終端（v1.4、ADR-0032 補足4）。**他の**機会が終わる `CLOSED_BY_ORDER_ACCEPTANCE` と混同しない |
 | `REQUEST_SUPERSEDED` | 同じ系列の新しい足による評価要求の追い越し（v1.3、ADR-0033 で改名。取引機会の `SUPERSEDED` と混同しない） |
+| `PROTECTION_INVALID` | 保護水準の置き方が宣言として不正であることによる受付前拒否（v1.5、D06 の Q6 決定）。買いの損切りが判断時の売却側価格以上、売りの損切りが購入側価格以下、不正数値、必要な価格情報の不足（上位設計書 §4.7.9 B）。口座のリスク上限の違反である `RISK` とは原因も対処も異なる |
 
 `MARKET_STATE_INVALIDATED` から `REQUEST_SUPERSEDED` までの7件は、2026-09-20 の ADR-0031・ADR-0032・ADR-0033 と 2026-09-21 の ADR-0032 補足4 で上位設計書 §4.7.14 に加わった語彙であり、v1.3 と v1.4 で本節の表へ反映した。取引機会の終端理由の意味の正本は上位設計書 §4.5、評価要求の追い越しの正本は §4.3.14 である。`common` の `ReasonCode` 列挙への追加は、取引機会の状態機械を実装する段階2（D04・D05）で行う。取引機会の状態機械そのもの（非終端の状態名と全遷移）は D05 §7 が正本である。
+
+`PROTECTION_INVALID` は 2026-09-21 の D06 の要決定 Q6 の決定で上位設計書 §4.7.14 に加わった語であり、v1.5 で本節の表へ反映した（同じ PR で §4.7.14 も改訂した）。損切りの向きの違反は戦略の宣言の誤りであり、口座のリスク上限の違反（`RISK`）と集計上分けられるようにするための語である。使用箇所は D06 §5.2・§6.4 の受付前拒否に限る。`common` の `ReasonCode` 列挙への追加は段階2の実装で行う。
 
 語彙の追加（執行理由など）は該当設計文書（D06）で行い、本節の表を更新する。「状態と理由は別フィールド」「許可された組合せの検証は各 domain」（上位設計書 §4.7.14）。
 
