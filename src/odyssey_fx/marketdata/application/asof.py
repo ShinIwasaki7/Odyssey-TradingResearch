@@ -25,6 +25,7 @@ from datetime import timedelta
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import UtcTime
+from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
@@ -103,6 +104,27 @@ def _require_approved(manifest: SnapshotManifest) -> None:
         )
 
 
+def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
+    """未分類の隔離期間の partition を許可集合から締め出す（D03 §6.1）。
+
+    未分類の隔離期間（`QUARANTINED_UNASSIGNED`）は、未観測の確認と別の決定記録（ADR）に
+    よる再分類が行われるまで**いかなる経路でも**読めない。封印期間の解除手続き
+    （holdout gate）も許可を発行しない。呼び出し側が誤って渡した場合に黙って無視すると、
+    「渡したのに読めない」のか「そもそも渡してはいけない」のかが区別できなくなるため、
+    構築時に構造エラーで拒否する。
+    """
+    quarantined = sorted(
+        str(partition_id)
+        for partition_id in allowed_partitions
+        if partition_id.access_class is AccessClass.QUARANTINED_UNASSIGNED
+    )
+    if quarantined:
+        raise HoldoutAccessViolation(
+            f"quarantined partitions may never be granted to a view: {quarantined};"
+            " they stay unreadable until an ADR reclassifies them (D03 §6.1, ADR-0014)"
+        )
+
+
 class _PartitionedBars:
     """許可された partition の足だけを保持する読み取り面（D03 §6.1）。
 
@@ -160,7 +182,11 @@ class _PartitionedBars:
         if not bars:  # pragma: no cover - 空の partition は記録されない
             raise HoldoutAccessViolation(f"no readable bars for {series} (D03 §6.1)")
         first, last = bars[0], bars[-1]
-        if moment < first.bar_start or last.bar_end < moment:
+        # 読める範囲は**半開区間** `[first.bar_start, last.bar_end)` である。上端を含めて
+        # しまうと、読める最後の足の直後に始まる足（＝隣の partition の最初の足）が範囲内と
+        # 見なされ、封印区分の足が期待足になったときに構造エラーではなく「最新足が未到着」
+        # という入力欠損が返ってしまう（D03 §6.1 は構造エラーを要求する）。
+        if moment < first.bar_start or last.bar_end <= moment:
             raise HoldoutAccessViolation(
                 f"{moment} lies outside the readable range of {series}"
                 f" [{first.bar_start}, {last.bar_end}); the surrounding partition was not"
@@ -196,6 +222,7 @@ class AsOfView:
                 raise MarketDataValueError(
                     f"partition {partition_id} is not recorded in the snapshot manifest"
                 )
+        _reject_quarantined(self.allowed_partitions)
 
     # --- 内部 ---------------------------------------------------------------
 
@@ -450,7 +477,13 @@ class ExecutionSeriesView:
             raise MarketDataValueError("ExecutionSeriesView.series must be a SeriesId")
         if not isinstance(self.allowed_partitions, frozenset):
             raise MarketDataValueError("ExecutionSeriesView.allowed_partitions must be a frozenset")
+        for partition_id in self.allowed_partitions:
+            if not isinstance(partition_id, PartitionId):
+                raise MarketDataValueError(
+                    "ExecutionSeriesView.allowed_partitions must contain PartitionId"
+                )
         _require_approved(self.manifest)
+        _reject_quarantined(self.allowed_partitions)
 
     def _bars(self) -> tuple[Bar, ...]:
         return _PartitionedBars(self.partition_bars, self.allowed_partitions).require_series(

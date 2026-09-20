@@ -18,7 +18,12 @@ import pytest
 
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.marketdata.application.asof import AsOfView, BarsWindow, MissingInput
+from odyssey_fx.marketdata.application.asof import (
+    AsOfView,
+    BarsWindow,
+    ExecutionSeriesView,
+    MissingInput,
+)
 from odyssey_fx.marketdata.application.publication import build_publication_log
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
@@ -252,6 +257,103 @@ def test_reading_outside_the_readable_range_is_a_structural_error() -> None:
             UtcTime.parse("2030-01-14T10:00:00Z"),
             UtcTime.parse("2030-01-14T11:00:00Z"),
         )
+
+
+def test_the_bar_right_after_the_readable_range_is_a_structural_error() -> None:
+    """読める範囲は半開区間。上端ちょうどに始まる足は隣の partition のもの（D03 §6.1）。
+
+    研究区分だけを許可したビューで、封印区分の最初の足が期待足になる時刻を問い合わせる。
+    「最新足が未到着」という入力欠損ではなく、分類の境界を越える構造エラーでなければ
+    ならない。入力欠損で返すと、封印区分のデータが「たまたま無い」ように見えてしまう。
+    """
+    # 研究区分の最後の足は 2023-12-31 23:00Z に終わる。その直後に始まる足は封印区分。
+    research_bars = market.make_bars(
+        HOURLY,
+        market.TF_1H,
+        CALENDAR,
+        Interval(
+            start=UtcTime.parse("2023-12-31T20:00:00Z"),
+            end=UtcTime.parse("2023-12-31T23:00:00Z"),
+        ),
+    )
+    assert research_bars[-1].bar_end == UtcTime.parse("2023-12-31T23:00:00Z")
+
+    manifest = _manifest(HOURLY_PARTITION)
+    view = AsOfView(
+        manifest=manifest,
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        schedules={HOURLY: SCHEDULES[HOURLY]},
+        partition_bars={HOURLY_PARTITION: research_bars},
+    )
+    # 00:30Z の判断時刻では、期待足は 23:00–00:00Z（＝許可されていない側の足）。
+    with pytest.raises(HoldoutAccessViolation, match="outside the readable range"):
+        view.latest_available(HOURLY, UtcTime.parse("2024-01-01T00:30:00Z"))
+
+
+def test_a_quarantined_partition_may_never_be_granted_to_a_view() -> None:
+    """未分類の隔離期間はいかなる経路でも許可集合に入らない（D03 §6.1、ADR-0014）。"""
+    quarantined = PartitionId(series=HOURLY, access_class=AccessClass.QUARANTINED_UNASSIGNED)
+    records = (
+        snapshots.partition(HOURLY, AccessClass.RESEARCH_HISTORY),
+        snapshots.partition(HOURLY, AccessClass.QUARANTINED_UNASSIGNED),
+    )
+    manifest = snapshots.approved(
+        series_records=(
+            SeriesManifest(
+                series_id=HOURLY,
+                covered_interval=snapshots.COVERED,
+                bar_count=200,
+                partitions=tuple(record.partition_id for record in records),
+            ),
+        ),
+        partitions=records,
+    )
+    with pytest.raises(HoldoutAccessViolation, match="quarantined partitions"):
+        AsOfView(
+            manifest=manifest,
+            allowed_partitions=frozenset({HOURLY_PARTITION, quarantined}),
+            schedules={HOURLY: SCHEDULES[HOURLY]},
+            partition_bars={HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+        )
+
+
+def test_the_execution_view_also_refuses_a_quarantined_partition() -> None:
+    """執行系列のビューも同じ規則に従う（D03 §6.1・§6.3）。"""
+    quarantined = PartitionId(series=HOURLY, access_class=AccessClass.QUARANTINED_UNASSIGNED)
+    with pytest.raises(HoldoutAccessViolation, match="quarantined partitions"):
+        ExecutionSeriesView(
+            manifest=_manifest(HOURLY_PARTITION),
+            series=HOURLY,
+            allowed_partitions=frozenset({quarantined}),
+            partition_bars={},
+        )
+
+
+def test_a_holdout_partition_may_still_be_granted() -> None:
+    """封印期間は、解除の手続きを通れば許可されうる（拒否されるのは隔離期間だけ）。"""
+    holdout = PartitionId(series=HOURLY, access_class=AccessClass.LEGACY_HOLDOUT)
+    records = (
+        snapshots.partition(HOURLY, AccessClass.RESEARCH_HISTORY),
+        snapshots.partition(HOURLY, AccessClass.LEGACY_HOLDOUT),
+    )
+    manifest = snapshots.approved(
+        series_records=(
+            SeriesManifest(
+                series_id=HOURLY,
+                covered_interval=snapshots.COVERED,
+                bar_count=200,
+                partitions=tuple(record.partition_id for record in records),
+            ),
+        ),
+        partitions=records,
+    )
+    view = AsOfView(
+        manifest=manifest,
+        allowed_partitions=frozenset({HOURLY_PARTITION, holdout}),
+        schedules={HOURLY: SCHEDULES[HOURLY]},
+        partition_bars={HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+    )
+    assert holdout in view.allowed_partitions
 
 
 # --- 承認（D03 §3.7.1 の3・§11）---------------------------------------------
