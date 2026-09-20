@@ -274,7 +274,7 @@ def test_classify_settles_the_snapshot(workspace: Path) -> None:
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
 
     assert _classify(workspace, pending, decisions) == 0
     final = _final_id(workspace)
@@ -283,26 +283,31 @@ def test_classify_settles_the_snapshot(workspace: Path) -> None:
 
 
 def test_the_classification_changes_the_snapshot_id(workspace: Path) -> None:
-    """分類が異なれば別 snapshot である（D03 §3.7.1）。"""
+    """分類が異なれば別 snapshot である（D03 §3.7.1）。
+
+    同じ欠落を「データ欠損」と分類した場合と「休場」と分類した場合で、最終の識別子が
+    変わることを確かめる。休場としての分類にはカレンダーの新版が要る（D03 §3.4・§4 の 9）
+    ので、そちらはカレンダーを変える経路で確定する。
+    """
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
 
-    as_closure = _decisions_file(workspace, store, pending, "CLOSURE")
-    assert _classify(workspace, pending, as_closure) == 0
-    closure_id = _final_id(workspace)
+    as_gap = _decisions_file(workspace, store, pending, "DATA_GAP")
+    assert _classify(workspace, pending, as_gap) == 0
+    gap_id = _final_id(workspace)
 
-    # 同じ原データを受け入れ直し、今度は欠損として分類する。
+    # 同じ原データを受け入れ直し、今度は休場として分類する（カレンダーの版を上げる）。
     assert _accept(workspace) == 0
     pending_again = _pending_id(workspace)
     assert pending_again == pending, "同じ入力なら暫定の識別子は変わらない"
-    as_gap = _decisions_file(workspace, store, pending_again, "DATA_GAP")
-    assert _classify(workspace, pending_again, as_gap) == 0
+    as_closure = _decisions_with_calendar(workspace, store, pending_again, _calendar_v2(workspace))
+    assert _classify_with_calendar(workspace, pending_again, as_closure) == 0
 
     root = workspace / "data/snapshots"
     finals = sorted(path.name for path in root.iterdir() if path.name != "_pending")
     assert len(finals) == 2, "分類が違えば別の snapshot になる"
-    assert closure_id in finals
+    assert gap_id in finals
     # どちらも暫定の識別子とは異なる（分類が識別子の計算対象に入るため）。
     assert pending not in finals
 
@@ -315,7 +320,7 @@ def test_a_settled_snapshot_is_not_readable_before_the_approval(workspace: Path)
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
     assert _classify(workspace, pending, decisions) == 0
 
     with pytest.raises(SnapshotNotApproved):
@@ -327,7 +332,7 @@ def test_the_whole_flow_ends_with_a_readable_snapshot(workspace: Path) -> None:
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
     assert _classify(workspace, pending, decisions) == 0
     final = _final_id(workspace)
     assert _approve(workspace, final) == 0
@@ -350,7 +355,7 @@ def test_the_approval_does_not_change_the_snapshot_id(workspace: Path) -> None:
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
     assert _classify(workspace, pending, decisions) == 0
     final = _final_id(workspace)
 
@@ -370,7 +375,7 @@ def test_a_snapshot_cannot_be_approved_twice(workspace: Path) -> None:
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
     assert _classify(workspace, pending, decisions) == 0
     final = _final_id(workspace)
 
@@ -395,7 +400,7 @@ def _settled(workspace: Path) -> tuple[ParquetSnapshotStore, str]:
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
     assert _classify(workspace, pending, decisions) == 0
     return store, _final_id(workspace)
 
@@ -583,7 +588,7 @@ def test_classify_does_not_overwrite_a_settled_snapshot(workspace: Path) -> None
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
     assert _classify(workspace, pending, decisions) == 0
     final = _final_id(workspace)
     assert _approve(workspace, final) == 0
@@ -745,7 +750,7 @@ def test_a_tampered_provisional_partition_blocks_the_plain_classify(workspace: P
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
 
     _tamper_with_a_provisional_partition(workspace, pending)
 
@@ -758,7 +763,7 @@ def test_a_tampered_provisional_report_blocks_the_plain_classify(workspace: Path
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
 
     _tamper_with_the_provisional_report(workspace, pending)
 
@@ -774,7 +779,7 @@ def test_an_untouched_provisional_snapshot_still_settles(workspace: Path) -> Non
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
-    decisions = _decisions_file(workspace, store, pending, "CLOSURE")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
 
     assert _classify(workspace, pending, decisions) == 0
     assert not _no_final_snapshot(workspace)

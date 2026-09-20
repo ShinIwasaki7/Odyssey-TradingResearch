@@ -222,7 +222,11 @@ class AcceptanceService:
                     target_timeframe_def=target_def,
                     calendar=self.calendar,
                 )
-                generated[target_series] = result.bars
+                # 1本も生成できなかった系列は**記録しない**（構成足がすべて不完全な
+                # とき）。空の系列を入れると、覆う区間も partition も決められず manifest の
+                # 組み立てが壊れる。生成できなかった事実は `findings` が伝える（D03 §5.2）。
+                if result.bars:
+                    generated[target_series] = result.bars
                 findings.extend(result.findings)
         return generated, tuple(findings)
 

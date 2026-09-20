@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import date, time
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.acceptance import (
     FinalizedSnapshot,
@@ -26,19 +28,25 @@ from odyssey_fx.marketdata.application.acceptance import (
     build_pending_snapshot,
     finalize,
     provisional_id,
+    reaccept_with_calendar,
 )
+from odyssey_fx.marketdata.application.aggregation import aggregate
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     ClosureDecision,
     ClosureDecisionKind,
+    ConversionRecord,
 )
+from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -57,12 +65,20 @@ def _build(
     skip_starts: Iterable[UtcTime] = (DROPPED,),
     bars: Sequence[Bar] | None = None,
     aggregated_findings: Sequence[CheckResult] = (),
+    calendar: TradingCalendar | None = None,
+    calendar_version: int | None = None,
+    with_aggregates: bool = False,
 ) -> PendingSnapshot:
-    """暫定 snapshot を組み立てる（テスト用の最小の受入れ）。"""
+    """暫定 snapshot を組み立てる（テスト用の最小の受入れ）。
+
+    `calendar` を渡すとそのカレンダーで検査する。`calendar_version` は変換の記録に載せる
+    版で、カレンダーの版を上げた状態を作るために使う（休場としての分類の試験）。
+    """
+    used = CALENDAR if calendar is None else calendar
     source_bars = (
         tuple(bars)
         if bars is not None
-        else market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=skip_starts)
+        else market.make_bars(HOURLY, market.TF_1H, used, WINDOW, skip_starts=skip_starts)
     )
     raw_file = RawFile(
         path=RAW_FILE.path,
@@ -71,17 +87,59 @@ def _build(
         timeframe=RAW_FILE.timeframe,
         declared_basis=RAW_FILE.declared_basis,
     )
+    conversion = snapshots.CONVERSION
+    if calendar_version is not None:
+        conversion = ConversionRecord(
+            code_version=conversion.code_version,
+            time_convention=conversion.time_convention,
+            aggregation_rule_version=conversion.aggregation_rule_version,
+            calendar_id=conversion.calendar_id,
+            calendar_version=calendar_version,
+        )
+    generated: dict[SeriesId, tuple[Bar, ...]] = {}
+    findings = list(aggregated_findings)
+    if with_aggregates:
+        for target_id, target_def in (
+            ("4h_ny17", market.TF_4H_NY17),
+            ("1d_ny17", market.TF_1D_NY17),
+        ):
+            result = aggregate(
+                source_bars,
+                source_timeframe_def=market.TF_1H,
+                target_series=market.series(timeframe_id=target_id),
+                target_timeframe_def=target_def,
+                calendar=used,
+            )
+            if result.bars:
+                generated[market.series(timeframe_id=target_id)] = result.bars
+            findings.extend(result.findings)
+
     return build_pending_snapshot(
         created_at=created_at,
         raw_files=(raw_file,),
         bars_by_file={raw_file.path: source_bars},
         timeframe_defs=market.TIMEFRAME_DEFS,
-        calendar=CALENDAR,
+        calendar=used,
         boundaries=INITIAL_ACCESS_BOUNDARIES,
         basis_declaration=snapshots.BASIS,
-        conversion=snapshots.CONVERSION,
-        aggregated_findings=aggregated_findings,
+        conversion=conversion,
+        aggregated_bars=generated or None,
+        aggregated_findings=tuple(findings),
     )
+
+
+def _build_with_revised_calendar(created_at: UtcTime) -> PendingSnapshot:
+    """間引いた1時間を休場として宣言した、版 2 のカレンダーで組み立てる。
+
+    ニューヨーク現地 05:00〜06:00 は、この期間（冬時間）の 10:00〜11:00Z にあたる。
+    休場を宣言しているので、その区間の欠落は報告に現れない。
+    """
+    revised = market.calendar(
+        closures=[market.closure(date(2022, 1, 6), time(5, 0), time(6, 0), note="休場")],
+        version=2,
+    )
+    # 間引いた足は休場の宣言で説明が付くので、生成する足はそのままでよい。
+    return _build(created_at, calendar=revised, calendar_version=2)
 
 
 # --- 暫定段階（D03 §3.7.1 の 1）---------------------------------------------
@@ -146,11 +204,60 @@ def test_recording_the_decision_yields_a_different_snapshot_id() -> None:
 
 
 def test_classifying_the_gap_differently_yields_a_different_snapshot_id() -> None:
-    """分類が異なれば別 snapshot である（D03 §3.7.1）。"""
+    """分類が異なれば別 snapshot である（D03 §3.7.1）。
+
+    休場としての分類にはカレンダーの新版が要る（D03 §3.4・§4 の 9）ので、休場側は版を
+    上げた暫定 snapshot に対して確定する。比べたいのは「分類の種別が識別子に効くこと」
+    なので、それ以外の条件は揃える必要がない（そもそも版が違えば識別子も違う）。
+    """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     as_gap = finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
-    as_closure = finalize(pending, (_decision(ClosureDecisionKind.CLOSURE),))
+
+    revised = _build_with_revised_calendar(UtcTime.parse("2026-09-20T09:00:00Z"))
+    as_closure = finalize(
+        revised,
+        (_decision(ClosureDecisionKind.CLOSURE),),
+        original_report=pending.report,
+        original_conversion=pending.manifest.conversion,
+    )
     assert as_gap.snapshot_id != as_closure.snapshot_id
+
+
+def test_a_closure_needs_the_calendar_to_be_revised() -> None:
+    """休場と分類するなら、カレンダーへ追加して版を上げる（D03 §3.4・§4 の 9）。
+
+    版を上げずに休場と記録すると、manifest は「休場」と言い、カレンダーはその足を期待
+    し続ける。矛盾した snapshot になるので確定させない。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    with pytest.raises(MarketDataValueError, match="calendar was not revised"):
+        finalize(pending, (_decision(ClosureDecisionKind.CLOSURE),))
+
+
+def test_a_data_gap_does_not_need_a_calendar_revision() -> None:
+    """データ欠損はカレンダーを変えずに確定できる。
+
+    欠損はカレンダーの規則の問題ではなく、データそのものが無いという事実だからである。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    assert finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),)).snapshot_id
+
+
+def test_a_closure_the_new_calendar_does_not_declare_is_rejected() -> None:
+    """新しい版が休場を宣言していなければ拒否する（版を上げただけでは足りない）。
+
+    版だけ上げて休場の宣言を入れ忘れると、欠落の警告が新しい報告にも残る。それを休場と
+    記録すると、やはり manifest と規則が矛盾する。
+    """
+    # 版だけ上げ、休場は宣言しないカレンダーで組み立てる（欠落はそのまま残る）。
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), calendar_version=2)
+    with pytest.raises(MarketDataValueError, match="still expects bars there"):
+        finalize(
+            pending,
+            (_decision(ClosureDecisionKind.CLOSURE),),
+            original_report=pending.report,
+            original_conversion=snapshots.CONVERSION,
+        )
 
 
 def test_the_final_snapshot_id_ignores_the_acceptance_time() -> None:
@@ -503,3 +610,105 @@ def test_an_approved_snapshot_can_be_opened_for_reading() -> None:
         manifest=approved, directory_name=final.directory_name, report=IntegrityReport()
     )
     assert readable.snapshot_id == final.snapshot_id
+
+
+# --- 生成系列の時間足定義（D03 §4 の 9）-------------------------------------
+
+
+def test_a_changed_generated_timeframe_version_is_rejected() -> None:
+    """**生成系列**（4h_ny17・1d_ny17）の定義の版を変えた設定は拒否する。
+
+    原系列だけを見ていると、上位足の定義を差し替えた設定が検査を通り、整列の違う上位足が
+    黙って作られる。人間が分類の根拠にした snapshot とは別の上位足を持つ snapshot が確定
+    してしまう。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), with_aggregates=True)
+    four_hour_v2 = TimeframeDefinition(
+        ref=TimeframeRef("4h_ny17", 2),
+        nominal_length=market.TF_4H_NY17.nominal_length,
+        alignment=market.TF_4H_NY17.alignment,
+    )
+    with pytest.raises(MarketDataValueError, match="4h_ny17"):
+        reaccept_with_calendar(
+            pending,
+            calendar=market.calendar(version=2),
+            timeframe_defs={**market.TIMEFRAME_DEFS, "4h_ny17": four_hour_v2},
+            boundaries=INITIAL_ACCESS_BOUNDARIES,
+            aggregation_targets=(("1h", "4h_ny17"), ("1h", "1d_ny17")),
+        )
+
+
+def test_a_changed_source_timeframe_version_is_rejected() -> None:
+    """原系列の定義の版を変えた設定も拒否する（従来どおり）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    hourly_v2 = TimeframeDefinition(
+        ref=TimeframeRef("1h", 2),
+        nominal_length=market.TF_1H.nominal_length,
+        alignment=market.TF_1H.alignment,
+    )
+    with pytest.raises(MarketDataValueError, match="1h"):
+        reaccept_with_calendar(
+            pending,
+            calendar=market.calendar(version=2),
+            timeframe_defs={**market.TIMEFRAME_DEFS, "1h": hourly_v2},
+            boundaries=INITIAL_ACCESS_BOUNDARIES,
+            aggregation_targets=(("1h", "4h_ny17"), ("1h", "1d_ny17")),
+        )
+
+
+def test_matching_timeframe_versions_are_accepted() -> None:
+    """版が一致していれば再実行できる（上の2件が空虚でないことの確認）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    again = reaccept_with_calendar(
+        pending,
+        calendar=market.calendar(version=2),
+        timeframe_defs=market.TIMEFRAME_DEFS,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        aggregation_targets=(("1h", "4h_ny17"), ("1h", "1d_ny17")),
+    )
+    assert again.manifest.conversion.calendar_version == 2
+    # 原ファイルの記録は引き継ぐ（読み直していない）。
+    assert again.manifest.sources == pending.manifest.sources
+
+
+# --- 生成できなかった上位足（D03 §5.2）--------------------------------------
+
+
+def test_a_series_with_no_complete_aggregate_is_not_recorded() -> None:
+    """上位足が1本も作れない場合でも受入れは完了し、欠落が報告に載る。
+
+    構成足がすべて不完全な期間（端が切れた範囲など）では、上位足を1本も生成できない。
+    空の系列を manifest に入れると、覆う区間も partition も決められず組み立てが壊れる
+    （以前はここで `IndexError` になっていた）。生成できなかった事実は報告が伝える。
+    """
+    # 4時間足の区間に満たない3本だけを与える（1本も上位足が作れない）。
+    narrow = Interval(
+        start=UtcTime.parse("2022-01-06T10:00:00Z"), end=UtcTime.parse("2022-01-06T13:00:00Z")
+    )
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, narrow)
+    aggregated = aggregate(
+        bars,
+        source_timeframe_def=market.TF_1H,
+        target_series=market.series(timeframe_id="4h_ny17"),
+        target_timeframe_def=market.TF_4H_NY17,
+        calendar=CALENDAR,
+    )
+    assert aggregated.bars == (), "この試験は上位足が作れない状況を前提にしている"
+    assert aggregated.findings, "生成できなかった事実は報告に載る"
+
+    # 本番の経路（カレンダーを変えた再実行）で、生成できない上位足を扱わせる。以前は
+    # 空の系列が manifest へ入り、覆う区間を決める段階で `IndexError` になっていた。
+    source_only = _build(UtcTime.parse("2026-09-20T09:00:00Z"), bars=bars, skip_starts=())
+    pending = reaccept_with_calendar(
+        source_only,
+        calendar=market.calendar(version=2),
+        timeframe_defs=market.TIMEFRAME_DEFS,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        aggregation_targets=(("1h", "4h_ny17"), ("1h", "1d_ny17")),
+    )
+
+    # 1時間足だけが記録され、作れなかった上位足の系列は現れない。
+    recorded = {str(record.series_id) for record in pending.manifest.series}
+    assert recorded == {str(HOURLY)}
+    for record in pending.manifest.partitions:
+        assert record.bar_count > 0, "足数 0 の partition は記録しない"

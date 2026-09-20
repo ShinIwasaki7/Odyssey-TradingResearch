@@ -339,7 +339,12 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
         pending = _pending_from_store(store, pending_directory, manifest, report)
 
     finalized: FinalizedSnapshot = finalize(
-        pending, decisions_file.decisions, original_report=original_report
+        pending,
+        decisions_file.decisions,
+        original_report=original_report,
+        # 暫定段階のカレンダーの版。休場としての分類には版が上がっていることが要る
+        # （D03 §3.4・§4 の 9）。
+        original_conversion=manifest.conversion,
     )
     final_id = str(finalized.snapshot_id)
 
