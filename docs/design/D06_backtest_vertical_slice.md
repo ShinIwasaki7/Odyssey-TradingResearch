@@ -144,7 +144,8 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `LedgerSnapshot` | `portfolio.ledger` | レコード | `at: ProcessingPoint` / `balance: Money` / `equity: Money` / `consumed: Money` / `open_position_ids: tuple[PositionId, ...]` | §8.1・§9.2 |
 | `FinalSummaries` | `trace.result` | レコード | `realized: Money` / `equity_with_mtm: Money` / `hypothetical_closed: Money` / `cost_breakdown: Mapping[CostKind, Money]` | §10.3 |
 | `RunStatus` | `trace.result` | enum | `COMPLETED` / `FAILED_DATA_ERROR` / `FAILED_CAPABILITY` | §9.4・§10.4 |
-| `DataCapabilityReport` | `engine` | レコード | `integrity: IntegrityReport` / `hierarchy_checks: tuple[RiskCheckResult, ...]` / `runnable: bool` / `reason: Reason \| None` | §7.5 |
+| `HierarchyCheckResult` | `execution` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `expected_interval: Interval \| None` / `observed_interval: Interval \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
+| `DataCapabilityReport` | `engine` | レコード | `compiled_match: bool` / `integrity: IntegrityReport` / `hierarchy_checks: tuple[HierarchyCheckResult, ...]` / `runnable: bool` / `reason: Reason \| None` | §7.5・§10.5 |
 | `RunManifest` | `trace.manifest` | レコード | 第9.3節の項目 | §9.3 |
 | `BacktestResult` | `trace.result` | レコード | 第9.4節の項目 | §9.4 |
 | `TraceSink` | `application.ports` | Protocol | `write(table: TraceTable, rows: tuple[object, ...]) -> None` | §9.1 |
@@ -200,11 +201,20 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 2. rank 1: 1 で生じた約定を台帳へ適用する（第8.1節）。
 3. rank 2: `expires_at <= T` の PENDING 注文を EXPIRED にする。
 4. rank 3: `available_at = T` の `Publication` と、`bar_end = T` の `ScheduledBoundary` から `PublicationBatch` を組み立てる（第4.3節）。
-5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。戻り値の `RuntimeStepResult` から `outputs` を `OutputSink` 経由で trace へ、`evaluations` と `transitions` を trace へ、`proposals` と `management_requests` を rank 10 へ渡す。
+5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。戻り値の `RuntimeStepResult` から `outputs` を `OutputSink` 経由で trace へ、`evaluations` と `transitions` を trace へ渡す。**`evaluations` に `Failed` が1件でもあれば、ここで run を止める**（下記）。無ければ `proposals` と `management_requests` を rank 10 へ渡す。
 6. rank 10: 要求組立から受付までを行い、`AttemptDecision` と `AdmissionNotice` を作る（第6節）。
 7. rank 11: 執行系列の始値処理を行う（第7.1節）。
 8. rank 12: 6 の `AdmissionNotice` と 7 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。戻り値の `management_requests` を建玉へ適用する（第8.3節）。通知が1件もなければ呼ばない。
 9. run_end の判断時点だけ rank 13 を行う（第10節）。
+
+**評価の失敗は受付より前で run を止める**【提案】。D05 §6.2 は、部品の失敗・`on_missing=Error` の欠損・戻り値の検査違反を `Failed(Reason(DATA_ERROR, ...))` として評価記録に残し、**以降の評価を行わずに結果を返す**と定め、「run を終了させるのはエンジンの責務」と本書へ委ねている【合意済み】。そこでエンジンは、第1回・第2回のどちらの `step` でも `RuntimeStepResult.evaluations` に `Failed` があれば、次のとおり扱う。
+
+1. その `RuntimeStepResult` の `outputs` / `evaluations` / `transitions` は trace へ保存する（失敗の診断を判断履歴から消さない）。
+2. `proposals` と `management_requests` は**受付へ渡さない**。同じ `step` の中で失敗より前に生まれた提案も渡さない（どこまでが有効な判断だったかが宣言から読めないため）。
+3. rank 10 以降（受付・始値処理・第2回の `step`）を実行しない。
+4. 第10.4節の実行失敗として扱う（未約定注文を `CANCELED` / `DATA_ERROR`、`status = FAILED_DATA_ERROR`）。
+
+**不採用**: 失敗した使用箇所だけを飛ばして続ける案（D05 が「以降の評価を行わない」と決めた範囲をエンジンが広げ直すことになる）、判断時点の末尾まで進めてから止める案（失敗後に受け付けた注文が約定し、失敗した run の成果物に取引が含まれる）。
 
 **戦略ランタイムを1つの判断時点で最大2回（run_end では最大3回）呼ぶ**【提案】。D05 §6.1 は同じ `batch_id` での再呼び出しを `KernelValueError` で拒むため、2回目は**新しい `EventId` を持つ別の `PublicationBatch`** として渡す。`decision_time` は同じ T、`available_bars` と `scheduled_closes` は空、`runtime_events` と `admissions` に通知を入れる。**不採用**: 受付結果を次の判断時点まで持ち越す案（取引機会が `ORDER_PENDING` のまま次の足へ渡り、同時保持上限の数え方が判断時点をまたいで変わる）、受付結果用に別のポート操作を足す案（D05 §6.1 の `StrategyRuntime` は `step` 1操作であり、入口が2つになると呼び出し順の規則がもう1本要る）。
 
@@ -396,7 +406,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 ### 7.3 保護水準の到達判定【提案】
 
 - 判定は `EXECUTION_BAR_COMPLETE` フェーズで、**その足の開始前に有効だった**保護水準について行う【合意済み】上位 §4.7.7。終値で計算した更新をその足の過去の高値・安値へ適用しない。
-- **新規建玉の初期保護水準は、約定した執行足の開始時点から有効**とする【提案】。`ProtectionState.effective_from` に約定した足の `BarKey` を入れ、その足の到達判定の対象に含める。上位 §4.7.7 が「新規約定直後の初期 SL/TP に既存建玉の規則を一律適用してはいけない」と述べているのはこの点であり、`effective_from` を持つことで既存建玉（次の執行足から有効）と新規建玉（約定した足から有効）を同じ1つの規則で扱える。**不採用**: 新規建玉だけ別の判定経路を作る案（同じ到達判定が2か所になる）。
+- **新規建玉の初期保護水準（初期の損切りと、同じ判断時点で設定される初期の利確）は、約定した執行足の開始時点から有効**とする【提案】。`ProtectionState.effective_from` に約定した足の `BarKey` を入れ、その足の到達判定の対象に含める。初期の利確が `POST_FILL_EVALUATION`（rank 12）で設定されるのに対し、その足の到達判定は次の判断時点の `EXECUTION_BAR_COMPLETE`（rank 0）で行われるため、判定の時点には既に設定済みである。上位 §4.7.7 が「新規約定直後の初期 SL/TP に既存建玉の規則を一律適用してはいけない」と述べているのはこの点であり、`effective_from` を持つことで既存建玉（次の執行足から有効）と新規建玉（約定した足から有効）を同じ1つの規則で扱える。**不採用**: 新規建玉だけ別の判定経路を作る案（同じ到達判定が2か所になる）。
 - 判定価格は買い建玉が bid、売り建玉が ask【合意済み】上位 §4.7.12。
 - 到達したら、エンジンが `CloseRequest(cause=STOP_LOSS | TAKE_PROFIT)` → `AcceptedOrder`（`eligibility=ProtectionHit(...)`）→ `FillRecord` を生成する【合意済み】上位 §4.7.15 B。通常の候補 open 規則は通さない。
 - `FillRecord.execution_time` は `BarExecutionInterval(bar_key, interval)`。足内の正確な到達時刻を観測できないため、終値時刻を到達時刻として記録しない【合意済み】同節。
@@ -408,7 +418,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 
 **宣言形**: `ResolutionHierarchy(levels: tuple[SeriesId, ...])` を粗い順に持ち、`levels[0]` は `RunConfig.execution_series` と一致しなければならない。置き場所は第16節 Q8。
 
-**適合検査**（run 開始前。`DataCapabilityReport.hierarchy_checks` に結果を残す）:
+**適合検査**（run 開始前。結果は `HierarchyCheckResult` として `DataCapabilityReport.hierarchy_checks` に残す）。検査が比べるのは区間・価格基準・足境界・利用可能時刻であり、金額でも比率でもないため、リスク審査の `RiskCheckResult`（`limit` と `observed` が `Money \| Decimal`）を流用せず専用の型を置く【提案】。流用すると不一致の実値を型どおり記録できず、架空の数値を入れるか診断を捨てることになる。
 
 | # | 検査 | 不合格のとき |
 |---|---|---|
@@ -480,7 +490,14 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 | `SetTakeProfit(price)` | `ProtectionState` の `take_profit` を設定し `version` を1増やす | 価格刻みへ丸め（第6.5節）、買いなら `entry < take_profit`、売りなら `take_profit < entry`。丸め後の実リスクリワード比を記録する |
 | `ClosePosition()` | `CloseRequest(STRATEGY_EXIT)` を組み立てて受付へ回す（第6.2節） | 対象建玉が開いていること |
 
-- 適用フェーズは `POST_FILL_EVALUATION`。更新した保護水準は `effective_from` を**次の執行足**にする（新規建玉の初期保護水準だけが約定した足から有効、第7.3節）。
+- 適用フェーズは `POST_FILL_EVALUATION`。`effective_from` は次の2つに分ける【提案】。
+
+| 区分 | 条件 | `effective_from` |
+|---|---|---|
+| **初期の保護水準** | 対象建玉が**同じ判断時点の `EXECUTION_OPEN` で約定**し、`take_profit` がまだ未設定である | **約定した執行足**（初期の損切り水準と同じ、第7.3節） |
+| それ以降の更新 | 上記以外（段階3のトレーリングなど） | 次の執行足 |
+
+初期の利確を約定した足から有効にするのは、上位 §4.7.7 が「新規建玉は約定 → 初期損切りの有効化 → Exit による初期利確の算定を行い、**同じ足のその後の値動きに対する保護判定の対象にする**」と定めているためである。D05 §8 も「次の足まで利確が無い」構成を排除している。次足からにすると、約定した足の中で利確に触れた取引を見逃し損益が変わる。既存建玉への更新だけが「終値で計算した更新はその足の過去の高値・安値へ適用しない」（上位 §4.7.7）の対象である。
 - 同じ建玉への更新と決済要求が同時なら決済を優先し、更新は理由を記録して破棄する【合意済み】上位 §4.7.6。
 - 閉じた建玉への要求は `POSITION_CLOSED` で拒否し、run 全体は止めない【合意済み】同節。
 - 損切り水準の更新（トレーリング）は段階3（第12節）。段階2の `ManagementAction` に `UPDATE_STOP` は無い【合意済み】D04 §11.2。
@@ -639,10 +656,11 @@ D05 §7.2 の遷移9 は「run 末尾に残った取引機会を `RUN_END` で�
 
 run 開始前に必須で行い、`DataCapabilityReport` を残す【合意済み】上位 §4.7.13 C・ADR-0030。
 
-1. 要求した期間・系列・ウォームアップ・必要な価格項目をカレンダーと照合する（D03 §3.9 の `IntegrityReport`）。
-2. 執行系列が run 区間を覆うことを確認する。
-3. 解像度階層の適合検査（第7.4節の検査1〜5）を行う。
-4. 既知の欠損・無効値・末尾不足があれば**開始前に失敗**させる（`status = FAILED_CAPABILITY`）。検査結果は戦略へ渡さず、欠損付近だけを取引対象から外すこともしない。
+1. **`compiled.compiled_ref == config.compiled_ref` を検査する**【提案】。`RunBacktest.run` は解決済み戦略とその参照を別々に受け取るため、照合しないと、実行 ID と manifest は設定側の参照を指しながら実際の評価と `ExitPlanRef` は引数側の戦略を使い、別の戦略の結果が同じ `runs/<run_id>/` に保存される。不一致は `FAILED_CAPABILITY` とする。同じ理由で `compiled.strategy_ref` と `config` が指す戦略参照、`compiled.symbol` と `config.execution_series.symbol` も照合する。
+2. 要求した期間・系列・ウォームアップ・必要な価格項目をカレンダーと照合する（D03 §3.9 の `IntegrityReport`）。
+3. 執行系列が run 区間を覆うことを確認する。
+4. 解像度階層の適合検査（第7.4節の検査1〜5）を行う。
+5. 既知の欠損・無効値・末尾不足があれば**開始前に失敗**させる（`status = FAILED_CAPABILITY`）。検査結果は戦略へ渡さず、欠損付近だけを取引対象から外すこともしない。
 
 公開遅延シナリオは元データの欠損とは区別する【合意済み】同節。
 
@@ -657,8 +675,8 @@ D05 §9 の使用箇所に対して、エンジン側で起きることを時刻
 | T | `PUBLICATION` 〜 `P5_ORDER_INTENT` | 第1回の `step`。取引機会1件の生成（D05 の遷移1）と `EntryProposal` 1件（遷移4） |
 | T | `ADMISSION` | `OrderRequest` を1件組み立て、参照価格を固定し、損切りを丸め、数量を決め、予約を確保して受付。`AdmissionNotice(accepted=True)` を作る |
 | T | `EXECUTION_OPEN` | `[T, T+15m)` の始値で約定。建玉を作り初期の損切りを有効化（`effective_from` はこの足） |
-| T | `POST_FILL_EVALUATION` | 第2回の `step`。受付の通知で機会が `FULFILLED_BY_ORDER_ACCEPTANCE` で終端（遷移5）。`POSITION_OPENED` で `fixed_rr_take_profit` が評価され `SetTakeProfit` を1件返す。丸めて建玉へ適用（`effective_from` は次の執行足） |
-| T+15m | `EXECUTION_BAR_COMPLETE` | `[T, T+15m)` の足について到達判定。損切りは同じ足から有効なので対象、利確は次の足から |
+| T | `POST_FILL_EVALUATION` | 第2回の `step`。受付の通知で機会が `FULFILLED_BY_ORDER_ACCEPTANCE` で終端（遷移5）。`POSITION_OPENED` で `fixed_rr_take_profit` が評価され `SetTakeProfit` を1件返す。丸めて建玉へ適用（初期の利確なので `effective_from` は約定した足、第8.3節） |
+| T+15m | `EXECUTION_BAR_COMPLETE` | `[T, T+15m)` の足について到達判定。初期の損切りも初期の利確も約定した足から有効なので、どちらも対象。両方に触れたら第7.4節へ |
 | 到達日 | `EXECUTION_BAR_COMPLETE` | 片側だけなら `SINGLE_HIT`。両側なら階層1段のため `UNRESOLVED_SL_PRIORITY` で損切りを採用（第7.4節） |
 | run_end | `RUN_END` | 残存注文の取消・残存機会の終端（Q2）・残存建玉の MTM 最終 snapshot |
 
