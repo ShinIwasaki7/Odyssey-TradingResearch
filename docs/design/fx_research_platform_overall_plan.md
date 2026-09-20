@@ -593,6 +593,8 @@ runs/
 
 2026年分が未観測だったことを確認できた場合だけ、別 ADR で sealed holdout へ割り当てる。確認できない場合は研究履歴として扱い、将来取得するデータを新しい prospective holdout にする。元 CSV は期間をまたいでいるため、物理分離は raw CSV の移動ではなく、受入れ処理で生成する snapshot partition に対して行う。
 
+`LEGACY_HOLDOUT` の partition だけが `HoldoutState`（`SEALED` / `CONSUMED`）を持つ（2026-09-20 改訂、ADR-0014）。`SEALED` は旧基盤で未観測と確認できた partition だけで、holdout_gate を通る最終評価で読むと不可逆に `CONSUMED` へ遷移する。`CONSUMED` は holdout としての再選定・最終評価に永久に使用禁止で、研究用途では明示的な opt-in がある場合のみ読め、利用の事実と目的を run manifest に記録し、結果を holdout 成績として扱わない。状態は追記専用の access log から導出し、許可発行・消費記録・公開を fail-closed で行う。
+
 ### D. プロセス
 
 | # | 項目 | 決定／要決定 | 補足 | ADR |
