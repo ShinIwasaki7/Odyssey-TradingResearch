@@ -1,0 +1,52 @@
+# 時間足定義（D03 §3.2・§9）
+#
+# `common.TimeframeRef` が指す定義の本体。足境界の決め方は2種類ある。
+#
+# - fixed_utc: UTC のエポックから名目長の整数倍で区切る（15m、1h）。足の長さは常に名目長。
+# - session:   現地時刻の起点から区切り、夏時間（DST）を含む zoneinfo の規則で UTC へ変換
+#              する。固定 UTC 時刻は書かない。切替日の日足は 23h / 25h、4h 足は 3h / 5h に
+#              なる（D03 §3.2）。
+#
+# nominal_length は表示と履歴窓の概算にだけ使い、足の検証には使わない。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+timeframes:
+  - id: 15m
+    version: 1
+    nominal_length: PT15M
+    alignment:
+      kind: fixed_utc
+
+  - id: 1h
+    version: 1
+    nominal_length: PT1H
+    alignment:
+      kind: fixed_utc
+
+  # ニューヨーク現地 17/21/01/05/09/13 時を起点とする 4時間足。
+  - id: 4h_ny17
+    version: 1
+    nominal_length: PT4H
+    alignment:
+      kind: session
+      tz: America/New_York
+      anchors_local:
+        - "01:00:00"
+        - "05:00:00"
+        - "09:00:00"
+        - "13:00:00"
+        - "17:00:00"
+        - "21:00:00"
+
+  # ニューヨーク現地 17 時から翌 17 時までの日足。
+  - id: 1d_ny17
+    version: 1
+    nominal_length: P1D
+    alignment:
+      kind: session
+      tz: America/New_York
+      anchors_local:
+        - "17:00:00"
