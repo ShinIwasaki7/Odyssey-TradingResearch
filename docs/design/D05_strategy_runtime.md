@@ -1,0 +1,633 @@
+# D05: 戦略ランタイム・部品カタログ・コンパイラ設計（`odyssey_fx.strategy.runtime` / `strategy.catalog` / `strategy.compiler` / `strategy.records`）
+
+作成日: 2026-09-21
+状態: **v0.1 承認待ち**。段階2（最小縦断＝戦略定義→注文→約定→単一評価）と紙上トレース T01 に必要な範囲だけを扱う。検証戦略 A（1時間足の高値突破→後続確認なしの成行→初期損切り＋固定リスクリワード比の利確）が動くことを必要十分条件とする。待機（`WAIT_FOR_INPUT`）・評価要求の追い越し・後続確認は本書の**後続版 v0.2**（段階3前）で確定する（全体計画 §6 D-2 の条件5）。第13節に要決定 Q1〜Q9 を置く。
+上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.11〜§4.3.15・§4.5・§4.6・§4.7.1・§7.1、[全体計画書](fx_research_platform_overall_plan.md) §5.3.2〜§5.3.5・§7.3 後半・§8.1・§8.2、[D01](D01_architecture_and_dependency_rules.md) §3.3・§4・§5.1・§7.2、[D02](D02_common_kernel.md) §3.3・§4・§7・§8・§9、[D03](D03_marketdata_and_time.md) §6.2・§7.1・§7.2、[D04](D04_strategy_declarations.md) 全体（特に §1.2 の境界表）、ADR-0006（決定論的 ID）、ADR-0008（純粋関数の部品）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）、ADR-0016（実装開始条件）、ADR-0021（NumPy の許可範囲）、ADR-0030（足内 SL/TP 競合）、ADR-0031（確認待ち中の条件再検査）、ADR-0032（再発火と複数取引機会）、ADR-0033（評価要求の追い越しの改名）
+対応段階: 段階2で実装。ADR-0016 条件2 のうち「D05 の最小ランタイム範囲」を本書 v0.1 で充足する。
+
+## 0. 本書の位置付けと凡例
+
+D04 が確定した宣言（戦略の「形」）を、**実行可能な形へ変換し（`compiler`）、実装を対応付け（`catalog`）、公開イベントに対して評価する（`runtime`）**手順と型を決める。注文の受付・執行・約定、口座と建玉、評価指標は決めない。
+
+凡例は全体計画書第0節に従い、本書は各項目に次のいずれかを付ける。
+
+| 印 | 意味 |
+|---|---|
+| 【合意済み】 | 上位文書・ADR・承認済み設計文書（D01〜D04）で確定済み。本書で再議論しない |
+| 【提案】 | 本書が推奨する設計。承認で確定 |
+| 【要決定】 | 承認時にユーザーが選択する事項。第14節に一覧を置く |
+
+## 1. 責務と境界
+
+| 項目 | 内容 | 印 |
+|---|---|---|
+| 提供するもの | `records` の役割別内容型、`catalog` の部品登録、`compiler` の `CompiledStrategy`、`runtime` の評価 API とポート定義 | 【合意済み】D01 §1・全体計画 §5.3.2〜§5.3.5 |
+| 依存できるもの | Python 標準ライブラリ、`odyssey_fx.common`、`marketdata.domain`、同パッケージの下位層。`catalog` に限り NumPy（条件は D01 §5.1） | 【合意済み】D01 §3.2・§5 |
+| 決めないもの | 宣言型の構造（D04）、注文受付・執行・約定・建玉・口座・フェーズ順序（D06）、評価指標と実験 manifest（D07） | 【合意済み】 |
+| 層順序 | `runtime` → `compiler` → `catalog` → `records` → `declarations`。上向き参照はしない | 【合意済み】D01 §3.3 |
+
+型はすべて `@dataclass(frozen=True, slots=True)`、コレクションは `tuple` か凍結 `Mapping`、区分タグ付き union は `kind` フィールドを持つ dataclass の `Union` とする【合意済み】D01 §8・ADR-0011。**唯一の例外**は `runtime` が保持する現在状態への参照1つで、第6.5節で範囲を限定する。
+
+### 1.1 語彙と規則の正本がどの文書にあるか【提案】
+
+D04 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しない。
+
+| 事項 | 正本 | 本書の扱い |
+|---|---|---|
+| 宣言型（`ComponentContract` ほか）のフィールド | D04 §3.1 | 参照のみ。再定義しない |
+| コンパイル時検査の一覧と、各検査が読む宣言 | D04 §12 | 参照のみ。本書は**実行順と失敗時の扱い**だけを足す（第5.2節） |
+| 取引機会の終端理由の語彙 | 上位設計書 §4.5（ADR-0031・ADR-0032） | 参照のみ。語を足す提案は第14節の要決定として人間へ出す |
+| 理由コードの語彙 | 上位設計書 §4.7.14（実装側の列挙は D02 §8.1 がその写し） | 参照のみ。足すときは §4.7.14 と D02 §8.1 を同じ PR で更新する |
+| 実行時の出力3層（`OutputRecord` / `Observation` / 6つの内容型）のフィールド | 上位設計書 §4.3.15 | 参照のみ。本書が定義するのは §4.3.15 に無い3つの内容型（第4.2節） |
+| 欠損の診断理由（`MissingInputReason`） | D02 §8.3 | 参照のみ |
+| as-of 読み取りの操作と欠損の返し方 | D03 §6.2 | 参照のみ。`max_age` の判定だけランタイムが行う（D03 §6.2 が委ねた） |
+| フェーズの正式な列挙と順位 | D06（`backtest.engine`） | 参照のみ。本書は上位設計書 §4.3.12 の P1〜P5 という**名前**で参照し、新しい列挙を作らない |
+| 処理順の全順序 `ProcessingPoint` | D02 §3.3 | 参照のみ |
+
+### 1.2 本書が決めること・後続に委ねること・D04 から受け取ること【提案】（**レビュー対象範囲の正本**）
+
+**本書 v0.1 のレビューの対象範囲は下表の第3列**である。第4列に属する指摘は「対象外（担当へ）」として記録し、本書では直さない。ただし D04 §1.2 と同じ例外を置く。**本書の文が第4列の挙動を暗示していて誤解を招く場合は、その暗示を消す修正だけ行う**。第4列の内容を本書に書き足すことはしない。
+
+| # | 領域 | 本書 v0.1 が決めること（対象内） | 後続が決めること（対象外・担当） |
+|---|---|---|---|
+| 1 | 実行時の内容型 | 上位設計書 §4.3.15 に無い3つ（`OrderIntent` / `ProtectionLevels` / `ManagementAction`）のフィールドと、データ型識別子との対応（第4.2節） | `position_context@v1` / `account_context@v1` の項目（**D06**）、注文有効期限の既定値（**D06**） |
+| 2 | 部品カタログ | 登録の単位、実装の形、段階2の5部品の契約と計算規則（第4節） | 指標部品（EMA・ATR）と合成部品（AND/OR・遷移検出・N 本継続）の契約と計算規則（**本書 v0.2**） |
+| 3 | コンパイラ | 手順・検査の実行順・失敗時の扱い・`CompiledStrategy` の中身・依存グラフ構築・評価順の導出・ハッシュ計算の手順（第5節） | 検査項目そのものと各検査が読む宣言（**D04 §12 が正本**） |
+| 4 | ランタイムの評価 | 起動判定、入力解決、欠損の扱い、評価要求のライフサイクル、部品状態の保持、出力の付番と決定論（第6節） | 待機（`WAIT_FOR_INPUT`）・遡り（`USE_PREVIOUS`）・評価要求の追い越し（`REQUEST_SUPERSEDED`）の意味論と宣言形（**本書 v0.2**、段階3前） |
+| 5 | 取引機会 | 非終端状態、全遷移と発火条件・フェーズ・記録する理由、有効性の再検査、同時保持と発火の記録、`opportunity_id` の採番と生成時点の項目（第7節） | 後続確認（`AwaitConfirmation`）の期限の数え方と確認評価の起動（**本書 v0.2**）、受付結果を通知するフェーズと通知の内容（**D06**） |
+| 6 | 約定後の評価 | `POSITION_OPENED` を受けて利確を評価する起動点への要求（第8節、Q7） | その起動点のフェーズ順位・約定処理との前後関係（**D06**） |
+| 7 | 数値の境界 | 比率パラメータを部品へ渡すときの Decimal 化（第4.4節） | 価格刻みへの丸め方向と適用時点（**D06**）、通貨換算（**D06**） |
+| 8 | 記録 | 評価記録・取引機会の遷移記録として何を残すか（第6.4節・第7.2節） | trace の保存形式と `BacktestResult`（**D06**）、終端理由別の集計（**D07**） |
+
+前提として **D04 から受け取るもの**は次のとおりで、本書はこれらを再定義しない。
+
+| D04 の節 | 受け取るもの |
+|---|---|
+| §3・§3.1 | 3クラスのトップレベルと、宣言型35件のフィールド一覧 |
+| §5 | データ型識別子13件の登録、接続検証（型・`PortKind`）、銘柄の伝播規則 |
+| §6 | 読み取り条件4区分と、段階2の欠損方針2区分（`SkipEvaluation` / `Error`） |
+| §8 | 起動条件の型と検証意味論、`RuntimeEventKind` は `POSITION_OPENED` の1値 |
+| §9.1 | 状態の型・初期値・リセット契機の宣言 |
+| §10.2〜§10.4 | 有効性束縛、同時保持の3フィールド、再武装（`EDGE` / `LEVEL`）と状態の要求 |
+| §12 | コンパイル時検査 #1〜#7 と #6b、エンジン上の因果辺2本、段階2で拒否する構成 |
+| §13.2 | 3つのダイジェストの対象 |
+| §14 | 検証戦略 A に必要な宣言の一覧 |
+
+## 2. モジュール構成【提案】
+
+D01 §7.2 の一覧のうち、段階2で作るものと作らないものを分ける。
+
+| サブパッケージ | 段階2で作る | 段階3（v0.2）で作る |
+|---|---|---|
+| `records` | `records.py`（`OutputRecord` / `Observation`）、`payloads.py`（役割別内容型） | — |
+| `catalog` | `registry.py`、`features/extreme.py`、`triggers/breakout.py`、`orders/market.py`、`protection/level_stop.py`、`exits/fixed_rr.py` | `features/`（EMA・ATR）、`conditions/`、`permissions/`、`filters/` |
+| `compiler` | `validate.py`、`graph.py`、`capability.py`、`hashing.py`、`compiled.py` | — |
+| `runtime` | `ports.py`、`evaluator.py`、`requests.py`、`opportunities.py` | `waiting.py`、`supersession.py` |
+
+D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を段階2で作らないのは、待機と追い越しの意味論が v0.2 の範囲だからである（第10節）。
+
+## 3. 本書が定義する型の一覧【提案】
+
+本文に出る型名を、区分（値の集合だけの enum / `kind` タグ付き union / フィールドを持つレコード / `Protocol`）とフィールドまで一覧する。**この表にない型名を本文で使わない**。節を足すときは必ずこの表も更新する。D04 が定義した型はそのまま使い、ここには載せない（D04 §3.1 が正本）。
+
+| 型 | 置き場所 | 区分 | フィールド / 値 | 詳細 |
+|---|---|---|---|---|
+| `TradeDirection` | `records` | enum | `LONG` / `SHORT` | §4.2 |
+| `OrderType` | `records` | enum | `MARKET`（段階2の唯一の値） | §4.2 |
+| `OrderIntent` | `records` | レコード | `symbol: Symbol` / `direction: TradeDirection` / `order_type: OrderType` / `price_condition: None` / `expiry: timedelta \| None` | §4.2 |
+| `ProtectionLevels` | `records` | レコード | `stop_loss: Price` / `take_profit: Price \| None` | §4.2 |
+| `ManagementAction` | `records` | union | `SetTakeProfit(price: Price)` / `ClosePosition()` | §4.2 |
+| `OpportunityContent` | `records` | レコード | `symbol: Symbol` / `direction: TradeDirection` / `signal_interval: Interval` / `reference_values: Mapping[str, object]` | §4.2 |
+| `DataTypePayloadBinding` | `records` | レコード | `data_type: DataTypeRef` / `payload_type: type` | §4.2 |
+| `ContractKey` | `catalog` | レコード | `component_id: str` / `version: int` | §4.1 |
+| `ComponentRegistration` | `catalog` | レコード | `contract: ComponentContract` / `implementation: ComponentImplementation` / `implementation_ref: ImplementationRef` | §4.1 |
+| `ComponentImplementation` | `catalog` | union | `StatelessImplementation(evaluate)` / `StatefulImplementation(evaluate, state_type: DataTypeRef)` | §4.1 |
+| `ComponentOutputs` | `catalog` | レコード | `outputs: Mapping[str, object]` / `new_state: object \| None` | §4.1 |
+| `CompileResult` | `compiler` | union | `CompileSucceeded(compiled: CompiledStrategy)` / `CompileFailed(errors: tuple[CompileError, ...])` | §5.1 |
+| `CompiledStrategy` | `compiler` | レコード | `schema_version: int` / `strategy_ref: StrategyRef` / `compiled_ref: CompiledStrategyRef` / `symbol: Symbol` / `components: tuple[CompiledComponent, ...]` / `evaluation_order: tuple[str, ...]` / `roles: CompiledRoles` / `entry_policy: EntryPolicy` / `opportunity_validity: OpportunityValiditySpec` / `opportunity_concurrency: OpportunityConcurrencySpec` | §5.3 |
+| `CompiledComponent` | `compiler` | レコード | `instance_id: str` / `contract_ref: ContractRef` / `implementation_ref: ImplementationRef` / `parameters: Mapping[str, ResolvedParameter]` / `input_plans: Mapping[str, InputPlan]` / `triggers: tuple[EvaluationTrigger, ...]` / `required_inputs: Mapping[str, tuple[str, ...]]` / `state_spec: StateSpec \| None` / `symbol: Symbol \| None` | §5.3 |
+| `CompiledRoles` | `compiler` | レコード | `market_state: OutputRef \| None` / `trigger: OutputRef` / `execution_filter: OutputRef \| None` / `order: OutputRef` / `protection: OutputRef` / `exit: OutputRef \| None` | §5.3 |
+| `InputPlan` | `compiler` | レコード | `input_name: str` / `data_type: DataTypeRef` / `kind: PortKind` / `read_spec: InputReadSpec` / `resolved_window: BarsWindow \| DurationWindow \| None` / `sources: tuple[ResolvedSource, ...]` | §5.3 |
+| `ResolvedSource` | `compiler` | union | `ResolvedOutputSource(instance_id, output_name)` / `ResolvedMarketSource(series: SeriesId, field: MarketDataField)` / `ResolvedContextSource(target: RuntimeTarget)` | §5.3 |
+| `ResolvedParameter` | `compiler` | レコード | `name: str` / `value: ParameterValue` / `unit: UnitRef \| None` / `decimal_value: Decimal \| None` | §4.4 |
+| `DependencyGraph` | `compiler` | レコード | `nodes: tuple[str, ...]` / `edges: tuple[DependencyEdge, ...]` | §5.4 |
+| `DependencyEdge` | `compiler` | レコード | `source_instance: str` / `target_instance: str` / `kind: EdgeKind` | §5.4 |
+| `EdgeKind` | `compiler` | enum | `EXPLICIT_INPUT` / `FILL_TRIGGER` / `POSITION_CONTEXT`（後2者は D04 §12 の因果辺） | §5.4 |
+| `CompileError` | `compiler` | レコード | `check_id: str` / `rejection: CompileRejection` / `location: DeclarationLocation` / `message: str` | §5.2 |
+| `CompileRejection` | `compiler` | enum | `REFERENCE_NOT_FOUND` / `TYPE_MISMATCH` / `PARAMETER_INVALID` / `SCHEDULE_NOT_ALLOWED` / `ROLE_MISMATCH` / `OUTPUT_SPEC_INVALID` / `DEPENDENCY_CYCLE` / `UNSUPPORTED_CONFIGURATION`（Q9） | §5.2 |
+| `DeclarationLocation` | `compiler` | レコード | `instance_id: str \| None` / `field_path: str` | §5.2 |
+| `PublicationBatch` | `runtime` | レコード | `batch_id: EventId` / `decision_time: UtcTime` / `available_bars: tuple[BarKey, ...]` / `scheduled_closes: tuple[BarKey, ...]` / `runtime_events: tuple[RuntimeEventNotice, ...]` / `admissions: tuple[AdmissionNotice, ...]` | §6.1 |
+| `RuntimeEventNotice` | `runtime` | レコード | `kind: RuntimeEventKind` / `position_id: PositionId` / `opportunity_id: OpportunityId` | §8 |
+| `AdmissionNotice` | `runtime` | レコード | `opportunity_id: OpportunityId` / `attempt_id: AttemptId` / `accepted: bool` / `reason: Reason \| None` | §7.2 |
+| `RuntimeStepResult` | `runtime` | レコード | `outputs: tuple[OutputRecord, ...]` / `evaluations: tuple[EvaluationRecord, ...]` / `proposals: tuple[EntryProposal, ...]` / `management_requests: tuple[ManagementRequest, ...]` / `transitions: tuple[OpportunityTransition, ...]` | §6.2 |
+| `EntryProposal` | `runtime` | レコード | `opportunity_id: OpportunityId` / `order_intent: OrderIntent` / `protection: ProtectionLevels` / `decision_time: UtcTime` | §6.2 |
+| `ManagementRequest` | `runtime` | レコード | `position_id: PositionId` / `action: ManagementAction` / `decision_time: UtcTime` | §6.2 |
+| `RuntimeState` | `runtime` | レコード | `component_states: Mapping[str, object]` / `opportunities: tuple[OpportunityLifecycle, ...]` / `last_batch_id: EventId \| None` | §6.5 |
+| `EvaluationRequest` | `runtime` | レコード | `request_id: RequestId` / `instance_id: str` / `trigger_names: tuple[str, ...]` / `decision_time: UtcTime` / `opportunity_id: OpportunityId \| None` | §6.4 |
+| `EvaluationRecord` | `runtime` | レコード | `request_id: RequestId` / `evaluation_id: EvaluationId` / `instance_id: str` / `trigger_names: tuple[str, ...]` / `decision_time: UtcTime` / `outcome: EvaluationOutcome` | §6.4 |
+| `EvaluationOutcome` | `runtime` | union | `Evaluated(output_ids: tuple[OutputId, ...])` / `Skipped(diagnoses: tuple[MissingInputDiagnosis, ...])` / `Failed(reason: Reason)` | §6.4 |
+| `MissingInputDiagnosis` | `runtime` | レコード | `input_name: str` / `source: ResolvedSource` / `reason: MissingInputReason` | §6.3 |
+| `ResolvedInputs` | `runtime` | レコード | `by_name: Mapping[str, tuple[InputElement, ...]]`（並びは `InputBinding.sources` の順） | §6.3 |
+| `InputElement` | `runtime` | union | `ValueSample` / `ValueWindow` / `EventDelivery` / `ContextSnapshot` | §6.3 |
+| `ValueSample` | `runtime` | レコード | `payload: object` / `source: ResolvedSource` / `freshness_time: UtcTime` / `source_output_id: OutputId \| None` | §6.3 |
+| `ValueWindow` | `runtime` | レコード | `samples: tuple[ValueSample, ...]`（古い順） | §6.3 |
+| `EventDelivery` | `runtime` | レコード | `payload: object` / `source_output_id: OutputId` | §6.3 |
+| `ContextSnapshot` | `runtime` | レコード | `payload: object` / `read_at: UtcTime` | §6.3 |
+| `OpportunityState` | `runtime` | enum | `OPEN` / `CONFIRMED` / `ORDER_PENDING` / `TERMINATED`（名前と数は Q1・Q2） | §7.1 |
+| `OpportunityLifecycle` | `runtime` | レコード | `opportunity: Opportunity` / `state: OpportunityState` / `created_at: ProcessingPoint` / `created_decision_time: UtcTime` / `snapshots: tuple[ValiditySnapshot, ...]` / `attempt_id: AttemptId \| None` / `terminal: OpportunityTerminal \| None` | §7.1 |
+| `ValiditySnapshot` | `runtime` | レコード | `source: OutputRef` / `output_id: OutputId` / `satisfied: bool` | §7.3 |
+| `OpportunityTerminal` | `runtime` | レコード | `reason: Reason` / `at: ProcessingPoint` | §7.2 |
+| `OpportunityTransition` | `runtime` | レコード | `opportunity_id: OpportunityId` / `from_state: OpportunityState \| None` / `to_state: OpportunityState` / `at: ProcessingPoint` / `phase: PhaseRank` / `reason: Reason \| None` / `counterpart: OpportunityId \| None` / `attempt_id: AttemptId \| None` | §7.2 |
+| `MarketDataView` | `runtime.ports` | Protocol | D03 §6.2 の5操作（`latest_available` / `history` / `bar` / `expected_latest_key` / `freshness`） | §6.1 |
+| `RuntimeContextView` | `runtime.ports` | Protocol | `position_context(at: UtcTime) -> object \| None` / `account_context(at: UtcTime) -> object` | §6.1 |
+| `OutputSink` | `runtime.ports` | Protocol | `emit(records: tuple[OutputRecord, ...]) -> None` | §6.1 |
+| `StrategyRuntime` | `runtime` | Protocol | `step(batch: PublicationBatch) -> RuntimeStepResult` | §6.1 |
+
+`SeriesId` / `BarKey` は D03 §3.1・§3.3、`Symbol` / `Price` / `Interval` / `UtcTime` / `Decimal` / `Reason` / `PhaseRank` / `ProcessingPoint` と各 ID 型は D02、`OutputRecord` / `Opportunity` ほか6つの内容型は上位設計書 §4.3.15 が正本である。
+
+## 4. 部品カタログ（`catalog`）
+
+### 4.1 登録の単位と純粋性【提案】
+
+部品は「契約（宣言）＋実装＋実装参照」を1組として `ComponentRegistration` で登録する【合意済み】全体計画 §5.3.3。レジストリは `Mapping[ContractKey, ComponentRegistration]` の静的テーブルで、実行時の登録 API を持たない（D04 §5 のデータ型レジストリと同じ扱い）。
+
+実装は2形式だけとする【合意済み】ADR-0008・全体計画 §5.3.3。
+
+| 区分 | 呼び出し形 |
+|---|---|
+| `StatelessImplementation` | `evaluate(inputs: ResolvedInputs, parameters: Mapping[str, ResolvedParameter]) -> ComponentOutputs`（`new_state` は `None`） |
+| `StatefulImplementation` | `evaluate(inputs, parameters, state: object) -> ComponentOutputs`（`new_state` は非 `None`） |
+
+- 実装は純粋関数とし、実時計・乱数・環境変数・I/O・グローバル可変状態を読まない。同じ `(inputs, parameters, state)` に対して常に同じ `ComponentOutputs` を返す。
+- 実装オブジェクトは可変状態を持たない。状態はランタイムが使用箇所ごとに保持する（第6.5節）。
+- `ComponentOutputs.outputs` のキー集合は、契約の `outputs` のキー集合の**部分集合**でなければならない。出さなかった出力は「今回の評価では発生しなかった」を意味し、`None` を出力値として入れない（EDGE の Trigger が発火しない評価がこれに当たる）。
+- 登録時の検査【提案】: (a) 契約が `catalog` に無い `DataTypeRef` を使っていないこと、(b) `state_spec` がある契約の実装は `StatefulImplementation` で、その `state_type` が契約の `state_spec.state_type` と一致すること、(c) 逆に `state_spec=None` の契約の実装は `StatelessImplementation` であること。違反は `KernelValueError`（D02 §10）。これが D04 §9.1 の「契約と実装の状態型を二重定義せず登録時に照合する」の実施箇所である。
+- 段階2の5部品はいずれも NumPy を使わない【提案】。NumPy の使用は指標部品を足す v0.2 で改めて判断する（D01 §5.1 の条件は既に確定）。
+
+### 4.2 データ型識別子と実行時クラスの対応【提案】（D04 §1.2 行3 の引き受け）
+
+D04 が登録した13件のデータ型識別子に、`records` 側の内容型を1対1で対応付ける。`declarations` はこの表を持たず（上向き参照になるため）、表の正本は `records`、登録時の照合は `catalog`（第4.1節）に置く【合意済み】D04 §5。
+
+| データ型 | 部品が返す型 | `OutputRecord.payload` として配送される型 | 定義 | 段階2 |
+|---|---|---|---|---|
+| `price@v1` | `Price` | `Price` | D02 §4.3 | 使う |
+| `price_offset@v1` | `PriceOffset` | `PriceOffset` | D02 §4.3 | 使わない |
+| `ratio@v1` | `Decimal` | `Decimal` | 標準 | 使わない |
+| `volume@v1` | `Decimal` | `Decimal` | 標準 | 使わない |
+| `condition_state@v1` | `ConditionState` | `ConditionState` | 上位 §4.3.15 | 状態型として使う |
+| `market_permission@v1` | `MarketPermission` | `Observation[MarketPermission]` | 上位 §4.3.15 | 使わない |
+| `opportunity@v1` | `OpportunityContent` | `Opportunity` | 本書 §3・上位 §4.3.15 | 使う |
+| `confirmation_result@v1` | `ConfirmationResult` | `ConfirmationResult` | 上位 §4.3.15 | 使わない |
+| `order_intent@v1` | `OrderIntent` | `OrderIntent` | 本書 §3 | 使う |
+| `protection_levels@v1` | `ProtectionLevels` | `ProtectionLevels` | 本書 §3 | 使う |
+| `management_action@v1` | `ManagementAction` | `ManagementAction` | 本書 §3 | 使う |
+| `position_context@v1` | （入力専用） | D06 が定める | D06 | 使う |
+| `account_context@v1` | （入力専用） | D06 が定める | D06 | 使わない |
+
+取引機会だけ2つの列が異なる【提案】。`Opportunity`（上位 §4.3.15）は `opportunity_id` を持つが、識別子を付けるのはエンジン側の責務である（同節）。そこで**部品は識別子を持たない `OpportunityContent` を返し、ランタイムが `IdAllocator`（D02 §7.3）で `OpportunityId` を採番して `Opportunity` を組み立てる**。`Opportunity` のフィールド構成は変えない。**不採用**: 部品が `opportunity_id` も作る案（部品が採番を持つと決定論的 ID の所有者が分散する）、仮の識別子を入れて後で差し替える案（不変のはずの内容が書き換わる）。
+
+`ConditionState` の項目は `satisfied: bool` の1つだけとする【提案】（D04 §10.4 が本書へ委ねた点）。これにより `retrigger_mode=EDGE` の契約は `StateSpec(condition_state@v1, LiteralInitialState({"satisfied": BoolValue(False)}), reset_on=(RUN_START,))` と宣言でき、「起動時は発火可能」が宣言に現れる（D04 §9.1）。**不採用**: 成立を観測した確定足の識別子を持たせる案（同じ足で2回評価された場合の重複抑止は評価要求の集約（第6.2節・Q6）が担うため、状態に持たせると同じ規則が2か所になる）。
+
+**役割出力の `PortKind`**【提案】。D04 は `PortKind` の3区分を確定したが、役割ごとにどれを使うかは決めていない。次のとおりとする。
+
+| 役割フィールド | 出力の `PortKind` | 理由 |
+|---|---|---|
+| `market_state` | `VALUE` | 更新まで繰り返し参照する許可状態 |
+| `trigger` / `execution_filter` | `EVENT` | 一度発生した事実・機会 |
+| `order` / `protection` / `exit` | `COMMAND` | エンジンへの要求 |
+
+役割フィールドが指す出力は**エンジンが役割フィールド経由で読む**ものであり、`InputBinding` では読まない。したがって「`COMMAND` を入力に接続しない」（D04 §6.1）と両立する。
+
+### 4.3 段階2の初版カタログ（5部品）【提案】＋【要決定】Q8
+
+検証戦略 A（上位設計書 §7.1）に必要な最小集合とする。役割ごとに1部品、ただし高値・安値の抽出は1つの部品にまとめ、使用箇所を2つ置く。**粒度は Q8**。
+
+いずれも `evaluation_spec.fixed=False`、`temporal_constraints=TemporalConstraints(warmup=None, alignment=())` とする。ウォームアップ不足は履歴読み取りが返す `WARMUP_INSUFFICIENT`（D03 §6.2）で判定でき、段階2の5部品は系列を契約に書けないため `WarmupSpec` を使わない（第11節の差異2）。
+
+**(1) `extreme_price` v1**（高値・安値の抽出）
+
+| 項目 | 内容 |
+|---|---|
+| 入力 | `prices`: `price@v1` / `VALUE` / `HistoryWindow(BarsWindow(ParameterRef("lookback")), max_age=None, on_missing=SkipEvaluation, exclude_latest_bars=1)` / `arity=(1,1)` |
+| 出力 | `level`: `price@v1` / `VALUE` / `reference_schema={}` / `retrigger_mode=None` |
+| パラメータ | `lookback`: `INT` / `BARS` / `[2, 500]`、`mode`: `STR` / 単位なし / `allowed_values=("MAX","MIN")` |
+| 状態 | なし |
+| 許可する起動条件 | `AllowedBarClose(timeframes=None)` |
+| 計算規則 | 窓内の `Price` の最大（`MAX`）または最小（`MIN`）を返す。比較は `Price` 同士のみ（D02 §4.3）。窓は `exclude_latest_bars=1` により当該足を含まない |
+
+**(2) `breakout_trigger` v1**（水準突破の検出）
+
+| 項目 | 内容 |
+|---|---|
+| 入力 | `price`: `price@v1` / `VALUE` / `LatestAvailable(max_age=None, on_missing=SkipEvaluation)` / `arity=(1,1)`、`level`: 同左 |
+| 出力 | `opportunity`: `opportunity@v1` / `EVENT` / `reference_schema={"breakout_level": price@v1}` / `retrigger_mode=EDGE` |
+| パラメータ | `direction`: `STR` / `allowed_values=("LONG","SHORT")` |
+| 状態 | `StateSpec(condition_state@v1, LiteralInitialState({"satisfied": BoolValue(False)}), reset_on=(RUN_START,))` |
+| 許可する起動条件 | `AllowedBarClose(timeframes=None)` |
+| 計算規則 | 成立判定 `now = price > level`（`LONG`）または `price < level`（`SHORT`）。`now` かつ直前状態が不成立のときだけ `OpportunityContent(symbol, direction, signal_interval, {"breakout_level": level})` を出す。`signal_interval` は `price` 入力の観測区間（起動した足の `interval`）。`symbol` はコンパイラが伝播させた銘柄（D04 §5）。新しい状態は `ConditionState(now)` |
+
+`retrigger_mode=LEVEL` の契約を段階2で使わないが、宣言としては許可される（D04 §10.4）。同じ実装を `LEVEL` で登録した契約は、成立している評価ごとに出力を出し、状態を持たない。
+
+**(3) `market_order_intent` v1**（成行の注文意図）
+
+| 項目 | 内容 |
+|---|---|
+| 入力 | `opportunity`: `opportunity@v1` / `EVENT` / `DeliveredEvent` / `arity=(1,1)` |
+| 出力 | `intent`: `order_intent@v1` / `COMMAND` / `reference_schema={}` / `retrigger_mode=None` |
+| パラメータ | なし |
+| 状態 | なし |
+| 許可する起動条件 | `AllowedInputEvent(("opportunity",))` |
+| 計算規則 | `OrderIntent(symbol=機会の銘柄, direction=機会の方向, order_type=MARKET, price_condition=None, expiry=None)`。`expiry=None` は「D06 が定める既定の有効時間に従う」を意味する（第12節） |
+
+**(4) `level_stop_loss` v1**（価格水準型の初期損切り）
+
+| 項目 | 内容 |
+|---|---|
+| 入力 | `opportunity`: `opportunity@v1` / `EVENT` / `DeliveredEvent`、`level`: `price@v1` / `VALUE` / `LatestAvailable(max_age=None, on_missing=SkipEvaluation)` |
+| 出力 | `protection`: `protection_levels@v1` / `COMMAND` / `reference_schema={}` / `retrigger_mode=None` |
+| パラメータ | なし |
+| 状態 | なし |
+| 許可する起動条件 | `AllowedInputEvent(("opportunity",))` |
+| 計算規則 | `ProtectionLevels(stop_loss=level, take_profit=None)`。距離型は使わず解決済みの絶対価格を凍結する【合意済み】上位 §4.7.3。損切りが方向と整合するか（買いなら約定価格より下か）の検査は、参照価格を持つ受付側（D06）が行う |
+
+**(5) `fixed_rr_take_profit` v1**（固定リスクリワード比の利確）
+
+| 項目 | 内容 |
+|---|---|
+| 入力 | `position`: `position_context@v1` / `VALUE` / `CurrentContext` / `arity=(1,1)` |
+| 出力 | `action`: `management_action@v1` / `COMMAND` / `reference_schema={}` / `retrigger_mode=None` |
+| パラメータ | `reward_risk`: `FLOAT` / `RATIO` / `(0, 100]` |
+| 状態 | なし |
+| 許可する起動条件 | `AllowedRuntimeEvent((POSITION_OPENED,))` |
+| 計算規則 | 建玉の約定価格 `entry` と有効な損切り水準 `sl` から `risk = entry - sl`（`PriceOffset`）を求め、`SetTakeProfit(entry + risk * reward_risk)`（`LONG`）または `SetTakeProfit(entry - (sl - entry) * reward_risk)`（`SHORT`）を返す。`reward_risk` は Decimal 化して渡す（第4.4節）。価格刻みへの丸めは行わない（D06 の責務） |
+
+この部品は `position_context@v1` から**約定価格・方向・有効な損切り水準**を読む。D04 §5 は段階2で読む項目を「約定価格・方向・数量」と書いているが、リスクリワード比の計算には損切り水準が要る。供給範囲の正本は D06 であり、第12節で引き渡す（第11節の差異1）。
+
+### 4.4 部品への受け渡し【提案】
+
+- 入力は `ResolvedInputs`（第6.3節）だけを渡す。市場データ全体・台帳・他の使用箇所の出力への到達手段は渡さない【合意済み】全体計画 §5.3.3。
+- パラメータは `ResolvedParameter` で渡す。`ParameterRef` はコンパイル時に具体値へ解決済みである（D04 §12 #3）。
+- **比率・価格・pips の数値は Decimal 化して渡す**。`ComponentInstance.parameters` は有限 float のまま保持する（D04 §7、変更しない）が、`unit` が `RATIO` / `PRICE` / `PIPS` の `FloatValue` は、ランタイムが部品へ渡す時点で `common.money.decimal_from_str(repr(value))` により厳密な `Decimal` へ変換し、`ResolvedParameter.decimal_value` に入れる。部品内部に float 演算を持ち込まない。`Decimal(float)` を直接呼ばないため ADR-0012 と D02 §4.6 の規則を守れる。**不採用**: float のまま部品へ渡す案（`Price` との演算ができず、丸め誤差が trace に入る）、宣言の段階で `Decimal` にする案（D04 §7 の決定を覆す）。
+
+## 5. コンパイラ（`compiler`）
+
+### 5.1 手順【提案】
+
+`compile(definition: StrategyDefinition, registry, data_types) -> CompileResult`。段階は次の順で、**前段が失敗したら後段を実行しない**（存在しない参照の型を比較しようとして二次的な誤りを出さないため）。ただし同じ段の中では全件を検査し、`CompileFailed.errors` にまとめて返す（1件ずつ直す往復を減らす）。
+
+| 段 | 内容 | 対応する D04 §12 の検査 |
+|---|---|---|
+| 1 | 契約の解決: `contract_ref` をレジストリで引き、版と内容ハッシュを照合 | #1 |
+| 2 | 参照の解決: `OutputRef` の使用箇所・出力名、役割フィールドの参照先 | #1・#5 |
+| 3 | パラメータの解決: 型・範囲・列挙値、`ParameterRef` を具体値へ | #3 |
+| 4 | 銘柄の伝播: D04 §5 の4つの供給元の和集合を取り、2つ以上なら拒否 | #2 |
+| 5 | 型と接続の検査: `(type_id, version)`、`PortKind`、市場データ項目の対応、`arity`、読み方の組合せ | #2 |
+| 6 | 出力仕様の付随条件 | #6b |
+| 7 | 評価スケジュールの検査 | #4 |
+| 8 | 依存グラフの構築と循環検出、評価順の導出（第5.4節） | #6 |
+| 9 | 能力検査（段階2で拒否する構成） | #7 |
+| 10 | ハッシュ計算と `CompiledStrategy` の組み立て（第5.3節・第5.5節） | — |
+
+検査項目そのものと「各検査が読む宣言」は **D04 §12 が正本**であり、本書は再掲しない（第1.1節）。本書が足すのは上の実行順と、次節の失敗時の扱いである。
+
+### 5.2 失敗時の扱い【提案】＋【要決定】Q9
+
+| `CompileRejection` | 出る段 | 例 |
+|---|---|---|
+| `REFERENCE_NOT_FOUND` | 1・2 | 契約が未登録、`OutputRef` の使用箇所が無い |
+| `TYPE_MISMATCH` | 4・5 | データ型不一致、`PortKind` 不一致、銘柄が2つ以上 |
+| `PARAMETER_INVALID` | 3 | 範囲外、列挙外、未解決の `ParameterRef` |
+| `SCHEDULE_NOT_ALLOWED` | 7 | `allowed` の範囲外、`fixed=True` の上書き、`required_inputs` の不一致 |
+| `ROLE_MISMATCH` | 2 | 役割フィールドの型要求違反、`execution_filter` と `entry_policy` の不整合 |
+| `OUTPUT_SPEC_INVALID` | 6 | `opportunity` 出力に `retrigger_mode` が無い、`EDGE` に適合する状態が無い |
+| `DEPENDENCY_CYCLE` | 8 | 明示辺と因果辺の和に閉路がある |
+| `UNSUPPORTED_CONFIGURATION` | 9 | `AwaitConfirmation`、`RuntimeInputRef(PENDING_ORDER)`、15m より細かい足 ほか |
+
+各 `CompileError` は `check_id`（D04 §12 の番号、例 `"#6b"`）と `location`（使用箇所とフィールド経路）を必ず持ち、原因の宣言を指させる。**黙って無視する経路を作らない**【合意済み】D04 §12。
+
+D04 §12 は「拒否は `ReasonCode`（D02 §8.1）付きの構造エラー」としているが、D02 §8.1 の語彙は注文の受付・評価の理由であり、コンパイル拒否に対応する語が無い。**どちらへ寄せるかは Q9**。
+
+### 5.3 コンパイル結果【提案】
+
+`CompiledStrategy` は不変で、内容ハッシュ（`compiled_ref`）を持つ【合意済み】全体計画 §5.3.4。ランタイムは**この型だけを読み、`StrategyDefinition` を再解釈しない**。宣言の解釈を2か所に置かないためである。
+
+- `components` は `evaluation_order` と同じ並びで保持する（並びが2つあると食い違う）。`evaluation_order` は `instance_id` の列で、第5.4節の規則で一意に定まる。
+- `InputPlan.resolved_window` は `ParameterRef` を解決した後の窓で、ランタイムはこれをそのまま `MarketDataView.history` へ渡す。
+- `CompiledStrategy.symbol` は第5.1節 段4 で伝播させた単一銘柄。
+- `CompiledRoles.trigger` / `order` / `protection` は段階2で必須、`market_state` / `execution_filter` / `exit` は `None` を許す（検証戦略 A は `exit` を持つ）。
+
+### 5.4 依存グラフと評価順【提案】
+
+- 節点は使用箇所（`instance_id`）。辺は D04 §12 が確定した3種類（明示入力＋因果辺2本）で、`EdgeKind` で区別して保持する。因果辺も**種類を残したまま**保持するのは、循環が明示接続によるものか帰還路によるものかを `CompileError.message` で示すためである。
+- 循環検出は3種の和の上で行う。閉路があれば `DEPENDENCY_CYCLE`。
+- 評価順は**トポロジカル順、同順位は `instance_id` の Unicode コードポイント順**とする【提案】。同順位の並びを固定しないと、同じ宣言から出力の `sequence`（第6.6節）が変わり、「同一入力の再実行で trace が一致」（全体計画 §8.2）を満たせない。時間足の大小から順序を推測しない【合意済み】全体計画 §5.3.4 の6。
+- 評価順は使用箇所の全件を含む（起動しない使用箇所も並びには含め、実行時に起動判定で落とす）。
+
+### 5.5 ハッシュ計算【提案】
+
+D04 §13.2 が決めた3つの対象を、D02 §9.3 の `canonical.digest` で計算する手順だけを定める。
+
+1. `ContractRef.digest`: 契約から `implementation_ref` を除いた値を正規化エンコードして計算する。カタログ登録時に計算し、レジストリの鍵と一緒に保持する。
+2. `StrategyRef.digest`: `StrategyDefinition` 全体。各 `ComponentInstance` が持つ `contract_ref` を通じて 1 を含む。
+3. `CompiledStrategyRef.digest`: 解決済みパラメータ・評価順・各部品の `ImplementationRef` を含む。**`CompiledStrategy` 全体をそのまま対象にしない**のは、`strategy_ref` と `compiled_ref` 自身を含む自己参照になるためで、対象は `(strategy_ref, evaluation_order, 各 CompiledComponent の (instance_id, contract_ref, implementation_ref, parameters, input_plans, triggers))` とする。
+4. 順序に意味を持たせないコレクションは D04 §3 の表に従って構築時に正規化済みであり、ここで並べ替えを重複実装しない【合意済み】D04 §13.2。
+
+## 6. 戦略ランタイム（`runtime`）
+
+### 6.1 ポートと呼び出し境界【提案】
+
+所在と実装者は D01 §4 が確定している【合意済み】。本書はその呼び出し形を定める。
+
+| ポート | 呼び出し形 | 備考 |
+|---|---|---|
+| `MarketDataView` | D03 §6.2 の5操作 | 正本は D03。ランタイムは `at=decision_time` を必ず渡す |
+| `RuntimeContextView` | `position_context(at)` / `account_context(at)` | 戻り値の payload の項目は D06（第12節） |
+| `OutputSink` | `emit(records)` | trace への転送はエンジン側 |
+| `StrategyRuntime` | `step(batch) -> RuntimeStepResult` | `backtest.engine` が P1〜P5 の中身として呼ぶ |
+
+`step` は直前と同じ `batch_id` で呼ばれたら `KernelValueError` を送出し、状態を更新しない【提案】（`RuntimeState.last_batch_id` と比較する）。再配送の除外そのものはエンジン側の冪等性検査（全体計画 §5.4）の責務だが、二重適用を型の側でも止める。
+
+公開イベントは **`marketdata.domain` の型だけで渡す**【提案】。D03 §7.1 の `Publication` / `ScheduledBoundary` は `marketdata.application` に属し、`strategy` は `marketdata.domain` しか参照できない（D01 §3.2 の契約 F2）。そこでエンジンが両イベントを `BarKey` の列（`available_bars` / `scheduled_closes`）へ変換して渡す。
+
+### 6.2 1回の `step` で行うこと【提案】
+
+1. **起動判定**: 各使用箇所の各起動条件について、成立を判定する。`OnBarClose(name, series)` は batch の `scheduled_closes` に同じ系列の `BarKey` があるとき（D03 §7.2 の `ScheduledBoundary` に対応）【合意済み】D03 §7.2、`OnInputEvent(name, input_name)` はその入力に接続された `EVENT` 出力が**同じ `step` の上流評価で**出たとき、`OnRuntimeEvent(name, event)` は batch の `runtime_events` に同じ種別の通知があるとき。
+2. **評価要求の生成**: 起動した使用箇所ごとに `EvaluationRequest` を1件作る。同じ使用箇所で複数の起動条件が同時に成立した場合の扱いは **Q6**（推奨は1件に集約し、`trigger_names` に成立した名前をすべて入れる）。
+3. **依存順評価**: `evaluation_order` に従い、起動した使用箇所だけを評価する。上流の更新だけで下流を自動評価しない【合意済み】上位 §4.3.2。
+4. **入力解決**（第6.3節）→ **部品の呼び出し** → **出力の付番**（第6.6節）→ `OutputSink.emit`。
+5. **取引機会の処理**: 取引機会を出す出力が出たら第7.4節、有効性の再検査は第7.3節。
+6. **役割出力の取り出し**: `roles.order` と `roles.protection` の出力が同じ取引機会について揃った時点で `EntryProposal` を1件作る（P5）。`roles.exit` の出力は `ManagementRequest` にする。
+7. `RuntimeStepResult` を返す。
+
+同じ `EVENT` 出力を複数の入力が購読する場合、各購読先へ同じ `OutputRecord` を1回ずつ配送する【提案】。配送順は評価順（第5.4節）に従い、同じ論理確認を二重実行しない【合意済み】上位 §4.3.12。`COMMAND` 出力は入力に接続できない（D04 §6.1）ため、`COMMAND` を加工する部品は段階2では作れない。
+
+### 6.3 入力解決と欠損【提案】
+
+`InputPlan` の区分ごとに、`ResolvedInputs.by_name[input_name]` の各要素を作る。
+
+| 読み方 | 解決の手順 | 要素 |
+|---|---|---|
+| `LatestAvailable` | 市場データ参照なら `MarketDataView.latest_available(series, decision_time)` の該当項目、出力参照ならその使用箇所の最新 `OutputRecord` | `ValueSample` |
+| `HistoryWindow` | `MarketDataView.history(series, resolved_window, decision_time, end_offset_bars=exclude_latest_bars)` | `ValueWindow` |
+| `DeliveredEvent` | 同じ `step` で配送された `OutputRecord` | `EventDelivery` |
+| `CurrentContext` | `RuntimeContextView` を `decision_time` で読む | `ContextSnapshot` |
+
+- **`max_age` の判定はランタイムが行う**【合意済み】D03 §6.2。`decision_time - freshness_time > max_age` なら `MAX_AGE_EXCEEDED`。ビューは鮮度基準時刻を返すだけである。
+- **出力参照の鮮度基準時刻**は、その出力を生んだ評価の `decision_time` とする【提案】。上流の観測区間まで遡る鮮度の伝播は段階3（第10節）。段階2の5部品は `max_age=None` のため、この選択は検証戦略 A の結果を変えない。**不採用**: 上流の `Observation.freshness_time` を伝播させる案（複数系列を混ぜる部品が無い段階2では検証できない規則を先に固定することになる）。
+- 欠損は **`MissingInputDiagnosis` として集め**、`InputReadSpec.on_missing` に従う。`SkipEvaluation` なら評価を行わず `Skipped` を記録する。`Error` なら `Failed(Reason(DATA_ERROR, ...))` を記録し、`step` は例外を送出して run を失敗させる。**欠損を False や 0 に変換しない**【合意済み】上位 §4.3.15。
+- ウォームアップ不足は `history` が返す `WARMUP_INSUFFICIENT` として現れ、`SkipEvaluation` により評価が飛ぶ。これで「warmup 中の注文ゼロ」（全体計画 §8.2）が成立する。
+- 必須入力の判定は、成立した起動条件の `required_inputs` の**和集合**とする【提案】。必須でない入力が欠けても評価は行う。
+
+### 6.4 評価要求のライフサイクル【提案】
+
+段階2の終端は3つだけである【合意済み】全体計画 §5.3.5 の表（待機と追い越しは段階3）。
+
+| 終端 | 記録 |
+|---|---|
+| `Evaluated` | 生成した `OutputId` の列 |
+| `Skipped` | 欠損診断の列（`MissingInputDiagnosis`） |
+| `Failed` | `Reason`（段階2では `DATA_ERROR` のみ） |
+
+- **`Skipped` / `Failed` で決着した要求は復活させない**【合意済み】上位 §4.3.14。上流の到着で再開する経路は段階2には無い。
+- 評価記録は起動した使用箇所ごとに必ず1件残す。入力不足で評価しなかったことも記録に残す【合意済み】上位 §4.3.15。
+- `RequestId` / `EvaluationId` / `OutputId` は `IdAllocator`（D02 §7.3）で採番し、採番順は評価順に一致させる。
+
+### 6.5 部品状態の保持と更新【提案】
+
+- 状態はランタイムが使用箇所ごとに保持する【合意済み】ADR-0008。`RuntimeState.component_states` は `instance_id` → 状態 payload の凍結 `Mapping` で、`step` ごとに**新しい `RuntimeState` へ差し替える**。可変参照はランタイム1インスタンスにつき1つだけとし、他はすべて不変とする（第1節の例外）。
+- 初期値は `StateSpec.initial`（`LiteralInitialState`）から状態型の payload を構築して作る。実装側の既定値に委ねない【合意済み】D04 §9.1。
+- `reset_on=(RUN_START,)` は run 開始時に初期値へ戻すことと定義する【合意済み】D04 §9.1。段階2の `ResetTrigger` は1値のみ。
+- 更新は `ComponentOutputs.new_state` の置き換えだけで行う。差分更新・部分更新の経路を作らない。`Skipped` / `Failed` の評価では**状態を更新しない**【提案】。更新すると、欠損で飛ばした評価が再武装の判定（`EDGE`）に影響し、同じ入力でも観測遅延の有無で trace が変わる。
+- 段階2では状態を run 内のメモリにだけ持ち、run を跨いで復元しない【提案】。run の途中再開は段階5以降の課題である（全体計画 §7.5）。状態の値そのものは trace に出さず、`EvaluationId` から評価履歴を辿れば再現できる。**不採用**: 毎評価で状態を trace に書く案（段階2で使う状態は真偽値1つで、記録量に見合う情報が無い）。
+
+### 6.6 出力の付番と決定論【提案】
+
+部品は内容を計算し、ランタイムが `OutputRecord` の共通メタデータを付ける【合意済み】上位 §4.3.15。
+
+| フィールド | 付け方 |
+|---|---|
+| `output_id` | `IdAllocator.next(OutputId)` |
+| `evaluation_id` | その評価の `EvaluationId` |
+| `producer` | `(instance_id, output_name)` |
+| `decision_time` | `batch.decision_time`（エンジンが渡した判断時刻） |
+| `available_at` | 段階2は `decision_time` と同じ（計算遅延を入れない） |
+| `sequence` | `step` 内の通し番号。評価順（第5.4節）と、1評価内では契約の `outputs` のキー順で決まる |
+
+これにより、同じ宣言・同じ入力・同じ公開順から同じ `sequence` 列が出る。`ProcessingPoint` の `phase` はエンジンが付ける（D02 §3.3、列挙は D06）。
+
+## 7. 取引機会の状態機械
+
+### 7.1 状態【提案】＋【要決定】Q1・Q2
+
+上位設計書 §4.5 は `ACTIVE` / `CONFIRMED` を**説明用の仮置き**とし、正式な語彙ではないと明記している【合意済み】。本書は次の4つを提案する。**名前と、`CONFIRMED` を持つかどうかは Q1・Q2**。
+
+| 状態 | 区分 | 意味 | 段階 |
+|---|---|---|---|
+| `OPEN`（仮称 `ACTIVE`） | 非終端 | 生成され有効。確認待ち、または発注試行が可能 | 2 |
+| `CONFIRMED` | 非終端 | 後続確認が成立した。まだ発注試行をしていない | 3 |
+| `ORDER_PENDING` | 非終端 | 注文要求をエンジンへ渡し、受付の可否が返っていない | 2 |
+| `TERMINATED` | 終端 | 終端理由（`OpportunityTerminal.reason`）を伴って終わった | 2 |
+
+- **終端は1状態にまとめ、区別は理由が持つ**【提案】。終端理由の語彙の正本は上位設計書 §4.5 であり、状態名を増やすと語彙が2系統になる（第1.1節）。
+- **非終端状態のすべてを「有効な取引機会」と数える**【提案】。`OpportunityConcurrencySpec.max_active` の判定（第7.4節）はこの数え方による。受付待ちの機会を数から外すと、同じ判断時点で上限を超えた発注試行が並ぶ。
+- 取引機会の状態と、注文・建玉の状態は分離する【合意済み】上位 §4.5。`ORDER_PENDING` は「注文がどうなったか」ではなく「機会が発注試行に進んだ」ことを表す。
+- 生成時点は `created_at: ProcessingPoint`（エンジンが処理した点）と `created_decision_time: UtcTime`（判断時刻）の2つで表す【提案】。D04 §10.3 の追い出しの鍵「(取引機会の生成時点, `opportunity_id`)」はこのうち `created_decision_time` を使う。`ProcessingPoint` を鍵にすると、フェーズ順位（D06）が決まるまで鍵が定まらない。
+
+### 7.2 遷移【提案】
+
+すべての遷移を列挙する。フェーズは上位設計書 §4.3.12 の名前で示し、正式な列挙と順位は D06 が与える（第1.1節）。「ライフサイクル検査」は評価の前に走る独立の処理で、上位設計書 §4.3.14 が「期限・追い越し・機会失効の検査は実評価とは別のライフサイクル処理として起動できる」と述べているものである。
+
+| # | 遷移 | 発火条件 | フェーズ | 記録する理由 | 段階 |
+|---|---|---|---|---|---|
+| 1 | （生成）→ `OPEN` | Trigger が発火し、有効な機会数が `max_active` 未満 | P3 | なし | 2 |
+| 2 | （生成）→ `TERMINATED` | 上限に達しており `on_new_trigger=KEEP_EXISTING` | P3 | `CONCURRENCY_LIMIT_REACHED` | 2 |
+| 3 | `OPEN` → `TERMINATED` | 上限に達しており `on_new_trigger=SUPERSEDE_EXISTING`。対象は最も古い有効な機会1件（D04 §10.3 の鍵） | P3 | `SUPERSEDED` | 2 |
+| 4 | `OPEN` / `CONFIRMED` → `ORDER_PENDING` | 注文意図と保護水準が揃い `EntryProposal` を渡した | P5 | なし | 2 |
+| 5 | `ORDER_PENDING` → `TERMINATED` | 自身の注文が受け付けられた（`AdmissionNotice.accepted=True`） | D06 の受付フェーズ | **Q4** | 2 |
+| 6 | `ORDER_PENDING` → `TERMINATED` | 自身の注文がリスク審査で拒否された（`accepted=False`） | D06 の受付フェーズ | **Q3** | 2 |
+| 7 | 非終端 → `TERMINATED` | 他の機会の注文が受け付けられ `on_order_accepted=CLOSE_OTHERS` | D06 の受付フェーズ | `CLOSED_BY_ORDER_ACCEPTANCE` | 2 |
+| 8 | `OPEN` / `CONFIRMED` → `TERMINATED` | `REQUIRE_UNTIL_ORDER_REQUEST` の束縛条件が不成立になった | P4 と P5 直前 | `MARKET_STATE_INVALIDATED` | 2（束縛が空なら発生しない） |
+| 9 | 非終端 → `TERMINATED` | run 末尾に残った | 末尾処理 | **Q5** | 2 |
+| 10 | `OPEN` → `CONFIRMED` | 後続確認が成立した | P4 | なし | 3 |
+| 11 | `OPEN` / `CONFIRMED` → `TERMINATED` | `AwaitConfirmation` の期限に到達した | ライフサイクル検査 | `EXPIRED` | 3 |
+
+- 遷移は1件ごとに `OpportunityTransition` として記録する。生成（遷移1・2）は `from_state=None` で表す。
+- 終端した機会は復活させない【合意済み】ADR-0031。終端状態からの遷移は表に無く、実装は終端済みの機会への遷移要求を `KernelValueError` で拒否する。
+- 理由は `Reason(code, detail=None)`（D02 §8.2）で持ち、**置き換えた相手の機会や発注試行の識別子は `OpportunityTransition` の `counterpart` / `attempt_id` に入れる**【提案】。D02 §8.2 の詳細型は1つの理由コードへ固定して対応付く（`code: ClassVar[ReasonCode]`）ため、5つの終端理由を1つの詳細型では表せない。取引機会専用の終端理由 enum も作らない。D02 §8.1 の `ReasonCode` に5語ともあり、二重定義を避ける（第1.1節）。
+- 遷移5〜7は**エンジンからの通知**（`AdmissionNotice`）を次の `step` の入口で適用する。ランタイムは受付の可否を自分で決めない（リスク審査は `backtest.admission`）。
+- 遷移8の「P5 直前」は、`EntryProposal` を作る直前に束縛条件を読み直す点を指す【合意済み】ADR-0031。段階2は `bindings` が空のため実行されないが、経路は実装する（段階3で条件を足すだけで動くようにする）。
+
+### 7.3 有効性の再検査【提案】（ADR-0031 の実施）
+
+- `SNAPSHOT_AT_OPPORTUNITY` の束縛は、機会の生成時点で読んだ `OutputRecord` を `ValiditySnapshot` として `OpportunityLifecycle` に固定し、以後更新しない。
+- `REQUIRE_UNTIL_ORDER_REQUEST` の束縛は、遷移8のタイミングで**その時点の最新出力**を読み直す。成立しなくなっていれば終端する。再検査で機会の内容（方向・`signal_interval`・`reference_values`）を変更しない【合意済み】ADR-0031。
+- 再検査対象が欠損していれば `ValidityBinding.on_missing` に従う。段階2の2区分では `SkipEvaluation`（今回の再検査を行わず機会を残す）か `Error`（run を失敗させる）であり、**欠損を不成立に変換しない**【合意済み】ADR-0031。待機は段階3。
+- 束縛の対象は `condition_state@v1` を出す出力に限られ、成立の判定は `ConditionState.satisfied` を読むことである【合意済み】D04 §10.2・本書 §4.2。
+
+### 7.4 同時保持と発火の記録【提案】（ADR-0032 の実施）
+
+Trigger の出力が出た評価では、必ず次の順で処理する。
+
+1. `OpportunityId` を採番し、`Opportunity` を組み立てる（第4.2節）。**発火を捨てない**【合意済み】ADR-0032。
+2. 有効な機会（非終端すべて）の数を数える。
+3. 上限未満なら遷移1。上限に達していて `KEEP_EXISTING` なら遷移2、`SUPERSEDE_EXISTING` なら遷移3の後に新しい機会を `OPEN` にする。
+4. どの経路でも `OpportunityTransition` を残す。段階2の設定（`max_active=1`、`KEEP_EXISTING`）でも2本目以降の発火が trace に残り、終端理由で区別できる【合意済み】D04 §10.3。
+
+### 7.5 上位設計書 §4.5 の未解決3点の扱い
+
+| 未解決点 | 本書の扱い |
+|---|---|
+| 後続確認が成立した状態は終端か中間か | **Q2**。推奨は中間状態。ADR-0031 が「`OrderRequest` 生成直前にも再検査し、成立しなくなれば `MARKET_STATE_INVALIDATED` で終端する」と定めており、確認成立後にも終端しうる以上、確認成立そのものを終端にはできない |
+| リスク審査で受付を拒否された後の状態 | **Q3**。段階2は再審査なし（上位 §4.3.14 の確定規則）のため、その機会から次の発注試行は生まれない。残る論点は「終端理由をどう記録するか」である |
+| 自身の注文が受け付けられた後の状態 | **Q4**。`CLOSED_BY_ORDER_ACCEPTANCE` は**他の**機会を終わらせる理由であり（上位 §4.5）、当の機会自身には使えない |
+
+いずれも段階2の trace に現れる（検証戦略 A は必ず遷移5か6を通る）ため、**仮置きにせず段階2の承認時に決める**。
+
+## 8. 約定後の利確の評価【提案】＋【要決定】Q7
+
+検証戦略 A の利確は、約定価格と有効な損切り水準から決まるため、**約定が確定した後**に評価しなければならない。上位設計書 §4.3.12 の P0〜P5 は注文意図の生成で終わっており、約定後に戦略を評価する起動点が無い。
+
+本書は `RuntimeEventNotice(POSITION_OPENED, position_id, opportunity_id)` を受けて `fixed_rr_take_profit` を評価する起動点を D06 へ要求する。**その起動点をどこに置くかが Q7**。推奨は「同じ判断時点の約定処理の後に `step` をもう一度呼ぶ」である。次足まで待つと、建玉が初期の利確水準を持たない時間帯ができる。
+
+この起動点で評価できる情報は、その時点の `RuntimeContextView` と、`decision_time` 以前に公開済みの市場データに限る。約定によって生まれた建玉を読むのであり、未来の価格を読むのではない。D04 §12 の因果辺（注文→約定起動、注文→建玉参照）は、この起動点が帰還路を作らないことをコンパイル時に保証する。
+
+## 9. 段階2の最小範囲（検証戦略 A）と T01
+
+D04 §14 が挙げた宣言に、本書の部品と使用箇所を対応させる。
+
+| 使用箇所 | 契約 | 起動条件 | 入力の接続 | 出力 |
+|---|---|---|---|---|
+| `breakout_level` | `extreme_price` v1（`mode=MAX`、`lookback=20`） | `OnBarClose("h1", USDJPY/1h/bid)` | `prices` ← `MarketDataRef(USDJPY/1h/bid, HIGH)` | `level`: `price@v1` |
+| `stop_level` | `extreme_price` v1（`mode=MIN`、`lookback=20`） | `OnBarClose("h1", USDJPY/1h/bid)` | `prices` ← `MarketDataRef(USDJPY/1h/bid, LOW)` | `level`: `price@v1` |
+| `entry_trigger` | `breakout_trigger` v1（`direction=LONG`） | `OnBarClose("h1", USDJPY/1h/bid)` | `price` ← `MarketDataRef(..., CLOSE)`、`level` ← `breakout_level.level` | `opportunity`: `opportunity@v1` |
+| `entry_order` | `market_order_intent` v1 | `OnInputEvent("opp", "opportunity")` | `opportunity` ← `entry_trigger.opportunity` | `intent`: `order_intent@v1` |
+| `initial_stop` | `level_stop_loss` v1 | `OnInputEvent("opp", "opportunity")` | `opportunity` ← `entry_trigger.opportunity`、`level` ← `stop_level.level` | `protection`: `protection_levels@v1` |
+| `take_profit` | `fixed_rr_take_profit` v1（`reward_risk=2.0`） | `OnRuntimeEvent("filled", POSITION_OPENED)` | `position` ← `RuntimeInputRef(POSITION)` | `action`: `management_action@v1` |
+
+戦略全体の宣言は D04 §14 のとおり（`market_state=None`、`execution_filter=None`、`entry_policy=ImmediateEntry`、`opportunity_validity.bindings=()`、`opportunity_concurrency=(1, KEEP_EXISTING, KEEP_OTHERS)`）。評価順は第5.4節の規則で一意に定まり、`breakout_level` → `stop_level` → `entry_trigger` → `entry_order` → `initial_stop` → `take_profit` となる（同順位は `instance_id` 順。`take_profit` は約定による起動の因果辺で `entry_order` の下流になる）。
+
+T01（紙上トレース）で追う1回の突破は次のとおり【提案】。
+
+| 時点 | フェーズ | 起きること |
+|---|---|---|
+| T（1h 足の確定） | P1 | `breakout_level` と `stop_level` が評価され、当該足を除く20本の高値・安値を出す |
+| T | P3 | `entry_trigger` が評価され、終値が高値を上回り直前が不成立なら取引機会を1件生成（遷移1） |
+| T | P5 | `entry_order` と `initial_stop` が評価され、`EntryProposal` を1件返す（遷移4） |
+| T | D06 の受付 | 受付なら遷移5、リスク拒否なら遷移6 |
+| T | 約定後の起動点（Q7） | `take_profit` が評価され、`SetTakeProfit` を1件返す |
+| T+1h 以降 | P3 | 成立が続く間は `EDGE` により再発火しない。不成立へ戻った時点で再武装される |
+
+テスト【提案】: 単体（各部品の計算規則、`EDGE` の再武装、欠損時の `Skipped`）、意味論（上限到達時に `CONCURRENCY_LIMIT_REACHED` の機会が1件残ること、warmup 中の注文ゼロ、`Skipped` で状態が更新されないこと、終端した機会が復活しないこと）、プロパティ（同じ宣言・同じ入力から同じ `sequence` 列と同じ trace、使用箇所の宣言順を入れ替えても評価順が変わらないこと）、golden（検証戦略 A の1突破分の trace を固定）。
+
+## 10. 対象外
+
+本節は**時期**の線引き（段階2で作らないもの）であり、第1.2節は**担当**の線引き（本書 v0.1 が決めないもの）である。
+
+- 待機（`WAIT_FOR_INPUT`）の意味論と宣言形、`USE_PREVIOUS` の遡り → 本書 v0.2（段階3前）。
+- 評価要求の追い越し（`REQUEST_SUPERSEDED`）と `on_superseded` の既定 → 本書 v0.2。
+- 後続確認（`AwaitConfirmation`・ExecutionFilter）と確認期限の数え方、開始足の扱い → 本書 v0.2。
+- 合成部品（AND / OR / 遷移検出 / N 本継続 / A 後 N 本以内の B） → 本書 v0.2。
+- 指標部品（EMA・ATR）と、その初期化・更新規則、NumPy を使う部品の特定 → 本書 v0.2。
+- Feature の鮮度伝播と複数系列 Feature の鮮度 → 本書 v0.2。
+- 再審査設定の型・配置・回数上限 → 段階6・D10（段階2は能力検査で拒否）。
+- 部品状態の run 跨ぎの保存・復元 → 段階5以降。
+- 学習する部品（fit / 推論分離）、探索空間の宣言 → D09 以降。
+
+## 11. 上位文書との差異
+
+1. **`position_context@v1` が供給する項目**。D04 §5 は段階2で読む項目を「約定価格・方向・数量」と書いているが、固定リスクリワード比の利確には**有効な損切り水準**が要る（第4.3節(5)）。供給範囲の正本は D06 であり、第12節で引き渡す。D04 の次回改訂で §5 の例示に1項目足す。
+2. **`WarmupSpec` を段階2の部品で使わない**。`WarmupSpec.series` は具体的な `SeriesId` を持つ（D04 §9.2）ため、系列を使用箇所が選ぶ再利用可能な部品の契約には書けない。段階2はウォームアップ不足を履歴読み取りの `WARMUP_INSUFFICIENT` で判定でき（第4.3節）、完了条件「warmup 中の注文ゼロ」を満たす。系列を使用箇所から解決する規則が要るかは、EMA を足す v0.2 で扱う。
+3. **初版カタログの品揃え**。全体計画 §5.3.3 が挙げる12部品は検証戦略 A と B の合計であり、段階2（戦略 A）に必要なのは5部品である（第4.3節、Q8）。§5.3.3 の一覧は【提案】の印が付いており、決定との矛盾ではない。
+4. **`runtime/` のモジュール**。D01 §7.2 の一覧のうち `waiting.py` / `supersession.py` は段階3で作る（第2節）。一覧の改訂は不要（初期構成であり後続文書が追加・分割できる、D01 §7.2）。
+
+上記以外に、上位設計書・全体計画書・ADR・D01〜D04 と食い違う提案はない。
+
+## 12. 他文書への引き渡し
+
+第1.2節の境界表を正本とし、ここには**境界表に載らない細目**だけを挙げる。
+
+| 引き渡し先 | 項目 |
+|---|---|
+| D06 | `position_context@v1` の項目に**有効な損切り水準**を含めること（第11節の1）。`OrderIntent.expiry=None` のときに適用する既定の有効時間（第4.3節(3)）。`AdmissionNotice` を返すフェーズと、`attempt_id` の対応付け（第7.2節）。約定後の評価起動点のフェーズ順位（第8節・Q7）。`PhaseSet` への P1〜P5 とライフサイクル検査・約定後起動点の登録（D02 §3.3） |
+| D07 | 取引機会の終端理由別の集計と、`Skipped` の診断理由別の集計（全体計画 §7.5 の「診断」） |
+| D04（次回改訂） | §5 の `position_context@v1` の例示に損切り水準を足す（第11節の1） |
+| `common`（段階2の実装） | `ReasonCode` 列挙への取引機会の終端理由5件と `REQUEST_SUPERSEDED` の追加。設計側は D02 §8.1（v1.3）で確定済み【合意済み】D04 §18 |
+
+## 13. 要決定一覧
+
+「選択肢 n」は下の並びの番号で、1 が本書の推奨である。
+
+**Q1 取引機会の非終端状態をいくつ置くか**
+決めること: 有効な機会の内部状態を「有効」「確認済み」「発注試行中」の3つに分けるか、より少なくするか。
+影響: 同時保持上限の数え方と、判断履歴で「どこまで進んだ機会か」を読めるかが変わる。
+1. （推奨）`OPEN` / `CONFIRMED` / `ORDER_PENDING` の3つ — 受付待ちの機会を上限に数えられ、trace で発注試行の有無が読める。
+2. `OPEN` / `CONFIRMED` の2つ（発注試行中を別状態にしない） — 状態は減るが、同じ判断時点で上限を超えた発注試行が並びうる。
+3. 非終端を `OPEN` の1つだけにする — 最小だが、確認成立と発注試行を trace から区別できない。
+推奨理由: 段階2で必ず通る遷移（発注試行→受付/拒否）を状態として持たないと、受付結果の通知をどの機会へ適用するかが暗黙になる。
+
+**Q2 後続確認が成立した状態は中間か終端か**（上位設計書 §4.5 の未解決点1）
+決めること: 確認成立をもって機会のライフサイクルを終えるか、発注試行へ進む中間状態とするか。
+影響: 確認成立後に条件が崩れた機会を終端できるかどうかが変わる。
+1. （推奨）中間状態とする — 確認成立後も `OrderRequest` 直前の再検査で終端でき、ADR-0031 と一致する。
+2. 終端とし、確認結果を別の記録に移す — 機会の記録は短くなるが、確認後の無効化を機会の終端として表せない。
+推奨理由: ADR-0031 が確認成立後の再検査と終端を既に確定しているため、終端にすると決定と矛盾する。
+
+**Q3 リスク審査で拒否された後の取引機会をどう記録するか**（上位設計書 §4.5 の未解決点2）
+決めること: 自身の発注試行がリスク拒否で終わった機会の終端理由をどう表すか。
+影響: 判断履歴で「リスクで通らなかった機会」を期限切れや置き換えと集計上区別できるかが変わる。
+1. （推奨）専用の終端理由を1つ加える（上位設計書 §4.5 と §4.7.14、D02 §8.1 を同じ PR で改訂） — 区別して集計でき、既存5語の意味を変えない。
+2. 既存の理由コード `RISK` を機会の終端理由として流用する — 語彙を増やさないが、受付前拒否の理由と機会の終端が同じ語になる。
+3. 機会を終端させず、run 末尾まで有効なまま残す — 語彙を増やさないが、上限を占有し続けて次の発火が記録できなくなる。
+推奨理由: 同時保持上限の見送りに専用の理由を与えた D04 の決定（Q10）と同じ考え方で、集計上の区別を保てる。
+
+**Q4 自身の注文が受け付けられた後の取引機会をどう記録するか**（上位設計書 §4.5 の未解決点3）
+決めること: 発注試行が受け付けられた当の機会の終端理由をどう表すか。
+影響: 判断履歴で「注文になった機会」と「他の注文に終わらされた機会」を区別できるかが変わる。
+1. （推奨）成功の終端として専用の終端理由を1つ加える（正本の改訂を伴う） — 成約に至った機会を集計でき、`CLOSED_BY_ORDER_ACCEPTANCE` の意味を変えない。
+2. `CLOSED_BY_ORDER_ACCEPTANCE` を自身にも使う — 語彙は増えないが、自分の注文で終わったのか他人の注文で終わらされたのかを読めない。
+3. 建玉が閉じるまで非終端で保持する — 機会と建玉のライフサイクルが結び付き、上位設計書 §4.5 の「分離する」に反する。
+推奨理由: 上位設計書 §4.5 が `CLOSED_BY_ORDER_ACCEPTANCE` を「別の注文が受け付けられたことを理由に終端」と定義しており、自身には使えない。
+
+**Q5 run 末尾に残った有効な取引機会をどう終端するか**
+決めること: run の終了時点でまだ有効な機会の終端の表し方。
+影響: 末尾処理の記録が注文側（`RUN_END`）と揃うかどうかが変わる。
+1. （推奨）既存の理由コード `RUN_END` で終端する — 残存注文の取消（上位設計書 §4.7.13）と同じ語で末尾を読める。
+2. 終端させず「有効なまま run が終わった」として記録する — 語彙を増やさないが、終端理由別の集計で機会の総数が合わない。
+3. 機会専用の末尾終端理由を加える — 区別は増えるが、注文側と別語になる。
+推奨理由: `RUN_END` は D02 §8.1 に既にあり、末尾で打ち切ったという意味がそのまま当てはまる。
+
+**Q6 同じ判断時点で複数の起動条件が成立したときの評価回数**
+決めること: 1つの使用箇所で2つ以上の起動条件が同時に成立したとき、評価を1回にまとめるか、起動条件ごとに行うか。
+影響: 同じ判断時点で取引機会が1件生まれるか2件生まれるかが変わる。
+1. （推奨）1回に集約し、成立した起動条件名をすべて記録する — 同じ論理確認を二重実行しない（上位設計書 §4.3.12）。
+2. 起動条件ごとに1回ずつ評価する — 起動条件別の必須入力を厳密に分けられるが、同じ足で機会が重複しうる。
+3. 宣言（契約）でどちらかを選べるようにする — 柔軟だが、段階2で使わない設定が増える。
+推奨理由: 上位設計書 §4.3.12 が二重実行の禁止を既に述べており、検証戦略 A では集約しても必須入力の差が出ない。
+
+**Q7 約定後に利確を評価する起動点をどこに置くか**
+決めること: 建玉生成の通知を受けて Exit を評価する処理を、いつ走らせるか。
+影響: 約定した建玉が初期の利確水準を持たない時間帯が生じるかどうかが変わる。
+1. （推奨）同じ判断時点の約定処理の後に戦略ランタイムをもう一度呼ぶ — 約定と同じ時点で利確が付く。
+2. 次の公開バッチの先頭で評価する — 実装は単純だが、次の足まで利確が無い。
+3. エンジンが利確水準を直接計算する — 戦略の計算規則がエンジンへ漏れ、部品として差し替えられなくなる。
+推奨理由: 上位設計書 §4.7.1 が初期の利確を Exit の責務と定めており、次足まで遅らせると T01 で「利確なしの建玉」が現れる。
+
+**Q8 段階2の初版カタログの粒度**
+決めること: 検証戦略 A のために作る部品をいくつに分けるか。
+影響: 段階3で合成部品を足すときに契約を作り直すかどうかが変わる。
+1. （推奨）役割ごとに5部品（高値と安値は1部品を2使用箇所） — 段階2の最小で、各部品の契約が段階3でも変わらない。
+2. 条件部品と取引機会への変換部品を分けて6部品以上にする — 合成の下地になるが、段階2で使わない接続が増える。
+3. 全体計画 §5.3.3 の12部品を段階2で作る — 戦略 B まで一度に揃うが、段階2の完了条件を超える。
+推奨理由: 段階2の完了条件は戦略 A の実行であり、合成部品の契約は段階3で条件部品と同時に決めるほうが作り直しが少ない。
+
+**Q9 コンパイル拒否の理由をどう表すか**
+決めること: コンパイル時の拒否理由を、共通の理由コードで表すか、コンパイラ専用の区分で表すか。
+影響: 拒否の語彙が実行時の理由コードと混ざるかどうかが変わる。
+1. （推奨）コンパイラ専用の区分（`CompileRejection`）を使い、共通の理由コードは実行時に限る — 実行時の集計に設計ミスの分類が混ざらない。D04 §12 の文言を次回改訂で合わせる。
+2. 共通の理由コードへ拒否用の語を加える（正本の改訂を伴う） — 語彙が1系統になるが、注文・評価の集計に設計ミスが混ざる。
+3. 既存の `DATA_ERROR` を流用する — 改訂不要だが、データの問題と宣言の問題を区別できない。
+推奨理由: コンパイルは run の前に終わる処理で、理由コードの主な使用箇所（受付前拒否・評価見送り）とは対象が異なる。
+
+## 14. 承認時に確認すること
+
+本書は v0.1 であり、承認後も**待機・追い越し・後続確認**は v0.2（段階3前）で足す（第10節）。承認の範囲は第1.2節の表の第3列である。Q1〜Q9 の決定は本文へ反映し、第13節に決定内容を残す。
