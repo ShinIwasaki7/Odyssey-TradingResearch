@@ -1,7 +1,7 @@
 # D03: 市場データ・時刻基盤設計（`odyssey_fx.marketdata`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、短縮セッションの足の不変条件をカレンダー対応の期待区間で定義（第3.2節・第3.3節・第5.2節）。v1.2（同日）: 公開遅延の非負制約と `available_at >= bar_end`、DST 切替日の起点解決規則、snapshot ダイジェスト対象の列の正規順序を追加。第13節の9項目はすべて推奨案を採用。承認条件5点（①時間足定義の `length` を `nominal_length` に統一、②価格基準の宣言者・宣言日時を `SnapshotId` の対象から外して決定論化、③`QUARANTINED_UNASSIGNED` は再分類まで読めないと明記、④承認前の snapshot を読めないようにする、⑤CLI を暫定 ID フローに合わせる）を反映済み。ADR-0016 条件1（D01〜D03）を本書で充足し、段階1の実装を開始できる。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、短縮セッションの足の不変条件をカレンダー対応の期待区間で定義（第3.2節・第3.3節・第5.2節）。v1.2（同日）: 公開遅延の非負制約と `available_at >= bar_end`、DST 切替日の起点解決規則、snapshot ダイジェスト対象の列の正規順序を追加。第13節の9項目はすべて推奨案を採用。承認条件5点（①時間足定義の `length` を `nominal_length` に統一、②価格基準の宣言者・宣言日時を `SnapshotId` の対象から外して決定論化、③`QUARANTINED_UNASSIGNED` は再分類まで読めないと明記、④承認前の snapshot を読めないようにする、⑤CLI を暫定 ID フローに合わせる）を反映済み。ADR-0016 条件1（D01〜D03）を本書で充足し、段階1の実装を開始できる。v1.3（2026-09-20、ユーザー決定3件）: 段階1の実データ受入れ（PR #10）で分類が必要な警告が 23,989 件に達したことを受け、①人間の分類を必須とする検査種別を `MISSING_EXPECTED_BAR` と `UNEXPECTED_BAR` の明示集合に限定し、種別ごとに許される分類結果を分けた（第3.9節）。②分類 1 件を「検査種別 × 区間 × 対象系列（明示集合または全系列）」でまとめて宣言できる形にし、確定時の検査規則を定めた（第3.7節・第3.7.1節・第4節 9・第10節）。③検査報告 `integrity_report.json` を git 管理対象に加えた（第3.7節、ADR-0013 改訂）。併せて、確定段階の再実行が暫定 snapshot の実体を内容照合の上で再利用することを明記した（第4節 9。PR #10 の人間レビュー指摘）。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §3（データ前提）、§4.3.9〜4.3.10（読み方・鮮度）、§4.3.13（公開予定・遅延）、§4.7.13 C（完全性検査・カレンダー）、[全体計画書](fx_research_platform_overall_plan.md) §5.2、[D01](D01_architecture_and_dependency_rules.md) §1・§4・§10.2、[D02](D02_common_kernel.md)、ADR-0013（データ配置）、ADR-0014（期間のアクセス分類）、ADR-0015（初版の対象）
 対応段階: 段階1で実装。
 
@@ -81,9 +81,11 @@
 | `weekly_open` | `(weekday=Sunday, time=17:00)` | 週の開始（現地） |
 | `weekly_close` | `(weekday=Friday, time=17:00)` | 週の終了（現地） |
 | `closures` | `tuple[ClosureRule, ...]` | 明示した休場・短縮（現地日付と区間） |
+| `openings` | `tuple[OpeningRule, ...]` | 明示した営業例外（v1.3）: 週の休場時間帯のうち開場する現地日付と区間。`closures` と重なる宣言は構築時に拒否する |
 
 - `is_open(t: UtcTime) -> bool`、`sessions(interval) -> tuple[Interval, ...]`、`expected_bar_starts(timeframe_def, interval) -> tuple[UtcTime, ...]`。
 - **休場は宣言制**。土日を UTC で一律除外しない。受入れの検査で見つかった「足が存在すべきなのに無い区間」を、人間が「休場（カレンダーへ追加、版を上げる）」か「データ欠損（そのまま欠損として扱う）」に分類する。分類結果は manifest に残す。
+- **営業例外も宣言制**（v1.3）。週の休場時間帯（例: 日曜 17:00 前）に足がある区間は「休場帯の足」（`UNEXPECTED_BAR`）として報告され、人間が「カレンダー側の営業例外（`openings` へ追加、版を上げる）」か「セッション外データ異常（足を除外する）」に分類する。`sessions()` は `weekly_open`〜`weekly_close` に `openings` を加え、`closures` を取り除いた区間を返す。
 
 ### 3.5 公開予定 `SeriesSchedule`
 
@@ -118,23 +120,23 @@
 | `series` | `SeriesManifest(series_id, covered_interval, bar_count, partitions)` の列 |
 | `partitions` | `PartitionRecord(partition_id, series_id, access_class, interval, bar_count, digest)` |
 | `integrity_report_ref` | 検査結果ファイルの参照とダイジェスト |
-| `closure_decisions` | 検査で見つかった欠落区間に対する人間の分類（休場 / 欠損） |
+| `closure_decisions` | 検査で見つかった警告に対する人間の分類の列（v1.3: `ClassificationDecision` の列。フィールド名は互換のため据え置く）。1 件は `kind`（分類対象の検査種別）、`interval`（区間）、`series`（対象系列の**解決済み**明示集合。確定時に「全系列」を snapshot 内の具体的な `SeriesId` 集合へ解決して保存する）、`outcome`（分類結果。第3.9節の種別ごとの語彙）、`note`（根拠・注記）、`calendar_ref`（参照するカレンダー新版。任意）を持つ |
 | `legacy_access` | 旧基盤から引き継いだ閲覧・使用履歴（`LEGACY_HOLDOUT` の `CONSUMED` 判定の根拠） |
 | `access_log` | manifest 内には持たない。独立ファイル `access_log.jsonl`（追記専用、git 管理）に置き、`HoldoutState` はそこから導出する。`snapshot_id` の計算対象外 |
 | `approval` | 人間の受入れ承認（承認者・日時・コメント）。`snapshot_id` の計算対象外 |
 
-manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。実体は同ディレクトリ配下の partition（git 管理外）。
+manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検査報告 `integrity_report.json` と閲覧記録 `access_log.jsonl` も同ディレクトリで git 管理する（v1.3、ADR-0013 改訂）。検査報告は manifest のダイジェスト対象であり承認・読み取り関門が必要とするため、追跡しなければ別クローンで Parquet を復元しても snapshot を検証できない。検査報告には価格や封印期間の統計値を含めず、検査種別・系列・区間・重大度・構造的な詳細だけを保存する（第3.9節）。実体（partition の Parquet）と `_pending/` 配下の暫定成果物は git 管理外のまま。
 
 #### 3.7.1 `SnapshotId` の対象と二段階フロー（確定）
 
 `SnapshotId` の対象: `sources`、`conversion`（カレンダー版を含む）、`basis_declaration`（値と `verified` のみ）、`series`、`partitions`、`integrity_report_ref`、`closure_decisions`、`legacy_access`。対象外: `created_at`、`declaration_record`、`access_log`、`approval`。対象はすべて決定論的な内容であり、実行時刻・操作者・承認者は含めない。
 
-**列の正規順序**（確定）: ダイジェスト対象の列は、ファイルシステムの列挙順や検査の実行順に依存しないよう、符号化前に次の鍵で整列する。`sources` は `path`（POSIX 相対パス、コードポイント順）。`series` は `SeriesId` の文字列。`partitions` は `(series_id 文字列, access_class, interval.start)`。`closure_decisions` と `legacy_access` は `(series_id 文字列, interval.start)`。完全性検査の報告（`integrity_report_ref` の対象ファイル）は `CheckResult` を `(series_id 文字列, kind, interval.start, detail の正規化表現)` で整列して符号化する。manifest の保存形式も同じ順序で書く。
+**列の正規順序**（確定）: ダイジェスト対象の列は、ファイルシステムの列挙順や検査の実行順に依存しないよう、符号化前に次の鍵で整列する。`sources` は `path`（POSIX 相対パス、コードポイント順）。`series` は `SeriesId` の文字列。`partitions` は `(series_id 文字列, access_class, interval.start)`。`legacy_access` は `(series_id 文字列, interval.start)`。`closure_decisions` は v1.3 から `(kind, interval.start, interval.end, series 文字列の整列済み列, outcome)`（`series` は解決済みの明示集合を文字列のコードポイント順に並べた列）。分類は正規化した内容（解決済み系列集合を含む）で `SnapshotId` に入るため、同じ分類を「全系列」と書いても明示集合で書いても同じ `snapshot_id` になる。完全性検査の報告（`integrity_report_ref` の対象ファイル）は `CheckResult` を `(series_id 文字列, kind, interval.start, detail の正規化表現)` で整列して符号化する。manifest の保存形式も同じ順序で書く。
 
 受入れは二段階で行う。
 
 1. **暫定段階**: 第4節の 1〜8 を実行し、`closure_decisions` が空の状態で `provisional_id` を計算する。出力は `data/snapshots/_pending/<provisional_id>/` に置く。暫定 snapshot は as-of ビュー・公開フィードから読めない（バックテストの入力にできない）。
-2. **確定段階**: 人間が WARN を休場 / 欠損に分類して `closure_decisions` を記入する。分類でカレンダーを変更した場合は版を上げて 5〜7 を再実行する。分類確定後に**最終 `snapshot_id`** を計算し、ディレクトリを `data/snapshots/<snapshot_id>/` へ移す。`approval` はこの後に記入し、識別には影響しない。
+2. **確定段階**: 人間が分類対象の警告（第3.9節の明示集合。v1.3）を分類して `closure_decisions` を記入する。分類でカレンダーを変更した場合は版を上げ、**暫定 snapshot の原系列の足を内容照合の上で再利用して** 5〜7 を再実行する（原ファイルは読み直さない。第4節 9）。分類確定後に**最終 `snapshot_id`** を計算し、ディレクトリを `data/snapshots/<snapshot_id>/` へ移す。`approval` はこの後に記入し、識別には影響しない。
 3. **承認前は読めない**: `approval` が記入されるまで、最終ディレクトリにある snapshot も as-of ビュー・公開フィード・`SnapshotCatalog` から読めない（`SnapshotNotApproved`、構造エラー）。暫定 snapshot（`_pending/`）は承認の対象にならず、常に読めない。
 
 同じ原ファイル・設定・コード版・分類なら同じ最終 `snapshot_id` になる。分類が異なれば別 snapshot である。
@@ -160,12 +162,14 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。実�
 | `OHLC_INCONSISTENT` | `low <= open/close <= high` の違反、非正の価格 | ERROR |
 | `NAIVE_OR_FOREIGN_TZ` | オフセットなし、または UTC 以外のオフセット | ERROR |
 | `IRREGULAR_INTERVAL` | 足の開始が定義の整列に合わない | ERROR |
-| `MISSING_EXPECTED_BAR` | カレンダー上存在すべき足の欠落 | WARN（人間が休場 / 欠損に分類） |
-| `UNEXPECTED_BAR` | カレンダー上休場の時間帯に足がある | WARN（カレンダー修正の候補） |
-| `CROSS_SYMBOL_MISALIGNMENT` | 同じ時間足で銘柄間の足境界がずれる | WARN |
+| `MISSING_EXPECTED_BAR` | カレンダー上存在すべき足の欠落 | WARN（**分類必須**。結果: `CLOSURE`（休場。カレンダーの `closures` へ追加して版を上げる）/ `DATA_GAP`（データ欠損。そのまま欠損として扱う）） |
+| `UNEXPECTED_BAR` | カレンダー上休場の時間帯に足がある | WARN（**分類必須**。結果: `CALENDAR_EXCEPTION`（カレンダー側の営業例外。`openings` へ追加して版を上げる）/ `OUT_OF_SESSION_DATA`（セッション外データ異常。第4節 9 の除外規則で足を除外する）） |
+| `CROSS_SYMBOL_MISALIGNMENT` | 同じ時間足で銘柄間の足境界がずれる | WARN（記録のみ。分類は要求しない） |
 | `SOURCE_TRANSITION` | `source` の切替点 | INFO |
 | `ZERO_VOLUME_SPAN` | volume 0 の連続区間 | INFO |
-| `DST_BOUNDARY_ANOMALY` | DST 切替週の足数・境界が期待と異なる | WARN |
+| `DST_BOUNDARY_ANOMALY` | DST 切替週の足数・境界が期待と異なる | WARN（記録のみ。分類は要求しない） |
+
+**分類対象の検査種別**（v1.3、確定）: 人間の分類を必須とするのは `CLASSIFIABLE_KINDS = {MISSING_EXPECTED_BAR, UNEXPECTED_BAR}` の**明示集合**であり、「WARN 全体」ではない。集合の変更は本書の改訂を伴う。他の WARN（銘柄間の境界ずれ、DST 異常）は検査報告に保存し、確定・承認・読み取りの条件にしない。種別ごとに許される分類結果は上表のとおりで、`MISSING_EXPECTED_BAR` に `CALENDAR_EXCEPTION` を、`UNEXPECTED_BAR` に `CLOSURE` / `DATA_GAP` を与える分類は構築時に拒否する（休場帯の足を休場・欠損へ無理に当てはめない）。
 
 `LEGACY_HOLDOUT` と `QUARANTINED_UNASSIGNED` の partition に対する検査結果は、構造情報（件数・区間・種別）だけを含め、価格の統計を含めない。
 
@@ -182,10 +186,23 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。実�
 6. 上位足の生成            1h → 4h_ny17 / 1d_ny17（第5節）。生成元の参照を provenance に残す
 7. アクセス分類と partition  bar_end 基準で partition に分け、Parquet に書き出す（adapters）
 8. 暫定 manifest 生成      provisional_id を計算し _pending/ に manifest.json を書く（第3.7.1節）
-9. 分類と確定              人間が WARN を休場 / 欠損に分類（closure_decisions）。カレンダー変更なら版を上げて
-                           5〜7 を再実行。分類確定後に最終 snapshot_id を計算してディレクトリを確定し、
-                           approval を記入する
+9. 分類と確定              人間が分類対象の警告（第3.9節の明示集合）を分類（closure_decisions）。カレンダー
+                           変更なら版を上げて 5〜7 を再実行（暫定 snapshot の実体を内容照合の上で再利用）。
+                           分類確定後に最終 snapshot_id を計算してディレクトリを確定し、approval を記入する
 ```
+
+**分類の形式と確定時の検査**（v1.3、確定）。分類 1 件は「分類対象の検査種別・区間・対象系列（明示集合、または snapshot 内の全系列）・分類結果・根拠と注記・必要なら参照するカレンダー新版」を表し、その区間に**完全に含まれる**同種別の警告（対象系列のもの）をすべて分類したものとみなす。確定時に次を検査し、違反は構造エラーで確定を拒否する。
+
+1. 分類対象の警告がすべて**ちょうど 1 件**の分類に含まれる（未分類なし）。
+2. 同じ警告を複数の分類が覆わない（競合する分類は拒否。区間の重なりが警告を共有しなければ許容）。
+3. 対応する警告が 1 件もない分類を拒否する（分類は報告された警告に対してのみ行う）。
+4. 「全系列」は確定時に snapshot 内の具体的な `SeriesId` 集合へ解決して保存する。保存後の分類は明示集合だけを持つ。
+5. 分類の範囲を広げても、報告されていない警告を捏造しない（分類が警告を増やすことはない。除外規則で足が減っても警告は再検査で導く）。
+6. `SnapshotId` には正規化した分類内容（第3.7.1節の整列鍵）を含める。同じ警告集合に対する同じ分類は、記入の仕方によらず同じ `snapshot_id` になる。
+
+**再実行の入力**（v1.3、確定）。カレンダー新版を伴う分類では、暫定 snapshot の partition から読み戻した原系列の足（出所が `AGGREGATED` でないもの）を再利用し、原ファイルは読み直さない。再利用の前に、検査報告の実ダイジェストが暫定 manifest の `integrity_report_ref` と一致すること、全 partition の系列・件数・区間・内容ダイジェストが暫定 manifest の記録と一致することを検証し、不一致なら何も書かずに失敗する。`sources`・コード版・時刻規約・集約規則の版・`created_at` は引き継ぎ、カレンダーの識別と版だけを置き換える。時間足定義は id と版まで暫定 snapshot の系列と一致しなければ失敗。分類の突き合わせは元の報告（人間が見た報告）に対して行い、再実行後の報告に残る分類対象の警告がすべて分類に含まれることも検査する。
+
+**セッション外データ異常の除外規則**（v1.3、確定）。`UNEXPECTED_BAR` を `OUT_OF_SESSION_DATA` と分類した区間の足は、確定段階の 6〜7 再実行時に原系列から除外し partition に含めない。上位足は除外後の原系列から再生成する。除外は WARN 対象の足に限る（ERROR に関与する足は既に受入れ失敗している）。除外した足の件数と区間は分類記録（`note` ではなく構造的な `excluded_bar_count`）に残し、`sources` の行数は原ファイルの行数のまま変えない。除外後に「存在すべき足の欠落」が新たに生じることはない（休場帯の足だから）。
 
 - 受入れは決定論的。同じ原ファイル・設定・コード版・分類なら同じ最終 `snapshot_id` になる（`created_at` は識別に含めない）。
 - 受入れ自体は封印区分の価格を読むが、出力（partition 実体）は gate の外に置かれ、報告には価格統計を含めない（第3.9節）。
@@ -298,19 +315,39 @@ run 区間内の全系列について、`available_at` 順に次を生成する�
 | コマンド | 入力 | 出力・効果 |
 |---|---|---|
 | `odyssey-fx data accept --datasource <yaml> --calendar <yaml> --timeframes <yaml> --symbols <dir> --out data/snapshots/` | 原ファイルと設定 | 第4節 1〜8 を実行し、`data/snapshots/_pending/<provisional_id>/` に暫定 manifest・検査結果・partition を書く。`provisional_id` を表示 |
-| `odyssey-fx data classify --pending <provisional_id> --decisions <yaml>` | 欠落区間の分類（休場 / 欠損）と、必要ならカレンダーの新版 | `closure_decisions` を記入し、カレンダー変更があれば 5〜7 を再実行。最終 `snapshot_id` を計算して `data/snapshots/<snapshot_id>/` へ確定。未分類の WARN が残る場合は失敗 |
+| `odyssey-fx data classify --pending <provisional_id> --decisions <yaml> --timeframes <yaml> --out data/snapshots/` | 分類対象の警告の分類（第4節 9 の形式）と、必要ならカレンダーの新版 | 暫定 snapshot の実体を内容照合してから `closure_decisions` を記入し、カレンダー変更があれば暫定 snapshot の原系列の足から 5〜7 を再実行（原ファイルは読み直さない）。最終 `snapshot_id` を計算して `data/snapshots/<snapshot_id>/` へ確定。分類対象の警告が未分類、競合する分類、対応する警告のない分類、内容不一致、既に確定済みのディレクトリがある場合は失敗 |
 | `odyssey-fx data approve --snapshot <snapshot_id> --by <name> --comment <text>` | 確定済み snapshot | `approval` と `declaration_record` を記入。暫定 snapshot は承認できない |
 
 承認前の snapshot はどのコマンド・ポートからも読み取り対象にならない（第3.7.1節 3）。
+
+分類ファイルの形式（v1.3、確定。利用者が任意の場所に置き、`app.config` が検証する）:
+
+```yaml
+schema_version: 2
+calendar: configs/calendars/fx_ny17_v2.yaml   # 分類でカレンダーを変えた場合だけ
+decisions:
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T00:00:00Z", end: "2016-12-27T00:00:00Z"}
+    series: all                                # または [USDJPY/1h/bid, USDJPY/15m/bid]
+    outcome: CLOSURE
+    note: クリスマス翌日の休場
+  - kind: UNEXPECTED_BAR
+    interval: {start: "2020-03-15T20:00:00Z", end: "2020-03-15T22:00:00Z"}
+    series: [EURUSD/1h/bid]
+    outcome: OUT_OF_SESSION_DATA
+    note: 出所の切替に伴う早期配信
+```
+
 
 ## 11. テスト（確定）
 
 | 種別 | 内容 |
 |---|---|
-| 単体 | `Bar` の不変条件（短縮セッションで切り詰められた区間が受理され、整列上の区間のままの足が拒否されること。`available_at < bar_end` が拒否されること）、負の遅延の拒否、DST 切替日の起点解決（秋は最初の出現、春は次に存在する瞬間）、`SessionAlignment` の境界計算（DST 切替週の 4h/1d 境界を UTC で固定値と照合し、切替日の日足が 23h/25h、4h 足が 3h/5h になること）、カレンダーの週開閉、`DurationWindow` の端点、partition 所属（`bar_end` 基準）、`SnapshotId` が `created_at` に依存しないこと、分類の差で `snapshot_id` が変わること |
+| 単体 | `Bar` の不変条件（短縮セッションで切り詰められた区間が受理され、整列上の区間のままの足が拒否されること。`available_at < bar_end` が拒否されること）、負の遅延の拒否、DST 切替日の起点解決（秋は最初の出現、春は次に存在する瞬間）、`SessionAlignment` の境界計算（DST 切替週の 4h/1d 境界を UTC で固定値と照合し、切替日の日足が 23h/25h、4h 足が 3h/5h になること）、カレンダーの週開閉、`DurationWindow` の端点、partition 所属（`bar_end` 基準）、`SnapshotId` が `created_at` に依存しないこと、分類の差で `snapshot_id` が変わること、分類の突き合わせ（未分類・競合・対応なしの拒否、「全系列」の解決、明示集合と「全系列」で同じ `snapshot_id`）、種別と結果の組合せの拒否、営業例外の `sessions()` への反映、セッション外データ異常の除外 |
 | 意味論 | 未確定の上位足を参照できない、遅延注入で `Publication` だけが動き OHLC が変わらない、期待足未到着で古い足へ戻らない、範囲外 partition で `HoldoutAccessViolation` |
 | プロパティ | 将来の足を追加しても `at` 以前の as-of 結果が変わらない、受入れの決定論性（同じ入力で同じ `snapshot_id`。原ファイルの列挙順・検査の実行順を入れ替えても同じ `snapshot_id`）、集約の OHLC が構成足の集計と一致 |
 | golden | 人工 1h 系列から生成した 4h/1d の固定出力 |
+| 意味論（確定段階） | 暫定 partition の価格を書き換えた後の分類が内容不一致で拒否される、検査報告を差し替えた後の分類が拒否される、カレンダー新版で説明された警告の分類が「対応なし」として拒否されない |
 | 実データ | 段階1の完了条件として実データ受入れを1回実行し、manifest と検査結果を人間が確認する |
 
 ## 12. 段階1の完了条件との対応
