@@ -14,8 +14,11 @@
 無視されないにもかかわらず終了コード 0 を返す。したがって `-v` で
 最終的に一致した規則を読み、それが否定規則（`!` 始まり）かどうかで判定する。
 
-`--no-index` は付けない。作業ツリーに実ファイルが無くても判定でき、かつ
-「追跡済みファイルは無視されない」という実運用どおりの意味で検査するため。
+`--no-index` を付ける理由: 既定の `git check-ignore` は追跡済みのパスを
+「無視対象ではない」として規則の照合自体を省き、終了コード 1（一致なし）を返す。
+本 PR は manifest.json と access_log.jsonl を実際に追跡するので、実データが
+コミットされた時点で規則が正しいまま検査が失敗してしまう。ここで確かめたいのは
+索引の状態ではなく規則そのものの挙動なので、索引を見ない `--no-index` を使う。
 """
 
 from __future__ import annotations
@@ -53,9 +56,11 @@ def _matched_pattern(path: str) -> str | None:
 
     `git check-ignore -v` は `<source>:<line>:<pattern>\t<path>` を出力する。
     規則が `!` で始まる場合、そのパスは（一致はしたが）無視されない。
+
+    `--no-index` は必須。これが無いと追跡済みのパスで一致なし（None）になる。
     """
     result = subprocess.run(
-        ["git", "check-ignore", "-v", "--", path],
+        ["git", "check-ignore", "-v", "--no-index", "--", path],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -89,6 +94,35 @@ def test_snapshot_manifest_and_access_log_are_not_ignored(path: str) -> None:
     assert pattern is not None and pattern.startswith("!"), (
         f"{path} は追跡できなければならない（最終一致規則: {pattern!r}）。"
         "`data/snapshots/*/*` の後ろに `!` の再包含規則があるか確認すること"
+    )
+
+
+def test_no_ignored_data_artifact_is_actually_tracked() -> None:
+    """除外対象が誤って追跡されていないことを実リポジトリの索引で確かめる。
+
+    規則の判定（`--no-index`）は索引を見ないため、「規則では除外なのに過去に
+    強制追加されて追跡されている」状態を検出できない。原データや snapshot 実体が
+    追跡されると、容量だけでなく holdout の実体が共有先に流出しうるので別途見る。
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--", "data", "runs"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked = [line for line in result.stdout.splitlines() if line]
+    unexpected = [
+        path
+        for path in tracked
+        if not (
+            path.startswith("data/snapshots/")
+            and Path(path).name in {"manifest.json", "access_log.jsonl"}
+        )
+    ]
+    assert not unexpected, (
+        f"data/ と runs/ で追跡してよいのは snapshot の manifest.json と "
+        f"access_log.jsonl だけ。実際に追跡されている想定外のパス: {unexpected}"
     )
 
 
