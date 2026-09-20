@@ -1,7 +1,7 @@
 # D04: 戦略宣言モデル設計（`odyssey_fx.strategy.declarations`）
 
 作成日: 2026-09-20
-状態: **草案 v0.1。承認待ち**。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。PR #14 の Codex 指摘3件を反映済み（ダイジェスト対象から実装参照を分離: 第13.2節・Q2、状態の初期値宣言を追加: 第9.1節、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く: 第7節）。
+状態: **草案 v0.1。承認待ち**。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。PR #14 の Codex 指摘7件（1巡目3件・2巡目4件）を反映済み。1巡目: ダイジェスト対象から実装参照を分離（第13.2節・Q2）、状態の初期値宣言を追加（第9.1節）、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く（第7節）。2巡目: 建玉・口座を読む入力の許可組合せを表で明示（第6.1節）、約定通知で評価を起動する区分を追加（第8節）、使用箇所の一覧を識別子順に正規化（第3節）、銘柄をグラフ上で伝播させて一致検査を実装可能にした（第5節）。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.2〜§4.3.11・§4.3.15・§4.5・§4.6・§4.7.1、[全体計画書](fx_research_platform_overall_plan.md) §5.3.1〜§5.3.4・§7.3 前半、[D01](D01_architecture_and_dependency_rules.md) §2・§3・§5・§7.2・§8・§10.1、[D02](D02_common_kernel.md)、[D03](D03_marketdata_and_time.md) §3.1〜§3.3・§6・§7、ADR-0011（frozen dataclass）、ADR-0016（実装開始条件）、ADR-0018（設定は YAML）、ADR-0021（NumPy の許可範囲）、ADR-0031（確認待ち中の条件再検査）、ADR-0032（再発火と複数取引機会）、ADR-0033（評価要求の追い越しの改名）
 対応段階: 段階2で実装。ADR-0016 条件2 のうち D04 を充足する。
 
@@ -53,6 +53,8 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 不変条件【提案】: `component_id` は `^[a-z0-9_]+$`、`version >= 1`、`instance_id` は同一戦略内で一意で `^[a-z0-9_]+$`、`components` は 1 件以上、`inputs` / `outputs` / `parameters` のキーは `^[a-z0-9_]+$`。違反は `KernelValueError`（D02 §10）。
 
+`components` の正規化【提案】: 並び順で実行順序を指定しないため【合意済み】§4.3.5、`StrategyDefinition` は構築時に `components` を `instance_id` の Unicode コードポイント順へ並べ替えて保持する。D02 §3.3 の `PhaseSet` と同じ扱いであり、設定ファイル内の記述順が内容ハッシュ（第13.2節）に影響しないようにする。
+
 ## 4. 入出力と接続
 
 ### 4.1 仕様型【提案】（上位設計書 §4.3.8 の案を確定させる）
@@ -86,7 +88,9 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 初版の登録【提案】: `price`、`price_offset`、`ratio`、`condition_state`、`market_permission`、`opportunity`、`confirmation_result`、`order_intent`、`protection_levels`、`management_action`（すべて version 1）。各登録は「正規化エンコード可能な payload 構造」と「対応する `records` の型」を持ち、レジストリは `declarations` 内の静的テーブルとする（実行時の登録 API を持たない）。
 
-接続検証【提案】: 接続元 `OutputSpec` と接続先 `InputSpec` で `(type_id, version)` が一致すること。`price` 系は銘柄（`Symbol`）の一致も検査する。単位は `ParameterSpec` 側（第7節）が持ち、データ型には持たせない。
+接続検証【提案】: 接続元 `OutputSpec` と接続先 `InputSpec` で `(type_id, version)` が一致すること。単位は `ParameterSpec` 側（第7節）が持ち、データ型には持たせない。
+
+銘柄の一致検査【提案】: `DataTypeRef` は銘柄を持たないため、銘柄はコンパイラがグラフ上を伝播させて決める。各使用箇所の銘柄は「その部品の入力に接続された `MarketDataRef` の銘柄」と「上流の使用箇所から伝播した銘柄」の和集合とし、集合が2つ以上になった使用箇所は拒否する（初版は単一銘柄。上位設計書 §4.7.1）。`MarketDataRef` を1つも辿れない使用箇所は銘柄なしとして扱い、`price` 系の出力を持てない。これにより `OutputRef` 経由の価格入力にも銘柄の一致検査が効く。複数銘柄を扱う伝播規則は D10・段階6。
 
 ## 6. 読み取り条件と欠損方針
 
@@ -99,7 +103,16 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 | `DeliveredEvent` | 追加フィールドなし |
 | `CurrentContext` | 追加フィールドなし |
 
-`PortKind` との組合せ【提案】: `VALUE` は `LatestAvailable` / `HistoryWindow` のみ、`EVENT` は `DeliveredEvent` のみ、`COMMAND` は入力に接続しない（段階2）、`RuntimeInputRef` は `CurrentContext` のみ。他の組合せはコンパイル時に拒否する（上位設計書 §4.3.9）。
+`PortKind` × 参照元 × 読み方の許可表【提案】。表にない組合せはコンパイル時に拒否する（上位設計書 §4.3.9）。
+
+| `PortKind` | 参照元 | 許可する `InputReadSpec` |
+|---|---|---|
+| `VALUE` | `OutputRef` / `MarketDataRef` | `LatestAvailable`、`HistoryWindow` |
+| `VALUE` | `RuntimeInputRef` | `CurrentContext` のみ |
+| `EVENT` | `OutputRef` | `DeliveredEvent` のみ |
+| `COMMAND` | — | 段階2では入力に接続しない |
+
+建玉・口座を読む入力（`RuntimeInputRef`）は `PortKind.VALUE` ＋ `CurrentContext` で宣言する。現在処理中の時点情報を1回の評価内で参照するものであり、配送イベントでも履歴でもないためである。
 
 ### 6.2 窓と「当該足を除く」【提案】
 
@@ -130,10 +143,11 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 |---|---|
 | `EvaluationSpec` | `allowed: tuple[AllowedTrigger, ...]`、`fixed: bool`（契約が評価条件を固定するか）、`required_inputs: Mapping[str, tuple[str, ...]]`（起動条件名 → 必須入力名） |
 | `EvaluationSchedule` | `triggers: tuple[EvaluationTrigger, ...]`（1件以上） |
-| `EvaluationTrigger` | `kind` タグ付き。`OnBarClose(name: str, series: SeriesId)` / `OnInputEvent(name: str, input_name: str)` |
+| `EvaluationTrigger` | `kind` タグ付き。`OnBarClose(name: str, series: SeriesId)` / `OnInputEvent(name: str, input_name: str)` / `OnRuntimeEvent(name: str, event: RuntimeEventKind)` |
 
 - 起動条件に名前（`name`）を付け、`required_inputs` と対応付ける【提案】。これがないと「どの起動条件でどの入力が必須か」を宣言できない（上位設計書 §4.3.9 の残項目）。
 - `OnBarClose` は D03 §7.2 の `ScheduledBoundary` に結び付く【合意済み】D03。
+- `OnRuntimeEvent`【提案】: 上位設計書 §4.3.5 が `EvaluationSchedule` の対象に挙げている「約定通知」を表す区分。`RuntimeEventKind` は段階2では `POSITION_OPENED` の1値のみとし、それ以外（決済通知・保護水準の更新通知など）は段階3で追加する。これがないと、検証戦略 A の「約定価格から固定リスクリワード比の利確水準を決める Exit 部品」を約定時点で評価できず、次の足まで初期の利確水準が付かない。イベントの供給元は `backtest.engine`（`RuntimeContextView` ポート）で、フェーズ順序と供給の詳細は D06。
 - 同時刻に複数の起動条件が成立した場合の配送・評価回数は D05【合意済み】全体計画 §7.3。
 - 同時刻の実行優先度を部品ごとの自由な整数で指定しない【合意済み】§4.3.5。上流の更新だけで下流を自動評価しない【合意済み】§4.3.2。
 
@@ -209,7 +223,7 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 | 6 | 依存グラフの循環検出と評価順の導出（時間足から順序を推測しない） |
 | 7 | 能力検査（下表） |
 
-段階2で拒否する構成【提案】: `RuntimeInputRef(PENDING_ORDER)`、`AwaitConfirmation`、`execution_filter` が `None` でない戦略、`MissingInputPolicy` の `WAIT_FOR_INPUT` / `USE_PREVIOUS`、15m より細かい足、距離型 SL、指値、`UPDATE_STOP`、および Q3 の結論によっては `state_spec` が `None` でない部品。拒否は `ReasonCode`（D02 §8.1）付きの構造エラーとし、黙って無視しない。
+段階2で拒否する構成【提案】: `RuntimeInputRef(PENDING_ORDER)`、`AwaitConfirmation`、`execution_filter` が `None` でない戦略、`MissingInputPolicy` の `WAIT_FOR_INPUT` / `USE_PREVIOUS`、`POSITION_OPENED` 以外の `RuntimeEventKind`、複数銘柄に跨る使用箇所（第5節）、15m より細かい足、距離型 SL、指値、`UPDATE_STOP`、および Q3 の結論によっては `state_spec` が `None` でない部品。拒否は `ReasonCode`（D02 §8.1）付きの構造エラーとし、黙って無視しない。
 
 ## 13. 設定ファイル表現と内容ハッシュ
 
@@ -241,7 +255,7 @@ D02 §9.3 の `canonical.digest` をそのまま使う。ダイジェスト対�
 | 高値突破 Trigger | `OnBarClose(1h)` 起動、出力 `opportunity`、`reference_values` に突破水準（Q7）、再武装（Q4） |
 | 成行注文意図 | `OnInputEvent(取引機会)` 起動、出力 `order_intent` |
 | 初期 SL | 確定情報から絶対価格、出力 `protection_levels` |
-| 固定 RR の TP | 出力 `management_action`（`SET_TAKE_PROFIT`） |
+| 固定 RR の TP | `OnRuntimeEvent(POSITION_OPENED)` 起動、`RuntimeInputRef(POSITION)` ＋ `CurrentContext` 入力、出力 `management_action`（`SET_TAKE_PROFIT`） |
 | 戦略全体 | `market_state=None`、`execution_filter=None`、`entry_policy=ImmediateEntry`、`opportunity_validity`（Q5）、`opportunity_concurrency`（Q6） |
 
 T01（紙上トレース）では、この宣言から D06 の注文・約定、D07 の単一評価まで紙上で追跡し、同時刻・数量・末尾処理に暗黙の前提がないことを確認する【合意済み】ADR-0016。
@@ -254,7 +268,8 @@ T01（紙上トレース）では、この宣言から D06 の注文・約定、
 - `WAIT_FOR_INPUT` / `USE_PREVIOUS` のフィールド確定 → 段階3・D05。
 - 合成部品（AND / OR / 遷移検出 / N 本継続 / A 後 N 本以内の B）の契約 → D05。
 - 取引機会の非終端の状態名と遷移 → D05。
-- 再審査設定、距離型 SL、指値、複数建玉・複数銘柄、分割決済 → 段階6・D10。
+- 再審査設定、距離型 SL、指値、複数建玉・複数銘柄（銘柄の伝播規則を含む）、分割決済 → 段階6・D10。
+- `POSITION_OPENED` 以外の実行時イベント（決済通知、保護水準の更新通知）での評価起動 → 段階3・D05。
 - 学習する部品（fit / 推論分離）、探索空間の宣言 → D09 以降。
 - `RuntimeInputRef(PENDING_ORDER)` → 未対応として拒否を維持。
 - 部品カタログの指標一覧と計算規則（EMA の初期化・更新方法を含む） → D05。
@@ -299,7 +314,7 @@ T01（紙上トレース）では、この宣言から D06 の注文・約定、
 | 引き渡し先 | 項目 |
 |---|---|
 | D05 | `WAIT_FOR_INPUT` / `USE_PREVIOUS` のフィールド、取引機会の非終端の状態名と遷移、再検査の起動点、同時刻の複数起動条件の配送・評価回数、合成部品の契約、初版カタログの指標一覧と計算規則、NumPy を実際に使う部品の特定（ADR-0021）、状態の保存・復元、依存グラフ構築とハッシュ計算の実装、`MarketDataView` の引数名の整合 |
-| D06 | `OrderIntent` / `ProtectionLevels` / `ManagementAction` を受け取ってからの注文状態・執行意味論、`RuntimeInputRef(POSITION/ACCOUNT)` として供給する情報の具体、`ConfigDigest` に戦略の digest をどう含めるか、単位付き float パラメータから `Price` への変換と価格刻みの丸め方向（第7節） |
+| D06 | `OrderIntent` / `ProtectionLevels` / `ManagementAction` を受け取ってからの注文状態・執行意味論、`RuntimeInputRef(POSITION/ACCOUNT)` として供給する情報の具体、`ConfigDigest` に戦略の digest をどう含めるか、単位付き float パラメータから `Price` への変換と価格刻みの丸め方向（第7節）、`POSITION_OPENED` イベントの発生フェーズと供給方法（第8節） |
 | D07 | `CompiledStrategyRef` を実験 manifest に固定する方法、評価側から見た戦略の同一性 |
 | D01（次回改訂） | §7.2 のモジュール一覧へ `opportunity.py` を追記 |
 
