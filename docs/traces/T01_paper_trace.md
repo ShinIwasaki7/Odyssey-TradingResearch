@@ -96,7 +96,7 @@ D06 §4.1 の15フェーズ（rank 0〜14）を、判断時刻 T = **2026-01-06T
 | 6 | `P2_MARKET_STATE` | 宣言なし | 記録なし |
 | 7 | `P3_TRIGGER` | `entry_trigger` が `150.040 > 150.000` で発火。直前状態 `ConditionState(False)` から成立へ変わったため `EDGE` が通る | 部品は `OpportunityContent(direction=LONG, reference_values={"breakout_level": Price(150.000)})` を返す。ランタイムが `Opportunity(opportunity_id=OpportunityId 00000001, symbol=USDJPY, signal_interval=Interval[08:00,09:00), direction=LONG, reference_values={...})` を組み立てる（D05 §4.2）。有効な機会数 0 < `max_active`=1 → 遷移1。`OpportunityTransition(opportunity_id=00000001, from_state=None, to_state=OPEN, at=ProcessingPoint(09:00Z, P3_TRIGGER, 4), phase=P3_TRIGGER, reason=None, counterpart=None, attempt_id=None)` → 表3。`OutputRecord(output_id=00000003, producer=("entry_trigger","opportunity"), payload=Opportunity(…))` → 表1。新しい状態 `ConditionState(True)` |
 | 8 | `P4_CONFIRMATION` | 宣言なし | 記録なし |
-| 9 | `P5_ORDER_INTENT` | `entry_order` と `initial_stop` が同じ機会の配送で起動 | `OutputRecord(output_id=00000004, producer=("entry_order","intent"), payload=OrderIntent(symbol=USDJPY, direction=LONG, order_type=MARKET, price_condition=None, expiry=None))` と `OutputRecord(output_id=00000005, producer=("initial_stop","protection"), payload=ProtectionLevels(stop_loss=Price(149.500), take_profit=None))` → 表1。役割出力が揃い `EntryProposal(opportunity_id=00000001, order_intent=…, protection=…, decision_time=09:00Z)` を1件返す。遷移4: `OPEN → ORDER_PENDING`（`at=ProcessingPoint(09:00Z, P5_ORDER_INTENT, 7)`）→ 表3 |
+| 9 | `P5_ORDER_INTENT` | `entry_order` と `initial_stop` が同じ機会の配送で起動 | `OutputRecord(output_id=00000004, producer=("entry_order","intent"), payload=OrderIntent(symbol=USDJPY, direction=LONG, order_type=MARKET, price_condition=None, expiry=None))` と `OutputRecord(output_id=00000005, producer=("initial_stop","protection"), payload=ProtectionLevels(stop_loss=Price(149.500), take_profit=None))` → 表1。役割出力が揃い `EntryProposal(opportunity_id=00000001, order_intent=…, protection=…, decision_time=09:00Z, intent_output_id=OutputId 00000004, protection_output_id=OutputId 00000005)` を1件返す（根拠の出力 ID は D05 v1.2 で必須。第2.3節でそのまま `OrderRequest` へ渡る）。遷移4: `OPEN → ORDER_PENDING`（`at=ProcessingPoint(09:00Z, P5_ORDER_INTENT, 7)`）→ 表3 |
 | 10 | `ADMISSION` | 要求組立 → 全順序化 → 審査 → 予約 → 受付（D06 §6） | 第2.3節 |
 | 11 | `EXECUTION_OPEN` | `[09:00,09:15)` の始値で約定 | 第2.4節 |
 | 12 | `POST_FILL_EVALUATION` | 第2回の `step`。受付通知と `POSITION_OPENED` | 第2.5節 |
@@ -163,7 +163,7 @@ D06 §7.5 の6手順の順で処理する。
 |---|---|---|
 | 1 | 入口で受付通知を適用（D05 §7.2 の遷移5） | `OpportunityTransition(00000001, ORDER_PENDING → TERMINATED, at=ProcessingPoint(09:00Z, POST_FILL_EVALUATION, 0), reason=Reason(FULFILLED_BY_ORDER_ACCEPTANCE), attempt_id=00000001)` → 表3 |
 | 2 | `POSITION_OPENED` で `take_profit` を起動。入力は `RuntimeContextView.position_context(09:00Z, PositionId 00000001)` | `PositionContext(position_id=00000001, symbol=USDJPY, direction=LONG, quantity=Quantity(32000), entry_price=Price(150.080), effective_stop_loss=Price(149.500), effective_take_profit=None, opened_at=ProcessingPoint(09:00Z, EXECUTION_OPEN, 0))`（D06 §8.4） |
-| 3 | 部品が `risk = 150.080 − 149.500 = 0.580` から `SetTakeProfit(Price(151.240))` を返す（`reward_risk=2.0`。丸めは D06 の責務） | `ManagementRequest(position_id=00000001, action=SetTakeProfit(Price(151.240)), decision_time=09:00Z)`、`EvaluationRecord(… position_id=00000001, outcome=Evaluated((OutputId 00000006,)))` → 表2 |
+| 3 | 部品が `risk = 150.080 − 149.500 = 0.580` から `SetTakeProfit(Price(151.240))` を返す（`reward_risk=2.0`。丸めは D06 の責務） | `ManagementRequest(position_id=00000001, action=SetTakeProfit(Price(151.240)), decision_time=09:00Z, source_output_id=OutputId 00000006)`（D05 v1.2 で必須。`roles.exit` の出力 `00000006` を指す）、`EvaluationRecord(… position_id=00000001, outcome=Evaluated((OutputId 00000006,)))` → 表2 |
 | 4 | エンジンが丸めて建玉へ適用（買いは `DOWN`。`151.240` は刻みに整列済み）。検査 `entry 150.080 < take_profit 151.240` 合格 | `ProtectionState(version=2, stop_loss=Price(149.500), take_profit=Price(151.240), effective_from=BarKey(…, 09:00Z), owner_instance_id="take_profit")`。**初期の利確なので `effective_from` は約定した足**（D06 §8.3） |
 | 5 | 適用結果を記録。丸め後の実リスクリワード比 `(151.240 − 150.080) / (150.080 − 149.500) = 1.160 / 0.580 = 2.0` | 表12（`MANAGEMENT_APPLICATIONS`、主キー `(position_id, at)`） |
 
@@ -253,7 +253,7 @@ run 開始前の適合検査（D06 §7.4 の検査1〜5）:
 | `entry_trigger` が見る終値（1時間足 `[08:00,09:00)` の `close`） | `Price(150.040)` → `150.040 > 150.000` で発火 |
 | 参照価格の出どころ（執行系列 `USDJPY/15m/bid` の `[08:45,09:00)` の `close`） | **`Price(149.980)`**（1時間足の終値と6 pips 食い違う人工データ） |
 
-rank 5〜9 は経路1 と同じに進み、`EntryProposal(opportunity_id=00000001, order_intent=OrderIntent(USDJPY, LONG, MARKET, None, None), protection=ProtectionLevels(stop_loss=Price(149.990), take_profit=None), decision_time=09:00Z)` が1件出る。
+rank 5〜9 は経路1 と同じに進み、`EntryProposal(opportunity_id=00000001, order_intent=OrderIntent(USDJPY, LONG, MARKET, None, None), protection=ProtectionLevels(stop_loss=Price(149.990), take_profit=None), decision_time=09:00Z, intent_output_id=OutputId 00000004, protection_output_id=OutputId 00000005)` が1件出る（出力 ID の採番は経路1 と同じ順序）。
 
 ### 5.2 rank 10（`ADMISSION`）で拒否されるまで
 
@@ -295,7 +295,7 @@ rank 5〜9 は経路1 と同じに進み、`EntryProposal(opportunity_id=0000000
 
 | 時点 | 何が起きるか | 記録 |
 |---|---|---|
-| T_a（30本目の1時間足の確定） | `breakout_level` は `Evaluated`、`stop_level` は履歴不足で `Skipped` | `EvaluationRecord(instance_id="stop_level", outcome=Skipped((MissingInputDiagnosis(input_name="prices", source=ResolvedMarketSource(USDJPY/1h/bid, HIGH), reason=WARMUP_INSUFFICIENT),)))` → 表2 |
+| T_a（30本目の1時間足の確定） | `breakout_level` は `Evaluated`、`stop_level` は履歴不足で `Skipped` | `EvaluationRecord(instance_id="stop_level", outcome=Skipped((MissingInputDiagnosis(input_name="prices", source=ResolvedMarketSource(USDJPY/1h/bid, LOW), reason=WARMUP_INSUFFICIENT),)))` → 表2 |
 | T_a | `entry_trigger` が発火し機会1を生成（遷移1、`OPEN`） | 表3 |
 | T_a | `entry_order` は `intent` を出すが、`initial_stop` は `level` 入力（`stop_level.level`）が無く `Skipped` → **役割出力が揃わず `EntryProposal` は作られない** | 表2。`proposals=()` |
 | T_a | rank 10 に渡る要求が無い | 表4・表5 に行なし。**warmup 中の注文ゼロ**（全体計画 §8.2 の完了条件）がここで成立する |
