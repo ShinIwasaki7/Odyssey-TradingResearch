@@ -1,7 +1,7 @@
 # FX 研究基盤：全体構築計画書（アーキテクチャ・ディレクトリ・各基盤設計・進め方）
 
 作成日: 2026-09-18
-状態: **ドラフト。第6節の決定（2026-09-18、ADR-0001〜0017）を反映済み。残る要決定は第6節・第10節を参照**。本書は上位文書 [fx_research_platform_greenfield_design.md](fx_research_platform_greenfield_design.md) を出発点として、全体アーキテクチャ・ディレクトリ構成・各基盤の設計方針・構築計画を提案するもの。本書の承認をもって段階0（契約設計）を開始する。実装は本書および後続の各設計文書の承認後に行う。
+状態: **ドラフト。第6節の決定（2026-09-18、ADR-0001〜0017／2026-09-20、ADR-0018〜0032）を反映済み。残る要決定は第6節・第10節を参照**。本書は上位文書 [fx_research_platform_greenfield_design.md](fx_research_platform_greenfield_design.md) を出発点として、全体アーキテクチャ・ディレクトリ構成・各基盤の設計方針・構築計画を提案するもの。本書の承認をもって段階0（契約設計）を開始する。実装は本書および後続の各設計文書の承認後に行う。
 
 ## 0. 本書の読み方と凡例
 
@@ -396,7 +396,8 @@ src/odyssey_fx/
 | 評価要求のライフサイクル | 要求 ID、終端状態（評価済み / SKIP / ERROR / 待機 / 追い越し）。SKIP / ERROR で決着した要求は復活させない | §4.3.13、§4.3.14 |
 | 待機（WAIT_FOR_INPUT） | 問いの固定（対象区間・受信済み機会の内容）、有限期限、不足入力到着時のみ再開、現在状態は再開時の `decision_time` で読む | §4.3.14 |
 | 追い越し（supersession） | Trigger は失効、確認は対象足を進めて新要求を発行。開始足 ID と期限は維持 | §4.3.14 |
-| 取引機会の管理 | 保持・確認・期限・失効・重複防止。並行機会数・再発火規則は D05 で決める | §4.5 |
+| 取引機会の管理 | 保持・確認・期限・失効・重複防止。複数の有効な取引機会を同時に保持できること。再発火は常に新しい `opportunity_id` を生成し、内容の上書き（置換）は禁止。確認待ち中の条件再検査は `OpportunityValiditySpec`、複数機会の関係は `OpportunityConcurrencySpec`（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
+| 取引機会の終端状態 | `EXPIRED` / `MARKET_STATE_INVALIDATED`（継続要求条件の不成立、復活なし） / `SUPERSEDED`（新Trigger優先設定）。注文状態とは別の状態機械（2026-09-20 確定、ADR-0031・ADR-0032） | §4.5 |
 | 出力の付番 | `OutputRecord` の共通メタデータを付与し、因果順序を記録 | §4.3.15 |
 
 ランタイムは `backtest` のフェーズ P1〜P5（Feature → MarketState → Trigger → ExecutionFilter → 注文意図）の中身を担当し、フェーズの順序・P0 の公開・P5 以降の受付/執行は `backtest.engine` が駆動する。
@@ -438,7 +439,7 @@ src/odyssey_fx/
 
 - 初版は「受付後、因果順序上まだ到来していない最初の執行足の始値」で約定。買いは ask、売りは bid に slippage を適用。bid のみの系列は spread モデルで ask を導く【合意済み】。
 - `ExecutionPolicy` に `entry_delay_bars`（0 または 1）、銘柄別の許容不利約定幅 Δ、有効時間を置き、実験で固定する【合意済み・具体値は D06】。
-- SL/TP 到達は執行足ごとに判定し、OHLC で両方に触れた場合は SL 優先の保守的規則（案）。新規約定直後の SL gap は同じ open で SL 決済、約定ずれ超過は緊急決済。二重決済を防ぐ【合意済み】。
+- SL/TP 到達は執行足ごとに判定し、**OHLC で両方に触れた場合は常に SL が先に成立したとみなす**（2026-09-20 確定、ADR-0030）。足内の先後判定は差し替え可能な判定方式として定義し、使用した方式を約定記録と run manifest に記録する。新規約定直後の SL gap は同じ open で SL 決済、約定ずれ超過は緊急決済。二重決済を防ぐ【合意済み】。
 - `CostModel`: 手数料・slippage・spread の扱いを固定し、価格反映済み費用を二重計上しない。swap は初版未計上とし結果に明記する（第6節 C-5）。
 
 #### 5.4.4 口座・建玉（`portfolio`）
@@ -624,6 +625,16 @@ D06 を「骨子だけ」で実装へ進めない。注文状態、フェーズ�
 - 4分間隔、初回 P0/P1 なしなら終了、最大2巡という運用は維持する。
 - merge 判断は人間に残す。
 
+### E. 戦略・執行の意味論
+
+A〜D のどれにも属さない、戦略ランタイムと約定モデルの振る舞いに関する決定を置く。上位文書 §4.5・§4.7.7 が両論併記のまま残していた項目である。
+
+| # | 項目 | 決定／要決定 | 補足 | ADR |
+|---|---|---|---|---|
+| E-1 | OHLC 内の SL/TP 競合 | **決定**: 初版は損切り（SL）優先。同一足内で SL と TP の両方に届いた場合は常に SL が先に成立したとみなす | 判定方式は差し替え可能にし、使用した方式を約定記録と run manifest に記録する。下位足での先後判定は将来の拡張 | [ADR-0030](../decisions/0030-sl-priority-on-intrabar-sl-tp-conflict.md) |
+| E-2 | 確認待ち中の条件の再検査 | **決定**: 固定する条件（`SNAPSHOT_AT_OPPORTUNITY`）と継続成立を要求する条件（`REQUIRE_UNTIL_ORDER_REQUEST`）を `OpportunityValiditySpec` として `StrategyDefinition` に必須指定。暗黙の既定値を設けない | 不成立は `MARKET_STATE_INVALIDATED` で終端し復活させない。欠損は `ValidityBinding` の `MissingInputPolicy` に従い、待機しても期限は延長しない。上位文書 §4.5 | [ADR-0031](../decisions/0031-opportunity-validity-spec-for-waiting-conditions.md) |
+| E-3 | 再発火と複数取引機会 | **決定**: 各発火が固有 `opportunity_id` を持つ不変の取引機会を生成する。内容の上書き（置換）は禁止。関係は `OpportunityConcurrencySpec` として必須指定 | 新しい Trigger を優先する設定でも既存は `SUPERSEDED` で終端し、新規に生成する。同一 `event_id` の再配送は冪等性検査で除外。上位文書 §4.5 | [ADR-0032](../decisions/0032-opportunity-concurrency-spec-for-retrigger.md) |
+
 ### パッケージ名（決定済み）
 
 ```text
@@ -668,6 +679,8 @@ source directory:  src/odyssey_fx/
 - `StateSpec`（状態型の参照・初期化・リセット・保存/復元・実装との照合）。
 - `TemporalConstraints`（入力間の時刻整合性・ウォームアップの型と検査）。
 - `EntryPolicy` のモード別型（即時/確認待ち、期限単位、失効、再発火）。
+- `OpportunityValiditySpec` と `ValidityBinding` の型（`SNAPSHOT_AT_OPPORTUNITY` / `REQUIRE_UNTIL_ORDER_REQUEST` の分類、欠損時の `MissingInputPolicy` の指定）。ADR-0031。
+- `OpportunityConcurrencySpec` の型（複数機会の関係、`on_order_accepted`）。ADR-0032。
 - `RuntimeInputRef` の対象区分（初版は建玉・許可された口座情報。未約定注文は拒否）。
 - 入力ポートの時間的束縛（対象区間束縛／現在状態束縛）のフィールド。
 - スキーマ版の保存場所、設定ファイル表現、内容ハッシュの算出規則。
@@ -677,7 +690,7 @@ source directory:  src/odyssey_fx/
 
 - 同時刻の複数起動条件の配送・評価回数、確認待ち状態の管理主体（ランタイム側で一元管理する案）。
 - イベント出力の複数購読の配送規則、COMMAND を加工する部品の可否。
-- 発火時に凍結する値と随時更新する値、待機中の MarketState 再検査、同方向/逆方向の再発火（破棄/置換/並行待機）、並行機会数。
+- 発火時に凍結する値と随時更新する値の具体的な列挙（`Opportunity.reference_values` のスキーマと合わせる）。待機中の条件再検査（ADR-0031）と再発火・複数機会（ADR-0032）は 2026-09-20 に確定済みで、D05 では `OpportunityValiditySpec` / `OpportunityConcurrencySpec` の型と再検査の起動点（確認評価時・`OrderRequest` 生成直前）、取引機会の状態機械、Trigger 部品の再武装規則を定める。
 - Feature の鮮度伝播、複数系列 Feature の鮮度。
 - 追い越しの既定（Feature / MarketState）、複数入力の同時保留、期限切れの優先順位。
 - 再審査設定の型・配置・回数上限（初版は未実装として拒否）。
@@ -692,7 +705,7 @@ source directory:  src/odyssey_fx/
 - 有効時間の具体値（エントリー/決済別）、週末持ち越し設定の型名（初版は禁止）。
 - Δ（許容不利約定幅）の銘柄別設定、費用予算の内訳、価格/数量刻み、レバレッジ/保有枠/証拠金検査。
 - spread モデル、slippage モデル、`CostModel` の内訳、swap 未計上の明記。
-- OHLC 内 SL/TP 競合（SL 優先案）、gap、約定ずれ超過、口座強制縮小の対象・優先順位、約定直後以外の緊急決済の実行時点。
+- OHLC 内 SL/TP 競合は SL 優先で確定済み（2026-09-20、ADR-0030）。D06 では差し替え可能な足内先後判定方式の型と、使用方式の約定記録・run manifest への記録項目を定める。gap、約定ずれ超過、口座強制縮小の対象・優先順位、約定直後以外の緊急決済の実行時点は引き続き要決定。
 - 執行データの遅延/欠損時の停止、内部約定解決と戦略判断の順序。
 - 通貨換算（クロス通貨の経路、換算率の観測時点）。
 - Exit: トレーリングの評価足、初期 TP の算定時点、期間 Exit。

@@ -205,7 +205,7 @@ StrategyDefinition
 |---|---|---|
 | `ComponentContract` | `component_id`、`version`、`implementation_ref`、`inputs`、`outputs`、`parameters`、`evaluation_spec`、`state_spec`、`temporal_constraints` | 名前付き入出力の数・型、パラメータの名前・型・範囲、許可イベント、状態の構造等 |
 | `ComponentInstance` | `instance_id`、`contract_ref`、`inputs`、`parameters`、`evaluation` | 参照する契約、入力の接続先、具体的なパラメータ値、許可条件内での評価イベント指定 |
-| `StrategyDefinition` | `strategy_id`、`version`、`components`、`market_state`、`trigger`、`execution_filter`、`order`、`protection`、`exit`、`entry_policy` | 使用する部品数、接続グラフ、各役割の参照先、確認待ち等の方針 |
+| `StrategyDefinition` | `strategy_id`、`version`、`components`、`market_state`、`trigger`、`execution_filter`、`order`、`protection`、`exit`、`entry_policy`、`opportunity_validity`、`opportunity_concurrency` | 使用する部品数、接続グラフ、各役割の参照先、確認待ち等の方針 |
 
 例えばEMAと価格突破はどちらも `parameters` を持つが、内容はEMAなら期間、価格突破なら最小突破幅になる。契約側の `parameters` は各設定の仕様、使用箇所側の `parameters` はその仕様を満たす値である。可変の名前付きコレクションを使う場合も自由形式の任意データとはせず、未宣言キーや型・範囲の不一致を拒否する。
 
@@ -259,8 +259,12 @@ Pythonの型注釈だけに依存せず、構築・読込・コンパイル時�
 | `protection` | `OutputRef` | 初期の保護水準の参照。初版は必須 |
 | `exit` | `OutputRef` | 保有管理要求の参照。複数ルールは明示的に合成する |
 | `entry_policy` | `EntryPolicy` | 即時発注/確認待ち、期限、失効、再発火の扱い |
+| `opportunity_validity` | `OpportunityValiditySpec` | 確認待ち中に固定する条件と継続成立を要求する条件の分類。必須、暗黙の既定値なし（2026-09-20 確定、ADR-0031） |
+| `opportunity_concurrency` | `OpportunityConcurrencySpec` | 複数の有効な取引機会の関係と `on_order_accepted`。必須、暗黙の既定値なし（2026-09-20 確定、ADR-0032） |
 
-各 `OutputRef` が存在し、役割の要求型を満たすことをコンパイル時に検査する。例えば `trigger` に `OrderIntent` を接続することは拒否する。`execution_filter` の有無と `entry_policy` のモードも照合する。Protectionは初期SL、ExitはTPと保有後の管理を担当する。詳細な出力項目は第4.7節の責務分担に沿って具体化する。
+末尾2フィールドは 2026-09-20 の追加であり、2026-09-18 に確定した他のフィールドの意味を変更しない。取引機会のライフサイクル規則を宣言に現すために必須化したもので、詳細は第4.5節を正本とする。
+
+各 `OutputRef` が存在し、役割の要求型を満たすことをコンパイル時に検査する。例えば `trigger` に `OrderIntent` を接続することは拒否する。`execution_filter` の有無と `entry_policy` のモードも照合する。`opportunity_validity` の各 `ValidityBinding` が指す出力の存在と型、`opportunity_concurrency` の `on_order_accepted` の整合も同時に検査する。Protectionは初期SL、ExitはTPと保有後の管理を担当する。詳細な出力項目は第4.7節の責務分担に沿って具体化する。
 
 定義の内容ハッシュは部品参照・接続・パラメータ等から決定論的に算出する。探索で作った異なるパラメータ割当を、同じ `strategy_id/version` だから同一実行として扱わない。人間が管理する戦略の版と、各評価の解決済み設定の識別を分ける。研究ポリシー・口座・リスク方針・データsnapshot・探索空間は実験側の設定であり、このクラスへ混在させない。
 
@@ -317,6 +321,8 @@ Python実装側は状態を専用の型で管理し、契約からその状態�
 | どのイベントで部品を評価するか | `evaluation_spec` と `evaluation` |
 | 順序イベントの「5本以内」等 | 当該部品のパラメータと状態遷移の意味 |
 | Trigger後の確認待ち期限・失効 | `entry_policy` |
+| 確認待ち中に固定する条件／継続成立を要求する条件 | `opportunity_validity`（ADR-0031） |
+| 複数の有効な取引機会の関係・`on_order_accepted` | `opportunity_concurrency`（ADR-0032） |
 
 日足高値と15m終値の参照に「対象時刻の一致」を一律には要求しない。時刻整合性は必要な部品のみが宣言する。追加制約がない部品も `TemporalConstraints` は保持し、追加条件なしを明示する。具体的な制約の型・検査方法は詳細設計で決める。
 
@@ -502,7 +508,7 @@ P1は全Featureの無条件再計算を意味しない。宣言された起動�
 
 **同じ時刻の評価要求をまとめる案**
 
-取引機会の配送と15m足確定が同時に起きても、同じ機会に対する同じ論理確認を二重実行しない。P3までの必要な情報を揃えた後にP4で評価要求を集約し、機会IDごとに確認結果を確定する。異なる機会は別対象として識別する。任意の異なるイベントを時刻が同じという理由だけで一つに潰さない。初版での並行機会数・再発火規則は別途決める。
+取引機会の配送と15m足確定が同時に起きても、同じ機会に対する同じ論理確認を二重実行しない。P3までの必要な情報を揃えた後にP4で評価要求を集約し、機会IDごとに確認結果を確定する。異なる機会は別対象として識別する。任意の異なるイベントを時刻が同じという理由だけで一つに潰さない。再発火と複数機会の扱いは第4.5節で確定した（2026-09-20 確定、ADR-0032）。ランタイムは複数の有効な取引機会を同時に保持できなければならず、固定の並行上限を設けるのではなく `OpportunityConcurrencySpec` の宣言に従う。
 
 **情報公開が遅れる場合の案**
 
@@ -587,7 +593,7 @@ LatestAvailableもWAITに入った後で再開時の最新足を選び直す意�
 **再開契機と処理**
 
 1. 宣言した不足入力に対応する市場データまたは上流出力が到着した場合のみ、その待機要求を再開候補にする。
-2. 期限、追い越し、受信済み機会の失効を検査する。複数不足が残る場合は記録を更新して待機を継続し、部分入力で実評価を始めない。
+2. 期限、追い越し、受信済み機会の失効を検査する。受信済み機会については、`OpportunityValiditySpec` で `REQUIRE_UNTIL_ORDER_REQUEST` に分類された条件も読み直し、成立しなくなっていれば `MARKET_STATE_INVALIDATED` で終端にする（第4.5節、2026-09-20 確定、ADR-0031）。複数不足が残る場合は記録を更新して待機を継続し、部分入力で実評価を始めない。
 3. 対象区間を変えず市場入力を読み直す。現在状態入力は今回のdecision_timeで取得し、鮮度・型・必要本数を検査する。
 4. 条件を満たせば評価し、結果を下流へ配送する。要求IDによる重複処理防止を維持する。
 5. 注文要求に実際のdecision_timeを刻み、対象足の終了時刻へ遡らせない。
@@ -599,6 +605,8 @@ LatestAvailableもWAITに入った後で再開時の最新足を選び直す意�
 MarketStateが待機するとき、必要な同区間の出力に依存するTrigger等も未解決依存として保持できる。ただし全下流を無条件にWAITへ変換するわけではなく、解決済みの各入力ポリシーと戦略の実行契約が待機を認める場合に限る。SKIPやERRORで決着した要求を上流到着で復活させない。取引機会生成前の確認/注文は、機会生成後に起動する下流処理として区別する。独立した15m EMA等は通常どおり更新する。
 
 **supersession（追い越し）**
+
+ここでいう追い越しは**評価要求**に対するものであり、第4.5節で取引機会の終端として定義した `SUPERSEDED`（新しいTriggerを優先する設定、ADR-0032）とは対象が異なる。D05 で語彙を区別して定義する。
 
 同じ評価対象系列の新しい足が公開済みになった場合、期限とは別の失効/遷移理由として追い越しを検査する。WAIT設定のon_supersededに有効方針を明示し、部品/用途別の既定を実験固定時に解決・記録する。役割はStrategyDefinitionの配置から分かり、ComponentInstanceへroleを復活させない。Feature/MarketState等の既定の詳細は別途設計する。
 
@@ -680,7 +688,49 @@ Trigger の出力は単なる真偽値ではなく、少なくとも ID・発生
 
 例: 「レンジ突破後にリテストを待つ」場合、突破時のレンジ上限を保存し、ExecutionFilter がその水準を参照する。最新のレンジ上限に暗黙に置き換えない。
 
-要決定: 発火時に凍結する値、随時更新する値、MarketState を発火時だけ見るか待機中も再検査するか、同方向/逆方向の再発火を破棄・置換・並行待機のどれで扱うか。取引機会の状態と注文・建玉の状態は分離する。
+取引機会の状態と注文・建玉の状態は分離する。
+
+**確認待ち中の条件の再検査（2026-09-20 確定、ADR-0031）**
+
+> 確認待ちのOpportunityが参照する条件は、発生時に固定する条件と、待機中に継続して成立を要求する条件に明示的に分類する。分類はOpportunityValiditySpecとしてStrategyDefinitionに必須指定し、暗黙の既定値を設けない。
+>
+> SNAPSHOT_AT_OPPORTUNITYに指定された条件は、Opportunity生成時のOutputRecordを固定し、その後の更新によって再評価しない。
+>
+> REQUIRE_UNTIL_ORDER_REQUESTに指定された条件は、確認評価のたび、およびOrderRequest生成直前に、そのdecision_timeで利用可能な最新の出力を読み直す。条件が成立しなくなったOpportunityはMARKET_STATE_INVALIDATEDで終端とし、条件が再び成立しても復活させない。新たな取引には新しいTriggerとOpportunityを必要とする。
+>
+> 再検査によって、Opportunityに固定された方向、signal interval、突破水準、参照値、Trigger時点の根拠を変更してはならない。再検査するのはOpportunityの現在の有効性であり、過去のTriggerを現在値で再計算することではない。
+>
+> 再検査対象の入力が欠損している場合は、そのValidityBindingに宣言されたMissingInputPolicyを適用する。欠損を不成立や直前値へ暗黙変換してはならない。待機する場合もOpportunity本来の期限は延長しない。
+
+**再発火と複数Opportunity（2026-09-20 確定、ADR-0032）**
+
+> Triggerの各発火は、それぞれ固有のopportunity_idを持つ不変のOpportunityを生成する。同方向・逆方向という理由だけで、ランタイムが既存Opportunityを暗黙に破棄、更新または統合してはならない。
+>
+> 複数Opportunityの関係はOpportunityConcurrencySpecとしてStrategyDefinitionに必須指定する。ランタイムは複数の有効なOpportunityを同時に保持できなければならない。
+>
+> 既存Opportunityの内容を新しいTriggerの内容で上書きする「置換」は禁止する。新しいTriggerを優先する設定であっても、既存OpportunityをSUPERSEDEDで終端にし、新しいopportunity_idを持つOpportunityを生成する。
+>
+> 同一event_idの再配送は冪等性検査で除外し、新しいOpportunityを生成しない。異なるTriggerイベントは、方向・価格・内容が同じでも別の市場事実として記録する。条件が連続してtrueであることによる毎足の再発火は、Trigger部品の遷移検出および再武装規則で制御する。
+>
+> 各Opportunityは独立した確認開始区間、期限、ValiditySpec、確認履歴を持つ。あるOpportunityの確認、失効、無効化または発注試行によって、別のOpportunityを暗黙に変更してはならない。
+>
+> 複数のOpportunityが同時にOrderRequestへ到達した場合は、決定論的な受付順とRiskPolicyで審査する。ある注文が受け付けられたことを理由に他のOpportunityを終了する場合は、on_order_acceptedへその規則を明示する。
+
+**取引機会のライフサイクル状態（2026-09-20 確定、ADR-0031・ADR-0032）**
+
+上記2決定が導入する終端状態を含め、取引機会の状態を次のとおりとする。注文状態（第4.7.13節の PENDING / FILLED / CANCELED / EXPIRED）とは別の状態機械であり、混同しない。
+
+| 状態 | 意味 |
+|---|---|
+| `ACTIVE` | 生成済みで、確認待ちまたは発注試行が可能 |
+| `CONFIRMED` | 後続確認が成立し、`OrderRequest` へ進んだ |
+| `EXPIRED` | `entry_policy` の期限に到達して終端 |
+| `MARKET_STATE_INVALIDATED` | `REQUIRE_UNTIL_ORDER_REQUEST` の条件が成立しなくなって終端（ADR-0031）。復活させない |
+| `SUPERSEDED` | 新しいTriggerを優先する設定により終端（ADR-0032）。内容の上書きではなく終端＋新規生成 |
+
+`SUPERSEDED` は取引機会の終端であり、第4.3.14節の評価要求に対する「追い越し（supersession）」とは対象が異なる。D05 で語彙を区別して定義する。
+
+要決定として残るのは、発火時に凍結する値と随時更新する値の具体的な列挙（`Opportunity.reference_values` のスキーマ宣言と合わせて D04 で確定する）。
 
 ### 4.6 条件・イベントの合成
 
@@ -778,7 +828,14 @@ SL/TPの到達判定は戦略部品のOnBarCloseとは独立し、約定モデ�
 
 ただし、この規則を新規約定直後の初期SL/TPに一律適用してはいけない。次足始値で約定した新規建玉は、約定→初期SL有効化→Exitによる初期TP算定を行い、同じ足のその後の値動きに対する保護判定の対象にする。終値約定なら過去の同一足の高値・安値を使わない。約定から初期化までの遅延は、初版では因果順序上連続した処理とし、将来の遅延モデルは明示的に追加する。
 
-OHLCだけでSL/TP双方に触れたときの順序は観測できない。初版はSL優先の保守的規則を約定モデルに置く案とし、実際の価格経路が分かったことにはしない。gap、約定ずれ超過、既にSLを越えた始値での約定は実約定を記録した上で執行モデルが処理し、複数の緊急/保護決済で二重決済しない。
+OHLCだけでSL/TP双方に触れたときの順序は観測できない。**初版は損切り（SL）優先。同一足内で SL と TP の両方に届いた場合は常に SL が先に成立したとみなす**（2026-09-20 確定、ADR-0030）。これは保守的な仮定であり、実際の価格経路が分かったことにはしない。
+
+将来、下位足（例: 15分足）で先後を判定する方式へ拡張できるよう、次の拡張点を D06 に明記する。
+
+1. **判定方式が差し替え可能であること**。足内の SL/TP 先後判定は約定モデル内の差し替え可能な判定方式として定義し、SL 優先規則をその初版の実装とする。呼び出し側に SL 優先を直接埋め込まない。
+2. **初版の判定方式が結果に記録されること**。どの判定方式でその約定が決まったかを、約定記録および run manifest に記録する。後から別方式で再計算した結果と混同できないようにする。
+
+gap、約定ずれ超過、既にSLを越えた始値での約定は実約定を記録した上で執行モデルが処理し、複数の緊急/保護決済で二重決済しない。
 
 #### 4.7.8 判断根拠とID連鎖
 
@@ -1066,6 +1123,8 @@ run_endは実験前に固定する。必要データがそれより前に尽き�
 | `DATA_ERROR` | 完全性検査/実行失敗、失敗に伴う残存注文のCANCELED |
 | `EXPIRED` | 期限による注文のEXPIRED |
 | `CARRY_NOT_ALLOWED` | 初版の週末持ち越し禁止による受付前拒否 |
+| `MARKET_STATE_INVALIDATED` | 継続成立を要求した条件が崩れたことによる取引機会の終端（第4.5節、ADR-0031） |
+| `SUPERSEDED` | 新しいTriggerを優先する設定による取引機会の終端（第4.5節、ADR-0032） |
 
 同じ理由コードでもイベント種別・状態で意味を絞る。EXPIREDという理由でCANCELEDにする等の不整合は拒否する。DATA_ERRORには期待/実際の観測区間・項目・原因を添える。発注試行や注文を作る前の完全性検査失敗には、存在しない注文IDを要求しない。
 
@@ -1331,9 +1390,9 @@ component catalog → strategy contracts
 
 1. 新リポジトリの場所、Pythonで使用するライブラリ、パッケージ構成、設定形式。
 2. 初版の対象FXペア・口座通貨・期間、採用データsnapshot、既存データ参照/複製方法。
-3. 時刻/足境界/同時刻処理順、初版の約定方式とOHLC内競合規則。
+3. 時刻/足境界/同時刻処理順、初版の約定方式。OHLC内のSL/TP競合規則は確定済み（2026-09-20、ADR-0030）。
 4. 部品の型、取引機会のpayload、許可する合成、状態のライフサイクル。
-5. 確認待ちの期限単位、MarketState再検査、再発火と並行機会の扱い。
+5. 確認待ちの期限単位。MarketState再検査と再発火・並行機会の扱いは確定済み（2026-09-20、ADR-0031・ADR-0032。第4.5節）。
 6. 数量・通貨換算・リスク・コスト・swap・評価末尾処理の初版仕様。
 7. 実行manifest・trace・成果物形式、再現性の許容誤差、能力不足時の拒否仕様。
 8. 単一評価の指標定義。探索・分割・採否規則は段階5の実装前に固定する。
