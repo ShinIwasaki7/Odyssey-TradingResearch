@@ -30,3 +30,6 @@
 | [0024](0024-no-legacy-aggregation-reproduction.md) | 上位足の集約は新規則のみとし、旧集約の再現版は作らない | C-4 |
 | [0025](0025-polars-in-adapters.md) | adapters の表形式ライブラリは polars | B-5 |
 | [0026](0026-config-parser-rule-covers-whole-app.md) | 設定解析ライブラリの禁止範囲は `app` 配下全体（`app.config` を除く） | D01 §6 F5c |
+| [0027](0027-fs-parquet-json-artifacts.md) | 成果物保存はファイルシステムに Parquet（表）＋ JSON（manifest） | B-7 |
+| [0028](0028-argparse-cli.md) | CLI ライブラリは argparse | B-8 |
+| [0029](0029-swap-rollover-not-modeled-in-initial-version.md) | swap / rollover は初版で未計上とし結果に明記する | C-5 |

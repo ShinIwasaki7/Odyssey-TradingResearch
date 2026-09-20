@@ -544,8 +544,8 @@ evaluate(inputs, parameters, state) -> (outputs, new_state)
 | B-4 | 数値精度 | **決定**: 台帳系は Decimal、Feature は float。変換点と丸めを明示 | 境界は下記 | [ADR-0012](../decisions/0012-decimal-float-boundary.md) |
 | B-5 | 表形式ライブラリ | **決定**: polars（adapters 限定） | 型が厳密で高速。adapters に閉じるため後から交換可能 | [ADR-0025](../decisions/0025-polars-in-adapters.md) |
 | B-6 | 設定形式 | **決定**: 人間が書く宣言は YAML（安全な読込・カスタムタグ禁止・重複キーエラー・merge key 禁止・`schema_version` 必須）、機械生成の manifest は JSON | Pydantic 検証後に frozen dataclass へ変換 | [ADR-0018](../decisions/0018-config-format-yaml-json.md) |
-| B-7 | 成果物保存 | 要決定（期限: 段階2）。推奨はファイルシステムに Parquet（表）＋ JSON（manifest） | 集計は後から DuckDB で読める | — |
-| B-8 | CLI | 要決定（期限: 段階2）。推奨は argparse | 依存を増やさない | — |
+| B-7 | 成果物保存 | **決定**: ファイルシステムに Parquet（表）＋ JSON（manifest） | 集計は後から DuckDB で読める | [ADR-0027](../decisions/0027-fs-parquet-json-artifacts.md) |
+| B-8 | CLI | **決定**: argparse | 依存を増やさない | [ADR-0028](../decisions/0028-argparse-cli.md) |
 | B-9 | 品質ツール | **決定**: ruff、mypy（strict）、pytest、hypothesis、import-linter | ビルドバックエンドは hatchling（[ADR-0020](../decisions/0020-hatchling-build-backend.md)）。NumPy は `strategy.catalog` 内部に限り条件付き使用可（[ADR-0021](../decisions/0021-numpy-in-strategy-catalog.md)） | [ADR-0019](../decisions/0019-quality-tools.md) |
 
 **B-4 の境界**
@@ -565,7 +565,7 @@ evaluate(inputs, parameters, state) -> (outputs, new_state)
 | C-2 | 期間分割と封印 | **決定**: 二択を廃止し、期間をアクセス状態で三分類する | 分類は下記 | [ADR-0014](../decisions/0014-period-access-classification.md) |
 | C-3 | 初版の対象 | **決定**: USDJPY・JPY 口座・判断 1h・執行 15m・日足生成。他9ペアの保管・受入れ能力は残す | 「USDJPY 単一」は初版の縦断実行範囲であり、移管済みの他ペアを削除する意味ではない | [ADR-0015](../decisions/0015-initial-vertical-slice-scope.md) |
 | C-4 | 足生成規則の版 | **決定**: 旧集約の再現版は作らない。NY 17時基準の新規則（`ny17_v2`）を唯一の集約規則とする | 旧基盤の集約出力が引き渡されておらず照合対象がない。入手できれば別版として追加 | [ADR-0024](../decisions/0024-no-legacy-aggregation-reproduction.md) |
-| C-5 | swap / rollover | 要決定（期限: 段階2）。推奨は初版未計上（結果に明記） | 政策金利差を実 swap と同一視しない【合意済み】 | — |
+| C-5 | swap / rollover | **決定**: 初版未計上（結果に明記） | 政策金利差を実 swap と同一視しない【合意済み】 | [ADR-0029](../decisions/0029-swap-rollover-not-modeled-in-initial-version.md) |
 | C-6 | 補助データ（金利等） | 初版外【合意済み】 | 上位文書 §3.1 | — |
 
 **C-1 の配置**
