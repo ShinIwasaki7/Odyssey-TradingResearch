@@ -1,7 +1,7 @@
 # D03: 市場データ・時刻基盤設計（`odyssey_fx.marketdata`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、短縮セッションの足の不変条件をカレンダー対応の期待区間で定義（第3.2節・第3.3節・第5.2節）。第13節の9項目はすべて推奨案を採用。承認条件5点（①時間足定義の `length` を `nominal_length` に統一、②価格基準の宣言者・宣言日時を `SnapshotId` の対象から外して決定論化、③`QUARANTINED_UNASSIGNED` は再分類まで読めないと明記、④承認前の snapshot を読めないようにする、⑤CLI を暫定 ID フローに合わせる）を反映済み。ADR-0016 条件1（D01〜D03）を本書で充足し、段階1の実装を開始できる。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、短縮セッションの足の不変条件をカレンダー対応の期待区間で定義（第3.2節・第3.3節・第5.2節）。v1.2（同日）: 公開遅延の非負制約と `available_at >= bar_end`、DST 切替日の起点解決規則、snapshot ダイジェスト対象の列の正規順序を追加。第13節の9項目はすべて推奨案を採用。承認条件5点（①時間足定義の `length` を `nominal_length` に統一、②価格基準の宣言者・宣言日時を `SnapshotId` の対象から外して決定論化、③`QUARANTINED_UNASSIGNED` は再分類まで読めないと明記、④承認前の snapshot を読めないようにする、⑤CLI を暫定 ID フローに合わせる）を反映済み。ADR-0016 条件1（D01〜D03）を本書で充足し、段階1の実装を開始できる。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §3（データ前提）、§4.3.9〜4.3.10（読み方・鮮度）、§4.3.13（公開予定・遅延）、§4.7.13 C（完全性検査・カレンダー）、[全体計画書](fx_research_platform_overall_plan.md) §5.2、[D01](D01_architecture_and_dependency_rules.md) §1・§4・§10.2、[D02](D02_common_kernel.md)、ADR-0013（データ配置）、ADR-0014（期間のアクセス分類）、ADR-0015（初版の対象）
 対応段階: 段階1で実装。
 
@@ -53,7 +53,7 @@
 | `alignment` | `FixedUtcAlignment \| SessionAlignment` | 足境界の決め方 |
 
 - `FixedUtcAlignment`: UTC のエポックからの `nominal_length` の整数倍に整列（15m、1h）。この整列では足の長さは常に `nominal_length` に等しい。
-- `SessionAlignment(tz: "America/New_York", anchors_local: tuple[time, ...])`: 現地時刻の起点（4h は 17:00, 21:00, 01:00, 05:00, 09:00, 13:00。1d は 17:00）から境界を作り、DST を含む `zoneinfo` 規則で UTC へ変換する（上位設計書 §3.2）。固定 UTC 時刻を埋め込まない。**足の長さは固定ではない**: DST 切替日を含む日足は 23 時間または 25 時間、4h 足は 3 時間または 5 時間になる。足の妥当性は「区間の両端が整列規則の計算した境界に一致すること」で検証し、`nominal_length` との一致は要求しない。
+- `SessionAlignment(tz: "America/New_York", anchors_local: tuple[time, ...])`: 現地時刻の起点（4h は 17:00, 21:00, 01:00, 05:00, 09:00, 13:00。1d は 17:00）から境界を作り、DST を含む `zoneinfo` 規則で UTC へ変換する（上位設計書 §3.2）。固定 UTC 時刻を埋め込まない。**DST 切替日の起点の解決規則**（確定）: 現地時刻が2回現れる日（秋の切り戻し。NY では 01:00 が2度ある）は**最初の出現（`fold=0`）**を起点とし、現地時刻が存在しない日（春の切り替え。NY では 02:00〜02:59 が存在しない）は**次に存在する瞬間**を起点とする。この規則を D02 の `UtcTime.from_local` に `fold` を明示して渡し、曖昧な変換を残さない。**足の長さは固定ではない**: DST 切替日を含む日足は 23 時間または 25 時間、4h 足は 3 時間または 5 時間になる。足の妥当性は「区間の両端が整列規則の計算した境界に一致すること」で検証し、`nominal_length` との一致は要求しない。
 - `boundaries(t: UtcTime) -> Interval`: `t` を含む足の**整列上の**区間を整列規則から計算する。`FixedUtcAlignment` は `nominal_length` の整数倍、`SessionAlignment` は現地起点の列から求める。カレンダーは考慮しない。
 - `expected_interval(calendar, t: UtcTime) -> Interval | None`: `boundaries(t)` をカレンダーの取引セッションで切り詰めた、**その足が実際に取るべき区間**。区間の末尾が宣言された休場・短縮の開始に掛かる場合は末尾を休場開始で切り詰め、区間全体が休場ならその足は存在しない（`None`）。足の検証と期待足の判定はこちらを使う。
 - 初版の定義 ID: `15m`、`1h`、`4h_ny17`、`1d_ny17`（すべて version 1）。`configs/calendars/timeframes_v1.yaml` に置く。
@@ -66,7 +66,7 @@
 | `interval` | `Interval` | `[bar_start, bar_end)`。`timeframe_def.expected_interval(calendar, bar_start) == interval` であること。通常は整列上の区間と一致し、DST 切替日の日足・4h 足は名目より長短する。カレンダーが宣言した短縮セッションでは、期待区間の末尾が休場開始で切り詰められた区間と一致することを要求する（整列上の区間との一致は要求しない） |
 | `open` / `high` / `low` / `close` | `Price` | `low <= min(open, close)`、`max(open, close) <= high` |
 | `volume` | `Decimal` | `>= 0` |
-| `available_at` | `UtcTime` | 通常は `bar_end`。遅延シナリオ適用後は後ろへずれる |
+| `available_at` | `UtcTime` | **`available_at >= interval.end`**（不変条件）。通常は `bar_end` に等しく、遅延シナリオ適用後は後ろへずれる。足の終了前に確定値が見える構成は構築時に拒否する |
 | `provenance` | `Provenance` | 出所（`histdata` / `dukascopy` / `aggregated`）と生成元の参照 |
 
 - 足の自然キー `BarKey(series, bar_start)`。連番 ID は持たない。
@@ -87,7 +87,7 @@
 
 ### 3.5 公開予定 `SeriesSchedule`
 
-`SeriesSchedule(series, timeframe_def, calendar_ref, normal_publication_delay: timedelta = 0)`。
+`SeriesSchedule(series, timeframe_def, calendar_ref, normal_publication_delay: timedelta = 0)`。`normal_publication_delay` は **非負**（負値は構築時に拒否）。
 
 - 期待される足境界はカレンダーと定義から機械的に導く。
 - 通常の公開予定 `scheduled_at = bar_end + normal_publication_delay`。初版はすべて 0。
@@ -102,7 +102,7 @@
 | `InjectedBarDelay(series, bar_start, delay)` | 指定足だけ遅延 |
 | `SeededRandomDelay(...)` | 将来用。初版は能力検査で拒否 |
 
-- 適用後 `available_at = scheduled_at + delay`。OHLC と対象区間は変えない。
+- 各 `DelayRule.delay` は**非負**（負値は構築時に拒否）。適用後 `available_at = scheduled_at + delay` であり、`available_at >= bar_end` が常に成り立つ。OHLC と対象区間は変えない。負の遅延で足の終了前に確定値が見える先読みを、設定の誤りからも起こさせない。
 - 実現した `available_at` 列は `PublicationLog` として run に保存する（上位設計書 §4.3.13）。
 
 ### 3.7 snapshot manifest `SnapshotManifest`
@@ -128,6 +128,8 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。実�
 #### 3.7.1 `SnapshotId` の対象と二段階フロー（確定）
 
 `SnapshotId` の対象: `sources`、`conversion`（カレンダー版を含む）、`basis_declaration`（値と `verified` のみ）、`series`、`partitions`、`integrity_report_ref`、`closure_decisions`、`legacy_access`。対象外: `created_at`、`declaration_record`、`access_log`、`approval`。対象はすべて決定論的な内容であり、実行時刻・操作者・承認者は含めない。
+
+**列の正規順序**（確定）: ダイジェスト対象の列は、ファイルシステムの列挙順や検査の実行順に依存しないよう、符号化前に次の鍵で整列する。`sources` は `path`（POSIX 相対パス、コードポイント順）。`series` は `SeriesId` の文字列。`partitions` は `(series_id 文字列, access_class, interval.start)`。`closure_decisions` と `legacy_access` は `(series_id 文字列, interval.start)`。完全性検査の報告（`integrity_report_ref` の対象ファイル）は `CheckResult` を `(series_id 文字列, kind, interval.start, detail の正規化表現)` で整列して符号化する。manifest の保存形式も同じ順序で書く。
 
 受入れは二段階で行う。
 
@@ -305,9 +307,9 @@ run 区間内の全系列について、`available_at` 順に次を生成する�
 
 | 種別 | 内容 |
 |---|---|
-| 単体 | `Bar` の不変条件（短縮セッションで切り詰められた区間が受理され、整列上の区間のままの足が拒否されること）、`SessionAlignment` の境界計算（DST 切替週の 4h/1d 境界を UTC で固定値と照合し、切替日の日足が 23h/25h、4h 足が 3h/5h になること）、カレンダーの週開閉、`DurationWindow` の端点、partition 所属（`bar_end` 基準）、`SnapshotId` が `created_at` に依存しないこと、分類の差で `snapshot_id` が変わること |
+| 単体 | `Bar` の不変条件（短縮セッションで切り詰められた区間が受理され、整列上の区間のままの足が拒否されること。`available_at < bar_end` が拒否されること）、負の遅延の拒否、DST 切替日の起点解決（秋は最初の出現、春は次に存在する瞬間）、`SessionAlignment` の境界計算（DST 切替週の 4h/1d 境界を UTC で固定値と照合し、切替日の日足が 23h/25h、4h 足が 3h/5h になること）、カレンダーの週開閉、`DurationWindow` の端点、partition 所属（`bar_end` 基準）、`SnapshotId` が `created_at` に依存しないこと、分類の差で `snapshot_id` が変わること |
 | 意味論 | 未確定の上位足を参照できない、遅延注入で `Publication` だけが動き OHLC が変わらない、期待足未到着で古い足へ戻らない、範囲外 partition で `HoldoutAccessViolation` |
-| プロパティ | 将来の足を追加しても `at` 以前の as-of 結果が変わらない、受入れの決定論性（同じ入力で同じ `snapshot_id`）、集約の OHLC が構成足の集計と一致 |
+| プロパティ | 将来の足を追加しても `at` 以前の as-of 結果が変わらない、受入れの決定論性（同じ入力で同じ `snapshot_id`。原ファイルの列挙順・検査の実行順を入れ替えても同じ `snapshot_id`）、集約の OHLC が構成足の集計と一致 |
 | golden | 人工 1h 系列から生成した 4h/1d の固定出力 |
 | 実データ | 段階1の完了条件として実データ受入れを1回実行し、manifest と検査結果を人間が確認する |
 
