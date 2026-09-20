@@ -15,12 +15,11 @@ ADR-0025）。
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import polars as pl
@@ -35,8 +34,17 @@ from odyssey_fx.marketdata.application.partition_digest import (
     partition_digest_hex,
     partition_row,
 )
+from odyssey_fx.marketdata.application.report_digest import (
+    integrity_report_digest_hex,
+    integrity_report_text,
+)
+from odyssey_fx.marketdata.application.snapshot_access import (
+    PENDING_DIRECTORY,
+    ReadableSnapshot,
+)
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
+from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
     CheckResult,
@@ -309,23 +317,6 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
     )
 
 
-def _report_payload(report: IntegrityReport) -> Mapping[str, Any]:
-    """検査結果を JSON 互換の構造へ変換する（D03 §3.7.1 の整列鍵順）。"""
-    return {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
-        "results": [
-            {
-                "detail": [{"key": key, "value": value} for key, value in result.detail],
-                "interval": _interval_payload(result.interval),
-                "kind": result.kind.value,
-                "series": _series_payload(result.series),
-                "severity": result.severity.value,
-            }
-            for result in report.results
-        ],
-    }
-
-
 def _report_from_payload(payload: Mapping[str, Any]) -> IntegrityReport:
     return IntegrityReport(
         results=tuple(
@@ -428,19 +419,61 @@ class ParquetSnapshotStore:
         (target / _MANIFEST_FILE).write_text(_dumps(_manifest_payload(manifest)), encoding="utf-8")
 
     def read_manifest(self, snapshot_dir: str) -> SnapshotManifest:
-        """`manifest.json` を読む。"""
+        """`manifest.json` を読む（D03 §3.7.1）。
+
+        ファイルに書かれた `snapshot_id` と、読み込んだ内容から**再計算した** `snapshot_id`
+        の一致を確かめる。一致しない manifest は、内容が書き換えられたか識別子が改変された
+        ものであり、そのまま読めば「別の内容を、記録された識別子の snapshot として」扱って
+        しまう。
+        """
         path = self._snapshot_path(snapshot_dir) / _MANIFEST_FILE
         if not path.is_file():
             raise FileNotFoundError(f"manifest not found: {path}")
-        return _manifest_from_payload(json.loads(path.read_text(encoding="utf-8")))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        manifest = _manifest_from_payload(payload)
+
+        recorded = str(payload.get("snapshot_id", ""))
+        recomputed = str(manifest.snapshot_id())
+        if recorded != recomputed:
+            raise MarketDataValueError(
+                f"{path} records snapshot id {recorded!r} but its content hashes to"
+                f" {recomputed}; the manifest has been altered (D03 §3.7.1)"
+            )
+        return manifest
+
+    def open_readable(self, snapshot_id: str) -> ReadableSnapshot:
+        """確定・承認済みの snapshot を読み取り可能な形で開く（D03 §3.7.1 の 2・3）。
+
+        `data/snapshots/<snapshot_id>/manifest.json` を読み、**3者の一致**を確かめる。
+
+        1. ファイルに書かれた `snapshot_id`
+        2. 内容から再計算した `snapshot_id`
+        3. ディレクトリ名
+
+        そのうえで `ReadableSnapshot` を作るので、暫定ディレクトリ（`_pending/`）配下の
+        snapshot と、承認の無い snapshot は開けない。読み取り経路はこの型しか受け取らない
+        ため、検査を通らない manifest でビューを作ることはできない。
+        """
+        if PENDING_DIRECTORY in PurePosixPath(snapshot_id).parts:
+            raise SnapshotNotApproved(
+                f"{snapshot_id!r} is a provisional snapshot; provisional snapshots are never"
+                " approved and never readable (D03 §3.7.1 の 1・3)"
+            )
+        manifest = self.read_manifest(snapshot_id)
+        return ReadableSnapshot(manifest=manifest, directory_name=snapshot_id)
 
     def write_integrity_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
-        """検査の報告を書き出し、内容のダイジェストを返す。"""
+        """検査の報告を書き出し、内容のダイジェストを返す。
+
+        正規化表現とダイジェストは application が持つ（`report_digest`）。書く文字列と
+        ダイジェストの対象が同じなので、ファイルの内容と manifest の記録が食い違わない
+        （D03 §3.7.1）。
+        """
         target = self._snapshot_path(snapshot_dir)
         target.mkdir(parents=True, exist_ok=True)
-        text = _dumps(_report_payload(report))
+        text = integrity_report_text(report)
         (target / _INTEGRITY_FILE).write_text(text, encoding="utf-8")
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return integrity_report_digest_hex(report)
 
     def read_integrity_report(self, snapshot_dir: str) -> IntegrityReport:
         """検査の報告を読む。"""

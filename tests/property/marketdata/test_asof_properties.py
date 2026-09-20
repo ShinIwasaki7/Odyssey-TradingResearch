@@ -39,7 +39,7 @@ def _view(window: Interval) -> AsOfView:
     """その窓の足を持つビュー。manifest はその足から作る（D03 §3.7.1 の照合を通すため）。"""
     partition_bars = {PARTITION: market.make_bars(HOURLY, market.TF_1H, CALENDAR, window)}
     return AsOfView(
-        manifest=snapshots.approved_for(partition_bars),
+        snapshot=snapshots.readable_for(partition_bars),
         allowed_partitions=frozenset({PARTITION}),
         schedules=SCHEDULES,
         partition_bars=partition_bars,

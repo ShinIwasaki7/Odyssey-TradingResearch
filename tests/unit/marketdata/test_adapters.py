@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -29,9 +30,11 @@ from odyssey_fx.marketdata.application.access_log import (
     AccessLogEntryKind,
     serialize_entry,
 )
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
-from odyssey_fx.marketdata.domain.snapshot import PartitionId
+from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -195,3 +198,109 @@ def test_a_zero_volume_bar_round_trips(tmp_path: Path) -> None:
     store.write_partition("snap", PARTITION, (bar,))
     (restored,) = store.read_partition("snap", PARTITION)
     assert restored.volume == decimal_from_str("0")
+
+
+# --- 確定・承認済み snapshot を開く（D03 §3.7.1 の 2・3）--------------------
+
+
+def _write_snapshot(store: ParquetSnapshotStore, manifest: SnapshotManifest) -> str:
+    """manifest を最終識別子のディレクトリへ書き、そのディレクトリ名を返す。"""
+    directory = str(manifest.snapshot_id())
+    store.write_manifest(directory, manifest)
+    return directory
+
+
+def test_open_readable_accepts_a_correctly_placed_snapshot(tmp_path: Path) -> None:
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest)
+
+    readable = store.open_readable(directory)
+    assert readable.snapshot_id == manifest.snapshot_id()
+    assert readable.manifest == manifest
+
+
+def test_open_readable_refuses_a_provisional_snapshot(tmp_path: Path) -> None:
+    """暫定ディレクトリに承認付き manifest を置いても開けない（D03 §3.7.1 の1）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    pending_dir = f"_pending/{manifest.snapshot_id()}"
+    store.write_manifest(pending_dir, manifest)
+
+    with pytest.raises(SnapshotNotApproved, match="provisional snapshot"):
+        store.open_readable(pending_dir)
+
+
+def test_open_readable_refuses_a_mismatched_directory_name(tmp_path: Path) -> None:
+    """ディレクトリ名が最終識別子と違えば開けない（D03 §3.7.1 の2）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("wrong-directory", manifest)
+
+    with pytest.raises(MarketDataValueError, match="does not match the manifest"):
+        store.open_readable("wrong-directory")
+
+
+def test_reading_a_manifest_with_an_altered_id_is_refused(tmp_path: Path) -> None:
+    """ファイルの `snapshot_id` を書き換えた manifest は読めない（D03 §3.7.1）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest)
+
+    path = tmp_path / directory / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["snapshot_id"] = "0" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(MarketDataValueError, match="has been altered"):
+        store.read_manifest(directory)
+
+
+def test_reading_a_manifest_with_altered_content_is_refused(tmp_path: Path) -> None:
+    """内容を書き換えれば再計算値が変わり、記録された識別子と食い違う。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest)
+
+    path = tmp_path / directory / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["partitions"][0]["bar_count"] = 999
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(MarketDataValueError, match="has been altered"):
+        store.read_manifest(directory)
+
+
+# --- 書いた内容と manifest の記録が一致する（D03 §3.7.1）-------------------
+
+
+def test_the_written_report_digest_matches_the_application_value(tmp_path: Path) -> None:
+    """adapters が返すダイジェストは application の計算値と一致する。"""
+    report = IntegrityReport(
+        results=(
+            CheckResult.create(
+                CheckKind.MISSING_EXPECTED_BAR, HOURLY, WINDOW, detail={"reason": "gap"}
+            ),
+        )
+    )
+    written = ParquetSnapshotStore(root=tmp_path).write_integrity_report("snap", report)
+    assert written == integrity_report_digest_hex(report)
+
+
+def test_the_written_report_file_hashes_to_the_recorded_digest(tmp_path: Path) -> None:
+    """書いたファイルそのものを読み直して再計算しても同じ値になる。"""
+    report = IntegrityReport(
+        results=(CheckResult.create(CheckKind.UNEXPECTED_BAR, HOURLY, WINDOW),)
+    )
+    store = ParquetSnapshotStore(root=tmp_path)
+    written = store.write_integrity_report("snap", report)
+
+    text = (tmp_path / "snap" / "integrity_report.json").read_text(encoding="utf-8")
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == written
+    # 読み戻した報告からの再計算も一致する。
+    assert integrity_report_digest_hex(store.read_integrity_report("snap")) == written

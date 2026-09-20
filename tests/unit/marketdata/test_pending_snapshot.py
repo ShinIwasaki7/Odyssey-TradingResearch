@@ -11,27 +11,33 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import cast
 
 import pytest
 
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.acceptance import (
+    FinalizedSnapshot,
     PendingSnapshot,
     RawFile,
+    approve,
     build_pending_snapshot,
-    classify_partitions,
     finalize,
     provisional_id,
 )
+from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
+from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import (
+    Approval,
     ClosureDecision,
     ClosureDecisionKind,
-    PartitionId,
 )
 from tests.fixtures.synthetic import market, snapshots
 
@@ -65,12 +71,6 @@ def _build(
         timeframe=RAW_FILE.timeframe,
         declared_basis=RAW_FILE.declared_basis,
     )
-    # partition のダイジェストは adapters が返す値。テストでは内容から決まる固定値を使う。
-    grouped = classify_partitions(source_bars, INITIAL_ACCESS_BOUNDARIES)
-    digests = {
-        PartitionId(series=HOURLY, access_class=access): snapshots.digest_for(access.value).hex
-        for access in grouped
-    }
     return build_pending_snapshot(
         created_at=created_at,
         raw_files=(raw_file,),
@@ -80,8 +80,6 @@ def _build(
         boundaries=INITIAL_ACCESS_BOUNDARIES,
         basis_declaration=snapshots.BASIS,
         conversion=snapshots.CONVERSION,
-        partition_digests=digests,
-        integrity_report_digest=snapshots.REPORT_DIGEST,
         aggregated_findings=aggregated_findings,
     )
 
@@ -144,7 +142,7 @@ def test_an_unclassified_warning_blocks_the_finalization() -> None:
 def test_recording_the_decision_yields_a_different_snapshot_id() -> None:
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     final = finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
-    assert final.snapshot_id() != pending.provisional_id
+    assert final.snapshot_id != pending.provisional_id
 
 
 def test_classifying_the_gap_differently_yields_a_different_snapshot_id() -> None:
@@ -152,7 +150,7 @@ def test_classifying_the_gap_differently_yields_a_different_snapshot_id() -> Non
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     as_gap = finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
     as_closure = finalize(pending, (_decision(ClosureDecisionKind.CLOSURE),))
-    assert as_gap.snapshot_id() != as_closure.snapshot_id()
+    assert as_gap.snapshot_id != as_closure.snapshot_id
 
 
 def test_the_final_snapshot_id_ignores_the_acceptance_time() -> None:
@@ -164,14 +162,14 @@ def test_the_final_snapshot_id_ignores_the_acceptance_time() -> None:
         _build(UtcTime.parse("2026-09-20T21:30:00Z")),
         (_decision(ClosureDecisionKind.DATA_GAP),),
     )
-    assert morning.snapshot_id() == evening.snapshot_id()
+    assert morning.snapshot_id == evening.snapshot_id
 
 
 def test_a_clean_series_finalizes_without_decisions() -> None:
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
     assert pending.report.warnings == ()
     final = finalize(pending, ())
-    assert final.snapshot_id() == pending.provisional_id
+    assert final.snapshot_id == pending.provisional_id
 
 
 # --- partition の分割（D03 §4 の 7）-----------------------------------------
@@ -395,7 +393,7 @@ def test_a_decision_matching_the_full_interval_is_accepted() -> None:
     warned = _warned_interval()
     decision = ClosureDecision(series_id=HOURLY, interval=warned, kind=ClosureDecisionKind.DATA_GAP)
     final = finalize(pending, (decision,))
-    assert final.closure_decisions == (decision,)
+    assert final.manifest.closure_decisions == (decision,)
 
 
 def test_a_clean_report_refuses_any_decision() -> None:
@@ -404,3 +402,102 @@ def test_a_clean_report_refuses_any_decision() -> None:
     assert pending.report.warnings == ()
     with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
         finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
+
+
+# --- ダイジェストは受入れが自分で計算する（D03 §3.7.1）---------------------
+
+
+def test_the_partition_digest_is_computed_from_the_recorded_bars() -> None:
+    """partition のダイジェストは、その場で分けた足から決まる。
+
+    呼び出し元が渡した値を記録する形だと、実データと食い違う値のまま確定・承認できて
+    しまう。
+    """
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    for partition_id, bars in pending.partition_bars.items():
+        record = pending.manifest.partition_record(partition_id)
+        assert record is not None
+        assert record.digest.hex == partition_digest_hex(bars)
+        assert record.bar_count == len(bars)
+
+
+def test_the_integrity_report_digest_is_computed_from_the_report() -> None:
+    """検査報告のダイジェストも、その場で組み立てた報告から決まる。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    assert pending.manifest.integrity_report_ref.hex == integrity_report_digest_hex(pending.report)
+
+
+def test_a_different_report_yields_a_different_snapshot_id() -> None:
+    """報告が変われば識別子も変わる（報告が識別に結び付いている）。"""
+    clean = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    with_gap = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    assert clean.provisional_id != with_gap.provisional_id
+
+
+def test_the_written_partition_digest_matches_the_manifest(tmp_path: Path) -> None:
+    """adapters が書き出して返す値と、manifest に記録された値が一致する。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    store = ParquetSnapshotStore(root=tmp_path)
+    for partition_id, bars in pending.partition_bars.items():
+        written = store.write_partition("snap", partition_id, bars)
+        record = pending.manifest.partition_record(partition_id)
+        assert record is not None
+        assert written == record.digest.hex
+        # 書いたものを読み戻して再計算しても一致する。
+        restored = store.read_partition("snap", partition_id)
+        assert partition_digest_hex(restored) == record.digest.hex
+
+
+# --- 承認は確定段階を経たものだけ（D03 §3.7.1 の2）-------------------------
+
+
+def test_finalize_returns_a_finalized_snapshot() -> None:
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    final = finalize(pending, ())
+    assert isinstance(final, FinalizedSnapshot)
+    assert not final.manifest.is_approved
+    assert final.directory_name == str(final.snapshot_id)
+
+
+def test_approving_a_finalized_snapshot_records_the_approval() -> None:
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    final = finalize(pending, ())
+    approval = Approval(
+        approved_by="reviewer",
+        approved_at=UtcTime.parse("2026-09-20T12:00:00Z"),
+        comment="確認済み",
+    )
+    approved = approve(final, approval)
+    assert approved.is_approved
+    # 承認は識別子に影響しない（D03 §3.7.1）。
+    assert approved.snapshot_id() == final.snapshot_id
+
+
+def test_a_provisional_manifest_cannot_be_approved_through_this_path() -> None:
+    """暫定段階の manifest は `FinalizedSnapshot` にならないので承認できない。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    approval = Approval(approved_by="reviewer", approved_at=UtcTime.parse("2026-09-20T12:00:00Z"))
+    with pytest.raises(MarketDataValueError, match="requires a FinalizedSnapshot"):
+        approve(pending.manifest, approval)  # type: ignore[arg-type]
+
+
+def test_a_finalized_snapshot_must_not_already_carry_an_approval() -> None:
+    """承認は確定のあとに記入する。先に付いている manifest は確定段階の型にできない。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    already = pending.manifest.with_approval(
+        Approval(approved_by="a", approved_at=UtcTime.parse("2026-09-20T12:00:00Z"))
+    )
+    with pytest.raises(MarketDataValueError, match="carries no approval yet"):
+        FinalizedSnapshot(manifest=already)
+
+
+def test_an_approved_snapshot_can_be_opened_for_reading() -> None:
+    """確定 → 承認 → 読み取り、という順が通ることを確かめる（D03 §3.7.1）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
+    final = finalize(pending, ())
+    approved = approve(
+        final,
+        Approval(approved_by="reviewer", approved_at=UtcTime.parse("2026-09-20T12:00:00Z")),
+    )
+    readable = ReadableSnapshot(manifest=approved, directory_name=final.directory_name)
+    assert readable.snapshot_id == final.snapshot_id

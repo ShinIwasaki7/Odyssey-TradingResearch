@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
+from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
@@ -115,6 +116,20 @@ def manifest(
         legacy_access=tuple(legacy_access),
         approval=approval,
     )
+
+
+def readable_for(
+    partition_bars: Mapping[PartitionId, Sequence[Bar]] | Sequence[PartitionId],
+    *,
+    interval: Interval = COVERED,
+) -> ReadableSnapshot:
+    """読み取り可能な snapshot（承認済み・最終ディレクトリ）を1行で作る。
+
+    読み取り経路は `ReadableSnapshot` しか受け取らない（D03 §3.7.1 の 2・3）。ディレクトリ名
+    は manifest から再計算した最終識別子にする。
+    """
+    manifest = approved_for(partition_bars, interval=interval)
+    return ReadableSnapshot(manifest=manifest, directory_name=str(manifest.snapshot_id()))
 
 
 def record_for(partition_id: PartitionId, bars: Sequence[Bar]) -> PartitionRecord:

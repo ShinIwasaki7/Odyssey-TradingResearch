@@ -40,7 +40,9 @@ from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.application.integrity import SeriesUnderCheck, check_all
+from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.ports import RawRow
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
@@ -48,6 +50,7 @@ from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketData
 from odyssey_fx.marketdata.domain.integrity import CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
+    Approval,
     BasisDeclaration,
     ClosureDecision,
     ConversionRecord,
@@ -331,10 +334,61 @@ def provisional_id(manifest: SnapshotManifest) -> SnapshotId:
     return manifest.snapshot_id()
 
 
+@dataclass(frozen=True, slots=True)
+class FinalizedSnapshot:
+    """確定段階を経た snapshot（D03 §3.7.1 の 2）。
+
+    `finalize()` の戻り値だけがこの型になる。承認（`approve()`）はこの型しか受け取らない
+    ので、「暫定段階の manifest に承認だけ付ける」ことができない。D03 §3.7.1 は、分類を
+    確定してから最終識別子を計算し、そのあとに承認を記入すると定めている。
+    """
+
+    manifest: SnapshotManifest
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest, SnapshotManifest):
+            raise MarketDataValueError("FinalizedSnapshot.manifest must be a SnapshotManifest")
+        if self.manifest.is_approved:
+            raise MarketDataValueError(
+                "a finalized snapshot carries no approval yet;"
+                " the approval is recorded afterwards (D03 §3.7.1 の 2)"
+            )
+
+    @property
+    def snapshot_id(self) -> SnapshotId:
+        """最終の識別子（分類を確定した後の値）。"""
+        return self.manifest.snapshot_id()
+
+    @property
+    def directory_name(self) -> str:
+        """この snapshot を置くディレクトリ名（最終識別子）。"""
+        return str(self.snapshot_id)
+
+
+def approve(finalized: FinalizedSnapshot, approval: Approval) -> SnapshotManifest:
+    """確定した snapshot に承認を記入する（D03 §3.7.1 の 2、§10 の `approve`）。
+
+    確定段階を経た snapshot（`finalize()` の戻り値）だけを受け取る。暫定段階の manifest に
+    承認を付ける経路を作らないためで、承認の有無だけを見る読み取り関門が「暫定なのに承認
+    済み」の manifest を受け取ることを構造的に防ぐ。承認は識別子に影響しない。
+    """
+    if not isinstance(finalized, FinalizedSnapshot):
+        raise MarketDataValueError("approve() requires a FinalizedSnapshot")
+    if not isinstance(approval, Approval):
+        raise MarketDataValueError("approve() requires an Approval")
+    approved = finalized.manifest.with_approval(approval)
+    if approved.snapshot_id() != finalized.snapshot_id:  # pragma: no cover - 承認は対象外
+        raise MarketDataValueError(
+            "recording the approval changed the snapshot id; the approval must not be part"
+            " of the identity (D03 §3.7.1)"
+        )
+    return approved
+
+
 def finalize(
     pending: PendingSnapshot,
     decisions: Sequence[ClosureDecision],
-) -> SnapshotManifest:
+) -> FinalizedSnapshot:
     """人間の分類を記入して最終の manifest を作る（D03 §3.7.1 の 2、§4 の 9）。
 
     分類が確定した後の識別子が最終の `snapshot_id`。分類が異なれば別 snapshot である。
@@ -368,7 +422,7 @@ def finalize(
             f" warning: {extraneous}; classify only the intervals the integrity check"
             " reported (D03 §4 の 9)"
         )
-    return pending.manifest.with_closure_decisions(tuple(decisions))
+    return FinalizedSnapshot(manifest=pending.manifest.with_closure_decisions(tuple(decisions)))
 
 
 def build_pending_snapshot(
@@ -381,17 +435,18 @@ def build_pending_snapshot(
     boundaries: AccessBoundaries,
     basis_declaration: BasisDeclaration,
     conversion: ConversionRecord,
-    partition_digests: Mapping[PartitionId, str],
-    integrity_report_digest: ContentDigest,
     aggregated_bars: Mapping[SeriesId, tuple[Bar, ...]] | None = None,
     aggregated_findings: Sequence[CheckResult] = (),
     legacy_access: Sequence[LegacyAccessRecord] = (),
 ) -> PendingSnapshot:
     """暫定 manifest を組み立てる（D03 §4 の 1〜8）。
 
-    `created_at` は受入れ実行時刻で、`app` が渡す。記録のみで識別には使わない
-    （D03 §3.7）。`partition_digests` と `integrity_report_digest` は、実体を書き出した
-    adapters が返したダイジェストで、本関数はそれを manifest に写すだけである。
+    `created_at` は受入れ実行時刻で、`app` が渡す。記録のみで識別には使わない（D03 §3.7）。
+
+    **ダイジェストは本関数が計算する**（D03 §3.7.1）。partition のダイジェストはその場で
+    分けた足から、検査報告のダイジェストはその場で組み立てた報告から計算する。呼び出し元が
+    渡した値を記録する形だと、実データや報告と食い違う値のまま確定・承認できてしまう。
+    adapters は同じ算法で書き出すので、書いた内容と manifest の記録は必ず一致する。
 
     `bars_by_file` は原ファイルのパスごとの正規化済み足、`aggregated_bars` は生成した
     上位足（D03 §5）。どちらもアクセス分類ごとの partition へ分けて記録する。
@@ -452,15 +507,14 @@ def build_pending_snapshot(
             partition_id = PartitionId(series=series, access_class=access_class)
             partition_ids.append(partition_id)
             partition_bars[partition_id] = group
-            digest_hex = partition_digests.get(partition_id)
-            if digest_hex is None:
-                raise MarketDataValueError(f"no partition digest was supplied for {partition_id}")
+            # ダイジェストは**この場の足から**計算する。呼び出し元が渡した値をそのまま
+            # 記録すると、実データと食い違う値のまま確定・承認できてしまう（D03 §3.7.1）。
             partitions.append(
                 PartitionRecord(
                     partition_id=partition_id,
                     interval=Interval(start=group[0].bar_start, end=group[-1].bar_end),
                     bar_count=len(group),
-                    digest=ContentDigest.sha256(digest_hex),
+                    digest=ContentDigest.sha256(partition_digest_hex(group)),
                 )
             )
         series_manifests.append(
@@ -479,7 +533,7 @@ def build_pending_snapshot(
         conversion=conversion,
         series=tuple(series_manifests),
         partitions=tuple(partitions),
-        integrity_report_ref=integrity_report_digest,
+        integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
         closure_decisions=(),
         legacy_access=tuple(legacy_access),
     )
