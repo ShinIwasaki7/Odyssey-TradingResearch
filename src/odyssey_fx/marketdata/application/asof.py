@@ -140,8 +140,22 @@ class _PartitionedBars:
             )
         return bars
 
+    def starts_before_data(self, series: SeriesId, moment: UtcTime) -> bool:
+        """要求した時刻が、読める足の最初より前かを判定する。
+
+        「データ開始前」は助走不足（`WARMUP_INSUFFICIENT`）であり、アクセス分類の境界を
+        越える要求とは別物である（上位設計書 §4.3.10 の4分類）。両者を混同すると、単に
+        データが始まっていないだけの窓が構造エラーになってしまう。
+        """
+        bars = self.require_series(series)
+        return bool(bars) and moment < bars[0].bar_start
+
     def require_covered(self, series: SeriesId, moment: UtcTime) -> None:
-        """要求した時刻が許可された partition の範囲内であることを確かめる。"""
+        """要求した時刻が許可された partition の範囲内であることを確かめる。
+
+        範囲の外は、封印期間や未分類の隔離期間の partition が渡されなかったことを意味する。
+        入力欠損に読み替えず、構造エラーで止める（D03 §6.1）。
+        """
         bars = self.require_series(series)
         if not bars:  # pragma: no cover - 空の partition は記録されない
             raise HoldoutAccessViolation(f"no readable bars for {series} (D03 §6.1)")
@@ -238,7 +252,10 @@ class AsOfView:
         expected = self.expected_latest_key(series, at)
         if expected is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-        self._bars().require_covered(series, expected.bar_start)
+        bars_view = self._bars()
+        if bars_view.starts_before_data(series, expected.bar_start):
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        bars_view.require_covered(series, expected.bar_start)
         for bar in self._visible_bars(series, at):
             if bar.bar_start == expected.bar_start:
                 return bar
@@ -322,6 +339,10 @@ class AsOfView:
 
         bars_view = self._bars()
         for start in wanted:
+            # データ開始前に及ぶ窓は助走不足。分類の境界を越える要求（構造エラー）とは
+            # 区別する（上位設計書 §4.3.10）。
+            if bars_view.starts_before_data(series, start):
+                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
             bars_view.require_covered(series, start)
         visible = {bar.bar_start: bar for bar in self._visible_bars(series, at)}
         collected: list[Bar] = []

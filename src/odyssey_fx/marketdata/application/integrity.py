@@ -206,9 +206,13 @@ def _cross_symbol_findings(
 ) -> list[CheckResult]:
     """同じ時間足で銘柄間の足境界がずれている場合に報告する（`CROSS_SYMBOL_MISALIGNMENT`）。
 
-    比較は「同じ時間足定義を使う系列どうしで、共通する期間に現れる足の開始時刻の集合」で
-    行う。片方にしかない開始時刻は、その銘柄側の欠落・余剰としてすでに別の検査が報告して
-    いるため、ここでは「どちらの系列にも足があるのに境界が噛み合わない」区間だけを扱う。
+    比較は「同じ時間足定義を使う系列どうし」で行い、ある系列の足の開始時刻が、同じ期間を
+    覆う**他のどの系列にも現れない**とき、その足を境界のずれとして報告する。
+
+    片方の系列にしかない開始時刻でも、その系列の欠落・余剰は別の検査（存在すべき足の欠落、
+    休場時間帯の足）がすでに報告している。ここで見たいのは「同じ時間足なのに銘柄によって
+    足の刻み方が違う」ことなので、比較対象は「その時刻を含む期間を覆っている系列」に限り、
+    まだデータが始まっていない・もう終わっている系列を比較相手にしない。
     """
     by_timeframe: dict[str, list[SeriesUnderCheck]] = {}
     for target in targets:
@@ -218,28 +222,42 @@ def _cross_symbol_findings(
     for group in by_timeframe.values():
         if len(group) < 2:
             continue
-        reference = min(group, key=lambda target: str(target.series))
-        reference_starts = {bar.bar_start for bar in reference.bars}
-        if not reference_starts:
-            continue
-        reference_span = Interval(
-            start=min(reference_starts, key=lambda value: value.value),
-            end=max(reference_starts, key=lambda value: value.value) + timedelta(microseconds=1),
-        )
-        for other in group:
-            if other is reference:
-                continue
-            for bar in other.bars:
-                if not reference_span.contains(bar.bar_start):
+        starts_by_series = {id(target): {bar.bar_start for bar in target.bars} for target in group}
+        spans: dict[int, Interval | None] = {}
+        for target in group:
+            starts = starts_by_series[id(target)]
+            spans[id(target)] = (
+                None
+                if not starts
+                else Interval(
+                    start=min(starts, key=lambda value: value.value),
+                    end=max(starts, key=lambda value: value.value) + timedelta(microseconds=1),
+                )
+            )
+
+        for target in group:
+            for bar in target.bars:
+                comparable = [
+                    other
+                    for other in group
+                    if other is not target
+                    and (span := spans[id(other)]) is not None
+                    and span.contains(bar.bar_start)
+                ]
+                if not comparable:
                     continue
-                if bar.bar_start in reference_starts:
+                if any(bar.bar_start in starts_by_series[id(other)] for other in comparable):
                     continue
                 findings.append(
                     CheckResult.create(
                         CheckKind.CROSS_SYMBOL_MISALIGNMENT,
-                        other.series,
+                        target.series,
                         bar.interval,
-                        detail={"reference_series": str(reference.series)},
+                        detail={
+                            "compared_with": ",".join(
+                                sorted(str(other.series) for other in comparable)
+                            )
+                        },
                     )
                 )
     return findings

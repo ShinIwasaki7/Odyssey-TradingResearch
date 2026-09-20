@@ -69,6 +69,12 @@ _INTEGRITY_FILE = "integrity_report.json"
 #: `manifest.json` のファイル名。
 _MANIFEST_FILE = "manifest.json"
 
+#: partition のダイジェストで列を区切る ASCII の unit separator（0x1F）。
+_UNIT_SEPARATOR = "\x1f"
+
+#: partition のダイジェストで行を区切る ASCII の record separator（0x1E）。
+_RECORD_SEPARATOR = b"\x1e"
+
 
 def _dumps(payload: Any) -> str:
     """キーをコードポイント順に整列した JSON（D03 §3.7.1 の正規順序）。"""
@@ -400,10 +406,12 @@ class ParquetSnapshotStore:
         # ダイジェストは Parquet のバイト列ではなく、論理的な内容から取る。圧縮設定や
         # ライブラリの版が変わっても同じ内容なら同じ値になるようにするため（D03 §3.7.1
         # の決定論）。
+        # 区切りには ASCII の unit separator（0x1F）と record separator（0x1E）を使う。
+        # 価格・時刻の文字列には現れない制御文字なので、値の境界が曖昧にならない。
         hasher = hashlib.sha256()
         for row in frame.iter_rows():
-            hasher.update("\u001f".join(row).encode("utf-8"))
-            hasher.update(b"\u001e")
+            hasher.update(_UNIT_SEPARATOR.join(row).encode("utf-8"))
+            hasher.update(_RECORD_SEPARATOR)
         return hasher.hexdigest()
 
     def read_partition(self, snapshot_dir: str, partition_id: PartitionId) -> Sequence[Bar]:
