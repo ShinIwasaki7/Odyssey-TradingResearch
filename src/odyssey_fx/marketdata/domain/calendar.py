@@ -181,10 +181,20 @@ class TradingCalendar:
     # --- 週の開閉 -----------------------------------------------------------
 
     def _weekly_sessions(self, window: Interval) -> list[Interval]:
-        """`window` と重なる「週の開場区間」を昇順で返す（休場は未適用）。"""
+        """`window` と重なる「週の開場区間」を昇順で返す（休場は未適用）。
+
+        探索範囲は**窓の長さから決める**。固定日数で探索すると、長い窓の後半にある週が
+        まるごと抜け落ちる（30日の窓で5件あるはずのセッションが2件しか返らない）。
+        `sessions()` は取引カレンダーの公開 API（D03 §3.4、バックテスト側の `Calendar`
+        ポート）なので、窓の長さによらず全体を覆う必要がある。
+
+        前後に `_WEEK_SEARCH_DAYS` の余裕を取るのは、窓の開始より前に始まって窓に掛かる
+        週と、窓の終了後に終わる週の両方を拾うため。
+        """
         local_day = window.start.value.astimezone(self.tz).date()
+        window_days = int(window.duration.total_seconds() // 86400) + 1
         sessions: list[Interval] = []
-        for offset in range(-_WEEK_SEARCH_DAYS, _WEEK_SEARCH_DAYS + 1):
+        for offset in range(-_WEEK_SEARCH_DAYS, window_days + _WEEK_SEARCH_DAYS + 1):
             day = local_day + timedelta(days=offset)
             if day.weekday() != self.weekly_open.weekday:
                 continue

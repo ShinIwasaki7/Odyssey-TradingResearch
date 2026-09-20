@@ -58,6 +58,42 @@ def test_sessions_split_the_week_at_the_weekend() -> None:
 # --- 宣言した休場 -----------------------------------------------------------
 
 
+def test_sessions_cover_a_window_spanning_many_weeks() -> None:
+    """探索範囲は窓の長さから決まる（D03 §3.4 の公開 API）。
+
+    固定日数で探索すると、長い窓の後半にある週がまるごと抜け落ちる。30日の窓なら
+    5つの週セッションが返らなければならない。
+    """
+    long_window = Interval(
+        start=UtcTime.parse("2026-01-05T00:00:00Z"),
+        end=UtcTime.parse("2026-02-04T00:00:00Z"),
+    )
+    sessions = market.calendar().sessions(long_window)
+    assert len(sessions) == 5
+    # 窓全体を覆い、隙間なく昇順に並ぶ。
+    assert sessions[0].start == long_window.start
+    assert sessions[-1].end == long_window.end
+    for earlier, later in zip(sessions, sessions[1:], strict=False):
+        assert earlier.end < later.start
+
+
+def test_sessions_cover_a_window_spanning_a_full_year() -> None:
+    """さらに長い窓でも欠落しない（週は年に約52回ある）。"""
+    year = Interval(
+        start=UtcTime.parse("2026-01-05T00:00:00Z"),
+        end=UtcTime.parse("2027-01-04T00:00:00Z"),
+    )
+    sessions = market.calendar().sessions(year)
+    assert len(sessions) >= 52
+
+
+def test_is_open_still_holds_for_a_single_instant_probe() -> None:
+    """1瞬間の問い合わせでも、窓の長さから決まる探索範囲が正しく働く。"""
+    calendar = market.calendar()
+    assert calendar.is_open(UtcTime.parse("2026-06-10T12:00:00Z"))
+    assert not calendar.is_open(UtcTime.parse("2026-06-13T12:00:00Z"))
+
+
 def test_a_declared_whole_day_closure_removes_that_day() -> None:
     calendar = market.calendar(
         closures=(ClosureRule(local_date=date(2026, 1, 14), covers_whole_day=True, note="休場"),)
