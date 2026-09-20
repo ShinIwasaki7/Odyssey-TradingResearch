@@ -94,7 +94,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 
 | 型 | 置き場所 | 区分 | フィールド / 値 | 詳細 |
 |---|---|---|---|---|
-| `BACKTEST_PHASES` | `engine.phases` | 定数（`PhaseSet`） | 第4.1節の14フェーズ（rank 0〜13） | §4.1 |
+| `BACKTEST_PHASES` | `engine.phases` | 定数（`PhaseSet`） | 第4.1節の15フェーズ（rank 0〜14） | §4.1 |
 | `RunConfig` | `domain.policies` | レコード | `run_interval: Interval` / `snapshot_ref: SnapshotRef` / `compiled_ref: CompiledStrategyRef` / `account: AccountSpec` / `risk_policy_ref: PolicyRef` / `execution_policy_ref: PolicyRef` / `cost_model_ref: PolicyRef` / `delay_scenario_ref: PolicyRef` / `execution_series: SeriesId` / `seed: int` | §4.2・§9.3 |
 | `AccountSpec` | `domain.account` | レコード | `account_id: AccountId` / `currency: CurrencyCode` / `initial_balance: Money` | §8.1 |
 | `RiskPolicy` | `domain.policies` | レコード | `trial_risk_rate: Decimal` / `account_risk_cap: Decimal` / `cost_budget: Money` | §6.4 |
@@ -119,7 +119,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `Eligibility` | `domain.orders` | union | `ScheduledOpen(bar_key: BarKey, open_time: UtcTime)` / `ImmediateAfterFill(trigger_fill_id: FillId, open_event_id: EventId)` / `ProtectionHit(position_id: PositionId, protection_version: int, execution_bar_key: BarKey)` | §7.1・§7.3・§7.5 |
 | `OrderState` | `domain.orders` | レコード | `order_id: OrderId` / `status: OrderStatus` / `last_event_id: EventId` / `last_processed_at: ProcessingPoint` / `terminal_reason: Reason \| None` | §5.1 |
 | `OrderEvent` | `domain.events` | レコード | `event_id: EventId` / `order_id: OrderId` / `from_status: OrderStatus \| None` / `to_status: OrderStatus` / `at: ProcessingPoint` / `reason: Reason \| None` / `fill_id: FillId \| None` | §5.1 |
-| `AttemptDecision` | `admission` | union | `AttemptAccepted(attempt_id, order_id, assessment_ref)` / `AttemptRejected(attempt_id, reason: Reason, assessment_ref: RiskAssessmentRef \| None)`。発端の識別子は同じ `attempt_id` を持つ `OrderRequest`（表4）から辿る | §6.2 |
+| `AttemptDecision` | `admission` | union | `AttemptAccepted(attempt_id, order_id, assessment_ref: RiskAssessmentRef \| None)` / `AttemptRejected(attempt_id, reason: Reason, assessment_ref: RiskAssessmentRef \| None)`。発端の識別子は同じ `attempt_id` を持つ `OrderRequest`（表4）から辿る | §6.2 |
 | `AdmissionBudget` | `admission` | レコード | `balance: Money` / `trial_budget: Money` / `account_remaining: Money` / `admission_budget: Money` / `consumed: Money` | §6.4 |
 | `RiskAssessment` | `admission` | レコード | `assessment_id: EvidenceId` / `attempt_id: AttemptId` / `policy_ref` / `budget: AdmissionBudget` / `reference_quote: ReferenceQuote` / `adverse_fill_limit: Price` / `stop_before_rounding: Price` / `stop_after_rounding: Price` / `quantity_step: Decimal` / `quantity: Quantity \| None` / `conversion: ConversionRate` / `cost_budget: Money` / `reservation_amount: Money \| None` / `checks: tuple[RiskCheckResult, ...]` | §6.4 |
 | `RiskCheckResult` | `admission` | レコード | `check: str` / `passed: bool` / `limit: Money \| Decimal` / `observed: Money \| Decimal` | §6.4 |
@@ -144,7 +144,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `LedgerSnapshot` | `portfolio.ledger` | レコード | `at: ProcessingPoint` / `balance: Money` / `equity: Money` / `consumed: Money` / `open_position_ids: tuple[PositionId, ...]` | §8.1・§9.2 |
 | `FinalSummaries` | `trace.result` | レコード | `realized: Money` / `equity_with_mtm: Money` / `hypothetical_closed: Money` / `cost_breakdown: Mapping[CostKind, Money]` | §10.3 |
 | `RunStatus` | `trace.result` | enum | `COMPLETED` / `FAILED_DATA_ERROR` / `FAILED_CAPABILITY` | §9.4・§10.4 |
-| `HierarchyCheckResult` | `execution` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `expected_interval: Interval \| None` / `observed_interval: Interval \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
+| `HierarchyCheckResult` | `execution` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `child_bar: BarKey \| None` / `expected_interval: Interval \| None` / `observed_interval: Interval \| None` / `expected_boundary: UtcTime \| None` / `observed_boundary: UtcTime \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
 | `DataCapabilityReport` | `engine` | レコード | `compiled_match: bool` / `integrity: IntegrityReport` / `hierarchy_checks: tuple[HierarchyCheckResult, ...]` / `runnable: bool` / `reason: Reason \| None` | §7.5・§10.5 |
 | `RunManifest` | `trace.manifest` | レコード | 第9.3節の項目 | §9.3 |
 | `BacktestResult` | `trace.result` | レコード | 第9.4節の項目 | §9.4 |
@@ -165,7 +165,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 
 D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義する」とし、`PhaseSet` の構築時に `rank` と `name` の一意性を検査する。D05 §6.1 は、取引機会の記録に押す `ProcessingPoint` のフェーズ順位を `PublicationBatch.phases.by_name(...)` で引く。**したがって本書がフェーズ名を確定させないと、D05 のランタイムは記録を組み立てられない。**
 
-1つの判断時刻 T に属するフェーズを、因果順に次の14件（rank 0〜13）とする。`RUN_END` も `BACKTEST_PHASES` に含め、run 末尾の判断時点でだけ使う。フェーズ集合は run 全体で1つであり、判断時点ごとに変えない（D02 §3.3 の `PhaseSet` は run 内で固定される）。
+1つの判断時刻 T に属するフェーズを、因果順に次の15件（rank 0〜14）とする。`RUN_END` も `BACKTEST_PHASES` に含め、run 末尾の判断時点でだけ使う。フェーズ集合は run 全体で1つであり、判断時点ごとに変えない（D02 §3.3 の `PhaseSet` は run 内で固定される）。
 
 | rank | 名前 | 内容 | 戦略ランタイムの関与 |
 |---|---|---|---|
@@ -182,12 +182,14 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 | 10 | `ADMISSION` | 要求組立・全順序化・リスク審査・予約・受付（第6節） | なし |
 | 11 | `EXECUTION_OPEN` | 次の執行足の始値処理: gap 保護決済 → 適格な成行注文の約定 → 新規建玉初期化 → 約定直後の緊急決済（第7.1節・第7.5節） | なし |
 | 12 | `POST_FILL_EVALUATION` | 約定後の評価起動点（D05 §8）と受付結果の通知（第6.6節） | 第2回 `step` |
-| 13 | `RUN_END` | 末尾処理（run_end の判断時点だけ。第10節） | 第3回 `step`（Q2 の決定による） |
+| 13 | `POST_FILL_ADMISSION` | rank 12 で生まれた管理要求のうち、注文になるもの（全数量決済）の要求組立・審査・予約・受付（第6.2節） | なし |
+| 14 | `RUN_END` | 末尾処理（run_end の判断時点だけ。第10節） | 第3回 `step`（Q2 の決定による） |
 
 - rank 0〜2 が rank 3 より前にあるのは「終値評価より先に足内約定を反映する」【合意済み】上位 §4.7.12。
 - rank 10 が rank 9 の直後にあるのは「同時刻 close → 判断/受付 → open」【合意済み】上位 §4.7.11。
 - rank 12 が rank 11 の後にあるのは D05 §8 の決定（約定処理より前に置く構成は排除済み）。D05 が本書へ委ねたのは**順位と挿す位置**だけであり、本書はそれを rank 12 として確定する。
 - rank 2 が rank 11 より前にあるのは「期限処理フェーズを open 約定フェーズより前に置き、同時刻なら EXPIRED を先に確定する」【合意済み】上位 §4.7.13 B。
+- rank 13 を置くのは、rank 12 の評価が返した管理要求のうち**全数量決済**が注文になるためである【提案】。受付フェーズ（rank 10）は既に過ぎており、受け口が無いとこの要求が注文にならないまま消える。rank 13 で受け付けた注文の最初の適格な始値は、rank 11 を過ぎているため**次の執行足の始値**になり、「因果順序上まだ到来していない最初の執行足の始値で約定する」【合意済み】上位 §4.7.11 を満たす。**不採用**: 次の判断時点の受付フェーズまで要求を保持する案（保持する仕組みと有効期限の起算点をもう1つ決めることになり、約定できる最初の始値は同じである）、rank 12 の中で受け付ける案（受付の処理点（`ProcessingPoint`）が評価と同じフェーズになり、判断履歴で評価と受付を区別できなくなる）。
 
 **フェーズ名に数字を含められるかが未解決**である【要決定】（Q1）。D02 §3.3 は `PhaseRank.name` を `^[A-Z_]+$` と定めており、この正規表現は数字を許さない。一方 D05 §6.1 は `P1_FEATURE`〜`P5_ORDER_INTENT` という名前で引くと書いている。どちらかを改訂しなければ実装できないため、上表は Q1 の決定が「D02 の規則を緩める」場合の名前で書いてある。Q1 で「数字を使わない」を選んだ場合は、上表の rank 5〜9 の名前を `FEATURE` / `MARKET_STATE` / `TRIGGER` / `CONFIRMATION` / `ORDER_INTENT` に置き換え、D05 §6.1 の名前の列挙を同じ PR で改訂する。**どちらを選んでも rank の順序と本書の他の節は変わらない。**
 
@@ -204,8 +206,9 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。戻り値の `RuntimeStepResult` から `outputs` を `OutputSink` 経由で trace へ、`evaluations` と `transitions` を trace へ渡す。**`evaluations` に `Failed` が1件でもあれば、ここで run を止める**（下記）。無ければ `proposals` と `management_requests` を rank 10 へ渡す。
 6. rank 10: 要求組立から受付までを行い、`AttemptDecision` と `AdmissionNotice` を作る（第6節）。
 7. rank 11: 執行系列の始値処理を行う（第7.1節）。
-8. rank 12: 6 の `AdmissionNotice` と 7 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。戻り値の `management_requests` を建玉へ適用する（第8.3節）。通知が1件もなければ呼ばない。
-9. run_end の判断時点だけ rank 13 を行う（第10節）。
+8. rank 12: 6 の `AdmissionNotice` と 7 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。**第1回と同じく `outputs` / `evaluations` / `transitions` をすべて trace へ渡す**（第2回で出る固定リスクリワード比の評価記録と、受付通知による取引機会の終端の遷移は、ここで保存しないと表2・表3から落ちる）。`management_requests` のうち保護水準の更新は建玉へ適用し（第8.3節）、全数量決済は rank 13 へ渡す。通知が1件もなければ呼ばない。
+9. rank 13: 8 の `management_requests` のうち全数量決済を要求へ組み立て、第6節と同じ手順で受け付ける。要求が1件も無ければ何もしない。
+10. run_end の判断時点だけ rank 14 を行う（第10節）。
 
 **評価の失敗は受付より前で run を止める**【提案】。D05 §6.2 は、部品の失敗・`on_missing=Error` の欠損・戻り値の検査違反を `Failed(Reason(DATA_ERROR, ...))` として評価記録に残し、**以降の評価を行わずに結果を返す**と定め、「run を終了させるのはエンジンの責務」と本書へ委ねている【合意済み】。そこでエンジンは、第1回・第2回のどちらの `step` でも `RuntimeStepResult.evaluations` に `Failed` があれば、次のとおり扱う。
 
@@ -312,12 +315,14 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 
 ### 6.2 段階2で組み立てる要求の種類【提案】
 
-| 要求 | 出どころ | `origin` | `payload` |
-|---|---|---|---|
-| 新規エントリー | `RuntimeStepResult.proposals` | `STRATEGY` | `EntryRequest` |
-| 戦略の全数量決済 | `ManagementRequest(ClosePosition())` | `STRATEGY` | `CloseRequest(STRATEGY_EXIT)` |
-| 保護水準の到達による決済 | 第7.3節 | `ENGINE` | `CloseRequest(STOP_LOSS \| TAKE_PROFIT)` |
-| 約定直後の緊急決済 | 第7.5節 | `ENGINE` | `CloseRequest(EMERGENCY)` |
+| 要求 | 出どころ | 受け付けるフェーズ | `origin` | `payload` |
+|---|---|---|---|---|
+| 新規エントリー | 第1回の `step` の `proposals` | `ADMISSION`（rank 10） | `STRATEGY` | `EntryRequest` |
+| 戦略の全数量決済 | `ManagementRequest(ClosePosition())` | **それを返した `step` の直後の受付フェーズ**（第1回なら rank 10、第2回なら `POST_FILL_ADMISSION`（rank 13）） | `STRATEGY` | `CloseRequest(STRATEGY_EXIT)` |
+| 保護水準の到達による決済 | 第7.3節 | `EXECUTION_BAR_COMPLETE`（rank 0）の中で組み立て、同じ確定単位で受け付ける | `ENGINE` | `CloseRequest(STOP_LOSS \| TAKE_PROFIT)` |
+| 約定直後の緊急決済 | 第7.5節 | `EXECUTION_OPEN`（rank 11）の中で組み立て、同じ確定単位で受け付ける | `ENGINE` | `CloseRequest(EMERGENCY)` |
+
+エンジンが生成する決済（保護水準の到達・緊急決済）が通常の受付フェーズを通らないのは、候補の始値を探す規則の対象外だからである【合意済み】上位 §4.7.15 B。`eligibility` が `ProtectionHit` / `ImmediateAfterFill` で固定されており、受付と約定が同じ確定単位で確定する（第4.4節）。
 
 `ManagementRequest(SetTakeProfit(price))` は注文ではなく**建玉の保護水準の更新**であり、この表に入らない（第8.3節）。検証戦略 A が出すのはこれだけである。
 
@@ -351,7 +356,7 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 5. 損切りを価格刻みで丸める（第6.5節）。`P_limit = P_ref + d × Δ`、`R(Q) = d × (P_limit − S) × Q × X + C(Q)`。`d × (P_limit − S) > 0` を要求する。
 6. `R(Q) <= admission_budget` を満たす最大の数量を数量刻みで**切り下げ**て求める。最小数量未満なら拒否（`RISK`）。切り上げない。
 7. 丸め後の数量で `R(Q)` を再計算し、口座制約（総量・数量上限）を再検査する。
-8. すべての段の入力と結果を `RiskAssessment` に残す。`assessment_id` は `IdAllocator.next(EvidenceId)` で採番し、`RiskAssessmentRef` はこの値だけを持つ（参照と実体で識別子を二重に持たない）。`attempt_id` を `RiskAssessment` 自身にも持たせるのは、拒否された試行でも審査の記録から試行へ戻れるようにするためである。`checks` には各検査の名前・上限・観測値を `RiskCheckResult` で入れる。D02 §8.2 の `RiskRejectionDetail` は `limit` と `observed` の型一致を要求するため、同じ組で作る。
+8. すべての段の入力と結果を `RiskAssessment` に残す。**手順1〜8 はエントリー要求にだけ適用する**【提案】。決済要求は新規リスク予算の審査対象ではなく（上位 §4.7.15 A）、参照価格・丸め前後の損切り・予約額といった `RiskAssessment` の必須項目がそもそも存在しない。したがって決済の受付では `AttemptAccepted.assessment_ref` を `None` とし、代わりに対象建玉の存否・数量・競合・期限・執行条件を検査する【合意済み】同節。この検査の結果は `AttemptRejected.reason` と表15 の根拠記録に残す。**不採用**: 決済用に空の `RiskAssessment` を作る案（架空の参照価格と予約額を記録することになる）、受付結果をエントリー用と決済用の2つの union 要素に分ける案（受付済み注文の側が既に `AcceptedEntryTerms` / `AcceptedCloseTerms` で目的を区別しており、試行結果まで分けると区別が2か所になる）。`assessment_id` は `IdAllocator.next(EvidenceId)` で採番し、`RiskAssessmentRef` はこの値だけを持つ（参照と実体で識別子を二重に持たない）。`attempt_id` を `RiskAssessment` 自身にも持たせるのは、拒否された試行でも審査の記録から試行へ戻れるようにするためである。`checks` には各検査の名前・上限・観測値を `RiskCheckResult` で入れる。D02 §8.2 の `RiskRejectionDetail` は `limit` と `observed` の型一致を要求するため、同じ組で作る。
 
 段階2はレバレッジ・証拠金の検査を行わない【提案】（ADR-0015 の縦断範囲に証拠金モデルが無く、検査に使う値が存在しないため）。`checks` に「未実施」を入れず、検査そのものを持たない。**不採用**: 仮の証拠金率を置いて検査する案（実験前に固定すべき値を設計が勝手に決めることになる）。
 
@@ -428,6 +433,16 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 | 4 | 下位足の `available_at` が親足の `available_at` 以下である（親を解決する時点で子が見えている） | 実行不可 |
 | 5 | run 区間と銘柄について、階層の各系列が snapshot に欠損なく存在する（D03 §3.9 の `IntegrityReport`） | 実行不可 |
 
+各検査が `HierarchyCheckResult` に埋める項目は次のとおりとする【提案】。不合格の実値を型どおり残せるようにするためで、どの検査でも埋まらない項目は `None` にする。
+
+| 検査 | 埋める項目 |
+|---|---|
+| 1（被覆） | `parent_bar`、`expected_interval`（親足の区間）、`observed_interval`（子足の区間の和） |
+| 2（価格基準） | `expected_basis`（親の `PriceBasis`）、`observed_basis` |
+| 3（足境界） | `parent_bar`、**`child_bar`**（ずれた子足）、`expected_boundary`（親の境界時刻）、`observed_boundary`（その子足の対応する端の時刻） |
+| 4（利用可能時刻） | `parent_bar`、`child_bar`、`expected_available_at`（親の `available_at`）、`observed_available_at` |
+| 5（存在） | `parent_bar`、`expected_interval`（期待した区間）、`observed_interval`（実際に存在した区間） |
+
 **不足時は実行不可とし、暗黙に親足の4本値へ落とさない**【合意済み】ADR-0030。検査1〜5 は「下位足が宣言されている場合」にだけ走る。階層が1段だけなら検査は5だけになる。
 
 **解決の手順**:
@@ -488,7 +503,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 | 要求 | 適用 | 検査 |
 |---|---|---|
 | `SetTakeProfit(price)` | `ProtectionState` の `take_profit` を設定し `version` を1増やす | 価格刻みへ丸め（第6.5節）、買いなら `entry < take_profit`、売りなら `take_profit < entry`。丸め後の実リスクリワード比を記録する |
-| `ClosePosition()` | `CloseRequest(STRATEGY_EXIT)` を組み立てて受付へ回す（第6.2節） | 対象建玉が開いていること |
+| `ClosePosition()` | `CloseRequest(STRATEGY_EXIT)` を組み立て、その `step` の直後の受付フェーズへ回す（第6.2節の表） | 対象建玉が開いていること |
 
 - 適用フェーズは `POST_FILL_EVALUATION`。`effective_from` は次の2つに分ける【提案】。
 
@@ -622,9 +637,9 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | 1 | run_end で終了する足までの内部約定・口座更新を解決する | `EXECUTION_BAR_COMPLETE` / `LEDGER_UPDATE` |
 | 2 | run_end までに期限到達した PENDING を EXPIRED にする（run_end と同時刻なら期限切れを優先） | `ORDER_EXPIRY` |
 | 3 | 通常の評価スケジュールに従って戦略評価を行い判断履歴を残す | `PUBLICATION` 〜 `P5_ORDER_INTENT` |
-| 4 | この評価から出た注文意図を**受付前に `RUN_END` で拒否**する。注文を作ってから取り消す方式にしない | `ADMISSION` |
-| 5 | 残った受付済み PENDING を CANCELED（理由 `RUN_END`）にし、未約定予約を解放する。run_end から始まる足の始値処理は行わない | `RUN_END` |
-| 6 | 残存建玉は未決済のまま MTM 評価して最終 snapshot を保存する。建玉割当も解放しない | `RUN_END` |
+| 4 | この評価から出た注文意図を**受付前に `RUN_END` で拒否**する。注文を作ってから取り消す方式にしない | `ADMISSION`。rank 11 を行わないため rank 12 の評価は通知の配送だけで、rank 13 で出た決済要求も同じく `RUN_END` で拒否する |
+| 5 | 残った受付済み PENDING を CANCELED（理由 `RUN_END`）にし、未約定予約を解放する。run_end から始まる足の始値処理（rank 11）は行わない | `RUN_END`（rank 14） |
+| 6 | 残存建玉は未決済のまま MTM 評価して最終 snapshot を保存する。建玉割当も解放しない | `RUN_END`（rank 14） |
 
 - 手順4の拒否も `AdmissionNotice(accepted=False, reason=RUN_END)` として `POST_FILL_EVALUATION` で配送し、取引機会を `ORDER_ATTEMPT_REJECTED` で終端させる【提案】。末尾でだけ通知経路を変えない。
 - 手順3で生成された管理要求は記録するが**適用しない**。適用しない理由は `RUN_END` で残す【合意済み】同節。
