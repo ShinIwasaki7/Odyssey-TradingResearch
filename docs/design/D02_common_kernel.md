@@ -1,7 +1,7 @@
 # D02: 共通カーネル型設計（`odyssey_fx.common`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に記録。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15「共通の値型と参照」、§4.3.15、§4.7.14、[D01](D01_architecture_and_dependency_rules.md) §1・§2・§5・§7.2、ADR-0006（決定論的 ID）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）
 対応段階: 段階1で実装。以降の全パッケージが依存する。
 
@@ -27,7 +27,7 @@ D01 §7.2 の7モジュールに、ダイジェスト用の `canonical.py` と�
 
 | モジュール | 内容 |
 |---|---|
-| `time.py` | `UtcTime`、`Interval`、`PhaseRank`、`ProcessingPoint` |
+| `time.py` | `UtcTime`、`Interval`、`PhaseRank`、`PhaseSet`、`ProcessingPoint` |
 | `ids.py` | 用途別 ID 型、`RunId`、`IdAllocator` |
 | `money.py` | `CurrencyCode`、`Price`、`PriceOffset`、`Quantity`、`Money`、`ConversionRate`、丸め、float 変換 |
 | `symbol.py` | `Symbol`、`SymbolSpec`、`SymbolSpecRef` |
@@ -75,7 +75,8 @@ D01 §7.2 の7モジュールに、ダイジェスト用の `canonical.py` と�
 | `ProcessingPoint` | `time: UtcTime`、`phase: PhaseRank`、`sequence: int` | `sequence >= 0` |
 
 - 全順序は `(time, phase.rank, sequence)`。同じ `time` でも phase と sequence で区別する。
-- **一意性**: run 内で使うフェーズの集合は `backtest.engine` が固定の tuple として定義し、`rank` と `name` はそれぞれ集合内で一意（rank ↔ name は全単射）。同じ `rank` に異なる `name`、同じ `name` に異なる `rank` を含む集合は構築時に拒否する。`ProcessingPoint` の全順序はこの一意性を前提とし、フェーズ集合の定義は run manifest に記録する。
+- **一意性**: run 内で使うフェーズの集合は `backtest.engine` が固定の tuple として定義し、`rank` と `name` はそれぞれ集合内で一意（rank ↔ name は全単射）。同じ `rank` に異なる `name`、同じ `name` に異なる `rank`、および同一要素の重複を含む集合は構築時に拒否する。`ProcessingPoint` の全順序はこの一意性を前提とし、フェーズ集合の定義は run manifest に記録する。
+- **`PhaseSet`（v1.2、確定）**: 上記の一意性検査は `common` の `PhaseSet(phases: tuple[PhaseRank, ...])` が構築時に行う（各パッケージでの再実装を防ぐ）。`PhaseSet` は内部のフェーズ列を **`rank` の昇順に正規化して保持**し、入力の並び順によって同値性・ハッシュ・正規化エンコード（第9.3節）・manifest の記録内容が変わらない。`by_name(name)` / `by_rank(rank)` で引け、未登録は `KernelValueError`。空集合は拒否する。具体的なフェーズ一覧の定義は引き続き `backtest.engine`（D06）が行い、`common` は構造と検査だけを持つ。
 - `ProcessingPoint` は「エンジンがいつ処理したか」であり、市場で起きた時刻ではない。市場時刻は `Interval` / `UtcTime` で別に持つ。
 
 ## 4. 金額・価格・数量（`money.py`）
@@ -165,7 +166,9 @@ price_from_float(raw: float, *, tick: Decimal, direction: RoundingDirection) -> 
 
 ## 6. 時間足参照（`timeframe.py`）（確定）
 
-`TimeframeRef(id: str, version: int)`。`id` は `^[a-z0-9_]+$`（例: `15m`、`1h`、`4h_ny17`、`1d_ny17`）。長さ・整列・セッション規則を持つ定義本体は `marketdata.domain`（D03）に置き、`common` は参照だけを持つ。固定 enum にしない（上位設計書 §4.3.9）。
+`TimeframeRef(id: str, version: int)`。`id` は `^[a-z0-9_]+$`（例: `15m`、`1h`、`4h_ny17`、`1d_ny17`）、`version >= 1`。長さ・整列・セッション規則を持つ定義本体は `marketdata.domain`（D03）に置き、`common` は参照だけを持つ。固定 enum にしない（上位設計書 §4.3.9）。
+
+`__str__` / `parse` の形式（v1.2、実装で確定）: `"<id>@v<version>"`（例: `1h@v1`）。第9.3節の正規化エンコードはこの文字列を使うため、形式の変更はダイジェストの変更を意味する。
 
 ## 7. ID（`ids.py`）（確定、ADR-0006）
 
@@ -243,7 +246,7 @@ Reason(code: ReasonCode, detail: ReasonDetail | None)
 | `RunEndDetail` | `run_end: UtcTime` | `RUN_END` |
 | `CarryNotAllowedDetail` | `next_candidate: UtcTime`、`session_close: UtcTime` | `CARRY_NOT_ALLOWED` |
 | `PositionClosedDetail` | `position_id: PositionId`、`closed_at: ProcessingPoint` | `POSITION_CLOSED` |
-| `RiskRejectionDetail` | `check: str`、`limit: Money \| Decimal`、`observed: Money \| Decimal` | `RISK`。`check` の語彙は D06 |
+| `RiskRejectionDetail` | `check: str`、`limit: Money \| Decimal`、`observed: Money \| Decimal` | `RISK`。`check` の語彙は D06。**`limit` と `observed` は型を一致させ（両方 `Money` か両方 `Decimal`）、`Money` 同士なら通貨も一致させる**（v1.2、確定。比較不能な記録を構築時に拒否する）。`Decimal` 同士の意味（比率・件数など）の検査は D06 が行う |
 
 ### 8.3 入力不足の診断コード（確定）
 
@@ -312,7 +315,7 @@ Reason(code: ReasonCode, detail: ReasonDetail | None)
 
 | 種別 | 内容 |
 |---|---|
-| 単体 | 各型の不変条件（拒否される値）、演算の型規則、`__str__` / `parse` の往復、`round_to_tick` の方向、`Money` の通貨不一致、`from_local` の DST 曖昧・不存在時刻 |
+| 単体 | 各型の不変条件（拒否される値）、演算の型規則、`__str__` / `parse` の往復、`round_to_tick` の方向、`Money` の通貨不一致、`from_local` の DST 曖昧・不存在時刻、`PhaseSet` の一意性違反の拒否と並び順に依らない同値性、`RiskRejectionDetail` の型・通貨不一致の拒否 |
 | プロパティ | `ProcessingPoint` の全順序性、`canonical.digest` がキー順序に依存しないこと、`Decimal` 表現の正規化（`150.00` と `150`）と厳密性（精度 28 を超える桁数の異なる2値が異なる表現になり、コンテキスト精度を変えても表現が変わらないこと、巨大な指数の値でも展開しないこと）、`price_from_float` の `exact` が `Decimal(repr(x))` と一致すること、`IdAllocator` の再現性 |
 | アーキテクチャ | `Decimal(` の呼び出し位置の制限（第4.6節）、`common` が標準ライブラリ以外を import しないこと（D01 F5a/F5b で機械検査済み） |
 
