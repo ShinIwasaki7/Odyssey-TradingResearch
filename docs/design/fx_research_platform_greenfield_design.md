@@ -604,9 +604,9 @@ LatestAvailableもWAITに入った後で再開時の最新足を選び直す意�
 
 MarketStateが待機するとき、必要な同区間の出力に依存するTrigger等も未解決依存として保持できる。ただし全下流を無条件にWAITへ変換するわけではなく、解決済みの各入力ポリシーと戦略の実行契約が待機を認める場合に限る。SKIPやERRORで決着した要求を上流到着で復活させない。取引機会生成前の確認/注文は、機会生成後に起動する下流処理として区別する。独立した15m EMA等は通常どおり更新する。
 
-**supersession（追い越し）**
+**supersession（追い越し）＝ `REQUEST_SUPERSEDED`**
 
-ここでいう追い越しは**評価要求**に対するものであり、第4.5節で取引機会の終端として定義した `SUPERSEDED`（新しいTriggerを優先する設定、ADR-0032）とは対象が異なる。D05 で語彙を区別して定義する。
+ここでいう追い越しは**評価要求**に対するものであり、第4.5節で取引機会の終端として定義した `SUPERSEDED`（新しいTriggerを優先する設定、ADR-0032）とは対象が異なる。両者を同じ語で呼ぶと判断履歴（trace）と理由コードで読み分けられないため、**評価要求側の追い越しを `REQUEST_SUPERSEDED` と呼ぶ**（2026-09-20 改訂、ADR-0032）。取引機会側の `SUPERSEDED` は変更しない。改名は語彙のみで、本節で確定済みの追い越しの意味・検査時点・`on_superseded` の扱いは変えない。
 
 同じ評価対象系列の新しい足が公開済みになった場合、期限とは別の失効/遷移理由として追い越しを検査する。WAIT設定のon_supersededに有効方針を明示し、部品/用途別の既定を実験固定時に解決・記録する。役割はStrategyDefinitionの配置から分かり、ComponentInstanceへroleを復活させない。Feature/MarketState等の既定の詳細は別途設計する。
 
@@ -727,10 +727,11 @@ Trigger の出力は単なる真偽値ではなく、少なくとも ID・発生
 | `EXPIRED` | `entry_policy` の期限に到達して終端 |
 | `MARKET_STATE_INVALIDATED` | `REQUIRE_UNTIL_ORDER_REQUEST` の条件が成立しなくなって終端（ADR-0031）。復活させない |
 | `SUPERSEDED` | 新しいTriggerを優先する設定により終端（ADR-0032）。内容の上書きではなく終端＋新規生成 |
+| `CLOSED_BY_ORDER_ACCEPTANCE` | 別の注文が受け付けられたことを理由に終端（ADR-0032）。`OpportunityConcurrencySpec` の `on_order_accepted` に規則を明示した場合に限る。規則がなければ暗黙に終端させない |
 
-**要決定（2026-09-20 時点、未解決）**: `on_order_accepted` に「ある注文が受け付けられたら他の取引機会を終了する」規則を書いた場合の終端状態が、上の一覧にない。`SUPERSEDED` は新しい Trigger を優先する場合に限っており、`EXPIRED` も `MARKET_STATE_INVALIDATED` も意味が合わない。専用の状態・理由コードを追加するか、`SUPERSEDED` の意味を受付起因の終了まで広げるかを D05 で決める。決めるまでこの遷移の状態名を仮置きしない。
+受付起因の終了には専用の終端状態を使う（2026-09-20 確定、ADR-0032）。`SUPERSEDED` の意味を受付起因の終了まで広げることはしない。両者を1つの状態にまとめると、判断履歴（trace）で「新しい Trigger に置き換わった機会」と「他の注文が通ったので終わった機会」を集計上区別できなくなるためである。
 
-`SUPERSEDED` は取引機会の終端であり、第4.3.14節の評価要求に対する「追い越し（supersession）」とは対象が異なる。D05 で語彙を区別して定義する。
+`SUPERSEDED` は取引機会の終端であり、第4.3.14節の評価要求に対する追い越し（`REQUEST_SUPERSEDED`）とは対象が異なる。
 
 要決定として残るのは、発火時に凍結する値と随時更新する値の具体的な列挙（`Opportunity.reference_values` のスキーマ宣言と合わせて D04 で確定する）。
 
@@ -1127,6 +1128,8 @@ run_endは実験前に固定する。必要データがそれより前に尽き�
 | `CARRY_NOT_ALLOWED` | 初版の週末持ち越し禁止による受付前拒否 |
 | `MARKET_STATE_INVALIDATED` | 継続成立を要求した条件が崩れたことによる取引機会の終端（第4.5節、ADR-0031） |
 | `SUPERSEDED` | 新しいTriggerを優先する設定による取引機会の終端（第4.5節、ADR-0032） |
+| `CLOSED_BY_ORDER_ACCEPTANCE` | 別の注文が受け付けられたことによる取引機会の終端（第4.5節、ADR-0032）。`on_order_accepted` に規則がある場合のみ |
+| `REQUEST_SUPERSEDED` | 同じ系列の新しい足による評価要求の追い越し（第4.3.14節、ADR-0032 で改名）。取引機会の `SUPERSEDED` と混同しない |
 
 同じ理由コードでもイベント種別・状態で意味を絞る。EXPIREDという理由でCANCELEDにする等の不整合は拒否する。DATA_ERRORには期待/実際の観測区間・項目・原因を添える。発注試行や注文を作る前の完全性検査失敗には、存在しない注文IDを要求しない。
 
