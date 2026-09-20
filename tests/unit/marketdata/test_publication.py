@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 
 import pytest
@@ -23,16 +24,22 @@ from odyssey_fx.marketdata.application.publication import (
     build_feed,
     build_publication_log,
 )
+from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import (
+    HoldoutAccessViolation,
+    MarketDataValueError,
+    SnapshotNotApproved,
+)
 from odyssey_fx.marketdata.domain.schedule import (
     DelayScenario,
     FixedSeriesDelay,
     SeriesSchedule,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
-from tests.fixtures.synthetic import market
+from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
 FIFTEEN = market.series(timeframe_id="15m")
@@ -50,8 +57,28 @@ SCHEDULES = {
 }
 
 
+HOURLY_PARTITION = PartitionId(series=HOURLY, access_class=AccessClass.RESEARCH_HISTORY)
+FIFTEEN_PARTITION = PartitionId(series=FIFTEEN, access_class=AccessClass.RESEARCH_HISTORY)
+DAILY_PARTITION = PartitionId(series=DAILY, access_class=AccessClass.RESEARCH_HISTORY)
+
+PARTITION_OF = {HOURLY: HOURLY_PARTITION, FIFTEEN: FIFTEEN_PARTITION, DAILY: DAILY_PARTITION}
+
+
 def _bars(series: SeriesId, timeframe_def: TimeframeDefinition) -> tuple[Bar, ...]:
     return market.make_bars(series, timeframe_def, CALENDAR, WINDOW)
+
+
+def _context(
+    bars_by_series: Mapping[SeriesId, Sequence[Bar]],
+) -> tuple[SnapshotManifest, frozenset[PartitionId], dict[PartitionId, Sequence[Bar]]]:
+    """承認済み snapshot・許可 partition・partition ごとの足を組み立てる。
+
+    公開フィードは as-of ビューと同じ関門を通るので（D03 §3.7.1・§6.1）、テストも同じ形で
+    入力を渡す。
+    """
+    partition_bars = {PARTITION_OF[series]: bars for series, bars in bars_by_series.items()}
+    allowed = frozenset(partition_bars)
+    return snapshots.approved_for(sorted(allowed, key=str)), allowed, partition_bars
 
 
 # --- 同時刻の順序（D03 §7.1）------------------------------------------------
@@ -72,8 +99,14 @@ def test_events_at_the_same_instant_follow_the_fixed_order() -> None:
     予定境界は公開予定を持つ全系列に出るので、順序の確認は1つの系列に絞る。
     """
     bars = {FIFTEEN: _bars(FIFTEEN, market.TF_15M)}
+    manifest, allowed, partition_bars = _context(bars)
     feed = build_feed(
-        bars, {FIFTEEN: SCHEDULES[FIFTEEN]}, WINDOW, execution_series=frozenset({FIFTEEN})
+        manifest,
+        allowed,
+        partition_bars,
+        {FIFTEEN: SCHEDULES[FIFTEEN]},
+        WINDOW,
+        execution_series=frozenset({FIFTEEN}),
     )
     boundary = UtcTime.parse("2026-01-14T12:00:00Z")
     at_boundary = [event for event in feed if event.at == boundary]
@@ -91,7 +124,8 @@ def test_the_longer_timeframe_is_delivered_first_at_the_same_instant() -> None:
         HOURLY: _bars(HOURLY, market.TF_1H),
         FIFTEEN: _bars(FIFTEEN, market.TF_15M),
     }
-    feed = build_feed(bars, SCHEDULES, WINDOW)
+    manifest, allowed, partition_bars = _context(bars)
+    feed = build_feed(manifest, allowed, partition_bars, SCHEDULES, WINDOW)
     boundary = UtcTime.parse("2026-01-14T12:00:00Z")
     publications = [
         event
@@ -112,7 +146,8 @@ def test_a_missing_bar_still_produces_its_scheduled_boundary() -> None:
     """
     missing = UtcTime.parse("2026-01-14T10:00:00Z")
     bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=(missing,))
-    feed = build_feed({HOURLY: bars}, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+    manifest, allowed, partition_bars = _context({HOURLY: bars})
+    feed = build_feed(manifest, allowed, partition_bars, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
 
     boundaries = {
         event.bar_key.bar_start for event in feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY)
@@ -129,7 +164,8 @@ def test_the_scheduled_boundaries_cover_every_expected_bar() -> None:
     数える。
     """
     bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
-    feed = build_feed({HOURLY: bars}, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+    manifest, allowed, partition_bars = _context({HOURLY: bars})
+    feed = build_feed(manifest, allowed, partition_bars, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
     boundaries = sorted(str(event.at) for event in feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY))
     search = Interval(start=WINDOW.start - timedelta(hours=2), end=WINDOW.end)
     expected = sorted(
@@ -145,7 +181,8 @@ def test_the_scheduled_boundaries_cover_every_expected_bar() -> None:
 
 def test_a_series_with_no_bars_at_all_still_gets_its_boundaries() -> None:
     """データが1本も無い系列にも、公開予定があれば予定境界が出る（D03 §7.1）。"""
-    feed = build_feed({}, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
+    manifest, allowed, partition_bars = _context({HOURLY: ()})
+    feed = build_feed(manifest, allowed, partition_bars, {HOURLY: SCHEDULES[HOURLY]}, WINDOW)
     assert feed.of_kind(PublicationKind.SCHEDULED_BOUNDARY)
     assert not feed.of_kind(PublicationKind.PUBLICATION)
 
@@ -158,8 +195,9 @@ def test_the_scheduled_boundary_fires_even_when_the_data_is_delayed() -> None:
         version=1,
         rules=(FixedSeriesDelay(series=HOURLY, delay=timedelta(minutes=5)),),
     )
-    log = build_publication_log(bars, SCHEDULES, scenario)
-    feed = build_feed(bars, SCHEDULES, WINDOW, publication_log=log)
+    manifest, allowed, partition_bars = _context(bars)
+    log = build_publication_log(manifest, allowed, partition_bars, SCHEDULES, scenario)
+    feed = build_feed(manifest, allowed, partition_bars, SCHEDULES, WINDOW, publication_log=log)
 
     boundary = UtcTime.parse("2026-01-14T12:00:00Z")
     boundaries = [
@@ -187,7 +225,15 @@ def test_execution_events_are_produced_only_for_the_execution_series() -> None:
         HOURLY: _bars(HOURLY, market.TF_1H),
         FIFTEEN: _bars(FIFTEEN, market.TF_15M),
     }
-    feed = build_feed(bars, SCHEDULES, WINDOW, execution_series=frozenset({FIFTEEN}))
+    manifest, allowed, partition_bars = _context(bars)
+    feed = build_feed(
+        manifest,
+        allowed,
+        partition_bars,
+        SCHEDULES,
+        WINDOW,
+        execution_series=frozenset({FIFTEEN}),
+    )
     execution_kinds = {
         PublicationKind.EXECUTION_OPEN,
         PublicationKind.EXECUTION_BAR_COMPLETE,
@@ -198,7 +244,15 @@ def test_execution_events_are_produced_only_for_the_execution_series() -> None:
 
 def test_the_execution_open_fires_at_the_bar_start() -> None:
     bars = {FIFTEEN: _bars(FIFTEEN, market.TF_15M)}
-    feed = build_feed(bars, SCHEDULES, WINDOW, execution_series=frozenset({FIFTEEN}))
+    manifest, allowed, partition_bars = _context(bars)
+    feed = build_feed(
+        manifest,
+        allowed,
+        partition_bars,
+        SCHEDULES,
+        WINDOW,
+        execution_series=frozenset({FIFTEEN}),
+    )
     for event in feed.of_kind(PublicationKind.EXECUTION_OPEN):
         assert event.at == event.bar_key.bar_start
 
@@ -213,7 +267,8 @@ def test_the_publication_log_records_the_scheduled_and_realized_times() -> None:
         version=1,
         rules=(FixedSeriesDelay(series=HOURLY, delay=timedelta(seconds=90)),),
     )
-    log = build_publication_log(bars, SCHEDULES, scenario)
+    manifest, allowed, partition_bars = _context(bars)
+    log = build_publication_log(manifest, allowed, partition_bars, SCHEDULES, scenario)
     assert log.records
     for record in log.records:
         assert record.scheduled_at == record.bar_end
@@ -251,3 +306,86 @@ def test_consistent_phase_ranks_are_accepted() -> None:
 
 def test_a_feed_without_phase_ranks_reports_none() -> None:
     assert PublicationFeed(events=()).phase_rank(PublicationKind.PUBLICATION) is None
+
+
+# --- snapshot の関門（D03 §3.7.1 の3・§6.1）--------------------------------
+
+
+def test_an_unapproved_snapshot_cannot_produce_a_feed() -> None:
+    """暫定・未承認の snapshot から公開フィードは作れない（D03 §3.7.1 の3）。
+
+    作れてしまうと「暫定 snapshot はバックテストの入力にできない」という設計が
+    成り立たない。
+    """
+    bars = _bars(HOURLY, market.TF_1H)
+    approved_manifest = snapshots.approved_for((HOURLY_PARTITION,))
+    pending = snapshots.manifest(
+        series_records=approved_manifest.series, partitions=approved_manifest.partitions
+    )
+    with pytest.raises(SnapshotNotApproved, match="has not been approved"):
+        build_feed(
+            pending,
+            frozenset({HOURLY_PARTITION}),
+            {HOURLY_PARTITION: bars},
+            {HOURLY: SCHEDULES[HOURLY]},
+            WINDOW,
+        )
+
+
+def test_an_unapproved_snapshot_cannot_produce_a_publication_log() -> None:
+    bars = _bars(HOURLY, market.TF_1H)
+    approved_manifest = snapshots.approved_for((HOURLY_PARTITION,))
+    pending = snapshots.manifest(
+        series_records=approved_manifest.series, partitions=approved_manifest.partitions
+    )
+    with pytest.raises(SnapshotNotApproved, match="has not been approved"):
+        build_publication_log(
+            pending,
+            frozenset({HOURLY_PARTITION}),
+            {HOURLY_PARTITION: bars},
+            {HOURLY: SCHEDULES[HOURLY]},
+        )
+
+
+def test_a_quarantined_partition_cannot_produce_a_feed() -> None:
+    """未分類の隔離期間はいかなる経路でも読めない（D03 §6.1、ADR-0014）。"""
+    quarantined = PartitionId(series=HOURLY, access_class=AccessClass.QUARANTINED_UNASSIGNED)
+    manifest = snapshots.approved_for((HOURLY_PARTITION, quarantined))
+    with pytest.raises(HoldoutAccessViolation, match="quarantined partitions"):
+        build_feed(
+            manifest,
+            frozenset({HOURLY_PARTITION, quarantined}),
+            {HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+            {HOURLY: SCHEDULES[HOURLY]},
+            WINDOW,
+        )
+
+
+def test_a_partition_missing_from_the_manifest_is_refused() -> None:
+    """manifest に記録のない partition は許可できない（何が入っているか確かめられない）。"""
+    manifest = snapshots.approved_for((HOURLY_PARTITION,))
+    with pytest.raises(MarketDataValueError, match="not recorded in the snapshot manifest"):
+        build_feed(
+            manifest,
+            frozenset({HOURLY_PARTITION, FIFTEEN_PARTITION}),
+            {HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+            SCHEDULES,
+            WINDOW,
+        )
+
+
+def test_bars_of_an_unallowed_partition_are_not_published() -> None:
+    """許可外の partition に足を置いても、公開イベントには現れない（D03 §6.1）。"""
+    manifest = snapshots.approved_for((HOURLY_PARTITION, FIFTEEN_PARTITION))
+    feed = build_feed(
+        manifest,
+        frozenset({HOURLY_PARTITION}),  # 15分足は許可しない。
+        {
+            HOURLY_PARTITION: _bars(HOURLY, market.TF_1H),
+            FIFTEEN_PARTITION: _bars(FIFTEEN, market.TF_15M),
+        },
+        SCHEDULES,
+        WINDOW,
+    )
+    published = {event.series for event in feed.of_kind(PublicationKind.PUBLICATION)}
+    assert published == {HOURLY}

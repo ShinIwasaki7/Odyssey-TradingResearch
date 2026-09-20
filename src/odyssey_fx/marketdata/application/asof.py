@@ -25,13 +25,12 @@ from datetime import timedelta
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import UtcTime
-from odyssey_fx.marketdata.domain.access import AccessClass
-from odyssey_fx.marketdata.domain.bar import Bar, BarKey
-from odyssey_fx.marketdata.domain.errors import (
-    HoldoutAccessViolation,
-    MarketDataValueError,
-    SnapshotNotApproved,
+from odyssey_fx.marketdata.application.snapshot_access import (
+    PartitionedBars,
+    require_readable_snapshot,
 )
+from odyssey_fx.marketdata.domain.bar import Bar, BarKey
+from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -95,105 +94,6 @@ class DurationWindow:
             raise MarketDataValueError(f"DurationWindow.duration must be > 0, got {self.duration}")
 
 
-def _require_approved(manifest: SnapshotManifest) -> None:
-    """承認済みの snapshot だけを読めるようにする（D03 §3.7.1 の3）。"""
-    if not manifest.is_approved:
-        raise SnapshotNotApproved(
-            "this snapshot has not been approved; as-of views, the publication feed and the"
-            " snapshot catalog cannot read it until the approval is recorded (D03 §3.7.1)"
-        )
-
-
-def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
-    """未分類の隔離期間の partition を許可集合から締め出す（D03 §6.1）。
-
-    未分類の隔離期間（`QUARANTINED_UNASSIGNED`）は、未観測の確認と別の決定記録（ADR）に
-    よる再分類が行われるまで**いかなる経路でも**読めない。封印期間の解除手続き
-    （holdout gate）も許可を発行しない。呼び出し側が誤って渡した場合に黙って無視すると、
-    「渡したのに読めない」のか「そもそも渡してはいけない」のかが区別できなくなるため、
-    構築時に構造エラーで拒否する。
-    """
-    quarantined = sorted(
-        str(partition_id)
-        for partition_id in allowed_partitions
-        if partition_id.access_class is AccessClass.QUARANTINED_UNASSIGNED
-    )
-    if quarantined:
-        raise HoldoutAccessViolation(
-            f"quarantined partitions may never be granted to a view: {quarantined};"
-            " they stay unreadable until an ADR reclassifies them (D03 §6.1, ADR-0014)"
-        )
-
-
-class _PartitionedBars:
-    """許可された partition の足だけを保持する読み取り面（D03 §6.1）。
-
-    partition の集合を構築時に固定し、そこにない系列・区間を読もうとしたら
-    `HoldoutAccessViolation` を送出する。「許可されていないものは返さない」ではなく
-    「要求そのものを構造エラーにする」ことで、封印期間の読み取りが静かな欠損に化けない
-    ようにする。
-    """
-
-    __slots__ = ("_by_series", "_allowed")
-
-    def __init__(
-        self,
-        partition_bars: Mapping[PartitionId, Sequence[Bar]],
-        allowed_partitions: frozenset[PartitionId],
-    ) -> None:
-        self._allowed = allowed_partitions
-        by_series: dict[SeriesId, list[Bar]] = {}
-        for partition_id, bars in partition_bars.items():
-            if partition_id not in allowed_partitions:
-                continue
-            by_series.setdefault(partition_id.series, []).extend(bars)
-        self._by_series = {
-            series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
-            for series, bars in by_series.items()
-        }
-
-    def require_series(self, series: SeriesId) -> tuple[Bar, ...]:
-        """許可された partition にその系列があることを確かめて足を返す。"""
-        bars = self._by_series.get(series)
-        if bars is None:
-            raise HoldoutAccessViolation(
-                f"series {series} is not inside the allowed partitions of this view;"
-                " reading it would cross an access-class boundary (D03 §6.1)"
-            )
-        return bars
-
-    def starts_before_data(self, series: SeriesId, moment: UtcTime) -> bool:
-        """要求した時刻が、読める足の最初より前かを判定する。
-
-        「データ開始前」は助走不足（`WARMUP_INSUFFICIENT`）であり、アクセス分類の境界を
-        越える要求とは別物である（上位設計書 §4.3.10 の4分類）。両者を混同すると、単に
-        データが始まっていないだけの窓が構造エラーになってしまう。
-        """
-        bars = self.require_series(series)
-        return bool(bars) and moment < bars[0].bar_start
-
-    def require_covered(self, series: SeriesId, moment: UtcTime) -> None:
-        """要求した時刻が許可された partition の範囲内であることを確かめる。
-
-        範囲の外は、封印期間や未分類の隔離期間の partition が渡されなかったことを意味する。
-        入力欠損に読み替えず、構造エラーで止める（D03 §6.1）。
-        """
-        bars = self.require_series(series)
-        if not bars:  # pragma: no cover - 空の partition は記録されない
-            raise HoldoutAccessViolation(f"no readable bars for {series} (D03 §6.1)")
-        first, last = bars[0], bars[-1]
-        # 読める範囲は**半開区間** `[first.bar_start, last.bar_end)` である。上端を含めて
-        # しまうと、読める最後の足の直後に始まる足（＝隣の partition の最初の足）が範囲内と
-        # 見なされ、封印区分の足が期待足になったときに構造エラーではなく「最新足が未到着」
-        # という入力欠損が返ってしまう（D03 §6.1 は構造エラーを要求する）。
-        if moment < first.bar_start or last.bar_end <= moment:
-            raise HoldoutAccessViolation(
-                f"{moment} lies outside the readable range of {series}"
-                f" [{first.bar_start}, {last.bar_end}); the surrounding partition was not"
-                " granted to this view (D03 §6.1)"
-            )
-
-
 @dataclass(frozen=True, slots=True)
 class AsOfView:
     """判断時点の as-of 読み取り（D03 §6）。
@@ -208,31 +108,19 @@ class AsOfView:
     publication_log: PublicationLog = PublicationLog()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.manifest, SnapshotManifest):
-            raise MarketDataValueError("AsOfView.manifest must be a SnapshotManifest")
-        if not isinstance(self.allowed_partitions, frozenset):
-            raise MarketDataValueError("AsOfView.allowed_partitions must be a frozenset")
         if not isinstance(self.publication_log, PublicationLog):
             raise MarketDataValueError("AsOfView.publication_log must be a PublicationLog")
-        _require_approved(self.manifest)
-        for partition_id in self.allowed_partitions:
-            if not isinstance(partition_id, PartitionId):
-                raise MarketDataValueError("AsOfView.allowed_partitions must contain PartitionId")
-            if self.manifest.partition_record(partition_id) is None:
-                raise MarketDataValueError(
-                    f"partition {partition_id} is not recorded in the snapshot manifest"
-                )
-        _reject_quarantined(self.allowed_partitions)
+        require_readable_snapshot(self.manifest, self.allowed_partitions, label="AsOfView")
 
     # --- 内部 ---------------------------------------------------------------
 
-    def _bars(self) -> _PartitionedBars:
+    def _bars(self) -> PartitionedBars:
         """許可された partition の読み取り面。
 
         frozen dataclass なので構築時にキャッシュせず、呼ばれるたびに組み立てる。
         （`slots=True` と frozen の組合せでは後からの属性代入ができないため。）
         """
-        return _PartitionedBars(self.partition_bars, self.allowed_partitions)
+        return PartitionedBars(self.partition_bars, self.allowed_partitions)
 
     def _schedule(self, series: SeriesId) -> SeriesSchedule:
         schedule = self.schedules.get(series)
@@ -471,22 +359,16 @@ class ExecutionSeriesView:
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.manifest, SnapshotManifest):
-            raise MarketDataValueError("ExecutionSeriesView.manifest must be a SnapshotManifest")
         if not isinstance(self.series, SeriesId):
             raise MarketDataValueError("ExecutionSeriesView.series must be a SeriesId")
-        if not isinstance(self.allowed_partitions, frozenset):
-            raise MarketDataValueError("ExecutionSeriesView.allowed_partitions must be a frozenset")
-        for partition_id in self.allowed_partitions:
-            if not isinstance(partition_id, PartitionId):
-                raise MarketDataValueError(
-                    "ExecutionSeriesView.allowed_partitions must contain PartitionId"
-                )
-        _require_approved(self.manifest)
-        _reject_quarantined(self.allowed_partitions)
+        # 戦略側のビューと同じ関門を通す。執行系列だけ検査が緩いと、manifest に無い
+        # partition を渡して未記録のデータを読む経路が残ってしまう。
+        require_readable_snapshot(
+            self.manifest, self.allowed_partitions, label="ExecutionSeriesView"
+        )
 
     def _bars(self) -> tuple[Bar, ...]:
-        return _PartitionedBars(self.partition_bars, self.allowed_partitions).require_series(
+        return PartitionedBars(self.partition_bars, self.allowed_partitions).require_series(
             self.series
         )
 

@@ -27,7 +27,11 @@ from odyssey_fx.marketdata.application.asof import (
 from odyssey_fx.marketdata.application.publication import build_publication_log
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
-from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, SnapshotNotApproved
+from odyssey_fx.marketdata.domain.errors import (
+    HoldoutAccessViolation,
+    MarketDataValueError,
+    SnapshotNotApproved,
+)
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.schedule import (
     DelayScenario,
@@ -150,7 +154,13 @@ def test_injecting_a_delay_moves_only_the_availability_not_the_ohlc() -> None:
         version=1,
         rules=(FixedSeriesDelay(series=DAILY, delay=timedelta(seconds=2)),),
     )
-    log = build_publication_log({DAILY: bars}, SCHEDULES, scenario)
+    log = build_publication_log(
+        _manifest(DAILY_PARTITION),
+        frozenset({DAILY_PARTITION}),
+        {DAILY_PARTITION: bars},
+        SCHEDULES,
+        scenario,
+    )
     delayed = _view(publication_log=log)
     plain = _view()
 
@@ -322,11 +332,39 @@ def test_the_execution_view_also_refuses_a_quarantined_partition() -> None:
     quarantined = PartitionId(series=HOURLY, access_class=AccessClass.QUARANTINED_UNASSIGNED)
     with pytest.raises(HoldoutAccessViolation, match="quarantined partitions"):
         ExecutionSeriesView(
-            manifest=_manifest(HOURLY_PARTITION),
+            manifest=snapshots.approved_for((HOURLY_PARTITION, quarantined)),
             series=HOURLY,
             allowed_partitions=frozenset({quarantined}),
             partition_bars={},
         )
+
+
+def test_the_execution_view_refuses_a_partition_missing_from_the_manifest() -> None:
+    """執行系列のビューも、許可 partition が manifest に記録されていることを検査する。
+
+    戦略側のビューだけ検査していると、執行系列から「manifest に無い partition」を渡して
+    未記録のデータを読む経路が残る（D03 §6.1）。
+    """
+    with pytest.raises(MarketDataValueError, match="not recorded in the snapshot manifest"):
+        ExecutionSeriesView(
+            manifest=_manifest(HOURLY_PARTITION),
+            series=DAILY,
+            allowed_partitions=frozenset({DAILY_PARTITION}),
+            partition_bars={DAILY_PARTITION: _bars(DAILY, market.TF_1D_NY17)},
+        )
+
+
+def test_the_execution_view_accepts_a_recorded_partition() -> None:
+    """記録されている partition なら執行系列のビューを作れる。"""
+    view = ExecutionSeriesView(
+        manifest=_manifest(HOURLY_PARTITION),
+        series=HOURLY,
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        partition_bars={HOURLY_PARTITION: _bars(HOURLY, market.TF_1H)},
+    )
+    key = view.next_bar_key_after(UtcTime.parse("2026-01-14T09:30:00Z"))
+    assert key is not None
+    assert key.bar_start == UtcTime.parse("2026-01-14T10:00:00Z")
 
 
 def test_a_holdout_partition_may_still_be_granted() -> None:

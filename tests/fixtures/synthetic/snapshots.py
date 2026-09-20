@@ -115,6 +115,40 @@ def manifest(
     )
 
 
+def approved_for(
+    partition_ids: Sequence[PartitionId],
+    *,
+    interval: Interval = COVERED,
+) -> SnapshotManifest:
+    """指定した partition を記録した、承認済みの manifest を作る。
+
+    as-of ビューと公開フィードは、どちらも「承認済み snapshot の、manifest に記録された
+    partition」しか読めない（D03 §3.7.1・§6.1）。その前提を満たす manifest を1行で作る。
+    """
+    records = tuple(
+        PartitionRecord(
+            partition_id=partition_id,
+            interval=interval,
+            bar_count=100,
+            digest=digest_for(partition_id.access_class.value),
+        )
+        for partition_id in partition_ids
+    )
+    by_series: dict[SeriesId, list[PartitionId]] = {}
+    for record in records:
+        by_series.setdefault(record.series_id, []).append(record.partition_id)
+    series_records = tuple(
+        SeriesManifest(
+            series_id=series,
+            covered_interval=interval,
+            bar_count=100 * len(ids),
+            partitions=tuple(ids),
+        )
+        for series, ids in by_series.items()
+    )
+    return approved(series_records=series_records, partitions=records)
+
+
 def approved(
     *,
     created_at: UtcTime = CREATED_AT,

@@ -30,11 +30,16 @@ from dataclasses import dataclass
 from enum import Enum
 
 from odyssey_fx.common.time import Interval, PhaseRank, UtcTime
+from odyssey_fx.marketdata.application.snapshot_access import (
+    PartitionedBars,
+    require_readable_snapshot,
+)
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog, PublicationRecord
 from odyssey_fx.marketdata.domain.schedule import DelayScenario, SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 
 __all__ = [
     "EVENT_ORDER",
@@ -222,7 +227,9 @@ def _boundary_search_window(schedule: SeriesSchedule, run_interval: Interval) ->
 
 
 def build_publication_log(
-    bars_by_series: Mapping[SeriesId, Sequence[Bar]],
+    manifest: SnapshotManifest,
+    allowed_partitions: frozenset[PartitionId],
+    partition_bars: Mapping[PartitionId, Sequence[Bar]],
     schedules: Mapping[SeriesId, SeriesSchedule],
     scenario: DelayScenario | None = None,
 ) -> PublicationLog:
@@ -230,13 +237,19 @@ def build_publication_log(
 
     OHLC と対象区間は変えず、利用可能時刻だけを後ろへ動かす。遅延は非負なので
     `available_at >= bar_end` が常に成り立つ。
+
+    足は as-of ビューと同じ関門を通した読み取り面から取る（D03 §3.7.1・§6.1）。承認前の
+    snapshot と許可されていない partition は、公開の記録にも入れない。
     """
+    require_readable_snapshot(manifest, allowed_partitions, label="build_publication_log")
+    readable = PartitionedBars(partition_bars, allowed_partitions)
+
     records: list[PublicationRecord] = []
-    for series, bars in bars_by_series.items():
+    for series in readable.series():
         schedule = schedules.get(series)
         if schedule is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
-        for bar in bars:
+        for bar in readable.bars_or_empty(series):
             scheduled = schedule.scheduled_at(bar.bar_end)
             available = (
                 scheduled
@@ -255,7 +268,9 @@ def build_publication_log(
 
 
 def build_feed(
-    bars_by_series: Mapping[SeriesId, Sequence[Bar]],
+    manifest: SnapshotManifest,
+    allowed_partitions: frozenset[PartitionId],
+    partition_bars: Mapping[PartitionId, Sequence[Bar]],
     schedules: Mapping[SeriesId, SeriesSchedule],
     run_interval: Interval,
     *,
@@ -279,9 +294,16 @@ def build_feed(
 
     並びは `(発生時刻, イベント種別の固定順, 系列順)`。同じ時刻に複数の系列・種別が並んでも
     順序が一意に決まる。
+
+    **読めるのは承認済み snapshot の許可された partition だけ**（D03 §3.7.1 の3・§6.1）。
+    as-of ビューと同じ関門を通す。生の足を直接受け取る形にすると、暫定・未承認の snapshot
+    から公開フィードを作れてしまい、「暫定 snapshot はバックテストの入力にできない」という
+    設計が成り立たない。
     """
     if not isinstance(run_interval, Interval):
         raise MarketDataValueError("build_feed requires an Interval run_interval")
+    require_readable_snapshot(manifest, allowed_partitions, label="build_feed")
+    readable = PartitionedBars(partition_bars, allowed_partitions)
 
     events: list[PublicationEvent] = []
 
@@ -307,12 +329,12 @@ def build_feed(
                 )
             )
 
-    for series, bars in bars_by_series.items():
+    for series in readable.series():
         schedule = schedules.get(series)
         if schedule is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
         is_execution = series in execution_series
-        for bar in bars:
+        for bar in readable.bars_or_empty(series):
             recorded = None if publication_log is None else publication_log.available_at(bar.key)
             available = recorded if recorded is not None else schedule.scheduled_at(bar.bar_end)
 
