@@ -1,0 +1,197 @@
+"""adapters の単体テスト（D03 §8・§11、ADR-0025）。
+
+確かめること:
+
+- CSV は全列を文字列として読み、値を解釈しない（Decimal 化は application の責務）。
+- Parquet の往復で価格・出来高が厳密に保たれる（浮動小数を経由しない、ADR-0012）。
+- `manifest.json` の往復で snapshot 識別子が変わらない。
+- 閲覧記録が追記専用で読み戻せる。
+
+実データは読まない。人工データを一時ディレクトリに書いて使う。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from odyssey_fx.common.money import decimal_from_str
+from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
+from odyssey_fx.marketdata.adapters.parquet_store import (
+    MANIFEST_SCHEMA_VERSION,
+    ParquetSnapshotStore,
+)
+from odyssey_fx.marketdata.application.access_log import (
+    AccessLogEntry,
+    AccessLogEntryKind,
+    serialize_entry,
+)
+from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
+from tests.fixtures.synthetic import market, snapshots
+
+HOURLY = market.series()
+CALENDAR = market.calendar()
+WINDOW = Interval(
+    start=UtcTime.parse("2026-01-13T22:00:00Z"), end=UtcTime.parse("2026-01-14T22:00:00Z")
+)
+PARTITION = PartitionId(series=HOURLY, access_class=AccessClass.RESEARCH_HISTORY)
+
+
+# --- CSV 読込（D03 §8）------------------------------------------------------
+
+
+def test_the_csv_source_returns_strings_without_interpreting_them(tmp_path: Path) -> None:
+    """値の解釈は application の責務。adapters は文字列のまま渡す（ADR-0025）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    (tmp_path / "USDJPY_1h_merged.csv").write_text(market.csv_text(bars), encoding="utf-8")
+
+    source = CsvRawBarSource(root=tmp_path)
+    rows = source.read_rows("USDJPY_1h_merged.csv")
+    assert len(rows) == len(bars)
+    for row in rows:
+        assert all(isinstance(value, str) for value in row.values())
+    # 先頭の無名列は宣言した名前に付け替わる。
+    assert rows[0]["timestamp"] == bars[0].bar_start.value.strftime("%Y-%m-%d %H:%M:%S+00:00")
+    assert rows[0]["open"] == str(bars[0].open.value)
+    assert rows[0]["source"] == "histdata"
+
+
+def test_the_csv_source_hashes_the_file_contents(tmp_path: Path) -> None:
+    (tmp_path / "a.csv").write_text(",open\n2026-01-01 00:00:00+00:00,1\n", encoding="utf-8")
+    digest = CsvRawBarSource(root=tmp_path).file_sha256("a.csv")
+    assert len(digest) == 64
+    assert digest == CsvRawBarSource(root=tmp_path).file_sha256("a.csv")
+
+
+def test_the_csv_source_refuses_a_path_outside_its_root(tmp_path: Path) -> None:
+    source = CsvRawBarSource(root=tmp_path / "market")
+    (tmp_path / "market").mkdir()
+    (tmp_path / "secret.csv").write_text("x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="outside the raw data root"):
+        source.read_rows("../secret.csv")
+
+
+# --- Parquet の往復（D03 §8）------------------------------------------------
+
+
+def test_a_partition_round_trips_without_losing_decimal_precision(tmp_path: Path) -> None:
+    """価格・出来高は文字列列として保存し、浮動小数を経由しない（ADR-0012）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_partition("snap", PARTITION, bars)
+    restored = store.read_partition("snap", PARTITION)
+    assert tuple(restored) == bars
+
+
+def test_the_partition_digest_is_stable_for_the_same_content(tmp_path: Path) -> None:
+    """同じ内容なら同じダイジェスト（受入れの決定論性、D03 §3.7.1）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    store = ParquetSnapshotStore(root=tmp_path)
+    first = store.write_partition("snap_a", PARTITION, bars)
+    second = store.write_partition("snap_b", PARTITION, tuple(reversed(bars)))
+    assert first == second
+
+
+def test_the_partition_directory_carries_the_access_class(tmp_path: Path) -> None:
+    """物理分離のため、実体はアクセス分類ごとのディレクトリに置く（D03 §3.8）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_partition("snap", PARTITION, bars)
+    assert (tmp_path / "snap" / "USDJPY_1h_bid" / "RESEARCH_HISTORY" / "bars.parquet").is_file()
+
+
+# --- manifest の往復（D03 §3.7.1）------------------------------------------
+
+
+def test_the_manifest_round_trips_and_keeps_its_snapshot_id(tmp_path: Path) -> None:
+    manifest = snapshots.approved()
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("snap", manifest)
+    restored = store.read_manifest("snap")
+    assert restored.snapshot_id() == manifest.snapshot_id()
+    assert restored == manifest
+
+
+def test_the_manifest_json_is_written_with_sorted_keys(tmp_path: Path) -> None:
+    """保存形式も正規順序で書く（D03 §3.7.1）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("snap", snapshots.approved())
+    text = (tmp_path / "snap" / "manifest.json").read_text(encoding="utf-8")
+    payload = json.loads(text)
+    assert payload["schema_version"] == MANIFEST_SCHEMA_VERSION
+    assert list(payload) == sorted(payload)
+
+
+def test_reading_an_unknown_manifest_version_is_refused(tmp_path: Path) -> None:
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("snap", snapshots.approved())
+    path = tmp_path / "snap" / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 99
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported manifest schema_version"):
+        store.read_manifest("snap")
+
+
+# --- 検査報告と閲覧記録 -----------------------------------------------------
+
+
+def test_the_integrity_report_round_trips(tmp_path: Path) -> None:
+    report = IntegrityReport(
+        results=(
+            CheckResult.create(
+                CheckKind.MISSING_EXPECTED_BAR, HOURLY, WINDOW, detail={"reason": "gap"}
+            ),
+        )
+    )
+    store = ParquetSnapshotStore(root=tmp_path)
+    digest = store.write_integrity_report("snap", report)
+    assert len(digest) == 64
+    assert store.read_integrity_report("snap") == report
+
+
+def test_the_access_log_is_append_only(tmp_path: Path) -> None:
+    """既存の行を書き換えず、追記した順に読み戻せる（ADR-0014）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    holdout = PartitionId(series=HOURLY, access_class=AccessClass.LEGACY_HOLDOUT)
+    for kind in (AccessLogEntryKind.GRANTED, AccessLogEntryKind.CONSUMED):
+        store.append_access_log(
+            "snap",
+            serialize_entry(
+                AccessLogEntry(
+                    kind=kind,
+                    partition_id=holdout,
+                    recorded_at=UtcTime.parse("2026-09-20T00:00:00Z"),
+                    actor="tester",
+                )
+            ),
+        )
+    entries = store.read_access_log("snap")
+    assert [entry["kind"] for entry in entries] == ["GRANTED", "CONSUMED"]
+
+
+def test_an_absent_access_log_reads_as_empty(tmp_path: Path) -> None:
+    assert ParquetSnapshotStore(root=tmp_path).read_access_log("snap") == ()
+
+
+def test_reading_a_missing_partition_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="partition file not found"):
+        ParquetSnapshotStore(root=tmp_path).read_partition("snap", PARTITION)
+
+
+def test_a_zero_volume_bar_round_trips(tmp_path: Path) -> None:
+    """HistData 由来の出来高 0 も厳密に保たれる（D03 §2）。"""
+    interval = Interval(
+        start=UtcTime.parse("2026-01-14T10:00:00Z"),
+        end=UtcTime.parse("2026-01-14T11:00:00Z"),
+    )
+    bar = market.make_bar(HOURLY, interval, volume="0")
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_partition("snap", PARTITION, (bar,))
+    (restored,) = store.read_partition("snap", PARTITION)
+    assert restored.volume == decimal_from_str("0")

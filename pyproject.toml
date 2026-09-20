@@ -30,7 +30,10 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests", "tools"]
+# `.` を含めるのは、テストが `tests.fixtures.synthetic` を自リポジトリのモジュールとして
+# import するため（pytest の `pythonpath = ["."]` と揃える）。含めないと import 整列が
+# `tests.*` を外部ライブラリとして扱い、標準ライブラリの直後へ並べてしまう。
+src = [".", "src", "tests", "tools"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
