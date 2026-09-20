@@ -1,7 +1,7 @@
 # D04: 戦略宣言モデル設計（`odyssey_fx.strategy.declarations`）
 
 作成日: 2026-09-20
-状態: **承認（2026-09-20、PR #14）**。v1.0: 第19節の要決定 Q1〜Q9 をユーザーが決定し本文へ反映済み（Q3 は選択肢2「任意の部品で状態を許す」、他の8件は推奨案）。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。Codex 指摘7件（1巡目3件・2巡目4件）も反映済み。1巡目: ダイジェスト対象から実装参照を分離（第13.2節）、状態の初期値宣言を追加（第9.1節）、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く（第7節）。2巡目: 建玉・口座を読む入力の許可組合せを表で明示（第6.1節）、約定通知で評価を起動する区分を追加（第8節）、使用箇所の一覧を識別子順に正規化（第3節）、銘柄をグラフ上で伝播させて一致検査を実装可能にした（第5節）。v1.1（同日）: Codex 3巡目の指摘4件を反映（取引機会を必ず記録する規則: 第10.3節、再武装モードの置き場所を出力仕様に確定: 第4.1節・第10.4節、許可する起動条件の型と検証意味論を定義: 第8節、データ型レジストリから実行時クラスの対応を外す: 第5節）。v1.2（同日）: 残っていた1点、同時保持上限に達して有効化せず終端した取引機会の終端理由の名前（第19節 Q10）を人間が決定し（選択肢1、`CONCURRENCY_LIMIT_REACHED`）、第10.3節へ反映するとともに ADR-0032・上位設計書 §4.5/§4.7.14・全体計画書 §5.3.5 の語彙へ同じ語を加えた。**要決定は残っていない**。あわせて、レビューで同じ種類の指摘が繰り返された原因への手当てを入れた: 本書が定義する宣言型を1つの表へ集約し（第3.1節）、語彙と責務の正本がどの文書かを1つの表で示し（第1.1節）、コンパイル時検査の表に「その検査が読む宣言」の列を足した（第12節）。ADR-0016 条件2 のうち D04 を本書で充足する。
+状態: **承認（2026-09-20、PR #14）**。v1.0: 第19節の要決定 Q1〜Q9 をユーザーが決定し本文へ反映済み（Q3 は選択肢2「任意の部品で状態を許す」、他の8件は推奨案）。段階2（最小縦断）と紙上トレース T01 に必要な範囲だけを扱う。将来機能は第15節で明示的に対象外とする。Codex 指摘7件（1巡目3件・2巡目4件）も反映済み。1巡目: ダイジェスト対象から実装参照を分離（第13.2節）、状態の初期値宣言を追加（第9.1節）、価格パラメータを float のまま保持し `Price` 変換を D06 の境界に置く（第7節）。2巡目: 建玉・口座を読む入力の許可組合せを表で明示（第6.1節）、約定通知で評価を起動する区分を追加（第8節）、使用箇所の一覧を識別子順に正規化（第3節）、銘柄をグラフ上で伝播させて一致検査を実装可能にした（第5節）。v1.1（同日）: Codex 3巡目の指摘4件を反映（取引機会を必ず記録する規則: 第10.3節、再武装モードの置き場所を出力仕様に確定: 第4.1節・第10.4節、許可する起動条件の型と検証意味論を定義: 第8節、データ型レジストリから実行時クラスの対応を外す: 第5節）。v1.3（同日）: レビュー4巡目の指摘5件を反映（建玉・口座の入力型 `position_context` / `account_context` を登録: 第5節、銘柄の供給元に起動条件とウォームアップの系列を追加: 第5節、`EDGE` は状態の宣言を要求: 第10.4節・第12節、追い出す取引機会の鍵を取引機会側の項目で定義: 第10.3節、順序に意味のないコレクションの正規化を一般規則化: 第3節）。v1.2（同日）: 残っていた1点、同時保持上限に達して有効化せず終端した取引機会の終端理由の名前（第19節 Q10）を人間が決定し（選択肢1、`CONCURRENCY_LIMIT_REACHED`）、第10.3節へ反映するとともに ADR-0032・上位設計書 §4.5/§4.7.14・全体計画書 §5.3.5 の語彙へ同じ語を加えた。**要決定は残っていない**。あわせて、レビューで同じ種類の指摘が繰り返された原因への手当てを入れた: 本書が定義する宣言型を1つの表へ集約し（第3.1節）、語彙と責務の正本がどの文書かを1つの表で示し（第1.1節）、コンパイル時検査の表に「その検査が読む宣言」の列を足した（第12節）。ADR-0016 条件2 のうち D04 を本書で充足する。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.2〜§4.3.11・§4.3.15・§4.5・§4.6・§4.7.1、[全体計画書](fx_research_platform_overall_plan.md) §5.3.1〜§5.3.4・§7.3 前半、[D01](D01_architecture_and_dependency_rules.md) §2・§3・§5・§7.2・§8・§10.1、[D02](D02_common_kernel.md)、[D03](D03_marketdata_and_time.md) §3.1〜§3.3・§6・§7、ADR-0011（frozen dataclass）、ADR-0016（実装開始条件）、ADR-0018（設定は YAML）、ADR-0021（NumPy の許可範囲）、ADR-0031（確認待ち中の条件再検査）、ADR-0032（再発火と複数取引機会）、ADR-0033（評価要求の追い越しの改名）
 対応段階: 段階2で実装。ADR-0016 条件2 のうち D04 を充足する。
 
@@ -78,7 +78,21 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 不変条件【提案】: `component_id` は `^[a-z0-9_]+$`、`version >= 1`、`instance_id` は同一戦略内で一意で `^[a-z0-9_]+$`、`components` は 1 件以上、`inputs` / `outputs` / `parameters` のキーは `^[a-z0-9_]+$`。違反は `KernelValueError`（D02 §10）。
 
-`components` の正規化【提案】: 並び順で実行順序を指定しないため【合意済み】§4.3.5、`StrategyDefinition` は構築時に `components` を `instance_id` の Unicode コードポイント順へ並べ替えて保持する。D02 §3.3 の `PhaseSet` と同じ扱いであり、設定ファイル内の記述順が内容ハッシュ（第13.2節）に影響しないようにする。
+コレクションの正規化【提案】: 意味の同じ2つの設定ファイルが、書いた順序の違いだけで別の内容ハッシュ（第13.2節）になると、実験の同一性やキャッシュが分かれてしまう。そこで**順序に意味を持たせないコレクションは、構築時に安定な鍵で並べ替えて保持する**。D02 §3.3 の `PhaseSet` と同じ扱いである。新しいコレクションを足すときは、この表に「順序に意味があるか」を必ず書く。
+
+| コレクション | 順序の意味 | 構築時の扱い |
+|---|---|---|
+| `StrategyDefinition.components` | なし【合意済み】§4.3.5 | `instance_id` の Unicode コードポイント順 |
+| `EvaluationSchedule.triggers` | なし（同時刻の配送・評価回数は D05） | 起動条件名 `name` 順 |
+| `EvaluationSpec.allowed` | なし | （区分タグ, 正規化エンコード）順 |
+| `AllowedBarClose.timeframes` / `AllowedInputEvent.input_names` / `AllowedRuntimeEvent.events` | なし（許可の集合） | 各要素の文字列表現順 |
+| `OpportunityValiditySpec.bindings` | なし | (`source.instance_id`, `source.output_name`) 順 |
+| `TemporalConstraints.alignment` と各 `AlignmentRequirement.input_names` | なし | 入力名を並べ替えたうえで、その結果の順 |
+| `StateSpec.reset_on` | なし | 列挙名順 |
+| `ParameterSpec.allowed_values` | なし（許可値の集合） | 正規化エンコード順 |
+| `InputBinding.sources` | **あり** | 並べ替えない。可変個数入力は「型付き参照の列」であり、並びを部品実装が参照しうる【合意済み】§4.3.5 |
+
+順序に意味を持たせないコレクションは、重複要素を構築時に拒否する（`KernelValueError`）。
 
 ### 3.1 本書が定義する宣言型の一覧【提案】
 
@@ -171,13 +185,24 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 登録制とし、Python のクラス名を動的読込しない【合意済み】。`DataTypeRef(type_id: str, version: int)`、`__str__` は `"<type_id>@v<version>"`（D02 §6 の `TimeframeRef` に合わせる）【提案】。
 
-初版の登録【提案】: `price`、`price_offset`、`ratio`、`condition_state`、`market_permission`、`opportunity`、`confirmation_result`、`order_intent`、`protection_levels`、`management_action`（すべて version 1）。レジストリは `declarations` 内の静的テーブルとし、実行時の登録 API を持たない。
+初版の登録【提案】: `price`、`price_offset`、`ratio`、`condition_state`、`market_permission`、`opportunity`、`confirmation_result`、`order_intent`、`protection_levels`、`management_action`、`position_context`、`account_context`（すべて version 1）。レジストリは `declarations` 内の静的テーブルとし、実行時の登録 API を持たない。
+
+`RuntimeInputRef` の入力の型【提案】: `InputSpec.data_type` は他の入力と同じく登録済みの `DataTypeRef` でなければならないため、建玉・口座を読む入力にも型が要る。`target` が `POSITION` なら `position_context@v1`、`ACCOUNT` なら `account_context@v1` であることをコンパイル時に要求する（第12節 #2）。この2つの payload に何の項目が入るかは、エンジンが評価時点に供給してよい情報の範囲そのものであるため **D06（`RuntimeContextView` ポート）が確定**し、`declarations` は識別子と版だけを持つ（第1.1節の境界表）。段階2の検証戦略 A が読むのは建玉の約定価格・方向・数量である。
 
 **レジストリが持つのは正規化エンコード可能な payload の構造だけ**【提案】。`records` の実行時クラスへの対応は `declarations` に置かない。`declarations` は `strategy` の最下層で `records` を参照できず（D01 §3.3、本書第1節）、クラスを直接持てば禁止された上向き import になり、クラス名の文字列で持てば検査できない対応表になるためである。データ型識別子と実行時クラスの対応、およびその一致検査は `records`（型の側）と `catalog`（部品登録時）に置き、D05 で確定する。
 
 接続検証【提案】: 接続元 `OutputSpec` と接続先 `InputSpec` で `(type_id, version)` が一致すること。単位は `ParameterSpec` 側（第7節）が持ち、データ型には持たせない。
 
-銘柄の一致検査【提案】: `DataTypeRef` は銘柄を持たないため、銘柄はコンパイラがグラフ上を伝播させて決める。各使用箇所の銘柄は「その部品の入力に接続された `MarketDataRef` の銘柄」と「上流の使用箇所から伝播した銘柄」の和集合とし、集合が2つ以上になった使用箇所は拒否する（初版は単一銘柄。上位設計書 §4.7.1）。`MarketDataRef` を1つも辿れない使用箇所は銘柄なしとして扱い、`price` 系の出力を持てない。これにより `OutputRef` 経由の価格入力にも銘柄の一致検査が効く。複数銘柄を扱う伝播規則は D10・段階6。
+銘柄の一致検査【提案】: `DataTypeRef` は銘柄を持たないため、銘柄はコンパイラがグラフ上を伝播させて決める。各使用箇所の銘柄は、次の4つの供給元の和集合とする。集合が2つ以上になった使用箇所は拒否する（初版は単一銘柄。上位設計書 §4.7.1）。
+
+| # | 供給元 |
+|---|---|
+| 1 | 入力に接続された `MarketDataRef.series` の銘柄（第4.3節） |
+| 2 | 使用箇所の `EvaluationSchedule` に含まれる `OnBarClose.series` の銘柄（第8節。第8節は銘柄の検査をここへ委ねている） |
+| 3 | `TemporalConstraints.warmup` の `WarmupSpec.series` の銘柄（第9.2節） |
+| 4 | 上流の使用箇所から伝播した銘柄 |
+
+起動条件（2）とウォームアップ（3）を含めるのは、EURUSD の価格を読みながら USDJPY の足確定で起動する使用箇所のように、**市場データ参照だけを見ていては食い違いを検出できない**ためである。`MarketDataRef` を1つも辿れない使用箇所は銘柄なしとして扱い、`price` 系の出力を持てない。これにより `OutputRef` 経由の価格入力にも銘柄の一致検査が効く。複数銘柄を扱う伝播規則は D10・段階6。
 
 ## 6. 読み取り条件と欠損方針
 
@@ -303,7 +328,11 @@ ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_a
 
 この終端理由は 2026-09-20 に人間が決定し（第19.0節 Q10、選択肢1）、正本である ADR-0032 を補足3 として改訂したうえで、上位設計書 §4.5・§4.7.14 と全体計画書 §5.3.5 の語彙表にも同じ語を加えた。本書はその語を参照しているだけである。**不採用**: 既存の `SUPERSEDED` を双方向の意味へ広げる案（新旧どちらが終わったのか trace から読めない）、発火を取引機会として生成しない案（ADR-0032 に反する）。
 
-**終端する既存の機会の選び方**【提案】。`on_new_trigger=SUPERSEDE_EXISTING` で有効な取引機会が複数ある（`max_active >= 2`）ときに、どれを `SUPERSEDED` で終端するかを決めておく。上位設計書 §4.7.12 が確定済みの全順序（`decision_time` → `strategy_priority` → `opportunity_id` → `attempt_id`）で**最小、すなわち最も古い有効な取引機会を1件**終端し、新しい発火を有効にする。新しい順序規則は導入しない【合意済み】ADR-0032。段階2の設定は `max_active=1` のため候補は常に1件だが、規則を書かなければ `max_active >= 2` の挙動が実装依存になる。この規則が適用される時点（どのフェーズで判定するか）は D05。
+**終端する既存の機会の選び方**【提案】。`on_new_trigger=SUPERSEDE_EXISTING` で有効な取引機会が複数ある（`max_active >= 2`）ときに、どれを `SUPERSEDED` で終端するかを決めておく。鍵は**取引機会そのものが持つ項目**で決める。`(取引機会の生成時点, opportunity_id)` の辞書式順序で**最小、すなわち最も古い有効な取引機会を1件**終端し、新しい発火を有効にする。同じ評価時点に生成された機会が並ぶ場合は `opportunity_id` が一意な決着を与えるため、順序は常に定まる。
+
+上位設計書 §4.7.12 の全順序（`decision_time` → `strategy_priority` → `opportunity_id` → `attempt_id`）は**発注試行の受付順**であり、ここでは使えない。まだ発注試行のない有効な取引機会には `attempt_id` がなく、`strategy_priority` は同一戦略内の機会を区別しないためである。両者は対象が異なる規則であり、受付順の規則そのものは変更しない【合意済み】上位設計書 §4.7.12。
+
+段階2の設定は `max_active=1` のため候補は常に1件だが、規則を書かなければ `max_active >= 2` の挙動が実装依存になる。この規則が適用される時点（どのフェーズで判定するか）と、生成時点を表す項目名は D05（取引機会の状態機械）。
 
 ### 10.4 Trigger の再武装【提案】＋【合意済み】（Q4 決定、選択肢1）
 
@@ -321,7 +350,7 @@ ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_a
 | `EDGE` | 条件が不成立から成立へ変わった評価でだけ発火する。成立が続く間は再発火しない。再武装は条件が不成立へ戻った時点 |
 | `LEVEL` | 条件が成立している評価ごとに発火する。発火のたびに新しい `opportunity_id` を持つ取引機会を生成する【合意済み】ADR-0032 |
 
-`EDGE` の判定に必要な「直前の評価で条件が成立していたか」は `StateSpec`（第9.1節）で宣言し、初期値も宣言に書く。**不採用**: 段階2は `EDGE` のみとする案（`LEVEL` の検証が段階3へ延びる）、宣言せずランタイム規則に委ねる案（宣言から挙動が読めない）。
+`EDGE` の判定に必要な「直前の評価で条件が成立していたか」は `StateSpec`（第9.1節）で宣言し、初期値も宣言に書く。したがって **`retrigger_mode=EDGE` の出力を持つ契約は `state_spec` を持たなければならない**【提案】。`state_spec=None` のままでは直前の成立を保持する場所がなく、不成立から成立への変化と成立の継続をランタイムが区別できないためで、コンパイル時に拒否する（第12節 #6b）。`LEVEL` は直前の評価を参照しないため、この要求はない。**不採用**: 段階2は `EDGE` のみとする案（`LEVEL` の検証が段階3へ延びる）、宣言せずランタイム規則に委ねる案（宣言から挙動が読めない）。
 
 ## 11. 役割出力に関する宣言
 
@@ -348,12 +377,12 @@ ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_a
 | # | 検査 | 検査が読む宣言（第3.1節の型） |
 |---|---|---|
 | 1 | 参照の存在: `OutputRef` の `instance_id` / `output_name`、`ContractRef` の版と digest（D02 §9.2） | `StrategyDefinition.components`、`ComponentInstance.contract_ref`、`InputBinding.sources` |
-| 2 | 型の整合: `(type_id, version)` 一致、`price` 系の銘柄一致、`arity`、`PortKind` × `InputReadSpec` の組合せ（第6.1節） | `InputSpec`（`data_type` / `kind` / `arity` / `read_spec`）、`OutputSpec.data_type`、銘柄伝播の起点としての `MarketDataRef.series`（第5節） |
+| 2 | 型の整合: `(type_id, version)` 一致、`RuntimeInputRef` の `target` と入力の型の対応（第5節）、銘柄の伝播と単一銘柄の検査（第5節）、`arity`、`PortKind` × `InputReadSpec` の組合せ（第6.1節） | `InputSpec`（`data_type` / `kind` / `arity` / `read_spec`）、`OutputSpec.data_type`、`RuntimeInputRef.target`、銘柄の供給元（`MarketDataRef.series`・`OnBarClose.series`・`WarmupSpec.series`） |
 | 3 | パラメータ: 名前・型・範囲・列挙値、`ParameterRef` の具体値への解決 | `ParameterSpec`、`ComponentInstance.parameters`、`ParameterRef` |
 | 4 | 評価スケジュールが `EvaluationSpec.allowed` の範囲内（第8節の検証意味論）で、`fixed=True` の契約を上書きしていないこと、`required_inputs` のキー集合が起動条件名の集合と一致し、その入力が接続済みであること | `EvaluationSpec`（`allowed` / `fixed` / `required_inputs`）、`EvaluationSchedule.triggers`、`AllowedTrigger` 各区分の制約 |
 | 5 | 役割フィールドの型要求（`trigger`→`opportunity`、`order`→`order_intent`、`protection`→`protection_levels`、`exit`→`management_action`、`market_state`→`market_permission`、`execution_filter`→`confirmation_result`）と、`execution_filter` の有無と `entry_policy` モードの整合、`opportunity_validity` の各 `ValidityBinding` が指す出力の存在と型 | `StrategyDefinition` の役割フィールド（型は上位設計書 §4.3.5 が正本）、`EntryPolicy` の区分、`ValidityBinding.source` |
 | 6 | 依存グラフの循環検出と評価順の導出（時間足から順序を推測しない） | 全 `ComponentInstance.inputs` の `OutputRef` |
-| 6b | 出力仕様の付随条件: `data_type` が `opportunity` の出力は `retrigger_mode` が必須で `reference_schema` を持て、それ以外の出力は `retrigger_mode=None` かつ `reference_schema` が空であること（第4.1節） | `OutputSpec`（`data_type` / `retrigger_mode` / `reference_schema`） |
+| 6b | 出力仕様の付随条件: `data_type` が `opportunity` の出力は `retrigger_mode` が必須で `reference_schema` を持て、それ以外の出力は `retrigger_mode=None` かつ `reference_schema` が空であること（第4.1節）。`retrigger_mode=EDGE` の出力を持つ契約は `state_spec` が `None` でないこと（第10.4節） | `OutputSpec`（`data_type` / `retrigger_mode` / `reference_schema`）、`ComponentContract.state_spec` |
 | 7 | 能力検査（次の段落の拒否一覧） | 同段落が挙げる各型 |
 
 段階2で拒否する構成【提案】: `RuntimeInputRef(PENDING_ORDER)`、`AwaitConfirmation`、`execution_filter` が `None` でない戦略、`MissingInputPolicy` の `WAIT_FOR_INPUT` / `USE_PREVIOUS`、`POSITION_OPENED` 以外の `RuntimeEventKind`、複数銘柄に跨る使用箇所（第5節）、15m より細かい足、距離型 SL、指値、`UPDATE_STOP`。`state_spec` が `None` でないことは拒否の理由にしない（第9.1節、Q3 決定）。拒否は `ReasonCode`（D02 §8.1）付きの構造エラーとし、黙って無視しない。
@@ -376,7 +405,7 @@ D02 §9.3 の `canonical.digest` をそのまま使う。ダイジェスト対�
 | `StrategyRef.digest` | `StrategyDefinition` 全体。各 `ComponentInstance` は `contract_ref` を通じて上記の契約ダイジェストを含むため、**実装コードの同一性は含まない** |
 | `CompiledStrategyRef.digest` | 解決済み設定（具体値へ解決したパラメータ、評価順）に加え、使用する各部品の `ImplementationRef`（ID ＋内容ハッシュ）を含む |
 
-`strategy_id` / `version` が同じでもパラメータ割当が違えば別の実行として扱う【合意済み】§4.3.5。上表の切り分けを採用する（Q2 決定、選択肢1）。**不採用**: 契約ダイジェストに `implementation_ref` を含める案（実装を直すたびに人間が管理する戦略の版まで変わる）、どちらにも含めず実行全体のコードダイジェストに任せる案（部品単位・戦略単位で実装差を検出できない）。各3クラスの `schema_version`（第3節）はダイジェスト対象に含まれる。
+順序に意味を持たせないコレクションは第3節の表に従って構築時に正規化済みであり、ダイジェスト計算の側で並べ替えを重複実装しない【提案】。`strategy_id` / `version` が同じでもパラメータ割当が違えば別の実行として扱う【合意済み】§4.3.5。上表の切り分けを採用する（Q2 決定、選択肢1）。**不採用**: 契約ダイジェストに `implementation_ref` を含める案（実装を直すたびに人間が管理する戦略の版まで変わる）、どちらにも含めず実行全体のコードダイジェストに任せる案（部品単位・戦略単位で実装差を検出できない）。各3クラスの `schema_version`（第3節）はダイジェスト対象に含まれる。
 
 ## 14. 段階2の最小範囲（検証戦略 A）と T01
 
