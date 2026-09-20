@@ -21,6 +21,16 @@
 - `RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`。
 - プラットフォームをまたいだ比較・グループ化には `ConfigDigest` と `CodeDigest` を使う。
 
+### `EnvDigest` の残余リスク（2026-09-20 明記）
+
+`EnvDigest` はインタプリタ・プラットフォーム・配布物の名前と版までを識別し、次は識別しない（ユーザー決定: 現状の粒度を維持し、リスクを明記する）。
+
+- 同じ名前・版でも異なるビルドの wheel（BLAS 等のバイナリ差）。
+- libc の版、CPU の機能・マイクロアーキテクチャ差による実行時ディスパッチの違い。
+- これらにより同じ `RunId` の run が異なる数値結果を出す可能性がある。
+
+対策は識別子ではなく検証で行う: golden trace と再現性テスト（同一 manifest の再実行で trace の digest が一致すること）を CI と各環境で実行し、差が出た場合は環境差として調査する。manifest には `EnvDigest` の入力に加え、可能な範囲で `platform.platform()` と `platform.libc_ver()` を参考情報として記録する（識別子には含めない）。将来、粒度を上げる場合は本 ADR を改訂する。
+
 ### manifest に記録する環境情報
 
 git commit、dirty 状態（未コミット変更の有無）、`EnvDigest` の入力（Python 版・プラットフォーム・配布物一覧）、`ConfigDigest` / `CodeDigest` / `LockDigest` / `EnvDigest` を run manifest に記録する。git 情報は識別子には含めない（dirty な作業ツリーでも `CodeDigest` が内容を識別する）。
@@ -50,3 +60,4 @@ git commit、dirty 状態（未コミット変更の有無）、`EnvDigest` の�
 | 2026-09-18 | 初版承認 |
 | 2026-09-20 | RunId を `ConfigDigest` ＋ `CodeDigest` ＋ `LockDigest` のダイジェストに改訂。環境情報の manifest 記録、再実行時の上書き禁止、`RunAttemptId` の初版除外を追加 |
 | 2026-09-20 | `EnvDigest`（インタプリタ・プラットフォーム・インストール済み配布物）を RunId に追加 |
+| 2026-09-20 | `EnvDigest` の残余リスク（wheel ビルド差・libc・CPU 機能）を明記。粒度は維持し、検証で対処 |
