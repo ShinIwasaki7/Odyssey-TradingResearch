@@ -542,7 +542,7 @@ evaluate(inputs, parameters, state) -> (outputs, new_state)
 | B-2 | パッケージ管理 | **決定**: uv。Python 版・仮想環境・依存 lock を一元管理 | — | [ADR-0010](../decisions/0010-uv.md) |
 | B-3 | 宣言型・検証 | **決定**: domain は frozen dataclass、設定境界（`app.config`）だけ Pydantic v2。Pydantic モデルを domain へ流入させない | — | [ADR-0011](../decisions/0011-frozen-dataclass-domain.md) |
 | B-4 | 数値精度 | **決定**: 台帳系は Decimal、Feature は float。変換点と丸めを明示 | 境界は下記 | [ADR-0012](../decisions/0012-decimal-float-boundary.md) |
-| B-5 | 表形式ライブラリ | 要決定（期限: 段階1）。推奨は polars を第一候補、adapters 限定 | 型が厳密で高速。adapters に閉じるため後から交換可能 | — |
+| B-5 | 表形式ライブラリ | **決定**: polars（adapters 限定） | 型が厳密で高速。adapters に閉じるため後から交換可能 | [ADR-0025](../decisions/0025-polars-in-adapters.md) |
 | B-6 | 設定形式 | **決定**: 人間が書く宣言は YAML（安全な読込・カスタムタグ禁止・重複キーエラー・merge key 禁止・`schema_version` 必須）、機械生成の manifest は JSON | Pydantic 検証後に frozen dataclass へ変換 | [ADR-0018](../decisions/0018-config-format-yaml-json.md) |
 | B-7 | 成果物保存 | 要決定（期限: 段階2）。推奨はファイルシステムに Parquet（表）＋ JSON（manifest） | 集計は後から DuckDB で読める | — |
 | B-8 | CLI | 要決定（期限: 段階2）。推奨は argparse | 依存を増やさない | — |
@@ -564,7 +564,7 @@ evaluate(inputs, parameters, state) -> (outputs, new_state)
 | C-1 | `data/` の扱い | **決定**: `data/raw/market/` へ移し、データ実体を git 管理外にする。snapshot manifest だけ git 管理 | 配置は下記 | [ADR-0013](../decisions/0013-data-layout-and-gitignore.md) |
 | C-2 | 期間分割と封印 | **決定**: 二択を廃止し、期間をアクセス状態で三分類する | 分類は下記 | [ADR-0014](../decisions/0014-period-access-classification.md) |
 | C-3 | 初版の対象 | **決定**: USDJPY・JPY 口座・判断 1h・執行 15m・日足生成。他9ペアの保管・受入れ能力は残す | 「USDJPY 単一」は初版の縦断実行範囲であり、移管済みの他ペアを削除する意味ではない | [ADR-0015](../decisions/0015-initial-vertical-slice-scope.md) |
-| C-4 | 足生成規則の版 | 要決定（期限: 段階1）。推奨は旧集約の再現版を作り検証に使い、その後新規則を別版に | 上位文書 §3.3 | — |
+| C-4 | 足生成規則の版 | **決定**: 旧集約の再現版は作らない。NY 17時基準の新規則（`ny17_v2`）を唯一の集約規則とする | 旧基盤の集約出力が引き渡されておらず照合対象がない。入手できれば別版として追加 | [ADR-0024](../decisions/0024-no-legacy-aggregation-reproduction.md) |
 | C-5 | swap / rollover | 要決定（期限: 段階2）。推奨は初版未計上（結果に明記） | 政策金利差を実 swap と同一視しない【合意済み】 | — |
 | C-6 | 補助データ（金利等） | 初版外【合意済み】 | 上位文書 §3.1 | — |
 
@@ -730,8 +730,8 @@ source directory:  src/odyssey_fx/
 | D00 | 本書 | 全体計画 | 上位文書 | — |
 | ADR | 技術選定・構成の決定記録 | 第6節 A/B/D の各決定を1件1ファイル | D00 承認 | 段階−1〜0 |
 | D01 | [アーキテクチャ・依存規則・ディレクトリ確定版](D01_architecture_and_dependency_rules.md)（承認 2026-09-19） | 第3〜4節を決定に基づき確定し、`import-linter` 契約を含める | ADR A-1〜A-5 | 段階0 |
-| D02 | 共通カーネル型設計 | 第5.1節・第7.1節 | D01、B-4 | 段階0 |
-| D03 | 市場データ・時刻基盤設計 | 第5.2節・第7.2節。受入れ手順と検査仕様、封印分離 | D02、C-1〜C-4 | 段階0〜1 |
+| D02 | [共通カーネル型設計](D02_common_kernel.md)（承認 2026-09-20） | 第5.1節・第7.1節 | D01、B-4 | 段階0 |
+| D03 | [市場データ・時刻基盤設計](D03_marketdata_and_time.md)（承認 2026-09-20） | 第5.2節・第7.2節。受入れ手順と検査仕様、封印分離 | D02、C-1〜C-4 | 段階0〜1 |
 | D04 | 戦略宣言モデル詳細設計 | 第5.3.1〜5.3.4節・第7.3節前半。補助型全フィールド、コンパイラ検査一覧、設定ファイル表現 | D02、D03（系列定義） | 段階0 |
 | D05 | 戦略ランタイム・カタログ設計 | 第5.3.5節・第7.3節後半 | D04 | 段階0〜3 |
 | D06 | バックテストエンジン設計 | 第5.4節・第7.4節。フェーズ順序、4型全フィールド、状態機械、理由コード、trace/result 形式 | D02〜D05 | 段階0〜2 |
@@ -800,7 +800,7 @@ CLAUDE.md の規則に従う。
 
 第6節の A 全項目、B-1〜B-4、C-1〜C-3、D-2〜D-3、パッケージ名は 2026-09-18 に決定済み（ADR-0001〜0017）。残る事項と着手順は次のとおり。
 
-1. **段階−1 完了・D01 承認済み**（2026-09-19）。段階0 の残りは D02〜D08 と T01。D-1・D-4 も決定済み（ADR-0022/0023）。
+1. **段階−1 完了・D01〜D03 承認済み**（2026-09-20）。実装開始条件（ADR-0016 条件1）を満たし、段階1（`common` → `marketdata` の順に別 PR）へ進める。段階0 の残りは D04〜D08 と T01。
 2. **段階−1（基盤整備）の着手**: `.gitignore` の書き換え（manifest 再包含）、`data/market/` → `data/raw/market/` の移動、`pyproject.toml`（`requires-python = ">=3.12,<3.13"`）、`.python-version`（3.12.13）、uv による lock、ツール設定、`src/odyssey_fx/` と `tests/` の骨格、import-linter 契約、pr-review スキルの書き換えと最小 poller。コミットを生むため worktree で行い、PR として提出する。
 3. **D01（アーキテクチャ・依存規則・ディレクトリ確定版）の作成**: 第3〜4節を決定に基づき確定し、import-linter 契約を含める。
 4. **D02、D03 の作成**: 段階1の開始条件。

@@ -27,3 +27,5 @@
 | [0021](0021-numpy-in-strategy-catalog.md) | NumPy は strategy.catalog の部品実装内部に限り使用可 | D01 §14 |
 | [0022](0022-design-doc-approval-unit.md) | 設計文書は1文書ずつ承認する | D-1 |
 | [0023](0023-adr-format.md) | ADR は1決定1ファイルで、必須項目と廃止規則を持つ | D-4 |
+| [0024](0024-no-legacy-aggregation-reproduction.md) | 上位足の集約は新規則のみとし、旧集約の再現版は作らない | C-4 |
+| [0025](0025-polars-in-adapters.md) | adapters の表形式ライブラリは polars | B-5 |
