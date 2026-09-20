@@ -27,7 +27,7 @@
 ## 影響
 
 - `StrategyDefinition`（上位設計書 §4.3.5）に必須フィールド `opportunity_validity` を追加する。省略時の既定値を持たせない。
-- 取引機会のライフサイクルに終端状態 `MARKET_STATE_INVALIDATED` を追加する。復活はしない。
+- 取引機会の終端理由に `MARKET_STATE_INVALIDATED` を追加する。復活はしない。非終端の状態名を含む完全な状態機械は D05 で設計する。
 - 理由コード（上位設計書 §4.7.14）に `MARKET_STATE_INVALIDATED` を追加し、条件未成立（`ConfirmationResult` の False）・期限切れ・入力不足と区別する。
 - 再検査単位の入力参照は `ValidityBinding` として持ち、欠損時の動作は既存の `MissingInputPolicy` を再利用する。待機しても機会本来の期限は延長しない。
 - D04（宣言モデル）に `OpportunityValiditySpec` / `ValidityBinding` の型を、D05（ランタイム）に再検査の起動点（確認評価時・`OrderRequest` 生成直前）を定める。

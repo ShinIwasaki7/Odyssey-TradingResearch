@@ -33,6 +33,6 @@
 | [0027](0027-fs-parquet-json-artifacts.md) | 成果物保存はファイルシステムに Parquet（表）＋ JSON（manifest） | B-7 |
 | [0028](0028-argparse-cli.md) | CLI ライブラリは argparse | B-8 |
 | [0029](0029-swap-rollover-not-modeled-in-initial-version.md) | swap / rollover は初版で未計上とし結果に明記する | C-5 |
-| [0030](0030-sl-priority-on-intrabar-sl-tp-conflict.md) | OHLC 内で SL と TP の双方に到達した場合は SL 優先 | D06 §4.7.7 |
-| [0031](0031-opportunity-validity-spec-for-waiting-conditions.md) | 確認待ち中の条件は固定／継続要求に明示分類し `OpportunityValiditySpec` を必須にする | D05 §4.5 |
-| [0032](0032-opportunity-concurrency-spec-for-retrigger.md) | 再発火は常に新しい Opportunity を生成し `OpportunityConcurrencySpec` を必須にする | D05 §4.5 |
+| [0030](0030-sl-priority-on-intrabar-sl-tp-conflict.md) | 足内の SL/TP 競合は下位足で再帰的に解決し、観測不能な場合だけ SL 優先 | E-1 |
+| [0031](0031-opportunity-validity-spec-for-waiting-conditions.md) | 確認待ち中の条件は固定／継続要求に明示分類し `OpportunityValiditySpec` を必須にする | E-2 |
+| [0032](0032-opportunity-concurrency-spec-for-retrigger.md) | 再発火は常に新しい Opportunity を生成し `OpportunityConcurrencySpec` を必須にする | E-3 |
