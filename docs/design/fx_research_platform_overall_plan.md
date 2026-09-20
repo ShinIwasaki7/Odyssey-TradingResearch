@@ -364,7 +364,7 @@ src/odyssey_fx/
 
 上位文書第4.3.15節で確定した `OutputRecord[T]`、`Observation[T]`、`ConditionState`、`MarketPermission`、`Opportunity`、`ConfirmationResult` に加え、`OrderIntent`、`ProtectionLevels`、`ManagementAction` を置く。部品は payload を計算し、エンジン（戦略ランタイム）が `output_id` / `evaluation_id` / `decision_time` / `available_at` / `sequence` を付ける【合意済み】。
 
-#### 5.3.3 部品カタログ（`catalog`）
+#### 5.3.3 部品カタログ（`catalog`）（担当文書は D05。2026-09-20 に D04 承認時の Q9 で確定）
 
 - 各部品は「契約（宣言）＋実装（関数またはクラス）＋状態型」を1組として登録する。契約の `state_spec` は実装の状態型を参照し、二重定義しない【合意済み】。
 - 実装は `ImplementationRef`（ID＋内容ハッシュ）で登録し、契約から実行関数そのものを保存しない【合意済み】。
@@ -372,7 +372,7 @@ src/odyssey_fx/
 - 実装の形式は `evaluate(inputs, parameters) -> outputs` または `evaluate(inputs, parameters, state) -> (outputs, new_state)` の2つに統一する。状態はランタイムが保持し、部品実装オブジェクトは可変状態を持たない（第6節 A-8、決定済み）。
 - 初版カタログ（検証戦略 A・B に必要な最小集合）【提案】: EMA、ATR、直近 N 本高値（当該足を除く）、価格比較、AND / OR、条件 → `MarketPermission` 変換、高値突破 Trigger、EMA 確認 ExecutionFilter（`include_start_bar` を持つ）、成行 `OrderIntent`、価格水準型 SL、固定 RR の TP ＋ トレーリング Exit、期間 Exit。段階的に第4.6節の合成部品（遷移検出、N 本継続、A 後 N 本以内の B）を加える。
 
-#### 5.3.4 コンパイラ（`compiler`）
+#### 5.3.4 コンパイラ（`compiler`）（検査一覧は D04、実装の詳細は D05。2026-09-20 に D04 承認時の Q9 で確定）
 
 `StrategyDefinition` → `CompiledStrategy`（不変、内容ハッシュ付き）。検査項目:
 
@@ -747,8 +747,8 @@ source directory:  src/odyssey_fx/
 | D01 | [アーキテクチャ・依存規則・ディレクトリ確定版](D01_architecture_and_dependency_rules.md)（承認 2026-09-19） | 第3〜4節を決定に基づき確定し、`import-linter` 契約を含める | ADR A-1〜A-5 | 段階0 |
 | D02 | [共通カーネル型設計](D02_common_kernel.md)（承認 2026-09-20） | 第5.1節・第7.1節 | D01、B-4 | 段階0 |
 | D03 | [市場データ・時刻基盤設計](D03_marketdata_and_time.md)（承認 2026-09-20） | 第5.2節・第7.2節。受入れ手順と検査仕様、封印分離 | D02、C-1〜C-4 | 段階0〜1 |
-| D04 | 戦略宣言モデル詳細設計 | 第5.3.1〜5.3.4節・第7.3節前半。補助型全フィールド、コンパイラ検査一覧、設定ファイル表現 | D02、D03（系列定義） | 段階0 |
-| D05 | 戦略ランタイム・カタログ設計 | 第5.3.5節・第7.3節後半 | D04 | 段階0〜3 |
+| D04 | [戦略宣言モデル詳細設計](D04_strategy_declarations.md)（承認 2026-09-20） | 第5.3.1節・第7.3節前半。補助型全フィールド、宣言から導かれるコンパイル時検査の一覧、設定ファイル表現 | D02、D03（系列定義） | 段階0 |
+| D05 | 戦略ランタイム・カタログ・コンパイラ設計 | 第5.3.2〜5.3.5節・第7.3節後半。部品カタログの構成と初版の部品、コンパイラの実装（依存グラフ構築・ハッシュ計算） | D04 | 段階0〜3 |
 | D06 | バックテストエンジン設計 | 第5.4節・第7.4節。フェーズ順序、4型全フィールド、状態機械、理由コード、trace/result 形式 | D02〜D05 | 段階0〜2 |
 | D07 | 単一実行評価設計 | 第5.5.1節・第7.5節前半 | D06 | 段階2〜4 |
 | D08 | テスト戦略 | 第8.4節を具体化。意味論テスト一覧、人工データ生成仕様、golden trace | D06 | 段階1〜 |
