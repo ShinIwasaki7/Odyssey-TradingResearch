@@ -12,9 +12,11 @@ from collections.abc import Mapping, Sequence
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
@@ -45,7 +47,11 @@ CONVERSION = ConversionRecord(
 
 BASIS = BasisDeclaration(value=PriceBasis.BID, verified=False)
 
-REPORT_DIGEST = ContentDigest.sha256("a" * 64)
+#: 警告のない報告（分類すべきものが無い状態）。読み取りの関門は報告と分類を突き合わせる
+#: ので、テストの manifest もこの報告から作ったダイジェストを持つ（D03 §3.7.1）。
+EMPTY_REPORT = IntegrityReport()
+
+REPORT_DIGEST = ContentDigest.sha256(integrity_report_digest_hex(EMPTY_REPORT))
 
 
 def digest_for(marker: str) -> ContentDigest:
@@ -122,14 +128,20 @@ def readable_for(
     partition_bars: Mapping[PartitionId, Sequence[Bar]] | Sequence[PartitionId],
     *,
     interval: Interval = COVERED,
+    report: IntegrityReport | None = None,
 ) -> ReadableSnapshot:
-    """読み取り可能な snapshot（承認済み・最終ディレクトリ）を1行で作る。
+    """読み取り可能な snapshot（承認済み・最終ディレクトリ・分類済み）を1行で作る。
 
     読み取り経路は `ReadableSnapshot` しか受け取らない（D03 §3.7.1 の 2・3）。ディレクトリ名
-    は manifest から再計算した最終識別子にする。
+    は manifest から再計算した最終識別子にする。報告を渡さない場合は、警告のない（＝分類
+    すべきものが無い）報告になる。
     """
     manifest = approved_for(partition_bars, interval=interval)
-    return ReadableSnapshot(manifest=manifest, directory_name=str(manifest.snapshot_id()))
+    return ReadableSnapshot(
+        manifest=manifest,
+        directory_name=str(manifest.snapshot_id()),
+        report=IntegrityReport() if report is None else report,
+    )
 
 
 def record_for(partition_id: PartitionId, bars: Sequence[Bar]) -> PartitionRecord:

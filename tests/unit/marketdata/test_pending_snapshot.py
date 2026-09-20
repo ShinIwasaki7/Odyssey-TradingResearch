@@ -499,5 +499,7 @@ def test_an_approved_snapshot_can_be_opened_for_reading() -> None:
         final,
         Approval(approved_by="reviewer", approved_at=UtcTime.parse("2026-09-20T12:00:00Z")),
     )
-    readable = ReadableSnapshot(manifest=approved, directory_name=final.directory_name)
+    readable = ReadableSnapshot(
+        manifest=approved, directory_name=final.directory_name, report=IntegrityReport()
+    )
     assert readable.snapshot_id == final.snapshot_id

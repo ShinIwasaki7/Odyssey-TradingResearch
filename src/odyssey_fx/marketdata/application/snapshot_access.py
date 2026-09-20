@@ -37,13 +37,19 @@ from odyssey_fx.marketdata.domain.errors import (
     PartitionContentMismatch,
     SnapshotNotApproved,
 )
+from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
+from odyssey_fx.marketdata.domain.snapshot import (
+    ClosureDecision,
+    PartitionId,
+    SnapshotManifest,
+)
 
 __all__ = [
     "PENDING_DIRECTORY",
     "PartitionedBars",
     "ReadableSnapshot",
+    "classification_mismatch",
     "freeze_partition_bars",
     "require_readable_snapshot",
 ]
@@ -51,6 +57,24 @@ __all__ = [
 #: 暫定 snapshot を置くディレクトリ名（D03 §3.7.1 の 1）。この配下の snapshot は承認の
 #: 対象にならず、常に読めない。
 PENDING_DIRECTORY = "_pending"
+
+
+def classification_mismatch(
+    report: IntegrityReport, decisions: Sequence[ClosureDecision]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """警告と分類の食い違いを返す（D03 §4 の 9）。
+
+    `(未分類の警告, 対応する警告のない分類)` の組。それぞれ `系列 区間` の形の文字列で、
+    人間が読める順に並ぶ。対応は**区間全体**で取る。開始時刻だけで突き合わせると、終端の
+    違う分類（別の足を指す分類）が対応済みとして通ってしまう。
+
+    確定（`finalize`）と読み取りの関門（`ReadableSnapshot`）が同じ規則を使うための共通の
+    純粋関数である。片方だけが検査していると、確定を経ずに組み立てた manifest が読み取り
+    側をすり抜ける。
+    """
+    warned = {f"{result.series} {result.interval}" for result in report.warnings}
+    decided = {f"{decision.series_id} {decision.interval}" for decision in decisions}
+    return tuple(sorted(warned - decided)), tuple(sorted(decided - warned))
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +92,13 @@ class ReadableSnapshot:
     2. `directory_name` が manifest から再計算した `snapshot_id` と一致する（＝確定段階を
        経ており、内容とディレクトリ名が食い違っていない）。
     3. 承認が記入されている。
+    4. 完全性検査の報告の**すべての警告が分類されている**（D03 §4 の 9）。
+
+    4点目を manifest だけでは確かめられないので、報告（`report`）も併せて受け取る。
+    ディレクトリ名と承認だけを見ていると、確定段階（`finalize`）を経ずに組み立てた
+    manifest——未分類の警告が残ったまま承認を付けたもの——が、最終識別子の名前で置くだけで
+    読めてしまう。報告そのものが manifest の記録どおりであること（ダイジェストの一致）は、
+    報告を読む側（`ParquetSnapshotStore.open_readable`）が確かめる。
 
     読み取り経路（as-of ビュー・執行系列ビュー・公開フィード）は `SnapshotManifest` では
     なくこの型を受け取るので、検査を通っていない manifest は構造的に渡せない。
@@ -75,12 +106,15 @@ class ReadableSnapshot:
 
     manifest: SnapshotManifest
     directory_name: str
+    report: IntegrityReport
 
     def __post_init__(self) -> None:
         if not isinstance(self.manifest, SnapshotManifest):
             raise MarketDataValueError("ReadableSnapshot.manifest must be a SnapshotManifest")
         if not isinstance(self.directory_name, str) or not self.directory_name:
             raise MarketDataValueError("ReadableSnapshot.directory_name must be a non-empty str")
+        if not isinstance(self.report, IntegrityReport):
+            raise MarketDataValueError("ReadableSnapshot.report must be an IntegrityReport")
 
         parts = PurePosixPath(self.directory_name).parts
         if PENDING_DIRECTORY in parts:
@@ -98,6 +132,23 @@ class ReadableSnapshot:
                 " by its final id (D03 §3.7.1 の 2)"
             )
         _require_approved(self.manifest)
+
+        # 確定段階を経ていれば、報告の警告はすべて分類されている（D03 §4 の 9）。
+        # 経ていない manifest はここで止まる。
+        undecided, extraneous = classification_mismatch(
+            self.report, self.manifest.closure_decisions
+        )
+        if undecided:
+            raise SnapshotNotApproved(
+                f"{len(undecided)} warning(s) in this snapshot's integrity report are still"
+                f" unclassified: {list(undecided)}; it has not been through the classification"
+                " stage and cannot be read (D03 §3.7.1 の 2、§4 の 9)"
+            )
+        if extraneous:
+            raise MarketDataValueError(
+                f"{len(extraneous)} closure decision(s) do not correspond to any warning in"
+                f" this snapshot's integrity report: {list(extraneous)} (D03 §4 の 9)"
+            )
 
     @property
     def snapshot_id(self) -> SnapshotId:

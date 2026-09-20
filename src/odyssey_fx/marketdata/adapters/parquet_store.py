@@ -450,9 +450,15 @@ class ParquetSnapshotStore:
         2. 内容から再計算した `snapshot_id`
         3. ディレクトリ名
 
+        同じディレクトリの完全性検査の報告（`integrity_report.json`）も読み、**再計算した
+        ダイジェストが manifest の `integrity_report_ref` と一致する**ことを確かめる。報告が
+        無い、または内容が書き換えられていれば開けない。
+
         そのうえで `ReadableSnapshot` を作るので、暫定ディレクトリ（`_pending/`）配下の
-        snapshot と、承認の無い snapshot は開けない。読み取り経路はこの型しか受け取らない
-        ため、検査を通らない manifest でビューを作ることはできない。
+        snapshot、承認の無い snapshot、**未分類の警告が残る snapshot** は開けない
+        （最後の1つは `ReadableSnapshot` が報告と分類を突き合わせて拒否する）。読み取り
+        経路はこの型しか受け取らないため、検査を通らない manifest でビューを作ることは
+        できない。
         """
         if PENDING_DIRECTORY in PurePosixPath(snapshot_id).parts:
             raise SnapshotNotApproved(
@@ -460,7 +466,22 @@ class ParquetSnapshotStore:
                 " approved and never readable (D03 §3.7.1 の 1・3)"
             )
         manifest = self.read_manifest(snapshot_id)
-        return ReadableSnapshot(manifest=manifest, directory_name=snapshot_id)
+
+        path = self._snapshot_path(snapshot_id) / _INTEGRITY_FILE
+        if not path.is_file():
+            raise MarketDataValueError(
+                f"{path} is missing; a readable snapshot carries the integrity report its"
+                " manifest refers to (D03 §3.7・§3.7.1)"
+            )
+        report = self.read_integrity_report(snapshot_id)
+        recomputed = integrity_report_digest_hex(report)
+        if recomputed != manifest.integrity_report_ref.hex:
+            raise MarketDataValueError(
+                f"{path} does not match the digest recorded in the manifest"
+                f" ({manifest.integrity_report_ref.hex}); the report has been altered"
+                " (D03 §3.7.1)"
+            )
+        return ReadableSnapshot(manifest=manifest, directory_name=snapshot_id, report=report)
 
     def write_integrity_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
         """検査の報告を書き出し、内容のダイジェストを返す。

@@ -34,6 +34,7 @@ from odyssey_fx.marketdata.domain.errors import (
     PartitionContentMismatch,
     SnapshotNotApproved,
 )
+from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog, PublicationRecord
 from odyssey_fx.marketdata.domain.schedule import (
     DelayScenario,
@@ -104,7 +105,9 @@ def _view(
         manifest = snapshots.manifest(
             series_records=manifest.series, partitions=manifest.partitions
         )
-    readable = ReadableSnapshot(manifest=manifest, directory_name=str(manifest.snapshot_id()))
+    readable = ReadableSnapshot(
+        manifest=manifest, directory_name=str(manifest.snapshot_id()), report=IntegrityReport()
+    )
     return AsOfView(
         snapshot=readable,
         allowed_partitions=frozenset(allowed),

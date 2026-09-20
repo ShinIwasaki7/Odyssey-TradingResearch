@@ -20,7 +20,10 @@ from odyssey_fx.marketdata.application.publication import (
     build_feed,
     build_publication_log,
 )
-from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
+from odyssey_fx.marketdata.application.snapshot_access import (
+    ReadableSnapshot,
+    classification_mismatch,
+)
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
@@ -28,8 +31,13 @@ from odyssey_fx.marketdata.domain.errors import (
     MarketDataValueError,
     SnapshotNotApproved,
 )
+from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
-from odyssey_fx.marketdata.domain.snapshot import PartitionId
+from odyssey_fx.marketdata.domain.snapshot import (
+    ClosureDecision,
+    ClosureDecisionKind,
+    PartitionId,
+)
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -159,14 +167,20 @@ def test_a_provisional_snapshot_is_never_readable_even_when_approved() -> None:
     """暫定ディレクトリ配下は、承認を付けても読めない（D03 §3.7.1 の1）。"""
     approved = snapshots.approved_for({RESEARCH: _research_bars()})
     with pytest.raises(SnapshotNotApproved, match="provisional snapshot"):
-        ReadableSnapshot(manifest=approved, directory_name=f"_pending/{approved.snapshot_id()}")
+        ReadableSnapshot(
+            manifest=approved,
+            directory_name=f"_pending/{approved.snapshot_id()}",
+            report=IntegrityReport(),
+        )
 
 
 def test_a_nested_pending_path_is_also_refused() -> None:
     approved = snapshots.approved_for({RESEARCH: _research_bars()})
     with pytest.raises(SnapshotNotApproved, match="provisional snapshot"):
         ReadableSnapshot(
-            manifest=approved, directory_name=f"data/_pending/{approved.snapshot_id()}"
+            manifest=approved,
+            directory_name=f"data/_pending/{approved.snapshot_id()}",
+            report=IntegrityReport(),
         )
 
 
@@ -174,20 +188,26 @@ def test_the_directory_name_must_be_the_final_snapshot_id() -> None:
     """ディレクトリ名は最終識別子でなければならない（D03 §3.7.1 の2）。"""
     approved = snapshots.approved_for({RESEARCH: _research_bars()})
     with pytest.raises(MarketDataValueError, match="does not match the manifest"):
-        ReadableSnapshot(manifest=approved, directory_name="2024-acceptance")
+        ReadableSnapshot(
+            manifest=approved, directory_name="2024-acceptance", report=IntegrityReport()
+        )
 
 
 def test_an_unapproved_manifest_cannot_become_readable() -> None:
     approved = snapshots.approved_for({RESEARCH: _research_bars()})
     pending = snapshots.manifest(series_records=approved.series, partitions=approved.partitions)
     with pytest.raises(SnapshotNotApproved, match="has not been approved"):
-        ReadableSnapshot(manifest=pending, directory_name=str(pending.snapshot_id()))
+        ReadableSnapshot(
+            manifest=pending, directory_name=str(pending.snapshot_id()), report=IntegrityReport()
+        )
 
 
 def test_a_correctly_placed_approved_snapshot_is_readable() -> None:
     """条件を満たす snapshot は開ける（関門が正しいものまで拒まないことの確認）。"""
     approved = snapshots.approved_for({RESEARCH: _research_bars()})
-    readable = ReadableSnapshot(manifest=approved, directory_name=str(approved.snapshot_id()))
+    readable = ReadableSnapshot(
+        manifest=approved, directory_name=str(approved.snapshot_id()), report=IntegrityReport()
+    )
     assert readable.snapshot_id == approved.snapshot_id()
 
 
@@ -267,3 +287,84 @@ def test_a_feed_without_any_granted_partition_is_refused() -> None:
     readable = snapshots.readable_for({RESEARCH: research})
     with pytest.raises(HoldoutAccessViolation, match="no partition was granted"):
         build_feed(readable, frozenset(), {}, SCHEDULES, RESEARCH_WINDOW)
+
+
+# --- 報告と分類の突き合わせ（D03 §3.7.1 の2・§4 の 9）-----------------------
+
+
+def _warned_report() -> IntegrityReport:
+    """未分類の警告を1件持つ報告。"""
+    return IntegrityReport(
+        results=(CheckResult.create(CheckKind.MISSING_EXPECTED_BAR, HOURLY, RESEARCH_WINDOW),)
+    )
+
+
+def _decision_for(report: IntegrityReport) -> ClosureDecision:
+    """その報告の警告に対応する分類。"""
+    (warning,) = report.warnings
+    return ClosureDecision(
+        series_id=HOURLY,
+        interval=warning.interval,
+        kind=ClosureDecisionKind.DATA_GAP,
+    )
+
+
+def test_an_unclassified_warning_makes_the_snapshot_unreadable() -> None:
+    """未分類の警告が残る manifest は、最終識別子の名前で置いても読めない。
+
+    確定段階（`finalize`）を飛ばして承認だけ付けた manifest がここで止まる（D03 §3.7.1 の2）。
+    """
+    report = _warned_report()
+    approved = snapshots.approved_for({RESEARCH: _research_bars()})
+    with pytest.raises(SnapshotNotApproved, match="still unclassified"):
+        ReadableSnapshot(
+            manifest=approved,
+            directory_name=str(approved.snapshot_id()),
+            report=report,
+        )
+
+
+def test_a_classified_warning_makes_the_snapshot_readable() -> None:
+    """分類が記入されていれば読める（関門が正しいものまで拒まないことの確認）。"""
+    report = _warned_report()
+    decided = snapshots.approved_for({RESEARCH: _research_bars()}).with_closure_decisions(
+        (_decision_for(report),)
+    )
+    readable = ReadableSnapshot(
+        manifest=decided, directory_name=str(decided.snapshot_id()), report=report
+    )
+    assert readable.snapshot_id == decided.snapshot_id()
+
+
+def test_a_decision_without_a_matching_warning_makes_it_unreadable() -> None:
+    """報告に無い区間の分類が付いた manifest も拒否する（`finalize` と同じ規則）。"""
+    extra = ClosureDecision(
+        series_id=HOURLY,
+        interval=HOLDOUT_WINDOW,
+        kind=ClosureDecisionKind.CLOSURE,
+    )
+    decided = snapshots.approved_for({RESEARCH: _research_bars()}).with_closure_decisions((extra,))
+    with pytest.raises(MarketDataValueError, match="do not correspond to any warning"):
+        ReadableSnapshot(
+            manifest=decided,
+            directory_name=str(decided.snapshot_id()),
+            report=IntegrityReport(),
+        )
+
+
+def test_the_matching_rule_is_shared_with_finalize() -> None:
+    """突き合わせは共通の純粋関数で行う（確定と読み取りで規則がずれない）。"""
+    report = _warned_report()
+    (warning,) = report.warnings
+    # 終端の違う分類は対応しない（`finalize` と同じ判定）。
+    wrong_end = ClosureDecision(
+        series_id=HOURLY,
+        interval=Interval(start=warning.interval.start, end=HOLDOUT_WINDOW.end),
+        kind=ClosureDecisionKind.DATA_GAP,
+    )
+    undecided, extraneous = classification_mismatch(report, (wrong_end,))
+    assert undecided and extraneous
+
+    # 区間が完全に一致すれば対応する。
+    undecided, extraneous = classification_mismatch(report, (_decision_for(report),))
+    assert not undecided and not extraneous

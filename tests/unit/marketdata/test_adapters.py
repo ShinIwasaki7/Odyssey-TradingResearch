@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from odyssey_fx.common.money import decimal_from_str
+from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
 from odyssey_fx.marketdata.adapters.parquet_store import (
@@ -34,7 +35,12 @@ from odyssey_fx.marketdata.application.report_digest import integrity_report_dig
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
-from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
+from odyssey_fx.marketdata.domain.snapshot import (
+    ClosureDecision,
+    ClosureDecisionKind,
+    PartitionId,
+    SnapshotManifest,
+)
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -203,11 +209,22 @@ def test_a_zero_volume_bar_round_trips(tmp_path: Path) -> None:
 # --- 確定・承認済み snapshot を開く（D03 §3.7.1 の 2・3）--------------------
 
 
-def _write_snapshot(store: ParquetSnapshotStore, manifest: SnapshotManifest) -> str:
-    """manifest を最終識別子のディレクトリへ書き、そのディレクトリ名を返す。"""
-    directory = str(manifest.snapshot_id())
-    store.write_manifest(directory, manifest)
-    return directory
+def _write_snapshot(
+    store: ParquetSnapshotStore,
+    manifest: SnapshotManifest,
+    *,
+    directory: str | None = None,
+    report: IntegrityReport | None = None,
+) -> str:
+    """manifest と検査報告を書き、そのディレクトリ名を返す。
+
+    読み取りの関門は報告のダイジェストと分類の対応も見る（D03 §3.7.1）ので、manifest だけ
+    では開けない。
+    """
+    target = str(manifest.snapshot_id()) if directory is None else directory
+    store.write_manifest(target, manifest)
+    store.write_integrity_report(target, snapshots.EMPTY_REPORT if report is None else report)
+    return target
 
 
 def test_open_readable_accepts_a_correctly_placed_snapshot(tmp_path: Path) -> None:
@@ -227,7 +244,7 @@ def test_open_readable_refuses_a_provisional_snapshot(tmp_path: Path) -> None:
     manifest = snapshots.approved_for({PARTITION: bars})
     store = ParquetSnapshotStore(root=tmp_path)
     pending_dir = f"_pending/{manifest.snapshot_id()}"
-    store.write_manifest(pending_dir, manifest)
+    _write_snapshot(store, manifest, directory=pending_dir)
 
     with pytest.raises(SnapshotNotApproved, match="provisional snapshot"):
         store.open_readable(pending_dir)
@@ -238,7 +255,7 @@ def test_open_readable_refuses_a_mismatched_directory_name(tmp_path: Path) -> No
     bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
     manifest = snapshots.approved_for({PARTITION: bars})
     store = ParquetSnapshotStore(root=tmp_path)
-    store.write_manifest("wrong-directory", manifest)
+    _write_snapshot(store, manifest, directory="wrong-directory")
 
     with pytest.raises(MarketDataValueError, match="does not match the manifest"):
         store.open_readable("wrong-directory")
@@ -304,3 +321,94 @@ def test_the_written_report_file_hashes_to_the_recorded_digest(tmp_path: Path) -
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == written
     # 読み戻した報告からの再計算も一致する。
     assert integrity_report_digest_hex(store.read_integrity_report("snap")) == written
+
+
+# --- 検査報告も検証する（D03 §3.7.1）---------------------------------------
+
+
+def test_open_readable_refuses_a_snapshot_without_its_report(tmp_path: Path) -> None:
+    """報告が無ければ開けない（manifest が参照しているものが見つからない）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = str(manifest.snapshot_id())
+    store.write_manifest(directory, manifest)  # 報告は書かない。
+
+    with pytest.raises(MarketDataValueError, match="is missing"):
+        store.open_readable(directory)
+
+
+def test_open_readable_refuses_an_altered_report(tmp_path: Path) -> None:
+    """報告のファイルを書き換えると、ダイジェストが合わず開けない。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest = snapshots.approved_for({PARTITION: bars})
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest)
+
+    # 報告に結果を1件足す（manifest のダイジェストは元のまま）。
+    tampered = IntegrityReport(
+        results=(CheckResult.create(CheckKind.SOURCE_TRANSITION, HOURLY, WINDOW),)
+    )
+    store.write_integrity_report(directory, tampered)
+
+    with pytest.raises(MarketDataValueError, match="does not match the digest"):
+        store.open_readable(directory)
+
+
+def test_open_readable_refuses_unclassified_warnings(tmp_path: Path) -> None:
+    """未分類の警告が残る manifest は、最終識別子の名前で置いても開けない。
+
+    `FinalizedSnapshot` を直接作って確定段階を飛ばしても、読み取りの関門で止まる
+    （D03 §3.7.1 の2、§4 の 9）。
+    """
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    report = IntegrityReport(
+        results=(CheckResult.create(CheckKind.MISSING_EXPECTED_BAR, HOURLY, WINDOW),)
+    )
+    # 報告のダイジェストは正しいが、分類が記入されていない manifest。
+    base = snapshots.approved_for({PARTITION: bars})
+    manifest = SnapshotManifest(
+        created_at=base.created_at,
+        basis_declaration=base.basis_declaration,
+        sources=base.sources,
+        conversion=base.conversion,
+        series=base.series,
+        partitions=base.partitions,
+        integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
+        approval=base.approval,
+    )
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest, report=report)
+
+    with pytest.raises(SnapshotNotApproved, match="still unclassified"):
+        store.open_readable(directory)
+
+
+def test_open_readable_accepts_a_snapshot_whose_warnings_are_classified(
+    tmp_path: Path,
+) -> None:
+    """分類が記入されていれば開ける。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    report = IntegrityReport(
+        results=(CheckResult.create(CheckKind.MISSING_EXPECTED_BAR, HOURLY, WINDOW),)
+    )
+    base = snapshots.approved_for({PARTITION: bars})
+    manifest = SnapshotManifest(
+        created_at=base.created_at,
+        basis_declaration=base.basis_declaration,
+        sources=base.sources,
+        conversion=base.conversion,
+        series=base.series,
+        partitions=base.partitions,
+        integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
+        closure_decisions=(
+            ClosureDecision(series_id=HOURLY, interval=WINDOW, kind=ClosureDecisionKind.DATA_GAP),
+        ),
+        approval=base.approval,
+    )
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest, report=report)
+
+    readable = store.open_readable(directory)
+    assert readable.snapshot_id == manifest.snapshot_id()
+    assert readable.report == report

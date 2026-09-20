@@ -43,6 +43,7 @@ from odyssey_fx.marketdata.application.integrity import SeriesUnderCheck, check_
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.ports import RawRow
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
+from odyssey_fx.marketdata.application.snapshot_access import classification_mismatch
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
@@ -400,26 +401,23 @@ def finalize(
     """
     _require_no_integrity_errors(pending.report)
 
-    # 分類と警告の対応は**区間全体**で取る。開始時刻だけで突き合わせると、終端の違う分類
-    # （別の足を指す分類）が対応済みとして通ってしまう。
-    warned = {(str(result.series), str(result.interval)) for result in pending.report.warnings}
-    decided = {(str(decision.series_id), str(decision.interval)) for decision in decisions}
-
-    undecided = sorted(warned - decided)
+    # 分類と警告の対応は**区間全体**で取る。突き合わせの規則は読み取りの関門と共有する
+    # （`classification_mismatch`）。片方だけが検査していると、確定を経ずに組み立てた
+    # manifest が読み取り側をすり抜ける。
+    undecided, extraneous = classification_mismatch(pending.report, decisions)
     if undecided:
         raise MarketDataValueError(
             f"{len(undecided)} warning(s) are still unclassified;"
             " every warning must be recorded as a closure or a data gap before the snapshot"
-            f" can be finalized (D03 §4 の 9): {undecided}"
+            f" can be finalized (D03 §4 の 9): {list(undecided)}"
         )
 
     # 対応する警告のない分類も拒否する。余分な分類は識別子（`snapshot_id`）を変えるので、
     # 検査が見つけていない区間を人間が書き足せば、内容の同じ snapshot が別物になってしまう。
-    extraneous = sorted(decided - warned)
     if extraneous:
         raise MarketDataValueError(
             f"{len(extraneous)} closure decision(s) do not correspond to any reported"
-            f" warning: {extraneous}; classify only the intervals the integrity check"
+            f" warning: {list(extraneous)}; classify only the intervals the integrity check"
             " reported (D03 §4 の 9)"
         )
     return FinalizedSnapshot(manifest=pending.manifest.with_closure_decisions(tuple(decisions)))

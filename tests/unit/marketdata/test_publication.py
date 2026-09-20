@@ -33,6 +33,7 @@ from odyssey_fx.marketdata.domain.errors import (
     PartitionContentMismatch,
     SnapshotNotApproved,
 )
+from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.schedule import (
     DelayScenario,
     FixedSeriesDelay,
@@ -346,7 +347,9 @@ def test_an_unapproved_snapshot_cannot_produce_a_feed() -> None:
     # 公開フィードは `ReadableSnapshot` しか受け取らないので、未承認の manifest は
     # そもそもその型を作れない段階で止まる。
     with pytest.raises(SnapshotNotApproved, match="has not been approved"):
-        ReadableSnapshot(manifest=pending, directory_name=str(pending.snapshot_id()))
+        ReadableSnapshot(
+            manifest=pending, directory_name=str(pending.snapshot_id()), report=IntegrityReport()
+        )
 
 
 def test_a_provisional_snapshot_can_never_be_opened_for_reading() -> None:
@@ -357,6 +360,7 @@ def test_a_provisional_snapshot_can_never_be_opened_for_reading() -> None:
         ReadableSnapshot(
             manifest=approved,
             directory_name=f"_pending/{approved.snapshot_id()}",
+            report=IntegrityReport(),
         )
 
 
@@ -365,7 +369,9 @@ def test_a_directory_name_that_is_not_the_snapshot_id_is_refused() -> None:
     bars = _bars(HOURLY, market.TF_1H)
     approved = snapshots.approved_for({HOURLY_PARTITION: bars})
     with pytest.raises(MarketDataValueError, match="does not match the manifest"):
-        ReadableSnapshot(manifest=approved, directory_name="some-other-directory")
+        ReadableSnapshot(
+            manifest=approved, directory_name="some-other-directory", report=IntegrityReport()
+        )
 
 
 def test_a_quarantined_partition_cannot_produce_a_feed() -> None:
