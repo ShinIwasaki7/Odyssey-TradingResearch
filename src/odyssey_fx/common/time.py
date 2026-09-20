@@ -29,6 +29,14 @@ _PHASE_NAME_PATTERN: Final = re.compile(r"^[A-Z_]+$")
 #: `UtcTime.__str__` の秒までの書式（D02 §3.1）。
 _SECONDS_FORMAT: Final = "%Y-%m-%dT%H:%M:%S"
 
+#: `UtcTime.parse` が受け付ける文法（D02 §3.1）。照合は `fullmatch`。
+#: 小数部は1〜6桁に限る。`datetime.fromisoformat` は7桁以上を黙って6桁へ切り捨てるため、
+#: 正規表現で先に弾かないと別々の時刻が同じ値・同じダイジェストに潰れる。
+#: 日付と時刻の区切りは `T` のみ（空白区切りは受けない）、秒の省略と週番号日付も受けない。
+_UTC_LITERAL_PATTERN: Final = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|\+00:00)"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class UtcTime:
@@ -111,18 +119,32 @@ class UtcTime:
     def parse(cls, text: str) -> Self:
         """`YYYY-MM-DDTHH:MM:SS[.ffffff]Z` または `+00:00` 形式を読む（D02 §3.1）。
 
-        naive な文字列や 0 以外のオフセットは拒否する。
+        文法は `_UTC_LITERAL_PATTERN` で厳密に検査してから解釈する。`datetime.fromisoformat`
+        だけに任せると、次のような文書化していない入力を黙って受理してしまう。
+
+        - 小数部が7桁以上の値は6桁に切り捨てられる（`.1234567` と `.1234561` が同じ値になり、
+          別々の時刻が同じダイジェストに潰れる）。
+        - 日付と時刻の区切りが空白の値、秒を省いた値、週番号日付（`2026-W10-1`）。
+
+        naive な文字列や 0 以外のオフセットも拒否する。
         """
         if not isinstance(text, str):  # pragma: no cover - 型検査で防がれる
             raise KernelValueError("UtcTime.parse requires a string")
+        if not _UTC_LITERAL_PATTERN.fullmatch(text):
+            raise KernelValueError(
+                f"invalid UtcTime literal: {text!r};"
+                " expected YYYY-MM-DDTHH:MM:SS[.ffffff] followed by 'Z' or '+00:00'"
+                " (at most 6 fractional digits)"
+            )
         normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
         try:
             parsed = datetime.fromisoformat(normalized)
         except ValueError as exc:
+            # 文法は合っていても暦として存在しない日付（2026-02-30 など）はここで落ちる。
             raise KernelValueError(f"invalid UtcTime literal: {text!r}") from exc
-        if parsed.tzinfo is None:
+        if parsed.tzinfo is None:  # pragma: no cover - 正規表現がオフセットを必須にする
             raise KernelValueError(f"UtcTime literal must carry a UTC offset: {text!r}")
-        if parsed.utcoffset() != timedelta(0):
+        if parsed.utcoffset() != timedelta(0):  # pragma: no cover - 正規表現が UTC に限る
             raise KernelValueError(f"UtcTime literal must be UTC: {text!r}")
         return cls(parsed.astimezone(UTC))
 
@@ -259,6 +281,11 @@ class PhaseSet:
     （同一要素の重複も一意性の違反であり、フェーズ数が実際と食い違う原因になる）。
     `ProcessingPoint` の全順序はこの一意性を前提とし、集合の定義は run manifest に記録する。
     実際のフェーズ一覧は `backtest.engine`（D06）が固定の tuple として定義する。
+
+    **正規化（D02 §3.3 v1.2）**: 検査を通ったあと `phases` を `rank` の昇順に並べ替えて
+    保持する。これにより同値性・ハッシュ・正規化エンコード（D02 §9.3）・manifest の記録内容
+    が入力の並び順に左右されなくなり、同じフェーズ集合を別の順で書いた run が別物として
+    記録される事故を防ぐ。
     """
 
     phases: tuple[PhaseRank, ...]
@@ -286,6 +313,12 @@ class PhaseSet:
             seen_ranks[phase.rank] = phase.name
             seen_names[phase.name] = phase.rank
 
+        # frozen dataclass なので、正規化した値の書き戻しは `object.__setattr__` で行う。
+        # 検査を通したあとの一度きりの代入であり、構築後は変更されない。
+        normalized = tuple(sorted(self.phases, key=lambda phase: phase.rank))
+        if normalized != self.phases:
+            object.__setattr__(self, "phases", normalized)
+
     def by_name(self, name: str) -> PhaseRank:
         """名前からフェーズを引く。未登録の名前は `KernelValueError`。"""
         for phase in self.phases:
@@ -301,12 +334,12 @@ class PhaseSet:
         raise KernelValueError(f"unknown phase rank: {rank!r}")
 
     def ordered(self) -> tuple[PhaseRank, ...]:
-        """`rank` の昇順に整列したフェーズ列。
+        """`rank` の昇順に並んだフェーズ列。
 
-        構築時に重複を拒否しているので、長さは `phases` と常に一致する（並べ替えるだけで、
-        要素を捨てない）。
+        構築時に正規化済みなので `phases` そのものを返す。呼び出し側が「順序が保証された列
+        が欲しい」という意図を明示できるよう、メソッドとして残している。
         """
-        return tuple(sorted(self.phases, key=lambda phase: phase.rank))
+        return self.phases
 
 
 @dataclass(frozen=True, slots=True)

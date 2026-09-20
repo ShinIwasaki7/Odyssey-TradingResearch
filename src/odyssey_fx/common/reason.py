@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from decimal import Decimal
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
@@ -248,11 +248,26 @@ class Reason:
             raise KernelValueError(f"Reason.code must be a ReasonCode, got {self.code!r}")
         if self.detail is None:
             return
-        detail_code = getattr(type(self.detail), "code", None)
+
+        detail_type = type(self.detail)
+        # 詳細型は frozen dataclass でなければならない（D02 §1 規則2・§8.2）。
+        # `code` を持つだけの任意のオブジェクトを受けると、`Reason` が不変でも中身が後から
+        # 書き換わり、記録した理由が実行後に変わってしまう。
+        if not is_dataclass(detail_type):
+            raise KernelValueError(
+                f"Reason.detail must be a frozen dataclass, got {detail_type.__name__}"
+            )
+        params = getattr(detail_type, "__dataclass_params__", None)
+        if params is None or not params.frozen:
+            raise KernelValueError(
+                f"Reason.detail must be a frozen dataclass, but {detail_type.__name__} is mutable"
+            )
+
+        detail_code = getattr(detail_type, "code", None)
         if not isinstance(detail_code, ReasonCode):
             raise KernelValueError(
                 "Reason.detail must be a ReasonDetail carrying a ReasonCode class variable,"
-                f" got {type(self.detail).__name__}"
+                f" got {detail_type.__name__}"
             )
         if detail_code is not self.code:
             raise KernelValueError(

@@ -92,6 +92,67 @@ def test_reason_rejects_a_detail_without_a_reason_code() -> None:
         Reason(ReasonCode.RISK, _Bogus("x"))  # type: ignore[arg-type]
 
 
+# --- 詳細型は不変でなければならない（Codex レビュー round 2 指摘E）----------
+#
+# `code` を持つだけの任意のオブジェクトを受けると、`Reason` 自体が frozen でも詳細の中身が
+# 後から書き換わり、記録した理由が実行後に変わってしまう（D02 §1 規則2・§8.2）。
+
+
+def test_reason_rejects_a_mutable_dataclass_detail() -> None:
+    @dataclass
+    class _MutableDetail:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        note: str = "x"
+
+    with pytest.raises(KernelValueError, match="frozen dataclass"):
+        Reason(ReasonCode.RISK, _MutableDetail())
+
+
+def test_reason_rejects_a_plain_object_detail() -> None:
+    class _PlainDetail:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+
+    with pytest.raises(KernelValueError, match="frozen dataclass"):
+        Reason(ReasonCode.RISK, _PlainDetail())
+
+
+def test_a_mutable_detail_really_could_have_changed_after_the_fact() -> None:
+    """拒否する理由の実証: 可変な詳細は構築後に中身を書き換えられる。"""
+
+    @dataclass
+    class _MutableDetail:
+        code: ClassVar[ReasonCode] = ReasonCode.RISK
+        note: str = "before"
+
+    detail = _MutableDetail()
+    detail.note = "after"
+    assert detail.note == "after"
+    with pytest.raises(KernelValueError, match="frozen dataclass"):
+        Reason(ReasonCode.RISK, detail)
+
+
+def test_reason_still_accepts_every_detail_type_common_defines() -> None:
+    """`common` の詳細型はすべて frozen dataclass なので、検査を通る。"""
+    accepted = [
+        Reason(ReasonCode.RUN_END, RunEndDetail(run_end=MOMENT)),
+        Reason(ReasonCode.EXPIRED, ExpiryDetail(expires_at=MOMENT, observed_at=POINT)),
+        Reason(
+            ReasonCode.NO_CANDIDATE,
+            NoCandidateDetail(expires_at=MOMENT, earliest_candidate=None),
+        ),
+        Reason(
+            ReasonCode.CARRY_NOT_ALLOWED,
+            CarryNotAllowedDetail(next_candidate=MOMENT, session_close=MOMENT),
+        ),
+        Reason(
+            ReasonCode.POSITION_CLOSED,
+            PositionClosedDetail(position_id=PositionId(1), closed_at=POINT),
+        ),
+        Reason(ReasonCode.RISK, RiskRejectionDetail("c", D("1"), D("2"))),
+    ]
+    assert all(reason.detail is not None for reason in accepted)
+
+
 def test_reason_rejects_a_non_reason_code() -> None:
     with pytest.raises(KernelValueError, match="ReasonCode"):
         Reason("RISK")  # type: ignore[arg-type]
@@ -205,8 +266,12 @@ def test_risk_rejection_detail_accepts_money_and_decimal_pairs() -> None:
 
 
 def test_risk_rejection_detail_requires_matching_kinds() -> None:
+    """金額と比率を混ぜた比較不能な記録は拒否する（D02 §8.2 v1.2、確定）。"""
     with pytest.raises(KernelValueError, match="same type"):
         RiskRejectionDetail(check="c", limit=Money(D("1"), JPY), observed=D("1"))
+    # 逆向き（上限が比率で実測が金額）も同じく拒否する。
+    with pytest.raises(KernelValueError, match="same type"):
+        RiskRejectionDetail(check="c", limit=D("1"), observed=Money(D("1"), JPY))
 
 
 def test_risk_rejection_detail_requires_one_currency() -> None:

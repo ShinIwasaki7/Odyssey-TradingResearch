@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from decimal import Decimal
+from decimal import Context, Decimal, getcontext, localcontext
 
 import pytest
 
@@ -371,6 +371,73 @@ def test_float_conversion_validates_its_fields() -> None:
             direction=valid.direction,
             result=valid.result,
         )
+
+
+# --- 呼び出し側のコンテキストからの独立（Codex レビュー round 2 指摘D）-------
+#
+# `Decimal` の演算は「現在のコンテキスト」の精度で丸められる。カーネルの算術が呼び出し側の
+# コンテキストに左右されると、同じ入力でも呼ばれ方次第で台帳の値が変わり、再現性が崩れる。
+# 単項演算子（`-x`、`abs(x)`）も例外ではない。
+
+#: カーネルの精度 28 にちょうど収まる 28 桁の仮数。精度 5 のコンテキストで計算されれば
+#: 5 桁に丸められて一目で分かる。28 桁を超える値にするとカーネル自身が丸めるため、
+#: 「呼び出し側のコンテキストの影響」だけを見たいここでは 28 桁に合わせる。
+_LONG_MANTISSA = "1.234567890123456789012345678"
+
+#: 呼び出し側が持ち込む低精度のコンテキスト。
+_LOW_PRECISION = Context(prec=5)
+
+
+def test_price_offset_negation_ignores_the_ambient_context() -> None:
+    offset = PriceOffset(D(_LONG_MANTISSA))
+    with localcontext(_LOW_PRECISION):
+        assert (-offset).value == D("-" + _LONG_MANTISSA)
+
+
+def test_price_offset_abs_ignores_the_ambient_context() -> None:
+    offset = PriceOffset(D("-" + _LONG_MANTISSA))
+    with localcontext(_LOW_PRECISION):
+        assert abs(offset).value == D(_LONG_MANTISSA)
+
+
+def test_money_negation_ignores_the_ambient_context() -> None:
+    money = Money(D(_LONG_MANTISSA), JPY)
+    with localcontext(_LOW_PRECISION):
+        assert (-money).amount == D("-" + _LONG_MANTISSA)
+
+
+def test_money_abs_ignores_the_ambient_context() -> None:
+    negative = -Money(D(_LONG_MANTISSA), JPY)
+    with localcontext(_LOW_PRECISION):
+        assert abs(negative).amount == D(_LONG_MANTISSA)
+
+
+def test_binary_arithmetic_ignores_the_ambient_context() -> None:
+    """二項演算も同じく、呼び出し側の精度に影響されない。"""
+    left = Money(D(_LONG_MANTISSA), JPY)
+    with localcontext(_LOW_PRECISION):
+        assert (left + Money(D("0"), JPY)).amount == D(_LONG_MANTISSA)
+        assert (left - Money(D("0"), JPY)).amount == D(_LONG_MANTISSA)
+        assert (left * D("1")).amount == D(_LONG_MANTISSA)
+        assert (left / D("1")).amount == D(_LONG_MANTISSA)
+
+
+def test_price_arithmetic_ignores_the_ambient_context() -> None:
+    price = Price(D(_LONG_MANTISSA))
+    with localcontext(_LOW_PRECISION):
+        assert (price + PriceOffset(D("0"))).value == D(_LONG_MANTISSA)
+        assert (price - Price(D("0.000000000000000000000000001"))).value == D(
+            "1.234567890123456789012345677"
+        )
+
+
+def test_the_ambient_context_is_left_untouched() -> None:
+    """カーネルの算術はプロセスのコンテキストを書き換えない（D02 §4.1）。"""
+    with localcontext(_LOW_PRECISION) as ambient:
+        _ = -Money(D(_LONG_MANTISSA), JPY)
+        _ = abs(PriceOffset(D(_LONG_MANTISSA)))
+        assert ambient.prec == 5
+        assert getcontext().prec == 5
 
 
 # --- FloatConversion の内部整合（Codex レビュー round 1 指摘3）---------------

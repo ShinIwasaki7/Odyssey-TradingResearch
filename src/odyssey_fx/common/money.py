@@ -184,10 +184,13 @@ class PriceOffset:
             return PriceOffset(self.value - other.value)
 
     def __neg__(self) -> PriceOffset:
-        return PriceOffset(-self.value)
+        # 単項演算子もコンテキストの精度で丸められるため、カーネルのコンテキストで行う。
+        with localcontext(KERNEL_DECIMAL_CONTEXT):
+            return PriceOffset(-self.value)
 
     def __abs__(self) -> PriceOffset:
-        return PriceOffset(abs(self.value))
+        with localcontext(KERNEL_DECIMAL_CONTEXT):
+            return PriceOffset(abs(self.value))
 
     def __mul__(self, factor: Decimal) -> PriceOffset:
         if not isinstance(factor, Decimal):
@@ -399,10 +402,13 @@ class Money:
             return Money(self.amount - other.amount, self.currency)
 
     def __neg__(self) -> Money:
-        return Money(-self.amount, self.currency)
+        # 単項演算子もコンテキストの精度で丸められるため、カーネルのコンテキストで行う。
+        with localcontext(KERNEL_DECIMAL_CONTEXT):
+            return Money(-self.amount, self.currency)
 
     def __abs__(self) -> Money:
-        return Money(abs(self.amount), self.currency)
+        with localcontext(KERNEL_DECIMAL_CONTEXT):
+            return Money(abs(self.amount), self.currency)
 
     def __mul__(self, factor: Decimal) -> Money:
         if not isinstance(factor, Decimal):

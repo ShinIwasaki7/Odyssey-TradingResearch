@@ -69,6 +69,75 @@ def test_utc_time_parse_rejects_non_utc_literals(text: str) -> None:
         UtcTime.parse(text)
 
 
+# --- UtcTime.parse の文法（Codex レビュー round 2 指摘C）--------------------
+#
+# `datetime.fromisoformat` は寛容すぎる。小数部が7桁以上の値を黙って6桁へ切り捨てるため、
+# 別々の時刻が同じ値・同じダイジェストに潰れる。文書化していない書き方（空白区切り・秒の
+# 省略・週番号日付）も受理してしまう。文法を正規表現で先に固定する。
+
+
+def test_parse_rejects_more_than_six_fractional_digits() -> None:
+    """7桁以上の小数部は切り捨てずに拒否する。"""
+    with pytest.raises(KernelValueError, match="at most 6 fractional digits"):
+        UtcTime.parse("2026-03-01T12:00:00.1234567Z")
+
+
+def test_two_distinct_sub_microsecond_instants_do_not_collapse() -> None:
+    """指摘の核心: 切り捨てを許すと別の時刻が同じ値になってしまう。"""
+    for text in ("2026-03-01T12:00:00.1234567Z", "2026-03-01T12:00:00.1234561Z"):
+        with pytest.raises(KernelValueError):
+            UtcTime.parse(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2026-03-01 12:00:00Z",  # 区切りが空白
+        "2026-03-01T12:00Z",  # 秒の省略
+        "2026-03-01T12Z",  # 分と秒の省略
+        "2026-W10-1T12:00:00Z",  # 週番号日付
+        "2026-03-01T12:00:00.Z",  # 小数点だけで桁がない
+        "2026-03-01T12:00:00",  # オフセットなし
+        "2026-03-01T12:00:00+09:00",  # UTC 以外
+        "2026-03-01T12:00:00z",  # 小文字の z
+        " 2026-03-01T12:00:00Z",  # 前後の空白
+        "2026-03-01T12:00:00Z ",
+    ],
+)
+def test_parse_rejects_undocumented_spellings(text: str) -> None:
+    with pytest.raises(KernelValueError):
+        UtcTime.parse(text)
+
+
+@pytest.mark.parametrize("suffix", ["Z", "+00:00"])
+def test_parse_accepts_both_documented_utc_suffixes(suffix: str) -> None:
+    assert UtcTime.parse(f"2026-03-01T12:00:00{suffix}") == UtcTime.from_components(2026, 3, 1, 12)
+
+
+@pytest.mark.parametrize(
+    ("fraction", "microsecond"),
+    [
+        ("1", 100000),
+        ("12", 120000),
+        ("123", 123000),
+        ("1234", 123400),
+        ("12345", 123450),
+        ("123456", 123456),
+    ],
+)
+def test_parse_accepts_one_to_six_fractional_digits(fraction: str, microsecond: int) -> None:
+    moment = UtcTime.parse(f"2026-03-01T12:00:00.{fraction}Z")
+    assert moment.value.microsecond == microsecond
+    # 桁を補った正規形へ往復する。
+    assert UtcTime.parse(str(moment)) == moment
+
+
+def test_parse_rejects_a_calendar_date_that_does_not_exist() -> None:
+    """文法は合っていても暦として存在しない日付は拒否する。"""
+    with pytest.raises(KernelValueError, match="invalid UtcTime literal"):
+        UtcTime.parse("2026-02-30T12:00:00Z")
+
+
 @pytest.mark.parametrize(
     "moment",
     [
@@ -230,10 +299,53 @@ def test_phase_set_accepts_a_bijective_set() -> None:
 
 
 def test_phase_set_ordered_keeps_every_entry() -> None:
-    """重複を構築時に拒否するので、`ordered()` は並べ替えるだけで要素を捨てない。"""
+    """重複を構築時に拒否するので、`ordered()` は要素を捨てない。"""
     phases = PhaseSet((PhaseRank(2, "TRACE"), PhaseRank(0, "ADMISSION"), PhaseRank(1, "EXECUTION")))
     assert len(phases.ordered()) == len(phases.phases)
     assert [phase.rank for phase in phases.ordered()] == [0, 1, 2]
+
+
+# --- PhaseSet の正規化（D02 §3.3 v1.2）--------------------------------------
+#
+# 構築時に `rank` の昇順へ正規化して保持するので、同じフェーズ集合を別の並び順で書いても
+# 同値性・ハッシュ・正規化エンコード・manifest の記録内容が変わらない。
+
+_UNSORTED = (PhaseRank(2, "TRACE"), PhaseRank(0, "ADMISSION"), PhaseRank(1, "EXECUTION"))
+_SORTED = (PhaseRank(0, "ADMISSION"), PhaseRank(1, "EXECUTION"), PhaseRank(2, "TRACE"))
+
+
+def test_phase_set_stores_its_phases_in_rank_order() -> None:
+    assert PhaseSet(_UNSORTED).phases == _SORTED
+    assert PhaseSet(_SORTED).phases == _SORTED
+
+
+def test_phase_set_equality_does_not_depend_on_input_order() -> None:
+    assert PhaseSet(_UNSORTED) == PhaseSet(_SORTED)
+
+
+def test_phase_set_hash_does_not_depend_on_input_order() -> None:
+    assert hash(PhaseSet(_UNSORTED)) == hash(PhaseSet(_SORTED))
+    assert len({PhaseSet(_UNSORTED), PhaseSet(_SORTED)}) == 1
+
+
+def test_phase_set_canonical_encoding_does_not_depend_on_input_order() -> None:
+    """正規化エンコードが一致しないと、同じ集合の run が別のダイジェストになる。"""
+    from odyssey_fx.common import canonical
+
+    assert canonical.encode(PhaseSet(_UNSORTED)) == canonical.encode(PhaseSet(_SORTED))
+    assert canonical.digest(PhaseSet(_UNSORTED)) == canonical.digest(PhaseSet(_SORTED))
+
+
+def test_phase_set_ordered_returns_the_normalized_tuple() -> None:
+    phases = PhaseSet(_UNSORTED)
+    assert phases.ordered() == phases.phases
+
+
+def test_phase_set_stays_immutable_after_normalization() -> None:
+    """正規化に `object.__setattr__` を使っても、構築後の代入は拒否される。"""
+    phases = PhaseSet(_UNSORTED)
+    with pytest.raises((AttributeError, TypeError)):
+        phases.phases = _SORTED  # type: ignore[misc]
 
 
 def test_phase_set_rejects_one_rank_with_two_names() -> None:
