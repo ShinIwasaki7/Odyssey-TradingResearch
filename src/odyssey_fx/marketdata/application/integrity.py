@@ -188,6 +188,77 @@ def _dst_findings(target: SeriesUnderCheck, calendar: TradingCalendar) -> list[C
     return findings
 
 
+def _source_transition_findings(target: SeriesUnderCheck) -> list[CheckResult]:
+    """出所（`source` 列）が切り替わる点を記録する（`SOURCE_TRANSITION`、INFO）。
+
+    同じ系列の中で HistData 由来と Dukascopy 由来が入れ替わる境目を残す。価格そのものには
+    影響しないが、後から「この期間の値はどちらの出所か」を追えるようにするための記録で、
+    受入れの合否には影響しない（D03 §3.9 の INFO）。
+
+    報告する区間は「切替の直前の足の開始から、切替後の足の終了まで」。境目がどの2本の間に
+    あるかが区間だけで分かる形にしている。
+    """
+    if len(target.bars) < 2:
+        return []
+    ordered = sorted(target.bars, key=lambda bar: bar.bar_start.value)
+    findings: list[CheckResult] = []
+    for earlier, later in zip(ordered, ordered[1:], strict=False):
+        if earlier.provenance.kind is later.provenance.kind:
+            continue
+        findings.append(
+            CheckResult.create(
+                CheckKind.SOURCE_TRANSITION,
+                target.series,
+                Interval(start=earlier.bar_start, end=later.bar_end),
+                detail={
+                    "from": earlier.provenance.kind.value,
+                    "to": later.provenance.kind.value,
+                },
+            )
+        )
+    return findings
+
+
+def _zero_volume_findings(target: SeriesUnderCheck) -> list[CheckResult]:
+    """出来高 0 が連続する区間を記録する（`ZERO_VOLUME_SPAN`、INFO）。
+
+    HistData 由来の出来高は 0 であり、これは真の市場出来高ではない（D03 §2）。0 を出来高
+    として解釈してしまわないよう、連続する区間を1件にまとめて記録する。受入れの合否には
+    影響しない（D03 §3.9 の INFO）。
+
+    報告する詳細は足の本数だけで、価格は含めない（D03 §3.9）。
+    """
+    if not target.bars:
+        return []
+    ordered = sorted(target.bars, key=lambda bar: bar.bar_start.value)
+
+    # 連続する 0 出来高の足を (開始, 終了, 本数) の区間へまとめてから報告する。
+    spans: list[tuple[UtcTime, UtcTime, int]] = []
+    current: tuple[UtcTime, UtcTime, int] | None = None
+    for bar in ordered:
+        if bar.volume != 0:
+            if current is not None:
+                spans.append(current)
+                current = None
+            continue
+        if current is None:
+            current = (bar.bar_start, bar.bar_end, 1)
+        else:
+            current = (current[0], bar.bar_end, current[2] + 1)
+    if current is not None:
+        spans.append(current)
+
+    return [
+        CheckResult.create(
+            CheckKind.ZERO_VOLUME_SPAN,
+            target.series,
+            Interval(start=start, end=end),
+            detail={"bars": str(count)},
+        )
+        for start, end, count in spans
+    ]
+
+
 def check_series(target: SeriesUnderCheck, calendar: TradingCalendar) -> tuple[CheckResult, ...]:
     """1系列の構造検査とカレンダー照合を行う（D03 §4 の 4〜5）。"""
     if not isinstance(calendar, TradingCalendar):
@@ -198,6 +269,8 @@ def check_series(target: SeriesUnderCheck, calendar: TradingCalendar) -> tuple[C
     findings.extend(_alignment_findings(target))
     findings.extend(_calendar_findings(target, calendar))
     findings.extend(_dst_findings(target, calendar))
+    findings.extend(_source_transition_findings(target))
+    findings.extend(_zero_volume_findings(target))
     return tuple(findings)
 
 

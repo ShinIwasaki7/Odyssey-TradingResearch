@@ -8,7 +8,9 @@ version = "0.0.1"
 description = "FX strategy research platform (strategy / backtest / evaluation foundations)"
 requires-python = ">=3.12,<3.13"
 readme = "README.md"
-# ランタイム依存はなし。必要な依存は後続の設計文書（D01〜）の承認後に追加する。
+# ランタイム依存は、それを使う設計文書の承認後に追加する（D01 §5・§12）。
+# polars: 原 CSV の読込と snapshot の Parquet 入出力に使う表形式ライブラリ（ADR-0025）。
+# 使用は marketdata.adapters / evaluation.adapters / app に限り、契約 F5a が機械検査する。
 dependencies = [
     "polars>=1.44.2",
 ]

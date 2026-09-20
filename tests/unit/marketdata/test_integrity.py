@@ -22,7 +22,7 @@ from odyssey_fx.marketdata.application.integrity import (
     check_series,
     severity_counts,
 )
-from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.bar import Bar, ProvenanceKind
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
@@ -116,6 +116,128 @@ def test_a_misaligned_symbol_is_reported_across_series() -> None:
     )
     report = check_all([_target(reference_bars), other_target], CALENDAR)
     assert CheckKind.CROSS_SYMBOL_MISALIGNMENT in _kinds(report.results)
+
+
+# --- 出所の切替と 0 出来高（D03 §3.9 の INFO）-------------------------------
+
+
+def _bar_at(hours: int, *, volume: str = "1000", source: ProvenanceKind) -> Bar:
+    """検査対象の足を1本作る（出所と出来高を指定できる）。"""
+    start = UtcTime.parse("2026-01-14T00:00:00Z") + timedelta(hours=hours)
+    interval = Interval(start=start, end=start + timedelta(hours=1))
+    return market.make_bar(
+        HOURLY, interval, volume=volume, provenance_kind=source, source_ref="a.csv"
+    )
+
+
+def test_a_source_change_is_recorded_as_an_information_finding() -> None:
+    """出所（`source` 列）の切替点を記録する（D03 §3.9 の SOURCE_TRANSITION）。"""
+    bars = [
+        _bar_at(0, source=ProvenanceKind.HISTDATA),
+        _bar_at(1, source=ProvenanceKind.HISTDATA),
+        _bar_at(2, source=ProvenanceKind.DUKASCOPY),
+        _bar_at(3, source=ProvenanceKind.DUKASCOPY),
+    ]
+    transitions = [
+        result
+        for result in check_series(_target(bars), CALENDAR)
+        if result.kind is CheckKind.SOURCE_TRANSITION
+    ]
+    assert len(transitions) == 1
+    assert transitions[0].severity is Severity.INFO
+    assert dict(transitions[0].detail) == {"from": "histdata", "to": "dukascopy"}
+    # 区間は切替の直前の足の開始から、切替後の足の終了まで。
+    assert transitions[0].interval.start == bars[1].bar_start
+    assert transitions[0].interval.end == bars[2].bar_end
+
+
+def test_a_single_source_produces_no_transition_finding() -> None:
+    bars = [_bar_at(index, source=ProvenanceKind.HISTDATA) for index in range(4)]
+    assert not [
+        result
+        for result in check_series(_target(bars), CALENDAR)
+        if result.kind is CheckKind.SOURCE_TRANSITION
+    ]
+
+
+def test_consecutive_zero_volume_bars_are_reported_as_one_span() -> None:
+    """0 出来高の連続区間は1件にまとめる（D03 §3.9 の ZERO_VOLUME_SPAN）。
+
+    HistData 由来の出来高は 0 であり、真の市場出来高ではない（D03 §2）。
+    """
+    bars = [
+        _bar_at(0, volume="1000", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(1, volume="0", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(2, volume="0", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(3, volume="0", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(4, volume="1000", source=ProvenanceKind.DUKASCOPY),
+    ]
+    spans = [
+        result
+        for result in check_series(_target(bars), CALENDAR)
+        if result.kind is CheckKind.ZERO_VOLUME_SPAN
+    ]
+    assert len(spans) == 1
+    assert spans[0].severity is Severity.INFO
+    assert dict(spans[0].detail) == {"bars": "3"}
+    assert spans[0].interval.start == bars[1].bar_start
+    assert spans[0].interval.end == bars[3].bar_end
+
+
+def test_separate_zero_volume_runs_are_reported_separately() -> None:
+    bars = [
+        _bar_at(0, volume="0", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(1, volume="1000", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(2, volume="0", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(3, volume="0", source=ProvenanceKind.DUKASCOPY),
+    ]
+    spans = [
+        result
+        for result in check_series(_target(bars), CALENDAR)
+        if result.kind is CheckKind.ZERO_VOLUME_SPAN
+    ]
+    assert [dict(span.detail)["bars"] for span in spans] == ["1", "2"]
+
+
+def test_a_zero_volume_span_reaching_the_end_is_reported() -> None:
+    """末尾まで 0 が続く場合も報告する（区切りが来ないまま終わるケース）。"""
+    bars = [
+        _bar_at(0, volume="1000", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(1, volume="0", source=ProvenanceKind.DUKASCOPY),
+        _bar_at(2, volume="0", source=ProvenanceKind.DUKASCOPY),
+    ]
+    spans = [
+        result
+        for result in check_series(_target(bars), CALENDAR)
+        if result.kind is CheckKind.ZERO_VOLUME_SPAN
+    ]
+    assert len(spans) == 1
+    assert dict(spans[0].detail) == {"bars": "2"}
+
+
+def test_the_information_findings_never_fail_the_acceptance() -> None:
+    """出所の切替も 0 出来高も記録のみ。受入れの合否には影響しない（D03 §3.9）。"""
+    bars = [
+        _bar_at(0, volume="0", source=ProvenanceKind.HISTDATA),
+        _bar_at(1, volume="1000", source=ProvenanceKind.DUKASCOPY),
+    ]
+    report = check_all([_target(bars)], CALENDAR)
+    kinds = _kinds(report.results)
+    assert CheckKind.SOURCE_TRANSITION in kinds
+    assert CheckKind.ZERO_VOLUME_SPAN in kinds
+    assert not report.has_errors()
+
+
+def test_the_information_findings_carry_no_prices() -> None:
+    """封印期間の情報漏れを防ぐため、詳細に価格を入れない（D03 §3.9）。"""
+    bars = [
+        _bar_at(0, volume="0", source=ProvenanceKind.HISTDATA),
+        _bar_at(1, volume="1000", source=ProvenanceKind.DUKASCOPY),
+    ]
+    for result in check_all([_target(bars)], CALENDAR).results:
+        for key, value in result.detail:
+            assert isinstance(key, str) and isinstance(value, str)
+            assert "150" not in value, "価格らしい数値が詳細に含まれてはいけない"
 
 
 # --- 報告の正規順序（D03 §3.7.1）-------------------------------------------
