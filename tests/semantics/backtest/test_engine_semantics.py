@@ -961,6 +961,55 @@ def test_a_scheduled_candidate_bar_that_never_arrives_fails_the_run() -> None:
     assert output.rows(TraceTable.FILLS) == ()
 
 
+def test_a_missing_candidate_bar_is_found_before_the_order_expires() -> None:
+    """D06 §10.4: 欠損の検査は**期限切れより前**に行う。
+
+    候補の足が無いまま期限を過ぎ、次の公開イベントが期限より後にしか来ない場合、期限切れを
+    先に処理すると注文が普通の `EXPIRED` として畳まれ、**データの欠損が記録から消える**。
+
+    2本見送る設定で候補を `[09:30,09:45)` にし（有効時間は40分なので期限は 09:40）、候補の
+    足と手前の `[09:15,09:30)` を実データから抜く。候補の時刻と期限のあいだに公開イベントが
+    1件も無くなるので、次の判断時点は 09:45 になり、そこでは**期限切れも欠損も同時に成立
+    する**。期限切れを先に処理すると欠損が消える。
+    """
+    full = execution_bars()
+    # full[0]=[08:45,09:00)、full[1]=[09:00,09:15)、full[2]=[09:15,09:30)、
+    # full[3]=[09:30,09:45)、full[4]=[09:45,10:00)。候補とその手前を抜く。
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=full[:2] + full[4:],
+        execution_policy=replace(
+            EXECUTION_POLICY, entry_delay_bars=2, entry_valid_for=timedelta(minutes=40)
+        ),
+        run_interval=RUN_INTERVAL,
+    )
+
+    assert output.result.status is RunStatus.FAILED_DATA_ERROR
+    assert output.rows(TraceTable.FILLS) == ()
+
+
+def test_a_missing_candidate_bar_is_found_at_the_end_of_the_run() -> None:
+    """D06 §10.4: 末尾の判断時点でも、run_end より前の候補の欠損は実行失敗にする。
+
+    末尾で検査を飛ばすと、最後の公開イベントと run_end のあいだで欠けた足が検査されない
+    まま `RUN_END` の取消で終わる。有効時間を長くして期限切れを外し、末尾の判断時点だけが
+    残る形にしている。候補が run_end **ちょうど**の注文は末尾の取消で終わるので、対象は
+    run_end より前の候補だけである（D06 §10.1）。
+    """
+    full = execution_bars()
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=full[:2] + full[4:],
+        execution_policy=replace(
+            EXECUTION_POLICY, entry_delay_bars=2, entry_valid_for=timedelta(hours=3)
+        ),
+        run_interval=Interval(start=DECISION_TIME, end=UtcTime.from_components(2026, 1, 6, 9, 45)),
+    )
+
+    assert output.result.status is RunStatus.FAILED_DATA_ERROR
+    assert output.rows(TraceTable.FILLS) == ()
+
+
 def test_a_failed_run_records_the_ledger_state_after_the_cancellations() -> None:
     """D06 §8.1・§10.4: 取消で予約が解放された状態を最後の台帳 snapshot に残す。
 

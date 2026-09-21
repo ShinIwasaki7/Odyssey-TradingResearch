@@ -625,6 +625,15 @@ class BacktestEngine:
         # 失敗したときの取消も同じ時計で刻む（`_fail` が読む）。
         self._clock = clock
 
+        # 予定した候補の足が来ないまま過ぎた注文は、**期限切れ（rank 2）より前に**見つける
+        # （D06 §10.4）。期限の後に検査すると、候補の足が無いまま期限を過ぎた注文が普通の
+        # `EXPIRED` として畳まれ、データの欠損が「取引が成立しなかっただけ」として静かに
+        # 通ってしまう。末尾の判断時点でも行う（末尾だけ飛ばすと、最後の公開イベントと
+        # run_end のあいだで欠けた足が検査されないまま `RUN_END` の取消で終わる）。
+        self._require_scheduled_opens_arrived(
+            decision_time, events.execution_open, is_run_end=is_run_end
+        )
+
         self._phase_bar_complete(clock, events)
         self._phase_ledger_update(clock)
         self._phase_order_expiry(clock)
@@ -640,7 +649,6 @@ class BacktestEngine:
 
         opened: list[RuntimeEventNotice] = []
         if not is_run_end:
-            self._require_scheduled_opens_arrived(decision_time, events.execution_open)
             if events.execution_open is not None:
                 opened = self._phase_execution_open(clock, events.execution_open)
 
@@ -1136,7 +1144,7 @@ class BacktestEngine:
     # --- rank 11: 始値処理 ---------------------------------------------------
 
     def _require_scheduled_opens_arrived(
-        self, decision_time: UtcTime, arriving: BarKey | None
+        self, decision_time: UtcTime, arriving: BarKey | None, *, is_run_end: bool
     ) -> None:
         """予定した候補の足が実データに無いまま過ぎたら実行失敗にする（D06 §10.4）。
 
@@ -1145,12 +1153,22 @@ class BacktestEngine:
         の「始値が無い」検査には**到達しない**。放っておくと注文は期限切れか末尾の取消で
         終わり、データの欠損が「取引が成立しなかっただけ」として静かに通ってしまう。
         欠損は実行失敗であり（D06 §10.4）、成果物を正常完走と同じ扱いにしない。
+
+        **判断時点の先頭で呼ぶ**。期限切れ（rank 2）や末尾の取消より後に検査すると、検査の
+        対象になるはずの注文が先に畳まれて欠損が見えなくなる。
+
+        末尾の判断時点では始値を実行しない（D06 §10.1）ので、候補が run_end **ちょうど**の
+        注文は欠損ではなく末尾の取消（`RUN_END`）で終わる。末尾で欠損として扱うのは、候補が
+        run_end より**前**なのに `PENDING` のまま残っている注文だけである。
         """
         for order in self._context.ledger.pending_orders():
             eligibility = order.execution.eligibility
             if not isinstance(eligibility, ScheduledOpen):
                 continue
-            if eligibility.open_time > decision_time:
+            if is_run_end:
+                if eligibility.open_time >= decision_time:
+                    continue
+            elif eligibility.open_time > decision_time:
                 continue
             if arriving is not None and eligibility.bar_key == arriving:
                 continue
