@@ -23,8 +23,11 @@ __all__ = [
     "UtcTime",
 ]
 
-#: `PhaseRank.name` に許す字種（D02 §3.3）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
-_PHASE_NAME_PATTERN: Final = re.compile(r"^[A-Z_]+$")
+#: `PhaseRank.name` に許す字種（D02 §3.3 v1.5）。照合は `fullmatch`（`$` は末尾の改行を許すため）。
+#: 先頭は英大文字、2文字目以降は英大文字・数字・下線を許す。D06 §4.1（Q1 決定）が確定した
+#: フェーズ名 `P1_FEATURE`〜`P5_ORDER_INTENT` をそのままフェーズ集合に載せるための緩和であり、
+#: 数字で始まる名前と小文字は引き続き拒否する。
+_PHASE_NAME_PATTERN: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 #: `UtcTime.__str__` の秒までの書式（D02 §3.1）。
 _SECONDS_FORMAT: Final = "%Y-%m-%dT%H:%M:%S"
@@ -266,7 +269,9 @@ class PhaseRank:
         if self.rank < 0:
             raise KernelValueError(f"PhaseRank.rank must be >= 0, got {self.rank}")
         if not isinstance(self.name, str) or not _PHASE_NAME_PATTERN.fullmatch(self.name):
-            raise KernelValueError(f"PhaseRank.name must match ^[A-Z_]+$, got {self.name!r}")
+            raise KernelValueError(
+                f"PhaseRank.name must match ^[A-Z][A-Z0-9_]*$, got {self.name!r}"
+            )
 
     def __str__(self) -> str:
         return self.name

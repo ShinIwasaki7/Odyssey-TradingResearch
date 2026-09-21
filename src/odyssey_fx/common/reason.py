@@ -52,12 +52,31 @@ class ReasonCode(Enum):
     RUN_END = "RUN_END"
     #: 完全性検査・実行失敗、失敗に伴う残存注文の CANCELED。
     DATA_ERROR = "DATA_ERROR"
-    #: 期限による注文の EXPIRED。
+    #: 期限による注文の EXPIRED、期限切れによる取引機会の終端（上位設計書 §4.5）。
     EXPIRED = "EXPIRED"
     #: 週末持ち越し禁止による受付前拒否。
     CARRY_NOT_ALLOWED = "CARRY_NOT_ALLOWED"
     #: 閉鎖済み建玉への要求の拒否、保護決済後の残存決済注文の取消。
     POSITION_CLOSED = "POSITION_CLOSED"
+    #: 継続成立を要求した条件が崩れたことによる取引機会の終端（ADR-0031）。
+    MARKET_STATE_INVALIDATED = "MARKET_STATE_INVALIDATED"
+    #: 新しい Trigger を優先する設定による取引機会の終端（ADR-0032）。
+    SUPERSEDED = "SUPERSEDED"
+    #: **別の**機会の注文が受け付けられたことによる取引機会の終端（ADR-0032）。
+    CLOSED_BY_ORDER_ACCEPTANCE = "CLOSED_BY_ORDER_ACCEPTANCE"
+    #: 同時保持上限に達していたことによる取引機会の終端（ADR-0032 補足3）。
+    #: 発火は取引機会として記録したうえで有効にしない（D04 §10.3）。
+    CONCURRENCY_LIMIT_REACHED = "CONCURRENCY_LIMIT_REACHED"
+    #: **自身の**発注試行が受付前の審査で拒否されたことによる取引機会の終端（ADR-0032 補足4）。
+    ORDER_ATTEMPT_REJECTED = "ORDER_ATTEMPT_REJECTED"
+    #: **自身の**注文が受け付けられ、役目を終えたことによる取引機会の終端（ADR-0032 補足4）。
+    FULFILLED_BY_ORDER_ACCEPTANCE = "FULFILLED_BY_ORDER_ACCEPTANCE"
+    #: 同じ系列の新しい足による評価要求の追い越し（ADR-0033 で改名）。
+    #: 取引機会の `SUPERSEDED` と混同しない。意味論は D05 v0.2（段階3）。
+    REQUEST_SUPERSEDED = "REQUEST_SUPERSEDED"
+    #: 保護水準の置き方が宣言として不正であることによる受付前拒否（D06 の Q6 決定）。
+    #: 口座のリスク上限の違反である `RISK` とは原因も対処も異なる。
+    PROTECTION_INVALID = "PROTECTION_INVALID"
 
 
 class MissingInputReason(Enum):
