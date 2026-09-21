@@ -802,14 +802,22 @@ class BacktestEngine:
             scheduled_closes=closes,
         )
         # 第1回の `step` は rank 4〜9 を担う。失敗したらその最後のフェーズで刻む。
-        return self._step(batch, PHASE_P5_ORDER_INTENT)
+        return self._step(batch, PHASE_P5_ORDER_INTENT, clock)
 
     def _interval_of(self, bar_key: BarKey, bar_end: UtcTime) -> Interval:
         """足の実際の区間（名目の長さから再計算しない、D06 §4.3）。"""
         return Interval(start=bar_key.bar_start, end=bar_end)
 
-    def _step(self, batch: PublicationBatch, phase: str) -> RuntimeStepResult:
-        """戦略ランタイムを1回呼び、記録を判断履歴へ移す（D06 §4.2）。"""
+    def _step(self, batch: PublicationBatch, phase: str, clock: PhaseClock) -> RuntimeStepResult:
+        """戦略ランタイムを1回呼び、記録を判断履歴へ移す（D06 §4.2）。
+
+        取引機会の遷移が持つ処理点は、**エンジンの時計で番号を振り直す**（D02 §3.3）。
+        ランタイムは自分の `step` の中で 0 から数えるため、そのまま残すとエンジンが同じ
+        フェーズで刻んだ記録（受付の判断、保護水準の適用、台帳 snapshot）と
+        `(時刻, フェーズ, 通し番号)` が重なり、判断履歴を処理点の順に読み直したときに
+        どちらが先だったのかが決まらない。フェーズはランタイムが選んだものをそのまま使い、
+        番号だけを engine の採番列へ載せ替える。
+        """
         result = self._runtime.step(batch)
         for record in self._sink.drain():
             # 出力から評価へ辿れるようにしておく（根拠記録の `evaluation_ids`）。
@@ -819,7 +827,10 @@ class BacktestEngine:
             self._emit(TraceTable.EVALUATIONS, evaluation)
         for transition in result.transitions:
             self._opportunities.add(transition.opportunity_id)
-            self._emit(TraceTable.OPPORTUNITY_TRANSITIONS, transition)
+            self._emit(
+                TraceTable.OPPORTUNITY_TRANSITIONS,
+                replace(transition, at=clock.next(transition.phase.name)),
+            )
         if any(isinstance(record.outcome, Failed) for record in result.evaluations):
             # 失敗した `step` の提案と管理要求は一切使わない（D06 §4.2）。
             failed = next(
@@ -1648,7 +1659,7 @@ class BacktestEngine:
             runtime_events=tuple(opened),
             admissions=tuple(notices),
         )
-        result = self._step(batch, PHASE_POST_FILL_EVALUATION)
+        result = self._step(batch, PHASE_POST_FILL_EVALUATION, clock)
         # 同じ判断時点で同じ建玉への決済要求が返っていれば、決済を優先し、保護水準の更新は
         # 理由を記録して破棄する（上位設計書 §4.7.6、D06 §8.3）。理由は `SUPERSEDED_BY_EXIT`
         # （D02 §8.1、上位設計書 §4.7.14）。建玉が決済される以上、その更新は一度も有効に

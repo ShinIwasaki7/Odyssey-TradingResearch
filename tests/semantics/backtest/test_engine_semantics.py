@@ -7,6 +7,7 @@ D06 §11 が挙げる意味論テストのうち、判断時点を実際に進�
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 from odyssey_fx.backtest.domain.orders import OrderStatus
@@ -945,11 +946,13 @@ def test_a_scheduled_candidate_bar_that_never_arrives_fails_the_run() -> None:
     「取引が成立しなかっただけ」として静かに通る**。
     """
     full = execution_bars()
-    # `[09:00,09:15)` が候補の始値。予定表には載っているが、実データから抜く。
-    without_candidate = full[:1] + full[2:]
+    # 1本見送る設定にすると候補は `[09:15,09:30)` になる。予定表には載っているが、
+    # 実データから抜く。run 区間の先頭の足（実行前の能力検査が見る足）は残す。
+    without_candidate = full[:2] + full[3:]
     output = run_backtest(
         signal_bars=signal_bars(),
         execution_bars=without_candidate,
+        execution_policy=replace(EXECUTION_POLICY, entry_delay_bars=1),
         run_interval=RUN_INTERVAL,
     )
 
@@ -967,7 +970,8 @@ def test_a_failed_run_records_the_ledger_state_after_the_cancellations() -> None
     full = execution_bars()
     output = run_backtest(
         signal_bars=signal_bars(),
-        execution_bars=full[:1] + full[2:],
+        execution_bars=full[:2] + full[3:],
+        execution_policy=replace(EXECUTION_POLICY, entry_delay_bars=1),
         run_interval=RUN_INTERVAL,
     )
 
@@ -1015,3 +1019,79 @@ def test_the_end_of_run_rule_wins_over_the_close_collision() -> None:
     application = applications[0].parts[0][2]
     assert application.applied is False  # type: ignore[attr-defined]
     assert application.reason.code is ReasonCode.RUN_END  # type: ignore[attr-defined]
+
+
+def test_a_missing_expected_bar_on_an_executed_series_is_not_runnable() -> None:
+    """D06 §10.5 の手順2: 執行に使う系列の足の欠落は、実行前に止める。
+
+    完全性検査は「カレンダー上存在すべき足の欠落」を**警告**として分類する（受入れの段では
+    人間が休場かデータ欠損かを分けるため、D03 §3.9）。重大度だけを見ていると、欠落を
+    知りながら実行可能と判定し、建玉が開いたまま欠落区間の高値・安値が判定されず、古い
+    評価価格のまま run が完走してしまう。
+    """
+    from odyssey_fx.backtest.application.run_backtest import capability_report
+    from odyssey_fx.marketdata.domain.integrity import (
+        CheckKind,
+        CheckResult,
+        IntegrityReport,
+        Severity,
+    )
+    from tests.fixtures.backtest.harness import EXECUTION_SERIES, SYMBOL_SPEC
+
+    compiled = compiled_strategy()
+    gap = CheckResult(
+        kind=CheckKind.MISSING_EXPECTED_BAR,
+        severity=Severity.WARN,
+        series=EXECUTION_SERIES,
+        interval=Interval(
+            start=UtcTime.from_components(2026, 1, 6, 10, 0),
+            end=UtcTime.from_components(2026, 1, 6, 10, 15),
+        ),
+    )
+    report = capability_report(
+        _config(compiled),
+        compiled,
+        integrity=IntegrityReport(results=(gap,)),
+        execution_policy=EXECUTION_POLICY,
+        cost_model=COST_MODEL,
+        symbol_spec=SYMBOL_SPEC,
+    )
+
+    assert report.integrity.has_errors() is False, "欠落は警告であって重大な違反ではない"
+    assert report.runnable is False
+    assert any("missing expected bars" in line for line in report.diagnostics)
+
+
+def test_the_runtime_transitions_get_their_own_processing_points() -> None:
+    """D02 §3.3: ランタイムが返す処理点を、エンジンの時計で番号を振り直す。
+
+    ランタイムは自分の `step` の中で 0 から数えるので、そのまま残すと同じフェーズで
+    エンジンが刻んだ記録（保護水準の適用など）と `(時刻, フェーズ, 通し番号)` が重なり、
+    どちらが先だったのかが記録から決まらない。
+    """
+    from odyssey_fx.backtest.trace.recorder import CompositeRow
+    from odyssey_fx.strategy.runtime.opportunities import OpportunityTransition
+
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+    )
+
+    transitions = [
+        row
+        for row in output.rows(TraceTable.OPPORTUNITY_TRANSITIONS)
+        if isinstance(row, OpportunityTransition)
+    ]
+    applications = [
+        row
+        for row in output.rows(TraceTable.MANAGEMENT_APPLICATIONS)
+        if isinstance(row, CompositeRow)
+    ]
+    assert transitions, "取引機会の遷移が1件も無ければこの検査は意味を持たない"
+    assert applications, "保護水準の適用が1件も無ければこの検査は意味を持たない"
+
+    points = [transition.at for transition in transitions]
+    points.extend(row.parts[0][2].at for row in applications)  # type: ignore[attr-defined]
+    keys = [(point.time, point.phase.rank, point.sequence) for point in points]
+    assert len(set(keys)) == len(keys), "同じ処理点が2つ以上の記録に付いている"

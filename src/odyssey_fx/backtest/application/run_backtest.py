@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal, localcontext
 
 from odyssey_fx.backtest.application.ports import (
@@ -50,13 +51,32 @@ from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDige
 from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.timeframe import TimeframeRef
-from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.runtime.ports import StrategyRuntime
 
 __all__ = ["RunBacktest", "capability_report"]
 
 _ZERO = decimal_from_int(0)
+
+
+#: 「判断時刻と同じ時刻に始まる足も候補に含める」ための最小の後戻り（`engine.loop` と同じ）。
+_TINY = timedelta(microseconds=1)
+
+
+def _first_scheduled_open_is_missing(config: RunConfig, series: ExecutionSeries) -> bool:
+    """run 区間の最初の予定の執行足が実データに無いか（D06 §10.5）。
+
+    予定はカレンダーと時間足定義から決まり、実データを見ない（D03 §6.3）。両者を突き合わ
+    せることで、系列が空・run 区間の先頭が丸ごと欠けている、といった「完全性検査に1件も
+    載らない欠落」を実行前に捕まえる。
+    """
+    first = series.next_scheduled_open_after(config.run_interval.start - _TINY)
+    if first is None or first.bar_start >= config.run_interval.end:
+        # run 区間に予定の執行足が1本も無い場合（区間全体が休場のときなど）は、実行する
+        # ものが無いだけで欠落ではない。受け付けた注文は末尾で取り消される（D06 §5.3）。
+        return False
+    return series.open_of(first) is None
 
 
 def capability_report(
@@ -68,6 +88,7 @@ def capability_report(
     cost_model: CostModel,
     symbol_spec: SymbolSpec,
     intrabar_series: IntrabarSeries | None = None,
+    execution_series: ExecutionSeries | None = None,
 ) -> DataCapabilityReport:
     """実行前のデータ能力検査（D06 §10.5）。合格・不合格のどちらでも全体を保存する。"""
     reasons: list[str] = []
@@ -86,6 +107,30 @@ def capability_report(
         reasons.append("the first level of the resolution hierarchy is not the execution series")
     if integrity.has_errors():
         reasons.append("the snapshot integrity report contains errors")
+    # 執行に使う系列（執行系列と解像度階層の各段）の足が1本でも欠けていれば実行できない。
+    # 完全性検査は「カレンダー上存在すべき足の欠落」を**警告**として分類するが（受入れの
+    # 段では人間が休場かデータ欠損かを分ける、D03 §3.9）、執行モデルはそれらの系列の足を
+    # 1本ずつ読んで保護水準の到達を決めるので、欠落は run を続けられる状態ではない。
+    # 重大度だけを見ていると、欠落を知りながら実行可能と判定し、建玉が開いたまま欠落区間の
+    # 高値・安値が判定されず、古い評価価格のまま run が完走してしまう（D06 §10.5 の手順2）。
+    executed_series = {config.execution_series, *execution_policy.resolution_hierarchy.levels}
+    missing = tuple(
+        result
+        for result in integrity.results
+        if result.kind is CheckKind.MISSING_EXPECTED_BAR and result.series in executed_series
+    )
+    if missing:
+        reasons.append(
+            "the snapshot is missing expected bars on the series the execution model reads:"
+            f" {', '.join(sorted({str(result.series) for result in missing}))}"
+        )
+    if execution_series is not None and _first_scheduled_open_is_missing(config, execution_series):
+        # 系列そのものが空でも、完全性検査に欠落が1件も載らないことがある（比べる相手の
+        # 足が無いため）。run 区間の最初の予定の足が実データに無ければ、そもそも1本も
+        # 執行できない。
+        reasons.append(
+            "the execution series has no bar at the first scheduled open of the run interval"
+        )
     if config.execution_series.symbol.quote != config.account.currency:
         # 段階2 は恒等換算だけを通す（D06 §8.5）。決済通貨と口座通貨が違う組み合わせは、
         # 換算の経路が無いまま予約額・損益・費用を口座通貨として記録してしまうので、
@@ -240,6 +285,7 @@ class RunBacktest:
             cost_model=self._cost_model,
             symbol_spec=self._symbol_spec,
             intrabar_series=self._intrabar,
+            execution_series=self._execution_series,
         )
         engine = BacktestEngine(
             config=config,
