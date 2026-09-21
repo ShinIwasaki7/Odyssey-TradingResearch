@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from odyssey_fx.backtest.domain.orders import OrderStatus
+from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.run_end import RUN_END_STEPS
 from odyssey_fx.backtest.portfolio.ledger import LedgerSnapshot
 from odyssey_fx.backtest.portfolio.mtm import unrealized
@@ -18,6 +19,7 @@ from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.money import Money, decimal_from_str
 from odyssey_fx.common.reason import ReasonCode
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from tests.fixtures.backtest.harness import COST_MODEL, JPY, run_backtest
 from tests.fixtures.backtest.paths import (
     DECISION_TIME,
@@ -201,3 +203,101 @@ def test_the_decision_points_stop_at_the_run_end() -> None:
         not (row.at.time == end and row.at.phase.name == "EXECUTION_OPEN") for row in snapshots
     )
     assert end - DECISION_TIME == timedelta(minutes=15)
+
+
+def test_a_declared_child_level_without_a_series_blocks_the_run() -> None:
+    """ADR-0030: 下位足を宣言したのに走査できなければ実行不可（親足へ落とさない）。"""
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.application.run_backtest import capability_report
+    from odyssey_fx.backtest.domain.policies import ResolutionHierarchy
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+    from odyssey_fx.marketdata.domain.series import PriceBasis
+    from tests.fixtures.backtest.harness import (
+        EXECUTION_POLICY,
+        EXECUTION_SERIES,
+        SYMBOL_SPEC,
+        compiled_strategy,
+    )
+    from tests.fixtures.synthetic.market import USDJPY, series
+
+    child = series(USDJPY, "5m", PriceBasis.BID)
+    policy = replace(
+        EXECUTION_POLICY,
+        resolution_hierarchy=ResolutionHierarchy(levels=(EXECUTION_SERIES, child)),
+    )
+    compiled = compiled_strategy()
+    report = capability_report(
+        _config(compiled),
+        compiled,
+        integrity=IntegrityReport(),
+        execution_policy=policy,
+        symbol_spec=SYMBOL_SPEC,
+        intrabar_series=None,
+    )
+
+    assert report.runnable is False
+    assert report.hierarchy_checks == ()
+
+
+def test_the_hierarchy_checks_run_against_the_parent_bars() -> None:
+    """D06 §7.4 の検査1〜4: 親足を渡さないと1件も走らない（見逃しになる）。"""
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.application.run_backtest import capability_report
+    from odyssey_fx.backtest.domain.policies import ResolutionHierarchy
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+    from odyssey_fx.marketdata.domain.series import PriceBasis
+    from tests.fixtures.backtest.harness import (
+        EXECUTION_POLICY,
+        EXECUTION_SERIES,
+        SYMBOL_SPEC,
+        FakeIntrabarSeries,
+        compiled_strategy,
+    )
+    from tests.fixtures.synthetic.market import USDJPY, series
+
+    child = series(USDJPY, "5m", PriceBasis.BID)
+    policy = replace(
+        EXECUTION_POLICY,
+        resolution_hierarchy=ResolutionHierarchy(levels=(EXECUTION_SERIES, child)),
+    )
+    # 子足を1本も持たない系列を渡すと、被覆の検査が落ちる。
+    intrabar = FakeIntrabarSeries({EXECUTION_SERIES: execution_bars(), child: ()})
+    compiled = compiled_strategy()
+    report = capability_report(
+        _config(compiled),
+        compiled,
+        integrity=IntegrityReport(),
+        execution_policy=policy,
+        symbol_spec=SYMBOL_SPEC,
+        intrabar_series=intrabar,
+    )
+
+    assert report.hierarchy_checks != ()
+    assert any(check.check == "coverage" and not check.passed for check in report.hierarchy_checks)
+    assert report.runnable is False
+
+
+def _config(compiled: CompiledStrategy) -> RunConfig:
+    """能力検査だけを呼ぶための実行設定。"""
+    import hashlib
+
+    from odyssey_fx.common.ids import SnapshotId
+    from odyssey_fx.common.refs import ContentDigest, PolicyRef, SnapshotRef
+    from tests.fixtures.backtest.harness import ACCOUNT, EXECUTION_SERIES
+
+    digest = ContentDigest.sha256(hashlib.sha256(b"capability").hexdigest())
+    ref = PolicyRef(policy_kind="risk", policy_id="risk_v1", version=1, digest=digest)
+    return RunConfig(
+        run_interval=RUN_INTERVAL,
+        snapshot_ref=SnapshotRef(snapshot_id=SnapshotId(digest)),
+        compiled_ref=compiled.compiled_ref,
+        account=ACCOUNT,
+        risk_policy_ref=ref,
+        execution_policy_ref=ref,
+        cost_model_ref=ref,
+        conversion_policy_ref=ref,
+        delay_scenario_ref=ref,
+        execution_series=EXECUTION_SERIES,
+    )

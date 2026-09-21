@@ -281,6 +281,23 @@ def test_an_unreachable_protection_price_is_not_used() -> None:
     assert spread_applied is False
 
 
+def test_the_spread_is_applied_only_once_on_a_short_gap_exit() -> None:
+    """D06 §7.2: 幅を価格へ二重に加算しない（売り建玉の決済は買いで、幅は1回だけ）。
+
+    始値 bid 150.000 → ask 150.020 が損切り 149.900 を越えているので始値が基準になる。
+    約定価格は `150.020 + 0.010 = 150.030` であり、幅を2回足した `150.050` にはならない。
+    """
+    base, spread_applied = protection_base_price(
+        OrderSide.BUY, _price("149.900"), _price("150.000"), SPREAD
+    )
+
+    assert base == _price("150.000")
+    assert spread_applied is True
+    assert fill_price(
+        base, OrderSide.BUY, FillPurpose.CLOSE, COST_MODEL, use_spread=spread_applied
+    ) == _price("150.030")
+
+
 def test_the_spread_cost_only_appears_on_the_buy_side() -> None:
     """D06 §7.6・T01 §9.3: bid のみの系列では買い側の約定にだけ提示幅が立つ。"""
     conversion = rate_of(identity_path(MOMENT), JPY, JPY)

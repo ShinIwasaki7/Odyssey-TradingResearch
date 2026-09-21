@@ -43,19 +43,24 @@ def protection_base_price(
     """保護決済の基準価格（上位設計書 §4.7.12）。
 
     基準は保護水準そのものだが、**始値が既にその水準を越えている場合は始値を基準**にする。
-    到達不能な保護水準の価格で約定させないためである。戻り値の2つ目は、提示価格の幅を
-    通したか（始値を基準にしたか）を表す。
+    到達不能な保護水準の価格で約定させないためである。
+
+    戻り値は `(基準価格, 提示価格の幅を通すか)` で、**基準価格は系列の生の値（bid）のまま**
+    返す。幅を適用するのは約定価格を作る `fill_model.fill_price` の1か所だけにしないと、
+    売り建玉の決済（買い）で幅が二重に乗り、実現損益が幅1つぶん不利になる。保護水準その
+    ものを基準にする場合は、水準が既に決済側の価格なので幅を通さない。
 
     `side` は**決済注文の売買方向**である（買い建玉を閉じる売り注文なら `SELL`）。
     """
     if open_price is None:
         return level, False
+    # 水準と比べるのは、幅を通した後の決済側の価格である。
     quote = open_price if side is OrderSide.SELL else spread_model.ask_from_bid(open_price)
     if side is OrderSide.SELL:
         # 買い建玉の決済（売り）。始値が水準より下なら始値のほうが不利で、水準には戻れない。
-        return (quote, True) if quote < level else (level, False)
+        return (open_price, True) if quote < level else (level, False)
     # 売り建玉の決済（買い）。始値が水準より上なら始値のほうが不利。
-    return (quote, True) if quote > level else (level, False)
+    return (open_price, True) if quote > level else (level, False)
 
 
 def needs_emergency_close(

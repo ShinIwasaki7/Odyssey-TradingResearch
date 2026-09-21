@@ -58,11 +58,13 @@ def _money(text: str) -> Money:
     return Money(decimal_from_str(text), JPY)
 
 
-def _entry(stop: str = "149.500", opportunity: int = 1) -> EntryRequest:
+def _entry(
+    stop: str = "149.500", opportunity: int = 1, side: OrderSide = OrderSide.BUY
+) -> EntryRequest:
     return EntryRequest(
         opportunity_id=OpportunityId(opportunity),
         symbol=USDJPY,
-        side=OrderSide.BUY,
+        side=side,
         order_type=OrderType.MARKET,
         protection=InitialProtectionPlan(stop_loss=_price(stop), source_output_id=OutputId(5)),
         exit_plan_ref=ExitPlanRef(compiled_ref=CompiledStrategyRef(digest=DIGEST)),
@@ -80,20 +82,26 @@ def _close(position: int = 1) -> CloseRequest:
     )
 
 
-def _quote(price: str = "150.060") -> ReferenceQuote:
+def _quote(price: str = "150.060", *, derived: bool = True) -> ReferenceQuote:
+    """参照価格（買いは ask、売りは bid。上位設計書 §4.7.9 C）。"""
     return ReferenceQuote(
         price=_price(price),
-        basis=PriceBasis.BID,
+        basis=PriceBasis.ASK if derived else PriceBasis.BID,
         observed_at=MOMENT,
-        derived_from_spread=True,
+        derived_from_spread=derived,
     )
 
 
 def _assess(
-    stop: str = "149.500", *, decision_bid: str = "150.040", ledger: AccountLedger | None = None
+    stop: str = "149.500",
+    *,
+    decision_bid: str = "150.040",
+    ledger: AccountLedger | None = None,
+    side: OrderSide = OrderSide.BUY,
 ) -> tuple[object, object]:
+    quote = _quote() if side is OrderSide.BUY else _quote(decision_bid, derived=False)
     return assess_entry(
-        _entry(stop),
+        _entry(stop, side=side),
         attempt_id=AttemptId(1),
         assessment_id=EvidenceId(2),
         ledger=AccountLedger.opened(ACCOUNT) if ledger is None else ledger,
@@ -101,7 +109,7 @@ def _assess(
         policy_ref=POLICY,
         cost_model=COST_MODEL,
         symbol_spec=SYMBOL_SPEC,
-        reference_quote=_quote(),
+        reference_quote=quote,
         decision_bid=_price(decision_bid),
         adverse_fill_limit=PriceOffset(decimal_from_str("0.05")),
         conversion=rate_of(identity_path(MOMENT), JPY, JPY),
@@ -224,3 +232,37 @@ def test_a_tiny_budget_is_rejected_for_the_minimum_quantity() -> None:
     assert rejection.code is ReasonCode.RISK  # type: ignore[attr-defined]
     assert assessment.reached_step == 6  # type: ignore[attr-defined]
     assert assessment.quantity is None  # type: ignore[attr-defined]
+
+
+# --- 売りの参照価格（D06 §6.4 の手順3・4）-----------------------------------
+
+
+def test_a_short_is_checked_against_the_ask() -> None:
+    """上位設計書 §4.7.9 B・C: 売りの参照価格は bid、保護水準の検査は ask と比べる。
+
+    直前に完了した執行足の終値（bid）150.040 に対し ask は 150.060 である。損切り
+    150.050 は ask より下なので、売りの保護水準としては不正になる。
+    """
+    assessment, rejection = _assess("150.050", side=OrderSide.SELL)
+
+    assert rejection is not None
+    assert rejection.code is ReasonCode.PROTECTION_INVALID  # type: ignore[attr-defined]
+    check = assessment.checks[-1]  # type: ignore[attr-defined]
+    assert check.limit == decimal_from_str("150.060")
+    assert check.observed == decimal_from_str("150.050")
+
+
+def test_a_short_sizes_from_the_bid_reference() -> None:
+    """同節: 売りの1通貨あたりの予約リスクは bid を基準に測る。
+
+    `P_limit = 150.040 - 0.050 = 149.990`、`d x (P_limit - S) = 150.500 - 149.990 = 0.510`、
+    費用予算 0.012 を足して 0.522。`20000 / 0.522 = 38314.1...` を刻み 1000 で切り下げて
+    38,000 通貨になる。
+    """
+    assessment, rejection = _assess("150.500", side=OrderSide.SELL)
+
+    assert rejection is None
+    assert assessment.quantity is not None  # type: ignore[attr-defined]
+    assert assessment.quantity.units == decimal_from_str("38000")  # type: ignore[attr-defined]
+    assert assessment.adverse_fill_limit == _price("149.990")  # type: ignore[attr-defined]
+    assert assessment.reference_quote.derived_from_spread is False  # type: ignore[attr-defined]

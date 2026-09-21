@@ -206,6 +206,9 @@ def assess_entry(
     """エントリー要求を審査する（D06 §6.4 の手順1〜8）。
 
     戻り値は `(審査記録, 拒否理由)`。拒否理由が `None` なら受付できる。
+    `reference_quote` は買いなら ask、売りなら bid で（上位設計書 §4.7.9 C）、`decision_bid`
+    は同じ足の bid そのものである。保護水準の検査（手順4）はここから売却側・購入側の価格を
+    作る。
     `decision_bid` は参照価格と**同じ足**の bid で、保護水準の妥当性検査に使う。
     """
     currency = ledger.currency
@@ -249,12 +252,14 @@ def assess_entry(
         return record(3), _rejection(checks[-1])
 
     # 手順4: 保護水準の妥当性（買いは判断時 bid より下、売りは ask より上）。
+    # 比べる価格は手順3 で固定した参照価格と**同じ足**から取り、買いの検査には bid
+    # （売却側）、売りの検査には ask（購入側）を使う（D06 §6.4 の手順4）。
     stop = request.protection.stop_loss
     if request.side is OrderSide.BUY:
         comparand = decision_bid
         valid = stop < comparand
     else:
-        comparand = reference_quote.price
+        comparand = cost_model.spread_model.ask_from_bid(decision_bid)
         valid = stop > comparand
     checks.append(
         RiskCheckResult(

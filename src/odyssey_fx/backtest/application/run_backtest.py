@@ -28,6 +28,7 @@ from odyssey_fx.backtest.domain.policies import (
     ConversionPolicy,
     CostModel,
     ExecutionPolicy,
+    HierarchyCheckResult,
     RiskPolicy,
     RunConfig,
 )
@@ -82,11 +83,28 @@ def capability_report(
         reasons.append("the first level of the resolution hierarchy is not the execution series")
     if integrity.has_errors():
         reasons.append("the snapshot integrity report contains errors")
-    checks = hierarchy_checks(
-        execution_policy.resolution_hierarchy,
-        (),
-        None if intrabar_series is None else intrabar_series.bars_in,
-    )
+
+    hierarchy = execution_policy.resolution_hierarchy
+    checks: tuple[HierarchyCheckResult, ...] = ()
+    if len(hierarchy.levels) > 1:
+        if intrabar_series is None:
+            # 下位足を宣言しているのに走査する手段が無ければ、検査1〜4 を1件も実行できない。
+            # 黙って親足の4本値へ落とさず実行不可にする（ADR-0030）。
+            reasons.append(
+                "the resolution hierarchy declares child levels but no series to scan them"
+            )
+        else:
+            # 親足を渡さないと検査が1件も走らず、被覆の欠けや価格基準の食い違いを
+            # 見逃したまま実行可能と報告してしまう（D06 §7.4 の検査1〜4）。
+            checks = hierarchy_checks(
+                hierarchy,
+                intrabar_series.bars_in(hierarchy.levels[0], config.run_interval),
+                intrabar_series.bars_in,
+            )
+            if not checks:
+                reasons.append(
+                    "the execution series has no bars in the run interval to check the hierarchy"
+                )
     if any(not check.passed for check in checks):
         reasons.append("the resolution hierarchy does not fit the data")
     runnable = not reasons

@@ -86,6 +86,7 @@ from odyssey_fx.backtest.engine.phases import (
     PHASE_EXECUTION_OPEN,
     PHASE_LEDGER_UPDATE,
     PHASE_ORDER_EXPIRY,
+    PHASE_P5_ORDER_INTENT,
     PHASE_POST_FILL_ADMISSION,
     PHASE_POST_FILL_EVALUATION,
     PHASE_RUN_END,
@@ -161,7 +162,7 @@ from odyssey_fx.common.symbol import SymbolSpec
 from odyssey_fx.common.time import Interval, PhaseSet, ProcessingPoint, UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
-from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.declarations.evaluation import RuntimeEventKind
 from odyssey_fx.strategy.records.payloads import (
@@ -365,11 +366,17 @@ class _RunFailure(Exception):
     例外で運ぶのは、失敗が「その判断時点の残りのフェーズをすべて飛ばす」性質のもので、
     戻り値で運ぶとフェーズごとに分岐が増えるためである。捕まえるのは `execute` だけで、
     そこで第10.4節の実行失敗として扱う。
+
+    **どのフェーズで検出したか**を一緒に運ぶ。未約定注文の取消をそのフェーズの処理点で
+    刻まないと、受付（rank 10）より前の順位で取消が記録され、判断履歴を処理点の順に
+    読み直したときに取消が受付より先に来てしまう（D06 §5.1 の遷移5 はどのフェーズでも
+    起こりうる）。
     """
 
-    def __init__(self, reason: Reason) -> None:
-        super().__init__(str(reason))
+    def __init__(self, reason: Reason, phase: str) -> None:
+        super().__init__(f"{reason} in {phase}")
         self.reason = reason
+        self.phase = phase
 
 
 class BacktestEngine:
@@ -428,6 +435,7 @@ class BacktestEngine:
         self._cost_totals: dict[CostKind, Money] = {}
         self._measurements: dict[PositionId, RiskMeasurement] = {}
         self._entry_opportunities: dict[AttemptId, OpportunityId] = {}
+        self._clock: PhaseClock | None = None
 
     # --- 読み出し -----------------------------------------------------------
 
@@ -492,13 +500,13 @@ class BacktestEngine:
             try:
                 self._decision_point(decision_time, grouped[decision_time], is_run_end=False)
             except _RunFailure as failure:
-                self._fail(decision_time, failure.reason)
+                self._fail(decision_time, failure)
                 self._finalize_tables()
                 return
         try:
             self._decision_point(run_end, grouped.get(run_end, _DecisionEvents()), is_run_end=True)
         except _RunFailure as failure:
-            self._fail(run_end, failure.reason)
+            self._fail(run_end, failure)
         self._finalize_tables()
 
     def _group_events(self) -> dict[UtcTime, _DecisionEvents]:
@@ -536,20 +544,29 @@ class BacktestEngine:
             )
         return grouped
 
-    def _fail(self, decision_time: UtcTime, reason: Reason | None) -> None:
-        """実行失敗（D06 §10.4）。未約定注文を取消し、予約を解放する。"""
+    def _fail(self, decision_time: UtcTime, failure: _RunFailure) -> None:
+        """実行失敗（D06 §10.4）。未約定注文を取消し、予約を解放する。
+
+        取消は**失敗を検出したフェーズ**の処理点で刻む（D06 §5.1 の遷移5）。常に期限の
+        フェーズで刻むと、同じ判断時点で受け付けた注文の取消が受付より前の順位になり、
+        判断履歴を処理点の順に読み直したときに因果順が逆転する。
+        """
         self._status = RunStatus.FAILED_DATA_ERROR
-        self._failure = reason
-        clock = PhaseClock(self._phases, decision_time)
-        cause = Reason(ReasonCode.DATA_ERROR) if reason is None else reason
-        cancel_reason = Reason(ReasonCode.DATA_ERROR, cause.detail if cause.detail else None)
+        self._failure = failure.reason
+        # 同じ判断時点の時計をそのまま使う。作り直すと通し番号が 0 に戻り、その判断時点で
+        # 既に刻んだ処理点と同じ値になってしまう（D02 §3.3 の全順序が壊れる）。
+        clock = self._clock
+        if clock is None or clock.decision_time != decision_time:  # pragma: no cover - 防御
+            clock = PhaseClock(self._phases, decision_time)
+        detail = failure.reason.detail if failure.reason.code is ReasonCode.DATA_ERROR else None
+        cancel_reason = Reason(ReasonCode.DATA_ERROR, detail)
         for order in self._context.ledger.pending_orders():
             event = OrderEvent(
                 event_id=self._allocator.next(EventId),
                 order_id=order.order_id,
                 from_status=OrderStatus.PENDING,
                 to_status=OrderStatus.CANCELED,
-                at=clock.next(PHASE_ORDER_EXPIRY),
+                at=clock.next(failure.phase),
                 reason=cancel_reason,
             )
             self._context.ledger = commit_order_termination(self._context.ledger, event=event)
@@ -561,6 +578,8 @@ class BacktestEngine:
         self, decision_time: UtcTime, events: _DecisionEvents, *, is_run_end: bool
     ) -> None:
         clock = PhaseClock(self._phases, decision_time)
+        # 失敗したときの取消も同じ時計で刻む（`_fail` が読む）。
+        self._clock = clock
 
         self._phase_bar_complete(clock, events)
         self._phase_ledger_update(clock)
@@ -593,7 +612,10 @@ class BacktestEngine:
             return
         bar = self._execution.bar(events.bar_complete)
         if bar is None:
-            raise _RunFailure(self._data_error(events.bar_complete, "execution bar is missing"))
+            raise _RunFailure(
+                self._data_error(events.bar_complete, "execution bar is missing"),
+                PHASE_EXECUTION_BAR_COMPLETE,
+            )
         self._last_complete = bar
         for position in self._context.ledger.open_positions():
             if position.protection.effective_from.bar_start > bar.bar_start:
@@ -656,12 +678,12 @@ class BacktestEngine:
         self._record_snapshot(at)
 
     def _record_snapshot(self, at: ProcessingPoint) -> None:
-        equity = self._equity()
+        equity = self._equity(at.phase.name)
         self._context.equity = equity
         snapshot: LedgerSnapshot = snapshot_of(self._context.ledger, at, equity)
         self._emit(TraceTable.LEDGER_SNAPSHOTS, snapshot)
 
-    def _equity(self) -> Money:
+    def _equity(self, phase: str) -> Money:
         """含み損益込みの資産（D06 §8.1、Q13 決定）。"""
         ledger = self._context.ledger
         equity = ledger.balance
@@ -680,7 +702,8 @@ class BacktestEngine:
                         observed_interval=None,
                         cause="no completed execution bar is available to value open positions",
                     ),
-                )
+                ),
+                phase,
             )
         for position in positions:
             equity = equity + unrealized(
@@ -727,13 +750,14 @@ class BacktestEngine:
             available_bars=events.publications,
             scheduled_closes=closes,
         )
-        return self._step(batch)
+        # 第1回の `step` は rank 4〜9 を担う。失敗したらその最後のフェーズで刻む。
+        return self._step(batch, PHASE_P5_ORDER_INTENT)
 
     def _interval_of(self, bar_key: BarKey, bar_end: UtcTime) -> Interval:
         """足の実際の区間（名目の長さから再計算しない、D06 §4.3）。"""
         return Interval(start=bar_key.bar_start, end=bar_end)
 
-    def _step(self, batch: PublicationBatch) -> RuntimeStepResult:
+    def _step(self, batch: PublicationBatch, phase: str) -> RuntimeStepResult:
         """戦略ランタイムを1回呼び、記録を判断履歴へ移す（D06 §4.2）。"""
         result = self._runtime.step(batch)
         for record in self._sink.drain():
@@ -750,7 +774,7 @@ class BacktestEngine:
             )
             outcome = failed.outcome
             assert isinstance(outcome, Failed)  # noqa: S101 - 直前の絞り込みが保証する
-            raise _RunFailure(outcome.reason)
+            raise _RunFailure(outcome.reason, phase)
         return result
 
     # --- rank 10: 受付 -------------------------------------------------------
@@ -849,7 +873,7 @@ class BacktestEngine:
         accepted_at = clock.next(phase)
 
         if isinstance(payload, EntryRequest):
-            quote, decision_bid = self._reference_quote(decision_time)
+            quote, decision_bid = self._reference_quote(payload.side)
             conversion = self._conversion(decision_time)
             outcome = decide_entry(
                 request,
@@ -969,26 +993,28 @@ class BacktestEngine:
         ]
         return closes[-1] if closes else moment
 
-    def _reference_quote(
-        self, decision_time: UtcTime
-    ) -> tuple[ReferenceQuote | None, Price | None]:
+    def _reference_quote(self, side: OrderSide) -> tuple[ReferenceQuote | None, Price | None]:
         """受付時の参照価格（D06 §6.4 の手順3、Q10 決定）。
 
-        直前に完了した執行足の終値（bid）から取り、買いは spread モデルで ask を導く。
+        直前に完了した執行足の終値（bid）から取る。**買いは ask、売りは bid** であり
+        （上位設計書 §4.7.9 C）、bid のみの系列では買いのときだけ spread モデルで ask を
+        導く。戻り値の2つ目はその足の bid そのもので、保護水準の妥当性検査（手順4）が
+        売却側・購入側の価格を作るのに使う。
+
         戦略向けのビューは期待足が未到着なら古い足へ戻らないため、そこからは引けない。
         """
-        del decision_time
         bar = self._last_complete
         if bar is None:
             return None, None
         bid = bar.close
-        ask = self._cost_model.spread_model.ask_from_bid(bid)
+        derived = side is OrderSide.BUY
+        price = self._cost_model.spread_model.ask_from_bid(bid) if derived else bid
         return (
             ReferenceQuote(
-                price=ask,
-                basis=bar.series.basis,
+                price=price,
+                basis=PriceBasis.ASK if derived else PriceBasis.BID,
                 observed_at=bar.interval.end,
-                derived_from_spread=True,
+                derived_from_spread=derived,
                 source_bar=bar.key,
             ),
             bid,
@@ -1008,7 +1034,7 @@ class BacktestEngine:
         try:
             path = resolve_path(currency, currency, at, self._conversion_policy)
         except ConversionUnavailable as error:  # pragma: no cover - 段階2は恒等換算のみ
-            raise _RunFailure(Reason(ReasonCode.DATA_ERROR)) from error
+            raise _RunFailure(Reason(ReasonCode.DATA_ERROR), PHASE_ADMISSION) from error
         return rate_of(path, currency, currency)
 
     # --- rank 11: 始値処理 ---------------------------------------------------
@@ -1016,7 +1042,9 @@ class BacktestEngine:
     def _phase_execution_open(self, clock: PhaseClock, bar_key: BarKey) -> list[RuntimeEventNotice]:
         open_price = self._execution.open_of(bar_key)
         if open_price is None:
-            raise _RunFailure(self._data_error(bar_key, "execution bar open is missing"))
+            raise _RunFailure(
+                self._data_error(bar_key, "execution bar open is missing"), PHASE_EXECUTION_OPEN
+            )
 
         # 手順1: 既存建玉の gap 決済。
         for position in self._context.ledger.open_positions():
@@ -1474,7 +1502,7 @@ class BacktestEngine:
             runtime_events=tuple(opened),
             admissions=tuple(notices),
         )
-        result = self._step(batch)
+        result = self._step(batch, PHASE_POST_FILL_EVALUATION)
         for request in result.management_requests:
             if isinstance(request.action, SetTakeProfit):
                 self._apply_take_profit(clock, request)
