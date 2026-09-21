@@ -1,40 +1,15 @@
 """バックテストのフェーズ集合（D06 §4.1）。
 
-戦略ランタイムは取引機会の遷移に処理点（時刻・フェーズ・通し番号）を押すが、フェーズの
-順位と全列挙は `backtest.engine`（D06）の責務である。段階2 の実装範囲にはエンジンが無い
-ので、テストは D06 §4.1 が確定した15件をそのまま組み立てて渡す。
+フェーズの順位と全列挙は `backtest.engine.phases`（D06）が正本である。戦略ランタイムは
+取引機会の遷移に処理点（時刻・フェーズ・通し番号）を押すが、引くのは名前だけであり、順位の
+意味には踏み込まない。
 
-順位と名前は D06 §4.1 の表のとおりで、ランタイムが要求する8つの名前（D05 §6.1）をすべて
-含む。ランタイムが引くのは名前だけであり、順位の意味には踏み込まない。
+段階2 でエンジンが実装されたため、テストは**同じ定数をそのまま使う**。ここで組み立て直すと
+正本が2つになり、フェーズ名や順位が食い違っても気付けなくなる。
 """
 
 from __future__ import annotations
 
-from typing import Final
-
-from odyssey_fx.common.time import PhaseRank, PhaseSet
+from odyssey_fx.backtest.engine.phases import BACKTEST_PHASES, PHASE_ORDER
 
 __all__ = ["BACKTEST_PHASES", "PHASE_ORDER"]
-
-#: D06 §4.1 の15フェーズ（rank 0〜14）。
-PHASE_ORDER: Final[tuple[str, ...]] = (
-    "EXECUTION_BAR_COMPLETE",
-    "LEDGER_UPDATE",
-    "ORDER_EXPIRY",
-    "PUBLICATION",
-    "OPPORTUNITY_LIFECYCLE",
-    "P1_FEATURE",
-    "P2_MARKET_STATE",
-    "P3_TRIGGER",
-    "P4_CONFIRMATION",
-    "P5_ORDER_INTENT",
-    "ADMISSION",
-    "EXECUTION_OPEN",
-    "POST_FILL_EVALUATION",
-    "POST_FILL_ADMISSION",
-    "RUN_END",
-)
-
-BACKTEST_PHASES: Final = PhaseSet(
-    tuple(PhaseRank(rank=rank, name=name) for rank, name in enumerate(PHASE_ORDER))
-)
