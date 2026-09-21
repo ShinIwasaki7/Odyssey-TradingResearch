@@ -31,8 +31,14 @@ from odyssey_fx.backtest.trace.recorder import (
     table_columns,
 )
 from odyssey_fx.backtest.trace.result import BacktestResult
+from odyssey_fx.common.errors import KernelValueError
 
-__all__ = ["FileSystemResultWriter", "FileSystemTraceSink", "run_directory"]
+__all__ = [
+    "FileSystemResultWriter",
+    "FileSystemTraceSink",
+    "reserve_run_directory",
+    "run_directory",
+]
 
 
 def run_directory(root: Path, run_id: object) -> Path:
@@ -57,12 +63,48 @@ def _columns(
     return {name: [row.get(name) for row in rows] for name in names}
 
 
-@dataclass(frozen=True, slots=True)
+def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) -> Path:
+    """成果物の置き場所を確保する（ADR-0006）。
+
+    同じ完全入力の再実行は同じ `RunId` になるので、`runs/<run_id>/` が既にあることは
+    ふつうに起こる。**既存の成果物を無条件に上書きしない**（既定は失敗）。置換は明示的な
+    指示があるときだけ行い、置換したときも**旧 manifest を記録に残す**。
+
+    途中まで書いたところで失敗すると新旧の表が混ざるので、書き始める前にここで判断する。
+    """
+    directory = run_directory(root, run_id)
+    existing = sorted(directory.glob("*")) if directory.exists() else []
+    if existing and not replace:
+        raise KernelValueError(
+            f"{directory} already holds artifacts for this run; re-running the same complete"
+            " input produces the same RunId, and overwriting would destroy the earlier"
+            " reproducibility artifact. Pass replace=True to replace it (ADR-0006)"
+        )
+    if existing:
+        previous = directory / "manifest.json"
+        if previous.exists():
+            # 置換しても旧成果物の manifest は記録に残す（ADR-0006）。
+            (directory / "manifest.replaced.json").write_text(
+                previous.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        for path in existing:
+            if path.is_file() and path.name != "manifest.replaced.json":
+                path.unlink()
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+@dataclass(slots=True)
 class FileSystemTraceSink:
-    """15表を `runs/<run_id>/<TABLE>.parquet` へ書く（D06 §9.1・§9.2）。"""
+    """15表を `runs/<run_id>/<TABLE>.parquet` へ書く（D06 §9.1・§9.2）。
+
+    最初の書き出しの前に置き場所を確保し、既存の成果物があれば失敗する（ADR-0006）。
+    """
 
     root: Path
     run_id: object
+    replace: bool = False
+    _reserved: bool = False
 
     def write(self, table: TraceTable, rows: tuple[object, ...]) -> None:
         """1つの表を書き出す。書き出し専用で、検索元にはならない。
@@ -71,8 +113,10 @@ class FileSystemTraceSink:
         永続参照は `(run_id, ID)` の組になる。行そのものが `run_id` を持たない表でも、
         ここで必ず列として足す。
         """
+        if not self._reserved:
+            reserve_run_directory(self.root, self.run_id, replace=self.replace)
+            self._reserved = True
         directory = run_directory(self.root, self.run_id)
-        directory.mkdir(parents=True, exist_ok=True)
         run_id = str(self.run_id)
         flattened = [{"run_id": run_id, **flatten_row(row)} for row in rows]
         columns = _columns(flattened, table_columns(table))
@@ -110,7 +154,11 @@ class FileSystemResultWriter:
     root: Path
 
     def write(self, result: BacktestResult, manifest: RunManifest) -> None:
-        """`manifest.json` と `result.json` を書き出す。"""
+        """`manifest.json` と `result.json` を書き出す。
+
+        置き場所の確保（既存成果物の検査）は判断履歴の書き出し口が run のはじめに行う
+        （ADR-0006）。ここで作り直すと、同じ run の途中でもう一度検査することになる。
+        """
         directory = run_directory(self.root, manifest.run_id)
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "manifest.json").write_text(
@@ -168,6 +216,7 @@ def _capability_payload(report: DataCapabilityReport) -> dict[str, Any]:
         "reason": None if report.reason is None else report.reason.code.value,
         "integrity": [canonical_text(result) for result in report.integrity.results],
         "hierarchy_checks": [canonical_text(check) for check in report.hierarchy_checks],
+        "diagnostics": list(report.diagnostics),
     }
 
 

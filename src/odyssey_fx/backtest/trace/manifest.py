@@ -45,10 +45,23 @@ class DataCapabilityReport:
     hierarchy_checks: tuple[HierarchyCheckResult, ...] = ()
     runnable: bool = True
     reason: Reason | None = None
+    diagnostics: tuple[str, ...] = ()
+    """不合格の理由を1件ずつ書いた文（D06 §10.5 の手順6「不合格の個別結果を落とさない」）。
+
+    銘柄仕様の食い違い・許容不利約定幅の不足・下位足を走査する手段の不在といった不合格は、
+    完全性検査にも階層の検査にも現れない。理由コードだけを残すと、判断履歴からは
+    `DATA_ERROR` としか読めず、**なぜ実行しなかったのかを説明できない**。
+    """
 
     def __post_init__(self) -> None:
         if not isinstance(self.compiled_match, bool):
             raise KernelValueError("DataCapabilityReport.compiled_match must be a bool")
+        if not isinstance(self.diagnostics, tuple) or not all(
+            isinstance(item, str) and item for item in self.diagnostics
+        ):
+            raise KernelValueError(
+                "DataCapabilityReport.diagnostics must be a tuple of non-empty strings"
+            )
         if not isinstance(self.integrity, IntegrityReport):
             raise KernelValueError("DataCapabilityReport.integrity must be an IntegrityReport")
         if not isinstance(self.hierarchy_checks, tuple):
@@ -63,6 +76,13 @@ class DataCapabilityReport:
             raise KernelValueError(
                 "a capability report that blocks the run must say why (D06 §10.5)"
             )
+        if not self.runnable and not self.diagnostics and not self.hierarchy_checks:
+            raise KernelValueError(
+                "a capability report that blocks the run must keep the individual findings;"
+                " a bare reason code cannot explain why the run was refused (D06 §10.5 の手順6)"
+            )
+        if self.runnable and self.diagnostics:
+            raise KernelValueError("a runnable capability report has nothing to diagnose")
 
 
 def config_digest_of(

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from odyssey_fx.backtest.trace.recorder import (
     TraceTable,
@@ -17,6 +18,7 @@ from odyssey_fx.backtest.trace.recorder import (
     table_column_kinds,
     table_columns,
 )
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultWriter,
     FileSystemTraceSink,
@@ -186,3 +188,60 @@ def test_the_declared_types_match_the_real_rows(tmp_path: Path) -> None:
         frame = pl.read_parquet(directory / f"{table.value}.parquet")
         for name, kind in table_column_kinds(table).items():
             assert frame.schema[name] == expected[kind], f"{table.value}.{name}"
+
+
+def test_an_existing_run_directory_is_not_overwritten(tmp_path: Path) -> None:
+    """ADR-0006: 既存の成果物を無条件に上書きしない（既定は失敗）。
+
+    同じ完全入力の再実行は同じ識別子になるので、黙って上書きすると前回の再現性の証拠が
+    消える。途中まで書いてから失敗すると新旧の表が混ざるため、書き始める前に判断する。
+    """
+    _write(tmp_path)
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(conflict=CONFLICT_BAR),
+        run_interval=RUN_INTERVAL,
+    )
+
+    with pytest.raises(KernelValueError, match="already holds artifacts"):
+        FileSystemTraceSink(root=tmp_path, run_id=output.result.run_id).write(
+            TraceTable.FILLS, output.rows(TraceTable.FILLS)
+        )
+
+
+def test_replacing_a_run_keeps_the_previous_manifest(tmp_path: Path) -> None:
+    """ADR-0006: 置換するときも旧成果物の manifest を記録に残す。"""
+    output, directory = _write(tmp_path)
+
+    sink = FileSystemTraceSink(root=tmp_path, run_id=output.result.run_id, replace=True)
+    for table in TraceTable:
+        sink.write(table, output.rows(table))
+
+    assert (directory / "manifest.replaced.json").exists()
+    assert json.loads((directory / "manifest.replaced.json").read_text(encoding="utf-8"))[
+        "run_id"
+    ] == str(output.result.run_id)
+
+
+def test_a_blocked_run_explains_itself(tmp_path: Path) -> None:
+    """D06 §10.5 の手順6: 不合格の個別結果を落とさない。"""
+    from odyssey_fx.backtest.trace.manifest import DataCapabilityReport
+    from odyssey_fx.common.reason import Reason, ReasonCode
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+
+    report = DataCapabilityReport(
+        compiled_match=True,
+        integrity=IntegrityReport(),
+        runnable=False,
+        reason=Reason(ReasonCode.DATA_ERROR),
+        diagnostics=("the symbol spec does not describe the traded symbol",),
+    )
+
+    assert report.diagnostics
+    with pytest.raises(KernelValueError, match="individual findings"):
+        DataCapabilityReport(
+            compiled_match=True,
+            integrity=IntegrityReport(),
+            runnable=False,
+            reason=Reason(ReasonCode.DATA_ERROR),
+        )

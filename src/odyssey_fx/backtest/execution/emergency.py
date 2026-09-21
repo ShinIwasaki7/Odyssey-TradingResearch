@@ -19,9 +19,9 @@ from __future__ import annotations
 from odyssey_fx.backtest.domain.orders import OrderSide
 from odyssey_fx.backtest.domain.policies import SpreadModel
 from odyssey_fx.backtest.domain.positions import ProtectionState
-from odyssey_fx.backtest.execution.fill_model import is_adverse_fill_excessive
+from odyssey_fx.backtest.execution.fill_model import exceeds_committed_limit
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.money import Price, PriceOffset
+from odyssey_fx.common.money import Price
 
 __all__ = ["gap_breaches_stop", "needs_emergency_close", "protection_base_price"]
 
@@ -63,8 +63,10 @@ def protection_base_price(
     return (open_price, True) if quote > level else (level, False)
 
 
-def needs_emergency_close(
-    fill: Price, reference: Price, side: OrderSide, limit: PriceOffset
-) -> bool:
-    """約定ずれ超過による緊急決済が要るか（D06 §7.5 の手順5）。"""
-    return is_adverse_fill_excessive(fill, reference, side, limit)
+def needs_emergency_close(fill: Price, committed_limit: Price, side: OrderSide) -> bool:
+    """約定ずれ超過による緊急決済が要るか（D06 §7.5 の手順5）。
+
+    比べるのは**受付時に固定した許容不利価格**（`AcceptedEntryTerms.adverse_fill_limit`）
+    である。予約額をその価格で計算しているので、判定も同じ値で行う。
+    """
+    return exceeds_committed_limit(fill, committed_limit, side)

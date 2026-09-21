@@ -16,11 +16,20 @@ from odyssey_fx.backtest.portfolio.ledger import LedgerSnapshot
 from odyssey_fx.backtest.portfolio.mtm import unrealized
 from odyssey_fx.backtest.trace.recorder import TraceTable
 from odyssey_fx.backtest.trace.result import RunStatus
+from odyssey_fx.common.ids import PositionId, RunId
 from odyssey_fx.common.money import Money, decimal_from_str
 from odyssey_fx.common.reason import ReasonCode
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
-from tests.fixtures.backtest.harness import COST_MODEL, JPY, compiled_strategy, run_backtest
+from odyssey_fx.strategy.runtime.ports import PublicationBatch
+from odyssey_fx.strategy.runtime.requests import RuntimeStepResult
+from tests.fixtures.backtest.harness import (
+    COST_MODEL,
+    EXECUTION_POLICY,
+    JPY,
+    compiled_strategy,
+    run_backtest,
+)
 from tests.fixtures.backtest.paths import (
     DECISION_TIME,
     RUN_INTERVAL,
@@ -390,3 +399,98 @@ def test_the_config_digest_covers_the_symbol_specification() -> None:
 
     assert first != second
     assert first != third
+
+
+def test_the_entry_delay_does_not_postpone_a_strategy_exit() -> None:
+    """D06 §7.1: 1本見送るのは**新規エントリーだけ**で、決済要求には適用しない。
+
+    決済まで遅らせると、戦略が求めた時点より後の価格で約定し、建玉がその間だけ余計に晒される。
+    """
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.domain.orders import CloseCause, CloseRequest
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+
+    engine = _engine(replace(EXECUTION_POLICY, entry_delay_bars=1))
+    decision = DECISION_TIME
+    expires = decision + timedelta(minutes=20)
+    close = CloseRequest(
+        position_id=PositionId(1), cause=CloseCause.STRATEGY_EXIT, valid_for=timedelta(minutes=20)
+    )
+    assert isinstance(engine, BacktestEngine)
+
+    entry_candidate, _ = engine._candidate(decision, expires, is_entry=True)
+    close_candidate, _ = engine._candidate(decision, expires, is_entry=False)
+
+    assert close.request_class.rank == 0
+    assert entry_candidate is not None and close_candidate is not None
+    # エントリーは1本見送って 09:15、決済は見送らず 09:00。
+    assert close_candidate.open_time == decision
+    assert entry_candidate.open_time == decision + timedelta(minutes=15)
+
+
+def _engine(policy: object) -> object:
+    """候補の選び方だけを確かめるためのエンジン（run は実行しない）。"""
+    from odyssey_fx.backtest.engine.loop import BacktestEngine, EngineContext, TraceOutputSink
+    from odyssey_fx.backtest.trace.manifest import DataCapabilityReport
+    from odyssey_fx.common.ids import IdAllocator
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+    from tests.fixtures.backtest.harness import (
+        ACCOUNT,
+        CONVERSION_POLICY,
+        COST_MODEL,
+        RISK_POLICY,
+        SYMBOL_SPEC,
+        FakeExecutionSeries,
+        FakeFeed,
+    )
+    from tests.fixtures.synthetic.market import calendar
+
+    compiled = compiled_strategy()
+    config = _config(compiled)
+    context = EngineContext(ACCOUNT)
+    return BacktestEngine(
+        config=config,
+        compiled=compiled,
+        runtime=_NullRuntime(),
+        context=context,
+        output_sink=TraceOutputSink(),
+        allocator=IdAllocator(_run_id()),
+        feed=FakeFeed((), execution_bars()),
+        execution_series=FakeExecutionSeries(execution_bars()),
+        calendar=calendar(),
+        risk_policy=RISK_POLICY,
+        execution_policy=policy,  # type: ignore[arg-type]
+        cost_model=COST_MODEL,
+        conversion_policy=CONVERSION_POLICY,
+        symbol_spec=SYMBOL_SPEC,
+        capability_report=DataCapabilityReport(compiled_match=True, integrity=IntegrityReport()),
+    )
+
+
+def _run_id() -> RunId:
+    from odyssey_fx.backtest.trace.manifest import config_digest_of
+    from odyssey_fx.common.refs import run_id
+    from tests.fixtures.backtest.harness import (
+        CALENDAR_REF,
+        CODE_DIGEST,
+        ENV_DIGEST,
+        LOCK_DIGEST,
+        SYMBOL_SPEC_REF,
+        TIMEFRAME_REFS,
+    )
+
+    digest = config_digest_of(
+        _config(compiled_strategy()),
+        symbol_spec_ref=SYMBOL_SPEC_REF,
+        calendar_ref=CALENDAR_REF,
+        timeframe_def_refs=TIMEFRAME_REFS,
+    )
+    return run_id(digest, CODE_DIGEST, LOCK_DIGEST, ENV_DIGEST)
+
+
+class _NullRuntime:
+    """呼ばれない戦略ランタイム（候補の選び方だけを見るため）。"""
+
+    def step(self, batch: PublicationBatch) -> RuntimeStepResult:  # pragma: no cover
+        raise AssertionError("the runtime must not be called in this test")

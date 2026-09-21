@@ -103,6 +103,7 @@ from odyssey_fx.backtest.execution.emergency import (
 from odyssey_fx.backtest.execution.fill_model import fill_price
 from odyssey_fx.backtest.execution.protection_hits import (
     ChildBars,
+    IntrabarResolution,
     ResolutionMethod,
     resolve_intrabar,
 )
@@ -684,6 +685,7 @@ class BacktestEngine:
                 execution_bar_key=bar.key,
             ),
             fill_id=fill_id,
+            resolution=resolution,
         )
         self._emit(TraceTable.INTRABAR_RESOLUTIONS, resolution)
 
@@ -894,7 +896,9 @@ class BacktestEngine:
         if isinstance(payload, EntryRequest):
             self._entry_opportunities[request.attempt_id] = payload.opportunity_id
         expires_at = decision_time + payload.valid_for
-        candidate, carry = self._candidate(decision_time, expires_at)
+        candidate, carry = self._candidate(
+            decision_time, expires_at, is_entry=isinstance(payload, EntryRequest)
+        )
         run_end = self._config.run_interval.end if is_run_end else None
         accepted_at = clock.next(phase)
 
@@ -971,15 +975,19 @@ class BacktestEngine:
         self._emit(TraceTable.ORDER_EVENTS, outcome.acceptance_event)
 
     def _candidate(
-        self, decision_time: UtcTime, expires_at: UtcTime
+        self, decision_time: UtcTime, expires_at: UtcTime, *, is_entry: bool
     ) -> tuple[ScheduledOpen | None, CarryNotAllowedDetail | None]:
         """候補の始値を固定する（D06 §5.3・§7.1）。
 
-        `entry_delay_bars` のぶんだけ最初の適格 open を見送る。候補はカレンダーと執行系列の
-        足スケジュールから決め、将来価格や実ファイルの欠損を候補選択に使わない。
+        `entry_delay_bars` のぶんだけ最初の適格 open を見送るのは**新規エントリーだけ**で、
+        決済要求には適用しない（D06 §7.1）。決済まで遅らせると、戦略が求めた時点より後の
+        価格で約定し、建玉がその間だけ余計に晒される。
+
+        候補はカレンダーと執行系列の足スケジュールから決め、将来価格を候補選択に使わない。
         """
         key = self._first_candidate_key(decision_time)
-        for _ in range(self._execution_policy.entry_delay_bars):
+        delay = self._execution_policy.entry_delay_bars if is_entry else 0
+        for _ in range(delay):
             if key is None:
                 break
             key = self._execution.next_bar_key_after(key.bar_start)
@@ -1187,11 +1195,9 @@ class BacktestEngine:
         if gap_breaches_stop(position.side, protection, open_price, self._cost_model.spread_model):
             self._close_at_open(clock, position, bar_key, open_price, CloseCause.STOP_LOSS)
             return None
-        # 手順5: 約定ずれ超過なら緊急決済。
-        limit = self._execution_policy.adverse_fill_limit(order.symbol)
-        if limit is not None and needs_emergency_close(
-            price, terms.reference_quote.price, order.side, limit
-        ):
+        # 手順5: 約定ずれ超過なら緊急決済。比べるのは受付時に固定した許容不利価格で、
+        # 実行ポリシーの Δ を読み直さない（丸める前の広い幅で比べることになる）。
+        if needs_emergency_close(price, terms.adverse_fill_limit, order.side):
             self._emergency_close(clock, position, bar_key, open_price, fill_id)
             return None
         opportunity_id = self._opportunity_of(order)
@@ -1346,6 +1352,7 @@ class BacktestEngine:
         execution_time: ExecutionTime,
         eligibility: ProtectionHit | ImmediateAfterFill,
         fill_id: FillId,
+        resolution: IntrabarResolution | None = None,
     ) -> None:
         """エンジンが生成する即時決済（D06 §4.4・§6.2・§7.3・§7.5）。
 
@@ -1404,6 +1411,7 @@ class BacktestEngine:
             spread_applied=spread_applied,
             acceptance_event=outcome.acceptance_event,
             fill_id=fill_id,
+            resolution=resolution,
         )
 
     def _settle(
@@ -1417,6 +1425,7 @@ class BacktestEngine:
         spread_applied: bool,
         acceptance_event: OrderEvent | None = None,
         fill_id: FillId | None = None,
+        resolution: IntrabarResolution | None = None,
     ) -> None:
         """決済の約定を確定する（D06 §4.4 の確定単位4・5）。"""
         fill_id = self._allocator.next(FillId) if fill_id is None else fill_id
@@ -1448,7 +1457,7 @@ class BacktestEngine:
                 position_id=position.position_id,
                 conversion_paths=(self._identity_path(at.time),),
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
-                market_refs=self._execution_market_refs(execution_time),
+                market_refs=self._execution_market_refs(execution_time, resolution),
             ),
         )
         with localcontext(kernel_context()):
@@ -1850,19 +1859,32 @@ class BacktestEngine:
         return () if bar is None else (self._market_ref(bar, field),)
 
     def _execution_market_refs(
-        self, execution_time: ExecutionTime
+        self,
+        execution_time: ExecutionTime,
+        resolution: IntrabarResolution | None = None,
     ) -> tuple[MarketObservationRef, ...]:
-        """決済の根拠（始値約定なら始値、足の中の到達なら高値と安値）。"""
+        """決済の根拠（始値約定なら始値、足の中の到達なら高値と安値）。
+
+        足内の競合を下位足まで降りて決めた場合は、**走査した下位足も**根拠に入れる。
+        `INTRABAR_RESOLUTIONS` が残すのは決め手になった子足1本だけで、どの観測を見て
+        その裁定になったかは根拠記録にしか残せない。
+        """
         if isinstance(execution_time, ExactExecutionTime):
             key = self._execution.next_bar_key_after(execution_time.time - _TINY)
             return () if key is None else self._fill_market_refs(key, MarketDataField.OPEN)
         bar = self._execution.bar(execution_time.bar_key)
         if bar is None:  # pragma: no cover - 到達判定はその足を読んでいる
             return ()
-        return (
+        refs = [
             self._market_ref(bar, MarketDataField.HIGH),
             self._market_ref(bar, MarketDataField.LOW),
-        )
+        ]
+        if resolution is not None and self._intrabar is not None:
+            for series in resolution.series_used[1:]:
+                for child in self._intrabar.bars_in(series, bar.interval):
+                    refs.append(self._market_ref(child, MarketDataField.HIGH))
+                    refs.append(self._market_ref(child, MarketDataField.LOW))
+        return tuple(refs)
 
     def _reference_market_refs(self) -> tuple[MarketObservationRef, ...]:
         """受付の根拠になった市場データ（直前に完了した執行足の終値、D06 §6.4 の手順3）。"""

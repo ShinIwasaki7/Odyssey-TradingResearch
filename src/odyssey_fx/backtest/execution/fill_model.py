@@ -28,7 +28,13 @@ from odyssey_fx.common.money import (
     kernel_context,
 )
 
-__all__ = ["adverse_fill_excess", "apply_slippage", "fill_price", "is_adverse_fill_excessive"]
+__all__ = [
+    "adverse_fill_excess",
+    "apply_slippage",
+    "exceeds_committed_limit",
+    "fill_price",
+    "is_adverse_fill_excessive",
+]
 
 
 def apply_slippage(base: Price, side: OrderSide, slippage: PriceOffset) -> Price:
@@ -71,3 +77,16 @@ def is_adverse_fill_excessive(
     if not isinstance(limit, PriceOffset):
         raise KernelValueError("is_adverse_fill_excessive requires a PriceOffset limit")
     return adverse_fill_excess(fill, reference, side) > limit
+
+
+def exceeds_committed_limit(fill: Price, limit: Price, side: OrderSide) -> bool:
+    """受付時に固定した許容不利価格を約定が越えたか（上位設計書 §4.7.9 C）。
+
+    `limit` は `P_ref + d × Δ` として受付時に確定した**絶対価格**（`AcceptedEntryTerms`）
+    である。予約額もこの価格で計算されているので、判定も同じ値で行う。実行ポリシーの Δ を
+    読み直すと、価格刻みへ丸める前の広い幅で比べることになり、**予約した額を超える損失を
+    出す約定が緊急決済されずに残る**。上限一致は許容する。
+    """
+    if not isinstance(fill, Price) or not isinstance(limit, Price):
+        raise KernelValueError("exceeds_committed_limit requires Price values")
+    return fill > limit if side is OrderSide.BUY else fill < limit

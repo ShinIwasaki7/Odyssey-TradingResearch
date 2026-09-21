@@ -115,6 +115,7 @@ def capability_report(
         hierarchy_checks=checks,
         runnable=runnable,
         reason=None if runnable else Reason(ReasonCode.DATA_ERROR),
+        diagnostics=tuple(reasons),
     )
 
 

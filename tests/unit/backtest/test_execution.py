@@ -96,11 +96,20 @@ def test_the_limit_itself_is_allowed() -> None:
     )
 
 
-def test_an_emergency_close_follows_the_same_rule() -> None:
-    """D06 §7.5 の手順5: 約定ずれが Δ を超えたら緊急決済する。"""
-    assert needs_emergency_close(
-        _price("150.200"), _price("150.060"), OrderSide.BUY, _offset("0.05")
-    )
+def test_an_emergency_close_uses_the_committed_limit() -> None:
+    """D06 §7.5 の手順5: 受付時に固定した許容不利価格を越えたら緊急決済する。
+
+    実行ポリシーの Δ を読み直すと、価格刻みへ丸める前の広い幅で比べることになり、予約した
+    額を超える損失を出す約定が残ってしまう。
+    """
+    # 受付時に固定した許容不利価格（`150.060 + 0.050`）。
+    committed = _price("150.110")
+
+    assert needs_emergency_close(_price("150.200"), committed, OrderSide.BUY)
+    assert not needs_emergency_close(_price("150.110"), committed, OrderSide.BUY)
+    # 売りは逆向き（`150.040 - 0.050`）。
+    assert needs_emergency_close(_price("149.900"), _price("149.990"), OrderSide.SELL)
+    assert not needs_emergency_close(_price("149.990"), _price("149.990"), OrderSide.SELL)
 
 
 def _protection(stop: str, take_profit: str | None = None) -> ProtectionState:
