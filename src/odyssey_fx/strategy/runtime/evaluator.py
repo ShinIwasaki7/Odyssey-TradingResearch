@@ -1138,7 +1138,8 @@ class _StepRun:
         concurrency = self._compiled.opportunity_concurrency
         active = [item for item in self._lifecycles.values() if item.is_active]
         if len(active) < concurrency.max_active:
-            self._open(opportunity)
+            # 生成時点の束縛を先に固定してから記録を足す（次の節の理由）。
+            self._open(opportunity, self._take_snapshots())
             return opportunity, True
         if concurrency.on_new_trigger is OnNewTrigger.SUPERSEDE_EXISTING:
             replaceable = sorted(
@@ -1146,26 +1147,35 @@ class _StepRun:
                 key=lambda item: item.supersession_key,
             )
             if replaceable:
+                # **置換の前に新しい機会の束縛を固定する**。束縛が読めず失敗する場合
+                # （`on_missing=Error`）、先に古い機会を終端していると、置換した相手が
+                # ひとつも公開されないまま `SUPERSEDED` の遷移だけが判断履歴に残る。
+                snapshots = self._take_snapshots()
                 self._terminate(
                     replaceable[0],
                     Reason(code=ReasonCode.SUPERSEDED),
                     PHASE_P3_TRIGGER,
                     counterpart=opportunity.opportunity_id,
                 )
-                self._open(opportunity)
+                self._open(opportunity, snapshots)
                 return opportunity, True
         self._reject(opportunity)
         return opportunity, False
 
-    def _open(self, opportunity: Opportunity) -> None:
-        """遷移1: 生成して有効にする（D05 §7.2）。"""
+    def _open(self, opportunity: Opportunity, snapshots: tuple[ValiditySnapshot, ...]) -> None:
+        """遷移1: 生成して有効にする（D05 §7.2）。
+
+        生成時点の束縛（`snapshots`）は**呼び出し元が、状態を変える前に**固定しておく
+        （D05 §7.3）。束縛が読めずに失敗しうるため、ここで固定すると途中まで進んだ記録が
+        残ってしまう。
+        """
         at = self._point(PHASE_P3_TRIGGER)
         lifecycle = OpportunityLifecycle(
             opportunity=opportunity,
             state=OpportunityState.OPEN,
             created_at=at,
             created_decision_time=self._batch.decision_time,
-            snapshots=self._take_snapshots(),
+            snapshots=snapshots,
         )
         self._lifecycles[opportunity.opportunity_id] = lifecycle
         self._transitions.append(

@@ -18,6 +18,7 @@ D04 §12 の検査1〜7（＋6b）が、それぞれ**どの宣言の誤りを�
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -37,6 +38,7 @@ from odyssey_fx.strategy.catalog.orders import market
 from odyssey_fx.strategy.catalog.protection import level_stop
 from odyssey_fx.strategy.catalog.registry import (
     ComponentRegistration,
+    ComponentRegistry,
     StatefulImplementation,
     build_registry,
 )
@@ -56,6 +58,7 @@ from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation, Bar
 from odyssey_fx.strategy.declarations.evaluation import (
     EvaluationSchedule,
     OnBarClose,
+    OnInputEvent,
     OnRuntimeEvent,
     RuntimeEventKind,
 )
@@ -73,6 +76,12 @@ from odyssey_fx.strategy.declarations.refs import (
 )
 from odyssey_fx.strategy.declarations.specs import BoolValue, InputBinding, IntValue, StrValue
 from odyssey_fx.strategy.declarations.state_spec import LiteralInitialState, StateSpec
+from odyssey_fx.strategy.declarations.temporal import (
+    AlignmentRequirement,
+    AlignmentRule,
+    TemporalConstraints,
+    WarmupSpec,
+)
 from tests.fixtures.strategy.strategy_a import SIGNAL_SERIES, TIMEFRAMES, strategy_a
 
 breakout_contract = breakout.CONTRACT
@@ -453,6 +462,69 @@ def test_an_unknown_timeframe_cannot_be_waved_through() -> None:
     assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(result)
 
 
+def _registry_with(contract: ComponentContract) -> ComponentRegistry:
+    """`entry_trigger` の契約だけ差し替えた登録簿を作る。"""
+    return build_registry(
+        (
+            extreme.REGISTRATION,
+            ComponentRegistration(
+                contract=contract,
+                implementation=StatefulImplementation(
+                    evaluate=breakout.evaluate, state_type=CONDITION_STATE_V1
+                ),
+                implementation_ref=contract.implementation_ref,
+            ),
+            market.REGISTRATION,
+            level_stop.REGISTRATION,
+            fixed_rr.REGISTRATION,
+        )
+    )
+
+
+def test_a_declared_warmup_requirement_is_rejected_instead_of_being_ignored() -> None:
+    """D04 §9.2・§12 #7: 段階2 は宣言されたウォームアップ本数を守らせる仕組みを持たない。
+
+    通してしまうと、ウォームアップ中に出力を出す部品が宣言どおりに動いていないまま結果を
+    変える。段階2 のウォームアップは履歴窓が返す不足（`WARMUP_INSUFFICIENT`）で成立する。
+    """
+    with_warmup = replace(
+        breakout_contract,
+        temporal_constraints=TemporalConstraints(
+            warmup=WarmupSpec(series=SIGNAL_SERIES, bars=5), alignment=()
+        ),
+    )
+    definition = _swap_component(
+        strategy_a(), "entry_trigger", contract_ref=contract_ref_for(with_warmup)
+    )
+
+    result = compile_strategy(definition, _registry_with(with_warmup), TIMEFRAMES)
+
+    assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(result)
+
+
+def test_a_declared_alignment_requirement_is_rejected_instead_of_being_ignored() -> None:
+    """D04 §9.2・§12 #7: 入力どうしの観測区間を揃える要求も段階2 では守らせられない。"""
+    with_alignment = replace(
+        breakout_contract,
+        temporal_constraints=TemporalConstraints(
+            warmup=None,
+            alignment=(
+                AlignmentRequirement(
+                    input_names=("price", "level"),
+                    rule=AlignmentRule.SAME_OBSERVATION_INTERVAL,
+                ),
+            ),
+        ),
+    )
+    definition = _swap_component(
+        strategy_a(), "entry_trigger", contract_ref=contract_ref_for(with_alignment)
+    )
+
+    result = compile_strategy(definition, _registry_with(with_alignment), TIMEFRAMES)
+
+    assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(result)
+
+
 # --- 誤りの伝え方 ------------------------------------------------------------
 
 
@@ -493,6 +565,33 @@ def test_a_failed_compilation_never_carries_an_empty_error_list() -> None:
 
 
 # --- Codex レビュー1巡目（改善提案）で足した検査 ----------------------------
+
+
+def test_an_opportunity_cannot_inherit_a_missing_interval_through_an_event_chain() -> None:
+    """D05 §6.2 の手順3: 対象区間を持たない性質は入力イベントの連鎖を伝って下流へ伝わる。
+
+    起動条件そのものは入力イベントでも、その上流が実行時イベントで起動していれば対象区間は
+    決まらず、実行時に必ず失敗する。宣言から読めない失敗を残さないよう、コンパイル時に拒否
+    する。
+    """
+    definition = _swap_component(
+        strategy_a(),
+        "breakout_level",
+        evaluation=EvaluationSchedule(
+            triggers=(OnRuntimeEvent("filled", RuntimeEventKind.POSITION_OPENED),)
+        ),
+    )
+    definition = _swap_component(
+        definition,
+        "entry_trigger",
+        evaluation=EvaluationSchedule(triggers=(OnInputEvent("lvl", "level"),)),
+    )
+
+    result = _compile(definition)
+
+    assert CompileRejection.OUTPUT_SPEC_INVALID in _rejections(result)
+    assert isinstance(result, CompileFailed)
+    assert any("breakout_level" in error.message for error in result.errors)
 
 
 def test_an_opportunity_component_cannot_mix_in_a_runtime_event_trigger() -> None:

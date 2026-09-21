@@ -11,6 +11,7 @@
 | 後続確認（`AwaitConfirmation`）と `execution_filter` のある戦略 | 本モジュールが拒否する |
 | 15m より細かい足 | 本モジュールが拒否する（時間足定義の名目の長さで判定） |
 | 出力参照を履歴窓で読む接続 | 本モジュールが拒否する（D05 §6.3） |
+| 追加の時刻制約（ウォームアップ本数・観測区間の一致） | 本モジュールが拒否する（下記） |
 | 複数銘柄に跨る使用箇所 | 銘柄の伝播（段4）が拒否する |
 | 未約定注文の参照（`PENDING_ORDER`） | 列挙に無いので宣言できない（D04 §4.3） |
 | 待機・遡りの欠損方針 | 型に無いので宣言できない（D04 §6.3） |
@@ -18,6 +19,15 @@
 | 指値・距離型の損切り・トレーリング | 実行時の内容型に無いので部品が返せない（D05 §3） |
 
 内部状態を持つこと自体は拒否の理由にしない（D04 §9.1、Q3 決定）。
+
+**追加の時刻制約を段階2 が拒否する理由**: 契約は `TemporalConstraints`（D04 §9.2）で「有効な
+出力を出すまでに必要な確定足数」と「入力どうしの観測区間を揃える要求」を宣言できるが、
+段階2 のランタイムにこれを守らせる仕組みは無い（D05 §6 はどちらも扱っていない）。**宣言が
+黙って無視されると、ウォームアップ中に出力を出す部品や、観測区間の揃っていない入力を混ぜる
+部品が、宣言どおりに動いていないまま結果を変える**。そこで空でない時刻制約を持つ契約は、
+コンパイル時に拒否する。段階2 のカタログの5部品はいずれも空であり（D05 §4.3）、ウォームアップ
+不足は履歴窓が `WARMUP_INSUFFICIENT` として返す経路で成立している（D05 §6.3）。守らせる仕組み
+は D05 v0.2（段階3、指標部品を足すとき）で足す。
 """
 
 from __future__ import annotations
@@ -34,13 +44,19 @@ from odyssey_fx.strategy.compiler.compiled import (
     CompileRejection,
     DeclarationLocation,
 )
+from odyssey_fx.strategy.declarations.contract import ComponentContract
 from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation
 from odyssey_fx.strategy.declarations.evaluation import OnBarClose
 from odyssey_fx.strategy.declarations.read_spec import HistoryWindow
 from odyssey_fx.strategy.declarations.refs import MarketDataRef
 
-__all__ = ["MINIMUM_TIMEFRAME_LENGTH", "check_capabilities", "check_output_history_window"]
+__all__ = [
+    "MINIMUM_TIMEFRAME_LENGTH",
+    "check_capabilities",
+    "check_output_history_window",
+    "check_temporal_constraints",
+]
 
 #: 段階2が扱う最小の足の長さ（D04 §12）。これより細かい足は拒否する。
 MINIMUM_TIMEFRAME_LENGTH: Final = timedelta(minutes=15)
@@ -127,6 +143,39 @@ def check_capabilities(
                 )
             )
 
+    return tuple(errors)
+
+
+def check_temporal_constraints(
+    contracts: Mapping[str, ComponentContract],
+) -> tuple[CompileError, ...]:
+    """空でない追加の時刻制約を拒否する（D04 §9.2・§12 #7）。
+
+    段階2 のランタイムはウォームアップ本数も観測区間の一致も守らせないため、宣言を通すと黙って
+    無視することになる。宣言から読めない挙動を残さないよう、コンパイル時に拒否する。
+    """
+    errors: list[CompileError] = []
+    for instance_id in sorted(contracts):
+        constraints = contracts[instance_id].temporal_constraints
+        if constraints.warmup is not None:
+            errors.append(
+                _error(
+                    instance_id,
+                    "contract.temporal_constraints.warmup",
+                    "a warmup requirement is declared but stage 2 has no way to enforce it;"
+                    " warmup is covered by history windows instead (D05 §6.3), and enforcing"
+                    " the declaration is enabled in stage 3 (D05 v0.2)",
+                )
+            )
+        if constraints.alignment:
+            errors.append(
+                _error(
+                    instance_id,
+                    "contract.temporal_constraints.alignment",
+                    "an observation-interval alignment requirement is declared but stage 2 has"
+                    " no way to enforce it; it is enabled in stage 3 (D05 v0.2)",
+                )
+            )
     return tuple(errors)
 
 

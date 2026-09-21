@@ -218,6 +218,9 @@ def compile_strategy(
     evaluation_order = graph.evaluation_order()
 
     errors = capability.check_capabilities(definition, timeframes)
+    errors += capability.check_temporal_constraints(
+        {instance_id: item.contract for instance_id, item in resolved.items()}
+    )
     errors += _stage9_history_windows(definition, resolved)
     if errors:
         return CompileFailed(errors=errors)
@@ -955,7 +958,7 @@ def _stage6_output_specs(
                         )
                     )
         if produces_opportunity:
-            errors.extend(_check_opportunity_triggers(instance))
+            errors.extend(_check_opportunity_triggers(definition, instance))
         errors.extend(_check_state_initializer(instance.instance_id, contract))
     return tuple(errors)
 
@@ -1056,25 +1059,93 @@ def _type_name(annotation: object) -> str:
     return str(annotation)
 
 
-def _check_opportunity_triggers(instance: ComponentInstance) -> list[CompileError]:
+def _check_opportunity_triggers(
+    definition: StrategyDefinition, instance: ComponentInstance
+) -> list[CompileError]:
     """取引機会を出す使用箇所が対象区間を決められることを確かめる（D05 §6.2 の手順3）。
 
-    実行時イベントによる起動は対象区間を持たない（約定は足の区間に属さない）。起動条件が
-    **1つでも**そうなっていれば、その起動から出た取引機会は対象区間を決められないので、
-    足の確定と混ぜた宣言も拒否する。
+    対象区間の出どころは起動条件で決まる（D05 §6.2 の手順3）。足の確定は自分の区間を持ち、
+    実行時イベントは区間を持たず（約定は足の区間に属さない）、**入力イベントは上流の要求から
+    引き継ぐ**。したがって「区間を持たない」性質は入力イベントの連鎖を伝って下流へ伝わる。
+    起動条件が**1つでも**区間を持たなければ、その起動から出た取引機会は対象区間を決められず、
+    実行時に必ず失敗する。宣言から読めない失敗を残さないよう、ここで拒否する。
     """
-    return [
-        _error(
-            "#6b",
-            CompileRejection.OUTPUT_SPEC_INVALID,
-            instance.instance_id,
-            f"evaluation.{trigger.name}",
-            "a component that produces opportunities cannot start from a runtime event;"
-            " the opportunity would have no signal interval (D05 §6.2)",
+    provenance = _IntervalProvenance(definition)
+    errors: list[CompileError] = []
+    for trigger in instance.evaluation.triggers:
+        origin = provenance.missing_origin(instance.instance_id, trigger)
+        if origin is None:
+            continue
+        via = (
+            "starts from a runtime event"
+            if origin == instance.instance_id
+            else f"starts from an input event whose upstream {origin!r} has no signal interval"
         )
-        for trigger in instance.evaluation.triggers
-        if isinstance(trigger, OnRuntimeEvent)
-    ]
+        errors.append(
+            _error(
+                "#6b",
+                CompileRejection.OUTPUT_SPEC_INVALID,
+                instance.instance_id,
+                f"evaluation.{trigger.name}",
+                f"a component that produces opportunities cannot be started this way: it {via};"
+                " the opportunity would have no signal interval (D05 §6.2)",
+            )
+        )
+    return errors
+
+
+class _IntervalProvenance:
+    """対象区間を持つ起動かどうかを、入力イベントの連鎖をたどって判定する（D05 §6.2 の手順3）。
+
+    閉路は依存グラフの段が拒否する（D05 §5.4）。ここでは閉路に入ったら「判定できない」として
+    扱い、同じ閉路を二重に報告しない。
+    """
+
+    def __init__(self, definition: StrategyDefinition) -> None:
+        self._instances = {item.instance_id: item for item in definition.components}
+        self._resolved: dict[str, str | None] = {}
+
+    def missing_origin(self, instance_id: str, trigger: EvaluationTrigger) -> str | None:
+        """区間を持たない起点の使用箇所 ID。区間を持つなら `None`。"""
+        return self._for_trigger(instance_id, trigger, frozenset())
+
+    def _for_trigger(
+        self, instance_id: str, trigger: EvaluationTrigger, visiting: frozenset[str]
+    ) -> str | None:
+        if isinstance(trigger, OnRuntimeEvent):
+            return instance_id
+        if not isinstance(trigger, OnInputEvent):
+            return None
+        instance = self._instances.get(instance_id)
+        if instance is None:  # pragma: no cover - 段2 が参照の存在を先に検査する
+            return None
+        binding = instance.inputs.get(trigger.input_name)
+        if binding is None:  # pragma: no cover - 段2 が接続の存在を先に検査する
+            return None
+        for source in binding.sources:
+            if not isinstance(source, OutputRef):
+                continue
+            origin = self._for_instance(source.instance_id, visiting | {instance_id})
+            if origin is not None:
+                return origin
+        return None
+
+    def _for_instance(self, instance_id: str, visiting: frozenset[str]) -> str | None:
+        if instance_id in visiting:
+            return None
+        if instance_id in self._resolved:
+            return self._resolved[instance_id]
+        instance = self._instances.get(instance_id)
+        if instance is None:  # pragma: no cover - 段2 が参照の存在を先に検査する
+            return None
+        origin: str | None = None
+        for trigger in instance.evaluation.triggers:
+            found = self._for_trigger(instance_id, trigger, visiting)
+            if found is not None:
+                origin = found
+                break
+        self._resolved[instance_id] = origin
+        return origin
 
 
 # --- 段7: 評価スケジュール ---------------------------------------------------
