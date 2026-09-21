@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from types import MappingProxyType
+from typing import Final
 
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
@@ -45,6 +46,11 @@ __all__ = [
     "ExecutionSeriesView",
     "MissingInput",
 ]
+
+#: 予定上の足を先へ辿る上限の本数。開場中の足が1本も無いまま進む区間は休場であり、
+#: 15分足ならおよそ52日ぶんに当たる。run 区間より長い休場は扱わないので、これを超えたら
+#: 「次の予定は無い」として `None` を返す。
+_SCHEDULE_PROBE_LIMIT: Final = 5000
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,16 +394,27 @@ class ExecutionSeriesView:
     `ExecutionSeries`（`backtest.application.ports`）を同じ snapshot から構造的に満たす。
     戦略ビューとは**別インスタンス**で、足の始値だけを先に公開する段階（D03 §7.3）を持つ
     ため戦略側には渡さない。
+
+    `schedule` は**予定上の足**を答えるために持つ。注文の約定候補は予定から決めるので
+    （D06 §5.3）、実ファイルに足があるかどうかを候補選択に混ぜない。
     """
 
     snapshot: ReadableSnapshot
     series: SeriesId
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
+    schedule: SeriesSchedule
 
     def __post_init__(self) -> None:
         if not isinstance(self.series, SeriesId):
             raise MarketDataValueError("ExecutionSeriesView.series must be a SeriesId")
+        if not isinstance(self.schedule, SeriesSchedule):
+            raise MarketDataValueError("ExecutionSeriesView.schedule must be a SeriesSchedule")
+        if self.schedule.series != self.series:
+            raise MarketDataValueError(
+                f"ExecutionSeriesView of {self.series} was given a schedule for"
+                f" {self.schedule.series}"
+            )
         # 戦略側のビューと同じ関門を通す。執行系列だけ検査が緩いと、manifest に無い
         # partition を渡して未記録のデータを読む経路が残ってしまう。
         frozen = require_readable_snapshot(
@@ -449,4 +466,25 @@ class ExecutionSeriesView:
         for bar in self._bars():
             if moment < bar.bar_start:
                 return bar.key
+        return None
+
+    def next_scheduled_open_after(self, moment: UtcTime) -> BarKey | None:
+        """`moment` より後に始まる最初の**予定上の**執行足の鍵（D03 §6.3）。
+
+        カレンダーと時間足定義だけから決める。実ファイルに足があるかどうかは見ない。
+        注文の約定候補はこの操作で選ぶ（D06 §5.3 の「実ファイルの欠損を候補選択に
+        使わない」）。実在する足から選ぶと、休場でない区間で足が1本欠けているだけで候補が
+        先へずれ、データの欠損が受付結果を変えてしまう。
+
+        休場が続く区間は飛ばして次の開場中の足を返す。`_SCHEDULE_PROBE_LIMIT` 本ぶん進んでも
+        開場中の足が無ければ `None`（run 区間より長い休場は扱わない）。
+        """
+        _require_utc(moment, "next_scheduled_open_after")
+        definition = self.schedule.timeframe_def
+        probe = definition.boundaries(moment).end
+        for _ in range(_SCHEDULE_PROBE_LIMIT):
+            interval = definition.expected_interval(self.schedule.calendar, probe)
+            if interval is not None and moment < interval.start:
+                return BarKey(series=self.series, bar_start=interval.start)
+            probe = definition.boundaries(probe).end
         return None

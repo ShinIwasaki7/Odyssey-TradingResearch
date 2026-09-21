@@ -324,6 +324,7 @@ def test_the_execution_view_also_refuses_a_quarantined_partition() -> None:
             series=HOURLY,
             allowed_partitions=frozenset({quarantined}),
             partition_bars={},
+            schedule=SCHEDULES[HOURLY],
         )
 
 
@@ -339,6 +340,7 @@ def test_the_execution_view_refuses_a_partition_missing_from_the_manifest() -> N
             series=DAILY,
             allowed_partitions=frozenset({DAILY_PARTITION}),
             partition_bars={DAILY_PARTITION: _bars(DAILY, market.TF_1D_NY17)},
+            schedule=SCHEDULES[DAILY],
         )
 
 
@@ -350,6 +352,7 @@ def test_the_execution_view_accepts_a_recorded_partition() -> None:
         series=HOURLY,
         allowed_partitions=frozenset({HOURLY_PARTITION}),
         partition_bars={HOURLY_PARTITION: bars},
+        schedule=SCHEDULES[HOURLY],
     )
     key = view.next_bar_key_after(UtcTime.parse("2026-01-14T09:30:00Z"))
     assert key is not None
@@ -569,6 +572,7 @@ def test_the_execution_view_also_binds_its_bars_to_the_manifest() -> None:
             series=HOURLY,
             allowed_partitions=frozenset({HOURLY_PARTITION}),
             partition_bars={HOURLY_PARTITION: bars[:-1]},
+            schedule=SCHEDULES[HOURLY],
         )
 
 
@@ -583,3 +587,69 @@ def test_matching_bars_are_accepted() -> None:
     )
     latest = view.latest_available(HOURLY, UtcTime.parse("2026-01-14T12:00:00Z"))
     assert not isinstance(latest, MissingInput)
+
+
+# --- 予定上の足（D03 §6.3）--------------------------------------------------
+
+
+def test_the_schedule_answers_even_where_no_bar_exists() -> None:
+    """D03 §6.3: 予定上の足はカレンダーと時間足定義だけから決まる。
+
+    実ファイルの欠損を候補選択に使わない（D06 §5.3）ための操作である。足を1本も渡さない
+    ビューでも、次の予定は同じ答えを返す。
+    """
+    view = ExecutionSeriesView(
+        snapshot=snapshots.readable_for({HOURLY_PARTITION: ()}),
+        series=HOURLY,
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        partition_bars={HOURLY_PARTITION: ()},
+        schedule=SCHEDULES[HOURLY],
+    )
+
+    key = view.next_scheduled_open_after(UtcTime.parse("2026-01-14T09:30:00Z"))
+
+    assert key is not None
+    assert key.bar_start == UtcTime.parse("2026-01-14T10:00:00Z")
+    # 実在する足を辿る操作は、足が無いので何も返せない。2つの操作は別物である。
+    assert view.next_bar_key_after(UtcTime.parse("2026-01-14T09:30:00Z")) is None
+
+
+def test_a_missing_bar_does_not_shift_the_next_scheduled_open() -> None:
+    """D06 §5.3: 休場でない区間の欠損は、次の予定をずらさない。
+
+    実在する足から選ぶと、欠損1本で候補が先の足へ飛び、データの欠けが受付結果を変える。
+    """
+    full = _bars(HOURLY, market.TF_1H)
+    without_one = tuple(
+        bar for bar in full if bar.bar_start != UtcTime.parse("2026-01-14T10:00:00Z")
+    )
+    view = ExecutionSeriesView(
+        snapshot=snapshots.readable_for({HOURLY_PARTITION: without_one}),
+        series=HOURLY,
+        allowed_partitions=frozenset({HOURLY_PARTITION}),
+        partition_bars={HOURLY_PARTITION: without_one},
+        schedule=SCHEDULES[HOURLY],
+    )
+    moment = UtcTime.parse("2026-01-14T09:30:00Z")
+
+    assert view.next_scheduled_open_after(moment) is not None
+    assert view.next_scheduled_open_after(moment).bar_start == UtcTime.parse(  # type: ignore[union-attr]
+        "2026-01-14T10:00:00Z"
+    )
+    # 実在する足を辿る操作は、欠けた足を飛ばして次の足を返す（候補選択には使わない）。
+    skipped = view.next_bar_key_after(moment)
+    assert skipped is not None
+    assert skipped.bar_start == UtcTime.parse("2026-01-14T11:00:00Z")
+
+
+def test_the_schedule_refuses_a_series_it_does_not_describe() -> None:
+    """系列の違う予定表を渡すと構築時に拒否する（取り違えを実行時まで持ち越さない）。"""
+    bars = _bars(HOURLY, market.TF_1H)
+    with pytest.raises(MarketDataValueError, match="schedule for"):
+        ExecutionSeriesView(
+            snapshot=snapshots.readable_for({HOURLY_PARTITION: bars}),
+            series=HOURLY,
+            allowed_partitions=frozenset({HOURLY_PARTITION}),
+            partition_bars={HOURLY_PARTITION: bars},
+            schedule=SCHEDULES[DAILY],
+        )
