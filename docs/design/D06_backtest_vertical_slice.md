@@ -1,7 +1,7 @@
 # D06: バックテスト基盤の最小縦断設計（`odyssey_fx.backtest`: engine / domain.orders / admission / execution / portfolio / trace）
 
 作成日: 2026-09-21
-状態: **承認（2026-09-21、PR #16）**。v1.2（2026-09-21、PR #17）: D07 §15 の改訂依頼1〜3 に対する人間の決定（Q12〜Q14、いずれも選択肢1）を反映した。(1) 約定1件ごとの費用を区分別の金額列として読めるようにした（第9.2節の表9、Q12）。(2) run 中の台帳 snapshot の含み損益を、直前に完了した執行足の終値で評価すると定めた（第8.1節、Q13。受付時の参照価格 Q10 と同じ出どころ）。(3) 平坦化の規則の3つの穴（複合表の接頭辞・入れ子レコード・区分タグ付き union）を埋めた（第9.1節、Q14）。あわせて `Reason` の列名の例を一般規則に合わせて `*_code` / `*_detail` に直した（D07 §4.2 が既に使っている列名と一致させるため）。v1.1（2026-09-21、PR #17）: D07 §15 の改訂依頼4 を受け、`BacktestResult` から資産推移の2項目（`balance_series` / `equity_series`）を落とした（第9.4節）。要素の型が定義されておらず、同じ推移が台帳 snapshot の表（表14）と結果 DTO の2経路で読める状態だったためである。**第9.4節が既に定めた「集計前のレコードは `trace_tables` 経由で渡し、`BacktestResult` の中で集計しない」の適用であり、設計の選択は伴わない**（D07 は表14 を直接読むため、段階2の指標・集計・trace はどれも変わらない）。v1.0（2026-09-21）: 第16節の要決定 Q1〜Q11 を人間がすべて決定し（Q7 のみ選択肢2、他の10件は提示時の推奨案である選択肢1）、本文へ反映した。**未決の項目は残っていない**。決定に伴い、**同じ PR で正本を改訂した**: 処理段階の名前に数字を許す規則（D02 §3.3、v1.5）、公開バッチに run 末尾の合図を足す項目（D05 §6.1、v1.1）、保護水準の置き方が不正なときの受付前拒否の理由コード `PROTECTION_INVALID`（上位設計書 §4.7.14 と D02 §8.1、v1.5）、発注の根拠になった出力の識別子を戦略ランタイムの戻り値へ足す改訂（D05 §3・§6.2、v1.2。第6.1節の阻害要因の解消）。あわせて紙上トレース [T01](../traces/T01_paper_trace.md) を書き（置き場所は D01 §7.1 に従い `docs/traces/`）、そこで洗い出した未記述を本書へ反映した（第17節に一覧）。段階2（最小縦断＝戦略定義→注文→約定→単一評価）と紙上トレース T01 に必要な範囲だけを扱う。検証戦略 A（1時間足の高値突破→後続確認なしの成行→初期損切り＋固定リスクリワード比の利確、上位設計書 §7.1）が動くことを必要十分条件とする。ADR-0016 条件2 のうち「D06 の最小縦断範囲」を本書で充足する。全体計画 §6 D-2 が「骨子だけで実装へ進めない」と列挙した5点（注文状態、フェーズ順、原子性、run_end、trace 型）は、最小縦断の範囲でもすべて本書で確定させる。第16節に決定の一覧を置く。
+状態: **承認（2026-09-21、PR #16）**。v1.3（2026-09-22、PR #19）: 段階2 のバックテスト基盤の実装で残った11件の仮置きを人間がすべて決定し、本文へ反映した（**未決の項目は残っていない**）。主なものは、(1) 保護水準の更新を決済要求との衝突で捨てた理由に新しい理由コード `SUPERSEDED_BY_EXIT` を置く（第8.3節。同じ PR で上位設計書 §4.7.14 と D02 §8.1 を改訂）、(2) 判断履歴の数値列を人が読める固定小数表記にし、同じ値が常に同じ文字列になる4つの規則を定めた（第9.1節）、(3) 候補の始値を実在する足ではなく**足のスケジュール**から決めるため、執行系列のポートに4つ目の操作を足した（第5.3節。同じ PR で D03 §6.3 を改訂）、(4) 公開が1件も無い判断時点では戦略ランタイムを呼ばない（第4.2節）、(5) 予約と建玉の表は run の終わりに最終状態を1行ずつ書く（第9.2節）、(6) 「診断として残す」の残す先は run manifest の警告群とする（第9.3節）、(7) 層規則に合わせた型の置き場所5件を第3節に確定した。v1.2（2026-09-21、PR #17）: D07 §15 の改訂依頼1〜3 に対する人間の決定（Q12〜Q14、いずれも選択肢1）を反映した。(1) 約定1件ごとの費用を区分別の金額列として読めるようにした（第9.2節の表9、Q12）。(2) run 中の台帳 snapshot の含み損益を、直前に完了した執行足の終値で評価すると定めた（第8.1節、Q13。受付時の参照価格 Q10 と同じ出どころ）。(3) 平坦化の規則の3つの穴（複合表の接頭辞・入れ子レコード・区分タグ付き union）を埋めた（第9.1節、Q14）。あわせて `Reason` の列名の例を一般規則に合わせて `*_code` / `*_detail` に直した（D07 §4.2 が既に使っている列名と一致させるため）。v1.1（2026-09-21、PR #17）: D07 §15 の改訂依頼4 を受け、`BacktestResult` から資産推移の2項目（`balance_series` / `equity_series`）を落とした（第9.4節）。要素の型が定義されておらず、同じ推移が台帳 snapshot の表（表14）と結果 DTO の2経路で読める状態だったためである。**第9.4節が既に定めた「集計前のレコードは `trace_tables` 経由で渡し、`BacktestResult` の中で集計しない」の適用であり、設計の選択は伴わない**（D07 は表14 を直接読むため、段階2の指標・集計・trace はどれも変わらない）。v1.0（2026-09-21）: 第16節の要決定 Q1〜Q11 を人間がすべて決定し（Q7 のみ選択肢2、他の10件は提示時の推奨案である選択肢1）、本文へ反映した。**未決の項目は残っていない**。決定に伴い、**同じ PR で正本を改訂した**: 処理段階の名前に数字を許す規則（D02 §3.3、v1.5）、公開バッチに run 末尾の合図を足す項目（D05 §6.1、v1.1）、保護水準の置き方が不正なときの受付前拒否の理由コード `PROTECTION_INVALID`（上位設計書 §4.7.14 と D02 §8.1、v1.5）、発注の根拠になった出力の識別子を戦略ランタイムの戻り値へ足す改訂（D05 §3・§6.2、v1.2。第6.1節の阻害要因の解消）。あわせて紙上トレース [T01](../traces/T01_paper_trace.md) を書き（置き場所は D01 §7.1 に従い `docs/traces/`）、そこで洗い出した未記述を本書へ反映した（第17節に一覧）。段階2（最小縦断＝戦略定義→注文→約定→単一評価）と紙上トレース T01 に必要な範囲だけを扱う。検証戦略 A（1時間足の高値突破→後続確認なしの成行→初期損切り＋固定リスクリワード比の利確、上位設計書 §7.1）が動くことを必要十分条件とする。ADR-0016 条件2 のうち「D06 の最小縦断範囲」を本書で充足する。全体計画 §6 D-2 が「骨子だけで実装へ進めない」と列挙した5点（注文状態、フェーズ順、原子性、run_end、trace 型）は、最小縦断の範囲でもすべて本書で確定させる。第16節に決定の一覧を置く。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.3.12・§4.5・§4.7（全節）、[全体計画書](fx_research_platform_overall_plan.md) §5.4・§6 B/C/D/E・§7.4・§8.1・§8.2、[D01](D01_architecture_and_dependency_rules.md) §3・§4・§7.2、[D02](D02_common_kernel.md) §3.3・§4・§5.2・§7・§8・§9、[D03](D03_marketdata_and_time.md) §3・§6・§7、[D04](D04_strategy_declarations.md) §1.2・§5・§11、[D05](D05_strategy_runtime.md) §1.2・§6.1・§7・§8・§11・§12、ADR-0006（決定論的 ID）、ADR-0012（Decimal / float 境界）、ADR-0015（初版の縦断実行範囲）、ADR-0016（実装開始条件）、ADR-0027（成果物は Parquet 表＋JSON マニフェスト）、ADR-0029（swap 未計上）、ADR-0030（足内競合解決契約）、ADR-0031・ADR-0032・ADR-0033（取引機会の語彙）
 対応段階: 段階2で実装。
 
@@ -101,8 +101,8 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `ExecutionPolicy` | `domain.policies` | レコード | `entry_delay_bars: int` / `adverse_fill_limits: Mapping[Symbol, PriceOffset]` / `entry_valid_for: timedelta` / `close_valid_for: timedelta` / `resolution_hierarchy: ResolutionHierarchy` / `reference_quote_source: ReferenceQuoteSource` | §7.1・§7.1.1・§7.4・§6.4 |
 | `ReferenceQuoteSource` | `domain.policies` | enum | `EXECUTION_SERIES_LAST_CLOSE`（段階2の唯一の値。Q10 決定、選択肢1） | §6.4 |
 | `ConversionPolicy` | `domain.policies` | レコード | `pivot_currency: CurrencyCode` / `max_observation_skew: timedelta` | §8.5・Q7・Q9 |
-| `ConversionPath` | `portfolio.conversion` | レコード | `legs: tuple[ConversionLeg, ...]`（**0本＝恒等換算 / 1本＝直接 / 2本＝基軸通貨経由**）/ `rate: Decimal`（各 leg の積。0本なら1）/ `observed_at: UtcTime`（各 leg の `observed_at` の**最も古いもの**。0本なら判断時刻）/ `skew: timedelta`（0本・1本なら0） | §8.5 |
-| `ConversionLeg` | `portfolio.conversion` | レコード | `series: SeriesId` / `bar_key: BarKey` / `rate: Decimal` / `observed_at: UtcTime` / `inverted: bool` | §8.5 |
+| `ConversionPath` | `domain.policies` | レコード | `legs: tuple[ConversionLeg, ...]`（**0本＝恒等換算 / 1本＝直接 / 2本＝基軸通貨経由**）/ `rate: Decimal`（各 leg の積。0本なら1）/ `observed_at: UtcTime`（各 leg の `observed_at` の**最も古いもの**。0本なら判断時刻）/ `skew: timedelta`（0本・1本なら0） | §8.5 |
+| `ConversionLeg` | `domain.policies` | レコード | `series: SeriesId` / `bar_key: BarKey` / `rate: Decimal` / `observed_at: UtcTime` / `inverted: bool` | §8.5 |
 | `CostModel` | `domain.policies` | レコード | `commission_per_unit: Money` / `entry_slippage: PriceOffset` / `close_slippage: PriceOffset` / `spread_model: SpreadModel` / `swap_modeled: bool`（段階2は常に `False`） | §7.6 |
 | `SpreadModel` | `domain.policies` | union | `FixedSpread(offset: PriceOffset)`（段階2の唯一の値） | §7.2 |
 | `ResolutionHierarchy` | `domain.policies` | レコード | `levels: tuple[SeriesId, ...]`（粗い順。先頭は執行系列） | §7.4 |
@@ -148,18 +148,23 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `LedgerSnapshot` | `portfolio.ledger` | レコード | `at: ProcessingPoint` / `balance: Money` / `equity: Money` / `consumed: Money` / `open_position_ids: tuple[PositionId, ...]` | §8.1・§9.2 |
 | `FinalSummaries` | `trace.result` | レコード | `realized: Money` / `equity_with_mtm: Money` / `hypothetical_closed: Money` / `cost_breakdown: Mapping[CostKind, Money]` | §10.3 |
 | `RunStatus` | `trace.result` | enum | `COMPLETED` / `FAILED_DATA_ERROR` / `FAILED_CAPABILITY` | §9.4・§10.4 |
-| `HierarchyCheckResult` | `execution` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `child_bar: BarKey \| None` / `expected_interval: Interval \| None` / `child_intervals: tuple[Interval, ...]` / `coverage_gaps: tuple[Interval, ...]` / `coverage_overlaps: tuple[Interval, ...]` / `expected_boundary: UtcTime \| None` / `observed_boundary: UtcTime \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
-| `DataCapabilityReport` | `engine` | レコード | `compiled_match: bool` / `integrity: IntegrityReport` / `hierarchy_checks: tuple[HierarchyCheckResult, ...]` / `runnable: bool` / `reason: Reason \| None` | §7.5・§10.5 |
+| `HierarchyCheckResult` | `domain.policies` | レコード | `check: str` / `passed: bool` / `parent_series: SeriesId` / `child_series: SeriesId \| None` / `parent_bar: BarKey \| None` / `child_bar: BarKey \| None` / `expected_interval: Interval \| None` / `child_intervals: tuple[Interval, ...]` / `coverage_gaps: tuple[Interval, ...]` / `coverage_overlaps: tuple[Interval, ...]` / `expected_boundary: UtcTime \| None` / `observed_boundary: UtcTime \| None` / `expected_basis: PriceBasis \| None` / `observed_basis: PriceBasis \| None` / `expected_available_at: UtcTime \| None` / `observed_available_at: UtcTime \| None` | §7.4 |
+| `DataCapabilityReport` | `trace.manifest` | レコード | `compiled_match: bool` / `integrity: IntegrityReport` / `hierarchy_checks: tuple[HierarchyCheckResult, ...]` / `runnable: bool` / `reason: Reason \| None` | §7.5・§10.5 |
 | `RunManifest` | `trace.manifest` | レコード | 第9.3節の項目 | §9.3 |
 | `BacktestResult` | `trace.result` | レコード | 第9.4節の項目 | §9.4 |
 | `TraceSink` | `application.ports` | Protocol | `write(table: TraceTable, rows: tuple[object, ...]) -> None` | §9.1 |
 | `TraceTable` | `trace.recorder` | enum | 第9.2節の15件 | §9.2 |
-| `PublicationFeed` | `application.ports` | Protocol | `events(interval)`。要素は D03 §7.1 の4イベントの union（`marketdata.application` が実装し `app` が注入する） | §4.3 |
-| `ExecutionSeries` | `application.ports` | Protocol | D03 §6.3 の3操作（`open_of` / `bar` / `next_bar_key_after`） | §7.1 |
-| `Calendar` | `application.ports` | Protocol | `marketdata.domain` の `TradingCalendar` を受ける（D01 §4）。期限・候補 open・休場の判定に使う | §5.3 |
+| `CompositeRow` | `trace.recorder` | レコード | `primary: object` / `parts: tuple[tuple[str, type, object], ...]`（接頭辞・従の型・値）。複合表と区分タグ付き union の行を、記録層が受付層・執行層・台帳層を import せずに運ぶための入れ物 | §9.1・§9.2 |
+| `ManagementApplication` | `trace.recorder` | レコード | `at: ProcessingPoint` / `applied: bool` / `reason: Reason \| None` / `protection_version: int \| None` / `rounded_take_profit: Price \| None` / `realized_reward_risk: Decimal \| None` | §8.3・§9.2 |
+| `PublicationFeed` | `engine.loop` で構造を定義し `application.ports` が再公開 | Protocol | **反復できること**だけを要求する（`__iter__`）。要素は D03 §7.1 の4イベント。run 区間で絞るのはエンジン側で行う | §4.3 |
+| `ExecutionSeries` | `engine.loop` で構造を定義し `application.ports` が再公開 | Protocol | D03 §6.3 の4操作（`open_of` / `bar` / `next_bar_key_after` / `next_scheduled_open_after`） | §5.3・§7.1 |
+| `IntrabarSeries` | `engine.loop` で構造を定義し `application.ports` が再公開 | Protocol | `bars_in(series, interval)`。足内競合を下位足で解く段でだけ使う（階層が2段以上のとき） | §7.4 |
+| `Calendar` | `engine.loop` で構造を定義し `application.ports` が再公開 | Protocol | `marketdata.domain` の `TradingCalendar` を受ける（D01 §4）。期限・候補 open・休場の判定に使う | §5.3 |
 | `ResultWriter` | `application.ports` | Protocol | `write(result: BacktestResult, manifest: RunManifest) -> None` | §9.1 |
 | `RiskAssessmentRef` | `admission` | レコード | `assessment_id: EvidenceId`（`RiskAssessment.assessment_id` と同じ値。`RISK_ASSESSMENTS` の行を指す） | §6.4 |
-| `RunBacktest` | `application.run_backtest` | Protocol | `run(config: RunConfig, compiled: CompiledStrategy) -> BacktestResult` | §4.2 |
+| `RunBacktest` | `application.run_backtest` | Protocol | `run(config: RunConfig, compiled: CompiledStrategy) -> BacktestResult`。構築時に**実行の出どころ**（`CodeDigest` / `LockDigest` / `EnvDigest` / git の状態）も受け取る（第9.3節の識別の群。実際に算出して渡すのは `app`） | §4.2・§9.3 |
+
+**中間の4層（受付・執行・台帳・記録）は相互に import できないため、2つ以上の層から参照される型は置き場所を下げる**【確定】（2026-09-22 の人間の決定。PR #19。D01 §3.3 の契約 L2c）。解像度階層の適合検査の結果（`HierarchyCheckResult`）と換算経路（`ConversionPath` / `ConversionLeg`）は、執行層・台帳層だけでなく run manifest と根拠記録にも入るため `domain.policies` に置く（経路を決める規則そのものは `portfolio.conversion` に残す）。データ能力検査の報告（`DataCapabilityReport`）は run manifest と結果 DTO の項目であり、記録層はエンジンを import できないため `trace.manifest` に置く。公開フィード・執行系列・下位足・カレンダーの受け口は、使うのが `engine` でありエンジンは1つ上の `application` を import できないため、**`engine.loop` で構造を定義し `application.ports` が同じ名前で再公開する**（D01 §4 の「ポートは利用側の application が定義する」の、層順序に合わせた実現である）。予約（`RiskReservation`）が持つ審査記録への参照は、参照型（受付層の `RiskAssessmentRef`）ではなく**同じ値の識別子**（`assessment_id: EvidenceId`）とする（`domain` から受付層を参照できないため）。
 
 `PositionContext` と `AccountContext` の2件だけが `strategy` 側に置かれる（理由は第8.4節）。`Symbol` / `Price` / `PriceOffset` / `Quantity` / `Money` / `ConversionRate` / `UtcTime` / `Interval` / `Reason` / `PhaseRank` / `PhaseSet` / `ProcessingPoint` と各 ID 型は D02、`SeriesId` / `BarKey` / `PriceBasis` / `IntegrityReport` は D03、`CompiledStrategy` / `EntryProposal` / `ManagementRequest` / `PublicationBatch` / `AdmissionNotice` / `RuntimeEventNotice` は D04・D05 が正本である。
 
@@ -234,6 +239,8 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 **不採用**: 失敗した使用箇所だけを飛ばして続ける案（D05 が「以降の評価を行わない」と決めた範囲をエンジンが広げ直すことになる）、判断時点の末尾まで進めてから止める案（失敗後に受け付けた注文が約定し、失敗した run の成果物に取引が含まれる）。
 
 **出力記録（`OutputRecord`）は `OutputSink` から受け取った分だけを表1へ書き、`RuntimeStepResult.outputs` を再送しない**【提案】。D05 §6.2 の手順7 はランタイム自身が `OutputSink.emit` を呼んでから結果を返すと定めており【合意済み】、戻り値をもう一度書き出すと同じ `output_id` の行が二重に入り、主キーが重複して出力件数が水増しになる。エンジンは `OutputSink` の実装（D01 §4）として受け取った時点で表1へ書き、戻り値の `outputs` は後続の処理と件数の検算にだけ使う。
+
+**公開も足の終了も無い判断時点では `step` を呼ばない**【確定】（2026-09-22 の人間の決定。PR #19）。執行足の始値だけが来る判断時点（rank 11 しか仕事が無い時点）では、`PublicationBatch` に入れるものが `available_bars` も `scheduled_closes` も無く、部品が読むものが1つも無い。それでも呼ぶと、入力の無い評価記録と空の `step` の呼び出しが判断時点の数だけ判断履歴に並び、「評価を見送った」（`Skipped`）と「そもそも渡すものが無かった」を読む側が区別できなくなる。**不採用**: 空のバッチで毎回呼ぶ案（上記のとおり記録が読めなくなる。D05 §6.1 は空のバッチを拒まないので実行はできるが、意味が無い）。
 
 **戦略ランタイムを1つの判断時点で最大2回（run_end では最大3回）呼ぶ**【提案】。D05 §6.1 は同じ `batch_id` での再呼び出しを `KernelValueError` で拒むため、2回目・3回目は**新しい `EventId` を持つ別の `PublicationBatch`** として渡す。3回とも `decision_time` は同じ T、`phases` は `BACKTEST_PHASES` である。
 
@@ -345,6 +352,7 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 - 約定可能条件は `open_time < expires_at`。同時刻なら期限切れを先に確定する（rank 2 < rank 11）【合意済み】同節。
 - 期限は足の到着に依存せず休場中も進む。受付後の延長は行わない【合意済み】同節。
 - **受付時点で期限内に候補 open が無ければ受付前拒否**（`NO_CANDIDATE`）。候補はカレンダー（`backtest.application.ports` の `Calendar`）と執行系列の足スケジュールから決め、将来価格や実ファイルの欠損を候補選択に使わない【合意済み】同節。
+- **足スケジュールは執行系列のポートの操作として受け取る**【確定】（2026-09-22 の人間の決定。PR #19）。`ExecutionSeries` に4つ目の操作 `next_scheduled_open_after(t)` を置き、候補の始値はこれで選ぶ（D03 §6.3 を同じ PR で改訂した）。実在する足を辿る操作（`next_bar_key_after`）で選ぶと、休場でない区間で足が1本欠けているだけで候補が次の足へずれ、**データの欠損が受付結果を変える**。実在する足を辿る操作は、実際に読んだ足を根拠記録へ載せるときにだけ使う。**不採用**: 実在する足から探し続ける案（上記のとおり本節の規則に反する）、受付層がカレンダーと時間足定義を直接持って予定を計算する案（同じ計算が市場データ側と受付層の2か所に割れる）。
 - 候補が週末休場をまたぐ場合は `CARRY_NOT_ALLOWED` で受付前拒否する。有効時間を長くしても回避できない【合意済み】同節。週末をまたぐ候補は有効時間の外にもなるため `NO_CANDIDATE` も同時に成立するが、**代表理由は `CARRY_NOT_ALLOWED`** とする（第5.2節の代表理由の順位）。
 - **候補の始値が run_end 以降になる注文は、そのまま受け付け、末尾で `CANCELED`（理由 `RUN_END`）にする**【合意済み】（Q11 決定、選択肢1）。上位 §4.7.13 F は「候補が run_end 以降と受付時に分かる場合の早期拒否」を詳細設計へ委ねているが、同節の時刻表は「run_end=22:15、期限22:20 → 末尾 open は実行せず、**受付済みなら CANCELED/RUN_END**」と書いており、受け付けたうえで末尾に取り消す経路を前提にしている。本書はその読み方を採り、早期拒否を入れない。早期拒否を入れると、末尾手順5（残存する受付済み注文の取消、第10.1節）が段階2で一度も起きなくなる。**不採用**: 受付時に `RUN_END` で受付前拒否する案（Q11 の選択肢2。約定できない注文を作らずに済むが、末尾手順5 が段階2で常に空になり、テストの書けない手順が残る）、実験設定で選べるようにする案（Q11 の選択肢3。両方を比較できるが、段階2で使わない設定が1つ増える）。
 - **この規則の下で、判断時点をまたいで `PENDING` のまま残る注文は次の1種類だけ**である【提案】。`entry_delay_bars=0` では rank 10 で受け付けた注文は同じ判断時点の rank 11 で約定するため、残るのは**約定後の受付（rank 13）で受け付けた決済注文**（最初の適格な始値が次の執行足になる）だけである。その注文が run_end の直前の判断時点で受け付けられ、候補の始値が run_end と一致した場合に、第5.1節の遷移4 が起きる。
@@ -608,7 +616,7 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 初期の利確を約定した足から有効にするのは、上位 §4.7.7 が「新規建玉は約定 → 初期損切りの有効化 → Exit による初期利確の算定を行い、**同じ足のその後の値動きに対する保護判定の対象にする**」と定めているためである。D05 §8 も「次の足まで利確が無い」構成を排除している。次足からにすると、約定した足の中で利確に触れた取引を見逃し損益が変わる。既存建玉への更新だけが「終値で計算した更新はその足の過去の高値・安値へ適用しない」（上位 §4.7.7）の対象である。
 - **保護水準の更新の検査に失敗した場合は、その要求だけを適用せずに記録し、run は止めない**【提案】。丸めの結果 `take_profit` が約定価格と同値以下（買い）になる場合や、対象建玉が方向と合わない場合がこれに当たる。理由は `PROTECTION_INVALID`（第5.2節で加えた語）とし、表12（`MANAGEMENT_APPLICATIONS`）に「適用しなかった要求」として残す。建玉は利確を持たないまま損切りだけで継続する。**不採用**: run を失敗させる案（戦略の宣言の誤りは判断履歴に残して診断する対象であり、データ誤りと同じ扱いにしない。第4.2節が run を止めるのは部品の評価が `Failed` になった場合に限る）、丸め方向を反転して通す案（利益を上方に丸めない規則（第6.5節）に反する）。
 - **管理要求が1件も返らなかった建玉は、初期の利確を持たないまま継続する**【提案】。`fixed_rr_take_profit` の評価が `Skipped`（入力欠損）で終わる場合がこれに当たる。架空の利確水準を埋めず、`ProtectionState.take_profit` を `None` のままにする。評価が `Skipped` であったことは表2（`EVALUATIONS`）に残る。`Failed` の場合は第4.2節の失敗の規則に従って run を止める。
-- 同じ建玉への更新と決済要求が同時なら決済を優先し、更新は理由を記録して破棄する【合意済み】上位 §4.7.6。
+- 同じ建玉への更新と決済要求が同時なら決済を優先し、更新は理由を記録して破棄する【合意済み】上位 §4.7.6。**破棄の理由は `SUPERSEDED_BY_EXIT`**【確定】（2026-09-22 の人間の決定。PR #19。同じ PR で上位設計書 §4.7.14 と D02 §8.1 の表を改訂した）。既存の語はどれも意味が合わない（`POSITION_CLOSED` は閉じた建玉への要求、`RUN_END` は末尾、`PROTECTION_INVALID` は宣言の誤りであり、ここでは建玉は開いていて宣言も正しい）。取引機会が終端する `SUPERSEDED` と混同しないよう、決済（Exit）に押しのけられたことを名前に入れる。適用を試みてから捨てるのではなく**適用そのものを行わない**（建玉は決済されるので、その更新は一度も有効にならない）。表12（`MANAGEMENT_APPLICATIONS`）に `applied=False` とこの理由で残す。**不採用**: `POSITION_CLOSED` を流用する案（まだ閉じていない建玉に「閉鎖済み」と記録され、集計で本来の閉鎖済み拒否と混ざる）、理由を持たせずに記録だけ残す案（`ManagementApplication` は適用しなかった要求に必ず理由を要求する）。
 - 閉じた建玉への要求は `POSITION_CLOSED` で拒否し、run 全体は止めない【合意済み】同節。
 - 損切り水準の更新（トレーリング）は段階3（第12節）。段階2の `ManagementAction` に `UPDATE_STOP` は無い【合意済み】D04 §11.2。
 
@@ -676,7 +684,15 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 
 - 表形式データは Parquet、manifest は JSON【合意済み】ADR-0027。保存先は `runs/<run_id>/`。
 - 書き出しは `TraceSink`（`backtest.application.ports`）経由で、実装は `evaluation.adapters` または `app` が持つ【合意済み】D01 §4。`backtest` は polars も Parquet も直接触らない。
-- **行は平坦化して保存する**【提案】。各表の列は本書・D05 の型のフィールドに1対1で対応させ、入れ子の値は次の規則で開く。`ProcessingPoint` は `*_time` / `*_phase` / `*_sequence` の3列、`Reason` は `*_code` と `*_detail`（正規化エンコード文字列、D02 §9.3）の2列、`Money` は `*_amount`（文字列）と `*_currency`、`Decimal` と `Price` と `Quantity` は文字列、`UtcTime` は D02 §3.1 の文字列、ID 型は `__str__`。Decimal を浮動小数として保存すると再現性が壊れるため文字列にする【合意済み】ADR-0012。
+- **行は平坦化して保存する**【提案】。各表の列は本書・D05 の型のフィールドに1対1で対応させ、入れ子の値は次の規則で開く。`ProcessingPoint` は `*_time` / `*_phase` / `*_sequence` の3列、`Reason` は `*_code` と `*_detail`（正規化エンコード文字列、D02 §9.3）の2列、`Money` は `*_amount`（文字列）と `*_currency`、`Decimal` と `Price` と `Quantity` は文字列、`UtcTime` は D02 §3.1 の文字列、ID 型は `__str__`。Decimal を浮動小数として保存すると再現性が壊れるため文字列にする【合意済み】ADR-0012。期間（`timedelta`）は**秒数の十進文字列**（D02 §9.3 v1.7 の注記。段階2で現れるのは換算経路のずれだけ）。
+- **十進数の単一の列は、人が読める固定小数で書く**【確定】（2026-09-22 の人間の決定。PR #19）。ダイジェスト用の正規化エンコード（D02 §9.3）は `149.500` を `1495e-1`、`1000000` を `1e6` と書くため、判断履歴を人が読み下せない。そこで**数値の列だけ**を次の4つの規則で書く。
+
+  1. **末尾ゼロを落とす**（スケールの決め方）。`Decimal("149.500")` も `Decimal("149.5")` も `149.5` になる。落とさないと、**同じ値が書き手の持っていた桁数によって別の文字列になり**、再実行の判断履歴を文字列のまま比べられない（第4.4節の「許容誤差は完全一致」）。
+  2. **指数表記を使わない**。`Decimal("1E+6")` は `1000000`、`Decimal("5E-4")` は `0.0005`。小数点の前が空にならないよう `0` を補う。
+  3. **負号は値が負のときだけ**先頭に付ける。ゼロは符号も桁も捨てて `0`（`-0` も `0.00` も `0`）。
+  4. 固定小数で書くと長さが上限（1000 文字）を超える値は**書き出しを失敗させる**。固定小数で書けない大きさは人が読む形にならず、黙って別表記へ落とすと規則1 が崩れる（既定は失敗、ADR-0006）。段階2 の値（価格・数量・金額・率）はいずれも 30 文字に満たない。
+
+  読み戻しは `Decimal(文字列)` で厳密に往復する（D07 §4.3 の `ColumnValueKind` による解釈がこれに当たる）。**この表記を使うのは数値の単一の列だけ**で、理由の型付き詳細（`*_detail`）と可変長の入れ子の列は、復号せずに文字列のまま比べる列なので**正規化エンコードのまま**にする。**不採用**: すべての列を正規化エンコードにする案（同じ値が常に同じ文字列になる利点はあるが、価格表を人が読めず、紙上トレースとの突き合わせが手作業でできない）、列ごとに固定のスケールを決める案（`149.500` のように桁数を揃えられるが、率や比のように刻みを持たない列のスケールを一般に定義できず、規則が列ごとの例外表になる）。
 - **可変長の入れ子（`market_refs` / `conversion_paths` / `checks` / `hierarchy_checks` など、レコードの `tuple`）は、要素ごとに D02 §9.3 の正規化エンコード文字列にし、その文字列の `list` 列として保存する**【提案】。要素数が行ごとに変わるため固定の列へ開けず、かといって落とすと診断の実値が消える。ID の `tuple`（`output_ids` など）は `__str__` の `list` 列とする。正規化エンコードを使うのは、同じ内容から常に同じ文字列が出て再現性の比較ができるためである。**不採用**: 子表へ分ける案（表が15を超え、D07 が開く表が増える）、JSON 文字列にする案（`Decimal` の表現が正規化エンコードと二重になる）。
 - **入れ子・複合・区分タグ付き union の列名の規則**【合意済み】（Q14 決定、選択肢1）。上の3例（`ProcessingPoint` / `Reason` / `Money`）は、いずれも次の規則1 の適用である。D07 §4.2 が読む列名は、この3件でちょうど確定する。
 
@@ -719,6 +735,8 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 
 `costs` 列は**そのまま残す**。原通貨額と換算根拠（第7.6節）は区分別の列に入らず、正規化エンコード列が引き続きその正本である。該当する区分の `CostEntry` が無い約定では、その区分の2列を**どちらも `None`** にする（金額 0 の `CostEntry` が記録された場合と区別するため）。読む側は D07 v0.2（段階4）で、取引単位の費用と入場費用を含む取引損益に使う（D07 §12）。段階2 の D07 は run 単位の集計（第10.3節の `cost_breakdown`）だけを使うため、この列が増えても段階2 の指標は変わらない。**不採用**: 正規化エンコード列の復号規則を D02 §9.3 に足す案（符号化の正本に復号の責務が増え、区分別に読むたびに文字列の解析が要る）、費用を子表に分ける案（表が15を超える。第9.1節と同じ理由）。
 
+**予約の表（表10）と建玉の表（表11）は、run の終わりに最終状態を1行ずつ書く**【確定】（2026-09-22 の人間の決定。PR #19）。主キーは `reservation_id` / `position_id` であり、状態が変わるたびに行を足すと同じ主キーの行が複数でき、主キーとして読めなくなる。状態の移り変わりそのものは注文イベントの表（表8）と約定の表（表9）が処理点付きで持っており、そこから復元できる。**不採用**: 状態が変わるたびに行を足す案（主キーが一意でなくなり、D07 §10.2 の整合検査が書けない）、状態遷移用の子表を足す案（表が15を超え、D07 が開く表が増える。第9.1節と同じ理由）。
+
 **ID 連鎖で辿れること**（機会 → 試行 → 注文 → 約定 → 建玉 → 管理要求、および予約）を、表3・4・7・9・11・12・10 の外部キーで満たす。**受付前拒否でも連鎖が切れない**のは、`OrderRequest` を表4として必ず保存するためである（上位 §4.7.15 A が「受付前拒否もこの記録に紐付く」と定めている）。`AttemptRejected` は `AcceptedOrder` を作らないため、発端の取引機会は表4の `opportunity_id` からだけ辿れる【合意済み】全体計画 §5.4.5。**根拠記録は表15 `EVIDENCE` に置く**【提案】。`EvidenceRef`（D02 §9.2）は `evidence_id: EvidenceId` だけを持ち、表1・2・4 の主キーは `OutputId` / `EvaluationId` / `AttemptId` であるため、`EvidenceRef` から直接それらの行を引くことはできない。そこで上位 §4.7.15 が定める根拠記録の内容（入力の出力 ID、市場データの snapshot・系列・区間・項目、読取時点、口座 snapshot、使用した設定の版）を `EvidenceRecord` として型付きで保持し、**そこから表1・2・4・12・14 へ自然キーで辿る**。`EvidenceId` の採番は `backtest.trace`【合意済み】D02 §7.1。`RiskAssessment.assessment_id` も同じ `EvidenceId` の採番列から取り、審査記録それ自体が1件の根拠記録であることを表す。**不採用**: 表1・2 の行に `EvidenceId` を足す案（`OutputRecord` と `EvaluationRecord` は D05 が正本であり、記録の都合で戦略側の型にエンジン側の識別子を足すことになる）、自由記述のログにする案（型付きで辿れない記録が増え、上位 §4.7.15 の「説明文だけのログではない」に反する）。
 
 ### 9.3 run manifest【提案】
@@ -733,7 +751,12 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | 実行の構造 | `BACKTEST_PHASES` のフェーズ集合（D02 §3.3 の要求）、`IdAllocator.snapshot()`（D02 §7.3） |
 | 足内競合 | `resolution_hierarchy`、`UNRESOLVED_SL_PRIORITY` の件数と割合（ADR-0030） |
 | 能力検査 | **`DataCapabilityReport` の全体**（`compiled_match`、`IntegrityReport`、`HierarchyCheckResult` の全件、`runnable`、`reason`）。要約に畳まない |
+| 診断 | **`warnings`（文章の列）**。理由コードの語彙に当てはまらない診断をここに残す |
 | 状態 | `RunStatus`、失敗時の `Reason` |
+
+**「診断として残す」の残す先は run manifest の警告群とする**【確定】（2026-09-22 の人間の決定。PR #19）。第7.5節の手順6 は、始値の gap による損切りと約定ずれ超過が重なったとき「約定ずれ超過は診断として残す」と定めるが、残す先を特定していなかった。理由コード（D02 §8.1）はどれも意味が合わず、判断履歴の表に列を足すと、その列を持つ表がこの1件のためだけに広がる。警告群は**実行ごとに0件以上の文章**を持つ項目で、run 全体の診断を読む側が1か所で拾える。なお段階2 の算術ではこの重なりは成立しない（買い建玉では、gap 損切りは始値が損切り水準以下であることを要し、約定ずれ超過は始値が参照価格＋許容幅より上であることを要する。損切り水準は受付時の妥当性検査で参照価格より下と決まっているため両立しない）。設計が定める分岐なので実装は残す。**不採用**: 新しい理由コードを足す案（理由コードは状態遷移の理由の語彙であり、どの遷移にも紐付かない診断を入れると「状態と理由は別フィールド」の体系が崩れる。上位 §4.7.14）、判断履歴の表に列を足す案（1件の診断のために表の列が増え、D07 の入力契約が広がる）。
+
+**実行の出どころ（コード・依存 lock・環境のダイジェストと git の状態）は、実行ユースケースの必須の入力とする**【確定】（2026-09-22 の人間の決定。PR #19）。これらは設定ではなく実行環境の事実であり、`RunId` がこの4つのダイジェストから決まる以上（ADR-0006）、空のままでは識別子が成り立たない。実際に算出して渡すのは `app`（段階2 の3本目の CLI）である。
 
 `ConfigDigest` の対象は「識別」を除く上表の**入力とポリシーの群**とする【提案】（D02 §9.2 が「項目は D06」と委ねた範囲）。口座仕様（`AccountSpec`）を入力群に含めるのは、初期残高だけを変えた実行は数量・損益・資産推移がすべて変わるのに、含めないと同じ `ConfigDigest` と `RunId` になり、別の結果が同じ `runs/<run_id>/` を指すためである。`RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`【合意済み】ADR-0006。
 

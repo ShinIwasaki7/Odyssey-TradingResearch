@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021, 0026](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -136,7 +136,8 @@ app → evaluation → backtest → strategy → marketdata → common
 | `RuntimeContextView` | `strategy.runtime.ports` | `backtest.engine` | 現在処理中の建玉・許可された口座情報 |
 | `OutputSink` | `strategy.runtime.ports` | `backtest.engine`（trace へ転送） | `OutputRecord` の受け取り |
 | `PublicationFeed` | `backtest.application.ports` | `marketdata.application.publication` | `available_at` 順の公開イベント列 |
-| `ExecutionSeries` | `backtest.application.ports` | `marketdata.application.asof` | 執行用系列の open/high/low/close |
+| `ExecutionSeries` | `backtest.application.ports` | `marketdata.application.asof` | 執行用系列の open/high/low/close と、予定上の次の足（D03 §6.3） |
+| `IntrabarSeries` | `backtest.application.ports` | `marketdata.application.asof` | 足内競合を解く下位足の供給（D06 §7.4） |
 | `Calendar` | `backtest.application.ports` | `marketdata.domain.calendar`（domain 型そのもの） | 期限・候補 open・休場の判定 |
 | `StrategyRuntime` | `backtest.application.ports` | `strategy.runtime.evaluator` | 公開バッチと現在状態を渡し、出力・注文意図・管理要求を受け取る |
 | `TraceSink` | `backtest.application.ports` | `evaluation.adapters.fs_store` または `app` | 記録の書き出し |
@@ -148,6 +149,8 @@ app → evaluation → backtest → strategy → marketdata → common
 | `HoldoutAccessLog` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | holdout 閲覧履歴の記録 |
 
 ポート名は D02 以降で変更されうるが、**所在（どのパッケージの application が定義するか）と実装者の層**は本書で確定する。
+
+**利用側が application より下の層なら、構造は下の層で定義し application が同じ名前で再公開する**（確定。v2.4、2026-09-22 の人間の決定。PR #19）。`PublicationFeed` / `ExecutionSeries` / `IntrabarSeries` / `Calendar` を実際に使うのは `backtest.engine` であり、エンジンは1つ上の `backtest.application` を import できない（第3.3節の層順序）。そこで構造（`Protocol`）を `backtest.engine.loop` に置き、`backtest.application.ports` がそれを再公開する。**表の「定義場所」は引き続きポートの所在の正本**であり、結線するのも `app.composition` のままである（実装者はどちらの名前も import せず、構造的に満たす）。この扱いは D06 §3 にも記載する。
 
 ## 5. 外部ライブラリの配置（確定）
 
