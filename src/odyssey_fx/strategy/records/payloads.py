@@ -25,10 +25,10 @@ from enum import Enum
 from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import OpportunityId
-from odyssey_fx.common.money import Price, PriceOffset
+from odyssey_fx.common.ids import AccountId, OpportunityId, PositionId
+from odyssey_fx.common.money import CurrencyCode, Money, Price, PriceOffset, Quantity
 from odyssey_fx.common.symbol import Symbol
-from odyssey_fx.common.time import Interval
+from odyssey_fx.common.time import Interval, ProcessingPoint
 from odyssey_fx.strategy.declarations import datatypes
 from odyssey_fx.strategy.declarations.datatypes import DataTypeRef
 from odyssey_fx.strategy.declarations.refs import require_kind
@@ -41,6 +41,7 @@ from odyssey_fx.strategy.declarations.validation import (
 
 __all__ = [
     "PAYLOAD_BINDINGS",
+    "AccountContext",
     "ClosePosition",
     "ConditionState",
     "ConfirmationResult",
@@ -51,6 +52,7 @@ __all__ = [
     "OpportunityContent",
     "OrderIntent",
     "OrderType",
+    "PositionContext",
     "ProtectionLevels",
     "SetTakeProfit",
     "TradeDirection",
@@ -245,6 +247,68 @@ class ClosePosition:
 
 #: 区分タグ付き union（D04 §11.2）。トレーリング（`UPDATE_STOP`）は段階3。
 ManagementAction = SetTakeProfit | ClosePosition
+
+
+@dataclass(frozen=True, slots=True)
+class PositionContext:
+    """建玉の時点情報（`position_context@v1`、D06 §8.4）。
+
+    **項目を決めるのは D06**（エンジンが評価時点に供給してよい情報の範囲そのものだから）
+    だが、これを読むのは `strategy.catalog` の部品であり、`strategy` は `backtest` を参照
+    できない（D01 §3.2）。そこでクラスはここに置き、`backtest.engine` が
+    `RuntimeContextView` の実装としてこの型の値を作って渡す。
+
+    `direction` に戦略側の語彙（`TradeDirection`）を使うのは、台帳側の `OrderSide` が
+    「買い建玉を決済する売り注文」のように建玉の方向と一致しない場面があるためである。
+    未約定注文の一覧・状態は**含めない**（上位設計書 §4.7.12）。
+    """
+
+    position_id: PositionId
+    symbol: Symbol
+    direction: TradeDirection
+    quantity: Quantity
+    entry_price: Price
+    effective_stop_loss: Price
+    opened_at: ProcessingPoint
+    effective_take_profit: Price | None = None
+
+    def __post_init__(self) -> None:
+        require_instance(self.position_id, PositionId, "PositionContext.position_id")
+        require_instance(self.symbol, Symbol, "PositionContext.symbol")
+        require_instance(self.direction, TradeDirection, "PositionContext.direction")
+        require_instance(self.quantity, Quantity, "PositionContext.quantity")
+        require_instance(self.entry_price, Price, "PositionContext.entry_price")
+        require_instance(self.effective_stop_loss, Price, "PositionContext.effective_stop_loss")
+        require_instance(self.opened_at, ProcessingPoint, "PositionContext.opened_at")
+        if self.effective_take_profit is not None:
+            require_instance(
+                self.effective_take_profit, Price, "PositionContext.effective_take_profit"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AccountContext:
+    """口座の時点情報（`account_context@v1`、D06 §8.4）。段階2の部品は読まない。"""
+
+    account_id: AccountId
+    currency: CurrencyCode
+    balance: Money
+    equity: Money
+    consumed_risk: Money
+
+    def __post_init__(self) -> None:
+        require_instance(self.account_id, AccountId, "AccountContext.account_id")
+        require_instance(self.currency, CurrencyCode, "AccountContext.currency")
+        for value, label in (
+            (self.balance, "balance"),
+            (self.equity, "equity"),
+            (self.consumed_risk, "consumed_risk"),
+        ):
+            require_instance(value, Money, f"AccountContext.{label}")
+            if value.currency != self.currency:
+                raise KernelValueError(
+                    f"AccountContext.{label} must be in {self.currency}, got {value.currency}"
+                )
 
 
 @dataclass(frozen=True, slots=True)

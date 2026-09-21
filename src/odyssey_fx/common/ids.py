@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from odyssey_fx.common.refs import ContentDigest
 
 __all__ = [
+    "AccountId",
     "AllocationId",
     "AttemptId",
     "DigestId",
@@ -57,6 +58,36 @@ _SEQUENCE_WIDTH: Final = 8
 
 #: 短縮表示に使う先頭桁数（D02 §7.2）。識別には使わない。
 _SHORT_DIGEST_LENGTH: Final = 12
+
+#: 口座識別の字種。照合は `fullmatch`（`$` は末尾の改行を許すため）。
+_ACCOUNT_PATTERN: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountId:
+    """口座の識別（D06 §3・§8.1）。
+
+    ダイジェスト系でも連番系でもない**第3の系統**で、実験設定が与える名前をそのまま持つ。
+    run の中で採番されるものではなく、同じ口座は run をまたいで同じ値になる。
+
+    D06 §3 の型表が `AccountSpec.account_id` / `AccountContext.account_id` の型としてこの
+    名前を使い、`AccountContext` の置き場所は `strategy.records.payloads`（D06 §8.4）である
+    ため、`backtest` 側に置くことはできない（`strategy` は `backtest` を参照できない、
+    D01 §3.2）。**D02 §7.1 の ID の表にはまだ行が無く、追記を依頼する**（D06 §15 と同じ扱い）。
+    """
+
+    code: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.code, str) or not _ACCOUNT_PATTERN.fullmatch(self.code):
+            raise KernelValueError(f"AccountId must match ^[A-Z][A-Z0-9_]*$, got {self.code!r}")
+
+    def __str__(self) -> str:
+        return self.code
+
+    def canonical_str(self) -> str:
+        """正規化エンコードでの表現（D02 §9.3: ID 型は `__str__`）。"""
+        return self.code
 
 
 @dataclass(frozen=True, slots=True)
