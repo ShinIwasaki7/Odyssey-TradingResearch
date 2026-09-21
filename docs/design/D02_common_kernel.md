@@ -1,7 +1,7 @@
 # D02: 共通カーネル型設計（`odyssey_fx.common`）
 
 作成日: 2026-09-19
-状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。v1.3（2026-09-20）: 理由コードの表（第8.1節）が上位設計書 §4.7.14 の写しであることを明記し、ADR-0031・ADR-0032・ADR-0033 で §4.7.14 に加わった取引機会の終端理由と評価要求の追い越し（`MARKET_STATE_INVALIDATED` / `SUPERSEDED` / `CLOSED_BY_ORDER_ACCEPTANCE` / `CONCURRENCY_LIMIT_REACHED` / `REQUEST_SUPERSEDED`）を表へ反映した（D04 の PR #14）。`common` の列挙への追加は段階2 の実装で行う。v1.4（2026-09-21）: D05 の要決定 Q3・Q4 に対する人間の決定（PR #15）により、取引機会の終端理由に `ORDER_ATTEMPT_REJECTED`（自身の発注試行が受付前の審査で拒否された）と `FULFILLED_BY_ORDER_ACCEPTANCE`（自身の注文が受け付けられて役目を終えた）が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した（ADR-0032 補足4）。`common` の列挙への追加は引き続き段階2 の実装で行う。v1.5（2026-09-21）: D06 の要決定 Q1・Q6 に対する人間の決定（PR #16）を反映した。Q1（選択肢1）により、処理段階の名前の規則（第3.3節の `PhaseRank.name`）を `^[A-Z_]+$` から `^[A-Z][A-Z0-9_]*$` へ緩め、上位設計書 §4.3.12 の P0〜P5 の呼び方をそのままフェーズ名に使えるようにした。Q6（選択肢1）により、保護水準の置き方が不正であることによる受付前拒否の理由コード `PROTECTION_INVALID` が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した。ADR-0016 条件1（D01〜D03）のうち D02 を充足。
+状態: **承認（2026-09-20）**。v1.1（2026-09-20）: 設計文書 PR #3 の Codex 指摘により、正規化ダイジェストの `Decimal` 表現をコンテキスト非依存の厳密表現に修正（第9.3節）。ユーザーの条件4点（①不変型と `IdAllocator` の例外、②`RunId` は完全入力の論理識別、③`CodeDigest` の曖昧でない定義、④`PhaseRank` の一意性）を反映済み。v1.2（2026-09-20）: 段階1の `common` 実装 PR #6 で判明した2点をユーザー決定により確定（第3.3節: フェーズ集合型 `PhaseSet` を `common` に置き順位順に正規化する。第8.2節: `RiskRejectionDetail` の `limit` / `observed` は型を一致させる）。併せて実装で定めた `TimeframeRef` の文字列形式を第6節に、Codex 指摘で確定した Decimal 文脈の扱いと刻み丸めの厳密化を第4.1節に記録。v1.3（2026-09-20）: 理由コードの表（第8.1節）が上位設計書 §4.7.14 の写しであることを明記し、ADR-0031・ADR-0032・ADR-0033 で §4.7.14 に加わった取引機会の終端理由と評価要求の追い越し（`MARKET_STATE_INVALIDATED` / `SUPERSEDED` / `CLOSED_BY_ORDER_ACCEPTANCE` / `CONCURRENCY_LIMIT_REACHED` / `REQUEST_SUPERSEDED`）を表へ反映した（D04 の PR #14）。`common` の列挙への追加は段階2 の実装で行う。v1.4（2026-09-21）: D05 の要決定 Q3・Q4 に対する人間の決定（PR #15）により、取引機会の終端理由に `ORDER_ATTEMPT_REJECTED`（自身の発注試行が受付前の審査で拒否された）と `FULFILLED_BY_ORDER_ACCEPTANCE`（自身の注文が受け付けられて役目を終えた）が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した（ADR-0032 補足4）。`common` の列挙への追加は引き続き段階2 の実装で行う。v1.5（2026-09-21）: D06 の要決定 Q1・Q6 に対する人間の決定（PR #16）を反映した。Q1（選択肢1）により、処理段階の名前の規則（第3.3節の `PhaseRank.name`）を `^[A-Z_]+$` から `^[A-Z][A-Z0-9_]*$` へ緩め、上位設計書 §4.3.12 の P0〜P5 の呼び方をそのままフェーズ名に使えるようにした。Q6（選択肢1）により、保護水準の置き方が不正であることによる受付前拒否の理由コード `PROTECTION_INVALID` が上位設計書 §4.7.14 へ加わったため、第8.1節の表に反映した。ADR-0016 条件1（D01〜D03）のうち D02 を充足。 v1.6（2026-09-21、PR #18）: 段階2 の戦略基盤の実装で判明した2点を人間の決定により確定した。第9.2節に **`ImplementationRef.digest` の算出規則**（宣言した実装識別子と改訂番号の正規化ダイジェスト）を追記し、第9.3節に **期間（`timedelta`）は正規化エンコードの対象外**であること（期間を含む宣言はダイジェストを計算できない）と、符号化規則を足すかどうかを将来の改訂へ引き渡すことを明記した。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15「共通の値型と参照」、§4.3.15、§4.7.14、[D01](D01_architecture_and_dependency_rules.md) §1・§2・§5・§7.2、ADR-0006（決定論的 ID）、ADR-0011（frozen dataclass）、ADR-0012（Decimal / float 境界）
 対応段階: 段階1で実装。以降の全パッケージが依存する。
 
@@ -292,6 +292,12 @@ Reason(code: ReasonCode, detail: ReasonDetail | None)
 | `SnapshotRef` | `snapshot_id: SnapshotId` | データ snapshot の参照 |
 | `EvidenceRef` | `evidence_id: EvidenceId` | 保存された根拠記録への参照 |
 
+**`ImplementationRef.digest` の算出（確定。v1.6、2026-09-21 の人間の決定。PR #18）**。部品の実装1件を指す指紋は、**宣言した実装識別子（`implementation_id`）と改訂番号（`revision`）の2項目だけ**を対象に、第9.3節の `canonical.digest({"implementation_id": …, "revision": …})` で作る。
+
+- 実装のソース内容そのものを読まないのは、部品を登録する `strategy.catalog` が I/O を持てない（D01 §5）ためである。run 全体のソース内容は `CodeDigest`（第9.4節）が別に識別しており、実装ごとの指紋の役目は**解決済み設定の指紋（D05 §5.5 の3）に部品単位の改訂を映すこと**に限られる。
+- したがって `revision` は**実装の計算規則を変えたら必ず上げる**という運用上の約束と対になる。上げ忘れると、計算規則が変わったのに解決済み設定の指紋が同じままになる。同じ約束を D05 §5.5 にも置く。
+- **不採用**: 実装コードのソース内容を読んでハッシュする案（`catalog` に I/O が要り、D01 §5 の依存規則に反する）、実装ごとの指紋を持たず `CodeDigest` に任せる案（部品単位で実装差を検出できず、D04 §13.2 の切り分けが成立しない）。
+
 ### 9.3 正規化エンコードとダイジェスト（確定。細部は案）
 
 `canonical.encode(obj) -> bytes` と `canonical.digest(obj) -> ContentDigest`（sha256）。
@@ -304,6 +310,7 @@ Reason(code: ReasonCode, detail: ReasonDetail | None)
 - `UtcTime`: 第3.1節の文字列。`Interval`: `{"start":…, "end":…}`。ID 型・`Symbol`・`CurrencyCode`・`TimeframeRef`: `__str__`。
 - `Enum`: `value`。dataclass: フィールド名をキーとする mapping（型名は含めない。型はスキーマ側で決まる）。`tuple` / `list`: 配列。`Mapping`: オブジェクト。`set` は拒否（順序が定まらない）。
 - `None`: `null`。それ以外の型は `KernelValueError`。
+- **期間（`timedelta`）は符号化しない（確定。v1.6、2026-09-21 の人間の決定。PR #18）**。上の一覧に `timedelta` は無く、「それ以外の型」として `KernelValueError` になる。したがって**期間値を含む宣言はダイジェストを計算できない**。D04 §13.1 が定めた設定ファイル上の期間の書き方（`<正の整数><単位>` の文字列）はあるが、それは読み込みの書式であり、正規化エンコードの規則ではない。両者を暗黙に同一視すると、`90m` と `1h30m` のように同じ期間を指す別表記を、正規化の規則を決めないままダイジェストへ通すことになる。**将来の改訂への引き渡し**: 期間の符号化規則（正規化の単位と表現）を足すかどうかは本書の次回改訂で決める。足すまでの間、期間値を持つ宣言（`InputReadSpec.max_age`・`DurationWindow`・`DurationDeadline`）は指紋の対象にできない（D04 §13.2 の注記、D05 §5.5）。段階2の検証戦略 A はいずれも期間値を持たないため、実行経路には現れない。
 
 `ConfigDigest`、`SnapshotId`、`ExperimentId`、`CompiledStrategyRef` はこのダイジェストで作る。`RunId` は `{"config": <ConfigDigest.hex>, "code": <CodeDigest.hex>, "lock": <LockDigest.hex>, "env": <EnvDigest.hex>}` の mapping のダイジェストとする。
 

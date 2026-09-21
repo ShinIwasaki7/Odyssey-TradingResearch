@@ -469,10 +469,11 @@ class _StepRun:
     # --- 受付結果の適用（遷移5〜7） ----------------------------------------
 
     def _apply_admissions(self) -> None:
-        """受付結果の通知を次の `step` の入口で適用する（D05 §7.2 の遷移5〜7）。
+        """受付結果の通知を次の `step` の入口で適用する（D05 §7.2 の遷移5〜7、v1.3）。
 
-        記録するフェーズは、通知が配送されたフェーズ（約定後の評価起動点）である。受付の
-        判定そのものはエンジンが済ませており、ランタイムはその結果を機会へ写すだけである。
+        記録するフェーズは「受付を判定したフェーズ」ではなく、**通知が配送された処理点**
+        （段階2では約定後の評価起動点。D05 §8）である。受付の判定そのものはエンジンが済ませて
+        おり、ランタイムはその結果を機会へ写すだけなので、状態が実際に変わるのはここである。
         """
         for notice in self._batch.admissions:
             lifecycle = self._lifecycles.get(notice.opportunity_id)
@@ -737,13 +738,12 @@ class _StepRun:
     def _required_input_names(
         self, component: CompiledComponent, trigger_names: Sequence[str]
     ) -> frozenset[str]:
-        """今回の起動で必須になる入力（D05 §6.3）。
+        """今回の起動で必須になる入力（D05 §6.3 v1.3）。
 
-        **差異**: D05 §6.3 は「成立した起動条件の `required_inputs` の和集合」とするが、
-        段階2の5部品は `required_inputs` を宣言していない（D05 §4.3）。文字どおり空集合を
-        必須とすると、履歴不足で読めない入力があっても評価を行うことになり、T01 §6.1 が
-        示す「ウォームアップ中は見送る」挙動にならない。そこで**宣言があればその和集合、
-        無ければ接続済みの入力すべて**を必須とする。
+        **宣言があればその和集合、1件も無ければ接続済みの入力すべて**を必須とする。段階2の
+        5部品は `required_inputs` を宣言しておらず（D05 §4.3）、空集合をそのまま必須とすると
+        履歴不足で読めない入力があっても評価を行うことになり、T01 §6.1 が示す「ウォームアップ
+        中は見送る」挙動にならないためである。
         """
         declared: set[str] = set()
         found = False
@@ -1291,7 +1291,12 @@ class _StepRun:
     def _add_management_request(
         self, record: OutputRecord[object], request: EvaluationRequest
     ) -> None:
-        """保有管理の要求を、宛先の建玉とともに作る（D05 §6.2 の手順9）。"""
+        """保有管理の要求を、宛先の建玉とともに作る（D05 §6.2 の手順9、v1.3）。
+
+        宛先の建玉が無ければ構造エラーで止める。段階2の Exit は約定通知でだけ起動し、通知が
+        必ず建玉を運ぶ（D05 §8）ため、この状態はカタログの5部品では起こらない。起きたとすれば
+        コンパイラの検査か宣言の誤りであり、黙って捨てると建玉に利確が付かないまま run が進む。
+        """
         if request.position_id is None:
             raise KernelValueError(
                 f"{request.instance_id} produced a management action without a position to"
