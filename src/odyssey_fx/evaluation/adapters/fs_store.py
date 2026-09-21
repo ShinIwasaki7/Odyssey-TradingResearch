@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -104,7 +104,9 @@ class FileSystemTraceSink:
     root: Path
     run_id: object
     replace: bool = False
-    _reserved: bool = False
+    #: 置き場所を確保したかどうか。run のはじめに1度だけ検査するための覚えで、
+    #: 書き出し口の同一性には関わらない。
+    _reserved: bool = field(default=False, repr=False, compare=False)
 
     def write(self, table: TraceTable, rows: tuple[object, ...]) -> None:
         """1つの表を書き出す。書き出し専用で、検索元にはならない。

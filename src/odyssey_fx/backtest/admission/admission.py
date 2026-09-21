@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from odyssey_fx.backtest.admission.risk_assessment import (
     RiskAssessment,
@@ -222,10 +222,15 @@ def decide_entry(
         # 参照価格も Δ も無いと手順3 より先へ進めない。審査記録は作らない（D06 §4.4）。
         return _rejected(request, Reason(ReasonCode.DATA_ERROR))
 
+    assessment_id = new_assessment_id()
+    # 換算率からその根拠記録へ辿れるようにする（上位設計書 §4.7.9 C）。審査記録の識別子は
+    # 手順3 へ進むと決まってから採番するので、率へ結び付けられるのもここが最初になる。
+    conversion = replace(conversion, evidence=EvidenceRef(evidence_id=assessment_id))
+
     assessment, rejection = assess_entry(
         payload,
         attempt_id=request.attempt_id,
-        assessment_id=new_assessment_id(),
+        assessment_id=assessment_id,
         ledger=ledger,
         risk_policy=risk_policy,
         policy_ref=risk_policy_ref,

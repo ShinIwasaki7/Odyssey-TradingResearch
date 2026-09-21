@@ -125,19 +125,33 @@ def _resolve_level(
     child_bars: ChildBars | None,
     spread_model: SpreadModel,
     used: list[SeriesId],
+    visited: list[Bar],
 ) -> tuple[CloseCause, ResolutionMethod, BarKey | None]:
-    """D06 §7.4 の解決手順を1段ぶん実行し、必要なら次の解像度へ降りる。"""
+    """D06 §7.4 の解決手順を1段ぶん実行し、必要なら次の解像度へ降りる。
+
+    `visited` には**実際に読んだ子足**だけを走査した順に積む。打ち切った先の足まで根拠に
+    載せると、裁定に関わっていない観測を「見た」と記録することになる。
+    """
     if level + 1 >= len(hierarchy.levels) or child_bars is None:
         # 最小解像度でもなお両方に触れ、順序が観測できない（ADR-0030 の裁定）。
         return CloseCause.STOP_LOSS, ResolutionMethod.UNRESOLVED_SL_PRIORITY, None
     child_series = hierarchy.levels[level + 1]
     used.append(child_series)
     for child in child_bars(child_series, parent.interval):
+        visited.append(child)
         stop_hit, tp_hit = touches(side, protection, child, spread_model)
         if stop_hit and tp_hit:
             # 同じ子足で両方に触れたら、その子足を親としてさらに降りる（再帰）。
             return _resolve_level(
-                side, protection, child, hierarchy, level + 1, child_bars, spread_model, used
+                side,
+                protection,
+                child,
+                hierarchy,
+                level + 1,
+                child_bars,
+                spread_model,
+                used,
+                visited,
             )
         if stop_hit:
             return CloseCause.STOP_LOSS, ResolutionMethod.RESOLVED_BY_CHILD, child.key
@@ -158,15 +172,28 @@ def resolve_intrabar(
     spread_model: SpreadModel,
     fill_id: FillId,
     child_bars: ChildBars | None = None,
+    visited: list[Bar] | None = None,
 ) -> IntrabarResolution | None:
-    """保護水準の到達を解決する（D06 §7.4）。触れていなければ `None`。"""
+    """保護水準の到達を解決する（D06 §7.4）。触れていなければ `None`。
+
+    `visited` を渡すと、**実際に読んだ子足**が走査した順に積まれる。足内競合の記録は決め手に
+    なった子足1本しか持てないため、どの観測を見てその裁定になったかは根拠記録にしか残せない。
+    """
     stop_hit, tp_hit = touches(side, protection, parent, spread_model)
     if not stop_hit and not tp_hit:
         return None
     used: list[SeriesId] = [hierarchy.levels[0]]
     if stop_hit and tp_hit:
         verdict, method, child_key = _resolve_level(
-            side, protection, parent, hierarchy, 0, child_bars, spread_model, used
+            side,
+            protection,
+            parent,
+            hierarchy,
+            0,
+            child_bars,
+            spread_model,
+            used,
+            [] if visited is None else visited,
         )
     else:
         verdict = CloseCause.STOP_LOSS if stop_hit else CloseCause.TAKE_PROFIT

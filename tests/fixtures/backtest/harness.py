@@ -30,7 +30,7 @@ from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
 from odyssey_fx.backtest.trace.manifest import RunManifest, config_digest_of
 from odyssey_fx.backtest.trace.recorder import TraceTable, flatten_row
 from odyssey_fx.backtest.trace.result import BacktestResult
-from odyssey_fx.common.ids import AccountId, IdAllocator, SnapshotId
+from odyssey_fx.common.ids import AccountId, IdAllocator, RunId, SnapshotId
 from odyssey_fx.common.money import (
     CurrencyCode,
     Money,
@@ -71,8 +71,10 @@ __all__ = [
     "JPY",
     "RISK_POLICY",
     "RunOutput",
+    "RunSetup",
     "SYMBOL_SPEC",
     "bars",
+    "build_run",
     "flatten_all",
     "run_backtest",
 ]
@@ -289,7 +291,19 @@ def compiled_strategy(definition: StrategyDefinition | None = None) -> CompiledS
     return outcome.compiled
 
 
-def run_backtest(
+@dataclass(frozen=True, slots=True)
+class RunSetup:
+    """まだ走らせていない run 一式（実行前の検査を確かめるテストが使う）。"""
+
+    use_case: RunBacktest
+    config: RunConfig
+    compiled: CompiledStrategy
+    trace_sink: CollectingTraceSink
+    result_writer: CollectingResultWriter
+    context: EngineContext
+
+
+def build_run(
     *,
     signal_bars: Sequence[Bar],
     execution_bars: Sequence[Bar],
@@ -301,11 +315,12 @@ def run_backtest(
     account: AccountSpec = ACCOUNT,
     intrabar: Mapping[SeriesId, Sequence[Bar]] | None = None,
     execution_view_bars: Sequence[Bar] | None = None,
-) -> RunOutput:
-    """人工データで1回の run を通す。
+    allocator_run_id: RunId | None = None,
+) -> RunSetup:
+    """run を組み立てるだけで実行はしない。
 
-    `execution_view_bars` に別の列を渡すと、公開フィードは足の到着を知らせるのに執行系列に
-    その足が無い状態を作れる（実行中のデータ不整合の検証に使う）。
+    `allocator_run_id` を渡すと、採番器の `RunId` を完全入力から作らない値に差し替えられる
+    （ADR-0006 の検査が**何かを書き出す前に**効くことの確認に使う）。
     """
     compiled = compiled_strategy(definition)
     config = RunConfig(
@@ -328,7 +343,11 @@ def run_backtest(
         calendar_ref=CALENDAR_REF,
         timeframe_def_refs=TIMEFRAME_REFS,
     )
-    allocator = IdAllocator(run_id(config_digest, CODE_DIGEST, LOCK_DIGEST, ENV_DIGEST))
+    allocator = IdAllocator(
+        run_id(config_digest, CODE_DIGEST, LOCK_DIGEST, ENV_DIGEST)
+        if allocator_run_id is None
+        else allocator_run_id
+    )
     sink = TraceOutputSink()
     context = EngineContext(account)
     evaluator = StrategyEvaluator(
@@ -369,13 +388,53 @@ def run_backtest(
         timeframe_refs=TIMEFRAME_REFS,
         intrabar_series=None if intrabar is None else FakeIntrabarSeries(intrabar),
     )
-    result = use_case.run(config, compiled)
-    assert result_writer.manifest is not None
+    return RunSetup(
+        use_case=use_case,
+        config=config,
+        compiled=compiled,
+        trace_sink=trace_sink,
+        result_writer=result_writer,
+        context=context,
+    )
+
+
+def run_backtest(
+    *,
+    signal_bars: Sequence[Bar],
+    execution_bars: Sequence[Bar],
+    run_interval: Interval,
+    definition: StrategyDefinition | None = None,
+    execution_policy: ExecutionPolicy = EXECUTION_POLICY,
+    cost_model: CostModel = COST_MODEL,
+    risk_policy: RiskPolicy = RISK_POLICY,
+    account: AccountSpec = ACCOUNT,
+    intrabar: Mapping[SeriesId, Sequence[Bar]] | None = None,
+    execution_view_bars: Sequence[Bar] | None = None,
+) -> RunOutput:
+    """人工データで1回の run を通す。
+
+    `execution_view_bars` に別の列を渡すと、公開フィードは足の到着を知らせるのに執行系列に
+    その足が無い状態を作れる（実行中のデータ不整合の検証に使う）。
+    """
+    setup = build_run(
+        signal_bars=signal_bars,
+        execution_bars=execution_bars,
+        run_interval=run_interval,
+        definition=definition,
+        execution_policy=execution_policy,
+        cost_model=cost_model,
+        risk_policy=risk_policy,
+        account=account,
+        intrabar=intrabar,
+        execution_view_bars=execution_view_bars,
+    )
+    result = setup.use_case.run(setup.config, setup.compiled)
+    assert setup.result_writer.manifest is not None
     return RunOutput(
         result=result,
-        manifest=result_writer.manifest,
-        tables=dict(trace_sink.tables),
-        context=context,
+        manifest=setup.result_writer.manifest,
+        tables=dict(setup.trace_sink.tables),
+        context=setup.context,
     )
 
 

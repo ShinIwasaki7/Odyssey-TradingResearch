@@ -19,7 +19,10 @@ from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.ids import PositionId, RunId
 from odyssey_fx.common.money import Money, decimal_from_str
 from odyssey_fx.common.reason import ReasonCode
+from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.runtime.ports import PublicationBatch
 from odyssey_fx.strategy.runtime.requests import RuntimeStepResult
@@ -429,7 +432,7 @@ def test_the_entry_delay_does_not_postpone_a_strategy_exit() -> None:
     assert entry_candidate.open_time == decision + timedelta(minutes=15)
 
 
-def _engine(policy: object) -> object:
+def _engine(policy: object, runtime: object | None = None) -> object:
     """候補の選び方だけを確かめるためのエンジン（run は実行しない）。"""
     from odyssey_fx.backtest.engine.loop import BacktestEngine, EngineContext, TraceOutputSink
     from odyssey_fx.backtest.trace.manifest import DataCapabilityReport
@@ -452,7 +455,7 @@ def _engine(policy: object) -> object:
     return BacktestEngine(
         config=config,
         compiled=compiled,
-        runtime=_NullRuntime(),
+        runtime=_NullRuntime() if runtime is None else runtime,  # type: ignore[arg-type]
         context=context,
         output_sink=TraceOutputSink(),
         allocator=IdAllocator(_run_id()),
@@ -494,3 +497,281 @@ class _NullRuntime:
 
     def step(self, batch: PublicationBatch) -> RuntimeStepResult:  # pragma: no cover
         raise AssertionError("the runtime must not be called in this test")
+
+
+def test_the_conversion_rate_points_at_its_evidence_record() -> None:
+    """上位設計書 §4.7.9 C: 換算率からその根拠記録へ辿れる。
+
+    率だけを残すと「どの観測で、どの設定のもとで換算したか」が結果から追えない。審査の率は
+    その審査の根拠記録を、費用の率はその約定の根拠記録を指す。
+    """
+    from odyssey_fx.backtest.admission.risk_assessment import RiskAssessment
+    from odyssey_fx.backtest.domain.fills import FillRecord
+    from odyssey_fx.backtest.trace.recorder import EvidenceRecord
+    from odyssey_fx.common.refs import EvidenceRef
+
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+    )
+
+    evidence_ids = {
+        row.evidence_id
+        for row in output.rows(TraceTable.EVIDENCE)
+        if isinstance(row, EvidenceRecord)
+    }
+    assessments = [
+        row for row in output.rows(TraceTable.RISK_ASSESSMENTS) if isinstance(row, RiskAssessment)
+    ]
+    assert assessments
+    for assessment in assessments:
+        assert assessment.conversion is not None
+        assert assessment.conversion.evidence == EvidenceRef(evidence_id=assessment.assessment_id)
+        assert assessment.assessment_id in evidence_ids
+
+    fills = [row for row in output.rows(TraceTable.FILLS) if isinstance(row, FillRecord)]
+    assert fills
+    for fill in fills:
+        assert fill.costs
+        for entry in fill.costs:
+            assert entry.conversion.evidence == fill.evidence_ref
+            assert fill.evidence_ref.evidence_id in evidence_ids
+
+
+def test_an_account_currency_unlike_the_settlement_currency_blocks_the_run() -> None:
+    """D06 §8.5: 段階2 は恒等換算だけを通す。決済通貨と口座通貨が違えば実行前に止める。"""
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.application.run_backtest import capability_report
+    from odyssey_fx.backtest.domain.account import AccountSpec
+    from odyssey_fx.common.ids import AccountId
+    from odyssey_fx.common.money import CurrencyCode
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+    from tests.fixtures.backtest.harness import SYMBOL_SPEC
+
+    usd = CurrencyCode("USD")
+    account = AccountSpec(
+        account_id=AccountId("ACC1"),
+        currency=usd,
+        initial_balance=Money(decimal_from_str("1000000"), usd),
+    )
+    compiled = compiled_strategy()
+    report = capability_report(
+        replace(_config(compiled), account=account),
+        compiled,
+        integrity=IntegrityReport(),
+        execution_policy=EXECUTION_POLICY,
+        symbol_spec=SYMBOL_SPEC,
+        intrabar_series=None,
+    )
+
+    assert report.runnable is False
+    assert any("settles in" in text for text in report.diagnostics)
+
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+        account=account,
+    )
+    assert output.result.status is RunStatus.FAILED_CAPABILITY
+    assert output.rows(TraceTable.ORDERS) == ()
+
+
+def test_a_run_id_unlike_the_complete_input_fails_before_anything_is_written() -> None:
+    """ADR-0006: `RunId` は完全入力のダイジェスト。違えば1行も書かずに止める。
+
+    manifest を作る段で初めて気付くと、表だけが残り manifest の無いディレクトリになる。
+    そのディレクトリは既存成果物の検査に引っかかり、直したあとの再実行まで塞いでしまう。
+    """
+    import pytest
+
+    from odyssey_fx.common.errors import KernelValueError
+    from odyssey_fx.common.ids import RunId
+    from tests.fixtures.backtest.harness import build_run
+
+    setup = build_run(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+        allocator_run_id=RunId(_content_digest("not the complete input")),
+    )
+
+    with pytest.raises(KernelValueError, match="ADR-0006"):
+        setup.use_case.run(setup.config, setup.compiled)
+
+    assert setup.trace_sink.tables == {}
+    assert setup.result_writer.manifest is None
+    assert setup.result_writer.result is None
+
+
+def _content_digest(seed: str) -> ContentDigest:
+    """テストが使う固定ダイジェスト。"""
+    import hashlib
+
+    return ContentDigest.sha256(hashlib.sha256(seed.encode("utf-8")).hexdigest())
+
+
+class _RunEndRuntime:
+    """末尾処理で機会の終端だけを返すランタイム。
+
+    ランタイムは自分の `step` の中で 0 から数えるので、返ってくる処理点の通し番号は
+    エンジンが末尾処理で配った番号と重なる。エンジンが振り直しているかを見るための相手役。
+    """
+
+    def step(self, batch: PublicationBatch) -> RuntimeStepResult:
+        from odyssey_fx.common.ids import OpportunityId
+        from odyssey_fx.common.reason import Reason, ReasonCode, RunEndDetail
+        from odyssey_fx.common.time import ProcessingPoint
+        from odyssey_fx.strategy.runtime.opportunities import (
+            OpportunityState,
+            OpportunityTransition,
+        )
+
+        phase = batch.phases.by_name("RUN_END")
+        return RuntimeStepResult(
+            transitions=(
+                OpportunityTransition(
+                    opportunity_id=OpportunityId(1),
+                    from_state=OpportunityState.OPEN,
+                    to_state=OpportunityState.TERMINATED,
+                    at=ProcessingPoint(time=batch.decision_time, phase=phase, sequence=0),
+                    phase=phase,
+                    reason=Reason(ReasonCode.RUN_END, RunEndDetail(run_end=batch.decision_time)),
+                ),
+            ),
+        )
+
+
+def test_the_end_of_run_transitions_get_their_own_processing_points() -> None:
+    """D06 §10.1: 取消 → 機会の終端 → 最終 snapshot の順を処理点の順で読み直せる。
+
+    ランタイムが返す処理点をそのまま残すと、最終 snapshot と同じ `(時刻, RUN_END, 通し番号)`
+    になり、どちらが先だったのかが記録から分からなくなる。
+    """
+    from odyssey_fx.backtest.engine.clock import PhaseClock
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.strategy.runtime.opportunities import OpportunityTransition
+
+    engine = _engine(EXECUTION_POLICY, runtime=_RunEndRuntime())
+    assert isinstance(engine, BacktestEngine)
+    clock = PhaseClock(engine._phases, RUN_INTERVAL.end)
+    engine._phase_run_end(clock)
+
+    rows = engine.rows
+    transitions = [
+        row
+        for row in rows[TraceTable.OPPORTUNITY_TRANSITIONS]
+        if isinstance(row, OpportunityTransition)
+    ]
+    snapshots = [
+        row for row in rows[TraceTable.LEDGER_SNAPSHOTS] if isinstance(row, LedgerSnapshot)
+    ]
+    assert len(transitions) == 1
+    assert transitions[0].at.phase.name == "RUN_END"
+    assert snapshots[-1].at.phase.name == "RUN_END"
+    # 機会の終端が先、最終 snapshot が後。同じ番号には決してならない。
+    assert transitions[0].at.sequence < snapshots[-1].at.sequence
+
+
+def _child_series() -> SeriesId:
+    """執行系列の1段下（5分足・同じ価格基準）。"""
+    from odyssey_fx.marketdata.domain.series import PriceBasis
+    from tests.fixtures.synthetic.market import USDJPY, series
+
+    return series(USDJPY, "5m", PriceBasis.BID)
+
+
+def _child_bars(
+    parents: tuple[Bar, ...], conflict_children: tuple[tuple[str, str, str, str], ...]
+) -> tuple[Bar, ...]:
+    """親足1本を5分足3本に割る。競合する親足だけ明示した並びを使う。"""
+    from datetime import timedelta as _timedelta
+
+    from tests.fixtures.backtest.harness import bars
+    from tests.fixtures.backtest.paths import CONFLICT_BAR
+
+    child_series = _child_series()
+    made: list[Bar] = []
+    for parent in parents:
+        open_text = str(parent.open.value)
+        high_text = str(parent.high.value)
+        low_text = str(parent.low.value)
+        close_text = str(parent.close.value)
+        if (open_text, high_text, low_text, close_text) == CONFLICT_BAR:
+            specs = list(conflict_children)
+        else:
+            flat = (close_text, close_text, close_text, close_text)
+            specs = [(open_text, high_text, low_text, close_text), flat, flat]
+        made.extend(bars(child_series, parent.bar_start, _timedelta(minutes=5), specs))
+    return tuple(made)
+
+
+def test_only_the_child_bars_actually_read_become_evidence() -> None:
+    """上位設計書 §4.7.15: 根拠記録に載せるのは**実際に読んだ**観測だけ。
+
+    足の中の競合を下位足で決めたとき、走査を打ち切った先の足まで載せると、裁定に関わって
+    いない観測を「見た」と記録することになる。
+    """
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.domain.fills import FillRecord
+    from odyssey_fx.backtest.domain.orders import CloseCause
+    from odyssey_fx.backtest.domain.policies import ResolutionHierarchy
+    from odyssey_fx.backtest.execution.protection_hits import IntrabarResolution, ResolutionMethod
+    from odyssey_fx.backtest.trace.recorder import EvidenceRecord
+    from tests.fixtures.backtest.harness import EXECUTION_SERIES
+    from tests.fixtures.backtest.paths import CONFLICT_BAR
+
+    # 1本目の子足で利確だけに触れる（そこで走査は終わる）。2本目に損切りの動きを置く。
+    conflict_children = (
+        ("150.100", "151.300", "150.100", "151.300"),
+        ("151.300", "151.300", "149.400", "149.400"),
+        ("149.400", "150.200", "149.400", "150.200"),
+    )
+    parents = execution_bars(conflict=CONFLICT_BAR)
+    children = _child_bars(parents, conflict_children)
+    child_series = _child_series()
+    policy = replace(
+        EXECUTION_POLICY,
+        resolution_hierarchy=ResolutionHierarchy(levels=(EXECUTION_SERIES, child_series)),
+    )
+
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=parents,
+        run_interval=RUN_INTERVAL,
+        execution_policy=policy,
+        intrabar={EXECUTION_SERIES: parents, child_series: children},
+    )
+
+    assert output.manifest.capability_report.runnable is True
+    resolutions = [
+        row
+        for row in output.rows(TraceTable.INTRABAR_RESOLUTIONS)
+        if isinstance(row, IntrabarResolution)
+    ]
+    assert len(resolutions) == 1
+    assert resolutions[0].method is ResolutionMethod.RESOLVED_BY_CHILD
+    assert resolutions[0].verdict is CloseCause.TAKE_PROFIT
+
+    fills = [row for row in output.rows(TraceTable.FILLS) if isinstance(row, FillRecord)]
+    evidence = {
+        row.evidence_id: row
+        for row in output.rows(TraceTable.EVIDENCE)
+        if isinstance(row, EvidenceRecord)
+    }
+    record = evidence[fills[-1].evidence_ref.evidence_id]
+    read_starts = {ref.interval.start for ref in record.market_refs if ref.series == child_series}
+    resolved = resolutions[0].resolved_child_bar_key
+    assert resolved is not None
+    assert read_starts == {resolved.bar_start}
+    # 決め手の子足より後ろの2本（同じ親足の中）は読んでいないので根拠にも載らない。
+    later = {
+        bar.bar_start
+        for bar in children
+        if resolved.bar_start < bar.bar_start < resolved.bar_start + timedelta(minutes=15)
+    }
+    assert len(later) == 2
+    assert not (later & read_starts)

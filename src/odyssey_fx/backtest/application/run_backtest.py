@@ -47,6 +47,7 @@ from odyssey_fx.common.ids import IdAllocator
 from odyssey_fx.common.money import decimal_from_int, kernel_context
 from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
+from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
@@ -84,6 +85,16 @@ def capability_report(
         reasons.append("the first level of the resolution hierarchy is not the execution series")
     if integrity.has_errors():
         reasons.append("the snapshot integrity report contains errors")
+    if config.execution_series.symbol.quote != config.account.currency:
+        # 段階2 は恒等換算だけを通す（D06 §8.5）。決済通貨と口座通貨が違う組み合わせは、
+        # 換算の経路が無いまま予約額・損益・費用を口座通貨として記録してしまうので、
+        # 実行する前に止める。
+        reasons.append(
+            "stage 2 only settles in the account currency;"
+            f" {config.execution_series.symbol} settles in"
+            f" {config.execution_series.symbol.quote} but the account is"
+            f" {config.account.currency}"
+        )
 
     hierarchy = execution_policy.resolution_hierarchy
     checks: tuple[HierarchyCheckResult, ...] = ()
@@ -201,6 +212,16 @@ class RunBacktest:
         """1回の run を実行し、結果 DTO を返す。"""
         if not isinstance(config, RunConfig):
             raise KernelValueError("RunBacktest.run requires a RunConfig")
+        # 識別子の検査は**何かを書き出す前に**行う。manifest を作る段になって初めて気付くと、
+        # 表だけが書かれて manifest の無いディレクトリが残り、既存成果物の検査（ADR-0006）
+        # のせいで直した再実行まで塞がれてしまう。
+        config_digest = self.config_digest(config)
+        expected = run_id_of(config_digest, self._code_digest, self._lock_digest, self._env_digest)
+        if expected != self._allocator.run_id:
+            raise KernelValueError(
+                "the allocator's RunId must be digest(ConfigDigest, CodeDigest, LockDigest,"
+                f" EnvDigest) = {expected}, got {self._allocator.run_id} (ADR-0006)"
+            )
         report = capability_report(
             config,
             compiled,
@@ -237,7 +258,7 @@ class RunBacktest:
         manifest = RunManifest(
             run_id=self._allocator.run_id,
             config=config,
-            config_digest=self.config_digest(config),
+            config_digest=config_digest,
             code_digest=self._code_digest,
             lock_digest=self._lock_digest,
             env_digest=self._env_digest,

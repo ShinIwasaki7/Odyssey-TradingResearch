@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal, localcontext
 from typing import Protocol, runtime_checkable
@@ -103,7 +103,6 @@ from odyssey_fx.backtest.execution.emergency import (
 from odyssey_fx.backtest.execution.fill_model import fill_price
 from odyssey_fx.backtest.execution.protection_hits import (
     ChildBars,
-    IntrabarResolution,
     ResolutionMethod,
     resolve_intrabar,
 )
@@ -648,6 +647,7 @@ class BacktestEngine:
 
     def _resolve_protection(self, clock: PhaseClock, position: Position, bar: Bar) -> None:
         fill_id = self._allocator.next(FillId)
+        visited: list[Bar] = []
         resolution = resolve_intrabar(
             position_id=position.position_id,
             side=position.side,
@@ -657,6 +657,7 @@ class BacktestEngine:
             spread_model=self._cost_model.spread_model,
             fill_id=fill_id,
             child_bars=self._child_bars(),
+            visited=visited,
         )
         if resolution is None:
             return
@@ -685,7 +686,7 @@ class BacktestEngine:
                 execution_bar_key=bar.key,
             ),
             fill_id=fill_id,
-            resolution=resolution,
+            scanned=tuple(visited),
         )
         self._emit(TraceTable.INTRABAR_RESOLUTIONS, resolution)
 
@@ -1063,14 +1064,26 @@ class BacktestEngine:
             self._conversion_policy,
         )
 
-    def _conversion(self, at: UtcTime) -> ConversionRate:
-        """決済通貨から口座通貨への換算率（段階2は恒等換算）。"""
-        currency = self._config.account.currency
+    def _conversion(
+        self, at: UtcTime, evidence: EvidenceRef | None = None, phase: str = PHASE_ADMISSION
+    ) -> ConversionRate:
+        """**決済通貨**から口座通貨への換算率（D06 §8.5）。
+
+        決済通貨は銘柄の決済側の通貨（`USDJPY` なら `JPY`）である。口座通貨をそのまま
+        出どころにすると、口座通貨と決済通貨が違う設定でも率1が返り、予約額・含み損益・
+        実現損益・費用が**換算されないまま口座通貨の額として記録される**。段階2 は恒等換算
+        だけを通すので、違えば経路が組めず run の失敗になる（実行前のデータ能力検査でも
+        同じ組み合わせを弾く）。
+
+        `evidence` を渡すと、率からその根拠記録へ辿れるようになる（上位設計書 §4.7.9 C）。
+        """
+        settlement = self._config.execution_series.symbol.quote
+        account = self._config.account.currency
         try:
-            path = resolve_path(currency, currency, at, self._conversion_policy)
-        except ConversionUnavailable as error:  # pragma: no cover - 段階2は恒等換算のみ
-            raise _RunFailure(Reason(ReasonCode.DATA_ERROR), PHASE_ADMISSION) from error
-        return rate_of(path, currency, currency)
+            path = resolve_path(settlement, account, at, self._conversion_policy)
+        except ConversionUnavailable as error:
+            raise _RunFailure(Reason(ReasonCode.DATA_ERROR), phase) from error
+        return rate_of(path, settlement, account, evidence)
 
     # --- rank 11: 始値処理 ---------------------------------------------------
 
@@ -1116,7 +1129,12 @@ class BacktestEngine:
         position_id = self._allocator.next(PositionId)
         fill_id = self._allocator.next(FillId)
         event_id = self._allocator.next(EventId)
-        conversion = self._conversion(clock.decision_time)
+        # 約定の根拠記録の識別子を先に採番し、費用の換算率からその記録へ辿れるようにする
+        # （上位設計書 §4.7.9 C）。
+        fill_evidence_id = self._allocator.next(EvidenceId)
+        conversion = self._conversion(
+            clock.decision_time, EvidenceRef(evidence_id=fill_evidence_id)
+        )
         costs = cost_entries(
             self._cost_model,
             purpose=FillPurpose.ENTRY,
@@ -1139,6 +1157,7 @@ class BacktestEngine:
             evidence_ref=self._evidence(
                 at,
                 EvidenceKind.FILL,
+                evidence_id=fill_evidence_id,
                 position_id=position_id,
                 conversion_paths=(self._identity_path(at.time),),
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
@@ -1352,7 +1371,7 @@ class BacktestEngine:
         execution_time: ExecutionTime,
         eligibility: ProtectionHit | ImmediateAfterFill,
         fill_id: FillId,
-        resolution: IntrabarResolution | None = None,
+        scanned: tuple[Bar, ...] = (),
     ) -> None:
         """エンジンが生成する即時決済（D06 §4.4・§6.2・§7.3・§7.5）。
 
@@ -1411,7 +1430,7 @@ class BacktestEngine:
             spread_applied=spread_applied,
             acceptance_event=outcome.acceptance_event,
             fill_id=fill_id,
-            resolution=resolution,
+            scanned=scanned,
         )
 
     def _settle(
@@ -1425,12 +1444,15 @@ class BacktestEngine:
         spread_applied: bool,
         acceptance_event: OrderEvent | None = None,
         fill_id: FillId | None = None,
-        resolution: IntrabarResolution | None = None,
+        scanned: tuple[Bar, ...] = (),
     ) -> None:
         """決済の約定を確定する（D06 §4.4 の確定単位4・5）。"""
         fill_id = self._allocator.next(FillId) if fill_id is None else fill_id
         event_id = self._allocator.next(EventId)
-        conversion = self._conversion(at.time)
+        # 約定の根拠記録の識別子を先に採番し、費用の換算率からその記録へ辿れるようにする
+        # （上位設計書 §4.7.9 C）。
+        fill_evidence_id = self._allocator.next(EvidenceId)
+        conversion = self._conversion(at.time, EvidenceRef(evidence_id=fill_evidence_id))
         costs = cost_entries(
             self._cost_model,
             purpose=FillPurpose.CLOSE,
@@ -1454,10 +1476,11 @@ class BacktestEngine:
             evidence_ref=self._evidence(
                 at,
                 EvidenceKind.FILL,
+                evidence_id=fill_evidence_id,
                 position_id=position.position_id,
                 conversion_paths=(self._identity_path(at.time),),
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
-                market_refs=self._execution_market_refs(execution_time, resolution),
+                market_refs=self._execution_market_refs(execution_time, scanned),
             ),
         )
         with localcontext(kernel_context()):
@@ -1736,7 +1759,14 @@ class BacktestEngine:
             )
         for transition in result.transitions:
             self._opportunities.add(transition.opportunity_id)
-            self._emit(TraceTable.OPPORTUNITY_TRANSITIONS, transition)
+            # 末尾の処理点だけは**エンジンとランタイムが同じフェーズを使う**。ランタイムは
+            # 自分の `step` の中で 0 から数えるので、そのまま残すと取消・最終 snapshot と
+            # 同じ `(時刻, RUN_END, 通し番号)` になり、D06 §10.1 が定めた順（取消 → 機会の
+            # 終端 → 最終 snapshot）を処理点の順で読み直せない。番号だけ振り直す。
+            self._emit(
+                TraceTable.OPPORTUNITY_TRANSITIONS,
+                replace(transition, at=clock.next(PHASE_RUN_END)),
+            )
 
         self._record_snapshot(clock.next(PHASE_RUN_END))
         self._summaries = self._final_summaries()
@@ -1861,13 +1891,14 @@ class BacktestEngine:
     def _execution_market_refs(
         self,
         execution_time: ExecutionTime,
-        resolution: IntrabarResolution | None = None,
+        scanned: tuple[Bar, ...] = (),
     ) -> tuple[MarketObservationRef, ...]:
         """決済の根拠（始値約定なら始値、足の中の到達なら高値と安値）。
 
-        足内の競合を下位足まで降りて決めた場合は、**走査した下位足も**根拠に入れる。
+        足内の競合を下位足まで降りて決めた場合は、**実際に読んだ下位足**も根拠に入れる。
         `INTRABAR_RESOLUTIONS` が残すのは決め手になった子足1本だけで、どの観測を見て
-        その裁定になったかは根拠記録にしか残せない。
+        その裁定になったかは根拠記録にしか残せない。走査を打ち切った先の足は読んでいない
+        ので載せない。
         """
         if isinstance(execution_time, ExactExecutionTime):
             key = self._execution.next_bar_key_after(execution_time.time - _TINY)
@@ -1879,11 +1910,9 @@ class BacktestEngine:
             self._market_ref(bar, MarketDataField.HIGH),
             self._market_ref(bar, MarketDataField.LOW),
         ]
-        if resolution is not None and self._intrabar is not None:
-            for series in resolution.series_used[1:]:
-                for child in self._intrabar.bars_in(series, bar.interval):
-                    refs.append(self._market_ref(child, MarketDataField.HIGH))
-                    refs.append(self._market_ref(child, MarketDataField.LOW))
+        for child in scanned:
+            refs.append(self._market_ref(child, MarketDataField.HIGH))
+            refs.append(self._market_ref(child, MarketDataField.LOW))
         return tuple(refs)
 
     def _reference_market_refs(self) -> tuple[MarketObservationRef, ...]:
