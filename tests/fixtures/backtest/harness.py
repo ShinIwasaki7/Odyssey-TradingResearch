@@ -51,6 +51,7 @@ from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey, Provenance, ProvenanceKind
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
@@ -61,10 +62,12 @@ from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 from tests.fixtures.strategy.fakes import FakeMarketDataView
 from tests.fixtures.strategy.strategy_a import SIGNAL_SERIES, TIMEFRAMES, strategy_a
-from tests.fixtures.synthetic.market import TF_15M, USDJPY, calendar, series
+from tests.fixtures.synthetic.market import TF_15M, USDJPY, series
+from tests.fixtures.synthetic.market import calendar as build_calendar
 
 __all__ = [
     "ACCOUNT",
+    "CALENDAR",
     "CONVERSION_POLICY",
     "COST_MODEL",
     "EXECUTION_POLICY",
@@ -86,10 +89,13 @@ JPY = CurrencyCode("JPY")
 #: 執行系列（T01 §1.1）。
 EXECUTION_SERIES = series(USDJPY, "15m", PriceBasis.BID)
 
+#: 既定のカレンダー（休場の宣言なし。T01 の8経路はこれで足りる）。
+CALENDAR = build_calendar()
+
 #: 執行系列の足スケジュール（D03 §3.5）。候補の始値はここから決まり、実ファイルに足が
 #: あるかどうかは見ない（D06 §5.3）。
 EXECUTION_SCHEDULE = SeriesSchedule(
-    series=EXECUTION_SERIES, timeframe_def=TF_15M, calendar=calendar()
+    series=EXECUTION_SERIES, timeframe_def=TF_15M, calendar=CALENDAR
 )
 
 #: 口座（T01 §1.1）。
@@ -141,7 +147,18 @@ def _policy_ref(kind: str, seed: str) -> PolicyRef:
 
 #: 銘柄仕様・カレンダー・時間足定義の版参照（`ConfigDigest` の対象、D06 §9.3）。
 SYMBOL_SPEC_REF = SymbolSpecRef(symbol=USDJPY, version=1, digest=_digest("s"))
-CALENDAR_REF = "fx_ny17@v1"
+
+
+def calendar_ref_of(source: TradingCalendar) -> str:
+    """カレンダーの版参照（`ConfigDigest` の対象、D06 §9.3）。
+
+    休場を足したカレンダーで run を組むと版が変わるので、参照も同じ値から導く。固定の
+    文字列にすると、中身の違うカレンダーが同じ `RunId` を指してしまう。
+    """
+    return f"{source.id}@v{source.version}"
+
+
+CALENDAR_REF = calendar_ref_of(CALENDAR)
 TIMEFRAME_REFS = (TimeframeRef("15m", 1), TimeframeRef("1h", 1))
 
 #: 実行の出どころ（D06 §9.3 の識別の群）。テストでは固定値にする。
@@ -343,11 +360,16 @@ def build_run(
     intrabar: Mapping[SeriesId, Sequence[Bar]] | None = None,
     execution_view_bars: Sequence[Bar] | None = None,
     allocator_run_id: RunId | None = None,
+    calendar: TradingCalendar = CALENDAR,
 ) -> RunSetup:
     """run を組み立てるだけで実行はしない。
 
     `allocator_run_id` を渡すと、採番器の `RunId` を完全入力から作らない値に差し替えられる
     （ADR-0006 の検査が**何かを書き出す前に**効くことの確認に使う）。
+
+    `calendar` を差し替えると、休場（祝日・短縮セッション）を宣言したカレンダーで run を
+    組める。足のスケジュールと受付の判定が同じカレンダーを見ることを保つため、執行系列の
+    ビューにも同じものを渡す（D03 §3.5・§6.3）。
     """
     compiled = compiled_strategy(definition)
     config = RunConfig(
@@ -364,10 +386,11 @@ def build_run(
     )
     # `RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`（ADR-0006）。
     # manifest がこの関係を検査するので、テストでも同じ組み立て方で作る。
+    calendar_ref = calendar_ref_of(calendar)
     config_digest = config_digest_of(
         config,
         symbol_spec_ref=SYMBOL_SPEC_REF,
-        calendar_ref=CALENDAR_REF,
+        calendar_ref=calendar_ref,
         timeframe_def_refs=TIMEFRAME_REFS,
     )
     allocator = IdAllocator(
@@ -394,16 +417,19 @@ def build_run(
         allocator=allocator,
         feed=FakeFeed(signal_bars, execution_bars),
         execution_series=FakeExecutionSeries(
-            execution_bars if execution_view_bars is None else execution_view_bars
+            execution_bars if execution_view_bars is None else execution_view_bars,
+            schedule=SeriesSchedule(
+                series=EXECUTION_SERIES, timeframe_def=TF_15M, calendar=calendar
+            ),
         ),
-        calendar=calendar(),
+        calendar=calendar,
         risk_policy=risk_policy,
         execution_policy=execution_policy,
         cost_model=cost_model,
         conversion_policy=CONVERSION_POLICY,
         symbol_spec=SYMBOL_SPEC,
         symbol_spec_ref=SYMBOL_SPEC_REF,
-        calendar_ref=CALENDAR_REF,
+        calendar_ref=calendar_ref,
         integrity=IntegrityReport(),
         trace_sink=trace_sink,
         result_writer=result_writer,
@@ -437,11 +463,13 @@ def run_backtest(
     account: AccountSpec = ACCOUNT,
     intrabar: Mapping[SeriesId, Sequence[Bar]] | None = None,
     execution_view_bars: Sequence[Bar] | None = None,
+    calendar: TradingCalendar = CALENDAR,
 ) -> RunOutput:
     """人工データで1回の run を通す。
 
     `execution_view_bars` に別の列を渡すと、公開フィードは足の到着を知らせるのに執行系列に
-    その足が無い状態を作れる（実行中のデータ不整合の検証に使う）。
+    その足が無い状態を作れる（実行中のデータ不整合の検証に使う）。`calendar` に休場を宣言
+    したカレンダーを渡すと、祝日・短縮セッションのある run を組める。
     """
     setup = build_run(
         signal_bars=signal_bars,
@@ -454,6 +482,7 @@ def run_backtest(
         account=account,
         intrabar=intrabar,
         execution_view_bars=execution_view_bars,
+        calendar=calendar,
     )
     result = setup.use_case.run(setup.config, setup.compiled)
     assert setup.result_writer.manifest is not None

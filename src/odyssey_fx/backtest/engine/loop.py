@@ -292,7 +292,9 @@ class IntrabarSeries(Protocol):
     def bars_in(self, series: SeriesId, interval: Interval) -> tuple[Bar, ...]: ...
 
 
-#: カレンダーは `marketdata.domain` の型をそのまま受ける（D01 §4）。
+#: カレンダーは `marketdata.domain` の型をそのまま受ける（D01 §4）。使う操作は
+#: `sessions`（休場を取り除いた取引セッション）と `weekly_session_at`（休場を適用する前の
+#: 週の開場区間。週末持ち越し禁止の判定だけに使う。D03 §3.4、D06 §5.3）。
 Calendar = TradingCalendar
 
 
@@ -1046,16 +1048,26 @@ class BacktestEngine:
     def _carry_not_allowed(
         self, decision_time: UtcTime, open_time: UtcTime
     ) -> CarryNotAllowedDetail | None:
-        """候補が週末休場をまたぐか（D06 §5.3）。UTC の土日判定には置き換えない。"""
+        """候補が**週末**をまたぐか（D06 §5.3）。UTC の土日判定には置き換えない。
+
+        判定にはカレンダーの「休場を適用する前の週の開場区間」を使う（D03 §3.4 の
+        `weekly_session_at`）。休場を取り除いた取引セッション（`sessions`）で判定すると、
+        祝日や短縮セッションをまたぐ候補まで週末持ち越しとして拒否される。この規則が
+        禁じているのは**週末の持ち越し**であり、平日の休場は有効時間の問題（`NO_CANDIDATE`）
+        として扱う（2026-09-22 の人間の決定。PR #19）。
+        """
         if open_time <= decision_time:
             return None
-        window = Interval(start=decision_time, end=open_time)
-        for session in self._calendar.sessions(window):
-            if session.start <= decision_time and open_time <= session.end:
+        week = self._calendar.weekly_session_at(decision_time)
+        if week is not None:
+            if open_time <= week.end:
                 return None
-        return CarryNotAllowedDetail(
-            next_candidate=open_time, session_close=self._last_session_close(decision_time)
-        )
+            session_close = week.end
+        else:
+            # 判断時点がどの週の開場区間にも入らない（週の終わりちょうど、または週と週の
+            # あいだ）場合。診断に載せる週の終わりは、観測できる直前のセッション終端を使う。
+            session_close = self._last_session_close(decision_time)
+        return CarryNotAllowedDetail(next_candidate=open_time, session_close=session_close)
 
     def _last_session_close(self, moment: UtcTime) -> UtcTime:
         """`moment` 以前で最後に観測できる週の終わり（診断に載せる）。"""

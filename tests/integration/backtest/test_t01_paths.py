@@ -19,7 +19,7 @@ T01 は「どの型のどのフィールドに何が入るか」を人間が手�
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, time, timedelta
 
 from odyssey_fx.backtest.admission.admission import AttemptRejected
 from odyssey_fx.backtest.admission.risk_assessment import RiskAssessment
@@ -58,6 +58,7 @@ from tests.fixtures.backtest.paths import (
     signal_bars,
 )
 from tests.fixtures.strategy.strategy_a import SIGNAL_SERIES
+from tests.fixtures.synthetic import market
 
 
 def _price(text: str) -> Price:
@@ -381,6 +382,47 @@ def test_path7_rejects_when_the_candidate_crosses_the_weekend() -> None:
     )
 
     assert _reject_reasons(output) == [ReasonCode.CARRY_NOT_ALLOWED]
+
+
+def test_a_holiday_inside_the_week_is_not_treated_as_a_weekend() -> None:
+    """週末持ち越し禁止は**週末だけ**に効く（D06 §5.3、2026-09-22 の人間の決定）。
+
+    火曜の 09:00Z から 11:00Z まで休場を宣言したカレンダーで、09:00Z の判断からの候補が
+    休場明けの 11:00Z になる場合を作る。候補は週末をまたがないので受け付けられ、
+    `CARRY_NOT_ALLOWED` にはならない。判定に取引セッション（休場を取り除いた区間）を
+    使っていると、この注文が週末持ち越しとして拒否される。
+    """
+    holiday = market.calendar(
+        closures=[market.closure(date(2026, 1, 6), time(4, 0), time(6, 0), note="祝日")],
+        version=2,
+    )
+    reopen = UtcTime.from_components(2026, 1, 6, 11, 0)
+    execution = bars(
+        EXECUTION_SERIES,
+        UtcTime.from_components(2026, 1, 6, 8, 45),
+        timedelta(minutes=15),
+        [("150.040", "150.060", "150.040", "150.040")],
+    ) + bars(
+        EXECUTION_SERIES,
+        reopen,
+        timedelta(minutes=15),
+        [("150.050", "150.120", "150.020", "150.100")]
+        + [("150.100", "150.200", "150.050", "150.150")] * 3,
+    )
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution,
+        run_interval=RUN_INTERVAL,
+        execution_policy=replace(EXECUTION_POLICY, entry_valid_for=timedelta(hours=3)),
+        calendar=holiday,
+    )
+
+    assert _reject_reasons(output) == []
+    fills = _fills(output)
+    assert len(fills) == 1
+    # 休場明けの最初の執行足の始値で約定する（bid 150.050 → ask 150.070 → 滑り 0.010）。
+    assert fills[0].processed_at.time == reopen
+    assert fills[0].price == _price("150.080")
 
 
 # --- 経路8: run 末尾の残存処理 -----------------------------------------------
