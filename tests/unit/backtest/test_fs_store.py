@@ -11,7 +11,12 @@ from pathlib import Path
 
 import polars as pl
 
-from odyssey_fx.backtest.trace.recorder import TraceTable, flatten_row, table_columns
+from odyssey_fx.backtest.trace.recorder import (
+    TraceTable,
+    flatten_row,
+    table_column_kinds,
+    table_columns,
+)
 from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultWriter,
     FileSystemTraceSink,
@@ -133,15 +138,51 @@ def test_an_empty_table_keeps_its_columns(tmp_path: Path) -> None:
 
 
 def test_the_declared_columns_match_the_real_rows(tmp_path: Path) -> None:
-    """D06 §9.2: 書き写した4表の列名が、実際の行と一致する。
+    """D06 §9.2: 書き写した7表の列名が、実際の行と一致する。
 
-    記録層は受付層・執行層・台帳層を import できないため、その4表の列名だけは名前を
-    書き写している。食い違うと、行の有無で表の形が変わってしまう。
+    記録層は受付層・執行層・台帳層を import できず、書き出し実装は戦略ランタイムを参照
+    できないため、その7表の列名だけは名前を書き写している。食い違うと、行の有無で表の形が
+    変わってしまう。
     """
-    output, directory = _write(tmp_path)
+    output, _ = _write(tmp_path)
 
     for table in TraceTable:
         rows = output.rows(table)
         assert rows, f"{table.value} should have at least one row in this run"
         for row in rows:
             assert set(flatten_row(row)) | {"run_id"} == set(table_columns(table)), table.value
+
+
+def test_an_empty_table_keeps_the_same_column_types(tmp_path: Path) -> None:
+    """行の有無で列の型が変わらない（空の表と行のある表を一緒に読める）。
+
+    すべて文字列にすると、行のある表では `list` や整数だった列が空の表では文字列になり、
+    読み込みで型が食い違う。
+    """
+    _, directory = _write(tmp_path)
+    empty_root = tmp_path / "empty"
+    sink = FileSystemTraceSink(root=empty_root, run_id="RUN")
+    for table in TraceTable:
+        sink.write(table, ())
+
+    for table in TraceTable:
+        populated = pl.read_parquet(directory / f"{table.value}.parquet")
+        empty = pl.read_parquet(run_directory(empty_root, "RUN") / f"{table.value}.parquet")
+        assert empty.height == 0, table.value
+        assert dict(empty.schema) == dict(populated.schema), table.value
+
+
+def test_the_declared_types_match_the_real_rows(tmp_path: Path) -> None:
+    """宣言した列の型が、行のある表の型と一致する（書き写した7表を含む）。"""
+    _, directory = _write(tmp_path)
+    expected = {
+        "string": pl.String,
+        "int": pl.Int64,
+        "bool": pl.Boolean,
+        "list": pl.List(pl.String),
+    }
+
+    for table in TraceTable:
+        frame = pl.read_parquet(directory / f"{table.value}.parquet")
+        for name, kind in table_column_kinds(table).items():
+            assert frame.schema[name] == expected[kind], f"{table.value}.{name}"

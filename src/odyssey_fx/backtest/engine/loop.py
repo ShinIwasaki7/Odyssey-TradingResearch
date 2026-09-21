@@ -128,6 +128,7 @@ from odyssey_fx.backtest.trace.recorder import (
     EvidenceKind,
     EvidenceRecord,
     ManagementApplication,
+    MarketObservationRef,
     TraceTable,
 )
 from odyssey_fx.backtest.trace.result import FinalSummaries, RunStatus
@@ -135,6 +136,7 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import (
     AllocationId,
     AttemptId,
+    EvaluationId,
     EventId,
     EvidenceId,
     FillId,
@@ -167,6 +169,7 @@ from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.declarations.evaluation import RuntimeEventKind
+from odyssey_fx.strategy.declarations.refs import MarketDataField
 from odyssey_fx.strategy.records.payloads import (
     AccountContext,
     ClosePosition,
@@ -446,6 +449,8 @@ class BacktestEngine:
         self._measurements: dict[PositionId, RiskMeasurement] = {}
         self._entry_opportunities: dict[AttemptId, OpportunityId] = {}
         self._clock: PhaseClock | None = None
+        self._last_snapshot_at: ProcessingPoint | None = None
+        self._output_evaluations: dict[OutputId, EvaluationId] = {}
 
     # --- 読み出し -----------------------------------------------------------
 
@@ -699,6 +704,8 @@ class BacktestEngine:
         self._context.equity = equity
         snapshot: LedgerSnapshot = snapshot_of(self._context.ledger, at, equity)
         self._emit(TraceTable.LEDGER_SNAPSHOTS, snapshot)
+        # 根拠記録が「どの時点の口座 snapshot を見たか」を指せるようにする。
+        self._last_snapshot_at = at
 
     def _equity(self, phase: str) -> Money:
         """含み損益込みの資産（D06 §8.1、Q13 決定）。"""
@@ -778,6 +785,8 @@ class BacktestEngine:
         """戦略ランタイムを1回呼び、記録を判断履歴へ移す（D06 §4.2）。"""
         result = self._runtime.step(batch)
         for record in self._sink.drain():
+            # 出力から評価へ辿れるようにしておく（根拠記録の `evaluation_ids`）。
+            self._output_evaluations[record.output_id] = record.evaluation_id
             self._emit(TraceTable.OUTPUTS, record)
         for evaluation in result.evaluations:
             self._emit(TraceTable.EVALUATIONS, evaluation)
@@ -869,6 +878,7 @@ class BacktestEngine:
             clock.peek(phase),
             EvidenceKind.ORDER_REQUEST,
             output_ids=entry_output_ids(payload),
+            market_refs=self._reference_market_refs(),
         )
         request = build_request(
             payload,
@@ -941,6 +951,7 @@ class BacktestEngine:
                 evidence_id=outcome.assessment.assessment_id,
                 conversion_paths=(self._identity_path(clock.decision_time),),
                 policy_refs=(self._config.risk_policy_ref, self._config.execution_policy_ref),
+                market_refs=self._reference_market_refs(),
             )
         if not outcome.accepted or outcome.order is None or outcome.acceptance_event is None:
             return
@@ -1117,7 +1128,14 @@ class BacktestEngine:
             price=price,
             quantity=order.quantity,
             costs=costs,
-            evidence_ref=self._evidence(at, EvidenceKind.FILL, position_id=position_id),
+            evidence_ref=self._evidence(
+                at,
+                EvidenceKind.FILL,
+                position_id=position_id,
+                conversion_paths=(self._identity_path(at.time),),
+                policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
+                market_refs=self._fill_market_refs(bar_key, MarketDataField.OPEN),
+            ),
         )
         protection = ProtectionState(
             version=1,
@@ -1424,7 +1442,14 @@ class BacktestEngine:
             price=price,
             quantity=order.quantity,
             costs=costs,
-            evidence_ref=self._evidence(at, EvidenceKind.FILL, position_id=position.position_id),
+            evidence_ref=self._evidence(
+                at,
+                EvidenceKind.FILL,
+                position_id=position.position_id,
+                conversion_paths=(self._identity_path(at.time),),
+                policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
+                market_refs=self._execution_market_refs(execution_time),
+            ),
         )
         with localcontext(kernel_context()):
             direction = decimal_from_int(1 if position.side is OrderSide.BUY else -1)
@@ -1521,6 +1546,10 @@ class BacktestEngine:
             admissions=tuple(notices),
         )
         result = self._step(batch, PHASE_POST_FILL_EVALUATION)
+        # 【未実装・要決定】同じ建玉への保護水準の更新と決済要求が同時に返ったら、決済を
+        # 優先して更新は理由を記録して破棄する（上位設計書 §4.7.6、D06 §8.3）。破棄の理由
+        # コードが D02 §8.1 の語彙に無いため、語を決めるまで実装しない。検証戦略 A は両方を
+        # 同時に返さないので、段階2の実行では起きない。
         for request in result.management_requests:
             if isinstance(request.action, SetTakeProfit):
                 self._apply_take_profit(clock, request, is_run_end=is_run_end)
@@ -1633,7 +1662,13 @@ class BacktestEngine:
                 rounded_take_profit=rounded,
                 realized_reward_risk=ratio,
             )
-            self._evidence(at, EvidenceKind.PROTECTION_UPDATE, position_id=position.position_id)
+            self._evidence(
+                at,
+                EvidenceKind.PROTECTION_UPDATE,
+                position_id=position.position_id,
+                output_ids=(request.source_output_id,),
+                policy_refs=(self._config.execution_policy_ref,),
+            )
         self._emit(
             TraceTable.MANAGEMENT_APPLICATIONS,
             CompositeRow(
@@ -1776,21 +1811,73 @@ class BacktestEngine:
         position_id: PositionId | None = None,
         conversion_paths: Sequence[ConversionPath] = (),
         policy_refs: Sequence[PolicyRef] = (),
+        market_refs: Sequence[MarketObservationRef] = (),
     ) -> EvidenceRef:
-        """根拠記録を1件残し、その参照を返す（D06 §9.2 の表15）。"""
+        """根拠記録を1件残し、その参照を返す（D06 §9.2 の表15）。
+
+        上位設計書 §4.7.15 が根拠記録に求める内容（入力の出力 ID、市場データの snapshot・
+        系列・区間・項目、読取時点、口座 snapshot、使用した設定の版）をすべて埋める。
+        `evaluation_ids` は出力 ID から辿り、`ledger_snapshot_at` は直前に残した台帳
+        snapshot の処理点を入れる。空のまま並べると、型としては在るのに中身が無い記録に
+        なってしまう。
+        """
         identifier = self._allocator.next(EvidenceId) if evidence_id is None else evidence_id
         record = EvidenceRecord(
             evidence_id=identifier,
             at=at,
             kind=kind,
             output_ids=tuple(output_ids),
+            evaluation_ids=tuple(
+                self._output_evaluations[output_id]
+                for output_id in output_ids
+                if output_id in self._output_evaluations
+            ),
             attempt_id=attempt_id,
             position_id=position_id,
+            market_refs=tuple(market_refs),
             conversion_paths=tuple(conversion_paths),
+            ledger_snapshot_at=self._last_snapshot_at,
             policy_refs=tuple(policy_refs),
         )
         self._emit(TraceTable.EVIDENCE, record)
         return EvidenceRef(evidence_id=identifier)
+
+    def _fill_market_refs(
+        self, bar_key: BarKey, field: MarketDataField
+    ) -> tuple[MarketObservationRef, ...]:
+        """始値で約定したときの根拠（その執行足のどの項目を見たか）。"""
+        bar = self._execution.bar(bar_key)
+        return () if bar is None else (self._market_ref(bar, field),)
+
+    def _execution_market_refs(
+        self, execution_time: ExecutionTime
+    ) -> tuple[MarketObservationRef, ...]:
+        """決済の根拠（始値約定なら始値、足の中の到達なら高値と安値）。"""
+        if isinstance(execution_time, ExactExecutionTime):
+            key = self._execution.next_bar_key_after(execution_time.time - _TINY)
+            return () if key is None else self._fill_market_refs(key, MarketDataField.OPEN)
+        bar = self._execution.bar(execution_time.bar_key)
+        if bar is None:  # pragma: no cover - 到達判定はその足を読んでいる
+            return ()
+        return (
+            self._market_ref(bar, MarketDataField.HIGH),
+            self._market_ref(bar, MarketDataField.LOW),
+        )
+
+    def _reference_market_refs(self) -> tuple[MarketObservationRef, ...]:
+        """受付の根拠になった市場データ（直前に完了した執行足の終値、D06 §6.4 の手順3）。"""
+        if self._last_complete is None:
+            return ()
+        return (self._market_ref(self._last_complete, MarketDataField.CLOSE),)
+
+    def _market_ref(self, bar: Bar, field: MarketDataField) -> MarketObservationRef:
+        """その足のどの項目を根拠にしたか（D06 §9.2 の `MarketObservationRef`）。"""
+        return MarketObservationRef(
+            snapshot_ref=self._config.snapshot_ref,
+            series=bar.series,
+            interval=bar.interval,
+            field=field,
+        )
 
     def _data_error(self, bar_key: BarKey, cause: str) -> Reason:
         return Reason(

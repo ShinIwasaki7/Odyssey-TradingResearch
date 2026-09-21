@@ -20,7 +20,7 @@ from odyssey_fx.common.money import Money, decimal_from_str
 from odyssey_fx.common.reason import ReasonCode
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
-from tests.fixtures.backtest.harness import COST_MODEL, JPY, run_backtest
+from tests.fixtures.backtest.harness import COST_MODEL, JPY, compiled_strategy, run_backtest
 from tests.fixtures.backtest.paths import (
     DECISION_TIME,
     RUN_INTERVAL,
@@ -301,3 +301,92 @@ def _config(compiled: CompiledStrategy) -> RunConfig:
         delay_scenario_ref=ref,
         execution_series=EXECUTION_SERIES,
     )
+
+
+def test_the_evidence_rows_carry_their_provenance() -> None:
+    """上位設計書 §4.7.15: 根拠記録は市場データ・口座 snapshot・設定の版まで辿れる。
+
+    型としては在るのに中身が空、という記録にしない（D06 §9.2 の表15）。
+    """
+    from odyssey_fx.backtest.trace.recorder import EvidenceKind, EvidenceRecord
+
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+    )
+
+    evidence = [row for row in output.rows(TraceTable.EVIDENCE) if isinstance(row, EvidenceRecord)]
+    request = next(row for row in evidence if row.kind is EvidenceKind.ORDER_REQUEST)
+    assert request.output_ids, "the order request points at the outputs behind it"
+    assert len(request.evaluation_ids) == len(request.output_ids)
+    assert request.market_refs, "the reference quote names the bar it came from"
+    assert request.ledger_snapshot_at is not None
+
+    admission = next(row for row in evidence if row.kind is EvidenceKind.ADMISSION)
+    assert admission.conversion_paths, "the conversion path is persisted (D06 §8.5.1 の規則8)"
+    assert admission.policy_refs
+
+    fill = next(row for row in evidence if row.kind is EvidenceKind.FILL)
+    assert fill.market_refs
+    assert fill.conversion_paths
+    assert fill.policy_refs
+
+
+def test_the_manifest_records_where_the_run_came_from() -> None:
+    """D06 §9.3 の識別の群: コード・lock・環境のダイジェストと git の状態を残す。
+
+    `RunId` がその4つのダイジェストから来ていることも manifest が検査する（ADR-0006）。
+    """
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+    )
+
+    manifest = output.manifest
+    assert manifest.code_digest.digest.hex
+    assert manifest.lock_digest.digest.hex
+    assert manifest.env_digest.digest.hex
+    assert manifest.git_commit == "0" * 40
+    assert manifest.git_dirty is False
+
+
+def test_the_config_digest_covers_the_symbol_specification() -> None:
+    """D06 §9.3: 入力とポリシーの群すべてが `ConfigDigest` の対象になる。
+
+    価格刻みを変えれば丸めも数量も変わるので、同じダイジェストになってはいけない。
+    """
+    from odyssey_fx.backtest.trace.manifest import config_digest_of
+    from odyssey_fx.common.refs import ContentDigest
+    from odyssey_fx.common.symbol import SymbolSpecRef
+    from tests.fixtures.backtest.harness import CALENDAR_REF, SYMBOL_SPEC_REF, TIMEFRAME_REFS
+    from tests.fixtures.synthetic.market import USDJPY
+
+    compiled = compiled_strategy()
+    config = _config(compiled)
+    other_spec = SymbolSpecRef(
+        symbol=USDJPY, version=2, digest=ContentDigest.sha256("b" * 32 + "c" * 32)
+    )
+
+    first = config_digest_of(
+        config,
+        symbol_spec_ref=SYMBOL_SPEC_REF,
+        calendar_ref=CALENDAR_REF,
+        timeframe_def_refs=TIMEFRAME_REFS,
+    )
+    second = config_digest_of(
+        config,
+        symbol_spec_ref=other_spec,
+        calendar_ref=CALENDAR_REF,
+        timeframe_def_refs=TIMEFRAME_REFS,
+    )
+    third = config_digest_of(
+        config,
+        symbol_spec_ref=SYMBOL_SPEC_REF,
+        calendar_ref="fx_ny17@v2",
+        timeframe_def_refs=TIMEFRAME_REFS,
+    )
+
+    assert first != second
+    assert first != third

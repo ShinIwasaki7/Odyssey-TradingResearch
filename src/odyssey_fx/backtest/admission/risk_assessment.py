@@ -209,7 +209,6 @@ def assess_entry(
     `reference_quote` は買いなら ask、売りなら bid で（上位設計書 §4.7.9 C）、`decision_bid`
     は同じ足の bid そのものである。保護水準の検査（手順4）はここから売却側・購入側の価格を
     作る。
-    `decision_bid` は参照価格と**同じ足**の bid で、保護水準の妥当性検査に使う。
     """
     currency = ledger.currency
     balance = ledger.balance

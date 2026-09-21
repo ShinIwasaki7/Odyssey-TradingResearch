@@ -22,11 +22,12 @@ from typing import Any
 
 import polars as pl
 
-from odyssey_fx.backtest.trace.manifest import RunManifest
+from odyssey_fx.backtest.trace.manifest import DataCapabilityReport, RunManifest
 from odyssey_fx.backtest.trace.recorder import (
     TraceTable,
     canonical_text,
     flatten_row,
+    table_column_kinds,
     table_columns,
 )
 from odyssey_fx.backtest.trace.result import BacktestResult
@@ -75,31 +76,31 @@ class FileSystemTraceSink:
         run_id = str(self.run_id)
         flattened = [{"run_id": run_id, **flatten_row(row)} for row in rows]
         columns = _columns(flattened, table_columns(table))
+        kinds = table_column_kinds(table)
         frame = pl.DataFrame(
             columns,
-            schema={name: _dtype_of(values) for name, values in columns.items()},
+            schema={name: _dtype_of(kinds.get(name, "string")) for name in columns},
             strict=False,
         )
         frame.write_parquet(directory / f"{table.value}.parquet")
 
 
-def _dtype_of(values: Sequence[object]) -> pl.DataType:
-    """列の型（値が1つも無ければ文字列にする）。
+#: 列の物理的な型（`backtest.trace.recorder` が宣言した名前から引く）。
+_DTYPES: Mapping[str, pl.DataType] = {
+    "string": pl.String(),
+    "int": pl.Int64(),
+    "bool": pl.Boolean(),
+    "list": pl.List(pl.String()),
+}
 
-    行の無い表でも列を残すため、推論できない列は文字列として書く。数値列は文字列で保存する
-    決まりなので（ADR-0012）、実際に食い違うのは整数・真偽・`list` の列だけである。
+
+def _dtype_of(kind: str) -> pl.DataType:
+    """宣言された型に対応する物理的な型。
+
+    行の有無で型が変わらないよう、**推論せず宣言に従う**。十進数は文字列で保存する決まり
+    なので（ADR-0012）、実際に文字列以外になるのは整数・真偽・`list` の列だけである。
     """
-    for value in values:
-        if value is None:
-            continue
-        if isinstance(value, bool):
-            return pl.Boolean()
-        if isinstance(value, int):
-            return pl.Int64()
-        if isinstance(value, list):
-            return pl.List(pl.String())
-        return pl.String()
-    return pl.String()
+    return _DTYPES.get(kind, pl.String())
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,13 +130,12 @@ def _manifest_payload(manifest: RunManifest) -> dict[str, Any]:
     正規化エンコード文字列にし、外部ツールが同じ文字列からダイジェストを再計算できるように
     する。
     """
-    report = manifest.capability_report
     return {
         "run_id": str(manifest.run_id),
         "config_digest": str(manifest.config_digest.digest),
-        "code_digest": manifest.code_digest,
-        "lock_digest": manifest.lock_digest,
-        "env_digest": manifest.env_digest,
+        "code_digest": manifest.code_digest.digest.hex,
+        "lock_digest": manifest.lock_digest.digest.hex,
+        "env_digest": manifest.env_digest.digest.hex,
         "git_commit": manifest.git_commit,
         "git_dirty": manifest.git_dirty,
         "config": canonical_text(manifest.config),
@@ -148,16 +148,26 @@ def _manifest_payload(manifest: RunManifest) -> dict[str, Any]:
         "unresolved_intrabar_count": manifest.unresolved_intrabar_count,
         "unresolved_intrabar_ratio": str(manifest.unresolved_intrabar_ratio),
         "swap_modeled": manifest.swap_modeled,
-        "capability_report": {
-            "compiled_match": report.compiled_match,
-            "runnable": report.runnable,
-            "reason": None if report.reason is None else report.reason.code.value,
-            "integrity": [canonical_text(result) for result in report.integrity.results],
-            "hierarchy_checks": [canonical_text(check) for check in report.hierarchy_checks],
-        },
+        "capability_report": _capability_payload(manifest.capability_report),
         "status": manifest.status,
         "reason": None if manifest.reason is None else manifest.reason.code.value,
         "warnings": list(manifest.warnings),
+    }
+
+
+def _capability_payload(report: DataCapabilityReport) -> dict[str, Any]:
+    """データ能力検査の結果を**全体のまま** JSON へ落とす（D06 §9.3 の能力検査の群）。
+
+    要約に畳まず、合格・不合格のどちらでも個別の結果を残す。run manifest と結果 DTO の
+    両方が同じ内容を持つのは、`FAILED_CAPABILITY` の run では判断履歴の表が空になりうる
+    ため、結果からも直接読めるようにするという D06 §9.4 の要求による。
+    """
+    return {
+        "compiled_match": report.compiled_match,
+        "runnable": report.runnable,
+        "reason": None if report.reason is None else report.reason.code.value,
+        "integrity": [canonical_text(result) for result in report.integrity.results],
+        "hierarchy_checks": [canonical_text(check) for check in report.hierarchy_checks],
     }
 
 
@@ -169,6 +179,7 @@ def _result_payload(result: BacktestResult) -> dict[str, Any]:
         "status": result.status.value,
         "manifest_ref": result.manifest_ref,
         "trace_tables": {table.value: path for table, path in result.trace_tables.items()},
+        "capability_report": _capability_payload(result.capability_report),
         "swap_modeled": result.swap_modeled,
         "unresolved_intrabar_count": result.unresolved_intrabar_count,
         "trade_count": result.trade_count,

@@ -27,10 +27,10 @@ from odyssey_fx.backtest.domain.policies import (
     RunConfig,
 )
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
-from odyssey_fx.backtest.trace.manifest import RunManifest
+from odyssey_fx.backtest.trace.manifest import RunManifest, config_digest_of
 from odyssey_fx.backtest.trace.recorder import TraceTable, flatten_row
 from odyssey_fx.backtest.trace.result import BacktestResult
-from odyssey_fx.common.ids import AccountId, IdAllocator, RunId, SnapshotId
+from odyssey_fx.common.ids import AccountId, IdAllocator, SnapshotId
 from odyssey_fx.common.money import (
     CurrencyCode,
     Money,
@@ -39,12 +39,17 @@ from odyssey_fx.common.money import (
     decimal_from_str,
 )
 from odyssey_fx.common.refs import (
+    CodeDigest,
     ContentDigest,
+    EnvDigest,
+    LockDigest,
     PolicyRef,
     SnapshotRef,
+    run_id,
 )
 from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
@@ -122,6 +127,17 @@ def _digest(seed: str) -> ContentDigest:
 
 def _policy_ref(kind: str, seed: str) -> PolicyRef:
     return PolicyRef(policy_kind=kind, policy_id=f"{kind}_v1", version=1, digest=_digest(seed))
+
+
+#: 銘柄仕様・カレンダー・時間足定義の版参照（`ConfigDigest` の対象、D06 §9.3）。
+SYMBOL_SPEC_REF = SymbolSpecRef(symbol=USDJPY, version=1, digest=_digest("s"))
+CALENDAR_REF = "fx_ny17@v1"
+TIMEFRAME_REFS = (TimeframeRef("15m", 1), TimeframeRef("1h", 1))
+
+#: 実行の出どころ（D06 §9.3 の識別の群）。テストでは固定値にする。
+CODE_DIGEST = CodeDigest(digest=_digest("code"))
+LOCK_DIGEST = LockDigest(digest=_digest("lock"))
+ENV_DIGEST = EnvDigest(digest=_digest("env"))
 
 
 def bars(
@@ -292,7 +308,27 @@ def run_backtest(
     その足が無い状態を作れる（実行中のデータ不整合の検証に使う）。
     """
     compiled = compiled_strategy(definition)
-    allocator = IdAllocator(RunId(_digest("a")))
+    config = RunConfig(
+        run_interval=run_interval,
+        snapshot_ref=SnapshotRef(snapshot_id=SnapshotId(_digest("n"))),
+        compiled_ref=compiled.compiled_ref,
+        account=account,
+        risk_policy_ref=_policy_ref("risk", "r"),
+        execution_policy_ref=_policy_ref("execution", "e"),
+        cost_model_ref=_policy_ref("cost", "c"),
+        conversion_policy_ref=_policy_ref("conversion", "v"),
+        delay_scenario_ref=_policy_ref("delay", "d"),
+        execution_series=EXECUTION_SERIES,
+    )
+    # `RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`（ADR-0006）。
+    # manifest がこの関係を検査するので、テストでも同じ組み立て方で作る。
+    config_digest = config_digest_of(
+        config,
+        symbol_spec_ref=SYMBOL_SPEC_REF,
+        calendar_ref=CALENDAR_REF,
+        timeframe_def_refs=TIMEFRAME_REFS,
+    )
+    allocator = IdAllocator(run_id(config_digest, CODE_DIGEST, LOCK_DIGEST, ENV_DIGEST))
     sink = TraceOutputSink()
     context = EngineContext(account)
     evaluator = StrategyEvaluator(
@@ -320,23 +356,18 @@ def run_backtest(
         cost_model=cost_model,
         conversion_policy=CONVERSION_POLICY,
         symbol_spec=SYMBOL_SPEC,
-        symbol_spec_ref=SymbolSpecRef(symbol=USDJPY, version=1, digest=_digest("s")),
+        symbol_spec_ref=SYMBOL_SPEC_REF,
+        calendar_ref=CALENDAR_REF,
         integrity=IntegrityReport(),
         trace_sink=trace_sink,
         result_writer=result_writer,
+        code_digest=CODE_DIGEST,
+        lock_digest=LOCK_DIGEST,
+        env_digest=ENV_DIGEST,
+        git_commit="0" * 40,
+        git_dirty=False,
+        timeframe_refs=TIMEFRAME_REFS,
         intrabar_series=None if intrabar is None else FakeIntrabarSeries(intrabar),
-    )
-    config = RunConfig(
-        run_interval=run_interval,
-        snapshot_ref=SnapshotRef(snapshot_id=_snapshot_id()),
-        compiled_ref=compiled.compiled_ref,
-        account=account,
-        risk_policy_ref=_policy_ref("risk", "r"),
-        execution_policy_ref=_policy_ref("execution", "e"),
-        cost_model_ref=_policy_ref("cost", "c"),
-        conversion_policy_ref=_policy_ref("conversion", "v"),
-        delay_scenario_ref=_policy_ref("delay", "d"),
-        execution_series=EXECUTION_SERIES,
     )
     result = use_case.run(config, compiled)
     assert result_writer.manifest is not None

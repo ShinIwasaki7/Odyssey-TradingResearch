@@ -46,6 +46,7 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import IdAllocator
 from odyssey_fx.common.money import decimal_from_int, kernel_context
 from odyssey_fx.common.reason import Reason, ReasonCode
+from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
 from odyssey_fx.common.symbol import SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
@@ -136,13 +137,26 @@ class RunBacktest:
         conversion_policy: ConversionPolicy,
         symbol_spec: SymbolSpec,
         symbol_spec_ref: SymbolSpecRef,
+        calendar_ref: str,
         integrity: IntegrityReport,
         trace_sink: TraceSink,
         result_writer: ResultWriter,
+        code_digest: CodeDigest,
+        lock_digest: LockDigest,
+        env_digest: EnvDigest,
+        git_commit: str = "",
+        git_dirty: bool = False,
         intrabar_series: IntrabarSeries | None = None,
         timeframe_refs: tuple[TimeframeRef, ...] = (),
         strategy_priority: int = 0,
     ) -> None:
+        """実行に要るポートとポリシー、そして**実行の出どころ**を受け取る。
+
+        コード・依存 lock・環境のダイジェストと git の状態は、実行環境の事実であって設定では
+        ない（D06 §9.3 の識別の群）。合成（`app`）が解決して渡す。これが無いと、成果物から
+        「どのコード・どの依存・どの環境で作られたか」を後から確かめられず、`RunId` が
+        ADR-0006 の4つのダイジェストから来ていることも検証できない。
+        """
         self._runtime = runtime
         self._context = context
         self._sink = output_sink
@@ -156,12 +170,31 @@ class RunBacktest:
         self._conversion_policy = conversion_policy
         self._symbol_spec = symbol_spec
         self._symbol_spec_ref = symbol_spec_ref
+        self._calendar_ref = calendar_ref
         self._integrity = integrity
         self._trace_sink = trace_sink
         self._result_writer = result_writer
+        self._code_digest = code_digest
+        self._lock_digest = lock_digest
+        self._env_digest = env_digest
+        self._git_commit = git_commit
+        self._git_dirty = git_dirty
         self._intrabar = intrabar_series
         self._timeframe_refs = timeframe_refs
         self._priority = strategy_priority
+
+    def config_digest(self, config: RunConfig) -> ConfigDigest:
+        """この実行の `ConfigDigest`（D06 §9.3）。
+
+        合成（`app`）が `RunId` を組み立てるときにも同じ値が要るので、外から呼べるように
+        している。銘柄仕様・カレンダー・時間足定義の版参照も対象に含む。
+        """
+        return config_digest_of(
+            config,
+            symbol_spec_ref=self._symbol_spec_ref,
+            calendar_ref=self._calendar_ref,
+            timeframe_def_refs=self._timeframe_refs,
+        )
 
     def run(self, config: RunConfig, compiled: CompiledStrategy) -> BacktestResult:
         """1回の run を実行し、結果 DTO を返す。"""
@@ -203,7 +236,12 @@ class RunBacktest:
         manifest = RunManifest(
             run_id=self._allocator.run_id,
             config=config,
-            config_digest=config_digest_of(config),
+            config_digest=self.config_digest(config),
+            code_digest=self._code_digest,
+            lock_digest=self._lock_digest,
+            env_digest=self._env_digest,
+            git_commit=self._git_commit,
+            git_dirty=self._git_dirty,
             phases=BACKTEST_PHASES,
             id_allocator_snapshot=self._allocator.snapshot(),
             capability_report=report,
@@ -215,7 +253,7 @@ class RunBacktest:
             swap_modeled=self._cost_model.swap_modeled,
             status=engine.status.value,
             symbol_spec_ref=self._symbol_spec_ref,
-            calendar_ref=f"{self._calendar.id}@v{self._calendar.version}",
+            calendar_ref=self._calendar_ref,
             timeframe_def_refs=self._timeframe_refs,
             reason=engine.failure_reason,
         )

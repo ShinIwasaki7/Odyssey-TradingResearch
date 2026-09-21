@@ -11,7 +11,7 @@ manifest は JSON で保存する（ADR-0027）。識別・入力・ポリシー
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -20,7 +20,8 @@ from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.reason import Reason
-from odyssey_fx.common.refs import ConfigDigest
+from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
+from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import SymbolSpecRef
 from odyssey_fx.common.time import PhaseSet
 from odyssey_fx.common.timeframe import TimeframeRef
@@ -64,16 +65,36 @@ class DataCapabilityReport:
             )
 
 
-def config_digest_of(config: RunConfig) -> ConfigDigest:
+def config_digest_of(
+    config: RunConfig,
+    *,
+    symbol_spec_ref: SymbolSpecRef,
+    calendar_ref: str,
+    timeframe_def_refs: Sequence[TimeframeRef] = (),
+) -> ConfigDigest:
     """入力とポリシーの群から `ConfigDigest` を作る（D06 §9.3）。
 
-    `RunConfig` は入力（snapshot・戦略・区間・執行系列・seed・口座）とポリシーの参照を
-    ちょうど持ち、識別の群（`RunId` や git の状態）は持たない。そのため設定そのものの
-    正規化エンコードがこのダイジェストの対象になる。
+    対象は「識別」を除く**入力とポリシーの群すべて**である。`RunConfig` は入力
+    （snapshot・戦略・区間・執行系列・seed・口座）とポリシーの参照を持つが、銘柄仕様・
+    カレンダー・時間足定義の版参照は manifest 側にあるため、ここで一緒にダイジェストへ入れる。
+
+    入れないと、**価格刻みや数量刻みを変えた実行、週の開閉を変えた実行が同じ `ConfigDigest`
+    になる**。丸めも週末持ち越しの判定も変わるのに同じ `RunId` になり、別の結果が同じ
+    `runs/<run_id>/` を指してしまう。
     """
     if not isinstance(config, RunConfig):
         raise KernelValueError("config_digest_of requires a RunConfig")
-    return ConfigDigest(digest=digest(config))
+    if not isinstance(symbol_spec_ref, SymbolSpecRef):
+        raise KernelValueError("config_digest_of requires a SymbolSpecRef")
+    if not isinstance(calendar_ref, str) or not calendar_ref:
+        raise KernelValueError("config_digest_of requires a non-empty calendar reference")
+    payload = {
+        "config": config,
+        "symbol_spec_ref": symbol_spec_ref,
+        "calendar_ref": calendar_ref,
+        "timeframe_def_refs": tuple(timeframe_def_refs),
+    }
+    return ConfigDigest(digest=digest(payload))
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +104,9 @@ class RunManifest:
     run_id: RunId
     config: RunConfig
     config_digest: ConfigDigest
+    code_digest: CodeDigest
+    lock_digest: LockDigest
+    env_digest: EnvDigest
     phases: PhaseSet
     id_allocator_snapshot: Mapping[str, int]
     capability_report: DataCapabilityReport
@@ -97,18 +121,34 @@ class RunManifest:
     git_commit: str = ""
     git_dirty: bool = False
     reason: Reason | None = None
-    code_digest: str = ""
-    lock_digest: str = ""
-    env_digest: str = ""
     warnings: tuple[str, ...] = field(default=())
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
             raise KernelValueError("RunManifest.run_id must be a RunId")
+        for name, expected in (
+            ("code_digest", CodeDigest),
+            ("lock_digest", LockDigest),
+            ("env_digest", EnvDigest),
+        ):
+            if not isinstance(getattr(self, name), expected):
+                raise KernelValueError(f"RunManifest.{name} must be a {expected.__name__}")
         if not isinstance(self.config, RunConfig):
             raise KernelValueError("RunManifest.config must be a RunConfig")
         if not isinstance(self.config_digest, ConfigDigest):
             raise KernelValueError("RunManifest.config_digest must be a ConfigDigest")
+        # `RunId = digest(ConfigDigest, CodeDigest, LockDigest, EnvDigest)`（ADR-0006）。
+        # 4つのダイジェストが手元にあるので、識別子が本当にその4つから来ていることを
+        # ここで確かめる。食い違うと、成果物がどのコード・どの依存・どの環境で作られたかを
+        # 後から検証できない。
+        expected_run_id = run_id_of(
+            self.config_digest, self.code_digest, self.lock_digest, self.env_digest
+        )
+        if expected_run_id != self.run_id:
+            raise KernelValueError(
+                "RunManifest.run_id must be digest(ConfigDigest, CodeDigest, LockDigest,"
+                f" EnvDigest) = {expected_run_id}, got {self.run_id} (ADR-0006)"
+            )
         if not isinstance(self.phases, PhaseSet):
             raise KernelValueError("RunManifest.phases must be a PhaseSet")
         if not isinstance(self.id_allocator_snapshot, Mapping):

@@ -73,6 +73,7 @@ __all__ = [
     "canonical_text",
     "cost_columns",
     "column_names",
+    "table_column_kinds",
     "table_columns",
     "flatten",
     "flatten_composite",
@@ -288,27 +289,40 @@ def _scalar_column(value: object) -> object:
         return value
     if isinstance(value, _CanonicalScalar):
         return value.canonical_str()
+    if is_dataclass(value) and not isinstance(value, type):
+        # 型が注釈から決まらない値（出力記録の中身など）。正規化エンコードにしておけば、
+        # 同じ内容から常に同じ文字列になり、再実行の判断履歴を文字列のまま比べられる。
+        return canonical_text(value)
     return str(value)
 
 
-def _expand(annotation: Any, value: object, name: str) -> dict[str, object]:
-    """1つのフィールドを列へ開く（値が `None` でも列の集合は変わらない）。"""
+def _expand(
+    annotation: Any, value: object, name: str, kinds: dict[str, str] | None = None
+) -> dict[str, object]:
+    """1つのフィールドを列へ開く（値が `None` でも列の集合は変わらない）。
+
+    `kinds` を渡すと、各列の**物理的な型**（`string` / `int` / `bool` / `list`）も一緒に
+    記録する。行が1件も無い表でも、行のある表と同じ型で書けるようにするためである。
+    """
     _, inner = _is_optional(annotation)
 
     variants = _variants(inner)
     if variants:
         columns: dict[str, object] = {_join(name, "kind"): None}
+        _mark(kinds, _join(name, "kind"), "string")
         for variant in variants:
             for field_name, hint in _hints(variant).items():
                 if field_name == "kind":
                     continue
-                columns.update(_expand(hint, None, _join(name, field_name)))
+                columns.update(_expand(hint, None, _join(name, field_name), kinds))
         if value is not None:
             columns[_join(name, "kind")] = getattr(value, "kind", type(value).__name__)
             for field_name, hint in _hints(type(value)).items():
                 if field_name == "kind":
                     continue
-                columns.update(_expand(hint, getattr(value, field_name), _join(name, field_name)))
+                columns.update(
+                    _expand(hint, getattr(value, field_name), _join(name, field_name), kinds)
+                )
         return columns
 
     origin = typing.get_origin(inner)
@@ -316,10 +330,13 @@ def _expand(annotation: Any, value: object, name: str) -> dict[str, object]:
         items: tuple[object, ...] = (
             () if value is None else tuple(value)  # type: ignore[arg-type]
         )
+        _mark(kinds, name, "list")
         return {name: [_list_item(item) for item in items]}
 
     if inner is Reason or (isinstance(value, Reason)):
         reason = value if isinstance(value, Reason) else None
+        _mark(kinds, _join(name, "code"), "string")
+        _mark(kinds, _join(name, "detail"), "string")
         return {
             _join(name, "code"): None if reason is None else reason.code.value,
             _join(name, "detail"): (
@@ -328,22 +345,41 @@ def _expand(annotation: Any, value: object, name: str) -> dict[str, object]:
         }
 
     if inner is PhaseRank or isinstance(value, PhaseRank):
+        _mark(kinds, name, "string")
         return {name: None if value is None else str(value)}
 
     if isinstance(inner, type) and issubclass(inner, _SCALAR_TYPES):
+        _mark(kinds, name, _scalar_kind(inner))
         return {name: _scalar_column(value)}
 
     if isinstance(inner, type) and issubclass(inner, Enum):
+        _mark(kinds, name, "string")
         return {name: None if value is None else _scalar_column(value)}
 
     if isinstance(inner, type) and is_dataclass(inner) and not _is_scalar_record(inner):
         columns = {}
         for field_name, hint in _hints(inner).items():
             child = None if value is None else getattr(value, field_name)
-            columns.update(_expand(hint, child, _join(name, field_name)))
+            columns.update(_expand(hint, child, _join(name, field_name), kinds))
         return columns
 
+    _mark(kinds, name, "string")
     return {name: _scalar_column(value)}
+
+
+def _mark(kinds: dict[str, str] | None, name: str, kind: str) -> None:
+    """列の物理的な型を控える（既に控えてあれば上書きしない）。"""
+    if kinds is not None:
+        kinds.setdefault(name, kind)
+
+
+def _scalar_kind(inner: type) -> str:
+    """単一の列の物理的な型。`Decimal` は文字列で保存する（ADR-0012）。"""
+    if issubclass(inner, bool):
+        return "bool"
+    if issubclass(inner, int):
+        return "int"
+    return "string"
 
 
 def _is_scalar_record(cls: type) -> bool:
@@ -641,6 +677,51 @@ def table_columns(table: TraceTable) -> tuple[str, ...]:
 def _with_run_id(names: Sequence[str]) -> tuple[str, ...]:
     """`run_id` を先頭に置く（行そのものが持つ表では重ねない）。"""
     return ("run_id", *(name for name in names if name != "run_id"))
+
+
+#: 書き写した7表のうち、文字列にならない列。ここに無い列は文字列である。
+#: `tests/unit/backtest/test_fs_store.py` が、実際の行の型と一致することを機械検査する。
+_BORROWED_KINDS: Final[Mapping[TraceTable, Mapping[str, str]]] = {
+    TraceTable.EVALUATIONS: {
+        "trigger_names": "list",
+        "outcome_output_ids": "list",
+        "outcome_diagnoses": "list",
+    },
+    TraceTable.OPPORTUNITY_TRANSITIONS: {"at_sequence": "int"},
+    TraceTable.RISK_ASSESSMENTS: {
+        "policy_ref_version": "int",
+        "reached_step": "int",
+        "reference_quote_derived_from_spread": "bool",
+        "checks": "list",
+    },
+    TraceTable.MANAGEMENT_APPLICATIONS: {
+        "application_at_sequence": "int",
+        "application_applied": "bool",
+        "application_protection_version": "int",
+    },
+    TraceTable.INTRABAR_RESOLUTIONS: {"series_used": "list"},
+    TraceTable.LEDGER_SNAPSHOTS: {"at_sequence": "int", "open_position_ids": "list"},
+}
+
+
+def table_column_kinds(table: TraceTable) -> Mapping[str, str]:
+    """表の各列の物理的な型（`string` / `int` / `bool` / `list`）。
+
+    行が1件も無い表を書くときに使う。すべて文字列にしてしまうと、行のある表では
+    `list` や `int` だった列が空の表では文字列になり、両方を読み込むときに型が食い違う。
+    """
+    names = table_columns(table)
+    if table in _BORROWED_COLUMNS:
+        declared = _BORROWED_KINDS.get(table, {})
+        return {name: declared.get(name, "string") for name in names}
+    row_type, secondaries = _TABLE_TYPES[table]
+    kinds: dict[str, str] = {}
+    for field_name, hint in _hints(row_type).items():
+        _expand(hint, None, field_name, kinds)
+    for prefix, secondary_type in secondaries:
+        for field_name, hint in _hints(secondary_type).items():
+            _expand(hint, None, _join(prefix, field_name), kinds)
+    return {name: kinds.get(name, "string") for name in names}
 
 
 def _cost_column_names(kind: CostKind) -> tuple[str, str]:
