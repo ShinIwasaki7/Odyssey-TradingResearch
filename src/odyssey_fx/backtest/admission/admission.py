@@ -26,6 +26,7 @@ from odyssey_fx.backtest.admission.risk_assessment import (
     RiskAssessment,
     RiskAssessmentRef,
     assess_entry,
+    non_positive_balance_reason,
 )
 from odyssey_fx.backtest.domain.account import AccountLedger
 from odyssey_fx.backtest.domain.events import OrderEvent
@@ -218,6 +219,11 @@ def decide_entry(
                 NoCandidateDetail(expires_at=expires_at, earliest_candidate=None),
             ),
         )
+    # 手順1（残高が非正なら拒否）は参照価格より**前**に判定する（D06 §6.4）。残高だけで
+    # 決まる拒否なので、参照価格が取れない判断時点でも本当の理由のまま記録される。
+    balance_rejection = non_positive_balance_reason(ledger)
+    if balance_rejection is not None:
+        return _rejected(request, balance_rejection)
     if reference_quote is None or decision_bid is None or adverse_fill_limit is None:
         # 参照価格も Δ も無いと手順3 より先へ進めない。審査記録は作らない（D06 §4.4）。
         return _rejected(request, Reason(ReasonCode.DATA_ERROR))

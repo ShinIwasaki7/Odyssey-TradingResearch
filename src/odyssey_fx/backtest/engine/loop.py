@@ -206,7 +206,7 @@ __all__ = [
 _ZERO = decimal_from_int(0)
 
 #: 「判断時刻と同じ時刻に始まる執行足も候補に含める」ための最小の後戻り。
-#: 執行系列の `next_bar_key_after` は**より後**に始まる足を返すため、判断時点と同時刻に
+#: 執行系列の足を探す操作は**より後**に始まる足を返すため、判断時点と同時刻に
 #: 始まる足（因果順序上まだ到来していない最初の始値）を候補にするにはここだけ1マイクロ秒
 #: 手前から探す（D06 §7.1・§5.3）。
 _TINY = timedelta(microseconds=1)
@@ -264,13 +264,21 @@ class PublicationFeed(Protocol):
 
 @runtime_checkable
 class ExecutionSeries(Protocol):
-    """執行用系列（D03 §6.3 の3操作）。"""
+    """執行用系列（D03 §6.3 の4操作）。
+
+    `next_bar_key_after` が**実在する足**を返すのに対し、`next_scheduled_open_after` は
+    カレンダーと時間足定義から決まる**予定上の足**を返す。候補の始値は後者から決める
+    （D06 §5.3。実ファイルの欠損を候補選択に使わない）。前者は、実際に読んだ足を根拠記録
+    へ載せるときだけ使う。
+    """
 
     def bar(self, bar_key: BarKey) -> Bar | None: ...
 
     def open_of(self, bar_key: BarKey) -> Price | None: ...
 
     def next_bar_key_after(self, moment: UtcTime) -> BarKey | None: ...
+
+    def next_scheduled_open_after(self, moment: UtcTime) -> BarKey | None: ...
 
 
 @runtime_checkable
@@ -994,14 +1002,16 @@ class BacktestEngine:
         決済要求には適用しない（D06 §7.1）。決済まで遅らせると、戦略が求めた時点より後の
         価格で約定し、建玉がその間だけ余計に晒される。
 
-        候補はカレンダーと執行系列の足スケジュールから決め、将来価格を候補選択に使わない。
+        候補は**カレンダーと執行系列の足スケジュール**から決め、将来価格も実ファイルの欠損も
+        候補選択に使わない（D06 §5.3）。実在する足から探すと、休場でない区間で足が欠けて
+        いるだけで候補が先へずれ、欠損の有無が受付結果を変えてしまう。
         """
         key = self._first_candidate_key(decision_time)
         delay = self._execution_policy.entry_delay_bars if is_entry else 0
         for _ in range(delay):
             if key is None:
                 break
-            key = self._execution.next_bar_key_after(key.bar_start)
+            key = self._execution.next_scheduled_open_after(key.bar_start)
         if key is None:
             return None, None
         open_time = key.bar_start
@@ -1013,9 +1023,8 @@ class BacktestEngine:
         return ScheduledOpen(bar_key=key, open_time=open_time), None
 
     def _first_candidate_key(self, decision_time: UtcTime) -> BarKey | None:
-        """因果順序上まだ到来していない最初の執行足（判断時点と同時刻の足を含む）。"""
-        key = self._execution.next_bar_key_after(decision_time - _TINY)
-        return key
+        """因果順序上まだ到来していない最初の**予定上の**執行足（同時刻の足を含む）。"""
+        return self._execution.next_scheduled_open_after(decision_time - _TINY)
 
     def _carry_not_allowed(
         self, decision_time: UtcTime, open_time: UtcTime
@@ -1437,8 +1446,9 @@ class BacktestEngine:
         self._emit(TraceTable.ATTEMPT_DECISIONS, _decision_row(outcome.decision))
         if not outcome.accepted or outcome.order is None or outcome.acceptance_event is None:
             return
-        self._emit(TraceTable.ORDERS, outcome.order)
-        self._emit(TraceTable.ORDER_EVENTS, outcome.acceptance_event)
+        # 注文と受付イベントの行は `_settle` が台帳を差し替えた**後**に出す。受付と約定を
+        # 1つの確定単位にまとめる経路（D06 §4.4）でも、他の受付経路（`_record_outcome`）と
+        # 「確定してから記録する」順序を揃えるため。
         price = fill_price(
             base_price,
             side,
@@ -1574,6 +1584,12 @@ class BacktestEngine:
                 balance=balance,
             )
         self._trade_count += 1
+        if acceptance_event is not None:
+            # エンジン生成の即時決済は受付と約定が1つの確定単位なので、注文と受付イベントの
+            # 行もここで出す（D06 §4.4）。差し替えより前に出すと、確定しなかった注文が判断
+            # 履歴に残る経路ができてしまう。
+            self._emit(TraceTable.ORDERS, order)
+            self._emit(TraceTable.ORDER_EVENTS, acceptance_event)
         self._emit(TraceTable.FILLS, fill)
         self._emit(TraceTable.ORDER_EVENTS, fill_event)
 
@@ -1603,14 +1619,43 @@ class BacktestEngine:
             admissions=tuple(notices),
         )
         result = self._step(batch, PHASE_POST_FILL_EVALUATION)
-        # 【未実装・要決定】同じ建玉への保護水準の更新と決済要求が同時に返ったら、決済を
-        # 優先して更新は理由を記録して破棄する（上位設計書 §4.7.6、D06 §8.3）。破棄の理由
-        # コードが D02 §8.1 の語彙に無いため、語を決めるまで実装しない。検証戦略 A は両方を
-        # 同時に返さないので、段階2の実行では起きない。
+        # 同じ判断時点で同じ建玉への決済要求が返っていれば、決済を優先し、保護水準の更新は
+        # 理由を記録して破棄する（上位設計書 §4.7.6、D06 §8.3）。理由は `SUPERSEDED_BY_EXIT`
+        # （D02 §8.1、上位設計書 §4.7.14）。建玉が決済される以上、その更新は一度も有効に
+        # ならないので、適用して直後に捨てるのではなく適用そのものを行わない。
+        closing = {
+            request.position_id
+            for request in result.management_requests
+            if isinstance(request.action, ClosePosition)
+        }
         for request in result.management_requests:
-            if isinstance(request.action, SetTakeProfit):
-                self._apply_take_profit(clock, request, is_run_end=is_run_end)
+            if not isinstance(request.action, SetTakeProfit):
+                continue
+            if request.position_id in closing:
+                self._discard_take_profit(clock, request)
+                continue
+            self._apply_take_profit(clock, request, is_run_end=is_run_end)
         return result
+
+    def _discard_take_profit(self, clock: PhaseClock, request: ManagementRequest) -> None:
+        """決済要求に押しのけられた保護水準の更新を、適用せずに記録する（D06 §8.3）。"""
+        self._emit(
+            TraceTable.MANAGEMENT_APPLICATIONS,
+            CompositeRow(
+                primary=request,
+                parts=(
+                    (
+                        "application",
+                        ManagementApplication,
+                        ManagementApplication(
+                            at=clock.next(PHASE_POST_FILL_EVALUATION),
+                            applied=False,
+                            reason=Reason(ReasonCode.SUPERSEDED_BY_EXIT),
+                        ),
+                    ),
+                ),
+            ),
+        )
 
     def _apply_take_profit(
         self, clock: PhaseClock, request: ManagementRequest, *, is_run_end: bool = False

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from odyssey_fx.backtest.admission.admission import AttemptAccepted, AttemptRejected
 from odyssey_fx.backtest.domain.account import AccountLedger
 from odyssey_fx.backtest.domain.fills import CostKind
@@ -37,7 +39,9 @@ from odyssey_fx.backtest.trace.recorder import (
     flatten,
     flatten_row,
     flatten_union,
+    plain_decimal,
 )
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import (
     AttemptId,
     EventId,
@@ -85,7 +89,7 @@ def test_money_becomes_an_amount_and_a_currency() -> None:
 
     columns = flatten(snapshot)
 
-    assert columns["balance_amount"] == "1e6"
+    assert columns["balance_amount"] == "1000000"
     assert columns["balance_currency"] == "JPY"
 
 
@@ -164,7 +168,7 @@ def test_a_composite_row_prefixes_the_secondary_type() -> None:
 
     assert columns["reservation_id"] == "RSV:00000001"
     assert columns["reservation_state_status"] == "TRANSFERRED"
-    assert columns["amount_amount"] == "19904e0"
+    assert columns["amount_amount"] == "19904"
 
 
 def test_a_missing_secondary_still_produces_its_columns() -> None:
@@ -196,7 +200,7 @@ def test_a_missing_secondary_still_produces_its_columns() -> None:
     assert columns["position_id"] == "POS:00000001"
     assert columns["position_risk_allocation_amount_amount"] is None
     assert columns["position_risk_allocation_position_id"] is None
-    assert columns["protection_stop_loss"] == "1495e-1"
+    assert columns["protection_stop_loss"] == "149.5"
 
 
 def test_the_final_summaries_match_the_paper_trace() -> None:
@@ -280,3 +284,62 @@ def test_the_summaries_are_not_built_without_a_final_price() -> None:
         )
         is None
     )
+
+
+# --- 数値列の十進表記（D06 §9.1）--------------------------------------------
+
+
+def test_the_decimal_notation_is_fixed_point_and_round_trips() -> None:
+    """D06 §9.1: 人が読める固定小数で書き、`Decimal(文字列)` で厳密に往復する。
+
+    値は T01 の価格・数量・金額・率である。指数表記を使わないこと、末尾ゼロを落とすこと、
+    ゼロと負号の扱いを1つの表で確かめる。
+    """
+    cases = {
+        "150.080": "150.08",
+        "149.500": "149.5",
+        "151.240": "151.24",
+        "32000": "32000",
+        "19904": "19904",
+        "1000000": "1000000",
+        "1036736": "1036736",
+        "-18880": "-18880",
+        "0.622": "0.622",
+        "0.02": "0.02",
+        "1": "1",
+    }
+    for source, expected in cases.items():
+        value = decimal_from_str(source)
+        text = plain_decimal(value)
+        assert text == expected
+        assert decimal_from_str(text) == value
+
+
+def test_the_same_value_always_produces_the_same_text() -> None:
+    """D06 §9.1 の規則1: 書き手が持っていた桁数で文字列が変わらない。
+
+    これが崩れると、同じ入力の再実行で判断履歴を文字列のまま比べられなくなる
+    （D06 §4.4 の「許容誤差は完全一致」）。
+    """
+    assert plain_decimal(decimal_from_str("149.500")) == plain_decimal(decimal_from_str("149.5"))
+    assert plain_decimal(decimal_from_str("150.00")) == plain_decimal(decimal_from_str("150"))
+    assert plain_decimal(decimal_from_str("1E+6")) == plain_decimal(decimal_from_str("1000000"))
+
+
+def test_zero_loses_its_sign_and_its_scale() -> None:
+    """D06 §9.1 の規則3: ゼロは常に `0`（`-0` も `0.00` も同じ文字列）。"""
+    assert plain_decimal(decimal_from_str("0")) == "0"
+    assert plain_decimal(decimal_from_str("-0")) == "0"
+    assert plain_decimal(decimal_from_str("0.00")) == "0"
+
+
+def test_a_small_magnitude_keeps_a_leading_zero() -> None:
+    """D06 §9.1 の規則2: 指数表記を使わず、小数点の前に `0` を補う。"""
+    assert plain_decimal(decimal_from_str("5E-4")) == "0.0005"
+    assert plain_decimal(decimal_from_str("-5E-4")) == "-0.0005"
+
+
+def test_a_magnitude_too_large_for_fixed_point_is_refused() -> None:
+    """D06 §9.1 の規則4: 固定小数で書けない大きさは、黙って別表記へ落とさず失敗させる。"""
+    with pytest.raises(KernelValueError, match="fixed-point decimal"):
+        plain_decimal(decimal_from_str("1E+5000"))

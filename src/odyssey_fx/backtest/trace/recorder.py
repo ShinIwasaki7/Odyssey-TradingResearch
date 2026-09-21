@@ -15,12 +15,16 @@
 `Quantity` は文字列、`UtcTime` は D02 §3.1 の文字列、ID 型は `__str__` である。**Decimal を
 浮動小数で保存すると再現性が壊れる**ため文字列にする（ADR-0012）。
 
-十進数の文字列には **D02 §9.3 の正規化エンコード**（`encode_decimal`）を使う。同じ値からは
-常に同じ文字列になり、再実行の判断履歴を文字列のまま比べられるためである（D06 §4.4 の
-「許容誤差は完全一致」）。`Decimal("1000000")` は `1e6`、`Decimal("149.500")` は
-`149500e-3` になる。読み戻しは `Decimal(文字列)` で厳密に往復する。
+十進数の**単一の列**には、人が読める固定小数表記（`plain_decimal`）を使う。`Decimal("1E+6")`
+は `1000000`、`Decimal("149.500")` は `149.5` になる。末尾ゼロを落とし、指数表記を使わず、
+負号は値が負のときだけ付けるので、同じ値からは常に同じ文字列が出る（D06 §4.4 の「許容誤差は
+完全一致」）。読み戻しは `Decimal(文字列)` で厳密に往復する。
 
-可変長の入れ子（レコードの `tuple`）は、要素ごとに D02 §9.3 の正規化エンコード文字列にし、
+**ダイジェスト用の正規化エンコード**（D02 §9.3 の `encode_decimal`）は、理由の型付き詳細
+（`*_detail`）と可変長の入れ子の列でだけ使う。これらは復号せずに文字列のまま比べる列であり、
+ダイジェストの正本と同じ表現にしておく必要があるためである。
+
+可変長の入れ子（レコードの `tuple`）も、要素ごとに D02 §9.3 の正規化エンコード文字列にし、
 その文字列の `list` 列として保存する。正規化エンコードを使うのは、同じ内容から常に同じ
 文字列が出て再現性の比較ができるためである。
 """
@@ -46,7 +50,7 @@ from odyssey_fx.backtest.domain.positions import (
     RiskMeasurement,
 )
 from odyssey_fx.backtest.domain.reservations import ReservationState, RiskReservation
-from odyssey_fx.common.canonical import encode, encode_decimal
+from odyssey_fx.common.canonical import encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import (
     AttemptId,
@@ -79,6 +83,7 @@ __all__ = [
     "flatten_composite",
     "flatten_row",
     "flatten_union",
+    "plain_decimal",
 ]
 
 
@@ -204,6 +209,11 @@ class _CanonicalScalar(Protocol):
 #: 単一の列へ落とす型（`canonical_str()` を持つ型はこの表を引かずに文字列化する）。
 _SCALAR_TYPES: Final = (Decimal, str, bool, int)
 
+#: 固定小数で書ける長さの上限（符号を含む文字数）。段階2 の値（価格・数量・金額・率）は
+#: いずれも 30 文字に満たない。これを超える大きさは人が読む表記にならないので、黙って
+#: 別の表記へ落とさずに書き出しを失敗させる（D06 §9.1）。
+_PLAIN_DECIMAL_LIMIT: Final = 1000
+
 
 def _join(prefix: str, child: str) -> str:
     return child if not prefix else f"{prefix}_{child}"
@@ -265,6 +275,60 @@ def _canonical_payload(value: object) -> Any:
     return value
 
 
+def plain_decimal(value: Decimal) -> str:
+    """判断履歴の数値列に入れる十進表記（D06 §9.1）。
+
+    人が読める固定小数で書き、**同じ値からは常に同じ文字列**が出るようにする。規則は4つ。
+
+    1. **末尾ゼロは落とす**（スケールの決め方）。`Decimal("149.500")` と `Decimal("149.5")` は
+       同じ値なので、同じ `"149.5"` になる。落とさないと、同じ値が書き手の持っていた桁数に
+       よって別の文字列になり、再実行の判断履歴を文字列のまま比べられない。
+    2. **指数表記を使わない**。`Decimal("1E+6")` は `"1000000"`、`Decimal("5E-4")` は
+       `"0.0005"`。小数点より前が空にならないよう `0` を補う。
+    3. **負号は値が負のときだけ**先頭に付ける。ゼロは符号も桁も捨てて `"0"`（`-0` と
+       `0.00` も `"0"`）。
+    4. 展開した文字列が `_PLAIN_DECIMAL_LIMIT` 文字を超える値は書かない
+       （`KernelValueError`）。固定小数で書けない大きさは人が読む形にならず、黙って別表記へ
+       落とすと規則1 が崩れるため、書き出す前に失敗させる（既定は失敗、ADR-0006）。
+
+    読み戻しは `Decimal(文字列)` で厳密に往復する。ダイジェスト用の正規化エンコード
+    （D02 §9.3 の `encode_decimal`）とは別物で、ダイジェストにこの表記は使わない。
+    """
+    if not isinstance(value, Decimal):  # pragma: no cover - 呼び出し側で保証する
+        raise KernelValueError(f"plain_decimal requires a Decimal, got {type(value).__name__}")
+    if not value.is_finite():
+        raise KernelValueError(f"cannot write a non-finite Decimal to a trace column: {value!r}")
+    sign, digits, exponent = value.as_tuple()
+    if not isinstance(exponent, int):  # pragma: no cover - is_finite() で除外済み
+        raise KernelValueError(f"cannot write a special Decimal to a trace column: {value!r}")
+
+    end = len(digits)
+    while end > 1 and digits[end - 1] == 0:
+        end -= 1
+        exponent += 1
+    kept = digits[:end]
+    if kept == (0,):
+        return "0"
+
+    if exponent >= 0:
+        length = len(kept) + exponent
+    else:
+        length = max(len(kept), -exponent + 1) + 1
+    if length + sign > _PLAIN_DECIMAL_LIMIT:
+        raise KernelValueError(
+            f"a trace column cannot hold a fixed-point decimal of {length} characters"
+            f" (limit {_PLAIN_DECIMAL_LIMIT}, D06 §9.1)"
+        )
+
+    text = "".join(str(digit) for digit in kept)
+    if exponent >= 0:
+        body = text + "0" * exponent
+    else:
+        point = len(text) + exponent  # 小数点より前の桁数（0 以下なら `0.` で始まる）
+        body = f"0.{'0' * -point}{text}" if point <= 0 else f"{text[:point]}.{text[point:]}"
+    return f"-{body}" if sign else body
+
+
 def _scalar_column(value: object) -> object:
     """単一の列に入れる値へ落とす。"""
     if value is None:
@@ -272,13 +336,13 @@ def _scalar_column(value: object) -> object:
     if isinstance(value, bool):
         return value
     if isinstance(value, Price):
-        return encode_decimal(value.value)
+        return plain_decimal(value.value)
     if isinstance(value, PriceOffset):
-        return encode_decimal(value.value)
+        return plain_decimal(value.value)
     if isinstance(value, Quantity):
-        return encode_decimal(value.units)
+        return plain_decimal(value.units)
     if isinstance(value, Decimal):
-        return encode_decimal(value)
+        return plain_decimal(value)
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, timedelta):
@@ -741,6 +805,6 @@ def cost_columns(fill: FillRecord) -> dict[str, object]:
         entry = fill.cost_of(kind)
         base = f"cost_{kind.value.lower()}"
         amount: Money | None = None if entry is None else entry.account
-        columns[f"{base}_amount"] = None if amount is None else encode_decimal(amount.amount)
+        columns[f"{base}_amount"] = None if amount is None else plain_decimal(amount.amount)
         columns[f"{base}_currency"] = None if amount is None else str(amount.currency)
     return columns

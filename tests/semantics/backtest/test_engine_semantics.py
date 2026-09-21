@@ -864,3 +864,73 @@ def test_a_commission_in_another_currency_blocks_the_run() -> None:
     )
     assert output.result.status is RunStatus.FAILED_CAPABILITY
     assert output.rows(TraceTable.FILLS) == ()
+
+
+class _ConflictingManagementRuntime:
+    """同じ建玉への保護水準の更新と決済要求を同時に返すランタイム。
+
+    上位設計書 §4.7.6 と D06 §8.3 が定める「決済を優先し、更新は理由を記録して破棄する」
+    規則の相手役である。
+    """
+
+    def step(self, batch: PublicationBatch) -> RuntimeStepResult:
+        from odyssey_fx.common.ids import OutputId, PositionId
+        from odyssey_fx.common.money import Price
+        from odyssey_fx.strategy.records.payloads import ClosePosition, SetTakeProfit
+        from odyssey_fx.strategy.runtime.requests import ManagementRequest
+
+        position_id = PositionId(1)
+        return RuntimeStepResult(
+            management_requests=(
+                ManagementRequest(
+                    position_id=position_id,
+                    action=SetTakeProfit(price=Price(decimal_from_str("151.240"))),
+                    decision_time=batch.decision_time,
+                    source_output_id=OutputId(1),
+                ),
+                ManagementRequest(
+                    position_id=position_id,
+                    action=ClosePosition(),
+                    decision_time=batch.decision_time,
+                    source_output_id=OutputId(2),
+                ),
+            ),
+        )
+
+
+def test_a_close_request_supersedes_a_protection_update_on_the_same_position() -> None:
+    """D06 §8.3・上位設計書 §4.7.6: 決済を優先し、更新は理由を記録して破棄する。
+
+    破棄の理由は `SUPERSEDED_BY_EXIT`（D02 §8.1）。適用を試みてから捨てるのではなく、
+    適用そのものを行わない。適用を試みていれば、建玉が台帳に無いこの状況では
+    `POSITION_CLOSED` が記録されるので、理由コードで2つの経路を区別できる。
+    """
+    from odyssey_fx.backtest.engine.clock import PhaseClock
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.backtest.trace.recorder import CompositeRow
+    from odyssey_fx.common.ids import OpportunityId, PositionId
+    from odyssey_fx.strategy.declarations.evaluation import RuntimeEventKind
+    from odyssey_fx.strategy.runtime.ports import RuntimeEventNotice
+
+    engine = _engine(EXECUTION_POLICY, runtime=_ConflictingManagementRuntime())
+    assert isinstance(engine, BacktestEngine)
+    clock = PhaseClock(engine._phases, DECISION_TIME)
+    engine._phase_post_fill_evaluation(
+        clock,
+        (),
+        (
+            RuntimeEventNotice(
+                kind=RuntimeEventKind.POSITION_OPENED,
+                position_id=PositionId(1),
+                opportunity_id=OpportunityId(1),
+            ),
+        ),
+        is_run_end=False,
+    )
+
+    rows = engine.rows[TraceTable.MANAGEMENT_APPLICATIONS]
+    applications = [row for row in rows if isinstance(row, CompositeRow)]
+    assert len(applications) == 1
+    application = applications[0].parts[0][2]
+    assert application.applied is False  # type: ignore[attr-defined]
+    assert application.reason.code is ReasonCode.SUPERSEDED_BY_EXIT  # type: ignore[attr-defined]

@@ -6,14 +6,18 @@ T01 §2.3 の手計算（予算 20,000 円・1通貨あたり 0.622 円・数量
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
+from odyssey_fx.backtest.admission.admission import AttemptRejected, decide_entry
 from odyssey_fx.backtest.admission.request_assembly import (
     AdmissionKey,
+    build_request,
     order_payloads,
 )
 from odyssey_fx.backtest.admission.risk_assessment import (
     assess_entry,
+    non_positive_balance_reason,
     round_adverse_limit,
     round_stop,
 )
@@ -28,17 +32,34 @@ from odyssey_fx.backtest.domain.orders import (
     OrderType,
     ReferenceQuote,
     RequestClass,
+    RequestOrigin,
+    ScheduledOpen,
 )
 from odyssey_fx.backtest.portfolio.conversion import identity_path, rate_of
-from odyssey_fx.common.ids import AttemptId, EvidenceId, OpportunityId, OutputId, PositionId
+from odyssey_fx.common.ids import (
+    AttemptId,
+    EvidenceId,
+    IdAllocator,
+    OpportunityId,
+    OutputId,
+    PositionId,
+    RunId,
+)
 from odyssey_fx.common.money import Money, Price, PriceOffset, decimal_from_str
 from odyssey_fx.common.reason import ReasonCode
-from odyssey_fx.common.refs import CompiledStrategyRef, ContentDigest, PolicyRef
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.refs import (
+    CompiledStrategyRef,
+    ContentDigest,
+    EvidenceRef,
+    PolicyRef,
+)
+from odyssey_fx.common.time import PhaseRank, ProcessingPoint, UtcTime
+from odyssey_fx.marketdata.domain.bar import BarKey
 from odyssey_fx.marketdata.domain.series import PriceBasis
 from tests.fixtures.backtest.harness import (
     ACCOUNT,
     COST_MODEL,
+    EXECUTION_SERIES,
     JPY,
     RISK_POLICY,
     SYMBOL_SPEC,
@@ -48,6 +69,8 @@ from tests.fixtures.synthetic.market import USDJPY
 MOMENT = UtcTime.from_components(2026, 1, 6, 9, 0)
 DIGEST = ContentDigest.sha256("0" * 64)
 POLICY = PolicyRef(policy_kind="risk", policy_id="risk_v1", version=1, digest=DIGEST)
+RUN_ID = RunId(digest=DIGEST)
+POINT = ProcessingPoint(MOMENT, PhaseRank(10, "ADMISSION"), 0)
 
 
 def _price(text: str) -> Price:
@@ -266,3 +289,81 @@ def test_a_short_sizes_from_the_bid_reference() -> None:
     assert assessment.quantity.units == decimal_from_str("38000")  # type: ignore[attr-defined]
     assert assessment.adverse_fill_limit == _price("149.990")  # type: ignore[attr-defined]
     assert assessment.reference_quote.derived_from_spread is False  # type: ignore[attr-defined]
+
+
+# --- 手順1: 残高（D06 §6.4）-------------------------------------------------
+
+
+def _drained() -> AccountLedger:
+    """残高を使い切った台帳（口座仕様は正の初期残高しか許さないので差し替えで作る）。"""
+    return replace(AccountLedger.opened(ACCOUNT), balance=_money("0"))
+
+
+def test_a_non_positive_balance_is_rejected_before_the_reference_price() -> None:
+    """D06 §6.4 の手順1: 残高が非正なら、参照価格を作る前に拒否する。
+
+    残高だけで決まる拒否なので、参照価格が取れない判断時点でも `RISK` のまま記録される。
+    後ろに置くと、同じ状況が「データが無い」（`DATA_ERROR`）として残り、本当の原因が
+    判断履歴から読めなくなる。
+    """
+    reason = non_positive_balance_reason(_drained())
+
+    assert reason is not None
+    assert reason.code is ReasonCode.RISK
+    assert reason.detail is not None
+    assert reason.detail.check == "positive_balance"  # type: ignore[attr-defined]
+    assert reason.detail.observed == _money("0")  # type: ignore[attr-defined]
+
+
+def test_a_funded_balance_passes_step_one() -> None:
+    """残高が正なら手順1 は理由を返さない（以降の手順へ進む）。"""
+    assert non_positive_balance_reason(AccountLedger.opened(ACCOUNT)) is None
+
+
+def test_the_balance_rejection_carries_no_assessment_record() -> None:
+    """D06 §4.4: 審査記録を持つのは手順3 へ到達した試行だけ。
+
+    手順1 の拒否では参照価格が無く、`RiskAssessment` を作れない。発注試行の記録が指す
+    審査記録は `None` になる。参照価格が取れない状況でも拒否理由は `RISK` のままである。
+    """
+    allocator = IdAllocator(RUN_ID)
+    request = build_request(
+        _entry(),
+        allocator=allocator,
+        run_id=RUN_ID,
+        account_id=ACCOUNT.account_id,
+        strategy_id="strategy_a",
+        created_at=POINT,
+        origin=RequestOrigin.STRATEGY,
+        evidence_ref=EvidenceRef(evidence_id=EvidenceId(1)),
+    )
+    outcome = decide_entry(
+        request,
+        ledger=_drained(),
+        allocator=allocator,
+        accepted_at=POINT,
+        expires_at=MOMENT + timedelta(minutes=20),
+        candidate=ScheduledOpen(
+            bar_key=BarKey(series=EXECUTION_SERIES, bar_start=MOMENT),
+            open_time=MOMENT,
+        ),
+        execution_series=EXECUTION_SERIES,
+        execution_policy_ref=POLICY,
+        risk_policy=RISK_POLICY,
+        risk_policy_ref=POLICY,
+        cost_model=COST_MODEL,
+        symbol_spec=SYMBOL_SPEC,
+        reference_quote=None,
+        decision_bid=None,
+        adverse_fill_limit=None,
+        conversion=rate_of(identity_path(MOMENT), JPY, JPY),
+        new_assessment_id=lambda: allocator.next(EvidenceId),
+        evidence_ref=EvidenceRef(evidence_id=EvidenceId(1)),
+    )
+
+    assert outcome.accepted is False
+    assert outcome.assessment is None
+    decision = outcome.decision
+    assert isinstance(decision, AttemptRejected)
+    assert decision.reason.code is ReasonCode.RISK
+    assert decision.assessment_ref is None

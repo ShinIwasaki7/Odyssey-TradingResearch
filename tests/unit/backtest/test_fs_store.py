@@ -63,7 +63,7 @@ def test_the_decimal_columns_stay_strings(tmp_path: Path) -> None:
     fills = pl.read_parquet(directory / "FILLS.parquet")
     assert fills.schema["price"] == pl.String
     assert fills.schema["quantity"] == pl.String
-    assert fills["price"].to_list() == ["15008e-2", "14949e-2"]
+    assert fills["price"].to_list() == ["150.08", "149.49"]
 
 
 def test_the_cost_columns_are_split_by_kind(tmp_path: Path) -> None:
@@ -71,8 +71,8 @@ def test_the_cost_columns_are_split_by_kind(tmp_path: Path) -> None:
     _, directory = _write(tmp_path)
 
     fills = pl.read_parquet(directory / "FILLS.parquet")
-    assert fills["cost_commission_amount"].to_list() == ["32e0", "32e0"]
-    assert fills["cost_spread_in_price_amount"].to_list() == ["64e1", None]
+    assert fills["cost_commission_amount"].to_list() == ["32", "32"]
+    assert fills["cost_spread_in_price_amount"].to_list() == ["640", None]
     assert "costs" in fills.columns
 
 

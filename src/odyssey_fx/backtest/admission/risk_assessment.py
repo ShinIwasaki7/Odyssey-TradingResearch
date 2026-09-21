@@ -7,7 +7,7 @@
 
 | 手順 | 内容 |
 |---|---|
-| 1 | 受付判断時の `balance` を読む。非正なら拒否（`RISK`） |
+| 1 | 受付判断時の `balance` を読む。非正なら拒否（`RISK`）。`non_positive_balance_reason` |
 | 2 | 試行予算・口座残余・受付予算を求める |
 | 3 | 参照価格を固定する（買いは ask、売りは bid） |
 | 4 | 保護水準の妥当性を検査する（違反は `PROTECTION_INVALID`） |
@@ -50,6 +50,7 @@ __all__ = [
     "RiskAssessmentRef",
     "RiskCheckResult",
     "assess_entry",
+    "non_positive_balance_reason",
     "round_adverse_limit",
     "round_stop",
 ]
@@ -188,6 +189,26 @@ def _rejection(check: RiskCheckResult, code: ReasonCode = ReasonCode.RISK) -> Re
     return Reason(code=code)
 
 
+def non_positive_balance_reason(ledger: AccountLedger) -> Reason | None:
+    """審査の手順1（D06 §6.4）。残高が非正なら拒否理由、そうでなければ `None`。
+
+    **参照価格を作るより前**に呼ぶ。手順1 は残高だけで決まり、参照価格（手順3）も保護水準
+    （手順4）も見ない。後ろに置くと、参照価格が取れない判断時点で残高切れの口座が
+    `DATA_ERROR` として拒否され、本当の原因が判断履歴に残らない。
+
+    手順3 まで到達した試行だけが審査記録（`RiskAssessment`）を持つ（D06 §4.4）ため、
+    ここで拒否する試行は審査記録を作らず、発注試行の記録の `assessment_ref` は `None` に
+    なる。審査記録は参照価格を必須の項目に持っており、手順1 では作れない。
+    """
+    balance = ledger.balance
+    if balance.amount > 0:
+        return None
+    check = RiskCheckResult(
+        check="positive_balance", passed=False, limit=ledger.zero(), observed=balance
+    )
+    return _rejection(check)
+
+
 def assess_entry(
     request: EntryRequest,
     *,
@@ -244,11 +265,11 @@ def assess_entry(
             checks=tuple(checks),
         )
 
-    if balance.amount <= 0:
-        checks.append(
-            RiskCheckResult(check="positive_balance", passed=False, limit=zero, observed=balance)
+    if balance.amount <= 0:  # pragma: no cover - 呼び出し側が手順1 で screening 済み
+        raise KernelValueError(
+            "assess_entry was called with a non-positive balance;"
+            " step 1 belongs to non_positive_balance_reason (D06 §6.4)"
         )
-        return record(3), _rejection(checks[-1])
 
     # 手順4: 保護水準の妥当性（買いは判断時 bid より下、売りは ask より上）。
     # 比べる価格は手順3 で固定した参照価格と**同じ足**から取り、買いの検査には bid

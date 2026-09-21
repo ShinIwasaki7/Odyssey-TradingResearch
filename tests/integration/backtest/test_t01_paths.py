@@ -205,6 +205,10 @@ def test_path1_costs_are_split_by_kind() -> None:
     assert _cost(entry, CostKind.SLIPPAGE_IN_PRICE) == _money("320")
     assert _cost(entry, CostKind.SPREAD_IN_PRICE) == _money("640")
     assert close.cost_of(CostKind.SPREAD_IN_PRICE) is None
+    # T01 §2.6: 決済側も同じ式で立つ（手数料 0.001 x 32000 = 32、滑り 0.01 x 32000 = 320）。
+    # 入場側だけを確かめていると、決済の費用が 0 でも気付けない。
+    assert _cost(close, CostKind.COMMISSION) == _money("32")
+    assert _cost(close, CostKind.SLIPPAGE_IN_PRICE) == _money("320")
 
 
 def test_path1_writes_all_fifteen_tables() -> None:

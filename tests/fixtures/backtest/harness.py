@@ -52,6 +52,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, CompileSucceeded
@@ -60,13 +61,14 @@ from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 from tests.fixtures.strategy.fakes import FakeMarketDataView
 from tests.fixtures.strategy.strategy_a import SIGNAL_SERIES, TIMEFRAMES, strategy_a
-from tests.fixtures.synthetic.market import USDJPY, calendar, series
+from tests.fixtures.synthetic.market import TF_15M, USDJPY, calendar, series
 
 __all__ = [
     "ACCOUNT",
     "CONVERSION_POLICY",
     "COST_MODEL",
     "EXECUTION_POLICY",
+    "EXECUTION_SCHEDULE",
     "EXECUTION_SERIES",
     "JPY",
     "RISK_POLICY",
@@ -83,6 +85,12 @@ JPY = CurrencyCode("JPY")
 
 #: 執行系列（T01 §1.1）。
 EXECUTION_SERIES = series(USDJPY, "15m", PriceBasis.BID)
+
+#: 執行系列の足スケジュール（D03 §3.5）。候補の始値はここから決まり、実ファイルに足が
+#: あるかどうかは見ない（D06 §5.3）。
+EXECUTION_SCHEDULE = SeriesSchedule(
+    series=EXECUTION_SERIES, timeframe_def=TF_15M, calendar=calendar()
+)
 
 #: 口座（T01 §1.1）。
 ACCOUNT = AccountSpec(
@@ -210,10 +218,19 @@ class FakeFeed:
 
 
 class FakeExecutionSeries:
-    """執行系列のビュー（D03 §6.3 の3操作）。"""
+    """執行系列のビュー（D03 §6.3 の4操作）。
 
-    def __init__(self, execution: Sequence[Bar]) -> None:
+    `next_scheduled_open_after` は**実在する足を見ない**。予定はカレンダーと時間足定義
+    だけから決まり、実ファイルの欠損は候補選択に影響しない（D06 §5.3）。
+    """
+
+    def __init__(
+        self,
+        execution: Sequence[Bar],
+        schedule: SeriesSchedule | None = None,
+    ) -> None:
         self._bars = tuple(sorted(execution, key=lambda bar: bar.bar_start.value))
+        self._schedule = EXECUTION_SCHEDULE if schedule is None else schedule
 
     def bar(self, bar_key: BarKey) -> Bar | None:
         for bar in self._bars:
@@ -229,6 +246,16 @@ class FakeExecutionSeries:
         for bar in self._bars:
             if moment < bar.bar_start:
                 return bar.key
+        return None
+
+    def next_scheduled_open_after(self, moment: UtcTime) -> BarKey | None:
+        definition = self._schedule.timeframe_def
+        probe = definition.boundaries(moment).end
+        for _ in range(5000):
+            interval = definition.expected_interval(self._schedule.calendar, probe)
+            if interval is not None and moment < interval.start:
+                return BarKey(series=self._schedule.series, bar_start=interval.start)
+            probe = definition.boundaries(probe).end
         return None
 
 
