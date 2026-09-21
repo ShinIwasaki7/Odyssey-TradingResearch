@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
@@ -186,13 +186,9 @@ class FakeFeed:
             events.append(_Event(_Kind("SCHEDULED_BOUNDARY"), bar.series, bar.key, bar.bar_end))
         self._events = tuple(sorted(events, key=lambda event: event.at.value))
 
-    def events(self, interval: Interval) -> tuple[_Event, ...]:
-        """run 区間に入るイベントだけを時刻順に返す。"""
-        return tuple(
-            event
-            for event in self._events
-            if interval.start <= event.at and event.at <= interval.end
-        )
+    def __iter__(self) -> Iterator[_Event]:
+        """イベントを時刻順に反復する（`marketdata.application` の公開フィードと同じ形）。"""
+        return iter(self._events)
 
 
 class FakeExecutionSeries:

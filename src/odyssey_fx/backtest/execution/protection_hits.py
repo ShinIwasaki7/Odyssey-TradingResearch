@@ -195,14 +195,18 @@ def hierarchy_checks(
     if len(hierarchy.levels) < 2 or child_bars is None:
         return ()
     results: list[HierarchyCheckResult] = []
+    # 1段ぶん降りるたびに、いま調べた子足が次の段の親足になる。渡された親足だけを毎回
+    # 走査すると、2段目より下の組（levels[1] と levels[2] など）の検査が1件も走らない。
+    current = tuple(bar for bar in parent_bars if bar.series == hierarchy.levels[0])
     for level in range(len(hierarchy.levels) - 1):
         parent_series = hierarchy.levels[level]
         child_series = hierarchy.levels[level + 1]
-        for parent in parent_bars:
-            if parent.series != parent_series:
-                continue
+        next_parents: list[Bar] = []
+        for parent in current:
             children = child_bars(child_series, parent.interval)
             results.extend(_checks_for_parent(parent_series, child_series, parent, children))
+            next_parents.extend(children)
+        current = tuple(next_parents)
     return tuple(results)
 
 

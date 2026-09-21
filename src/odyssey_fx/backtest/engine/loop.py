@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, localcontext
@@ -26,6 +26,8 @@ from typing import Protocol, runtime_checkable
 from odyssey_fx.backtest.admission.admission import (
     AdmissionOutcome,
     AttemptAccepted,
+    AttemptDecision,
+    AttemptRejected,
     decide_close,
     decide_entry,
 )
@@ -244,9 +246,17 @@ class PublicationEventView(Protocol):
 
 @runtime_checkable
 class PublicationFeed(Protocol):
-    """`available_at` 順の公開イベント列（D06 §3・§4.3）。"""
+    """`available_at` 順の公開イベント列（D06 §3・§4.3）。
 
-    def events(self, interval: Interval) -> tuple[PublicationEventView, ...]: ...
+    **形の差異**: D06 §3 の表は `events(interval)` という操作を挙げているが、この口を実装
+    するのは `marketdata.application` の公開フィード（D01 §4）であり、そちらは `events` を
+    **タプルの項目**として持ち、反復できる値になっている。操作として要求すると本物の
+    フィードが構造的に満たさなくなり、合成のためだけの薄い適合層が1つ増える。そこで
+    **反復できること**だけを要求し、run 区間で絞るのはエンジン側で行う（区間の外の
+    イベントを処理しないという規則は変わらない）。
+    """
+
+    def __iter__(self) -> Iterator[PublicationEventView]: ...
 
 
 @runtime_checkable
@@ -513,7 +523,12 @@ class BacktestEngine:
         """公開イベントを判断時刻ごとにまとめる（D06 §4.2・§4.3）。"""
         buckets: dict[UtcTime, dict[str, object]] = {}
         execution_series = self._config.execution_series
-        for event in self._feed.events(self._config.run_interval):
+        run_interval = self._config.run_interval
+        for event in self._feed:
+            if event.at < run_interval.start or run_interval.end < event.at:
+                # run 区間の外のイベントは処理しない。末尾の時刻ちょうどのイベントは
+                # 末尾の判断時点が使うので残す（D06 §10.1 の手順1・2）。
+                continue
             bucket = buckets.setdefault(event.at, {"publications": [], "boundaries": []})
             kind = event.kind.value
             if kind == "EXECUTION_BAR_COMPLETE" and event.series == execution_series:
@@ -598,7 +613,9 @@ class BacktestEngine:
         if not is_run_end and events.execution_open is not None:
             opened = self._phase_execution_open(clock, events.execution_open)
 
-        post = self._phase_post_fill_evaluation(clock, notices, tuple(opened))
+        post = self._phase_post_fill_evaluation(
+            clock, notices, tuple(opened), is_run_end=is_run_end
+        )
         if post is not None:
             self._phase_post_fill_admission(clock, post, is_run_end=is_run_end)
 
@@ -788,7 +805,6 @@ class BacktestEngine:
         is_run_end: bool,
     ) -> tuple[AdmissionNotice, ...]:
         payloads: list[OrderPayload] = []
-        sources: dict[int, ManagementRequest] = {}
         for proposal in proposals:
             payloads.append(
                 build_entry_payload(
@@ -800,11 +816,11 @@ class BacktestEngine:
             )
         for request in management:
             if isinstance(request.action, ClosePosition):
-                payload = build_close_payload(
-                    request, close_valid_for=self._execution_policy.close_valid_for
+                payloads.append(
+                    build_close_payload(
+                        request, close_valid_for=self._execution_policy.close_valid_for
+                    )
                 )
-                sources[id(payload)] = request
-                payloads.append(payload)
         if not payloads:
             return ()
         return self._admit(
@@ -915,7 +931,7 @@ class BacktestEngine:
         return outcome
 
     def _record_outcome(self, outcome: AdmissionOutcome, clock: PhaseClock, phase: str) -> None:
-        self._emit(TraceTable.ATTEMPT_DECISIONS, outcome.decision)
+        self._emit(TraceTable.ATTEMPT_DECISIONS, _decision_row(outcome.decision))
         if outcome.assessment is not None:
             self._emit(TraceTable.RISK_ASSESSMENTS, outcome.assessment)
             self._evidence(
@@ -1349,7 +1365,7 @@ class BacktestEngine:
             execution_policy_ref=self._config.execution_policy_ref,
             evidence_ref=evidence_ref,
         )
-        self._emit(TraceTable.ATTEMPT_DECISIONS, outcome.decision)
+        self._emit(TraceTable.ATTEMPT_DECISIONS, _decision_row(outcome.decision))
         if not outcome.accepted or outcome.order is None or outcome.acceptance_event is None:
             return
         self._emit(TraceTable.ORDERS, outcome.order)
@@ -1492,6 +1508,8 @@ class BacktestEngine:
         clock: PhaseClock,
         notices: Sequence[AdmissionNotice],
         opened: Sequence[RuntimeEventNotice],
+        *,
+        is_run_end: bool,
     ) -> RuntimeStepResult | None:
         if not notices and not opened:
             return None
@@ -1505,15 +1523,43 @@ class BacktestEngine:
         result = self._step(batch, PHASE_POST_FILL_EVALUATION)
         for request in result.management_requests:
             if isinstance(request.action, SetTakeProfit):
-                self._apply_take_profit(clock, request)
+                self._apply_take_profit(clock, request, is_run_end=is_run_end)
         return result
 
-    def _apply_take_profit(self, clock: PhaseClock, request: ManagementRequest) -> None:
-        """初期の利確を建玉へ適用する（D06 §8.3）。"""
+    def _apply_take_profit(
+        self, clock: PhaseClock, request: ManagementRequest, *, is_run_end: bool = False
+    ) -> None:
+        """初期の利確を建玉へ適用する（D06 §8.3）。
+
+        run 末尾では保護水準の更新を**記録するが適用しない**（D06 §10.1 の手順3 の表、
+        上位設計書 §4.7.13 D）。終了だから未公開の判断を建玉へ反映することはしない。
+        """
         at = clock.next(PHASE_POST_FILL_EVALUATION)
         position = self._context.ledger.positions.get(request.position_id)
         action = request.action
         if not isinstance(action, SetTakeProfit):  # pragma: no cover - 呼び出し側が絞る
+            return
+        if is_run_end:
+            self._emit(
+                TraceTable.MANAGEMENT_APPLICATIONS,
+                CompositeRow(
+                    primary=request,
+                    parts=(
+                        (
+                            "application",
+                            ManagementApplication,
+                            ManagementApplication(
+                                at=at,
+                                applied=False,
+                                reason=Reason(
+                                    ReasonCode.RUN_END,
+                                    RunEndDetail(run_end=self._config.run_interval.end),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
             return
         if position is None or not position.is_open:
             self._emit(
@@ -1758,3 +1804,12 @@ class BacktestEngine:
                 cause=cause,
             ),
         )
+
+
+def _decision_row(decision: AttemptDecision) -> CompositeRow:
+    """試行の結末を表5 の行にする（D06 §9.1 の規則2）。
+
+    行そのものが区分タグ付き union なので、列は**全変種のフィールドの和集合**になる。
+    受け付けた行でも拒否理由の列が（`None` として）並ぶようにする。
+    """
+    return CompositeRow(primary=decision, variants=(AttemptAccepted, AttemptRejected))

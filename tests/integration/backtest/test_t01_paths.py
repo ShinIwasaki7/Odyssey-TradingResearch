@@ -86,8 +86,9 @@ def _snapshots(output: RunOutput) -> tuple[LedgerSnapshot, ...]:
 
 
 def _reject_reasons(output: RunOutput) -> list[ReasonCode]:
-    rejected = _rows_of(output, TraceTable.ATTEMPT_DECISIONS, AttemptRejected)
-    return [row.reason.code for row in rejected]
+    """受付前拒否の代表理由（表5 は行そのものが区分タグ付き union なので包みを開く）。"""
+    rows = _rows_of(output, TraceTable.ATTEMPT_DECISIONS, CompositeRow)
+    return [row.primary.reason.code for row in rows if isinstance(row.primary, AttemptRejected)]
 
 
 def _cost(fill: FillRecord, kind: CostKind) -> Money:

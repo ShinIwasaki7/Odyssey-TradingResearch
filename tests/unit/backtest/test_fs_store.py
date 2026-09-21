@@ -11,20 +11,26 @@ from pathlib import Path
 
 import polars as pl
 
-from odyssey_fx.backtest.trace.recorder import TraceTable
+from odyssey_fx.backtest.trace.recorder import TraceTable, flatten_row, table_columns
 from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultWriter,
     FileSystemTraceSink,
     run_directory,
 )
-from tests.fixtures.backtest.harness import run_backtest
-from tests.fixtures.backtest.paths import RUN_INTERVAL, execution_bars, signal_bars
+from tests.fixtures.backtest.harness import RunOutput, run_backtest
+from tests.fixtures.backtest.paths import (
+    CONFLICT_BAR,
+    RUN_INTERVAL,
+    execution_bars,
+    signal_bars,
+)
 
 
-def _write(root: Path) -> tuple[object, Path]:
+def _write(root: Path) -> tuple[RunOutput, Path]:
+    """15表すべてに行が入る run を通してから保存する（足内競合も1件起こす）。"""
     output = run_backtest(
         signal_bars=signal_bars(),
-        execution_bars=execution_bars(),
+        execution_bars=execution_bars(conflict=CONFLICT_BAR),
         run_interval=RUN_INTERVAL,
     )
     sink = FileSystemTraceSink(root=root, run_id=output.result.run_id)
@@ -50,7 +56,7 @@ def test_the_decimal_columns_stay_strings(tmp_path: Path) -> None:
     fills = pl.read_parquet(directory / "FILLS.parquet")
     assert fills.schema["price"] == pl.String
     assert fills.schema["quantity"] == pl.String
-    assert fills["price"].to_list() == ["15008e-2", "15123e-2"]
+    assert fills["price"].to_list() == ["15008e-2", "14949e-2"]
 
 
 def test_the_cost_columns_are_split_by_kind(tmp_path: Path) -> None:
@@ -82,6 +88,7 @@ def test_the_result_names_all_the_tables(tmp_path: Path) -> None:
     assert set(result["trace_tables"]) == {table.value for table in TraceTable}
     assert result["status"] == "COMPLETED"
     assert result["trade_count"] == 1
+    assert result["unresolved_intrabar_count"] == 1
 
 
 def test_an_empty_table_is_still_written(tmp_path: Path) -> None:
@@ -92,3 +99,49 @@ def test_an_empty_table_is_still_written(tmp_path: Path) -> None:
     assert resolutions.height == 1
     empty = pl.read_parquet(directory / "EVALUATIONS.parquet")
     assert empty.height >= 1
+
+
+def test_every_row_carries_the_run_id(tmp_path: Path) -> None:
+    """上位設計書 §4.7.15: 全行が `run_id` を持つ。
+
+    連番 ID は run 内でのみ一意なので、永続参照は `(run_id, ID)` の組になる。行そのものが
+    `run_id` を持たない表（受付結果・建玉・足内競合・台帳 snapshot）でも列として入る。
+    """
+    output, directory = _write(tmp_path)
+
+    for table in TraceTable:
+        frame = pl.read_parquet(directory / f"{table.value}.parquet")
+        assert frame.columns[0] == "run_id", table.value
+        assert set(frame.columns) == set(table_columns(table)), table.value
+        if frame.height:
+            assert frame["run_id"].to_list() == [str(output.result.run_id)] * frame.height
+
+
+def test_an_empty_table_keeps_its_columns(tmp_path: Path) -> None:
+    """D06 §9.2: 行が1件も無い表でも列は落とさない。
+
+    取引が1件も無かった正常な run と、必須の列を欠いた壊れた表とを読む側が区別できなく
+    なるためである。
+    """
+    sink = FileSystemTraceSink(root=tmp_path, run_id="RUN")
+    sink.write(TraceTable.FILLS, ())
+
+    frame = pl.read_parquet(run_directory(tmp_path, "RUN") / "FILLS.parquet")
+    assert frame.height == 0
+    assert list(frame.columns) == list(table_columns(TraceTable.FILLS))
+    assert "cost_commission_amount" in frame.columns
+
+
+def test_the_declared_columns_match_the_real_rows(tmp_path: Path) -> None:
+    """D06 §9.2: 書き写した4表の列名が、実際の行と一致する。
+
+    記録層は受付層・執行層・台帳層を import できないため、その4表の列名だけは名前を
+    書き写している。食い違うと、行の有無で表の形が変わってしまう。
+    """
+    output, directory = _write(tmp_path)
+
+    for table in TraceTable:
+        rows = output.rows(table)
+        assert rows, f"{table.value} should have at least one row in this run"
+        for row in rows:
+            assert set(flatten_row(row)) | {"run_id"} == set(table_columns(table)), table.value

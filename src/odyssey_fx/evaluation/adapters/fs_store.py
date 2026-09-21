@@ -23,7 +23,12 @@ from typing import Any
 import polars as pl
 
 from odyssey_fx.backtest.trace.manifest import RunManifest
-from odyssey_fx.backtest.trace.recorder import TraceTable, canonical_text, flatten_row
+from odyssey_fx.backtest.trace.recorder import (
+    TraceTable,
+    canonical_text,
+    flatten_row,
+    table_columns,
+)
 from odyssey_fx.backtest.trace.result import BacktestResult
 
 __all__ = ["FileSystemResultWriter", "FileSystemTraceSink", "run_directory"]
@@ -34,13 +39,16 @@ def run_directory(root: Path, run_id: object) -> Path:
     return Path(root) / "runs" / str(run_id)
 
 
-def _columns(rows: Sequence[Mapping[str, object]]) -> dict[str, list[object]]:
+def _columns(
+    rows: Sequence[Mapping[str, object]], declared: Sequence[str]
+) -> dict[str, list[object]]:
     """行の並びを保ったまま、列ごとの値へ組み替える。
 
     行ごとに列が欠けることは無い（平坦化の規則が「その行の変種に無い列は `None`」と定めて
-    いる）が、表によっては行が1件も無い。その場合は空の表を書く。
+    いる）。**行が1件も無い表でも列は落とさない**。取引が1件も無かった正常な run と、必須の
+    列を欠いた壊れた表とを読む側が区別できなくなるためである。
     """
-    names: list[str] = []
+    names: list[str] = list(declared)
     for row in rows:
         for name in row:
             if name not in names:
@@ -56,12 +64,42 @@ class FileSystemTraceSink:
     run_id: object
 
     def write(self, table: TraceTable, rows: tuple[object, ...]) -> None:
-        """1つの表を書き出す。書き出し専用で、検索元にはならない。"""
+        """1つの表を書き出す。書き出し専用で、検索元にはならない。
+
+        **全行が `run_id` を持つ**（上位設計書 §4.7.15）。連番 ID は run 内でのみ一意なので、
+        永続参照は `(run_id, ID)` の組になる。行そのものが `run_id` を持たない表でも、
+        ここで必ず列として足す。
+        """
         directory = run_directory(self.root, self.run_id)
         directory.mkdir(parents=True, exist_ok=True)
-        flattened = [flatten_row(row) for row in rows]
-        frame = pl.DataFrame(_columns(flattened), strict=False)
+        run_id = str(self.run_id)
+        flattened = [{"run_id": run_id, **flatten_row(row)} for row in rows]
+        columns = _columns(flattened, table_columns(table))
+        frame = pl.DataFrame(
+            columns,
+            schema={name: _dtype_of(values) for name, values in columns.items()},
+            strict=False,
+        )
         frame.write_parquet(directory / f"{table.value}.parquet")
+
+
+def _dtype_of(values: Sequence[object]) -> pl.DataType:
+    """列の型（値が1つも無ければ文字列にする）。
+
+    行の無い表でも列を残すため、推論できない列は文字列として書く。数値列は文字列で保存する
+    決まりなので（ADR-0012）、実際に食い違うのは整数・真偽・`list` の列だけである。
+    """
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return pl.Boolean()
+        if isinstance(value, int):
+            return pl.Int64()
+        if isinstance(value, list):
+            return pl.List(pl.String())
+        return pl.String()
+    return pl.String()
 
 
 @dataclass(frozen=True, slots=True)

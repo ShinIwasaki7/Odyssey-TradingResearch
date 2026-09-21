@@ -36,8 +36,16 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Final, Protocol, runtime_checkable
 
+from odyssey_fx.backtest.domain.events import OrderEvent
 from odyssey_fx.backtest.domain.fills import CostKind, FillRecord
+from odyssey_fx.backtest.domain.orders import AcceptedOrder, OrderRequest
 from odyssey_fx.backtest.domain.policies import ConversionPath
+from odyssey_fx.backtest.domain.positions import (
+    Position,
+    PositionRiskAllocation,
+    RiskMeasurement,
+)
+from odyssey_fx.backtest.domain.reservations import ReservationState, RiskReservation
 from odyssey_fx.common.canonical import encode, encode_decimal
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import (
@@ -53,6 +61,7 @@ from odyssey_fx.common.refs import PolicyRef, SnapshotRef
 from odyssey_fx.common.time import Interval, PhaseRank, ProcessingPoint
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.declarations.refs import MarketDataField
+from odyssey_fx.strategy.records.records import OutputRecord
 
 __all__ = [
     "CompositeRow",
@@ -63,6 +72,8 @@ __all__ = [
     "TraceTable",
     "canonical_text",
     "cost_columns",
+    "column_names",
+    "table_columns",
     "flatten",
     "flatten_composite",
     "flatten_row",
@@ -416,6 +427,34 @@ class CompositeRow:
     variants: tuple[type, ...] = ()
 
 
+def column_names(
+    row_type: type,
+    *,
+    secondaries: Sequence[tuple[str, type]] = (),
+    variants: Sequence[type] = (),
+) -> tuple[str, ...]:
+    """その表の列名（行が1件も無くても表の形を保つために使う）。
+
+    値を持たない `None` の行を開いたときの列と同じ並びになる。平坦化の規則が「その行の
+    変種に無い列は `None`」と定めているので、行ごとに列が増減することはない。
+    """
+    if variants:
+        columns: dict[str, object] = {"kind": None}
+        for variant in variants:
+            for field_name, hint in _hints(variant).items():
+                if field_name == "kind":
+                    continue
+                columns.update(_expand(hint, None, field_name))
+        return tuple(columns)
+    columns = {}
+    for field_name, hint in _hints(row_type).items():
+        columns.update(_expand(hint, None, field_name))
+    for prefix, secondary_type in secondaries:
+        for field_name, hint in _hints(secondary_type).items():
+            columns.update(_expand(hint, None, _join(prefix, field_name)))
+    return tuple(columns)
+
+
 def flatten_row(row: object) -> dict[str, object]:
     """表の1行を列の辞書へ開く（書き出し側の唯一の入口）。
 
@@ -430,6 +469,183 @@ def flatten_row(row: object) -> dict[str, object]:
     if isinstance(row, FillRecord):
         columns.update(cost_columns(row))
     return columns
+
+
+#: 記録層から型を参照できる11表の「正本の型」（D06 §9.2 の表）。複合表は従の型を接頭辞と
+#: 一緒に並べる（規則3）。
+_TABLE_TYPES: Final[Mapping[TraceTable, tuple[type, tuple[tuple[str, type], ...]]]] = {
+    TraceTable.OUTPUTS: (OutputRecord, ()),
+    TraceTable.ORDER_REQUESTS: (OrderRequest, ()),
+    TraceTable.ORDERS: (AcceptedOrder, ()),
+    TraceTable.ORDER_EVENTS: (OrderEvent, ()),
+    TraceTable.FILLS: (FillRecord, ()),
+    TraceTable.RESERVATIONS: (
+        RiskReservation,
+        (("reservation_state", ReservationState),),
+    ),
+    TraceTable.POSITIONS: (
+        Position,
+        (
+            ("position_risk_allocation", PositionRiskAllocation),
+            ("risk_measurement", RiskMeasurement),
+        ),
+    ),
+    TraceTable.EVIDENCE: (EvidenceRecord, ()),
+}
+
+#: 型をここから参照できない7表の列。理由は2つある。
+#:
+#: 1. `admission` / `execution` / `portfolio` は記録層と同じ中間層で、相互に import できない
+#:    （D01 §3.3 の契約 L2c）: 表5・6・13・14
+#: 2. `strategy.runtime` は記録層からは見えるが、この表を読む書き出し実装
+#:    （`evaluation.adapters`）が `strategy.runtime` を参照できない（契約 F8）: 表2・3・12
+#:
+#: `tests/unit/backtest/test_fs_store.py` が、実際の行の列と一致することを機械検査する。
+_BORROWED_COLUMNS: Final[Mapping[TraceTable, tuple[str, ...]]] = {
+    TraceTable.EVALUATIONS: (
+        "request_id",
+        "evaluation_id",
+        "instance_id",
+        "trigger_names",
+        "decision_time",
+        "outcome_kind",
+        "outcome_output_ids",
+        "outcome_diagnoses",
+        "outcome_reason_code",
+        "outcome_reason_detail",
+        "target_interval_start",
+        "target_interval_end",
+        "opportunity_id",
+        "position_id",
+    ),
+    TraceTable.OPPORTUNITY_TRANSITIONS: (
+        "opportunity_id",
+        "from_state",
+        "to_state",
+        "at_time",
+        "at_phase",
+        "at_sequence",
+        "phase",
+        "reason_code",
+        "reason_detail",
+        "counterpart",
+        "attempt_id",
+    ),
+    TraceTable.MANAGEMENT_APPLICATIONS: (
+        "position_id",
+        "action_kind",
+        "action_price",
+        "decision_time",
+        "source_output_id",
+        "application_at_time",
+        "application_at_phase",
+        "application_at_sequence",
+        "application_applied",
+        "application_reason_code",
+        "application_reason_detail",
+        "application_protection_version",
+        "application_rounded_take_profit",
+        "application_realized_reward_risk",
+    ),
+    TraceTable.ATTEMPT_DECISIONS: (
+        "kind",
+        "attempt_id",
+        "order_id",
+        "assessment_ref_assessment_id",
+        "reason_code",
+        "reason_detail",
+    ),
+    TraceTable.RISK_ASSESSMENTS: (
+        "assessment_id",
+        "attempt_id",
+        "policy_ref_policy_kind",
+        "policy_ref_policy_id",
+        "policy_ref_version",
+        "policy_ref_digest_algorithm",
+        "policy_ref_digest_hex",
+        "reached_step",
+        "budget_balance_amount",
+        "budget_balance_currency",
+        "budget_trial_budget_amount",
+        "budget_trial_budget_currency",
+        "budget_account_remaining_amount",
+        "budget_account_remaining_currency",
+        "budget_admission_budget_amount",
+        "budget_admission_budget_currency",
+        "budget_consumed_amount",
+        "budget_consumed_currency",
+        "reference_quote_price",
+        "reference_quote_basis",
+        "reference_quote_observed_at",
+        "reference_quote_derived_from_spread",
+        "reference_quote_source_bar_series",
+        "reference_quote_source_bar_bar_start",
+        "stop_before_rounding",
+        "checks",
+        "stop_after_rounding",
+        "adverse_fill_limit",
+        "quantity_step",
+        "quantity",
+        "conversion_from_currency",
+        "conversion_to_currency",
+        "conversion_rate",
+        "conversion_observed_at",
+        "conversion_evidence_evidence_id",
+        "cost_budget_amount",
+        "cost_budget_currency",
+        "reservation_amount_amount",
+        "reservation_amount_currency",
+    ),
+    TraceTable.INTRABAR_RESOLUTIONS: (
+        "position_id",
+        "parent_bar_key_series",
+        "parent_bar_key_bar_start",
+        "method",
+        "series_used",
+        "verdict",
+        "fill_id",
+        "resolved_child_bar_key_series",
+        "resolved_child_bar_key_bar_start",
+    ),
+    TraceTable.LEDGER_SNAPSHOTS: (
+        "at_time",
+        "at_phase",
+        "at_sequence",
+        "balance_amount",
+        "balance_currency",
+        "equity_amount",
+        "equity_currency",
+        "consumed_amount",
+        "consumed_currency",
+        "open_position_ids",
+    ),
+}
+
+
+def table_columns(table: TraceTable) -> tuple[str, ...]:
+    """表の列（行が1件も無くても同じ形で保存するために使う、D06 §9.2）。
+
+    行の無い表を列の無いファイルとして書くと、取引が1件も無かった正常な run と、必須の列を
+    欠いた壊れた表とを読む側が区別できない。すべての行が持つ `run_id`（上位設計書 §4.7.15）
+    を先頭に置く。
+    """
+    if table in _BORROWED_COLUMNS:
+        return _with_run_id(_BORROWED_COLUMNS[table])
+    row_type, secondaries = _TABLE_TYPES[table]
+    names = column_names(row_type, secondaries=secondaries)
+    if table is TraceTable.FILLS:
+        names = (*names, *(name for kind in CostKind for name in _cost_column_names(kind)))
+    return _with_run_id(names)
+
+
+def _with_run_id(names: Sequence[str]) -> tuple[str, ...]:
+    """`run_id` を先頭に置く（行そのものが持つ表では重ねない）。"""
+    return ("run_id", *(name for name in names if name != "run_id"))
+
+
+def _cost_column_names(kind: CostKind) -> tuple[str, str]:
+    base = f"cost_{kind.value.lower()}"
+    return (f"{base}_amount", f"{base}_currency")
 
 
 def cost_columns(fill: FillRecord) -> dict[str, object]:
