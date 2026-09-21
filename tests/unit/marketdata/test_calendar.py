@@ -62,6 +62,54 @@ def test_sessions_split_the_week_at_the_weekend() -> None:
     assert sessions[1].start == UtcTime.parse("2026-01-18T22:00:00Z")
 
 
+# --- 休場を適用する前の週の開場区間 -----------------------------------------
+
+
+def test_the_weekly_session_spans_from_sunday_open_to_friday_close() -> None:
+    """`weekly_session_at` は週の開閉だけで決まる区間を返す（D03 §3.4）。"""
+    session = market.calendar().weekly_session_at(UtcTime.parse("2026-01-14T12:00:00Z"))
+
+    assert session is not None
+    assert session.start == UtcTime.parse("2026-01-11T22:00:00Z")
+    assert session.end == UtcTime.parse("2026-01-16T22:00:00Z")
+
+
+def test_the_weekly_session_ignores_a_declared_holiday() -> None:
+    """宣言した休場は取り除かない。週末とそれ以外を分けるための操作だからである。
+
+    `sessions()` は休場で週を割るので、祝日をまたぐかどうかと週末をまたぐかどうかを
+    区別できない。週末持ち越し禁止の判定（D06 §5.3）はこの操作を使う。
+    """
+    calendar = market.calendar(
+        closures=[market.closure(date(2026, 1, 14), time(9, 0), time(12, 0), note="祝日")]
+    )
+
+    session = calendar.weekly_session_at(UtcTime.parse("2026-01-14T12:00:00Z"))
+
+    assert session is not None
+    assert session.start == UtcTime.parse("2026-01-11T22:00:00Z")
+    assert session.end == UtcTime.parse("2026-01-16T22:00:00Z")
+    # 休場そのものは `sessions()` と `is_open()` には効き続ける。
+    assert not calendar.is_open(UtcTime.parse("2026-01-14T15:00:00Z"))
+
+
+def test_there_is_no_weekly_session_on_saturday() -> None:
+    assert market.calendar().weekly_session_at(UtcTime.parse("2026-01-17T12:00:00Z")) is None
+
+
+def test_the_weekly_session_ends_before_the_friday_close() -> None:
+    """区間は半開である。金曜 17:00 ちょうどは次の週にも属さない。"""
+    calendar = market.calendar()
+
+    assert calendar.weekly_session_at(UtcTime.parse("2026-01-16T21:59:59Z")) is not None
+    assert calendar.weekly_session_at(UtcTime.parse("2026-01-16T22:00:00Z")) is None
+
+
+def test_the_weekly_session_requires_a_utc_time() -> None:
+    with pytest.raises(MarketDataValueError):
+        market.calendar().weekly_session_at("2026-01-14T12:00:00Z")  # type: ignore[arg-type]
+
+
 # --- 宣言した休場 -----------------------------------------------------------
 
 

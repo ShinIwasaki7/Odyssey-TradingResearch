@@ -295,6 +295,28 @@ class TradingCalendar:
             return True
         return False
 
+    def weekly_session_at(self, moment: UtcTime) -> Interval | None:
+        """`moment` を含む**休場を適用する前の**週の開場区間を返す（D03 §3.4）。
+
+        週の開閉（日曜 17:00 開始・金曜 17:00 終了）だけで決まる区間であり、宣言した休場や
+        短縮は取り除かない。`moment` がどの週の開場区間にも入らない（週と週のあいだにある）
+        なら `None`。
+
+        `sessions()` との違いが本操作の存在理由である。`sessions()` は休場を取り除くので、
+        祝日を1日宣言すると週が2つに割れて見える。**週末をまたぐかどうかだけ**を知りたい
+        利用側（バックテストの週末持ち越し禁止の判定、D06 §5.3）がそれを使うと、祝日や
+        短縮セッションをまたぐ注文まで週末扱いになる。週の開閉は本型が持つ知識なので、
+        利用側が曜日と時刻から計算し直すのではなく、本型が答える（同じ計算が2か所に割れると
+        カレンダーの版を上げたときに片方だけ古くなる）。
+        """
+        if not isinstance(moment, UtcTime):
+            raise MarketDataValueError("TradingCalendar.weekly_session_at requires a UtcTime")
+        probe = Interval(start=moment, end=moment + timedelta(microseconds=1))
+        for session in self._weekly_sessions(probe):
+            if session.contains(moment):
+                return session
+        return None
+
     def sessions(self, window: Interval) -> tuple[Interval, ...]:
         """`window` 内の取引セッション（休場を取り除いた開場区間）を昇順で返す。"""
         if not isinstance(window, Interval):
