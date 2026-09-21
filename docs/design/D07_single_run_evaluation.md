@@ -57,7 +57,7 @@ D04・D05・D06 と同じ方針を引き継ぐ。同じ語彙を2か所に定義
 | 2 | 指標 | 段階2の最小集合14件の式・入力列・単位・丸め・欠損時の扱いと、そのうち T01 で検算できる12件の検算値（第5節） | 年率化・リスク調整指標・分布指標（**本書 v0.2・段階4**）、複数 run の集約と選定（**段階5・D09**）、最大ドローダウン2件（#5・#6）の検算値（**D06 §8.1 の改訂依頼2 の後、本書 v0.1 の改訂**。第5.4節） |
 | 3 | 集計と診断 | 終端理由別・拒否理由別・診断理由別など7種の集計、約定ずれと2つの経過時間の診断（第6節） | 遅延シナリオ別の比較（**段階3・D08**）、人間向けレポートの文面と体裁（**本書 v0.2・段階4**） |
 | 4 | 通貨と費用 | 口座通貨で統一すること、価格反映済み費用を二重計上しない区別、swap 未計上を出力に載せる場所（第7節） | swap を計上すること自体（**ADR-0029 の改訂を要する別決定**）、証拠金・レバレッジに基づく指標（**D10**） |
-| 5 | 結果の型と保存 | 出力4表と評価 manifest の項目、保存先と識別（Q4）、行の整列鍵（第8節） | 実験 manifest の項目（**本書 v0.2・段階4**）、探索履歴と holdout 閲覧履歴（**段階5・D09**） |
+| 5 | 結果の型と保存 | 出力5表と評価 manifest の項目、保存先と識別（Q4）、行の整列鍵（第8節） | 実験 manifest の項目（**本書 v0.2・段階4**）、探索履歴と holdout 閲覧履歴（**段階5・D09**） |
 | 6 | 再現性 | 決定論の条件、結果ダイジェスト、評価時のコードのダイジェスト（Q5）（第9節） | 別プロセスでの再現手順の検証（**段階4の完了条件・D08**） |
 | 7 | 失敗と0取引 | 評価の状態4値、整合検査8件と致命/警告の別、「値なし」を型で表すこと、失敗 run の扱い（Q6）（第10節） | 探索の中断（`ABORTED`）の扱い（**段階5・D09**）、研究ポリシーの内容と複雑性の計測（**本書 v0.2・段階4**） |
 
@@ -107,14 +107,15 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `ConsistencyCheckResult` | `domain.status` | レコード | `check: str` / `level: CheckLevel` / `passed: bool` / `table: TraceTable \| None` / `expected: str` / `observed: str`（`expected` / `observed` は D02 §9.3 の正規化エンコード文字列） | §10.2 |
 | `ColumnValueKind` | `application.ports` | enum | `STRING` / `DECIMAL` / `INT` / `TIME` / `ENUM` / `LIST_STRING` | §4.3 |
 | `TraceColumnSpec` | `application.ports` | レコード | `table: TraceTable` / `column: str` / `value_kind: ColumnValueKind` / `required: bool` | §4.2・§4.3 |
-| `EvaluationTable` | `application.manifest` | enum | `METRICS` / `CATEGORY_COUNTS` / `TRADES` / `FILL_DIAGNOSTICS` | §8.1 |
+| `TableReadResult` | `application.ports` | レコード | `table: TraceTable` / `table_present: bool` / `missing_columns: tuple[str, ...]` / `rows: tuple[tuple[str \| None, ...], ...]`（`rows` は `missing_columns` が空のときだけ非空になりうる） | §4.3・§10.2 |
+| `EvaluationTable` | `application.manifest` | enum | `METRICS` / `CATEGORY_COUNTS` / `TRADES` / `FILL_DIAGNOSTICS` / `CONSISTENCY_CHECKS` | §8.1 |
 | `RunEvaluationId` | `application.manifest` | レコード | `digest: ContentDigest`（`digest(run_id, metric_set_version, evaluation_code_digest)`）。D02 §7.1 の `EvaluationId`（部品の1回の評価）と**別の型**であり、名前も混同しない | §8.3・§9.2 |
-| `EvaluationManifest` | `application.manifest` | レコード | `run_evaluation_id: RunEvaluationId` / `run_id: RunId` / `run_manifest_ref: ContentDigest` / `metric_set_version: int` / `evaluation_code_digest: CodeDigest` / `run_code_digest: CodeDigest` / `account_currency: CurrencyCode` / `swap_modeled: bool` / `status: EvaluationStatus` / `result_digest: ContentDigest` / `input_tables: tuple[TraceTable, ...]` / `fatal_failure_count: int` / `warning_failure_count: int` | §8.3・§9.2 |
+| `EvaluationManifest` | `application.manifest` | レコード | `run_evaluation_id: RunEvaluationId` / `run_id: RunId` / `run_manifest_ref: ContentDigest` / `metric_set_version: int` / `evaluation_code_digest: CodeDigest`（Q5 で「持たせない」が選ばれた場合は項目ごと外す） / `run_code_digest: CodeDigest` / `run_status: RunStatus` / `run_failure_reason: Reason \| None` / `account_currency: CurrencyCode` / `swap_modeled: bool` / `status: EvaluationStatus` / `result_digest: ContentDigest` / `input_tables: tuple[TraceTable, ...]` / `fatal_failure_count: int` / `warning_failure_count: int` | §8.3・§9.2・§10.1 |
 | `EvaluationReport` | `application.evaluate_run` | レコード | `manifest: EvaluationManifest` / `status: EvaluationStatus` / `metrics: tuple[MetricRecord, ...]` / `categories: tuple[CategoryCount, ...]` / `trades: tuple[TradeRecord, ...]` / `fill_diagnostics: tuple[FillDiagnostic, ...]` / `checks: tuple[ConsistencyCheckResult, ...]` | §8.1・§10.1 |
-| `ResultRepository` | `application.ports` | Protocol | `read_manifest(run_id: RunId) -> RunManifest` / `read_table(run_id: RunId, table: TraceTable, columns: tuple[TraceColumnSpec, ...]) -> tuple[tuple[str \| None, ...], ...]` / `write_evaluation(report: EvaluationReport, rows: Mapping[EvaluationTable, tuple[object, ...]]) -> None` | §4.3・§8.2 |
+| `ResultRepository` | `application.ports` | Protocol | `read_manifest(run_id: RunId) -> RunManifest` / `read_table(run_id: RunId, table: TraceTable, columns: tuple[TraceColumnSpec, ...]) -> TableReadResult` / `write_evaluation(report: EvaluationReport, rows: Mapping[EvaluationTable, tuple[object, ...]]) -> None` | §4.3・§8.2 |
 | `EvaluateRun` | `application.evaluate_run` | Protocol | `evaluate(result: BacktestResult, repository: ResultRepository, metric_set_version: int) -> EvaluationReport` | §4.1 |
 
-`Money` / `Price` / `PriceOffset` / `Quantity` / `Decimal` / `UtcTime` / `Interval` / `ProcessingPoint` / `CurrencyCode` / `ContentDigest` / `CodeDigest` と各 ID 型は D02、`Symbol` は D02 §5.1、`OrderSide` / `CloseCause` / `TraceTable` / `BacktestResult` / `RunManifest` / `FinalSummaries` / `RunStatus` は D06、`OpportunityId` の意味は D05 が正本である。`ResultRepository` は D01 §4 が「結果の読み書き」として所在と実装者を既に確定しており、本書はその操作だけを具体化する。**表の読み出しに新しいポートを足さない**。
+`Money` / `Price` / `PriceOffset` / `Quantity` / `Decimal` / `UtcTime` / `Interval` / `ProcessingPoint` / `CurrencyCode` / `Reason` / `ContentDigest` / `CodeDigest` と各 ID 型は D02、`Symbol` は D02 §5.1、`OrderSide` / `CloseCause` / `TraceTable` / `BacktestResult` / `RunManifest` / `FinalSummaries` / `RunStatus` は D06、`OpportunityId` の意味は D05 が正本である。`ResultRepository` は D01 §4 が「結果の読み書き」として所在と実装者を既に確定しており、本書はその操作だけを具体化する。**表の読み出しに新しいポートを足さない**。
 
 ## 4. 評価の入力契約
 
@@ -129,13 +130,15 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | 3 | trace の9表 | `ResultRepository.read_table(...)`。読む表と列は第4.2節 | D06 §9.2 |
 
 - **評価は run を実行し直さない**【合意済み】全体計画 §5.5。単一 run の実行は `BacktestRunner` ポート（D01 §4）の仕事であり、本書の `evaluate` は実行済みの結果だけを受け取る。
-- **評価は trace を書き換えない**【合意済み】全体計画 §5.4.5「評価側はこれを改変しない」。読み出しだけを行い、書き出しは第8節の4表と JSON に限る。
+- **評価は trace を書き換えない**【合意済み】全体計画 §5.4.5「評価側はこれを改変しない」。読み出しだけを行い、書き出しは第8節の5表と JSON に限る。
 - **評価は生の市場データを読み直さない**【提案】（Q1、推奨案）。段階2の指標14件はすべて trace と manifest から作れる（第5.2節の各行の「入力列」）。市場データを読む経路を作ると、as-of の規則（D03 §6）とアクセス分類の許可（D03 §6.1 の `allowed_partitions`）を評価側にも置くことになり、D03 が正本である規則が2か所に割れる。
 - 入力の1と2の整合（`BacktestResult.run_id` と `RunManifest.run_id` が一致すること）は第10.2節の致命検査 C2 で確かめる。
 
 ### 4.2 読む表と列【提案】
 
 段階2で読むのは15表のうち**9表**である。各列は D06 §9.1 の平坦化規則で得られる名前を書く。**† を付けた列は、区分タグ付き union・入れ子レコード・複合表の列名の規則が D06 §9.1 に無いため、第15節の改訂依頼3 の採択を前提とする**。
+
+**9表すべてで `run_id` 列を読む**【提案】。下表では列の欄に書かず、`TraceColumnSpec` を組み立てるときに必ず `required=True` の先頭列として要求する。全行が `run_id` を持つことは D06 §9.1 で確定しており、これを読まないと第10.2節の致命検査 C2（実行の識別子が全表で一致すること）を実施できない。表ごとに書くと9回同じ列名が並び、1か所で落としても気付けない。
 
 | 表 | `TraceTable` | 読む列 | 何に使うか |
 |---|---|---|---|
@@ -155,8 +158,9 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 ### 4.3 読み出しの形【提案】
 
-- `read_table` は**要求した列だけ**を、`TraceColumnSpec` の順に、**文字列（または `None`）の行の `tuple`** で返す。値の解釈（`Decimal` 化、`UtcTime` 化、enum 化）は `evaluation.application` が `ColumnValueKind` に従って行う。Parquet を開くのは `evaluation.adapters.fs_store` だけであり、`domain` と `application` に表形式ライブラリを入れない【合意済み】D01 §5・ADR-0025。
-- `required=True` の列が表に無い場合は、その場で例外にせず**致命の整合検査の不合格**として記録する（第10.2節の C1）。評価は「なぜ評価できなかったか」を残すことが仕事であり、読み出し時に落ちると理由が残らない。
+- `read_table` は `TableReadResult` を返す。`rows` は**要求した列だけ**を `TraceColumnSpec` の順に並べた、**文字列（または `None`）の行の `tuple`** である。値の解釈（`Decimal` 化、`UtcTime` 化、enum 化）は `evaluation.application` が `ColumnValueKind` に従って行う。Parquet を開くのは `evaluation.adapters.fs_store` だけであり、`domain` と `application` に表形式ライブラリを入れない【合意済み】D01 §5・ADR-0025。
+- **列が無いことと、行が0件であることを、戻り値で区別する**【提案】。表そのものが無ければ `table_present=False`、要求した列のうち表に無いものは `missing_columns` に入れ、`rows` は空にする。行の `tuple` だけを返す形にすると、0行の表では「必須列はあるが行が無い」と「列自体が無い」を呼び出し側が区別できず、第10.2節の C1 を実施できない。
+- `required=True` の列が `missing_columns` にある場合、または `table_present=False` の場合は、その場で例外にせず**致命の整合検査の不合格**として記録する（第10.2節の C1）。評価は「なぜ評価できなかったか」を残すことが仕事であり、読み出し時に落ちると理由が残らない。
 - 行の順序は Parquet の格納順に依存させない。集計の前に必ず第8.1節の整列鍵で並べ替える（第9.1節の決定論の条件1）。
 - **不採用**: 表ごとの行の型（9個の dataclass）を本書で定義して `read_table` がそれを返す案（D06 の型を評価側で写し取ることになり、列が増えるたびに2か所を直す。第1.1節の二重定義の禁止に反する）、`Mapping[str, object]` の行を返す案（キーの打ち間違いを型で防げず、要求していない列が混ざる）。
 
@@ -273,7 +277,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 ## 8. 結果の型と保存
 
-### 8.1 出力する4表【提案】
+### 8.1 出力する5表【提案】
 
 | `EvaluationTable` | 行の型 | 1行の単位 | 整列鍵 |
 |---|---|---|---|
@@ -281,23 +285,28 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `CATEGORY_COUNTS` | `CategoryCount` | 集計の鍵1件 | `(CategoryKind の宣言順, 鍵の語彙の宣言順)` |
 | `TRADES` | `TradeRecord` | 完了取引1件 | `(entry_at, position_id)` |
 | `FILL_DIAGNOSTICS` | `FillDiagnostic` | 約定1件 | `fill_id` |
+| `CONSISTENCY_CHECKS` | `ConsistencyCheckResult` | 整合検査1件 | 第10.2節の C1〜C8 の宣言順 |
 
+- **整合検査の結果を表として保存する**【提案】。`EvaluationReport.checks` を保存しないと、不合格だった検査の名前・期待値・観測値が結果から消え、**保存済みの成果物だけを見て失敗を説明できない**（第10.1節の `FAILED` と `REJECTED` はここが主な出力になる）。manifest の件数だけでは、どの検査が落ちたかが分からない。
+- **どの状態でも5表すべてを書く**【提案】。指標を出さない状態（`FAILED` / `REJECTED`）では `METRICS` / `TRADES` / `FILL_DIAGNOSTICS` / `CATEGORY_COUNTS` を**0行の表**として書く。表の有無で状態を表すと、書き出しが途中で落ちた成果物と区別できない。
 - **資産推移の表を作らない**【提案】。最大ドローダウンは `LEDGER_SNAPSHOTS`（表14）から直接求める。評価側にも推移を保存すると同じ系列が2か所に残り、どちらが正本か決める規則がもう1つ要る。
+- **実行の能力検査（`DataCapabilityReport`）を写さない**【提案】。正本は run manifest と `BacktestResult`（D06 §10.5）であり、評価 manifest は `run_manifest_ref` と `run_status` / `run_failure_reason` で**そこへ辿れる形**だけを持つ。写すと同じ検査結果が2か所に残る。
 - `TRADES` の `opportunity_id` は、建玉 → 入場約定（表9）→ 注文（表7）→ 試行（表4）の外部キーを辿って埋める【合意済み】D06 §9.2 の ID 連鎖。辿れない場合は値を空にせず、致命検査 C4 の不合格とする（連鎖が切れている trace は不整合である）。
 
 ### 8.2 保存形式【合意済み】＋【要決定】（Q4）
 
 - 表は Parquet、manifest は JSON【合意済み】ADR-0027。平坦化の規則は D06 §9.1 と同じものを使い、別の規則を作らない（`Decimal` は文字列、`Money` は金額と通貨の2列、`ProcessingPoint` は3列）。
 - 書き出しは `ResultRepository.write_evaluation` 経由で、Parquet を触るのは `evaluation.adapters.fs_store` だけ【合意済み】D01 §4・§5。
-- 保存先と識別は【要決定】（Q4）。推奨案は `runs/<run_id>/eval/<metric_set_version>/` である（D01 §10.3 の `runs/` の下）。
+- **保存先は `RunEvaluationId` ごとに分ける**【提案】。識別子が違う成果物を同じ場所へ書かない。指標集合の版（`metric_set_version`）だけで場所を分けると、評価コードを変えて評価し直した結果（`RunEvaluationId` は別の値になる）が前の成果物を上書きし、識別子と保存された成果物の対応が崩れる。
+- 保存先の場所そのものは【要決定】（Q4）。推奨案は `runs/<run_id>/eval/<run_evaluation_id>/` である（D01 §10.3 の `runs/` の下）。
 
 ### 8.3 評価 manifest（JSON）【提案】
 
 | 群 | 項目 |
 |---|---|
 | 識別 | `run_evaluation_id`、`run_id`、`run_manifest_ref`、`metric_set_version` |
-| コード | `evaluation_code_digest`（評価を実行したときのコード）、`run_code_digest`（run manifest から写す。Q5） |
-| 入力 | `input_tables`（第4.2節の9表）、`account_currency` |
+| コード | `evaluation_code_digest`（評価を実行したときのコード。Q5）、`run_code_digest`（run manifest から写す） |
+| 入力 | `input_tables`（第4.2節の9表）、`account_currency`、`run_status`、`run_failure_reason`（`RunStatus` が `COMPLETED` でないときの理由。D06 §9.3 から写す） |
 | 明記 | `swap_modeled`（必須、第7.2節） |
 | 状態 | `status`、`fatal_failure_count`、`warning_failure_count` |
 | 再現性 | `result_digest`（第9.2節） |
@@ -318,9 +327,9 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 ### 9.2 結果のダイジェストと、評価コードのダイジェスト【提案】＋【要決定】（Q5）
 
-- `result_digest` は、4表の全行を第8.1節の整列鍵で並べた列の **D02 §9.3 の正規化エンコードのダイジェスト**とする【提案】。Parquet のファイルそのものはメタデータや圧縮設定でバイト列が変わりうるため、再現性の判定はファイルの一致ではなく `result_digest` の一致で行う。再現性テスト（第11節）は「同じ入力で2回評価して `result_digest` が一致する」ことを確かめる。
-- `RunEvaluationId = digest(run_id, metric_set_version, evaluation_code_digest)` とする【提案】。同じ trace を別の指標集合の版で評価した結果が、別の識別子になる。D02 §7.1 の `EvaluationId`（部品の1回の評価）とは別の型であり、名前を似せない（語彙の二重定義を避ける、第1.1節）。
-- **評価時のコードのダイジェストを持たせるかどうか**は【要決定】（Q5）。推奨案は、D02 §9.4 と同じ算出（パッケージ全体を対象にした `CodeDigest`）を評価時にもう一度行って `evaluation_code_digest` に入れ、run manifest の `code_digest` と異なるときに結果から判別できるようにすることである。
+- `result_digest` は、5表の全行を第8.1節の整列鍵で並べた列の **D02 §9.3 の正規化エンコードのダイジェスト**とする【提案】。Parquet のファイルそのものはメタデータや圧縮設定でバイト列が変わりうるため、再現性の判定はファイルの一致ではなく `result_digest` の一致で行う。再現性テスト（第11節）は「同じ入力で2回評価して `result_digest` が一致する」ことを確かめる。
+- `RunEvaluationId = digest(run_id, metric_set_version, evaluation_code_digest)` とする【提案】。同じ trace を別の指標集合の版で、あるいは別の評価コードで評価した結果が、別の識別子になる。D02 §7.1 の `EvaluationId`（部品の1回の評価）とは別の型であり、名前を似せない（語彙の二重定義を避ける、第1.1節）。
+- **評価時のコードのダイジェストを持たせるかどうか**は【要決定】（Q5）。推奨案は、D02 §9.4 と同じ算出（パッケージ全体を対象にした `CodeDigest`）を評価時にもう一度行って `evaluation_code_digest` に入れ、run manifest の `code_digest` と異なるときに結果から判別できるようにすることである。**Q5 で「持たせない」が選ばれた場合は、`EvaluationManifest` から `evaluation_code_digest` を外し、`RunEvaluationId = digest(run_id, metric_set_version, run_code_digest)` に置き換える**（識別子を作れない状態を残さないため、同じ決定の中で式まで確定する）。
 
 ## 10. 評価の状態と失敗の表し方
 
@@ -330,9 +339,9 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 | 値 | 意味 | 段階2で起きるか | 出力 |
 |---|---|---|---|
-| `COMPLETED` | 評価が完了した。0取引でもこの値 | 起きる | 4表と manifest をすべて出す |
-| `REJECTED` | 入力の run が正常完走していない（`BacktestResult.status != COMPLETED`）【合意済み】上位 §4.7.13 C | 起きる | 【要決定】Q6。推奨案は、指標を算出せず `status` と `capability_report` の要約・検査結果だけを出す |
-| `FAILED` | 評価自身が完了できなかった（致命の整合検査が1件でも不合格） | 起きる | 指標を算出せず、検査結果を全件出す |
+| `COMPLETED` | 評価が完了した。0取引でもこの値 | 起きる | 5表と manifest をすべて出す |
+| `REJECTED` | 入力の run が正常完走していない（`BacktestResult.status != COMPLETED`）【合意済み】上位 §4.7.13 C | 起きる | 【要決定】Q6。推奨案は、指標を算出せず、`CONSISTENCY_CHECKS` 表と manifest（`run_status` / `run_failure_reason` を含む）を出し、残る4表を0行で書く |
+| `FAILED` | 評価自身が完了できなかった（致命の整合検査が1件でも不合格） | 起きる | 指標を算出せず、`CONSISTENCY_CHECKS` 表に検査結果を全件出し、残る4表を0行で書く |
 | `ABORTED` | 探索の途中で中断された | **起きない（段階5・D09）** | — |
 
 - **0取引は失敗ではない**【提案】。`COMPLETED` とし、取引に依存する指標を `Unavailable(NO_TRADES)` にする。段階4の完了条件「失敗 / 0取引も説明できる」（全体計画 §8.2）は、状態と値なしの理由の組で満たす。
@@ -342,7 +351,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 | # | `check` | 水準 | 内容 |
 |---|---|---|---|
-| C1 | `required_columns_present` | FATAL | 第4.2節の9表が `trace_tables` にあり、`required=True` の列がすべて存在する |
+| C1 | `required_columns_present` | FATAL | 第4.2節の9表が `trace_tables` にあり（`TableReadResult.table_present`）、`required=True` の列が `missing_columns` に1つも無い |
 | C2 | `run_id_consistent` | FATAL | `BacktestResult.run_id`、`RunManifest.run_id`、各表の `run_id` 列が一致する |
 | C3 | `trade_count_matches` | FATAL | 完了取引の件数（表11）が `BacktestResult.trade_count` と一致する |
 | C4 | `id_chain_complete` | FATAL | 各完了取引の `entry_fill_id` / `close_fill_id` が表9 にあり、その `order_id` が表7 にあり、その `attempt_id` が表4 にある |
@@ -367,7 +376,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 - 範囲は「検証戦略 A の単一 run の結果を、再現可能に・数値で・swap 未計上と明記して出せること」である。指標14件・集計7種・診断3項目・検査8件がその最小集合であり、これ以外を段階2で作らない。
 - 全体計画 §8.2 の段階2の完了条件「人工データで注文・数量・損益・資産が手計算に一致」に対し、本書は**第5.2節の T01 検算の列**で対応する。T01 の経路1 と第9節の数値から、指標14件のうち12件が手で確かめられる（残る2件は改訂依頼2 の後、第5.4節）。
-- **テスト**【提案】: 単体（各指標の式、0取引・分母0・値なしの分岐、勝敗の3区分）、意味論（`REJECTED` の run で指標を出さない、致命検査の不合格で指標を出さない、0件の鍵が行として出る、通貨違いを拒否する）、プロパティ（同じ入力で2回評価して `result_digest` が一致する、表の行の入力順を入れ替えても結果が変わらない）、golden（T01 経路1 の1取引分の4表を固定する。D06 の golden trace（全体計画 §8.4）の出力をそのまま入力にする）。
+- **テスト**【提案】: 単体（各指標の式、0取引・分母0・値なしの分岐、勝敗の3区分）、意味論（`REJECTED` の run で指標を出さない、致命検査の不合格で指標を出さず検査表だけを出す、必須列が欠けた表と0行の表を区別する、0件の鍵が行として出る、通貨違いを拒否する）、プロパティ（同じ入力で2回評価して `result_digest` が一致する、表の行の入力順を入れ替えても結果が変わらない）、golden（T01 経路1 の1取引分の5表を固定する。D06 の golden trace（全体計画 §8.4）の出力をそのまま入力にする）。
 
 ## 12. 対象外（段階4以降）
 
@@ -422,7 +431,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | Q1 | 評価が市場データを読み直すか | 市場を基準にした指標を段階2で出せるかと、holdout へ触れる経路が増えるかが変わる |
 | Q2 | 指標の値の丸め | 保存される数値の桁と、再現性の判定の仕方が変わる |
 | Q3 | 最大ドローダウンの基準列 | 採用指標が含み損益込みになるか確定損益だけになるか、D06 への改訂依頼2 が必要かが変わる |
-| Q4 | 評価結果の保存先と識別 | 同じ run を別の指標集合で評価したときに上書きになるかが変わる |
+| Q4 | 評価結果の保存先 | 同じ run の成果物が1か所にまとまるか、評価をやり直すと上書きになるかが変わる |
 | Q5 | 評価時のコードのダイジェストを結果に持たせるか | 指標が別のコードで作られたことを後から判別できるかが変わる |
 | Q6 | 正常完走していない run に対する指標の扱い | 失敗した run の数値が他と並べられるかが変わる |
 
@@ -452,18 +461,18 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 推奨理由: 上位文書が求める MTM 基準を採用指標に残しつつ、改訂が済むまでの検算手段を確保できる。
 
-**Q4 評価結果の保存先と識別**
+**Q4 評価結果の保存先**
 
-1. **（推奨）run のディレクトリの下に指標集合の版ごとの副ディレクトリを作る**: `runs/<run_id>/eval/<metric_set_version>/` に置き、run と評価が同じ場所にまとまる。
-2. **評価専用の識別子で別ディレクトリに置く**: `runs/evaluations/<run_evaluation_id>/` に置き、run のディレクトリと評価のディレクトリが分かれる。
-3. **run のディレクトリ直下に1組だけ置く**: 別の指標集合で評価し直すと前の結果を上書きする。
+1. **（推奨）run のディレクトリの下に評価の識別子ごとの副ディレクトリを作る**: `runs/<run_id>/eval/<run_evaluation_id>/` に置き、run と評価が同じ場所にまとまる。
+2. **評価専用のディレクトリに置く**: `runs/evaluations/<run_evaluation_id>/` に置き、run のディレクトリと評価のディレクトリが分かれる。
+3. **run のディレクトリ直下に1組だけ置く**: 評価し直すと前の結果を上書きする。
 
-推奨理由: 1つの run の成果物が1か所にまとまり、指標集合の版を変えた評価が前の結果を消さない。
+推奨理由: 1つの run の成果物が1か所にまとまり、識別子が違う評価が前の結果を消さない。
 
 **Q5 評価時のコードのダイジェストを結果に持たせるか**
 
 1. **（推奨）評価時に算出した `CodeDigest` を持たせ、run manifest の値と併記する**: 既存の算出規則（D02 §9.4）をそのまま使い、両者が違えば結果から分かる。
-2. **持たせない**: run の `code_digest` だけを引き継ぎ、評価コードの変更は結果から分からない。
+2. **持たせない**: 評価コードの変更は結果から分からず、評価の識別子は `digest(run_id, metric_set_version, run_code_digest)` になる（第9.2節）。
 3. **評価モジュールだけを対象にした別のダイジェストを新たに定義する**: 指標の変更だけを狭く検出でき、算出規則が1つ増える。
 
 推奨理由: 新しい規則を足さずに、同じ trace から別の数値が出た原因がコードの変更かどうかを切り分けられる。
