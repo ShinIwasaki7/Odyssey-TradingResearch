@@ -275,8 +275,18 @@ def test_phase_rank_accepts_uppercase_names() -> None:
     assert PhaseRank(3, "RUN_END").rank == 3
 
 
-@pytest.mark.parametrize("name", ["admission", "Admission", "PHASE-1", "PHASE1", ""])
+def test_phase_rank_accepts_digits_after_the_first_letter() -> None:
+    """D02 §3.3 v1.5（D06 の Q1 決定）: `P1_FEATURE` のような名前をそのまま使う。
+
+    上位設計書 §4.3.12 が確定した P0〜P5 という呼び方が全文書で使われており、名前に数字を
+    残すと判断履歴のフェーズ列から因果順が名前だけで読める。
+    """
+    assert str(PhaseRank(5, "P1_FEATURE")) == "P1_FEATURE"
+
+
+@pytest.mark.parametrize("name", ["admission", "Admission", "PHASE-1", "1_FEATURE", ""])
 def test_phase_rank_rejects_invalid_names(name: str) -> None:
+    """小文字・記号・数字始まりは引き続き拒否する。"""
     with pytest.raises(KernelValueError, match="name"):
         PhaseRank(0, name)
 
