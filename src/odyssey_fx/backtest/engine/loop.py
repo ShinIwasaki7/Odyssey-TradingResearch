@@ -609,6 +609,10 @@ class BacktestEngine:
             )
             self._context.ledger = commit_order_termination(self._context.ledger, event=event)
             self._emit(TraceTable.ORDER_EVENTS, event)
+        # 取消で予約が解放された状態を最後の台帳 snapshot に残す（D06 §8.1）。残さないと、
+        # 予約の表は `RELEASED` なのに最後の snapshot はその額を消費済みとして数えたままに
+        # なり、失敗した run の記録が口座の状態について食い違う。
+        self._record_snapshot(clock.next(failure.phase))
 
     # --- 1つの判断時点 -------------------------------------------------------
 
@@ -633,8 +637,10 @@ class BacktestEngine:
         notices = self._phase_admission(clock, proposals, management, is_run_end=is_run_end)
 
         opened: list[RuntimeEventNotice] = []
-        if not is_run_end and events.execution_open is not None:
-            opened = self._phase_execution_open(clock, events.execution_open)
+        if not is_run_end:
+            self._require_scheduled_opens_arrived(decision_time, events.execution_open)
+            if events.execution_open is not None:
+                opened = self._phase_execution_open(clock, events.execution_open)
 
         post = self._phase_post_fill_evaluation(
             clock, notices, tuple(opened), is_run_end=is_run_end
@@ -1105,6 +1111,30 @@ class BacktestEngine:
         return rate_of(path, settlement, account, evidence)
 
     # --- rank 11: 始値処理 ---------------------------------------------------
+
+    def _require_scheduled_opens_arrived(
+        self, decision_time: UtcTime, arriving: BarKey | None
+    ) -> None:
+        """予定した候補の足が実データに無いまま過ぎたら実行失敗にする（D06 §10.4）。
+
+        候補の始値は足のスケジュールから決める（D06 §5.3）ので、実データにその足が無い
+        組み合わせが起こりうる。公開フィードは存在しない足の始値を知らせないため、rank 11
+        の「始値が無い」検査には**到達しない**。放っておくと注文は期限切れか末尾の取消で
+        終わり、データの欠損が「取引が成立しなかっただけ」として静かに通ってしまう。
+        欠損は実行失敗であり（D06 §10.4）、成果物を正常完走と同じ扱いにしない。
+        """
+        for order in self._context.ledger.pending_orders():
+            eligibility = order.execution.eligibility
+            if not isinstance(eligibility, ScheduledOpen):
+                continue
+            if eligibility.open_time > decision_time:
+                continue
+            if arriving is not None and eligibility.bar_key == arriving:
+                continue
+            raise _RunFailure(
+                self._data_error(eligibility.bar_key, "scheduled execution bar never arrived"),
+                PHASE_EXECUTION_OPEN,
+            )
 
     def _phase_execution_open(self, clock: PhaseClock, bar_key: BarKey) -> list[RuntimeEventNotice]:
         open_price = self._execution.open_of(bar_key)
@@ -1631,7 +1661,11 @@ class BacktestEngine:
         for request in result.management_requests:
             if not isinstance(request.action, SetTakeProfit):
                 continue
-            if request.position_id in closing:
+            # run 末尾では、衝突があってもなくても更新は `RUN_END` で適用しない
+            # （D06 §10.1 の手順3 の表）。末尾では決済要求も `RUN_END` で受付前拒否される
+            # ので、そこで更新を `SUPERSEDED_BY_EXIT` にすると「押しのけた決済」が存在
+            # しないまま記録が残る。末尾の規則を先に見る。
+            if request.position_id in closing and not is_run_end:
                 self._discard_take_profit(clock, request)
                 continue
             self._apply_take_profit(clock, request, is_run_end=is_run_end)

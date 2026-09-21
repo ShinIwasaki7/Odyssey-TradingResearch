@@ -934,3 +934,84 @@ def test_a_close_request_supersedes_a_protection_update_on_the_same_position() -
     application = applications[0].parts[0][2]
     assert application.applied is False  # type: ignore[attr-defined]
     assert application.reason.code is ReasonCode.SUPERSEDED_BY_EXIT  # type: ignore[attr-defined]
+
+
+def test_a_scheduled_candidate_bar_that_never_arrives_fails_the_run() -> None:
+    """D06 §5.3・§10.4: 予定した候補の足が実データに無ければ実行失敗にする。
+
+    候補の始値は足のスケジュールから決めるので、実データにその足が無い組み合わせが
+    起こりうる。公開フィードは存在しない足の始値を知らせないため、始値の処理そのものが
+    起きない。放っておくと注文は期限切れか末尾の取消で終わり、**データの欠損が
+    「取引が成立しなかっただけ」として静かに通る**。
+    """
+    full = execution_bars()
+    # `[09:00,09:15)` が候補の始値。予定表には載っているが、実データから抜く。
+    without_candidate = full[:1] + full[2:]
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=without_candidate,
+        run_interval=RUN_INTERVAL,
+    )
+
+    assert output.result.status is RunStatus.FAILED_DATA_ERROR
+    assert output.result.summaries is None
+    assert output.rows(TraceTable.FILLS) == ()
+
+
+def test_a_failed_run_records_the_ledger_state_after_the_cancellations() -> None:
+    """D06 §8.1・§10.4: 取消で予約が解放された状態を最後の台帳 snapshot に残す。
+
+    残さないと、予約の表は `RELEASED` なのに最後の snapshot はその額を消費済みとして
+    数えたままになり、失敗した run の記録が口座の状態について食い違う。
+    """
+    full = execution_bars()
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=full[:1] + full[2:],
+        run_interval=RUN_INTERVAL,
+    )
+
+    assert output.result.status is RunStatus.FAILED_DATA_ERROR
+    snapshots = [
+        row for row in output.rows(TraceTable.LEDGER_SNAPSHOTS) if isinstance(row, LedgerSnapshot)
+    ]
+    assert snapshots, "失敗した run でも台帳 snapshot は残る"
+    assert snapshots[-1].consumed == _money("0")
+    assert output.context.ledger.consumed() == _money("0")
+
+
+def test_the_end_of_run_rule_wins_over_the_close_collision() -> None:
+    """D06 §10.1 の手順3: run 末尾では保護水準の更新を `RUN_END` で適用しない。
+
+    末尾では決済要求も `RUN_END` で受付前拒否されるので、そこで更新を
+    `SUPERSEDED_BY_EXIT` にすると「押しのけた決済」が存在しないまま記録が残る。
+    """
+    from odyssey_fx.backtest.engine.clock import PhaseClock
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.backtest.trace.recorder import CompositeRow
+    from odyssey_fx.common.ids import OpportunityId, PositionId
+    from odyssey_fx.strategy.declarations.evaluation import RuntimeEventKind
+    from odyssey_fx.strategy.runtime.ports import RuntimeEventNotice
+
+    engine = _engine(EXECUTION_POLICY, runtime=_ConflictingManagementRuntime())
+    assert isinstance(engine, BacktestEngine)
+    clock = PhaseClock(engine._phases, RUN_INTERVAL.end)
+    engine._phase_post_fill_evaluation(
+        clock,
+        (),
+        (
+            RuntimeEventNotice(
+                kind=RuntimeEventKind.POSITION_OPENED,
+                position_id=PositionId(1),
+                opportunity_id=OpportunityId(1),
+            ),
+        ),
+        is_run_end=True,
+    )
+
+    rows = engine.rows[TraceTable.MANAGEMENT_APPLICATIONS]
+    applications = [row for row in rows if isinstance(row, CompositeRow)]
+    assert len(applications) == 1
+    application = applications[0].parts[0][2]
+    assert application.applied is False  # type: ignore[attr-defined]
+    assert application.reason.code is ReasonCode.RUN_END  # type: ignore[attr-defined]
