@@ -75,6 +75,8 @@ from odyssey_fx.strategy.declarations.evaluation import (
     OnRuntimeEvent,
 )
 from odyssey_fx.strategy.declarations.instance import ComponentInstance
+from odyssey_fx.strategy.declarations.missing import Error as ErrorPolicy
+from odyssey_fx.strategy.declarations.opportunity import ValidityMode
 from odyssey_fx.strategy.declarations.read_spec import (
     BarsWindow,
     CurrentContext,
@@ -417,6 +419,36 @@ def _check_validity_bindings(
                     "a validity binding must point at an output of type"
                     f" {datatypes.CONDITION_STATE_V1}, but {binding.source} produces"
                     f" {spec.data_type}",
+                )
+            )
+        elif spec.kind is not PortKind.VALUE:
+            # ランタイムが読み直せるのは繰り返し参照する値の最新出力だけである（D05 §6.5）。
+            # 配送イベントの出力を束縛に書くと、宣言は通るのに条件がいちども効かない。
+            errors.append(
+                _error(
+                    "#5",
+                    CompileRejection.ROLE_MISMATCH,
+                    None,
+                    field_path,
+                    "a validity binding must point at a VALUE output; the runtime keeps only"
+                    f" the latest VALUE output per reference, so a {spec.kind.value} output"
+                    " would never constrain an opportunity (D05 §6.5)",
+                )
+            )
+        if binding.mode is ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST and isinstance(
+            binding.on_missing, ErrorPolicy
+        ):
+            # 再検査は評価の外側で走るため、失敗を評価記録として残す先が無い（D05 §6.4）。
+            # 判断履歴に残せない失敗の経路を作らないよう、この組合せは段階2 では拒否する。
+            errors.append(
+                _error(
+                    "#7",
+                    CompileRejection.UNSUPPORTED_CONFIGURATION,
+                    None,
+                    f"opportunity_validity.bindings[{index}].on_missing",
+                    "treating a missing re-check as a run failure is not supported in stage 2;"
+                    " the re-check runs outside an evaluation, so the failure has no evaluation"
+                    " record to be reported in (D05 §6.4・§7.3)",
                 )
             )
     return errors
@@ -923,13 +955,18 @@ def _stage6_output_specs(
                     )
         if produces_opportunity:
             errors.extend(_check_opportunity_triggers(instance))
+        errors.extend(_check_state_initializer(instance.instance_id, contract))
     return tuple(errors)
 
 
 def _check_edge_state(
     instance_id: str, field_path: str, contract: ComponentContract
 ) -> list[CompileError]:
-    """`EDGE` の契約が直前の成立を保持できる状態を宣言していることを確かめる（D04 §10.4）。"""
+    """`EDGE` の契約が直前の成立を保持できる状態を宣言していることを確かめる（D04 §10.4）。
+
+    初期値の項目と型そのものの検査は `_check_state_initializer` が全契約に対して行う。
+    ここで見るのは「`EDGE` には条件の成否を表す状態が要る」という追加の要求だけである。
+    """
     state_spec = contract.state_spec
     if state_spec is None or state_spec.state_type != datatypes.CONDITION_STATE_V1:
         return [
@@ -954,17 +991,39 @@ def _check_edge_state(
                 " in the declaration",
             )
         ]
-    payload_types = payload_type_for(datatypes.CONDITION_STATE_V1)
-    if not payload_types:  # pragma: no cover - 対応表に必ずある
+    return []
+
+
+def _check_state_initializer(instance_id: str, contract: ComponentContract) -> list[CompileError]:
+    """宣言した初期値が状態型の項目と型に一致することを確かめる（D04 §9.1）。
+
+    再武装の宣言（`EDGE`）に限らず、**状態を宣言するすべての契約**に適用する。初期値は宣言に
+    書き切り、実装側の既定値に委ねないと決めているので（D04 §9.1）、書き間違いは run が
+    始まる前に分かるほうがよい。ここで見なければ、ランタイムの組み立て時に状態を作ろうと
+    した時点で落ちる。
+    """
+    state_spec = contract.state_spec
+    if state_spec is None:
         return []
+    field_path = "state_spec.initial"
+    payload_types = payload_type_for(state_spec.state_type)
+    if not payload_types:
+        return [
+            _error(
+                "#6b",
+                CompileRejection.OUTPUT_SPEC_INVALID,
+                instance_id,
+                "state_spec.state_type",
+                f"state type {state_spec.state_type} has no runtime payload type (D05 §4.2)",
+            )
+        ]
     expected = {
         item.name: _INITIAL_VALUE_TYPES.get(_type_name(item.type))
         for item in dataclass_fields(payload_types[0])
     }
-    errors: list[CompileError] = []
     values = state_spec.initial.values
     if set(values) != set(expected):
-        errors.append(
+        return [
             _error(
                 "#6b",
                 CompileRejection.OUTPUT_SPEC_INVALID,
@@ -972,8 +1031,8 @@ def _check_edge_state(
                 field_path,
                 f"the initial state must declare exactly {sorted(expected)}, got {sorted(values)}",
             )
-        )
-        return errors
+        ]
+    errors: list[CompileError] = []
     for name, value_type in expected.items():
         if value_type is not None and not isinstance(values[name], value_type):
             errors.append(
@@ -997,19 +1056,24 @@ def _type_name(annotation: object) -> str:
 
 
 def _check_opportunity_triggers(instance: ComponentInstance) -> list[CompileError]:
-    """取引機会を出す使用箇所が対象区間を決められることを確かめる（D05 §6.2 の手順3）。"""
-    if all(isinstance(trigger, OnRuntimeEvent) for trigger in instance.evaluation.triggers):
-        return [
-            _error(
-                "#6b",
-                CompileRejection.OUTPUT_SPEC_INVALID,
-                instance.instance_id,
-                "evaluation",
-                "a component that produces opportunities cannot start only from runtime events;"
-                " the opportunity would have no signal interval (D05 §6.2)",
-            )
-        ]
-    return []
+    """取引機会を出す使用箇所が対象区間を決められることを確かめる（D05 §6.2 の手順3）。
+
+    実行時イベントによる起動は対象区間を持たない（約定は足の区間に属さない）。起動条件が
+    **1つでも**そうなっていれば、その起動から出た取引機会は対象区間を決められないので、
+    足の確定と混ぜた宣言も拒否する。
+    """
+    return [
+        _error(
+            "#6b",
+            CompileRejection.OUTPUT_SPEC_INVALID,
+            instance.instance_id,
+            f"evaluation.{trigger.name}",
+            "a component that produces opportunities cannot start from a runtime event;"
+            " the opportunity would have no signal interval (D05 §6.2)",
+        )
+        for trigger in instance.evaluation.triggers
+        if isinstance(trigger, OnRuntimeEvent)
+    ]
 
 
 # --- 段7: 評価スケジュール ---------------------------------------------------

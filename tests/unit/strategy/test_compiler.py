@@ -30,7 +30,17 @@ from odyssey_fx.marketdata.domain.timeframe_def import (
     FixedUtcAlignment,
     TimeframeDefinition,
 )
+from odyssey_fx.strategy.catalog.exits import fixed_rr
+from odyssey_fx.strategy.catalog.features import extreme
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+from odyssey_fx.strategy.catalog.orders import market
+from odyssey_fx.strategy.catalog.protection import level_stop
+from odyssey_fx.strategy.catalog.registry import (
+    ComponentRegistration,
+    StatefulImplementation,
+    build_registry,
+)
+from odyssey_fx.strategy.catalog.triggers import breakout
 from odyssey_fx.strategy.compiler.compiled import (
     CompileFailed,
     CompileRejection,
@@ -38,7 +48,10 @@ from odyssey_fx.strategy.compiler.compiled import (
 )
 from odyssey_fx.strategy.compiler.graph import EdgeKind, build_dependency_graph
 from odyssey_fx.strategy.compiler.validate import compile_strategy
+from odyssey_fx.strategy.declarations.contract import ComponentContract
+from odyssey_fx.strategy.declarations.datatypes import CONDITION_STATE_V1
 from odyssey_fx.strategy.declarations.definition import StrategyDefinition
+from odyssey_fx.strategy.declarations.digest import contract_ref_for
 from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation, BarsDeadline
 from odyssey_fx.strategy.declarations.evaluation import (
     EvaluationSchedule,
@@ -47,13 +60,22 @@ from odyssey_fx.strategy.declarations.evaluation import (
     RuntimeEventKind,
 )
 from odyssey_fx.strategy.declarations.instance import ComponentInstance
+from odyssey_fx.strategy.declarations.missing import Error as MissingPolicyError
+from odyssey_fx.strategy.declarations.opportunity import (
+    OpportunityValiditySpec,
+    ValidityBinding,
+    ValidityMode,
+)
 from odyssey_fx.strategy.declarations.refs import (
     MarketDataField,
     MarketDataRef,
     OutputRef,
 )
-from odyssey_fx.strategy.declarations.specs import InputBinding, IntValue, StrValue
+from odyssey_fx.strategy.declarations.specs import BoolValue, InputBinding, IntValue, StrValue
+from odyssey_fx.strategy.declarations.state_spec import LiteralInitialState, StateSpec
 from tests.fixtures.strategy.strategy_a import SIGNAL_SERIES, TIMEFRAMES, strategy_a
+
+breakout_contract = breakout.CONTRACT
 
 
 def _compile(definition: StrategyDefinition) -> CompileFailed | CompileSucceeded:
@@ -468,3 +490,109 @@ def test_a_failed_compilation_never_carries_an_empty_error_list() -> None:
     """失敗と分かるのに理由が無い、という結果を作らせない。"""
     with pytest.raises(Exception, match="must not be empty"):
         CompileFailed(errors=())
+
+
+# --- Codex レビュー1巡目（改善提案）で足した検査 ----------------------------
+
+
+def test_an_opportunity_component_cannot_mix_in_a_runtime_event_trigger() -> None:
+    """D05 §6.2: 実行時イベントによる起動は対象区間を持たないので、混ぜた宣言も拒否する。
+
+    混在を通すと、足の確定では機会が作れるのに約定通知ではデータ誤りになる、という実行時に
+    しか分からない振る舞いが残る。
+    """
+    definition = _swap_component(
+        strategy_a(),
+        "entry_trigger",
+        evaluation=EvaluationSchedule(
+            triggers=(
+                OnBarClose("h1", SIGNAL_SERIES),
+                OnRuntimeEvent("filled", RuntimeEventKind.POSITION_OPENED),
+            )
+        ),
+    )
+
+    assert CompileRejection.OUTPUT_SPEC_INVALID in _rejections(_compile(definition))
+
+
+def test_a_validity_binding_must_point_at_a_value_output() -> None:
+    """D05 §6.5: ランタイムが読み直せるのは繰り返し参照する値の最新出力だけ。
+
+    条件の成否を配送イベントとして出す出力を束縛に書くと、宣言は通るのに条件がいちども
+    効かない。
+    """
+    definition = _replace(
+        strategy_a(),
+        opportunity_validity=OpportunityValiditySpec(
+            bindings=(
+                ValidityBinding(
+                    source=OutputRef("entry_trigger", "opportunity"),
+                    mode=ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST,
+                ),
+            )
+        ),
+    )
+
+    assert CompileRejection.ROLE_MISMATCH in _rejections(_compile(definition))
+
+
+def test_treating_a_missing_recheck_as_a_failure_is_not_supported_yet() -> None:
+    """D05 §6.4・§7.3: 再検査は評価の外側で走るので、失敗を残す評価記録が無い。"""
+    definition = _replace(
+        strategy_a(),
+        opportunity_validity=OpportunityValiditySpec(
+            bindings=(
+                ValidityBinding(
+                    source=OutputRef("breakout_level", "level"),
+                    mode=ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST,
+                    on_missing=MissingPolicyError(),
+                ),
+            )
+        ),
+    )
+
+    assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(_compile(definition))
+
+
+def test_a_malformed_initial_state_is_rejected_for_any_stateful_component() -> None:
+    """D04 §9.1: 初期値は宣言に書き切るので、書き間違いは run が始まる前に分かる。
+
+    再武装の宣言に限らず、状態を宣言するすべての契約に適用する。ここで見なければ、
+    ランタイムの組み立て時に状態を作ろうとした時点で落ちる。
+    """
+    broken = ComponentContract(
+        component_id=breakout_contract.component_id,
+        version=breakout_contract.version,
+        implementation_ref=breakout_contract.implementation_ref,
+        inputs=dict(breakout_contract.inputs),
+        outputs=dict(breakout_contract.outputs),
+        parameters=dict(breakout_contract.parameters),
+        evaluation_spec=breakout_contract.evaluation_spec,
+        state_spec=StateSpec(
+            state_type=CONDITION_STATE_V1,
+            initial=LiteralInitialState({"armed": BoolValue(False)}),
+        ),
+        temporal_constraints=breakout_contract.temporal_constraints,
+    )
+    registry = build_registry(
+        (
+            extreme.REGISTRATION,
+            ComponentRegistration(
+                contract=broken,
+                implementation=StatefulImplementation(
+                    evaluate=breakout.evaluate, state_type=CONDITION_STATE_V1
+                ),
+                implementation_ref=broken.implementation_ref,
+            ),
+            market.REGISTRATION,
+            level_stop.REGISTRATION,
+            fixed_rr.REGISTRATION,
+        )
+    )
+    definition = _swap_component(
+        strategy_a(), "entry_trigger", contract_ref=contract_ref_for(broken)
+    )
+
+    result = compile_strategy(definition, registry, TIMEFRAMES)
+
+    assert CompileRejection.OUTPUT_SPEC_INVALID in _rejections(result)

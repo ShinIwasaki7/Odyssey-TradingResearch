@@ -274,6 +274,14 @@ class StrategyEvaluator:
                 f"batch {batch.batch_id} has already been processed; the engine must not"
                 " redeliver a publication batch (D05 §6.1)"
             )
+        if self._state.run_end_seen:
+            # run 末尾の合図のあとに評価を続けると、そこで生まれた取引機会を `RUN_END` で
+            # 終端する機会がもう無い（末尾の合図は1 run に1回）。終端理由別の集計で機会の
+            # 総数が合わなくなるので、末尾以降はどのバッチも受け付けない（D05 §6.1・§7.2）。
+            raise KernelValueError(
+                f"batch {batch.batch_id} arrived after the end-of-run batch; a run has no"
+                " decision points left once its opportunities have been terminated (D05 §6.1)"
+            )
         phases = {name: batch.phases.by_name(name) for name in PHASE_NAMES}
 
         if batch.is_run_end:

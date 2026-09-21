@@ -384,8 +384,12 @@ def test_transition_9_the_run_end_batch_terminates_what_is_left() -> None:
     assert result.transitions[0].phase.name == "RUN_END"
 
 
-def test_the_run_end_batch_is_only_accepted_once() -> None:
-    """D05 §6.1: 末尾の合図は1 run に1回だけ。"""
+def test_nothing_is_accepted_after_the_run_end_batch() -> None:
+    """D05 §6.1: 末尾の合図は1 run に1回だけで、そのあとの判断時点は無い。
+
+    末尾のあとに通常のバッチを受け付けると、そこで生まれた取引機会を `RUN_END` で終端する
+    機会がもう無く、終端理由別の集計で機会の総数が合わなくなる。
+    """
     bars = _bars(FIRE_REARM_FIRE[:1])
     evaluator = _evaluator(bars)
     end = UtcTime.from_components(2026, 1, 16, 22, 0)
@@ -395,7 +399,7 @@ def test_the_run_end_batch_is_only_accepted_once() -> None:
         )
     )
 
-    with pytest.raises(KernelValueError, match="only be delivered once"):
+    with pytest.raises(KernelValueError, match="after the end-of-run batch"):
         evaluator.step(
             PublicationBatch(
                 batch_id=EventId(51),
@@ -404,6 +408,8 @@ def test_the_run_end_batch_is_only_accepted_once() -> None:
                 is_run_end=True,
             )
         )
+    with pytest.raises(KernelValueError, match="after the end-of-run batch"):
+        evaluator.step(_close_batch(bars, -1, 52))
 
 
 def test_a_run_end_batch_must_not_carry_publications() -> None:
