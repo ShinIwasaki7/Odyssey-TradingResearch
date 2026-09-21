@@ -65,6 +65,7 @@ def capability_report(
     *,
     integrity: IntegrityReport,
     execution_policy: ExecutionPolicy,
+    cost_model: CostModel,
     symbol_spec: SymbolSpec,
     intrabar_series: IntrabarSeries | None = None,
 ) -> DataCapabilityReport:
@@ -94,6 +95,15 @@ def capability_report(
             f" {config.execution_series.symbol} settles in"
             f" {config.execution_series.symbol.quote} but the account is"
             f" {config.account.currency}"
+        )
+    if cost_model.commission_per_unit.currency != config.account.currency:
+        # 手数料は原通貨のまま口座へ計上される（D06 §7.6）。口座通貨と違う通貨で与えられると、
+        # 換算の経路を通さないまま数字だけが口座通貨として扱われ、予約額・費用・残高・末尾の
+        # 集計が静かにずれる。段階2 は恒等換算だけを通すので、実行する前に止める。
+        reasons.append(
+            "stage 2 charges commission in the account currency;"
+            f" the cost model gives it in {cost_model.commission_per_unit.currency}"
+            f" but the account is {config.account.currency}"
         )
 
     hierarchy = execution_policy.resolution_hierarchy
@@ -227,6 +237,7 @@ class RunBacktest:
             compiled,
             integrity=self._integrity,
             execution_policy=self._execution_policy,
+            cost_model=self._cost_model,
             symbol_spec=self._symbol_spec,
             intrabar_series=self._intrabar,
         )
@@ -278,6 +289,7 @@ class RunBacktest:
             calendar_ref=self._calendar_ref,
             timeframe_def_refs=self._timeframe_refs,
             reason=engine.failure_reason,
+            warnings=engine.warnings,
         )
         result = BacktestResult(
             run_id=self._allocator.run_id,

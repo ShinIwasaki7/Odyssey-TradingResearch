@@ -451,6 +451,7 @@ class BacktestEngine:
         self._clock: PhaseClock | None = None
         self._last_snapshot_at: ProcessingPoint | None = None
         self._output_evaluations: dict[OutputId, EvaluationId] = {}
+        self._warnings: list[str] = []
 
     # --- 読み出し -----------------------------------------------------------
 
@@ -458,6 +459,15 @@ class BacktestEngine:
     def rows(self) -> dict[TraceTable, tuple[object, ...]]:
         """表ごとに集めた行（`TraceSink` へ渡す）。"""
         return {table: tuple(values) for table, values in self._rows.items()}
+
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        """run 中に残した診断（run manifest の警告群、D06 §7.5 の手順6）。
+
+        結果を変えない出来事のうち、後から監査するために残す必要があるものを入れる。
+        理由コード（D02 §8.1）の語彙には当てはまらないので、文章として残す。
+        """
+        return tuple(self._warnings)
 
     @property
     def status(self) -> RunStatus:
@@ -1212,12 +1222,21 @@ class BacktestEngine:
 
         # 手順4: 約定直後の gap は損切り到達として処理する（緊急決済に分類しない）。
         if gap_breaches_stop(position.side, protection, open_price, self._cost_model.spread_model):
+            # 手順6: 手順4 と手順5 が同時に成立したら手順4 だけを実行する。ただし
+            # **約定ずれ超過は診断として残す**（D06 §7.5 の手順6）。残さないと、ふつうの
+            # gap 損切りと見分けがつかず、執行モデルの逸脱を後から監査できない。
+            if needs_emergency_close(price, terms.adverse_fill_limit, order.side):
+                self._warnings.append(
+                    f"{position_id}: the entry fill {price} exceeded the committed adverse-fill"
+                    f" limit {terms.adverse_fill_limit} at {at.time}, but the gap stop-loss close"
+                    " was executed instead of a second, emergency close (D06 §7.5 の手順6)"
+                )
             self._close_at_open(clock, position, bar_key, open_price, CloseCause.STOP_LOSS)
             return None
         # 手順5: 約定ずれ超過なら緊急決済。比べるのは受付時に固定した許容不利価格で、
         # 実行ポリシーの Δ を読み直さない（丸める前の広い幅で比べることになる）。
         if needs_emergency_close(price, terms.adverse_fill_limit, order.side):
-            self._emergency_close(clock, position, bar_key, open_price, fill_id)
+            self._emergency_close(clock, position, bar_key, open_price, fill_id, event_id)
             return None
         opportunity_id = self._opportunity_of(order)
         if opportunity_id is None:  # pragma: no cover - エントリーは必ず機会を持つ
@@ -1343,8 +1362,14 @@ class BacktestEngine:
         bar_key: BarKey,
         open_price: Price,
         trigger_fill_id: FillId,
+        open_event_id: EventId,
     ) -> None:
-        """約定ずれ超過による緊急決済（D06 §7.5 の手順5）。"""
+        """約定ずれ超過による緊急決済（D06 §7.5 の手順5）。
+
+        `open_event_id` は**建玉を開いたその注文イベント**の識別子である。ここで新しく
+        採番すると、`ORDER_EVENTS` に存在しない識別子を指すことになり、緊急決済から
+        「どの約定が引き金だったか」を辿れなくなる。
+        """
         self._engine_close(
             clock,
             position=position,
@@ -1354,7 +1379,7 @@ class BacktestEngine:
             spread_applied=True,
             execution_time=ExactExecutionTime(time=bar_key.bar_start),
             eligibility=ImmediateAfterFill(
-                trigger_fill_id=trigger_fill_id, open_event_id=self._allocator.next(EventId)
+                trigger_fill_id=trigger_fill_id, open_event_id=open_event_id
             ),
             fill_id=self._allocator.next(FillId),
         )

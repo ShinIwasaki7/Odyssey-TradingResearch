@@ -244,6 +244,7 @@ def test_a_declared_child_level_without_a_series_blocks_the_run() -> None:
         compiled,
         integrity=IntegrityReport(),
         execution_policy=policy,
+        cost_model=COST_MODEL,
         symbol_spec=SYMBOL_SPEC,
         intrabar_series=None,
     )
@@ -282,6 +283,7 @@ def test_the_hierarchy_checks_run_against_the_parent_bars() -> None:
         compiled,
         integrity=IntegrityReport(),
         execution_policy=policy,
+        cost_model=COST_MODEL,
         symbol_spec=SYMBOL_SPEC,
         intrabar_series=intrabar,
     )
@@ -562,6 +564,7 @@ def test_an_account_currency_unlike_the_settlement_currency_blocks_the_run() -> 
         compiled,
         integrity=IntegrityReport(),
         execution_policy=EXECUTION_POLICY,
+        cost_model=COST_MODEL,
         symbol_spec=SYMBOL_SPEC,
         intrabar_series=None,
     )
@@ -775,3 +778,89 @@ def test_only_the_child_bars_actually_read_become_evidence() -> None:
     }
     assert len(later) == 2
     assert not (later & read_starts)
+
+
+def test_an_emergency_close_points_at_the_event_that_opened_the_position() -> None:
+    """D06 §7.5 の手順5: 緊急決済は、その建玉を開いた注文イベントを根拠に持つ。
+
+    ここで新しい識別子を採番すると、`ORDER_EVENTS` に無い番号を指すことになり、緊急決済から
+    引き金の約定へ辿れなくなる。
+    """
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.domain.events import OrderEvent
+    from odyssey_fx.backtest.domain.fills import FillRecord
+    from odyssey_fx.backtest.domain.orders import AcceptedOrder, ImmediateAfterFill
+    from odyssey_fx.common.money import Price
+
+    # 約定する足だけを大きく上へ飛ばす。受付時の参照価格（150.040）から離れるため、
+    # 受付時に固定した許容不利価格を約定が越える。
+    parents = list(execution_bars())
+    parents[1] = replace(
+        parents[1],
+        open=Price(decimal_from_str("150.500")),
+        high=Price(decimal_from_str("150.600")),
+        low=Price(decimal_from_str("150.500")),
+        close=Price(decimal_from_str("150.600")),
+    )
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=tuple(parents),
+        run_interval=RUN_INTERVAL,
+    )
+
+    fills = [row for row in output.rows(TraceTable.FILLS) if isinstance(row, FillRecord)]
+    assert len(fills) == 2, "エントリーと緊急決済の2件"
+    entry_event_id = fills[0].event_id
+    orders = [row for row in output.rows(TraceTable.ORDERS) if isinstance(row, AcceptedOrder)]
+    emergency = [
+        order for order in orders if isinstance(order.execution.eligibility, ImmediateAfterFill)
+    ]
+    assert len(emergency) == 1
+    eligibility = emergency[0].execution.eligibility
+    assert isinstance(eligibility, ImmediateAfterFill)
+    assert eligibility.trigger_fill_id == fills[0].fill_id
+    assert eligibility.open_event_id == entry_event_id
+    recorded = {
+        row.event_id for row in output.rows(TraceTable.ORDER_EVENTS) if isinstance(row, OrderEvent)
+    }
+    assert eligibility.open_event_id in recorded
+
+
+def test_a_commission_in_another_currency_blocks_the_run() -> None:
+    """D06 §7.6・§8.5: 手数料は口座通貨で与える。違う通貨なら実行前に止める。
+
+    換算の経路を通さないまま数字だけを口座通貨として扱うと、予約額・費用・残高・末尾の集計が
+    静かにずれる。段階2 は恒等換算だけを通すので、実行する前に弾く。
+    """
+    from dataclasses import replace
+
+    from odyssey_fx.backtest.application.run_backtest import capability_report
+    from odyssey_fx.common.money import CurrencyCode
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+    from tests.fixtures.backtest.harness import SYMBOL_SPEC
+
+    usd = CurrencyCode("USD")
+    cost_model = replace(COST_MODEL, commission_per_unit=Money(decimal_from_str("0.001"), usd))
+    compiled = compiled_strategy()
+    report = capability_report(
+        _config(compiled),
+        compiled,
+        integrity=IntegrityReport(),
+        execution_policy=EXECUTION_POLICY,
+        cost_model=cost_model,
+        symbol_spec=SYMBOL_SPEC,
+        intrabar_series=None,
+    )
+
+    assert report.runnable is False
+    assert any("commission" in text for text in report.diagnostics)
+
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(),
+        run_interval=RUN_INTERVAL,
+        cost_model=cost_model,
+    )
+    assert output.result.status is RunStatus.FAILED_CAPABILITY
+    assert output.rows(TraceTable.FILLS) == ()
