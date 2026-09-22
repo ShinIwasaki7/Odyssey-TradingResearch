@@ -10,16 +10,34 @@ CLI が画面へ出す文言を作る。要約に載せるのは**構造情報�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from odyssey_fx.evaluation.domain.metrics import (
+    AmountValue,
+    CategoryCount,
+    CountValue,
+    DurationValue,
+    MetricRecord,
+    MetricValue,
+    PriceOffsetValue,
+    RatioValue,
+    TradeRecord,
+)
+from odyssey_fx.evaluation.domain.status import ConsistencyCheckResult
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 
 __all__ = [
+    "category_lines",
     "classifiable_intervals",
+    "consistency_lines",
     "findings_lines",
     "merged_warning_spans",
+    "metric_lines",
     "partition_lines",
     "series_lines",
     "severity_totals",
+    "trade_lines",
     "warning_summary_lines",
 ]
 
@@ -157,4 +175,85 @@ def warning_summary_lines(report: IntegrityReport) -> list[str]:
             f" / 分類の記入が必要な区間 {classifiable_intervals(report, kind_value)} 件"
             f" / 連続する区間にまとめると {merged_warning_spans(report, kind_value)} 区間"
         )
+    return lines
+
+
+# --- 評価結果の表示（D07 §5・§6・§10）----------------------------------------
+
+
+def metric_lines(metrics: Sequence[MetricRecord]) -> list[str]:
+    """指標15件（D07 §5.2）。値なしは理由をそのまま出す。
+
+    **値なしを 0 や空欄に見せない**（D07 §5.1）。「計算できなかった」と「0 だった」を
+    画面でも区別できるようにする。注記（swap 未計上・参考値など）も1行に添える。
+    """
+    lines = ["指標:"]
+    for record in metrics:
+        caveats = (
+            ""
+            if not record.caveats
+            else "  [" + ", ".join(item.value for item in record.caveats) + "]"
+        )
+        lines.append(
+            f"  {record.metric_id.value}: {_metric_text(record.value)}"
+            f"  （観測 {record.observation_count} 件）{caveats}"
+        )
+    return lines
+
+
+def _metric_text(value: MetricValue) -> str:
+    """指標の値1件の表示。"""
+    if isinstance(value, AmountValue):
+        return str(value.amount)
+    if isinstance(value, RatioValue):
+        return str(value.ratio)
+    if isinstance(value, CountValue):
+        return str(value.count)
+    if isinstance(value, DurationValue):
+        return str(value.duration)
+    if isinstance(value, PriceOffsetValue):
+        return str(value.offset)
+    return f"値なし（{value.reason.value}）"
+
+
+def consistency_lines(checks: Sequence[ConsistencyCheckResult]) -> list[str]:
+    """整合検査の結果（D07 §10.2）。合格・不合格のどちらも全件出す。
+
+    不合格だけを出すと、検査が実施されたのかどうかが画面から分からない。
+    """
+    lines = ["整合検査:"]
+    for check in checks:
+        mark = "合格" if check.passed else f"不合格（{check.level.value}）"
+        lines.append(f"  {check.check}: {mark}")
+        if not check.passed:
+            lines.append(f"    期待: {check.expected}")
+            lines.append(f"    観測: {check.observed}")
+    return lines
+
+
+def trade_lines(trades: Sequence[TradeRecord]) -> list[str]:
+    """完了取引の一覧（D07 §5.2 の `TradeRecord`）。"""
+    lines = ["完了取引:"]
+    for trade in trades:
+        cause = "—" if trade.close_cause is None else trade.close_cause.value
+        lines.append(
+            f"  #{trade.trade_seq} {trade.symbol} {trade.side.value} {trade.quantity}"
+            f"  {trade.entry_price} → {trade.exit_price}"
+            f"  {trade.realized}  {trade.outcome.value}  {cause}  保有 {trade.holding}"
+        )
+    return lines
+
+
+def category_lines(categories: Sequence[CategoryCount]) -> list[str]:
+    """集計7種（D07 §6.1）。**0件の鍵も出す**。
+
+    出さないと「一度も起きなかった」と「集計していない」を画面から区別できない。
+    """
+    lines = ["集計:"]
+    current: str | None = None
+    for count in categories:
+        if count.category.value != current:
+            current = count.category.value
+            lines.append(f"  {current}:")
+        lines.append(f"    {count.key}: {count.count}")
     return lines

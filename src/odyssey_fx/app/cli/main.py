@@ -1,13 +1,21 @@
-"""コマンドライン入口（D03 §10）。
+"""コマンドライン入口（D03 §10、D06 §4.2、D07 §4・§8）。
 
-暫定の識別子を使う二段階フロー（D03 §3.7.1）に対応する3コマンドを提供する。CLI ライブラリ
-は段階2まで標準の `argparse` を使う（D03 §10）。
+CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）。市場データの受入れ3
+コマンドに、単一 run の実行と評価の2コマンドを足した5コマンドを提供する。
 
 - `odyssey-fx data accept`: 受入れの 1〜8 を実行し、`data/snapshots/_pending/<暫定 ID>/`
   に暫定 manifest・検査報告・partition を書く。
 - `odyssey-fx data classify`: 人間の分類を記入し、最終の識別子を計算して
   `data/snapshots/<最終 ID>/` へ確定する。
 - `odyssey-fx data approve`: 確定済み snapshot に承認と価格基準の宣言記録を記入する。
+- `odyssey-fx run`: 実験設定から1回の run を実行し、`runs/<run_id>/` に判断履歴15表・
+  run manifest・結果を書く。
+- `odyssey-fx evaluate`: 保存済みの run を評価し、`runs/<run_id>/eval/<評価 ID>/` に
+  指標・集計・取引・診断・整合検査の5表と評価 manifest を書く。
+
+**実行と評価を別のコマンドに分ける**（D07 §4.1）。評価は run を実行し直さず、保存された
+判断履歴と manifest だけを読む。同じ run を別の指標集合の版で評価し直しても、`runs/` の
+下の判断履歴は変わらない。
 
 **業務ロジックは持たない**（D01 §7）。引数の解釈・設定の読込の呼び出し・ポート越しの
 書き出し・画面への表示だけを行い、何を検査し何を識別子に含めるかは
@@ -36,7 +44,14 @@ from odyssey_fx.app.config import (
     load_symbol_specs,
     load_timeframes,
 )
+from odyssey_fx.app.config.experiment import ExperimentConfig, load_experiment
+from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.ids import RunId
+from odyssey_fx.common.refs import ContentDigest
+from odyssey_fx.common.symbol import Symbol, SymbolSpec
+from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
+from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.application.acceptance import (
     FinalizedSnapshot,
     PendingSnapshot,
@@ -52,6 +67,7 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     require_matching_partition_content,
 )
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
@@ -59,6 +75,8 @@ from odyssey_fx.marketdata.domain.snapshot import (
     DeclarationRecord,
     SnapshotManifest,
 )
+from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
+from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 
 __all__ = ["build_parser", "main"]
 
@@ -126,6 +144,57 @@ def build_parser() -> argparse.ArgumentParser:
     approve_command.add_argument("--comment", default="", help="承認時のコメント")
     approve_command.add_argument(
         "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
+    )
+
+    run_command = top.add_parser(
+        "run",
+        help="実験設定から1回の run を実行する（D06 §4.2）",
+    )
+    run_command.set_defaults(command="run")
+    run_command.add_argument("--experiment", type=Path, required=True, help="実験設定（YAML）")
+    run_command.add_argument("--calendar", type=Path, required=True, help="取引カレンダー（YAML）")
+    run_command.add_argument("--timeframes", type=Path, required=True, help="時間足定義（YAML）")
+    run_command.add_argument(
+        "--symbols", type=Path, required=True, help="銘柄仕様のディレクトリ（configs/symbols/）"
+    )
+    run_command.add_argument(
+        "--snapshots", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
+    )
+    run_command.add_argument(
+        "--out",
+        type=Path,
+        default=Path("."),
+        help="成果物の基点（この下に runs/<run_id>/ を作る。既定は現在のディレクトリ）",
+    )
+    run_command.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="`uv.lock` と作業ツリーの状態を読むリポジトリの位置（既定は現在のディレクトリ）",
+    )
+    run_command.add_argument(
+        "--replace",
+        action="store_true",
+        help="同じ実行の識別子の成果物が既にある場合に置き換える（既定は失敗、ADR-0006）",
+    )
+
+    evaluate_command = top.add_parser(
+        "evaluate",
+        help="保存済みの run を評価する（D07 §4・§8）",
+    )
+    evaluate_command.set_defaults(command="evaluate")
+    evaluate_command.add_argument("--run", required=True, help="実行の識別子（run_id、16進64文字）")
+    evaluate_command.add_argument(
+        "--out",
+        type=Path,
+        default=Path("."),
+        help="成果物の基点（runs/<run_id>/ を探す位置。既定は現在のディレクトリ）",
+    )
+    evaluate_command.add_argument(
+        "--metric-set-version",
+        type=int,
+        default=METRIC_SET_VERSION,
+        help=f"指標集合の版（既定は {METRIC_SET_VERSION}）",
     )
     return parser
 
@@ -475,6 +544,128 @@ def _with_declaration_record(
     )
 
 
+# --- run -------------------------------------------------------------------
+
+
+def _load_run_configs(
+    args: argparse.Namespace,
+) -> tuple[
+    TradingCalendar,
+    dict[str, TimeframeDefinition],
+    dict[Symbol, SymbolSpec],
+    ExperimentConfig,
+]:
+    """run と評価に共通の設定を読む（D01 §10.1）。
+
+    時間足定義を先に読むのは、系列の文字列（`USDJPY/1h/bid`）が時間足の版を持たず、版を
+    定義の読込結果から解決するためである（D03 §3.1）。
+    """
+    calendar = load_calendar(args.calendar)
+    timeframe_defs = dict(load_timeframes(args.timeframes))
+    symbol_specs = dict(load_symbol_specs(args.symbols))
+    experiment = load_experiment(args.experiment, timeframe_defs, INITIAL_CATALOG)
+    return calendar, timeframe_defs, symbol_specs, experiment
+
+
+def _run_run(args: argparse.Namespace, out: _Writer) -> int:
+    """実験設定から1回の run を実行する（D06 §4.2、§10 の `run`）。"""
+    calendar, timeframe_defs, symbol_specs, experiment = _load_run_configs(args)
+
+    out.line(f"実験: {experiment.experiment_id} v{experiment.version}")
+    out.line(f"snapshot: {experiment.snapshot_ref.snapshot_id}")
+    out.line(f"run 区間: {experiment.run_interval}")
+    out.line(f"執行系列: {experiment.execution_series}")
+
+    outcome = composition.execute_run(
+        experiment=experiment,
+        calendar=calendar,
+        timeframe_defs=timeframe_defs,
+        symbol_specs=symbol_specs,
+        snapshots_root=args.snapshots,
+        artifacts_root=args.out,
+        repo_root=args.repo_root,
+        replace=args.replace,
+    )
+    result = outcome.result
+
+    out.line("")
+    out.line(f"実行の識別子（run_id）: {outcome.run_id}")
+    out.line(f"出力先: {outcome.directory}")
+    out.line(f"結末: {result.status.value}")
+    out.line(f"完了した取引: {result.trade_count} 件")
+    out.line(f"生成した取引機会: {result.opportunity_count} 件")
+    out.line(f"解決できなかった足内競合: {result.unresolved_intrabar_count} 件")
+    out.line(f"swap / rollover の計上: {'あり' if result.swap_modeled else 'なし'}（ADR-0029）")
+    summaries = result.summaries
+    if summaries is not None:
+        out.line("")
+        out.line(f"確定損益: {summaries.realized}")
+        out.line(f"含み込み資産: {summaries.equity_with_mtm}（参考値）")
+        out.line(f"仮決済損益: {summaries.hypothetical_closed}（参考値）")
+    if result.status is not RunStatus.COMPLETED:
+        out.line("")
+        out.line(
+            "この run は正常完走していない。評価は指標を算出せず、状態と診断だけを出す（D07 §10.1）"
+        )
+    out.line("")
+    out.line(f"評価するには `odyssey-fx evaluate --run {outcome.run_id}` を実行すること")
+    return _EXIT_OK
+
+
+# --- evaluate ---------------------------------------------------------------
+
+
+def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
+    """保存済みの run を評価する（D07 §4・§8、§10 の `evaluate`）。"""
+    try:
+        run_id = RunId(ContentDigest.sha256(args.run))
+    except KernelValueError as exc:
+        raise ConfigError(
+            f"`--run` は実行の識別子（16進64文字）を書くこと（{args.run!r}）: {exc}"
+        ) from exc
+
+    outcome = composition.evaluate_saved_run(
+        run_id=run_id,
+        artifacts_root=args.out,
+        metric_set_version=args.metric_set_version,
+    )
+    report = outcome.report
+    manifest = report.manifest
+
+    out.line(f"評価の識別子（run_evaluation_id）: {manifest.run_evaluation_id}")
+    out.line(f"出力先: {outcome.directory}")
+    out.line(f"評価の状態: {report.status.value}")
+    out.line(f"run の結末: {manifest.run_status.value}")
+    out.line(f"指標集合の版: {manifest.metric_set_version}")
+    out.line(f"結果のダイジェスト（result_digest）: {manifest.result_digest.hex}")
+    out.line(
+        "swap / rollover の計上: "
+        f"{'あり' if manifest.swap_modeled else 'なし'}（ADR-0029。manifest の必須項目）"
+    )
+    if manifest.evaluation_code_digest != manifest.run_code_digest:
+        out.line("")
+        out.line(
+            "注意: 評価したコードと run を実行したコードが違う"
+            f"（評価 {manifest.evaluation_code_digest.digest.hex[:12]} /"
+            f" 実行 {manifest.run_code_digest.digest.hex[:12]}）"
+        )
+    out.line("")
+    out.lines(summary.consistency_lines(report.checks))
+    if report.metrics:
+        out.line("")
+        out.lines(summary.metric_lines(report.metrics))
+    if report.trades:
+        out.line("")
+        out.lines(summary.trade_lines(report.trades))
+    if report.status is not EvaluationStatus.COMPLETED:
+        out.line("")
+        out.line(
+            "指標は算出していない。正常完走していない run（拒否）と、致命の整合検査が"
+            " 不合格だった評価（失敗）では、算出できた数値も出さない（D07 §10.1）"
+        )
+    return _EXIT_OK
+
+
 # --- 入口 -------------------------------------------------------------------
 
 
@@ -512,6 +703,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "accept": _run_accept,
         "classify": _run_classify,
         "approve": _run_approve,
+        "run": _run_run,
+        "evaluate": _run_evaluate,
     }
     try:
         return handlers[args.command](args, out)
