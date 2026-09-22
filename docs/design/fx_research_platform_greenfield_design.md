@@ -736,7 +736,7 @@ Trigger の出力は単なる真偽値ではなく、少なくとも ID・発生
 | 終端理由 | 意味 |
 |---|---|
 | `EXPIRED` | `entry_policy` の確認期限に到達して終端 |
-| `MARKET_STATE_INVALIDATED` | `REQUIRE_UNTIL_ORDER_REQUEST` の条件が成立しなくなって終端（ADR-0031）。復活させない |
+| `MARKET_STATE_INVALIDATED` | **市場状態によって無効になって終端**（2026-09-22 改訂）。次の2つを含む: (a) `REQUIRE_UNTIL_ORDER_REQUEST` の条件が成立しなくなった場合（ADR-0031）、(b) **取引機会が生成された時点で、MarketState が発火した方向の取引を許していなかった場合**（D05 §7.6）。どちらも復活させない。両者は取引機会の遷移記録の遷移元の状態で区別できる（(a) は `OPEN` か `CONFIRMED`、(b) は生成直後なので遷移元が無い）。同じ原因を2語に割らないため、新しい終端理由は作らない |
 | `SUPERSEDED` | 新しいTriggerを優先する設定により終端（ADR-0032）。内容の上書きではなく終端＋新規生成 |
 | `CLOSED_BY_ORDER_ACCEPTANCE` | 別の注文が受け付けられたことを理由に終端（ADR-0032）。`OpportunityConcurrencySpec` の `on_order_accepted` に規則を明示した場合に限る。規則がなければ暗黙に終端させない |
 | `CONCURRENCY_LIMIT_REACHED` | 同時保持上限（`OpportunityConcurrencySpec.max_active`）に達している状態で発火したため、取引機会として記録はするが有効にせず終端（2026-09-20 改訂、ADR-0032 補足3）。発火そのものを捨てることはしない |
@@ -1164,7 +1164,7 @@ run_endは実験前に固定する。必要データがそれより前に尽き�
 | `DATA_ERROR` | 完全性検査/実行失敗、失敗に伴う残存注文のCANCELED |
 | `EXPIRED` | 期限による注文のEXPIRED |
 | `CARRY_NOT_ALLOWED` | 初版の週末持ち越し禁止による受付前拒否 |
-| `MARKET_STATE_INVALIDATED` | 継続成立を要求した条件が崩れたことによる取引機会の終端（第4.5節、ADR-0031） |
+| `MARKET_STATE_INVALIDATED` | 市場状態によって無効になったことによる取引機会の終端（第4.5節、ADR-0031）。継続成立を要求した条件が崩れた場合と、生成時点で市場状態が取引を許していなかった場合を含む（2026-09-22 改訂） |
 | `SUPERSEDED` | 新しいTriggerを優先する設定による取引機会の終端（第4.5節、ADR-0032） |
 | `CLOSED_BY_ORDER_ACCEPTANCE` | 別の注文が受け付けられたことによる取引機会の終端（第4.5節、ADR-0032）。`on_order_accepted` に規則がある場合のみ |
 | `CONCURRENCY_LIMIT_REACHED` | 同時保持上限に達していたことによる取引機会の終端（第4.5節、ADR-0032 補足3）。発火は取引機会として記録したうえで有効にしない |
