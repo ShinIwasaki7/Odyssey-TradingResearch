@@ -549,8 +549,10 @@ def _check_run_id(
     for table in INPUT_TABLES:
         for row in reads[table].records:
             value = row.get("run_id")
-            if value is not None:
-                observed.add(value)
+            # **空の `run_id` を読み飛ばさない**。飛ばすと、実行に紐付いていない行が
+            # 観測値から消えて検査が通り、その行が集計と指標へそのまま入る。全行が
+            # `run_id` を持つことは D06 §9.1 が確定しているので、空は不整合である。
+            observed.add(f"{table.value}: <missing run_id>" if value is None else value)
     return _result_of(
         CHECK_RUN_ID_CONSISTENT,
         passed=observed == {expected},
@@ -861,8 +863,14 @@ def _opportunity_of(
     orders: Mapping[str, Mapping[str, str | None]],
     requests: Mapping[str, Mapping[str, str | None]],
 ) -> OpportunityId | None:
-    """入場約定から取引機会まで外部キーを辿る（D06 §9.2 の ID 連鎖）。"""
-    order = orders.get(_text(fill, "order_id"))
+    """入場約定から取引機会まで外部キーを辿る（D06 §9.2 の ID 連鎖）。
+
+    辿れないところで `None` を返す。**途中で例外にしない**。連鎖の切れは整合検査 C4 の
+    不合格として記録するものであり、例外にすると評価が中断して検査の表が残らない
+    （D07 §4.3）。
+    """
+    order_id = fill.get("order_id")
+    order = None if order_id is None else orders.get(order_id)
     if order is None:
         return None
     attempt_id = order.get("attempt_id")
@@ -882,10 +890,12 @@ def _build_fill_diagnostics(
     orders = _by_key(reads[TraceTable.ORDERS].records, "order_id")
     built: list[FillDiagnostic] = []
     for row in reads[TraceTable.FILLS].records:
-        order_id = _text(row, "order_id")
-        order = orders.get(order_id)
-        if order is None:
-            # 注文の無い約定は整合検査 C4 の対象であり、診断は作れない。
+        order_id = row.get("order_id")
+        order = None if order_id is None else orders.get(order_id)
+        if order_id is None or order is None:
+            # 注文を辿れない約定は整合検査 C4 の対象であり、診断は作れない。**ここで
+            # 例外にしない**。例外にすると評価が中断し、失敗を説明する検査の表そのものが
+            # 残らない（D07 §4.3）。
             continue
         filled_at = _time(row, "processed_at_time")
         reference = _optional_decimal(order, "terms_reference_quote_price")
@@ -962,8 +972,20 @@ def _build_categories(reads: Mapping[TraceTable, _Rows]) -> tuple[CategoryCount,
     return tuple(
         CategoryCount(category=kind, key=key, count=counts[kind][key])
         for kind in CategoryKind
-        for key in counts[kind]
+        for key in _category_order(kind, counts[kind])
     )
+
+
+def _category_order(kind: CategoryKind, counted: Mapping[str, int]) -> tuple[str, ...]:
+    """集計の鍵を出す順（D07 §6.1・§8.1）。
+
+    語彙の鍵は**宣言順**、語彙に無い鍵はそのあとに**符号順**で並べる。語彙に無い鍵を
+    見つけた順に出すと、判断履歴の行の並びが変わるだけで結果のダイジェストが変わり、
+    行の並びに依存しないという決定論の条件（D07 §9.1 の条件1）が崩れる。
+    """
+    declared = CATEGORY_KEYS[kind]
+    extra = sorted(key for key in counted if key not in set(declared))
+    return (*declared, *extra)
 
 
 def _tally(counts: dict[CategoryKind, dict[str, int]], kind: CategoryKind, key: str | None) -> None:

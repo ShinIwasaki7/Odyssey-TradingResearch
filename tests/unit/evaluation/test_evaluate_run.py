@@ -37,6 +37,7 @@ from odyssey_fx.evaluation.domain.status import (
     CHECK_ORDER,
     CHECK_REALIZED_MATCHES_BALANCE,
     CHECK_REQUIRED_COLUMNS_PRESENT,
+    CHECK_RUN_ID_CONSISTENT,
     CHECK_SINGLE_ACCOUNT_CURRENCY,
     CHECK_TRADE_COUNT_MATCHES,
     CheckLevel,
@@ -535,3 +536,69 @@ def test_a_foreign_ledger_currency_is_reported_not_raised() -> None:
     assert CHECK_SINGLE_ACCOUNT_CURRENCY in failing
     # 8件すべての検査結果が残り、どの検査が落ちたかを成果物だけで説明できる。
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
+
+
+def test_a_row_without_a_run_identifier_is_fatal() -> None:
+    """`run_id` が空の行は致命の不合格になる（D07 §10.2 の C2）。
+
+    読み飛ばすと、実行に紐付いていない行が観測値から消えて検査が通り、その行が集計と
+    指標へそのまま入る。全行が `run_id` を持つことは D06 §9.1 が確定している。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        {**tables[TraceTable.LEDGER_SNAPSHOTS][0], "run_id": None},
+        *tables[TraceTable.LEDGER_SNAPSHOTS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    consistency = [check for check in report.checks if check.check == CHECK_RUN_ID_CONSISTENT]
+    assert consistency[0].passed is False
+    assert "missing run_id" in consistency[0].observed
+
+
+def test_a_fill_without_an_order_identifier_is_reported_not_raised() -> None:
+    """注文の識別子が空の約定も検査の不合格として残す（D07 §4.3・§10.2 の C4）。
+
+    例外にすると評価が中断し、失敗を説明する検査の表そのものが残らない。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.FILLS] = [
+        {**tables[TraceTable.FILLS][0], "order_id": None},
+        *tables[TraceTable.FILLS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    chain = [check for check in report.checks if check.check == CHECK_ID_CHAIN_COMPLETE]
+    assert chain[0].passed is False
+    assert "FIL:00000001" in chain[0].observed
+    assert [check.check for check in report.checks] == list(CHECK_ORDER)
+
+
+def test_keys_outside_the_vocabulary_are_emitted_in_a_fixed_order() -> None:
+    """語彙に無い鍵は宣言済みの鍵の後ろに符号順で並ぶ（D07 §6.1・§9.1 の条件1）。
+
+    見つけた順に出すと、判断履歴の行の並びが変わるだけで結果のダイジェストが変わる。
+    """
+    manifest = traces.manifest_for()
+
+    def tables_with(order: tuple[str, str]) -> dict[TraceTable, list[traces.Row]]:
+        built = traces.t01_tables(str(manifest.run_id))
+        built[TraceTable.INTRABAR_RESOLUTIONS] = [
+            {**built[TraceTable.INTRABAR_RESOLUTIONS][0], "method": method} for method in order
+        ]
+        return built
+
+    first = _evaluate(
+        traces.repository_for(tables_with(("ZZZ_UNKNOWN", "AAA_UNKNOWN")), manifest=manifest)
+    )
+    second = _evaluate(
+        traces.repository_for(tables_with(("AAA_UNKNOWN", "ZZZ_UNKNOWN")), manifest=manifest)
+    )
+
+    emitted = [row.key for row in first.categories if row.category is CategoryKind.INTRABAR_METHOD]
+    assert emitted[-2:] == ["AAA_UNKNOWN", "ZZZ_UNKNOWN"]
+    assert first.categories == second.categories
+    assert first.manifest.result_digest == second.manifest.result_digest
