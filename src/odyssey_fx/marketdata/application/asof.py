@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Protocol, runtime_checkable
 
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
@@ -42,8 +42,11 @@ from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 __all__ = [
     "AsOfView",
     "BarsWindow",
+    "BarsWindowLike",
     "DurationWindow",
+    "DurationWindowLike",
     "ExecutionSeriesView",
+    "HistoryWindowLike",
     "MissingInput",
 ]
 
@@ -66,6 +69,31 @@ class MissingInput:
     def __post_init__(self) -> None:
         if not isinstance(self.reason, MissingInputReason):
             raise MarketDataValueError("MissingInput.reason must be a MissingInputReason")
+
+
+@runtime_checkable
+class BarsWindowLike(Protocol):
+    """本数で指定する履歴窓として受け取れる形（D03 §6.2 v1.5）。"""
+
+    @property
+    def count(self) -> int: ...
+
+
+@runtime_checkable
+class DurationWindowLike(Protocol):
+    """経過時間で指定する履歴窓として受け取れる形（D03 §6.2 v1.5）。"""
+
+    @property
+    def duration(self) -> timedelta: ...
+
+
+#: `history()` が受け取る履歴窓（D03 §6.2 v1.5、2026-09-22 の人間の決定）。
+#:
+#: 呼び出し側（戦略ランタイム）は `marketdata.application` を参照できない（契約 F2）。
+#: 具体クラスを要求すると、両方を参照できる層で窓を言い換えるほかなくなるので、**構造**
+#: （本数か経過時間を読み出せること）だけを要求する。下の `BarsWindow` /
+#: `DurationWindow` は `marketdata` 自身が窓を組み立てるときの具体型である。
+HistoryWindowLike = BarsWindowLike | DurationWindowLike
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +272,7 @@ class AsOfView:
     def history(
         self,
         series: SeriesId,
-        window: BarsWindow | DurationWindow,
+        window: HistoryWindowLike,
         at: UtcTime,
         *,
         end_offset_bars: int = 0,
@@ -257,6 +285,7 @@ class AsOfView:
         `WARMUP_INSUFFICIENT`（欠損を削除して窓外の古い足を繰り上げることはしない）。
         """
         _require_utc(at, "history")
+        _require_window(window)
         if isinstance(end_offset_bars, bool) or not isinstance(end_offset_bars, int):
             raise MarketDataValueError(
                 f"history() end_offset_bars must be an int, got {end_offset_bars!r}"
@@ -283,7 +312,7 @@ class AsOfView:
             expected_starts = expected_starts[end_offset_bars:]
 
         wanted: tuple[UtcTime, ...]
-        if isinstance(window, BarsWindow):
+        if isinstance(window, BarsWindowLike):
             if len(expected_starts) < window.count:
                 return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
             wanted = expected_starts[: window.count]
@@ -318,18 +347,44 @@ def _require_utc(value: UtcTime, operation: str) -> None:
         raise MarketDataValueError(f"{operation}() requires a UtcTime")
 
 
-def _needed_bars(window: BarsWindow | DurationWindow, end_offset_bars: int) -> int:
+def _require_window(window: HistoryWindowLike) -> None:
+    """履歴窓が受け取れる形であることを確かめる（D03 §6.2 v1.5）。
+
+    構造だけを要求するので、具体クラスの `__post_init__` は通っていない。本数窓の本数が
+    解決済みの正の整数であることは、ここで確かめる（未解決のパラメータ参照を既定値で
+    埋めない）。
+    """
+    if isinstance(window, BarsWindowLike):
+        count = window.count
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise MarketDataValueError(
+                f"history() window count must be a resolved int, got {count!r}"
+            )
+        if count < 1:
+            raise MarketDataValueError(f"history() window count must be >= 1, got {count}")
+        return
+    if isinstance(window, DurationWindowLike):
+        duration = window.duration
+        if not isinstance(duration, timedelta):
+            raise MarketDataValueError(
+                f"history() window duration must be a timedelta, got {duration!r}"
+            )
+        if duration <= timedelta(0):
+            raise MarketDataValueError(f"history() window duration must be > 0, got {duration}")
+        return
+    raise MarketDataValueError(
+        f"history() window must expose a bar count or a duration, got {type(window).__name__}"
+    )
+
+
+def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:
     """遡って探索する足の本数の上限。
 
     本数窓は必要本数そのもの、経過時間窓は窓の長さを名目長で割った概算に余裕を足した値
     （DST で足の長さが伸縮するため、概算にしかならない）。
     """
-    if isinstance(window, BarsWindow):
+    if isinstance(window, BarsWindowLike):
         return window.count + end_offset_bars
-    if not isinstance(window, DurationWindow):
-        raise MarketDataValueError(
-            f"history() window must be a BarsWindow or DurationWindow, got {type(window).__name__}"
-        )
     return end_offset_bars + 1  # 経過時間窓は `_duration_selection` が必要なだけ伸ばす。
 
 
@@ -358,7 +413,7 @@ def _expected_starts_backwards(
 def _duration_selection(
     schedule: SeriesSchedule,
     expected_starts: tuple[UtcTime, ...],
-    window: DurationWindow,
+    window: DurationWindowLike,
 ) -> tuple[UtcTime, ...] | None:
     """経過時間窓に入る足の開始時刻を新しい順に返す（D03 §6.2）。
 

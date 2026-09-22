@@ -18,17 +18,39 @@ snapshot になる（D03 §3.7.1）。
 
 from __future__ import annotations
 
+import platform
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import metadata
 from pathlib import Path
 
 import odyssey_fx
 from odyssey_fx.app.config import DataSourceConfig
-from odyssey_fx.common.refs import CodeDigest
-from odyssey_fx.common.symbol import Symbol
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.app.config.experiment import ExperimentConfig
+from odyssey_fx.backtest.application.run_backtest import RunBacktest
+from odyssey_fx.backtest.domain.policies import RunConfig
+from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
+from odyssey_fx.backtest.trace.manifest import config_digest_of
+from odyssey_fx.backtest.trace.result import BacktestResult
+from odyssey_fx.common.canonical import digest
+from odyssey_fx.common.ids import IdAllocator, RunId
+from odyssey_fx.common.refs import CodeDigest, EnvDigest, LockDigest
+from odyssey_fx.common.refs import run_id as run_id_of
+from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.evaluation.adapters.fs_store import (
+    FileSystemResultRepository,
+    FileSystemResultWriter,
+    FileSystemTraceSink,
+    evaluation_directory,
+    run_directory,
+)
+from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
+from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.acceptance import (
@@ -38,24 +60,53 @@ from odyssey_fx.marketdata.application.acceptance import (
     normalize_rows,
 )
 from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSION, aggregate
+from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
-from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES, AccessBoundaries
+from odyssey_fx.marketdata.application.publication import build_feed
+from odyssey_fx.marketdata.application.snapshot_access import PartitionedBars, ReadableSnapshot
+from odyssey_fx.marketdata.domain.access import (
+    INITIAL_ACCESS_BOUNDARIES,
+    AccessBoundaries,
+    AccessClass,
+)
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckResult
+from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import ConversionRecord
+from odyssey_fx.marketdata.domain.snapshot import (
+    ConversionRecord,
+    PartitionId,
+    SnapshotManifest,
+)
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
+from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, CompileSucceeded
+from odyssey_fx.strategy.compiler.validate import compile_strategy
+from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 
 __all__ = [
     "AcceptanceService",
+    "EvaluationOutcome",
+    "RunOutcome",
+    "SnapshotInputs",
     "acceptance_service",
     "build_conversion_record",
+    "calendar_ref_of",
+    "code_digest",
     "code_version",
+    "compile_experiment_strategy",
+    "env_digest",
+    "evaluate_saved_run",
+    "execute_run",
+    "git_state",
+    "lock_digest",
     "now_utc",
+    "open_snapshot_inputs",
     "raw_bar_source",
     "snapshot_store",
+    "symbol_spec_ref_of",
 ]
 
 #: 上位足を生成する組（D03 §5.1）。1時間足からだけ作る。15分足は執行系列なので
@@ -292,4 +343,411 @@ def acceptance_service(
         calendar=calendar,
         timeframe_defs=timeframe_defs,
         boundaries=boundaries,
+    )
+
+
+# --- 単一 run の実行と評価（D06 §4.2、D07 §4）---------------------------------
+
+
+#: 段階2で読める期間の分類（D03 §3.8、ADR-0014）。
+#:
+#: 研究履歴だけを読む。封印期間（`LEGACY_HOLDOUT`）は探索から隔離する対象であり、閲覧は
+#: 記録と許可の手続き（段階4・D07 v0.2 の `holdout_gate`）を通ってからでないと行えない。
+#: 未分類の隔離期間（`QUARANTINED_UNASSIGNED`）は**いかなる経路でも読めない**（同節）。
+_READABLE_ACCESS_CLASSES: frozenset[AccessClass] = frozenset({AccessClass.RESEARCH_HISTORY})
+
+
+def lock_digest(repo_root: Path) -> LockDigest:
+    """`uv.lock` の内容ダイジェスト（D02 §9.4）。"""
+    return LockDigest.from_lock_file(Path(repo_root) / "uv.lock")
+
+
+def code_digest() -> CodeDigest:
+    """import されたパッケージのソース内容のダイジェスト（D02 §9.4）。"""
+    package_dir = Path(str(odyssey_fx.__file__)).resolve().parent
+    return CodeDigest.from_package_dir(package_dir)
+
+
+def env_digest() -> EnvDigest:
+    """実行環境のダイジェスト（D02 §9.4）。
+
+    同じ `uv.lock` でも環境が違えば別の wheel が選ばれ数値結果が変わりうるため、実行の
+    識別子に含める（ADR-0006）。`odyssey_fx` 自身はソース内容のダイジェストが識別するので
+    配布物の一覧から外す。
+    """
+    distributions: dict[str, str] = {}
+    for distribution in metadata.distributions():
+        name = distribution.metadata["Name"]
+        if not name or name.replace("_", "-").lower() == "odyssey-trading-research":
+            continue
+        distributions[name] = distribution.version or ""
+    return EnvDigest.from_environment(
+        python_implementation=platform.python_implementation(),
+        python_version=".".join(str(part) for part in sys.version_info[:3]),
+        sys_platform=sys.platform,
+        machine=platform.machine(),
+        distributions=distributions,
+    )
+
+
+def git_state(repo_root: Path) -> tuple[str, bool]:
+    """git のコミットと作業ツリーの汚れ（D06 §9.3 の識別の群）。
+
+    識別子の算出には使わない（D02 §9.4）。成果物から「どのコミットで走らせたか」を人が
+    辿れるようにするための記録である。git が使えない環境では空のコミットと `dirty=True`
+    を返す（実際の状態が分からないことを「きれい」と記録しない）。
+    """
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return ("", True)
+    return (commit, bool(status.strip()))
+
+
+def symbol_spec_ref_of(spec: SymbolSpec) -> SymbolSpecRef:
+    """銘柄仕様の版参照（D06 §9.3 の `ConfigDigest` の対象）。
+
+    価格刻み・数量刻みを変えた実行は丸めが変わるので、内容から作ったダイジェストを参照に
+    する。固定の文字列にすると、中身の違う仕様が同じ `ConfigDigest` になる。
+    """
+    return SymbolSpecRef(symbol=spec.symbol, version=spec.version, digest=digest(spec))
+
+
+def calendar_ref_of(calendar: TradingCalendar) -> str:
+    """カレンダーの版参照（D06 §9.3）。休場を足すと版が上がるので参照も変わる。"""
+    return f"{calendar.id}@v{calendar.version}"
+
+
+@dataclass(frozen=True, slots=True)
+class _IntrabarBars:
+    """下位足の供給（D06 §7.4）。解像度階層が2段以上のときだけ使う。
+
+    `IntrabarSeries`（`backtest.application.ports`）を構造的に満たす。読めるのは許可された
+    partition の足だけで、関門は `PartitionedBars` が持つ（D03 §6.1）。
+    """
+
+    bars: Mapping[SeriesId, tuple[Bar, ...]]
+
+    def bars_in(self, series: SeriesId, interval: Interval) -> tuple[Bar, ...]:
+        """区間に**収まる**下位足（D06 §7.4）。"""
+        return tuple(
+            bar
+            for bar in self.bars.get(series, ())
+            if interval.start <= bar.bar_start and bar.bar_end <= interval.end
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotInputs:
+    """承認済み snapshot から読んだ、run の入力一式（D03 §6・§7）。"""
+
+    snapshot: ReadableSnapshot
+    allowed_partitions: frozenset[PartitionId]
+    partition_bars: Mapping[PartitionId, tuple[Bar, ...]]
+    schedules: Mapping[SeriesId, SeriesSchedule]
+
+    def bars_of(self, series: SeriesId) -> tuple[Bar, ...]:
+        """許可された partition にあるその系列の足（無ければ空）。"""
+        return PartitionedBars(self.partition_bars, self.allowed_partitions).bars_or_empty(series)
+
+
+def _require_matching_calendar(
+    manifest: SnapshotManifest, calendar: TradingCalendar, snapshot_id: str
+) -> None:
+    """snapshot が記録したカレンダーと同じものを使うことを確かめる（D03 §3.7）。
+
+    承認済みの足と完全性検査の報告は、受入れのときのカレンダーで作られている
+    （`SnapshotManifest.conversion` が版を記録している）。別の版のカレンダーで run を
+    組むと、休場・夏時間・セッション境界の違いが公開イベントの予定と入力不足の判定を
+    変えてしまう。**受入れをやり直さないまま結果の意味だけが変わる**ので、実行する前に
+    止める。
+
+    カレンダーを変えたいときは、そのカレンダーで受入れからやり直す（D03 §4 の 9 が
+    分類の段でそれを行う）。
+    """
+    recorded = manifest.conversion
+    if recorded.calendar_id == calendar.id and recorded.calendar_version == calendar.version:
+        return
+    raise MarketDataValueError(
+        f"snapshot {snapshot_id} was accepted with the calendar"
+        f" {recorded.calendar_id}@v{recorded.calendar_version} but the run was given"
+        f" {calendar.id}@v{calendar.version}; a different calendar changes the publication"
+        " schedule and the missing-input decisions without re-running acceptance (D03 §3.7)"
+    )
+
+
+def open_snapshot_inputs(
+    *,
+    snapshots_root: Path,
+    snapshot_id: str,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+) -> SnapshotInputs:
+    """承認済み snapshot を開き、読める partition の足と公開予定を揃える（D03 §3.7.1）。
+
+    **読めるのは研究履歴の partition だけ**である（`_READABLE_ACCESS_CLASSES`）。封印期間と
+    未分類の隔離期間を許可集合へ入れないので、段階2の実行と評価は封印されたデータへ触れる
+    経路を1本も持たない（D07 §14）。
+    """
+    store = snapshot_store(snapshots_root)
+    snapshot = store.open_readable(snapshot_id)
+    manifest = snapshot.manifest
+    _require_matching_calendar(manifest, calendar, snapshot_id)
+    allowed = frozenset(
+        record.partition_id
+        for record in manifest.partitions
+        if record.partition_id.access_class in _READABLE_ACCESS_CLASSES
+    )
+    if not allowed:
+        raise MarketDataValueError(
+            f"snapshot {snapshot_id} has no research-history partition;"
+            " stage 2 reads only RESEARCH_HISTORY data (D03 §3.8)"
+        )
+    partition_bars = {
+        partition_id: tuple(store.read_partition(snapshot_id, partition_id))
+        for partition_id in sorted(allowed, key=str)
+    }
+    schedules: dict[SeriesId, SeriesSchedule] = {}
+    for record in manifest.series:
+        series = record.series_id
+        definition = timeframe_defs.get(series.timeframe.id)
+        if definition is None:
+            raise MarketDataValueError(
+                f"the snapshot records the series {series} but the configuration has no"
+                f" definition for the timeframe {series.timeframe.id!r} (D03 §3.2)"
+            )
+        if definition.ref != series.timeframe:
+            # **版まで揃っていることを確かめる**（D03 §3.1・§3.2）。系列の記録は定義の版を
+            # 持っており、承認済みの足はその版の整列規則で作られている。名前だけで引くと、
+            # 版を上げた定義で公開イベントの予定と足境界が変わり、**受入れをやり直さない
+            # まま評価の対象が変わる**。執行系列だけを見ていても、評価系列の定義が
+            # 差し替わっていれば戦略の判断が変わる。
+            raise MarketDataValueError(
+                f"the snapshot records the series {series} with the timeframe definition"
+                f" {series.timeframe} but the configuration supplies {definition.ref};"
+                " a different definition changes the bar boundaries the approved bars were"
+                " accepted with (D03 §3.1・§3.2)"
+            )
+        schedules[series] = SeriesSchedule(
+            series=series, timeframe_def=definition, calendar=calendar
+        )
+    return SnapshotInputs(
+        snapshot=snapshot,
+        allowed_partitions=allowed,
+        partition_bars=partition_bars,
+        schedules=schedules,
+    )
+
+
+def compile_experiment_strategy(
+    experiment: ExperimentConfig, timeframe_defs: Mapping[str, TimeframeDefinition]
+) -> CompiledStrategy:
+    """実験設定の戦略宣言を解決済み設定へコンパイルする（D04 §12、D05 §5）。
+
+    失敗を結果として返す型（`CompileFailed`）をそのまま外へ出さず、設定の誤りとして
+    言い換える。宣言の書き誤りは人間が直すものであり、run を開始する前に止める。
+    """
+    timeframes = {definition.ref: definition for definition in timeframe_defs.values()}
+    outcome = compile_strategy(experiment.strategy, INITIAL_CATALOG, timeframes)
+    if not isinstance(outcome, CompileSucceeded):
+        raise MarketDataValueError(
+            f"the strategy declaration of {experiment.experiment_id!r} does not compile: {outcome}"
+        )
+    return outcome.compiled
+
+
+@dataclass(frozen=True, slots=True)
+class RunOutcome:
+    """1回の run の成果（CLI が表示に使う）。"""
+
+    result: BacktestResult
+    run_id: RunId
+    directory: Path
+
+
+def execute_run(
+    *,
+    experiment: ExperimentConfig,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    symbol_specs: Mapping[Symbol, SymbolSpec],
+    snapshots_root: Path,
+    artifacts_root: Path,
+    repo_root: Path,
+    replace: bool = False,
+) -> RunOutcome:
+    """実験設定から1回の run を実行し、判断履歴・manifest・結果を保存する（D06 §4.2）。
+
+    **業務ロジックは持たない**（D01 §7）。ここにあるのは「どの実装をどの設定で結線するか」
+    だけで、実行の意味論は `backtest.application.run_backtest` が決める。
+
+    識別の4群（コード・依存 lock・環境のダイジェストと git の状態）は**この層が計算する**
+    （D06 §9.3）。実行環境の事実であって設定ではないためである。
+    """
+    inputs = open_snapshot_inputs(
+        snapshots_root=snapshots_root,
+        snapshot_id=str(experiment.snapshot_ref.snapshot_id),
+        calendar=calendar,
+        timeframe_defs=timeframe_defs,
+    )
+    symbol = experiment.execution_series.symbol
+    spec = symbol_specs.get(symbol)
+    if spec is None:
+        raise MarketDataValueError(
+            f"the configuration has no symbol specification for {symbol} (D02 §5.2)"
+        )
+
+    compiled = compile_experiment_strategy(experiment, timeframe_defs)
+    execution_schedule = inputs.schedules.get(experiment.execution_series)
+    if execution_schedule is None:
+        raise MarketDataValueError(
+            f"the snapshot does not carry the execution series {experiment.execution_series}"
+            " (D03 §6.3)"
+        )
+
+    # 戦略ランタイムへは as-of ビューをそのまま渡す（D05 §6.3 v1.4、D03 §6.2 v1.5）。
+    # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
+    market_data = AsOfView(
+        snapshot=inputs.snapshot,
+        allowed_partitions=inputs.allowed_partitions,
+        schedules=inputs.schedules,
+        partition_bars=inputs.partition_bars,
+    )
+    execution_view = ExecutionSeriesView(
+        snapshot=inputs.snapshot,
+        series=experiment.execution_series,
+        allowed_partitions=inputs.allowed_partitions,
+        partition_bars=inputs.partition_bars,
+        schedule=execution_schedule,
+    )
+    feed = build_feed(
+        inputs.snapshot,
+        inputs.allowed_partitions,
+        inputs.partition_bars,
+        inputs.schedules,
+        experiment.run_interval,
+        execution_series=frozenset({experiment.execution_series}),
+    )
+    levels = experiment.execution_policy.resolution_hierarchy.levels
+    intrabar = (
+        None
+        if len(levels) < 2
+        else _IntrabarBars(bars={level: inputs.bars_of(level) for level in levels})
+    )
+
+    symbol_spec_ref = symbol_spec_ref_of(spec)
+    calendar_ref = calendar_ref_of(calendar)
+    timeframe_refs = tuple(
+        sorted((definition.ref for definition in timeframe_defs.values()), key=str)
+    )
+    config = RunConfig(
+        run_interval=experiment.run_interval,
+        snapshot_ref=experiment.snapshot_ref,
+        compiled_ref=compiled.compiled_ref,
+        account=experiment.account,
+        risk_policy_ref=experiment.policy_ref("risk"),
+        execution_policy_ref=experiment.policy_ref("execution"),
+        cost_model_ref=experiment.policy_ref("cost"),
+        conversion_policy_ref=experiment.policy_ref("conversion"),
+        delay_scenario_ref=experiment.policy_ref("delay"),
+        execution_series=experiment.execution_series,
+        seed=experiment.seed,
+    )
+    config_digest = config_digest_of(
+        config,
+        symbol_spec_ref=symbol_spec_ref,
+        calendar_ref=calendar_ref,
+        timeframe_def_refs=timeframe_refs,
+    )
+    code = code_digest()
+    lock = lock_digest(repo_root)
+    environment = env_digest()
+    identifier = run_id_of(config_digest, code, lock, environment)
+    allocator = IdAllocator(identifier)
+
+    output_sink = TraceOutputSink()
+    context = EngineContext(experiment.account)
+    runtime = StrategyEvaluator(
+        compiled=compiled,
+        registry=INITIAL_CATALOG,
+        market_data=market_data,
+        context=context,
+        sink=output_sink,
+        allocator=allocator,
+    )
+    commit, dirty = git_state(repo_root)
+    use_case = RunBacktest(
+        runtime=runtime,
+        context=context,
+        output_sink=output_sink,
+        allocator=allocator,
+        feed=feed,
+        execution_series=execution_view,
+        calendar=calendar,
+        risk_policy=experiment.risk_policy,
+        execution_policy=experiment.execution_policy,
+        cost_model=experiment.cost_model,
+        conversion_policy=experiment.conversion_policy,
+        symbol_spec=spec,
+        symbol_spec_ref=symbol_spec_ref,
+        calendar_ref=calendar_ref,
+        integrity=inputs.snapshot.report,
+        trace_sink=FileSystemTraceSink(root=artifacts_root, run_id=identifier, replace=replace),
+        result_writer=FileSystemResultWriter(root=artifacts_root),
+        code_digest=code,
+        lock_digest=lock,
+        env_digest=environment,
+        git_commit=commit,
+        git_dirty=dirty,
+        intrabar_series=intrabar,
+        timeframe_refs=timeframe_refs,
+    )
+    result = use_case.run(config, compiled)
+    return RunOutcome(
+        result=result,
+        run_id=identifier,
+        directory=run_directory(artifacts_root, identifier),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationOutcome:
+    """1回の評価の成果（CLI が表示に使う）。"""
+
+    report: EvaluationReport
+    directory: Path
+
+
+def evaluate_saved_run(
+    *,
+    run_id: RunId,
+    artifacts_root: Path,
+    metric_set_version: int = METRIC_SET_VERSION,
+) -> EvaluationOutcome:
+    """保存済みの run を評価し、5表と評価 manifest を保存する（D07 §4・§8）。
+
+    評価時のコードのダイジェストは**この層が算出して渡す**（D07 §9.2、Q5 決定）。
+    パッケージのソース内容を読むのは入出力であり、`application` は入出力を持たない。
+    """
+    repository = FileSystemResultRepository(root=artifacts_root)
+    result = repository.read_result(run_id)
+    use_case = EvaluateRun(evaluation_code_digest=code_digest())
+    report = use_case.evaluate(result, repository, metric_set_version)
+    repository.write_evaluation(report, report.rows)
+    return EvaluationOutcome(
+        report=report,
+        directory=evaluation_directory(artifacts_root, run_id, report.manifest.run_evaluation_id),
     )

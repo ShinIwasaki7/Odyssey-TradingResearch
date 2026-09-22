@@ -161,10 +161,12 @@ def test_a_missing_bar_still_produces_its_scheduled_boundary() -> None:
 
 
 def test_the_scheduled_boundaries_cover_every_expected_bar() -> None:
-    """予定境界の集合は、実行区間内で**終わる**期待足の集合と一致する。
+    """予定境界の集合は、実行区間の中で**終わる**期待足の集合と一致する。
 
     区間の開始より前に始まって区間内で終わる足も対象なので、期待値は区間より手前から
-    数える。
+    数える。**区間の終端でちょうど終わる足も対象**である（D06 §10.1 の手順1 が「run_end
+    で終了する足までの内部約定・口座更新を解決する」と定めており、その判断時点が起きない
+    と末尾処理が1つ手前の足の値で行われる）。
     """
     bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
     manifest, allowed, partition_bars = _context({HOURLY: bars})
@@ -175,11 +177,36 @@ def test_the_scheduled_boundaries_cover_every_expected_bar() -> None:
         str(interval.end)
         for start in CALENDAR.expected_bar_starts(market.TF_1H, search)
         if (interval := market.TF_1H.expected_interval(CALENDAR, start)) is not None
-        and WINDOW.contains(interval.end)
+        and WINDOW.start <= interval.end <= WINDOW.end
     )
     assert boundaries == expected
     # 区間の開始ちょうどで終わる足の境界も含まれる（半開区間の下端は区間内）。
     assert str(WINDOW.start) in boundaries
+    # 区間の終端でちょうど終わる足の境界も含まれる（D06 §10.1 の手順1）。
+    assert str(WINDOW.end) in boundaries
+
+
+def test_the_bar_that_ends_at_the_run_end_is_completed_but_no_open_starts_there() -> None:
+    """終端でちょうど終わる足は完了イベントを出し、終端から始まる足は始値を出さない。
+
+    D06 §10.1 は手順1 で「run_end で終了する足までの内部約定・口座更新を解決する」、
+    手順5 で「run_end から始まる足の始値処理（rank 11）は行わない」と定めている。判定を
+    1つの述語で済ませると、どちらか一方が必ず設計と食い違う。
+    """
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    manifest, allowed, partition_bars = _context({HOURLY: bars})
+    feed = build_feed(
+        manifest,
+        allowed,
+        partition_bars,
+        {HOURLY: SCHEDULES[HOURLY]},
+        WINDOW,
+        execution_series=frozenset({HOURLY}),
+    )
+    completions = {str(event.at) for event in feed.of_kind(PublicationKind.EXECUTION_BAR_COMPLETE)}
+    opens = {str(event.at) for event in feed.of_kind(PublicationKind.EXECUTION_OPEN)}
+    assert str(WINDOW.end) in completions
+    assert str(WINDOW.end) not in opens
 
 
 def test_a_series_whose_bars_are_all_missing_still_gets_its_boundaries() -> None:

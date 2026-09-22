@@ -19,6 +19,12 @@
 では夏時間の切替日や短縮セッションで実際の区間を復元できない（D03 §3.3）。区間を決めるのは
 カレンダーを持つ `marketdata` 側で、戦略側で再計算すると規則が2か所になる。
 
+**履歴窓は構造だけを要求する**（D05 §6.3 v1.4、2026-09-22 の人間の決定）。宣言の履歴窓
+（`strategy.declarations.read_spec`）と as-of ビューの履歴窓（`marketdata.application.asof`）
+は同じ名前の別の型であり、どちらも相手を参照できない（契約 F2 と層順序）。そこで受け口の側で
+`HistoryWindowView`（本数か経過時間を読み出せること）だけを要求する。入力不足の診断
+（`MissingInputView`）と同じ手法で、合成（`app`）が層をまたいで言い換える必要がなくなる。
+
 **run 末尾の合図**（D05 §6.1 v1.1）: 末尾に残った取引機会を終端させる入口として、公開バッチに
 「これが末尾である」ことを示す項目を置く。入口は `step` 1つのままで、「同じバッチ識別子で
 2度呼ばない」という既存の不変条件だけで呼び出し規則が閉じる。
@@ -27,6 +33,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from odyssey_fx.common.errors import KernelValueError
@@ -36,7 +43,6 @@ from odyssey_fx.common.time import Interval, PhaseSet, UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.declarations.evaluation import RuntimeEventKind
-from odyssey_fx.strategy.declarations.read_spec import ReadWindow
 from odyssey_fx.strategy.declarations.validation import (
     require_bool,
     require_instance,
@@ -50,10 +56,14 @@ if TYPE_CHECKING:
 __all__ = [
     "AdmissionNotice",
     "BarClosure",
+    "BarsWindowView",
+    "DurationWindowView",
+    "HistoryWindowView",
     "MarketDataView",
     "MissingInputView",
     "OutputSink",
     "PublicationBatch",
+    "ResolvedBarsWindow",
     "RuntimeContextView",
     "RuntimeEventNotice",
     "StrategyRuntime",
@@ -74,6 +84,54 @@ class MissingInputView(Protocol):
 
 
 @runtime_checkable
+class BarsWindowView(Protocol):
+    """本数で指定する履歴窓（D05 §6.3 v1.4）。
+
+    本数は**解決済みの整数**である。パラメータ参照はコンパイラが解決するので
+    （D04 §12、D05 §5.3）、ランタイムがビューへ渡す窓には残らない。
+    """
+
+    @property
+    def count(self) -> int: ...
+
+
+@runtime_checkable
+class DurationWindowView(Protocol):
+    """経過時間で指定する履歴窓（D05 §6.3 v1.4）。"""
+
+    @property
+    def duration(self) -> timedelta: ...
+
+
+#: 履歴窓の受け口（D05 §6.3 v1.4）。
+#:
+#: 宣言の履歴窓（`strategy.declarations.read_spec`）と as-of ビューの履歴窓
+#: （`marketdata.application.asof`）は**同じ名前の別の型**である。`strategy` は
+#: `marketdata.application` を参照できず（契約 F2）、`marketdata` は `strategy` を参照
+#: できない（層順序）ので、境界では**構造だけ**を要求する。入力不足の診断
+#: （`MissingInputView`）と同じ手法である。
+HistoryWindowView = BarsWindowView | DurationWindowView
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedBarsWindow:
+    """本数が解決済みの履歴窓（D05 §6.3 v1.4）。
+
+    宣言の `BarsWindow.count` は `int | ParameterRef` だが、ランタイムが渡せるのは整数に
+    解決済みの窓だけである（D05 §5.3）。その「解決済み」を型で表すための小さな値であり、
+    ランタイムが自分の宣言型から組み立てる。**層をまたぐ言い換えではない**。
+    """
+
+    count: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.count, bool) or not isinstance(self.count, int):
+            raise KernelValueError(f"ResolvedBarsWindow.count must be an int, got {self.count!r}")
+        if self.count < 1:
+            raise KernelValueError(f"ResolvedBarsWindow.count must be >= 1, got {self.count}")
+
+
+@runtime_checkable
 class MarketDataView(Protocol):
     """判断時刻までに公開された市場データだけを読むビュー（D03 §6.2 の5操作）。
 
@@ -86,7 +144,7 @@ class MarketDataView(Protocol):
     def history(
         self,
         series: SeriesId,
-        window: ReadWindow,
+        window: HistoryWindowView,
         at: UtcTime,
         *,
         end_offset_bars: int = 0,

@@ -75,6 +75,7 @@ from odyssey_fx.strategy.declarations.opportunity import (
     ValidityMode,
 )
 from odyssey_fx.strategy.declarations.read_spec import (
+    BarsWindow,
     CurrentContext,
     DeliveredEvent,
     HistoryWindow,
@@ -110,9 +111,11 @@ from odyssey_fx.strategy.runtime.opportunities import (
 )
 from odyssey_fx.strategy.runtime.ports import (
     AdmissionNotice,
+    HistoryWindowView,
     MarketDataView,
     OutputSink,
     PublicationBatch,
+    ResolvedBarsWindow,
     RuntimeContextView,
 )
 from odyssey_fx.strategy.runtime.requests import (
@@ -372,6 +375,26 @@ def _project(bar: Bar, market_field: MarketDataField) -> Price | Decimal:
 def _is_missing(value: object) -> bool:
     """市場データビューの戻り値が欠損かどうか（`Bar` でなければ欠損）。"""
     return not isinstance(value, Bar)
+
+
+def _history_window(plan: InputPlan) -> HistoryWindowView:
+    """解決済みの履歴窓を、市場データビューの受け口の形で返す（D05 §6.3 v1.4）。
+
+    本数窓はコンパイラが整数へ解決している（D05 §5.3）ので、その整数だけを持つ
+    `ResolvedBarsWindow` にして渡す。「解決済み」であることを型で表すためであり、
+    層をまたぐ言い換えではない。経過時間窓はそのままで受け口の形を満たす。
+    """
+    window = plan.resolved_window
+    if window is None:  # pragma: no cover - コンパイル時に解決済み
+        raise KernelValueError(f"input {plan.input_name!r} has no resolved window")
+    if isinstance(window, BarsWindow):
+        if not isinstance(window.count, int):  # pragma: no cover - InputPlan が拒否する
+            raise KernelValueError(
+                f"input {plan.input_name!r} still refers to a parameter for its window size"
+                f" ({window.count}); the compiler resolves window sizes (D04 §12, D05 §5.3)"
+            )
+        return ResolvedBarsWindow(count=window.count)
+    return window
 
 
 def _missing_reason(value: object) -> MissingInputReason:
@@ -875,9 +898,7 @@ class _StepRun:
     ) -> tuple[tuple[InputElement, ...], list[MissingInputDiagnosis]]:
         elements: list[InputElement] = []
         missing: list[MissingInputDiagnosis] = []
-        window = plan.resolved_window
-        if window is None:  # pragma: no cover - コンパイル時に解決済み
-            raise KernelValueError(f"input {plan.input_name!r} has no resolved window")
+        window = _history_window(plan)
         for source in plan.sources:
             if not isinstance(source, ResolvedMarketSource):  # pragma: no cover
                 missing.append(

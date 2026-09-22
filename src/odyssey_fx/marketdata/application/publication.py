@@ -287,6 +287,22 @@ def _require_run_interval_inside_allowed(
     return tuple(coverage)
 
 
+def _within_run(run_interval: Interval, moment: UtcTime) -> bool:
+    """`moment` が実行区間の中か（**終端を含む**、D03 §7.1）。
+
+    足の終了・公開・予定境界は `run_interval.end` と同時刻のものまで出す。バックテストの
+    末尾処理は「run_end で終了する足までの内部約定・口座更新を解決する」ところから始まる
+    ので（D06 §10.1 の手順1）、終端をまたぐ足ではなく**終端でちょうど終わる足**を落として
+    しまうと、末尾の判断時点が1つ丸ごと起きず、残存建玉の最終評価価格が1本手前の足の
+    終値になる。
+
+    **足の始値（`ExecutionOpen`）だけは終端を含めない**。D06 §10.1 の手順5 が「run_end
+    から始まる足の始値処理は行わない」と定めており、区間の外で約定させないための規則で
+    ある。判定を分けているのはこのためで、同じ述語を使い回してはいけない。
+    """
+    return run_interval.start <= moment <= run_interval.end
+
+
 def build_publication_log(
     snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
@@ -402,7 +418,7 @@ def build_feed(
             )
             if expected is None:  # pragma: no cover - expected_bar_starts が除いている
                 continue
-            if not run_interval.contains(expected.end):
+            if not _within_run(run_interval, expected.end):
                 continue
             events.append(
                 ScheduledBoundary(
@@ -421,12 +437,13 @@ def build_feed(
             recorded = None if publication_log is None else publication_log.available_at(bar.key)
             available = recorded if recorded is not None else schedule.scheduled_at(bar.bar_end)
 
-            if is_execution and run_interval.contains(bar.bar_end):
+            if is_execution and _within_run(run_interval, bar.bar_end):
                 events.append(
                     ExecutionBarComplete(series=series, bar_key=bar.key, bar_end=bar.bar_end)
                 )
-            if run_interval.contains(available):
+            if _within_run(run_interval, available):
                 events.append(Publication(series=series, bar_key=bar.key, available_at=available))
+            # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。
             if is_execution and run_interval.contains(bar.bar_start):
                 events.append(
                     ExecutionOpen(series=series, bar_key=bar.key, open_time=bar.bar_start)
