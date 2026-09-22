@@ -610,17 +610,26 @@ def _unlinked_positions(
 
 
 def _unlinked_fills(reads: Mapping[TraceTable, _Rows]) -> tuple[str, ...]:
-    """対応する注文が判断履歴に無い約定（診断の行を作れない）。"""
-    orders = {
-        row["order_id"]
-        for row in reads[TraceTable.ORDERS].records
-        if row.get("order_id") is not None
-    }
+    """約定 → 注文 → 試行の連鎖が切れている約定（D07 §10.2 の C4）。
+
+    **入場側だけでなく決済側も見る**。C4 は「各完了取引の `entry_fill_id` /
+    `close_fill_id` が表9 にあり、その `order_id` が表7 にあり、その `attempt_id` が
+    表4 にある」ことを求めている。注文の有無だけを見ていると、決済注文の試行が表4 から
+    落ちている判断履歴でも検査が通り、指標が採用してよい数値として出てしまう。
+    """
+    orders = _by_key(reads[TraceTable.ORDERS].records, "order_id")
+    requests = _by_key(reads[TraceTable.ORDER_REQUESTS].records, "attempt_id")
     missing: list[str] = []
     for row in reads[TraceTable.FILLS].records:
+        fill_id = row.get("fill_id")
         order_id = row.get("order_id")
-        if order_id is None or order_id not in orders:
-            missing.append(f"{row.get('fill_id')}: fill without an accepted order")
+        order = None if order_id is None else orders.get(order_id)
+        if order is None:
+            missing.append(f"{fill_id}: fill without an accepted order")
+            continue
+        attempt_id = order.get("attempt_id")
+        if attempt_id is None or attempt_id not in requests:
+            missing.append(f"{fill_id}: order {order_id} without an order request")
     return tuple(missing)
 
 
@@ -642,7 +651,26 @@ def _check_realized_matches_balance(
             ),
             table=TraceTable.LEDGER_SNAPSHOTS,
         )
-    observed = snapshots[-1].balance - initial
+    last = snapshots[-1].balance
+    if last.currency != initial.currency or summaries.realized.currency != initial.currency:
+        # **通貨をまたぐ引き算をしない**。金額の型は通貨違いの演算を拒むので、ここで
+        # 引き算に入ると例外で評価が中断し、通貨の食い違いを指す検査（C8）の結果も、
+        # 失敗を説明する成果物も残らない。比べられないことを不合格として記録する。
+        return _result_of(
+            CHECK_REALIZED_MATCHES_BALANCE,
+            passed=False,
+            expected=canonical_text(initial.currency.code),
+            observed=canonical_text(
+                tuple(
+                    sorted(
+                        {last.currency.code, summaries.realized.currency.code}
+                        - {initial.currency.code}
+                    )
+                )
+            ),
+            table=TraceTable.LEDGER_SNAPSHOTS,
+        )
+    observed = last - initial
     return _result_of(
         CHECK_REALIZED_MATCHES_BALANCE,
         passed=observed == summaries.realized,

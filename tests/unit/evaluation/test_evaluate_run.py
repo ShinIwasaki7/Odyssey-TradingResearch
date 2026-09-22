@@ -494,3 +494,44 @@ def test_an_incomplete_closed_position_is_reported_not_silently_dropped() -> Non
     chain = [check for check in report.checks if check.check == CHECK_ID_CHAIN_COMPLETE]
     assert chain[0].passed is False
     assert "POS:00000001" in chain[0].observed
+
+
+def test_a_close_side_chain_break_is_fatal() -> None:
+    """決済側の試行が判断履歴から落ちていても致命の不合格になる（D07 §10.2 の C4）。
+
+    注文の有無だけを見ていると、決済注文の試行が表4 から落ちた判断履歴でも検査が通り、
+    指標が採用してよい数値として出てしまう。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.ORDER_REQUESTS] = [
+        row for row in tables[TraceTable.ORDER_REQUESTS] if row["attempt_id"] != "ATT:00000002"
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    chain = [check for check in report.checks if check.check == CHECK_ID_CHAIN_COMPLETE]
+    assert chain[0].passed is False
+    assert "ORD:00000002" in chain[0].observed
+
+
+def test_a_foreign_ledger_currency_is_reported_not_raised() -> None:
+    """台帳の通貨が口座通貨と違っても、例外にせず検査の不合格として残す（D07 §10.2）。
+
+    通貨をまたぐ引き算に入ると金額の型が例外を投げ、通貨の食い違いを指す検査（C8）の
+    結果も、失敗を説明する成果物も残らない。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        *tables[TraceTable.LEDGER_SNAPSHOTS][:-1],
+        {**tables[TraceTable.LEDGER_SNAPSHOTS][-1], "balance_currency": "USD"},
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    failing = {check.check for check in report.checks if not check.passed}
+    assert CHECK_REALIZED_MATCHES_BALANCE in failing
+    assert CHECK_SINGLE_ACCOUNT_CURRENCY in failing
+    # 8件すべての検査結果が残り、どの検査が落ちたかを成果物だけで説明できる。
+    assert [check.check for check in report.checks] == list(CHECK_ORDER)
