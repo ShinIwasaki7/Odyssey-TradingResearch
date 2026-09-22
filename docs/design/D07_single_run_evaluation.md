@@ -1,7 +1,7 @@
 # D07: 単一実行の評価境界設計（`odyssey_fx.evaluation`: domain.metrics / domain.status / application.evaluate_run / adapters）
 
 作成日: 2026-09-21
-状態: **承認（2026-09-21、PR #17）**。v1.1（2026-09-21、PR #17）: 第15節の改訂依頼1〜3 に対する人間の決定（D06 の Q12〜Q14、いずれも選択肢1）が出たため、**同じ PR で D06 を v1.2 に改訂し、本書の未確定箇所をすべて閉じた**。(1) 第4.2節の † を付けていた列名が確定した（平坦化規則の確定による。`decision_kind` は規則どおり `kind` になった）。(2) run 中の含み損益の評価価格が確定し、**最大ドローダウン（含み損益込み、#5・#6）の検算値が求まった**（`1,312 JPY` / `0.001312`）。これにより**段階2の指標15件すべてが紙上トレース [T01](../traces/T01_paper_trace.md) の数値で手で確かめられる**（従来は13件）。検算に必要な `equity` の全値は T01 v1.1（第9.4節）に足した。(3) 約定1件ごとの費用が区分別の金額列として読めるようになった（読むのは本書 v0.2・段階4）。**第15節に未実施の改訂依頼は残っていない**。v1.0（2026-09-21）: 第16節の要決定 Q1〜Q6 を人間がすべて決定し（6件すべてが提示時の推奨案である選択肢1）、本文へ反映した。**未決の項目は残っていない**。決定に伴い、**同じ PR で正本を1件改訂した**: 結果 DTO から資産推移の2項目（`balance_series` / `equity_series`）を落とす改訂（D06 §9.4、v1.1。第15節の改訂依頼4。D06 §9.4 が既に定めた「集計前のレコードは表のパス経由で渡し、結果 DTO の中で集計しない」から一意に導ける補完であり、設計の選択は伴わない）。第15節の改訂依頼1〜3 は設計の選択を含むためこの時点では実施せず、v1.1 で解消した。v0.1（2026-09-21）: 段階2（検証戦略 A の単一 run）の結果を、再現可能に・数値で・swap 未計上と明記して出すために必要な**境界**だけを決める。指標を将来まで書き切ることは目的にしない（全体計画 §6 D-2「D05 と D07 の将来機能をすべて書き切る必要はない」）。ADR-0016 条件2 のうち「D07 の単一実行評価境界」を本書で充足する。第16節に決定の一覧を置く。 v1.2（2026-09-22、PR #19）: 判断履歴の数値の列が人の読める固定小数表記になったことを第4.3節に注記した（D06 §9.1 v1.3）。**読む列の名前と顔ぶれは変わらず**、`Decimal(文字列)` の往復も変わらないため、指標・集計・整合検査はいずれも影響を受けない。
+状態: **承認（2026-09-21、PR #17）**。v1.3（2026-09-22、PR #20）: 段階2 の実装（PR #20）が残した**仮置き事項8件に人間の決定が出た**ので本文へ反映した。(1) 建玉を保有していた時間の割合（第5.2節の #9）は**完了取引だけ**を数える。式の本文にあった「未決済建玉は run 末尾までを数える」を削り、同じ節の冒頭の `Σ` の定義（完了した取引についての合計）と検算値 `0.0078125` に揃えた。これで**段階2 の指標15件すべてが T01 の検算値と一致する**。(2) 読む列（第4.2節）に**8列**を足した。処理点を組み立てる7列（表11 の `opened_at_phase` / `opened_at_sequence`、表9 の `processed_at_phase` / `processed_at_sequence`、表3 の `at_time` / `at_phase` / `at_sequence`）と、不利約定幅の符号に要る表7 の `side` である。(3) 評価 manifest の `run_manifest_ref`（第8.3節）は入力とポリシーの群のダイジェスト（`ConfigDigest`）である。(4) 取引機会の終端理由の語彙（第6.1節）は `RUN_END` を含む**8語**であり、語彙に無い鍵も行として残す。(5) 拒否（`REJECTED`）の run でも整合検査を7件実施する（第10.1節。末尾の集計と比べる C5 だけ実施しない）。(6) `EvaluateRun`（第3節）は `Protocol` ではなく具体クラスである。**未確定として残した項目は無い**。v1.1（2026-09-21、PR #17）: 第15節の改訂依頼1〜3 に対する人間の決定（D06 の Q12〜Q14、いずれも選択肢1）が出たため、**同じ PR で D06 を v1.2 に改訂し、本書の未確定箇所をすべて閉じた**。(1) 第4.2節の † を付けていた列名が確定した（平坦化規則の確定による。`decision_kind` は規則どおり `kind` になった）。(2) run 中の含み損益の評価価格が確定し、**最大ドローダウン（含み損益込み、#5・#6）の検算値が求まった**（`1,312 JPY` / `0.001312`）。これにより**段階2の指標15件すべてが紙上トレース [T01](../traces/T01_paper_trace.md) の数値で手で確かめられる**（従来は13件）。検算に必要な `equity` の全値は T01 v1.1（第9.4節）に足した。(3) 約定1件ごとの費用が区分別の金額列として読めるようになった（読むのは本書 v0.2・段階4）。**第15節に未実施の改訂依頼は残っていない**。v1.0（2026-09-21）: 第16節の要決定 Q1〜Q6 を人間がすべて決定し（6件すべてが提示時の推奨案である選択肢1）、本文へ反映した。**未決の項目は残っていない**。決定に伴い、**同じ PR で正本を1件改訂した**: 結果 DTO から資産推移の2項目（`balance_series` / `equity_series`）を落とす改訂（D06 §9.4、v1.1。第15節の改訂依頼4。D06 §9.4 が既に定めた「集計前のレコードは表のパス経由で渡し、結果 DTO の中で集計しない」から一意に導ける補完であり、設計の選択は伴わない）。第15節の改訂依頼1〜3 は設計の選択を含むためこの時点では実施せず、v1.1 で解消した。v0.1（2026-09-21）: 段階2（検証戦略 A の単一 run）の結果を、再現可能に・数値で・swap 未計上と明記して出すために必要な**境界**だけを決める。指標を将来まで書き切ることは目的にしない（全体計画 §6 D-2「D05 と D07 の将来機能をすべて書き切る必要はない」）。ADR-0016 条件2 のうち「D07 の単一実行評価境界」を本書で充足する。第16節に決定の一覧を置く。 v1.2（2026-09-22、PR #19）: 判断履歴の数値の列が人の読める固定小数表記になったことを第4.3節に注記した（D06 §9.1 v1.3）。**読む列の名前と顔ぶれは変わらず**、`Decimal(文字列)` の往復も変わらないため、指標・集計・整合検査はいずれも影響を受けない。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.12・§4.7.13 C/E・§4.7.14・§4.7.15・§5.3・§6、[全体計画書](fx_research_platform_overall_plan.md) §5.5・§5.5.1・§5.5.2・§6 C-5・§6 D-2・§7.5・§8.1・§8.2、[D01](D01_architecture_and_dependency_rules.md) §3.2・§4・§7.2・§10.3、[D02](D02_common_kernel.md) §4・§7.1・§8.1・§8.3・§9、[D03](D03_marketdata_and_time.md) §3.9・§6.1、[D05](D05_strategy_runtime.md) §3・§7.2、[D06](D06_backtest_vertical_slice.md) §9（全項）・§10.3・§14、[T01](../traces/T01_paper_trace.md)、ADR-0006（決定論的 ID）、ADR-0012（Decimal / float 境界）、ADR-0016（実装開始条件）、ADR-0027（成果物は Parquet 表＋JSON マニフェスト）、ADR-0029（swap 未計上）、ADR-0030（足内競合解決契約）
 対応段階: 段階2で最小実装、段階4で拡張（v0.2）。
 
@@ -113,7 +113,9 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `EvaluationManifest` | `application.manifest` | レコード | `run_evaluation_id: RunEvaluationId` / `run_id: RunId` / `run_manifest_ref: ContentDigest` / `metric_set_version: int` / `evaluation_code_digest: CodeDigest`（Q5 で「持たせない」が選ばれた場合は項目ごと外す） / `run_code_digest: CodeDigest` / `run_status: RunStatus` / `run_failure_reason: Reason \| None` / `account_currency: CurrencyCode` / `swap_modeled: bool` / `status: EvaluationStatus` / `result_digest: ContentDigest` / `input_tables: tuple[TraceTable, ...]` / `fatal_failure_count: int` / `warning_failure_count: int` | §8.3・§9.2・§10.1 |
 | `EvaluationReport` | `application.evaluate_run` | レコード | `manifest: EvaluationManifest` / `status: EvaluationStatus` / `metrics: tuple[MetricRecord, ...]` / `categories: tuple[CategoryCount, ...]` / `trades: tuple[TradeRecord, ...]` / `fill_diagnostics: tuple[FillDiagnostic, ...]` / `checks: tuple[ConsistencyCheckResult, ...]` | §8.1・§10.1 |
 | `ResultRepository` | `application.ports` | Protocol | `read_manifest(run_id: RunId) -> RunManifest` / `read_table(run_id: RunId, table: TraceTable, columns: tuple[TraceColumnSpec, ...]) -> TableReadResult` / `write_evaluation(report: EvaluationReport, rows: Mapping[EvaluationTable, tuple[object, ...]]) -> None` | §4.3・§8.2 |
-| `EvaluateRun` | `application.evaluate_run` | Protocol | `evaluate(result: BacktestResult, repository: ResultRepository, metric_set_version: int) -> EvaluationReport` | §4.1 |
+| `EvaluateRun` | `application.evaluate_run` | 具体クラス（v1.3） | `evaluate(result: BacktestResult, repository: ResultRepository, metric_set_version: int) -> EvaluationReport`。構築時に評価コードのダイジェストを受け取る | §4.1 |
+
+**`EvaluateRun` は `Protocol` ではなく具体クラスである**【確定】（v1.3、2026-09-22 の人間の決定）。評価を差し替える側が居らず（合成が唯一の結線点）、実装は1つだからである。D06 の実行の使用箇所（`RunBacktest`）と同じ形に揃えた。操作の名前と引数は上表の宣言どおりである。評価コードのダイジェストだけは構築時に受け取る。パッケージのソース内容を読むのは入出力であり、`application` は入出力を持たないためである（第9.2節）。
 
 `Money` / `Price` / `PriceOffset` / `Quantity` / `Decimal` / `UtcTime` / `Interval` / `ProcessingPoint` / `CurrencyCode` / `Reason` / `ContentDigest` / `CodeDigest` と各 ID 型は D02、`Symbol` は D02 §5.1、`OrderSide` / `CloseCause` / `TraceTable` / `BacktestResult` / `RunManifest` / `FinalSummaries` / `RunStatus` は D06、`OpportunityId` の意味は D05 が正本である。`ResultRepository` は D01 §4 が「結果の読み書き」として所在と実装者を既に確定しており、本書はその操作だけを具体化する。**表の読み出しに新しいポートを足さない**。
 
@@ -143,16 +145,18 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | 表 | `TraceTable` | 読む列 | 何に使うか |
 |---|---|---|---|
 | 2 | `EVALUATIONS` | `evaluation_id`、`outcome_kind`、`outcome_diagnoses`、`outcome_reason_code` | 評価の結果区分別・評価見送りの診断理由別の集計（第6.1節） |
-| 3 | `OPPORTUNITY_TRANSITIONS` | `opportunity_id`、`to_state`、`reason_code` | 取引機会の終端理由別の集計（第6.1節） |
+| 3 | `OPPORTUNITY_TRANSITIONS` | `opportunity_id`、`at_time`、`at_phase`、`at_sequence`、`to_state`、`reason_code` | 取引機会の終端理由別の集計（第6.1節）。処理点の3列は主キー `(opportunity_id, at)` を組み立てるため（v1.3） |
 | 4 | `ORDER_REQUESTS` | `attempt_id`、`payload_kind`、`payload_opportunity_id`、`payload_position_id` | 拒否をエントリーと決済に分ける。取引と取引機会を結ぶ（第5.2節の `TradeRecord.opportunity_id`） |
 | 5 | `ATTEMPT_DECISIONS` | `attempt_id`、`kind`、`order_id`、`reason_code` | 発注試行の拒否理由別の集計（第6.1節）。**行そのものが区分タグ付き union（`AttemptDecision`）であるため接頭辞が付かず、区分の列は `kind` になる**（D06 §9.1 の規則2） |
-| 7 | `ORDERS` | `order_id`、`attempt_id`、`accepted_at_time`、`terms_kind`、`terms_cause`、`terms_position_id`、`terms_reference_quote_price`、`terms_reference_quote_observed_at` | 約定ずれと2つの経過時間の診断（第6.2節）、決済契機別の集計 |
-| 9 | `FILLS` | `fill_id`、`order_id`、`position_id`、`processed_at_time`、`price`、`quantity` | 約定時刻、約定価格、取引の突合（第5.2節・第6.2節） |
-| 11 | `POSITIONS` | `position_id`、`symbol`、`side`、`quantity`、`entry_price`、`entry_fill_id`、`opened_at_time`、`status`、`close_fill_id`、`realized_amount`、`realized_currency` | 完了取引の一覧、損益、勝敗、保有時間（第5.2節） |
+| 7 | `ORDERS` | `order_id`、`attempt_id`、`accepted_at_time`、`side`、`terms_kind`、`terms_cause`、`terms_position_id`、`terms_reference_quote_price`、`terms_reference_quote_observed_at` | 約定ずれと2つの経過時間の診断（第6.2節）、決済契機別の集計。`side` は不利約定幅の符号 `d` に要る（第6.2節、v1.3） |
+| 9 | `FILLS` | `fill_id`、`order_id`、`position_id`、`processed_at_time`、`processed_at_phase`、`processed_at_sequence`、`price`、`quantity` | 約定時刻、約定価格、取引の突合（第5.2節・第6.2節）。処理点の3列は `TradeRecord.exit_at` に要る（v1.3） |
+| 11 | `POSITIONS` | `position_id`、`symbol`、`side`、`quantity`、`entry_price`、`entry_fill_id`、`opened_at_time`、`opened_at_phase`、`opened_at_sequence`、`status`、`close_fill_id`、`realized_amount`、`realized_currency` | 完了取引の一覧、損益、勝敗、保有時間（第5.2節）。処理点の3列は `TradeRecord.entry_at` と `TRADES` 表の整列鍵に要る（v1.3） |
 | 13 | `INTRABAR_RESOLUTIONS` | `fill_id`、`position_id`、`method` | 足内競合の解決方法別の集計（第6.1節） |
 | 14 | `LEDGER_SNAPSHOTS` | `at_time`、`at_phase`、`at_sequence`、`balance_amount`、`balance_currency`、`equity_amount`、`equity_currency` | 資産推移と最大ドローダウン（第5.2節） |
 
 **読まない6表**を明示する【提案】。表1 `OUTPUTS`・表6 `RISK_ASSESSMENTS`・表8 `ORDER_EVENTS`・表10 `RESERVATIONS`・表12 `MANAGEMENT_APPLICATIONS`・表15 `EVIDENCE` は段階2では開かない。段階2の指標と集計に必要な列が無く、開くと入力契約が広がって「どの表が変わると指標が変わるか」が追えなくなるためである。必要になった時点で本表に足す（例: 予約額と実リスクの差を指標にするなら表6と表10）。
+
+**処理点の列は3つで1つの値である**【確定】（v1.3、2026-09-22 の人間の決定）。起草時の表は建玉・約定・遷移の処理時刻について「時刻」の列だけを挙げていたが、第3節の `TradeRecord.entry_at` / `exit_at` は `ProcessingPoint` 型であり、処理点は `(時刻, フェーズ, 通し番号)` の3つで1つである（D06 §9.1）。`TRADES` 表の整列鍵も、`OPPORTUNITY_TRANSITIONS` の主キー `(opportunity_id, at)` も、この3つで決まる。そこで上表へ**7列**（表11 の `opened_at_phase` / `opened_at_sequence`、表9 の `processed_at_phase` / `processed_at_sequence`、表3 の `at_time` / `at_phase` / `at_sequence`）を足した。フェーズの順位は run manifest が記録しているフェーズ集合から引く（D06 §9.3）。あわせて表7 の `side` を足した。第6.2節の不利約定幅は `d × (約定価格 − 参照価格)` であり、方向 `d` は注文の側から引くほかないためである（起草時の表は入力として表7 を挙げながら、この列を落としていた）。
 
 **表9 の費用の列を段階2では読まない**【提案】。D06 v1.2（Q12 決定）が表9 に区分別の金額列（`cost_commission_amount` など3区分×2列）を足したため、**約定1件ごとの費用は読めるようになった**。それでも段階2 は run 単位の費用集計を `BacktestResult.summaries.cost_breakdown`（D06 §10.3、型付きの `Mapping[CostKind, Money]`）から取る。段階2 の指標15件に取引単位の費用を使うものが無く（第5.2節）、読む列を増やすと入力契約だけが広がるためである。取引単位の費用と、入場費用を含む取引損益は本書 v0.2（段階4）で扱う（第12節）。
 
@@ -193,7 +197,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | 6 | `MAX_DRAWDOWN_MTM_RATE` | RATIO | #5 を、その最大値が出た時点の「これまでの最大 equity」で割る | 表14 | #5 が値なし、または分母が 0 なら `Unavailable(UNDEFINED_DENOMINATOR)` | `1,312 ÷ 1,000,000 = 0.001312` |
 | 7 | `MAX_DRAWDOWN_BALANCE` | AMOUNT | #5 と同じ手順を `balance` 列に適用する（参考値） | 表14 | 同上 | `1,000,000 − 999,968 = 32 JPY` |
 | 8 | `MAX_DRAWDOWN_BALANCE_RATE` | RATIO | #7 ÷ その時点の最大 `balance` | 表14 | 同上 | `32 ÷ 1,000,000 = 0.000032` |
-| 9 | `EXPOSURE_RATE` | RATIO | `Σ 保有時間 ÷ RunManifest.run_interval の長さ`。保有時間は入場約定の `processed_at` から決済約定の `processed_at` まで。未決済建玉は run 末尾までを数える | 表9、表11、manifest | 建玉が1件も無ければ `RatioValue(0)`（保有時間0は観測された事実であり値なしではない） | `8,100 秒 ÷ 1,036,800 秒 = 0.0078125`（P1 の 09:00Z→11:15Z、run 区間は12日） |
+| 9 | `EXPOSURE_RATE` | RATIO | `Σ 保有時間 ÷ RunManifest.run_interval の長さ`。保有時間は入場約定の `processed_at` から決済約定の `processed_at` まで。**完了取引（`status=CLOSED`）のみ。未決済建玉は含めない** | 表9、表11、manifest | 建玉が1件も無ければ `RatioValue(0)`（保有時間0は観測された事実であり値なしではない） | `8,100 秒 ÷ 1,036,800 秒 = 0.0078125`（P1 の 09:00Z→11:15Z、run 区間は12日） |
 | 10 | `COST_CHARGED_TOTAL` | AMOUNT | `summaries.cost_breakdown[COMMISSION]` | `BacktestResult` | `summaries` が `None` なら `Unavailable(INPUT_NOT_AVAILABLE)` | `94 JPY`（P1 入場32 ＋ P1 決済32 ＋ P2 入場30） |
 | 11 | `COST_PRICE_EMBEDDED_TOTAL` | AMOUNT | `cost_breakdown[SLIPPAGE_IN_PRICE] + cost_breakdown[SPREAD_IN_PRICE]`（参考値。balance から控除しない） | `BacktestResult` | 同上 | `940 + 1,240 = 2,180 JPY` |
 | 12 | `MAX_ADVERSE_FILL_OFFSET` | PRICE_OFFSET | エントリー約定ごとの `max(0, d × (約定価格 − 参照価格))` の最大値 | 表7、表9 | エントリー約定が無ければ `Unavailable(NO_OBSERVATIONS)` | `+1 × (150.080 − 150.060) = 0.020` |
@@ -236,7 +240,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 | `CategoryKind` | 鍵の語彙 | 入力 | T01 経路1 での値 |
 |---|---|---|---|
-| `OPPORTUNITY_TERMINAL_REASON` | D02 §8.1 の終端理由7語 | 表3（`to_state=TERMINATED` の行の `reason_code`） | `FULFILLED_BY_ORDER_ACCEPTANCE=1`、他は 0 |
+| `OPPORTUNITY_TERMINAL_REASON` | D02 §8.1 の終端理由7語に、run 末尾の終端（`RUN_END`）を加えた**8語**（v1.3） | 表3（`to_state=TERMINATED` の行の `reason_code`） | `FULFILLED_BY_ORDER_ACCEPTANCE=1`、他は 0 |
 | `ENTRY_REJECTION_REASON` | D02 §8.1 の受付前拒否6語 | 表5（`REJECTED`）× 表4（`payload_kind=ENTRY`） | 全語 0 |
 | `CLOSE_REJECTION_REASON` | 同上 | 表5 × 表4（`payload_kind=CLOSE`） | 全語 0 |
 | `EVALUATION_OUTCOME` | `EVALUATED` / `SKIPPED` / `FAILED` | 表2（`outcome_kind`） | `EVALUATED=6`、他は 0 |
@@ -246,7 +250,8 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 - **語彙が有限の集計は、0件の鍵も行として出す**【提案】。出さないと「一度も起きなかった」と「集計していない」を後から区別できない。鍵の並びは各正本（D02 §8.1、D02 §8.3、D06 §3）の宣言順に固定する。
 - 取引機会の**生成総数**は `BacktestResult.opportunity_count` をそのまま使い、集計し直さない【提案】。終端理由別の件数の合計が生成総数と一致することを警告検査（第10.2節の C6）で確かめる。run 末尾に残った機会が必ず終端する規則（D05 §7.2 の遷移9）が守られていれば一致する。
-- **語を足さない**【合意済み】第1.1節。集計に現れる語はすべて他文書が正本であり、本書は鍵として並べるだけである。
+- **語を足さない**【合意済み】第1.1節。集計に現れる語はすべて他文書が正本であり、本書は鍵として並べるだけである。**取引機会の終端理由は8語である**【確定】（v1.3、2026-09-22 の人間の決定）。起草時は D02 §8.1 の7語と書いていたが、run 末尾に残った機会を終端させる遷移（D05 §7.2 の遷移9）が `RUN_END` を使うため、実際の語彙は8語になる。正本は D02 §8.1 と D05 §7.2 の両方であり、本書は写しを持たない（実装は `strategy.runtime.opportunities` の語彙をそのまま読み、写しが原本とずれないことを機械検査する）。
+- **語彙に無い鍵が判断履歴にあったら、行として残す**【確定】（v1.3、2026-09-22 の人間の決定）。語彙の鍵を宣言順にすべて出したうえで、語彙に無い鍵をその後ろに足す。落とすと件数の合計が生成総数と合わなくなり（第10.2節の C6 が不一致になる）、なぜ合わないかも結果から読めなくなる。「語を足さない」は本書が語彙を増やさないという規則であり、**観測された事実を落としてよいという意味ではない**。
 
 ### 6.2 約定の診断（3項目）【提案】
 
@@ -322,6 +327,8 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | 状態 | `status`、`fatal_failure_count`、`warning_failure_count` |
 | 再現性 | `result_digest`（第9.2節） |
 
+**`run_manifest_ref` は入力とポリシーの群のダイジェスト（`ConfigDigest`、D06 §9.3）である**【確定】（v1.3、2026-09-22 の人間の決定）。保存した JSON のバイト列のダイジェストにはしない。保存形式を変えると参照が変わり、**同じ実行を指せなくなる**ためである。`ConfigDigest` は run 区間・snapshot・コンパイル結果・口座・4ポリシーから決まるので、保存形式に依らず同じ実行条件を指す。
+
 **実行時刻を入れない**【提案】。壁時計の時刻を入れると同じ trace から同じ成果物が出なくなり、第9.1節の再現性の条件を評価自身が壊す。いつ評価したかはファイルシステムの更新時刻で足りる。
 
 ## 9. 再現性
@@ -356,6 +363,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `ABORTED` | 探索の途中で中断された | **起きない（段階5・D09）** | — |
 
 - **正常完走していない run の指標は作らない**【合意済み】（Q6 決定、選択肢1）。数値が存在しないことで、失敗した run の値が正常完走の値と並べられる経路そのものを作らない（上位 §4.7.13 C）。**不採用**: 算出できる指標だけ出して「採用不可」の印を付ける案（選択肢2。途中までの数値を見られる代わりに、印を見落とした利用が起きうる）、常に算出して採否の判断を段階5へ委ねる案（選択肢3。単一実行の結果は一様になるが、採否の規則が段階5だけに置かれる）。
+- **拒否（`REJECTED`）の run でも整合検査を7件実施する**【確定】（v1.3、2026-09-22 の人間の決定）。実施しないのは末尾の集計と比べる検査（第10.2節の C5）**だけ**である。末尾の集計（確定損益）は正常完走した run だけが持つので（D06 §9.4）、存在しない値との比較を「不合格」として記録すると、完走しなかった run を「不整合な run」として説明することになる。残る7件は判断履歴だけで実施でき、全件を `CONSISTENCY_CHECKS` 表に残す。
 - **0取引は失敗ではない**【提案】。`COMPLETED` とし、取引に依存する指標を `Unavailable(NO_TRADES)` にする。段階4の完了条件「失敗 / 0取引も説明できる」（全体計画 §8.2）は、状態と値なしの理由の組で満たす。
 - **致命の検査が1件でも不合格なら、算出できた指標も出さない**【提案】。部分的に出すと「採用してよい数値」と「不整合な trace から出た数値」が同じ表に混ざる。**不採用**: 算出できた指標だけを出して印を付ける案（印を見落とした利用が起きる。上位 §4.7.13 C の「失敗した run の結果を正常完走の結果と同じ扱いにしない」と同じ理由で退ける）。
 
