@@ -439,7 +439,7 @@ ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_a
 | 9 | **確認足の系列がただ1つに定まること**（v1.9）: `execution_filter` 役割の使用箇所が `OnBarClose` の起動条件を1件以上持ち、その系列が1つであること。系列が定まらないと確認の開始足も期限も決まらない | `EvaluationSchedule.triggers`、`OnBarClose.series` |
 | 10 | **待機・遡りと読み方の組合せが許可されたものであること**（v1.9）: `WaitForInput` は `LatestAvailable` と `HistoryWindow` に、`UsePrevious` は **`LatestAvailable` にだけ**書ける【合意済み】上位設計書 §4.3.13 | `InputSpec.read_spec`、`MissingInputPolicy` |
 | 11 | **市場状態から取引機会への因果辺を含めて循環を検出すること**（v1.9）: `market_state` 役割がある戦略では、下表の因果辺3本目を引いたうえで #6 の循環検出を行う | 役割フィールド、`OutputSpec.data_type` |
-| 12 | **パラメータどうしの関係が成り立つこと**（v1.9）: 契約は各パラメータの範囲しか持てないため、指標部品の `window_bars >= 2 * period` のような関係は解決済みの値でしか確かめられない。関係そのものは部品の契約が持つ（D05 §4.5） | `ComponentInstance.parameters`、`ParameterSpec.bounds` |
+| 12 | **パラメータどうしの関係が成り立つこと**（v1.9）: 契約は各パラメータの範囲（`ParameterSpec.bounds`）しか持てないため、指標部品の `window_bars >= 2 * period` のような関係は解決済みの値でしか確かめられない。**関係そのものをどこに書くかは未決**であり（D05 §15 の要決定 Q22）、決まるまでこの検査は実装しない。宣言の型を足す選択肢が選ばれた場合は、本書の第7節と第3.1節に型を足したうえで第3列を埋める | 解決済みの `ComponentInstance.parameters` と、**関係の置き場所（D05 §15 の Q22 で決める）**。現在の `ParameterSpec` には関係を表す項目が無い |
 | 13 | **出力参照を履歴窓で読む接続の窓が本数で数える窓であること**（v1.9）: `OutputRef` を `HistoryWindow` で読む接続では、窓が `BarsWindow` であり解決済みの本数が 1 以上でなければならない。経過時間の窓（`DurationWindow`）は、上流の出力が出る間隔が宣言から分からず保持本数を導けないため拒否する（D05 §6.12） | `InputSpec.read_spec`（`HistoryWindow.window`）、`InputBinding.sources`、`ParameterRef` の解決結果 |
 
 **エンジン上の因果辺**【提案】。明示的な `OutputRef` だけを辺とすると、エンジンを一周して戻る帰還路を見逃す。全体計画 §5.3.4 の6 が求める「エンジン上の因果辺」を、段階2では次の2本とする。
