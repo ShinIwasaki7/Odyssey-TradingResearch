@@ -128,6 +128,29 @@ def _call(argv: list[str]) -> str:
     return output
 
 
+def run_argv(repo: Path, artifacts_root: Path, *, replace: bool = False) -> list[str]:
+    """`run` コマンドの引数（同じ成果物の基点へもう一度回す試験が使う）。"""
+    configs = repo / "configs"
+    argv = [
+        "run",
+        "--experiment",
+        str(repo / "configs/experiments/strategy_a_t01.yaml"),
+        "--calendar",
+        str(configs / "calendars/fx_ny17_v1.yaml"),
+        "--timeframes",
+        str(configs / "calendars/timeframes_v1.yaml"),
+        "--symbols",
+        str(configs / "symbols"),
+        "--snapshots",
+        str(repo / "data/snapshots"),
+        "--out",
+        str(artifacts_root),
+        "--repo-root",
+        str(REPO_ROOT),
+    ]
+    return [*argv, "--replace"] if replace else argv
+
+
 def _accept(repo: Path) -> str:
     configs = repo / "configs"
     return _call(

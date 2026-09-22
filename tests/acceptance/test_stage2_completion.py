@@ -18,11 +18,15 @@ swap / rollover を計上していないことが成果物だけから読める�
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
+import pytest
+
+from odyssey_fx.app.cli.main import main
 from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.domain.metrics import ratio_of
-from tests.acceptance.conftest import Artifacts
+from tests.acceptance.conftest import Artifacts, run_argv
 from tests.fixtures.acceptance.t01_market import EXPECTED, RUN_INTERVAL, WARMUP_END
 
 #: 判断履歴の15表（再実行の一致はこの全表で確かめる）。
@@ -364,3 +368,28 @@ def test_the_saved_artifacts_are_where_the_design_says(artifacts: Artifacts) -> 
     for table in ("METRICS", "CATEGORY_COUNTS", "TRADES", "FILL_DIAGNOSTICS", "CONSISTENCY_CHECKS"):
         assert (directory / f"{table}.parquet").is_file(), table
     assert (directory / "evaluation.json").is_file()
+
+
+def test_running_again_into_the_same_place_refuses_to_overwrite(
+    artifacts: Artifacts, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """同じ成果物の基点へもう一度回すと、既存の成果物を上書きせずに失敗する（ADR-0006）。
+
+    同じ完全入力の再実行は同じ実行の識別子になるので、`runs/<run_id>/` が既にあることは
+    ふつうに起こる。黙って上書きすると、再現性の成果物が消える。
+
+    成果物の基点は**この試験専用に作る**。通しで作った成果物を書き換えると、他の試験が
+    読む内容がこの試験の実行順に左右される。
+    """
+    root = tmp_path / "artifacts"
+    assert main(run_argv(artifacts.repo, root)) == 0
+    capsys.readouterr()
+
+    assert main(run_argv(artifacts.repo, root)) == 1
+    message = capsys.readouterr().err
+    assert "already holds artifacts" in message
+    assert "replace=True" in message
+
+    # 置換を明示すれば書き直せる。旧 manifest は記録に残る（ADR-0006）。
+    assert main(run_argv(artifacts.repo, root, replace=True)) == 0
+    assert (root / "runs" / artifacts.run_id / "manifest.replaced.json").is_file()
