@@ -624,6 +624,14 @@ def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
             f"`--run` は実行の識別子（16進64文字）を書くこと（{args.run!r}）: {exc}"
         ) from exc
 
+    if args.metric_set_version != METRIC_SET_VERSION:
+        # **式のある版だけを受ける**。版の番号だけを変えても評価は段階2 の式で走るので、
+        # 「別の指標集合で作った」と名乗る成果物ができてしまう（D07 §9.2 は版を評価の
+        # 識別子の材料にしている）。版ごとの式を足すのは段階4 以降である。
+        raise ConfigError(
+            f"指標集合の版 {args.metric_set_version} の式はまだ無い。"
+            f" この実装が持つのは版 {METRIC_SET_VERSION} だけである（D07 §5.2）"
+        )
     outcome = composition.evaluate_saved_run(
         run_id=run_id,
         artifacts_root=args.out,

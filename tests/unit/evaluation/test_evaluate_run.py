@@ -705,3 +705,33 @@ def test_a_malformed_diagnosis_column_is_reported_not_raised() -> None:
     assert report.categories == ()
     failing = [check for check in report.checks if not check.passed]
     assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        (TraceTable.FILLS, "fill_id"),
+        (TraceTable.ORDERS, "order_id"),
+        (TraceTable.ORDER_REQUESTS, "attempt_id"),
+    ],
+)
+def test_a_duplicate_primary_key_is_reported_not_silently_resolved(
+    table: TraceTable, column: str
+) -> None:
+    """主キーが重複した判断履歴は失敗として残す（D06 §9.2、D07 §9.1 の条件1）。
+
+    後に現れた行で上書きすると、同じ判断履歴でも行の並びによって辿り着く行が変わり、
+    取引・集計・指標・結果のダイジェストが変わる。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    first = tables[table][0]
+    tables[table] = [first, {**tables[table][1], column: first[column]}, *tables[table][2:]]
+
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert "must be unique" in failing[0].observed

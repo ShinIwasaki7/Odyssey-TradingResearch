@@ -81,7 +81,11 @@ from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckResult
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import ConversionRecord, PartitionId
+from odyssey_fx.marketdata.domain.snapshot import (
+    ConversionRecord,
+    PartitionId,
+    SnapshotManifest,
+)
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, CompileSucceeded
@@ -536,6 +540,31 @@ class SnapshotInputs:
         return PartitionedBars(self.partition_bars, self.allowed_partitions).bars_or_empty(series)
 
 
+def _require_matching_calendar(
+    manifest: SnapshotManifest, calendar: TradingCalendar, snapshot_id: str
+) -> None:
+    """snapshot が記録したカレンダーと同じものを使うことを確かめる（D03 §3.7）。
+
+    承認済みの足と完全性検査の報告は、受入れのときのカレンダーで作られている
+    （`SnapshotManifest.conversion` が版を記録している）。別の版のカレンダーで run を
+    組むと、休場・夏時間・セッション境界の違いが公開イベントの予定と入力不足の判定を
+    変えてしまう。**受入れをやり直さないまま結果の意味だけが変わる**ので、実行する前に
+    止める。
+
+    カレンダーを変えたいときは、そのカレンダーで受入れからやり直す（D03 §4 の 9 が
+    分類の段でそれを行う）。
+    """
+    recorded = manifest.conversion
+    if recorded.calendar_id == calendar.id and recorded.calendar_version == calendar.version:
+        return
+    raise MarketDataValueError(
+        f"snapshot {snapshot_id} was accepted with the calendar"
+        f" {recorded.calendar_id}@v{recorded.calendar_version} but the run was given"
+        f" {calendar.id}@v{calendar.version}; a different calendar changes the publication"
+        " schedule and the missing-input decisions without re-running acceptance (D03 §3.7)"
+    )
+
+
 def open_snapshot_inputs(
     *,
     snapshots_root: Path,
@@ -552,6 +581,7 @@ def open_snapshot_inputs(
     store = snapshot_store(snapshots_root)
     snapshot = store.open_readable(snapshot_id)
     manifest = snapshot.manifest
+    _require_matching_calendar(manifest, calendar, snapshot_id)
     allowed = frozenset(
         record.partition_id
         for record in manifest.partitions

@@ -393,3 +393,27 @@ def test_running_again_into_the_same_place_refuses_to_overwrite(
     # 置換を明示すれば書き直せる。旧 manifest は記録に残る（ADR-0006）。
     assert main(run_argv(artifacts.repo, root, replace=True)) == 0
     assert (root / "runs" / artifacts.run_id / "manifest.replaced.json").is_file()
+
+
+def test_a_calendar_that_the_snapshot_did_not_use_is_refused(
+    artifacts: Artifacts, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """snapshot が記録したカレンダーと違う版では run を始めない（D03 §3.7）。
+
+    承認済みの足と完全性検査の報告は受入れのときのカレンダーで作られている。別の版で
+    run を組むと、休場・夏時間・セッション境界の違いが公開イベントの予定と入力不足の
+    判定を変え、**受入れをやり直さないまま結果の意味だけが変わる**。
+    """
+    other = tmp_path / "fx_ny17_v2.yaml"
+    original = (artifacts.repo / "configs/calendars/fx_ny17_v1.yaml").read_text(encoding="utf-8")
+    # カレンダー自身の版だけを上げる（`schema_version` は設定ファイルの形式の版であって
+    # カレンダーの版ではない）。
+    assert "\nversion: 1\n" in original, original
+    other.write_text(original.replace("\nversion: 1\n", "\nversion: 2\n", 1), encoding="utf-8")
+
+    argv = run_argv(artifacts.repo, tmp_path / "artifacts")
+    argv[argv.index("--calendar") + 1] = str(other)
+    assert main(argv) == 1
+    message = capsys.readouterr().err
+    assert "fx_ny17@v1" in message
+    assert "fx_ny17@v2" in message

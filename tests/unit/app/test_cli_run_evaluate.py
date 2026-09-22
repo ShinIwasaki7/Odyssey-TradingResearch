@@ -100,3 +100,26 @@ def test_running_with_a_missing_experiment_file_fails_with_exit_code_one(
     )
     assert code == 1
     assert "設定ファイルが見つからない" in capsys.readouterr().err
+
+
+def test_an_unimplemented_metric_set_version_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """式のある版だけを受ける（D07 §5.2・§9.2）。
+
+    版の番号だけを変えても評価は段階2 の式で走るので、通してしまうと「別の指標集合で
+    作った」と名乗る成果物ができる。
+    """
+    code = main(
+        [
+            "evaluate",
+            "--run",
+            "a" * 64,
+            "--out",
+            str(tmp_path),
+            "--metric-set-version",
+            str(METRIC_SET_VERSION + 1),
+        ]
+    )
+    assert code == 1
+    assert "式はまだ無い" in capsys.readouterr().err

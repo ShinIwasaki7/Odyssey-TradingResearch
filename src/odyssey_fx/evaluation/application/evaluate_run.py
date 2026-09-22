@@ -830,12 +830,26 @@ def _ordered_snapshots(
 def _by_key(
     rows: Sequence[Mapping[str, str | None]], column: str
 ) -> dict[str, Mapping[str, str | None]]:
-    """列の値で行を引けるようにする（外部キーを辿るため）。"""
+    """列の値で行を引けるようにする（外部キーを辿るため）。
+
+    **同じ値の行が2つあれば拒否する**。後に現れた行で上書きすると、同じ判断履歴でも行の
+    並びによって辿り着く行が変わり、取引・集計・指標・結果のダイジェストが変わる
+    （D07 §9.1 の条件1 が禁じている状態）。主キーは表ごとに一意であることが D06 §9.2 で
+    確定しているので、重複は不整合である。呼び出し元は検査の範囲の中にあり、ここで
+    送出した値の誤りは必須列の検査（C1）の不合格として結果に残る。
+    """
     indexed: dict[str, Mapping[str, str | None]] = {}
     for row in rows:
         value = row.get(column)
-        if value is not None:
-            indexed[value] = row
+        if value is None:
+            continue
+        if value in indexed:
+            raise KernelValueError(
+                f"the trace column {column!r} must be unique but {value!r} appears twice"
+                " (D06 §9.2); keeping the last row would make the result depend on the row"
+                " order"
+            )
+        indexed[value] = row
     return indexed
 
 
