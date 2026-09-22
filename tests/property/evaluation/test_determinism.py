@@ -15,6 +15,7 @@ from odyssey_fx.backtest.trace.recorder import TraceTable
 from odyssey_fx.common.refs import CodeDigest, ContentDigest
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
+from odyssey_fx.evaluation.domain.status import CHECK_SNAPSHOT_ORDER_MONOTONIC
 from tests.fixtures.evaluation import traces
 
 _CODE_DIGEST = CodeDigest(digest=ContentDigest.sha256("d" * 64))
@@ -60,8 +61,16 @@ def test_the_row_order_of_the_trace_does_not_change_the_result(seed: int) -> Non
     """判断履歴の行の入力順を入れ替えても結果が変わらない（D07 §9.1 の条件1）。
 
     Parquet の格納順（書き出しの並列度や圧縮設定）に結果が依存しないことを、順序を
-    入れ替えた入力で確かめる。台帳 snapshot の並びだけは警告検査 C7 に現れるので、
-    検査の結果は比べずに指標・集計・取引・診断とダイジェストを比べる。
+    入れ替えた入力で確かめる（D07 §9.1 の条件1）。
+
+    **結果のダイジェストは比べない**。台帳 snapshot が昇順に並んでいるかを見る警告検査
+    C7 は、観測した並びそのものを `observed` に残すのが仕事であり（D07 §10.2）、その行は
+    結果のダイジェストが覆う5表の1つに入る（D07 §9.2）。したがって台帳 snapshot の格納順
+    を変えるとダイジェストは変わる。**これは意図した振る舞い**で、「格納順が指標・集計・
+    取引・診断を変えない」という条件1 とは別のことである。ここでは条件1 の対象である
+    4つの表と、C7 以外の検査7件が変わらないことを確かめる。格納順を変えていない入力で
+    ダイジェストが一致することは `test_the_same_input_twice_gives_the_same_result_digest`
+    が確かめている。
     """
     manifest = traces.manifest_for()
     baseline = _evaluate(traces.t01_tables(str(manifest.run_id)))
@@ -78,3 +87,13 @@ def test_the_row_order_of_the_trace_does_not_change_the_result(seed: int) -> Non
     assert permuted.categories == baseline.categories  # type: ignore[attr-defined]
     assert permuted.trades == baseline.trades  # type: ignore[attr-defined]
     assert permuted.fill_diagnostics == baseline.fill_diagnostics  # type: ignore[attr-defined]
+
+    # C7 以外の検査7件は格納順で変わらない。C7 だけが観測した並びを残す（D07 §10.2）。
+    def _others(report: object) -> tuple[object, ...]:
+        return tuple(
+            check
+            for check in report.checks  # type: ignore[attr-defined]
+            if check.check != CHECK_SNAPSHOT_ORDER_MONOTONIC
+        )
+
+    assert _others(permuted) == _others(baseline)
