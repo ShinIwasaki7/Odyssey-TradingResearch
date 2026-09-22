@@ -99,9 +99,15 @@ def _workspace(root: Path) -> Path:
 
     for name in ("calendars/fx_ny17_v1.yaml", "calendars/timeframes_v1.yaml"):
         _copy(CONFIGS / name, repo / "configs" / name)
-    _copy(CONFIGS / "datasources/legacy_merged_csv_v1.yaml", repo / "configs/datasources/legacy_merged_csv_v1.yaml")
+    _copy(
+        CONFIGS / "datasources/legacy_merged_csv_v1.yaml",
+        repo / "configs/datasources/legacy_merged_csv_v1.yaml",
+    )
     _copy(CONFIGS / "symbols/USDJPY.yaml", repo / "configs/symbols/USDJPY.yaml")
-    _copy(CONFIGS / "experiments/strategy_a_t01.yaml", repo / "configs/experiments/strategy_a_t01.yaml")
+    _copy(
+        CONFIGS / "experiments/strategy_a_t01.yaml",
+        repo / "configs/experiments/strategy_a_t01.yaml",
+    )
 
     calendar = market.calendar()
     for timeframe_id, definition in _TIMEFRAMES:
