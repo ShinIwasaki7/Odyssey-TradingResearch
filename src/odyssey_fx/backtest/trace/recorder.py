@@ -6,7 +6,9 @@
 1. 行そのものの型のフィールドには接頭辞を付けず、入れ子は `<フィールド名>_` を接頭辞として
    再帰的に開く。
 2. 区分タグ付き union は `kind` がそのまま列になり、列は**全変種のフィールドの和集合**、
-   その行の変種に無い列は `None` にする。
+   その行の変種に無い列は `None` にする。区分が列挙で表されている union では、他の列挙の
+   列と同じく**列挙の値**を書く（列の型が union だけ列挙のオブジェクトになると、行のある表と
+   行の無い表で列の型が食い違う）。
 3. 複合表は「正本の型」欄の先頭の型を主として接頭辞なしで開き、従の型は
    `<型名のスネークケース>_` を接頭辞にする。
 
@@ -76,6 +78,7 @@ __all__ = [
     "TraceTable",
     "canonical_text",
     "cost_columns",
+    "column_kinds",
     "column_names",
     "table_column_kinds",
     "table_columns",
@@ -380,7 +383,9 @@ def _expand(
                     continue
                 columns.update(_expand(hint, None, _join(name, field_name), kinds))
         if value is not None:
-            columns[_join(name, "kind")] = getattr(value, "kind", type(value).__name__)
+            columns[_join(name, "kind")] = _scalar_column(
+                getattr(value, "kind", type(value).__name__)
+            )
             for field_name, hint in _hints(type(value)).items():
                 if field_name == "kind":
                     continue
@@ -488,7 +493,7 @@ def flatten_union(row: object, variants: Sequence[type]) -> dict[str, object]:
             if field_name == "kind":
                 continue
             columns.update(_expand(hint, None, field_name))
-    columns["kind"] = getattr(row, "kind", type(row).__name__)
+    columns["kind"] = _scalar_column(getattr(row, "kind", type(row).__name__))
     for field_name, hint in _hints(type(row)).items():
         if field_name == "kind":
             continue
@@ -553,6 +558,23 @@ def column_names(
         for field_name, hint in _hints(secondary_type).items():
             columns.update(_expand(hint, None, _join(prefix, field_name)))
     return tuple(columns)
+
+
+def column_kinds(row_type: type, *, secondaries: Sequence[tuple[str, type]] = ()) -> dict[str, str]:
+    """行の型から、各列の**物理的な型**（`string` / `int` / `bool` / `list`）を求める。
+
+    `column_names` と対になる。行が1件も無い表でも、行のある表と同じ型で書けるように
+    するために使う（列の型が行の有無で変わると、両方を読み込むときに食い違う）。
+    """
+    kinds: dict[str, str] = {}
+    for field_name, hint in _hints(row_type).items():
+        _expand(hint, None, field_name, kinds)
+    for prefix, secondary_type in secondaries:
+        for field_name, hint in _hints(secondary_type).items():
+            _expand(hint, None, _join(prefix, field_name), kinds)
+    return {
+        name: kinds.get(name, "string") for name in column_names(row_type, secondaries=secondaries)
+    }
 
 
 def flatten_row(row: object) -> dict[str, object]:
