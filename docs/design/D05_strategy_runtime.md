@@ -157,7 +157,7 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `ValiditySnapshot` | `runtime` | レコード | `source: OutputRef` / `output_id: OutputId` / `satisfied: bool` | §7.3 |
 | `OpportunityTerminal` | `runtime` | レコード | `reason: Reason` / `at: ProcessingPoint` | §7.2 |
 | `OpportunityTransition` | `runtime` | レコード | `opportunity_id: OpportunityId` / `from_state: OpportunityState \| None` / `to_state: OpportunityState` / `at: ProcessingPoint` / `phase: PhaseRank` / `reason: Reason \| None` / `counterpart: OpportunityId \| None` / `attempt_id: AttemptId \| None` | §7.2 |
-| `MarketDataView` | `runtime.ports` | Protocol | D03 §6.2 の操作（`latest_available` / `history` / `bar` / `expected_latest_key` / `freshness`。段階3 で `history_ending_at` を足して6操作。§6.8） | §6.1 |
+| `MarketDataView` | `runtime.ports` | Protocol | D03 §6.2 の操作（段階2 の5操作＝`latest_available` / `history` / `bar` / `expected_latest_key` / `freshness`。段階3 で `history_ending_at`（§6.8）と `previous_available`（§6.9）を足して7操作） | §6.1 |
 | `RuntimeContextView` | `runtime.ports` | Protocol | `position_context(at: UtcTime, position_id: PositionId \| None) -> object \| None` / `account_context(at: UtcTime) -> object` | §6.1 |
 | `OutputSink` | `runtime.ports` | Protocol | `emit(records: tuple[OutputRecord, ...]) -> None` | §6.1 |
 | `StrategyRuntime` | `runtime` | Protocol | `step(batch: PublicationBatch) -> RuntimeStepResult` | §6.1 |
@@ -179,6 +179,8 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `SubstitutedInput` | `runtime.requests` | レコード | `input_name: str` / `source: ResolvedSource` / `used_bar_key: BarKey \| None` / `used_output_id: OutputId \| None` / `freshness_time: UtcTime` / `reason: MissingInputReason` | §6.9 |
 | `ConfirmationPlan` | `compiler` | レコード | `filter_instance: str` / `series: SeriesId` / `include_start_bar: bool` / `deadline: BarsDeadline \| DurationDeadline` / `on_deadline: DeadlineAction` | §5.3・§7.7 |
 | `OutputRetentionPlan` | `compiler` | レコード | `by_output: Mapping[OutputRef, int]`（出力参照 → 保持する本数。1 以上。読み手が1つも無い出力は載せない） | §5.3・§6.12 |
+| `ValidityRecheck` | `runtime.opportunities` | レコード | `opportunity_id: OpportunityId` / `source: OutputRef` / `mode: ValidityMode` / `at: ProcessingPoint` / `outcome: ValidityRecheckOutcome` / `output_id: OutputId \| None`（読めた出力） / `reason: Reason \| None`（読めなかったときの理由） | §7.3 |
+| `ValidityRecheckOutcome` | `runtime.opportunities` | enum | `SATISFIED` / `NOT_SATISFIED` / `MISSING_SKIPPED` / `MISSING_FAILED` | §7.3 |
 | `RetainedOutput` | `runtime.output_history` | レコード | `record: OutputRecord` / `subject: BarKey \| None` / `observation_interval: Interval \| None`（`Observation` から写した観測の識別。第6.7節） | §6.12 |
 | `ConfirmationAttempt` | `runtime.confirmation` | レコード | `opportunity_id: OpportunityId` / `bar_key: BarKey` / `request_id: RequestId` / `outcome: ConfirmationAttemptOutcome` | §7.7 |
 | `ConfirmationAttemptOutcome` | `runtime.confirmation` | enum | `CONFIRMED` / `NOT_CONFIRMED` / `SKIPPED` / `WAITING` / `SUPERSEDED` | §7.7 |
@@ -190,7 +192,7 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `CompiledRoles` | `compiler` | レコード（**改訂**） | 段階2 の6項目に `confirmation: ConfirmationPlan \| None` を足す | §5.3 |
 | `CompiledStrategy` | `compiler` | レコード（**改訂**） | 段階2 の9項目に `output_retention: OutputRetentionPlan` を足す（読み手が1つも無ければ空の `by_output`） | §5.3・§6.12 |
 | `RuntimeState` | `runtime` | レコード（**改訂**） | 段階2 の4項目に `output_history: Mapping[OutputRef, tuple[RetainedOutput, ...]]`（古い順。`OutputRetentionPlan` に載る出力参照だけを持つ）を足す | §6.5・§6.12 |
-| `RuntimeStepResult` | `runtime` | レコード（**改訂**） | 段階2 の5項目に `wait_events: tuple[WaitEvent, ...]`（既定は空）を足す | §6.8 |
+| `RuntimeStepResult` | `runtime` | レコード（**改訂**） | 段階2 の5項目に `wait_events: tuple[WaitEvent, ...]` と `validity_rechecks: tuple[ValidityRecheck, ...]`（どちらも既定は空）を足す | §6.8・§7.3 |
 
 `BarsDeadline` / `DurationDeadline` / `DeadlineAction` / `BarsWindow` / `DurationWindow` / `MissingInputReason` は D04・D02 が正本であり、本書は参照するだけである（第1.1節）。
 
@@ -600,7 +602,7 @@ D04 §12 の「段階2 で拒否する構成」のうち、**段階3 で解除�
 | `AwaitConfirmation`（確認待ちの発注方針） | **解除** | 確認評価の起動・開始足の決め方・`CONFIRMED` から先の経路を第7.7節が確定する。**期限をどの系列の確定足で数えるかだけは未決**（第15節 Q19）であり、その一点が決まるまで期限の本数の数え方は実装しない |
 | `execution_filter` が `None` でない戦略 | **解除** | 同上 |
 | `MissingInputPolicy` の `WAIT_FOR_INPUT` / `USE_PREVIOUS` | **解除** | 意味論と宣言形を第6.8節・第6.9節が確定する（D04 への追加依頼と同時） |
-| 発注要求まで有効であり続けることを求める束縛（`REQUIRE_UNTIL_ORDER_REQUEST`）に `Error` を書いた宣言 | **解除** | D04 §6.3 が「再検査の結果そのものを残す記録型を D05 v0.2 で足し、失敗の書き先ができてから解除する」と定めた。第7.7節の確認試行の記録（`ConfirmationAttempt`）と、再検査の結果を残す遷移記録がその書き先になる |
+| 発注要求まで有効であり続けることを求める束縛（`REQUIRE_UNTIL_ORDER_REQUEST`）に `Error` を書いた宣言 | **解除** | D04 §6.3 が「再検査の結果そのものを残す記録型を D05 v0.2 で足し、失敗の書き先ができてから解除する」と定めた。**第7.3節の再検査の記録（`ValidityRecheck`）がその書き先**である。4つの結末（成立・不成立・読めず見送り・読めず失敗）をすべて持つので、どの経路でも記録が1件残る |
 | 空でない `TemporalConstraints`（ウォームアップ本数・観測区間の一致） | **一部を解除** | 観測区間の一致（`AlignmentRequirement`）は守らせる仕組みを第6.7節が足すので解除する。**ウォームアップ本数（`WarmupSpec`）は拒否を続ける**（第11節の2。段階3 の指標部品は履歴窓の不足で成立し、`WarmupSpec.series` を再利用可能な契約に書けない問題が残るため） |
 | 出力参照（`OutputRef`）を履歴窓（`HistoryWindow`）で読む接続 | **本数で数える窓（`BarsWindow`）だけ解除**（Q18 決定、選択肢2） | 保持する本数と捨てる時点の規則を第6.12節が確定する。**経過時間の窓（`DurationWindow`）は拒否を続ける**。保持の上限は「接続が要求する最大の窓」から導く規則にしたが、経過時間の窓は上流の出力がどの間隔で出るかが宣言から分からず、コンパイル時に本数へ直せない（第6.12節） |
 | `RuntimeInputRef(PENDING_ORDER)` | **拒否を続ける** | 未約定注文は戦略部品へ公開しない【合意済み】上位 §4.3.14・D06 §8.4 |
@@ -608,16 +610,19 @@ D04 §12 の「段階2 で拒否する構成」のうち、**段階3 で解除�
 | 複数銘柄に跨る使用箇所 / 15m より細かい足 / 距離型 SL / 指値 / 再審査設定 | **拒否を続ける** | いずれも段階6・D10【合意済み】D04 §15 |
 | `UPDATE_STOP` | **解除** | 第4.2節・第4.10節（D04 §11.2 への追加依頼と同時） |
 
-段階3 で**新しく必要になる検査**は次の6件である【提案】。**検査項目そのものと「その検査が読む宣言」の正本は D04 §12 であり（第1.1節・第1.2節の行3）、本節はそれを確定するものではない**。ここに挙げるのは D04 §12 への**改訂提案**であり、6件は第12.1節の依頼7 として D04 の改訂で確定する。**本書が決めるのは、確定後の6件をコンパイラのどの段で実行し、失敗をどの拒否の区分で返すか**（第5.1節・第5.2節）だけである。この分担を崩して本書側で検査を確定させると、正本の検査一覧に載っていない検査が生まれ、D04 §12 だけを読んで作ったコンパイラがそれらを実施しない。**D04 の改訂が入るまでは、この6件はコンパイラに実装しない**（本 PR で D04 v1.9 へ反映済みである）。起草時は5件だったが、Q18 の決定（選択肢2）により検査 f が加わった。
+段階3 で**新しく必要になる検査**は次の7件である【提案】。**検査項目そのものと「その検査が読む宣言」の正本は D04 §12 であり（第1.1節・第1.2節の行3）、本節はそれを確定するものではない**。ここに挙げるのは D04 §12 への**改訂提案**であり、7件は第12.1節の依頼7 として D04 の改訂で確定する。**本書が決めるのは、確定後の7件をコンパイラのどの段で実行し、失敗をどの拒否の区分で返すか**（第5.1節・第5.2節）だけである。この分担を崩して本書側で検査を確定させると、正本の検査一覧に載っていない検査が生まれ、D04 §12 だけを読んで作ったコンパイラがそれらを実施しない。**D04 の改訂が入るまでは、この7件はコンパイラに実装しない**（本 PR で D04 v1.9 へ反映済みである）。起草時は5件だったが、Q18 の決定（選択肢2）により検査 f が、独立レビューの指摘により検査 g が加わった。
 
 | # | 検査（D04 §12 への改訂提案） | 検査が読む宣言（D04 §12 の第3列へ足す内容） | 本書が決める拒否の区分 |
 |---|---|---|---|
 | a | `execution_filter` 役割に接続された出力を持つ使用箇所の契約が `include_start_bar`（`BOOL`、既定値なし）を持ち、使用箇所がその値を明示していること | 役割フィールド、`ComponentContract.parameters`、`ComponentInstance.parameters` | `ROLE_MISMATCH` |
 | b | `execution_filter` 役割の使用箇所が `OnBarClose` の起動条件を1件以上持ち、**その系列がただ1つ**であること（確認足の系列が定まらないと期限も開始足も決まらない） | `EvaluationSchedule.triggers` | `SCHEDULE_NOT_ALLOWED` |
-| c | `WaitForInput` / `UsePrevious` を書いた入力の読み方が許可された組合せであること（待機は `LatestAvailable` と `HistoryWindow`、遡りは **`LatestAvailable` のみ**。上位 §4.3.13） | `InputSpec.read_spec`、`MissingInputPolicy` | `UNSUPPORTED_CONFIGURATION` |
+| c | `WaitForInput` / `UsePrevious` を書いた入力の読み方と接続元が許可された組合せであること（待機は `LatestAvailable` と `HistoryWindow`、遡りは **`LatestAvailable` かつ接続元が市場データ参照のときのみ**。上位 §4.3.13・本書 §6.9） | `InputSpec.read_spec`、`MissingInputPolicy`、`InputBinding.sources` | `UNSUPPORTED_CONFIGURATION` |
 | d | `market_state` 役割がある戦略で、取引機会を出す使用箇所と市場状態の使用箇所のあいだに**エンジン上の因果辺**を1本引き、その辺を含めて循環を検出すること（第7.6節） | 役割フィールド、`OutputSpec.data_type` | `DEPENDENCY_CYCLE` |
 | e | パラメータどうしの関係（`ema` と `atr` の `window_bars >= 2 * period`）が成り立つこと。契約は各パラメータの範囲しか持てず、関係は解決済みの値でしか確かめられない（第4.5節）。**関係そのものをどこに書くかは未決**（第15節 Q22）であり、決まるまでこの検査は実装しない。第3列は決定後に埋める | 解決済みの `ComponentInstance.parameters` と、**関係の置き場所（Q22 で決める）** | `PARAMETER_INVALID` |
 | f | 出力参照（`OutputRef`）を履歴窓（`HistoryWindow`）で読む接続の窓が**本数で数える窓（`BarsWindow`）**であり、解決済みの本数が 1 以上であること（第6.12節。Q18 決定、選択肢2） | `InputSpec.read_spec`（`HistoryWindow.window`）、`InputBinding.sources`、`ParameterRef` の解決結果 | `UNSUPPORTED_CONFIGURATION` |
+| g | **`exit` 役割の使用箇所が足の確定で起動するなら、その `OnBarClose` の系列がただ1つ**であること（次段落） | `EvaluationSchedule.triggers`、役割フィールド | `SCHEDULE_NOT_ALLOWED` |
+
+**`exit` 役割の起動系列を1つに限る**【提案】（検査 g）。1つの使用箇所に区間の違う `OnBarClose` を2件宣言すると、両方が同じ判断時点で確定したときに**区間ごとに別の評価要求**が作られる（第6.2節 手順3）。段階3 の `exit` 役割は建玉1件につき要求1件を作る（第6.11節）ので、同じ建玉について同じ判断時点に2件の損切り水準の更新（`UpdateStop`）が出る。どちらを最後に適用するかは要求の並び次第であり、**最終的な損切り水準が処理順に依存する**。役割が `OutputRef` 1件であること（D04 §11.3）だけではこれを防げない。そこで、確認部品について検査 b が置いたのと同じ制限を `exit` 役割にも置く。**不採用**: 同じ建玉への複数の更新を「最も有利な水準を採る」規則で畳む案（エンジン側に戦略の意図を選ぶ規則が増え、D06 §8.3 の適用が1件ずつでなくなる）、実行時に2件目を構造エラーで止める案（宣言から書けてしまう構成を実行時まで見つけられない）。
 
 **`CompiledRoles` に確認の計画を載せる**【提案】（第5.3節の改訂）。`CompiledRoles` に `confirmation: ConfirmationPlan | None` を足し、コンパイラが検査 a・b で読んだ値（確認部品の使用箇所、確認足の系列、`include_start_bar`、`AwaitConfirmation` の期限と期限切れの動作）を1つのレコードにまとめる。ランタイムは**この1件だけを読んで確認を制御し、`StrategyDefinition` と契約を実行時に読み直さない**（第5.3節の「ランタイムは `CompiledStrategy` だけを読む」）。`execution_filter` が `None` の戦略では `confirmation=None` であり、`entry_policy` は `ImmediateEntry` でなければならない【合意済み】D04 §10.1。**不採用**: ランタイムが実行時に契約のパラメータから `include_start_bar` を引く案（コンパイル結果だけを読む規則が崩れる）、`ConfirmationPlan` を `EntryPolicy` に持たせる案（上位設計書 §4.3.13 の「`EntryPolicy` に同じ設定を重複して置かない」に反する）。
 
@@ -631,7 +636,7 @@ D04 §12 の「段階2 で拒否する構成」のうち、**段階3 で解除�
 
 | ポート | 呼び出し形 | 備考 |
 |---|---|---|
-| `MarketDataView` | D03 §6.2 の操作（段階2 は5件、段階3 は `history_ending_at` を加えて6件） | 正本は D03。ランタイムは `at=decision_time` を必ず渡す |
+| `MarketDataView` | D03 §6.2 の操作（段階2 は5件、段階3 は `history_ending_at` と `previous_available` を加えて7件） | 正本は D03。ランタイムは `at=decision_time` を必ず渡す |
 | `RuntimeContextView` | `position_context(at, position_id)` / `account_context(at)` | `position_id` は評価要求が指す建玉（第6.2節）。`None` は「現在の建玉」を意味し、段階2の単一建玉でだけ使える。戻り値の payload の項目は D06（第12節） |
 | `OutputSink` | `emit(records)` | trace への転送はエンジン側 |
 | `StrategyRuntime` | `step(batch) -> RuntimeStepResult` | `backtest.engine` が P1〜P5 の中身として呼ぶ |
@@ -849,7 +854,7 @@ WaitForInput(
 | フィールド | 中身 | §4.3.14 のどの項目か |
 |---|---|---|
 | `request: EvaluationRequest` | 評価要求そのもの（要求 ID・使用箇所・起動条件名・判断時刻・対象区間・機会・建玉） | 評価要求 ID、部品使用箇所 ID |
-| `pinned_bars: Mapping[str, BarKey]` | 入力名ごとに固定した対象足（`LatestAvailable` なら期待される最新足の鍵、`HistoryWindow` なら窓の末尾の足の鍵） | 対象足の系列 ID と区間、解決済み入力区間 |
+| `pinned_bars: Mapping[str, BarKey]` | 入力名ごとに固定した対象足。`LatestAvailable` も `HistoryWindow` も**期待される最新足の鍵**（`expected_latest_key` が返す足）であり、`HistoryWindow` では**当該足を除く指定（`exclude_latest_bars`）を適用する前の基準足**を固定する | 対象足の系列 ID と区間、解決済み入力区間 |
 | `pinned_events: Mapping[str, tuple[EventDelivery, ...]]` | 既に配送された入力イベント。再開時には再配送されないので待機記録が持つ | 既に受け取った取引機会の内容 |
 | `opportunity: Opportunity \| None` | 受信済みの取引機会（内容は不変） | 同上 |
 | `missing: tuple[MissingInputDiagnosis, ...]` | まだ足りない入力 | 不足している入力の識別情報 |
@@ -880,7 +885,7 @@ WaitForInput(
 | 読み方 | 再開時に呼ぶ操作 |
 |---|---|
 | `LatestAvailable` | `bar(series, pinned_bars[入力名].bar_start, decision_time)`（段階2 からある操作） |
-| `HistoryWindow` | **`history_ending_at(series, resolved_window, pinned_bars[入力名].bar_start, decision_time, end_offset_bars=exclude_latest_bars)`**（段階3 で足す操作。D03 §6.2 v1.6） |
+| `HistoryWindow` | **`history_ending_at(series, resolved_window, pinned_bars[入力名].bar_start, decision_time, end_offset_bars=exclude_latest_bars)`**（段階3 で足す操作。D03 §6.2 v1.6）。`pinned_bars` が持つのは**オフセットを適用する前の基準足**なので、`end_offset_bars` をここで渡してよい。窓の末尾（オフセット適用後）を固定してからもう一度オフセットを渡すと、待機したときだけ窓が1本ぶん古い側へずれる |
 
    `history` を再開時に呼ばないのは、`history` が判断時刻から「期待される最新足」を求めて窓の末尾にするためで、再開した判断時刻で呼ぶと窓が後ろへずれ、待たなかった場合と別の足を読むからである。`at` には**再開した判断時刻**を渡す（元の判断時刻へ戻すと、遅れて届いたデータそのものが読めない）。
 5. 評価を行い、結果を下流へ配送する。`decision_time` は**再開した判断時刻**であり、元の対象足の終了時刻へ遡らせない。
@@ -912,6 +917,18 @@ UsePrevious(
 上位設計書 §4.3.13 が遡りに要求する追加条件は「遡れる足数/経過時間、実際に使った観測の記録、許可する欠損理由」の3つである。**記録はランタイムの責務**なので宣言に置かず、宣言には残る2つを置く。窓の型は D04 §6.2 の2つをそのまま使う。
 
 **許可する欠損理由を宣言で絞る**【提案】。待機（第6.8節）と扱いが逆なのは、上位設計書 §4.3.13 が「用途は許可した未取得・公開遅延等に限定し、**破損データや計算例外まで一律に過去値で隠さない**」と明記しているためである。待機は待てば解消するかどうかが理由ごとに決まる（だからランタイムの固定規則でよい）のに対し、遡りは**どこまでを「隠してよい欠損」とみなすかが戦略ごとの判断**になる。
+
+**遡る足をどう探すか**【提案】。欠けた期待足（`expected_latest_key` が返す足）の**1本手前から古い側へたどり、最初に見つかった有効な足**を使う。ランタイムはカレンダーにも時間足定義にも到達できないため（D01 §3.2 の契約 F2）、前の足の開始時刻を自分で計算できない。そこで **D03 §6.2 へ `previous_available` を足し、`MarketDataView` の契約（第3節・第6.1節）にも足す**。ポートに無い操作は呼べないので、足さないとこの節で解除した宣言を実行できない。
+
+| 事項 | 規則 |
+|---|---|
+| 呼び出し | `previous_available(series, before_bar_start=欠けた期待足の開始時刻, at=decision_time, max_lookback_bars=解決済みの遡り上限)` |
+| 本数での上限 | `BarsWindow(n)` なら `max_lookback_bars=n` をそのまま渡す |
+| 経過時間での上限 | `DurationWindow(d)` は本数へ直せないため、**ビューが返した足について `decision_time - freshness_time <= d` をランタイムが確かめる**。超えていれば遡らず、欠損のままにする。たどる本数の上限には、解決済みの窓が本数を持たない場合の安全弁として `resolved_window` が無いことを構造エラーにせず、`max_lookback_bars` に**その系列の予定足で `d` に収まる最大本数**を渡す（ビューがカレンダーから数える） |
+| 見つからなかった | 上限の範囲に有効な足が無ければ遡らず、元の欠損理由のまま `on_missing` の残りの規則（この場合は遡りが成立しなかったので見送り）に従う |
+| 出力参照の遡り | 上流の出力については `RuntimeState.latest_outputs` が最新1件しか持たないため、**遡れるのは市場データ参照だけ**とする。出力参照に `UsePrevious` を書いた宣言は `UNSUPPORTED_CONFIGURATION` で拒否する（第5.6節の検査 c に含める） |
+
+**不採用**: ランタイムが足の開始時刻を自分で数えて `bar` を繰り返し呼ぶ案（カレンダーと時間足定義の規則が市場データ層と戦略層に割れ、休場と短縮セッションで数え方が食い違う）、`latest_available` に「古い足へ戻ってよい」引数を足す案（遡りを宣言していない入力でも古い足が返る経路ができ、同節の「古い足へ黙って戻らない」が崩れる）。
 
 **適用範囲**【合意済み】上位 §4.3.13:
 
@@ -1085,7 +1102,20 @@ UsePrevious(
 
 - `SNAPSHOT_AT_OPPORTUNITY` の束縛は、機会の生成時点で読んだ `OutputRecord` を `ValiditySnapshot` として `OpportunityLifecycle` に固定し、以後更新しない。**固定は、既存の機会を置き換えるより前に行う**【提案】（v1.3）。束縛が読めずに失敗する場合（`on_missing=Error`）、先に古い機会を終端していると、置き換えた相手がひとつも公開されないまま終端の記録だけが判断履歴に残る。
 - `REQUIRE_UNTIL_ORDER_REQUEST` の束縛は、遷移8のタイミングで**その時点の最新出力**を読み直す。成立しなくなっていれば終端する。再検査で機会の内容（方向・`signal_interval`・`reference_values`）を変更しない【合意済み】ADR-0031。
-- 再検査対象が欠損していれば `ValidityBinding.on_missing` に従う。段階2の2区分では `SkipEvaluation`（今回の再検査を行わず機会を残す）か `Error`（run を失敗させる）であり、**欠損を不成立に変換しない**【合意済み】ADR-0031。待機は段階3。
+- 再検査対象が欠損していれば `ValidityBinding.on_missing` に従う。2区分では `SkipEvaluation`（今回の再検査を行わず機会を残す）か `Error`（run を失敗させる）であり、**欠損を不成立に変換しない**【合意済み】ADR-0031。待機は段階3。
+
+**再検査の結果そのものを記録に残す**【提案】（v2.0。D04 §6.3 が「再検査の結果そのものを残す記録型を D05 v0.2 で足し、失敗の書き先ができてから解除する」と定めた解除条件の実施）。`ValidityRecheck` を1回の再検査につき1件作り、`RuntimeStepResult.validity_rechecks` で返す。
+
+| `ValidityRecheckOutcome` | いつ |
+|---|---|
+| `SATISFIED` | 読めて成立していた。機会はそのまま進む |
+| `NOT_SATISFIED` | 読めて成立していなかった。遷移8 で `MARKET_STATE_INVALIDATED` で終端する |
+| `MISSING_SKIPPED` | 読めず、`on_missing=SkipEvaluation` だったので今回の再検査を行わなかった。機会は残る |
+| `MISSING_FAILED` | 読めず、`on_missing=Error` だったので run を失敗させる。`reason` に `Reason(DATA_ERROR, ...)` を入れる |
+
+**この記録が `REQUIRE_UNTIL_ORDER_REQUEST` × `Error` の能力検査を解除できる条件である**【提案】。D04 §6.3 がこの組合せを段階2 で拒否していたのは、再検査が評価の外側（発注要求を組み立てる直前、遷移8 の「P5 直前」）で走るため、**失敗を書き残す評価記録が存在しない**からだった。確認試行の記録（`ConfirmationAttempt`、第7.7節）はこの書き先にならない。確認評価の結果を表すものであり、そもそも確認を始める前に機会が終わった場合には積まないと決めているからである（第7.7節の末尾）。遷移記録（`OpportunityTransition`）も書き先にならない。条件が**不成立になった**場合しか作られず、**読めなかった**場合を表せない。`ValidityRecheck` は4つの結末をすべて持つので、どの経路でも記録が1件残る。
+
+記録の処理点（`at`）は、再検査が走った点（確認評価の P4、または `EntryProposal` を作る直前の P5）である。`ValidityRecheck` は評価記録ではないので `EvaluationId` を持たず、読めた場合の根拠は `output_id` が指す出力記録である。**不採用**: 遷移記録に「読めなかった」区分を足す案（遷移が起きていないのに遷移記録が並ぶ）、再検査の失敗を直前の評価記録へ後付けする案（評価と再検査は別の処理であり、どの評価に帰属させるかが決まらない。D04 §6.3 が既に退けている）。
 - 束縛の対象は `condition_state@v1` を出す出力に限られ、成立の判定は `ConditionState.satisfied` を読むことである【合意済み】D04 §10.2・本書 §4.2。
 
 ### 7.4 同時保持と発火の記録【提案】（ADR-0032 の実施）
@@ -1439,7 +1469,7 @@ v1.4 の本節が「本書 v0.2」としていた項目のうち、次は本改�
 | 4 | §10.1 の `BarsDeadline` の説明を「Trigger の系列の確定足で数える」から「確認足の系列の確定足で数える」へ改める | §7.7・第11節の6 | **見送り**。確認期限を数える系列の変更は**設計の選択**であり、本改訂では確定しない（第15節 Q19）。決定が出てから D04 §10.1 を改訂する。見送っても段階3 の他の改訂は進む（期限の始点・終点・記録する理由は変わらないため） |
 | 5 | §12 の段階2 拒否一覧を「段階3 で解除するもの」と「段階3 でも拒否を続けるもの」に分けた | §5.6 | **反映**。Q18 が選択肢2 で決まったため、出力参照を履歴窓で読む接続は**本数で数える窓だけ解除**の側に置いた |
 | 6 | §12 の拒否一覧の「空でない `TemporalConstraints`」を、ウォームアップ本数（拒否を続ける）と観測区間の一致（解除）に分けた | §6.7・第11節の2 | **反映** |
-| 7 | §12 の検査一覧に段階3 の検査6件を足した（確認部品の `include_start_bar`、確認足の系列の一意性、待機・遡りと読み方の組合せ、市場状態の因果辺、パラメータどうしの関係、**出力参照の履歴窓が本数で数える窓であること**） | §5.6 | **反映**。起草時は5件だったが、Q18 の決定で検査 f が加わり6件になった |
+| 7 | §12 の検査一覧に段階3 の検査7件を足した（確認部品の `include_start_bar`、確認足の系列の一意性、待機・遡りと読み方と接続元の組合せ、市場状態の因果辺、パラメータどうしの関係、**出力参照の履歴窓が本数で数える窓であること**、**`exit` 役割の起動系列が1つであること**） | §5.6 | **反映**。起草時は5件だったが、Q18 の決定で検査 f が、独立レビューの指摘で検査 g が加わり7件になった |
 | 8 | §12 の「エンジン上の因果辺」の表に、市場状態の使用箇所から取引機会を出す使用箇所への辺を足した | §7.6 | **反映**（Q10 が選択肢1） |
 | 9 | §5 の `position_context@v1` の例示に有効な損切り水準を足した（段階2 から持ち越していた改訂依頼） | 第11節の1 | **反映** |
 
@@ -1449,15 +1479,15 @@ v1.4 の本節が「本書 v0.2」としていた項目のうち、次は本改�
 |---|---|---|---|
 | 1 | §4.1 の rank 4 `OPPORTUNITY_LIFECYCLE` の内容に、待機中の評価要求の期限・追い越しの検査を足した（新しいフェーズは足さない） | §6.8・§6.10 | **反映** |
 | 2 | §4.4 の「戦略ランタイムが返した記録の処理点はエンジンの時計で番号を振り直す」の対象に、待機の出来事（`WaitEvent.at`）を足した | §6.8 | **反映** |
-| 3 | §8.3 に `UpdateStop`（トレーリング）の適用意味論を足した（どの執行足から有効か、同じ判断時点の決済要求との競合、価格刻みへの丸め方向） | §4.10 | **反映** |
-| 4 | §9.2 の trace の表に、段階3 の4表（待機の出来事・遡り・確認試行・出力の履歴の読み取り根拠）の扱いを足した | §6.8〜6.10・§6.12・§7.7 | **反映**。出力の履歴については Q18 の決定を受けて「新しい表を足さない」ことを明記した（本書 §6.12） |
+| 3 | §8.3 に `UpdateStop`（トレーリング）の適用意味論を足した（参照価格の取り方、どの執行足から有効か、同じ判断時点の決済要求との競合、価格刻みへの丸め方向） | §4.10 | **反映** |
+| 4 | §9.2 の trace の表に、段階3 の4表（待機の出来事・遡った入力・確認試行・取引機会の有効性の再検査）を足した | §6.8〜6.10・§7.3・§7.7 | **反映**。出力の履歴については Q18 の決定を受けて「新しい表を足さない」ことを明記した（本書 §6.12）。有効性の再検査の表は、独立レビューの指摘により追加した（§7.3） |
 | 5 | §10.1 の末尾処理に、run 末尾に残った待機要求の終端を足した | §6.1・§6.8 | **反映** |
 
 **D03（市場データと時刻）: 2件を反映**
 
 | # | 改訂 | 本書のどこ | 状態 |
 |---|---|---|---|
-| 1 | §6.2 に、**末尾の足を指定して履歴窓を読む操作**を足した。待機からの再開では「最初の対象足から解決した窓」を読み直す必要があるが、`history(series, window, at, end_offset_bars)` は判断時刻 `at` を基準にしか読めず、再開時には窓が後ろへずれる | §6.8 | **反映** |
+| 1 | §6.2 に、**基準の足を指定して履歴窓を読む操作**（`history_ending_at`）を足した。待機からの再開では「最初の対象足から解決した窓」を読み直す必要があるが、`history(series, window, at, end_offset_bars)` は判断時刻 `at` を基準にしか読めず、再開時には窓が後ろへずれる。あわせて、**上限つきで過去の有効足を1本探す操作**（`previous_available`）も足した（独立レビューの指摘。遡り（`USE_PREVIOUS`）を解除すると、欠けた期待足の1本手前をたどる手段が要る。§6.9） | §6.8・§6.9 | **反映** |
 | 2 | §7.2 の「`OnBarClose` の結び付け（案）」を**確定**にした | §6.8 | **反映** |
 
 **上位設計書: 1件を反映**
