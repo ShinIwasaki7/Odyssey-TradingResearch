@@ -602,3 +602,48 @@ def test_keys_outside_the_vocabulary_are_emitted_in_a_fixed_order() -> None:
     assert emitted[-2:] == ["AAA_UNKNOWN", "ZZZ_UNKNOWN"]
     assert first.categories == second.categories
     assert first.manifest.result_digest == second.manifest.result_digest
+
+
+def test_a_zero_peak_makes_the_drawdown_rate_undefined() -> None:
+    """最大値が 0 なら率は定まらない（D07 §5.2 の #6・#8、§10.3）。
+
+    0 を返すと「沈みが無かった」と「率が定まらない」を区別できない。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        {
+            **row,
+            "balance_amount": "0",
+            "equity_amount": "0" if index == 0 else "-1",
+        }
+        for index, row in enumerate(tables[TraceTable.LEDGER_SNAPSHOTS])
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    # 末尾の確定損益と合わないので致命の不合格になり、検査の表だけが出る。
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+
+    # 率の分岐そのものは、走査の結果を直接与えて確かめる。
+    from odyssey_fx.evaluation.domain.metrics import max_drawdown
+
+    fall = max_drawdown([decimal_from_str("0"), decimal_from_str("-1")])
+    assert fall is not None
+    assert fall.peak == decimal_from_str("0")
+
+
+def test_an_empty_table_with_all_its_columns_is_accepted() -> None:
+    """必須列が揃っていれば行0件の表は不整合ではない（D07 §4.3）。
+
+    列が無いことと行が0件であることを区別できないと、取引が1件も無かった正常な run と
+    壊れた表を同じに扱ってしまう。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.INTRABAR_RESOLUTIONS] = []
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.COMPLETED
+    assert report.checks[0].passed is True
+    counts = {(row.category, row.key): row.count for row in report.categories}
+    # 0件でも鍵は行として出る（D07 §6.1）。
+    assert counts[(CategoryKind.INTRABAR_METHOD, "SINGLE_HIT")] == 0
