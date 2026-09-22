@@ -850,6 +850,25 @@ def _ordered_snapshots(
     return tuple(sorted(snapshots, key=lambda item: item.at.sort_key))
 
 
+def _normalized_key(value: str | None, kind: ColumnValueKind) -> str | None:
+    """主キーの構成要素を、宣言した型に直してから比べる形にする（D06 §9.2）。
+
+    文字列のまま比べると、同じ値の別の書き方（`2026-01-06T09:00:00Z` と
+    `2026-01-06T09:00:00+00:00`、`0` と `00`）が別の鍵に見える。読み出したあとは型へ
+    直して使うので、重複の判定だけ文字列で行うと、**判定は通るのに使う側では同じ値**に
+    なる行が残り、並びで結果が変わる（D07 §9.1 の条件1）。
+    """
+    if value is None:
+        return None
+    if kind is ColumnValueKind.TIME:
+        return str(UtcTime.parse(value))
+    if kind is ColumnValueKind.INT:
+        return str(int(value))
+    if kind is ColumnValueKind.DECIMAL:
+        return str(decimal_from_str(value))
+    return value
+
+
 def _require_unique_primary_keys(reads: Mapping[TraceTable, _Rows]) -> None:
     """9表それぞれの主キーが一意であることを確かめる（D06 §9.2）。
 
@@ -862,9 +881,10 @@ def _require_unique_primary_keys(reads: Mapping[TraceTable, _Rows]) -> None:
     不合格として結果に残る。
     """
     for table, columns in _PRIMARY_KEYS.items():
+        kinds = {spec.column: spec.value_kind for spec in COLUMN_SPECS[table]}
         seen: set[tuple[str | None, ...]] = set()
         for row in reads[table].records:
-            key = tuple(row.get(column) for column in columns)
+            key = tuple(_normalized_key(row.get(column), kinds[column]) for column in columns)
             if key in seen:
                 raise KernelValueError(
                     f"the primary key {columns} of {table.value} must be unique but"

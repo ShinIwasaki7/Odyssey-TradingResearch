@@ -15,6 +15,7 @@ DataFrame はこのモジュールの外へ出さない（D01 §2.2 規則1）�
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,7 +30,11 @@ from odyssey_fx.backtest.domain.policies import (
     ResolutionHierarchy,
     RunConfig,
 )
-from odyssey_fx.backtest.trace.manifest import DataCapabilityReport, RunManifest
+from odyssey_fx.backtest.trace.manifest import (
+    DataCapabilityReport,
+    RunManifest,
+    config_digest_of,
+)
 from odyssey_fx.backtest.trace.recorder import (
     TraceTable,
     canonical_text,
@@ -145,6 +150,12 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
         for path in existing:
             if path.is_file() and path.name != "manifest.replaced.json":
                 path.unlink()
+            elif path.is_dir() and path.name == _EVALUATION_DIRECTORY:
+                # **評価の成果物も一緒に畳む**。判断履歴だけを書き直すと、同じ実行の
+                # 識別子の下に「前の判断履歴から作った指標」と「新しい判断履歴」が並ぶ。
+                # 置換を頼むのは成果物が壊れているときなので、古い指標が信用できる値として
+                # 残るのがいちばん危うい（ADR-0006）。
+                shutil.rmtree(path)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -307,13 +318,17 @@ def _result_payload(result: BacktestResult) -> dict[str, Any]:
 # --- run 成果物の読み戻し（D07 §4.1・§4.3）-----------------------------------
 
 
+#: `runs/<run_id>/` の下で評価の成果物を置くディレクトリ（D07 §8.2、Q4 決定）。
+_EVALUATION_DIRECTORY = "eval"
+
+
 def evaluation_directory(root: Path, run_id: RunId, run_evaluation_id: RunEvaluationId) -> Path:
     """`runs/<run_id>/eval/<run_evaluation_id>/`（D07 §8.2、Q4 決定）。
 
     識別子が違う成果物を同じ場所へ書かない。評価コードを変えて評価し直した結果は
     `RunEvaluationId` が別の値になるので、前の成果物を上書きしない。
     """
-    return run_directory(root, run_id) / "eval" / str(run_evaluation_id)
+    return run_directory(root, run_id) / _EVALUATION_DIRECTORY / str(run_evaluation_id)
 
 
 def _digest_of(hex_value: object, label: str) -> ContentDigest:
@@ -514,10 +529,34 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
     timeframes = _timeframes_of(payload)
     config = _run_config_of(_loads(payload["config"], "RunManifest.config"), timeframes)
     symbol_spec = _loads(payload["symbol_spec_ref"], "RunManifest.symbol_spec_ref")
+    symbol_spec_ref = SymbolSpecRef(
+        symbol=Symbol(symbol_spec["symbol"]),
+        version=int(symbol_spec["version"]),
+        digest=_digest_of(symbol_spec["digest"]["hex"], "SymbolSpecRef.digest"),
+    )
+    timeframe_def_refs = tuple(TimeframeRef.parse(item) for item in payload["timeframe_def_refs"])
+    stored_digest = ConfigDigest(_digest_of(payload["config_digest"], "ConfigDigest"))
+    recomputed = config_digest_of(
+        config,
+        symbol_spec_ref=symbol_spec_ref,
+        calendar_ref=payload["calendar_ref"],
+        timeframe_def_refs=timeframe_def_refs,
+    )
+    if recomputed != stored_digest:
+        # **設定の中身と、その指紋を別々に信じない**（D06 §9.3、ADR-0006）。`RunManifest` は
+        # 実行の識別子が4つのダイジェストから来ていることを確かめるが、設定の中身がその
+        # ダイジェストと合っているかは見ない。中身だけを書き換えた manifest を通すと、
+        # たとえば run 区間を変えるだけで指標（保有時間の割合など）が変わるのに、整合検査
+        # 8件はすべて合格し、実行と評価の識別子も同じままになる。
+        raise KernelValueError(
+            f"the run manifest records the config digest {stored_digest.digest.hex} but its"
+            f" config hashes to {recomputed.digest.hex}; the recorded settings and their"
+            " fingerprint disagree (D06 §9.3)"
+        )
     return RunManifest(
         run_id=RunId(_digest_of(payload["run_id"], "RunId")),
         config=config,
-        config_digest=ConfigDigest(_digest_of(payload["config_digest"], "ConfigDigest")),
+        config_digest=stored_digest,
         code_digest=CodeDigest(_digest_of(payload["code_digest"], "CodeDigest")),
         lock_digest=LockDigest(_digest_of(payload["lock_digest"], "LockDigest")),
         env_digest=EnvDigest(_digest_of(payload["env_digest"], "EnvDigest")),
@@ -537,15 +576,9 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
         unresolved_intrabar_ratio=decimal_from_str(payload["unresolved_intrabar_ratio"]),
         swap_modeled=bool(payload["swap_modeled"]),
         status=payload["status"],
-        symbol_spec_ref=SymbolSpecRef(
-            symbol=Symbol(symbol_spec["symbol"]),
-            version=int(symbol_spec["version"]),
-            digest=_digest_of(symbol_spec["digest"]["hex"], "SymbolSpecRef.digest"),
-        ),
+        symbol_spec_ref=symbol_spec_ref,
         calendar_ref=payload["calendar_ref"],
-        timeframe_def_refs=tuple(
-            TimeframeRef.parse(item) for item in payload["timeframe_def_refs"]
-        ),
+        timeframe_def_refs=timeframe_def_refs,
         git_commit=payload["git_commit"],
         git_dirty=bool(payload["git_dirty"]),
         reason=_reason_of(payload.get("reason")),

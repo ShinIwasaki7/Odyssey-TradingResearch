@@ -20,6 +20,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultWriter,
     FileSystemTraceSink,
     evaluation_directory,
+    reserve_run_directory,
     run_directory,
 )
 from odyssey_fx.evaluation.application.evaluate_run import COLUMN_SPECS, EvaluateRun
@@ -238,3 +239,45 @@ def test_a_result_that_names_another_run_is_refused(saved_run: tuple[Path, objec
 
     with pytest.raises(KernelValueError, match="different run"):
         FileSystemResultRepository(root=root).read_result(run_id)
+
+
+def test_a_manifest_whose_config_was_edited_is_refused(saved_run: tuple[Path, object]) -> None:
+    """設定の中身とその指紋を別々に信じない（D06 §9.3、ADR-0006）。
+
+    `RunManifest` は実行の識別子が4つのダイジェストから来ていることを確かめるが、設定の
+    中身がそのダイジェストと合っているかは見ない。中身だけを書き換えた manifest を通すと、
+    run 区間を変えるだけで指標が変わるのに、整合検査8件はすべて合格し、実行と評価の
+    識別子も同じままになる。
+    """
+    root, output = saved_run
+    run_id = output.manifest.run_id  # type: ignore[attr-defined]
+    path = run_directory(root, run_id) / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["config"] = payload["config"].replace("2026-01-06T12:00:00Z", "2026-01-06T13:00:00Z")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(KernelValueError, match="fingerprint disagree"):
+        FileSystemResultRepository(root=root).read_manifest(run_id)
+
+
+def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, object]) -> None:
+    """置換のときは評価の成果物も畳む（ADR-0006）。
+
+    判断履歴だけを書き直すと、同じ実行の識別子の下に「前の判断履歴から作った指標」と
+    「新しい判断履歴」が並ぶ。置換を頼むのは成果物が壊れているときなので、古い指標が
+    信用できる値として残るのがいちばん危うい。
+    """
+    root, output = saved_run
+    repository = FileSystemResultRepository(root=root)
+    result = repository.read_result(output.result.run_id)  # type: ignore[attr-defined]
+    report = EvaluateRun(
+        evaluation_code_digest=output.manifest.code_digest  # type: ignore[attr-defined]
+    ).evaluate(result, repository, METRIC_SET_VERSION)
+    repository.write_evaluation(report, report.rows)
+    evaluations = run_directory(root, result.run_id) / "eval"
+    assert list(evaluations.iterdir()), "評価の成果物が保存されていない"
+
+    reserve_run_directory(root, result.run_id, replace=True)
+
+    assert not evaluations.exists(), "古い評価の成果物が残っている"
+    assert (run_directory(root, result.run_id) / "manifest.replaced.json").is_file()

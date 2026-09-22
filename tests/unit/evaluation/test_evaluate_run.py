@@ -791,3 +791,31 @@ def test_two_ledger_snapshots_at_the_same_point_are_refused() -> None:
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
+
+
+def test_the_same_moment_written_two_ways_counts_as_one_key() -> None:
+    """主キーの構成要素は宣言した型に直してから比べる（D06 §9.2、D07 §9.1 の条件1）。
+
+    文字列のまま比べると `2026-01-06T09:00:00Z` と `2026-01-06T09:00:00+00:00` が別の鍵に
+    見えるが、読み出したあとは同じ処理点になる。判定だけ文字列で行うと、**判定は通るのに
+    使う側では同じ値**になる行が残り、並びで最大ドローダウンが変わる。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    first = tables[TraceTable.LEDGER_SNAPSHOTS][0]
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        first,
+        {
+            **first,
+            "at_time": "2026-01-06T09:00:00+00:00",
+            "balance_amount": "999999",
+            "equity_amount": "999999",
+        },
+        *tables[TraceTable.LEDGER_SNAPSHOTS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert "must be unique" in failing[0].observed
