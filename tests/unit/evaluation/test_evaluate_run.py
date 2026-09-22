@@ -30,7 +30,6 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     TradeOutcome,
     Unavailable,
-    ratio_of,
 )
 from odyssey_fx.evaluation.domain.status import (
     CHECK_ID_CHAIN_COMPLETE,
@@ -120,13 +119,7 @@ def test_the_balance_drawdown_matches_the_paper_trace(report: EvaluationReport) 
 
 
 def test_the_exposure_rate_of_the_closed_trade_matches_the_paper_trace() -> None:
-    """#9: 完了取引だけなら `8,100 ÷ 1,036,800 = 0.0078125`（D07 §5.2 の検算値）。
-
-    D07 §5.2 の検算値は、T01 が残存建玉の入場時刻を定めていないため**完了取引の保有時間
-    だけ**を数えた値である。実装は同じ節の式の本文どおり「未決済建玉は run 末尾までを
-    数える」ので、残存建玉があると値が変わる（次のテスト）。どちらを正本にするかは人間の
-    決定を要する。
-    """
+    """#9: 完了取引だけを数えて `8,100 ÷ 1,036,800 = 0.0078125`（D07 §5.2 の検算値）。"""
     manifest = traces.manifest_for()
     repository = traces.repository_for(
         traces.closed_trade_only(str(manifest.run_id)), manifest=manifest
@@ -135,15 +128,13 @@ def test_the_exposure_rate_of_the_closed_trade_matches_the_paper_trace() -> None
     assert _ratio(report, MetricId.EXPOSURE_RATE) == decimal_from_str("0.0078125")
 
 
-def test_the_exposure_rate_counts_the_open_position_to_the_run_end(
-    report: EvaluationReport,
-) -> None:
-    """#9: 残存建玉は run 末尾までを数える（D07 §5.2 の式の本文）。
+def test_the_exposure_rate_ignores_the_open_position(report: EvaluationReport) -> None:
+    """#9: 未決済建玉は数えない（D07 §5.2、2026-09-22 の人間の決定）。
 
-    完了取引 8,100 秒 ＋ 残存建玉 734,400 秒（木曜 10:00Z → 金曜 22:00Z）を 12 日で割る。
+    T01 第9節の run は完了取引1件と残存建玉1件を持つが、残存建玉の 734,400 秒
+    （木曜 10:00Z → 金曜 22:00Z）は分子に入らないので、完了取引だけの run と同じ値になる。
     """
-    expected = ratio_of(decimal_from_str("742500"), decimal_from_str("1036800"))
-    assert _ratio(report, MetricId.EXPOSURE_RATE) == expected
+    assert _ratio(report, MetricId.EXPOSURE_RATE) == decimal_from_str("0.0078125")
 
 
 def test_the_cost_metrics_match_the_paper_trace(report: EvaluationReport) -> None:

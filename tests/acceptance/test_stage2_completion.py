@@ -27,7 +27,7 @@ from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.domain.metrics import ratio_of
 from tests.acceptance.conftest import Artifacts, run_argv
-from tests.fixtures.acceptance.t01_market import EXPECTED, RUN_INTERVAL, WARMUP_END
+from tests.fixtures.acceptance.t01_market import EXPECTED, WARMUP_END
 
 #: 判断履歴の15表（再実行の一致はこの全表で確かめる）。
 _TRACE_TABLES = (
@@ -171,14 +171,11 @@ def test_the_final_summaries_match_the_paper_trace(artifacts: Artifacts) -> None
 
 
 def test_the_metrics_match_the_paper_trace_check_values(artifacts: Artifacts) -> None:
-    """D07 §5.2 の「T01 検算」の値と一致する（15件のうち14件）。
+    """D07 §5.2 の「T01 検算」の値と一致する（15件すべて）。
 
-    残る1件は建玉を保有していた時間の割合（`EXPOSURE_RATE`）である。D07 §5.2 は式の本文で
-    「未決済建玉は run 末尾までを数える」と定めており、この実装はそのとおりに数えるが、
-    同表の検算値 `0.0078125` は**完了した取引の保有時間だけ**を数えた値である（T01 は残存
-    建玉の入場時刻を定めていないため、検算値に残存分を入れられなかった）。どちらの読み方を
-    正本にするかは人間の決定を要する（PR 本文の仮置き事項）。値そのものの検算は
-    `test_the_exposure_rate_counts_the_open_position_to_the_run_end` で行う。
+    建玉を保有していた時間の割合（`EXPOSURE_RATE`）は、2026-09-22 の人間の決定により
+    **完了取引だけ**を数える（D07 §5.2 v1.3）。値そのものの検算は
+    `test_the_exposure_rate_counts_only_the_closed_trade` で行う。
     """
     assert _amount(artifacts, "NET_PROFIT") == EXPECTED.realized
     assert _amount(artifacts, "CLOSED_TRADE_PROFIT") == EXPECTED.trade1_realized
@@ -206,22 +203,18 @@ def test_the_metrics_match_the_paper_trace_check_values(artifacts: Artifacts) ->
     assert _ratio(artifacts, "NET_RETURN_RATE") == decimal_from_str("0.036706")
 
 
-def test_the_exposure_rate_counts_the_open_position_to_the_run_end(
-    artifacts: Artifacts,
-) -> None:
+def test_the_exposure_rate_counts_only_the_closed_trade(artifacts: Artifacts) -> None:
     """建玉を保有していた時間の割合（D07 §5.2 の #9）を手計算と照合する。
 
-    完了取引の保有時間（2時間15分 = 8,100 秒）に、残存建玉の入場から run 末尾まで
-    （木曜 10:00Z → 金曜 22:00Z = 734,400 秒）を足し、run 区間の長さ（12 日 =
-    1,036,800 秒）で割る。
+    完了取引の保有時間（2時間15分 = 8,100 秒）だけを、run 区間の長さ（12 日 =
+    1,036,800 秒）で割る。**残存建玉の保有時間は数えない**（2026-09-22 の人間の決定。
+    D07 §5.2 v1.3）。run 末尾に残っている建玉 P2 は分子に入らない。
     """
-    open_entry = UtcTime.parse("2015-01-08T10:00:00Z")
-    held_seconds = int(EXPECTED.holding1.total_seconds()) + int(
-        (RUN_INTERVAL.end - open_entry).total_seconds()
-    )
-    assert held_seconds == 742_500
+    held_seconds = int(EXPECTED.holding1.total_seconds())
+    assert held_seconds == 8_100
     # 比率は除算を1回だけカーネル精度で行う規則（D07 §5.1）に合わせて期待値を作る。
     expected = ratio_of(decimal_from_str(str(held_seconds)), decimal_from_str("1036800"))
+    assert expected == decimal_from_str("0.0078125")
     assert _ratio(artifacts, "EXPOSURE_RATE") == expected
 
 

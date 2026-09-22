@@ -10,12 +10,15 @@
 段階2の指標15件はすべて判断履歴と manifest から作れるので、市場データを読む経路を作ると
 as-of の規則とアクセス分類の許可が評価側にも割れる（D07 §4.1）。
 
-**D07 §4.2 の読む列に3列だけ足している**。`POSITIONS.opened_at_phase` /
-`opened_at_sequence` と `FILLS.processed_at_phase` / `processed_at_sequence` である。
-D07 §3 の `TradeRecord.entry_at` / `exit_at` は `ProcessingPoint` 型であり、処理点は
-`(時刻, フェーズ, 通し番号)` の3つで1つなので、時刻の列だけでは宣言された型を組み立て
-られない（`TRADES` 表の整列鍵 `(entry_at, position_id)` もこの3つで決まる）。フェーズの
-順位は run manifest が記録しているフェーズ集合から引く（D06 §9.3）。
+**読む列は D07 §4.2（v1.3）の表がそのまま正本である**。起草時の表に無かった8列は
+2026-09-22 の人間の決定で §4.2 へ取り込まれた。内訳は処理点を組み立てる7列
+（`POSITIONS.opened_at_phase` / `opened_at_sequence`、`FILLS.processed_at_phase` /
+`processed_at_sequence`、`OPPORTUNITY_TRANSITIONS.at_time` / `at_phase` / `at_sequence`）と、
+不利約定幅の符号に要る `ORDERS.side` である。処理点は `(時刻, フェーズ, 通し番号)` の3つで
+1つなので（D07 §3 の `TradeRecord.entry_at` / `exit_at` は `ProcessingPoint` 型、
+`OPPORTUNITY_TRANSITIONS` の主キーは `(opportunity_id, at)`）、時刻の列だけでは宣言された型
+も主キーも組み立てられない。フェーズの順位は run manifest が記録しているフェーズ集合から
+引く（D06 §9.3）。
 """
 
 from __future__ import annotations
@@ -1277,7 +1280,7 @@ def _build_metrics(
         records.append(make(rate_id, rate, len(series)))
 
     # #9 建玉を保有していた時間の割合。
-    records.append(make(MetricId.EXPOSURE_RATE, *_exposure(reads, phases, manifest, trades)))
+    records.append(make(MetricId.EXPOSURE_RATE, *_exposure(manifest, trades)))
 
     # #10・#11 費用の集計（末尾の集計から取る）。
     records.append(
@@ -1368,34 +1371,21 @@ def _cost(
 
 
 def _exposure(
-    reads: Mapping[TraceTable, _Rows],
-    phases: Mapping[str, PhaseRank],
     manifest: RunManifest,
     trades: Sequence[TradeRecord],
 ) -> tuple[MetricValue, int]:
-    """建玉を保有していた時間の割合（D07 §5.2 の #9）。
+    """建玉を保有していた時間の割合（D07 §5.2 の #9、2026-09-22 の人間の決定）。
 
-    保有時間は入場約定の処理時刻から決済約定の処理時刻まで。**未決済建玉は run 末尾までを
-    数える**（D07 §5.2 の式）。建玉が1件も無ければ保有時間0は観測された事実なので
-    `RatioValue(0)` とし、値なしにしない。
+    **完了取引（`status=CLOSED`）だけを数える**。保有時間は入場約定の処理時刻から決済約定の
+    処理時刻までで、未決済建玉は含めない。D07 §5.2 の冒頭が `Σ` を「完了した取引についての
+    合計」と定めており、同表の検算値 `0.0078125` もその読み方の値である。建玉が1件も無ければ
+    保有時間0は観測された事実なので `RatioValue(0)` とし、値なしにしない。
     """
-    fills = _by_key(reads[TraceTable.FILLS].records, "fill_id")
     run_interval = manifest.config.run_interval
     held = decimal_from_int(0)
     observations = 0
     for trade in trades:
         held = held + _microseconds(trade.holding)
-        observations += 1
-    for row in reads[TraceTable.POSITIONS].records:
-        if row.get("status") == _CLOSED:
-            continue
-        entry_fill_id = row.get("entry_fill_id")
-        entry_fill = None if entry_fill_id is None else fills.get(entry_fill_id)
-        if entry_fill is None:
-            continue
-        opened_at = _time(entry_fill, "processed_at_time")
-        if opened_at < run_interval.end:
-            held = held + _microseconds(run_interval.end - opened_at)
         observations += 1
     if observations == 0:
         return RatioValue(decimal_from_int(0)), 0
