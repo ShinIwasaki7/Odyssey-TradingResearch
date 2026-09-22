@@ -648,3 +648,40 @@ def test_an_empty_table_with_all_its_columns_is_accepted() -> None:
     counts = {(row.category, row.key): row.count for row in report.categories}
     # 0件でも鍵は行として出る（D07 §6.1）。
     assert counts[(CategoryKind.INTRABAR_METHOD, "SINGLE_HIT")] == 0
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "value"),
+    [
+        (TraceTable.LEDGER_SNAPSHOTS, "at_time", None),
+        (TraceTable.LEDGER_SNAPSHOTS, "at_phase", "NOT_A_PHASE"),
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "not-a-number"),
+        (TraceTable.POSITIONS, "side", "SIDEWAYS"),
+        (TraceTable.POSITIONS, "position_id", None),
+        (TraceTable.FILLS, "processed_at_sequence", None),
+    ],
+)
+def test_a_value_that_cannot_be_read_is_reported_not_raised(
+    table: TraceTable, column: str, value: str | None
+) -> None:
+    """読めない値で評価を中断しない（D07 §4.3 の趣旨）。
+
+    列は揃っていても、常に埋まるはずの値が空・語彙に無い列挙・十進数として読めない
+    文字列は起こりうる。例外のまま外へ出すと、失敗を説明する検査の表も評価 manifest も
+    残らず、「なぜ評価できなかったか」が成果物から消える。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[table] = [{**tables[table][0], column: value}, *tables[table][1:]]
+
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    assert report.trades == ()
+    assert report.fill_diagnostics == ()
+    # 失敗の理由が成果物だけで説明できる（検査の表に1件だけ不合格が残る）。
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert failing[0].observed, "読めなかった理由が観測値に残らないと説明できない"
+    assert report.manifest.fatal_failure_count >= 1

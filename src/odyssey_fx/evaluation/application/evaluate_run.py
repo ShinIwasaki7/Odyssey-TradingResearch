@@ -415,18 +415,43 @@ class EvaluateRun:
         metrics: tuple[MetricRecord, ...] = ()
 
         if readable.passed:
-            trades = _build_trades(reads, phases)
-            diagnostics = _build_fill_diagnostics(reads, phases)
-            checks.append(_check_trade_count(result, trades))
-            checks.append(_check_id_chain(reads, trades))
-            if result.status is RunStatus.COMPLETED:
-                # 末尾の集計は正常完走した run だけが持つ（D06 §9.4）。存在しない値との
-                # 比較を「不合格」として記録すると、完走しなかった run を「不整合な run」
-                # として説明することになるので、この検査は行わない（D07 §10.1 の REJECTED）。
-                checks.append(_check_realized_matches_balance(result, manifest, reads))
-            checks.append(_check_opportunity_count(result, reads))
-            checks.append(_check_snapshot_order(reads, phases))
-            checks.append(_check_account_currency(result, currency, reads))
+            try:
+                trades = _build_trades(reads, phases)
+                diagnostics = _build_fill_diagnostics(reads, phases)
+                checks.append(_check_trade_count(result, trades))
+                checks.append(_check_id_chain(reads, trades))
+                if result.status is RunStatus.COMPLETED:
+                    # 末尾の集計は正常完走した run だけが持つ（D06 §9.4）。存在しない値
+                    # との比較を「不合格」として記録すると、完走しなかった run を「不整合な
+                    # run」として説明することになるので、この検査は行わない
+                    # （D07 §10.1 の REJECTED）。
+                    checks.append(_check_realized_matches_balance(result, manifest, reads))
+                checks.append(_check_opportunity_count(result, reads))
+                checks.append(_check_snapshot_order(reads, phases))
+                checks.append(_check_account_currency(result, currency, reads))
+            except (KernelValueError, ValueError) as exc:
+                # **列の値が読めないことで評価を中断しない**（D07 §4.3 の趣旨）。列は
+                # 揃っていても、常に埋まるはずの値が空・語彙に無い列挙・十進数として
+                # 読めない文字列は起こりうる。例外のまま外へ出すと、失敗を説明する検査の
+                # 表も評価 manifest も残らず、「なぜ評価できなかったか」が成果物から
+                # 消える。読めなかったことを C1 の不合格として記録し、行を見る残りの検査は
+                # 行わない（読めない値の上に積んだ比較は意味を持たない）。
+                #
+                # **設計文書との差異**: D07 §10.2 の C1 は「9表があり、必須列が欠けて
+                # いない」だけを見るとしている。値が読めないことも同じ検査へ寄せたのは、
+                # 8件の検査を増やさずに「読み出しの失敗は必ず結果に残る」を満たすためで
+                # ある（PR 本文の仮置き事項）。
+                readable = _result_of(
+                    CHECK_REQUIRED_COLUMNS_PRESENT,
+                    passed=False,
+                    expected=canonical_text(
+                        "every declared column holds a value the design says is always present"
+                    ),
+                    observed=canonical_text(f"{type(exc).__name__}: {exc}"),
+                )
+                checks = [readable, *(item for item in checks[1:] if item.check != readable.check)]
+                trades = ()
+                diagnostics = ()
 
         checks.sort(key=lambda item: CHECK_ORDER.index(item.check))
         fatal = sum(1 for item in checks if not item.passed and item.level is CheckLevel.FATAL)
