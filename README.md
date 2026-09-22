@@ -3,8 +3,9 @@
 FX 戦略研究のための基盤。戦略基盤・バックテスト基盤・評価基盤と、それらが共有する
 共通カーネル・市場データ/時刻基盤を、境界付きコンテキストごとのパッケージとして構築する。
 
-**現状は段階−1（基盤整備）**。骨格・ツール設定・CI のみで、業務ロジックは未実装。
-各型と計算規則は設計文書の承認後に実装する。
+**現状は段階2（最小縦断）**。市場データの受入れから、戦略定義・注文・約定・単一実行の評価
+までがコマンドとして通る。実データでの実行と複数実行の比較は段階4以降であり、まだ無い。
+各型と計算規則は設計文書の承認後に実装する（CLAUDE.md）。
 
 ## セットアップ
 
@@ -14,6 +15,41 @@ Python は uv 管理の 3.12.13 に固定している（ADR-0009 / ADR-0010）�
 ```bash
 uv sync
 ```
+
+## コマンド
+
+入口は `odyssey-fx`（`uv run odyssey-fx --help`）。市場データの受入れ3つと、単一実行の
+実行・評価2つがある。
+
+```bash
+# 1. 原ファイルを受け入れて暫定 snapshot を作る（D03 §4 の 1〜8）
+uv run odyssey-fx data accept \
+    --datasource configs/datasources/legacy_merged_csv_v1.yaml \
+    --calendar configs/calendars/fx_ny17_v1.yaml \
+    --timeframes configs/calendars/timeframes_v1.yaml \
+    --symbols configs/symbols --out data/snapshots
+
+# 2. 欠落区間の分類を記入して確定する（D03 §4 の 9）
+uv run odyssey-fx data classify --pending <暫定 ID> \
+    --decisions <分類ファイル> --out data/snapshots
+
+# 3. 承認を記入する。承認するまで読み取り対象にならない（D03 §3.7.1）
+uv run odyssey-fx data approve --snapshot <最終 ID> --by <名前> --out data/snapshots
+
+# 4. 実験設定から1回の run を実行する（D06 §4.2）。判断履歴15表と manifest を
+#    runs/<run_id>/ へ書く。実験設定の `snapshot` は 3 で承認した識別子に書き換える
+uv run odyssey-fx run --experiment configs/experiments/strategy_a_t01.yaml \
+    --calendar configs/calendars/fx_ny17_v1.yaml \
+    --timeframes configs/calendars/timeframes_v1.yaml \
+    --symbols configs/symbols --snapshots data/snapshots
+
+# 5. 保存済みの run を評価する（D07 §4・§8）。指標・集計・取引・診断・整合検査の5表と
+#    評価 manifest を runs/<run_id>/eval/<評価 ID>/ へ書く
+uv run odyssey-fx evaluate --run <run_id>
+```
+
+**評価は run を実行し直さない**。保存された判断履歴と実行条件だけを読むので、同じ run を
+別の指標集合の版で評価し直しても `runs/` の下の判断履歴は変わらない（D07 §4.1）。
 
 ## 検査
 
@@ -53,5 +89,10 @@ runs/             実行成果物（git 管理外）
 | [docs/design/D01_architecture_and_dependency_rules.md](docs/design/D01_architecture_and_dependency_rules.md) | アーキテクチャ・依存規則・ディレクトリ構成（承認 2026-09-19） |
 | [docs/design/D02_common_kernel.md](docs/design/D02_common_kernel.md) | 共通カーネル型設計（承認 2026-09-20） |
 | [docs/design/D03_marketdata_and_time.md](docs/design/D03_marketdata_and_time.md) | 市場データ・時刻基盤設計（承認 2026-09-20） |
+| [docs/design/D04_strategy_declarations.md](docs/design/D04_strategy_declarations.md) | 戦略宣言の型設計（承認 2026-09-21） |
+| [docs/design/D05_strategy_runtime.md](docs/design/D05_strategy_runtime.md) | 戦略ランタイム設計（承認 2026-09-21） |
+| [docs/design/D06_backtest_vertical_slice.md](docs/design/D06_backtest_vertical_slice.md) | バックテストの最小縦断設計（承認 2026-09-21） |
+| [docs/design/D07_single_run_evaluation.md](docs/design/D07_single_run_evaluation.md) | 単一実行の評価境界設計（承認 2026-09-21） |
+| [docs/traces/T01_paper_trace.md](docs/traces/T01_paper_trace.md) | 紙上トレース（検証戦略 A・B の期待値の正本） |
 | [docs/decisions/](docs/decisions/README.md) | ADR。技術選定・構成・運用の決定を1件1ファイルで記録 |
 | [docs/pr_review_policy.md](docs/pr_review_policy.md) | PR レビュー方針（Codex review の運用、指摘の分類） |
