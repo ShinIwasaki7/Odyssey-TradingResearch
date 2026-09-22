@@ -34,7 +34,15 @@ from odyssey_fx.backtest.trace.recorder import TraceTable, canonical_text, flatt
 from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, RunStatus
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import FillId, OpportunityId, OrderId, PositionId
+from odyssey_fx.common.ids import (
+    AttemptId,
+    EvaluationId,
+    FillId,
+    OpportunityId,
+    OrderId,
+    PositionId,
+    SequentialId,
+)
 from odyssey_fx.common.money import (
     CurrencyCode,
     Money,
@@ -850,16 +858,37 @@ def _ordered_snapshots(
     return tuple(sorted(snapshots, key=lambda item: item.at.sort_key))
 
 
-def _normalized_key(value: str | None, kind: ColumnValueKind) -> str | None:
+#: 主キーに現れる連番 ID の列と、その型（D02 §7.1、D06 §9.2）。
+#: 書き方の揺れ（`FIL:00000001` と `FIL:000000001`）を同じ鍵として扱うために使う。
+_KEY_ID_TYPES: Final[dict[str, type[SequentialId]]] = {
+    "evaluation_id": EvaluationId,
+    "opportunity_id": OpportunityId,
+    "attempt_id": AttemptId,
+    "order_id": OrderId,
+    "fill_id": FillId,
+    "position_id": PositionId,
+}
+
+
+def _normalized_key(column: str, value: str | None, kind: ColumnValueKind) -> str:
     """主キーの構成要素を、宣言した型に直してから比べる形にする（D06 §9.2）。
 
     文字列のまま比べると、同じ値の別の書き方（`2026-01-06T09:00:00Z` と
-    `2026-01-06T09:00:00+00:00`、`0` と `00`）が別の鍵に見える。読み出したあとは型へ
-    直して使うので、重複の判定だけ文字列で行うと、**判定は通るのに使う側では同じ値**に
-    なる行が残り、並びで結果が変わる（D07 §9.1 の条件1）。
+    `2026-01-06T09:00:00+00:00`、`FIL:00000001` と `FIL:000000001`、`0` と `00`）が別の鍵
+    に見える。読み出したあとは型へ直して使うので、重複の判定だけ文字列で行うと、**判定は
+    通るのに使う側では同じ値**になる行が残り、並びで結果が変わる（D07 §9.1 の条件1）。
+
+    **空の構成要素は鍵として認めない**。主キーは行を一意に指すためのものなので、欠けた
+    まま数えると、主キーを持たない行が集計と指標へ入る（D06 §9.2）。
     """
     if value is None:
-        return None
+        raise KernelValueError(
+            f"the primary key column {column!r} must not be empty; a row without a primary"
+            " key cannot be told apart from another (D06 §9.2)"
+        )
+    id_type = _KEY_ID_TYPES.get(column)
+    if id_type is not None:
+        return str(id_type.parse(value))
     if kind is ColumnValueKind.TIME:
         return str(UtcTime.parse(value))
     if kind is ColumnValueKind.INT:
@@ -882,9 +911,11 @@ def _require_unique_primary_keys(reads: Mapping[TraceTable, _Rows]) -> None:
     """
     for table, columns in _PRIMARY_KEYS.items():
         kinds = {spec.column: spec.value_kind for spec in COLUMN_SPECS[table]}
-        seen: set[tuple[str | None, ...]] = set()
+        seen: set[tuple[str, ...]] = set()
         for row in reads[table].records:
-            key = tuple(_normalized_key(row.get(column), kinds[column]) for column in columns)
+            key = tuple(
+                _normalized_key(column, row.get(column), kinds[column]) for column in columns
+            )
             if key in seen:
                 raise KernelValueError(
                     f"the primary key {columns} of {table.value} must be unique but"

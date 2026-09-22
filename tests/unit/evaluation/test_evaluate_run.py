@@ -819,3 +819,46 @@ def test_the_same_moment_written_two_ways_counts_as_one_key() -> None:
     failing = [check for check in report.checks if not check.passed]
     assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
     assert "must be unique" in failing[0].observed
+
+
+def test_the_same_identifier_written_two_ways_counts_as_one_key() -> None:
+    """連番 ID の書き方の揺れも同じ鍵として扱う（D02 §7.1、D06 §9.2）。
+
+    `FIL:00000001` と `FIL:000000001` は同じ約定を指すが、文字列のまま比べると別の鍵に
+    見える。判定だけ通ると、同じ約定の診断が2行になり、並びで結果のダイジェストが変わる。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    first = tables[TraceTable.FILLS][0]
+    tables[TraceTable.FILLS] = [
+        first,
+        {**first, "fill_id": "FIL:000000001"},
+        *tables[TraceTable.FILLS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert "must be unique" in failing[0].observed
+
+
+def test_a_row_without_a_primary_key_is_refused() -> None:
+    """主キーの構成要素が空の行は鍵として認めない（D06 §9.2）。
+
+    欠けたまま数えると、主キーを持たない行が集計と指標へ入る。必須列の検査は列の有無しか
+    見ないので、ここで止めないと評価が完了してしまう。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.EVALUATIONS] = [
+        {**tables[TraceTable.EVALUATIONS][0], "evaluation_id": None},
+        *tables[TraceTable.EVALUATIONS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    assert report.categories == ()
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert "must not be empty" in failing[0].observed

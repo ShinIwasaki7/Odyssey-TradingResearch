@@ -215,10 +215,14 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
             ),
         ],
         TraceTable.OPPORTUNITY_TRANSITIONS: [
+            # 主キーは `(opportunity_id, at)`（D06 §9.2）。処理点は3列で1つの値である。
             _row(
                 TraceTable.OPPORTUNITY_TRANSITIONS,
                 run_id,
                 opportunity_id="OPP:00000001",
+                at_time="2026-01-06T09:00:00Z",
+                at_phase="POST_FILL_EVALUATION",
+                at_sequence="0",
                 to_state="TERMINATED",
                 reason_code="FULFILLED_BY_ORDER_ACCEPTANCE",
             ),
@@ -226,6 +230,9 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 TraceTable.OPPORTUNITY_TRANSITIONS,
                 run_id,
                 opportunity_id="OPP:00000002",
+                at_time="2026-01-08T10:00:00Z",
+                at_phase="POST_FILL_EVALUATION",
+                at_sequence="0",
                 to_state="TERMINATED",
                 reason_code="FULFILLED_BY_ORDER_ACCEPTANCE",
             ),
