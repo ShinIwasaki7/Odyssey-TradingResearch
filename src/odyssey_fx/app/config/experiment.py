@@ -166,7 +166,8 @@ class _ParameterModel(StrictModel):
 
 class _TriggerModel(StrictModel):
     name: str
-    on: Literal["bar_close", "input_event", "runtime_event"]
+    #: 何で起動するか。`on` という名前は使えない（YAML 1.1 は `on` を真偽値として読む）。
+    when: Literal["bar_close", "input_event", "runtime_event"]
     series: str | None = None
     input_name: str | None = None
     event: Literal["POSITION_OPENED"] | None = None
@@ -428,11 +429,11 @@ def _trigger_of(
 ) -> EvaluationTrigger:
     """起動条件1件（D04 §8 の3区分）。"""
     try:
-        if model.on == "bar_close":
+        if model.when == "bar_close":
             if model.series is None:
                 raise ConfigError("`bar_close` の起動条件には `series` が要る")
             return OnBarClose(name=model.name, series=parse_series(model.series, timeframe_defs))
-        if model.on == "input_event":
+        if model.when == "input_event":
             if model.input_name is None:
                 raise ConfigError("`input_event` の起動条件には `input_name` が要る")
             return OnInputEvent(name=model.name, input_name=model.input_name)
