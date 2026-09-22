@@ -685,3 +685,23 @@ def test_a_value_that_cannot_be_read_is_reported_not_raised(
     assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
     assert failing[0].observed, "読めなかった理由が観測値に残らないと説明できない"
     assert report.manifest.fatal_failure_count >= 1
+
+
+def test_a_malformed_diagnosis_column_is_reported_not_raised() -> None:
+    """評価見送りの診断が読めなくても、失敗として完了する（D07 §4.3 の趣旨）。
+
+    集計だけが読む列であり、検査8件はどれも触らない。組み立てを検査と同じ範囲の外に
+    置くと、検査がすべて合格したあとで例外になり、失敗を説明する成果物が残らない。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.EVALUATIONS] = [
+        tables[TraceTable.EVALUATIONS][0],
+        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": "[not json"},
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    assert report.categories == ()
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]

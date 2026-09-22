@@ -229,6 +229,11 @@ _TERMINATED: Final = "TERMINATED"
 _SKIPPED: Final = "SKIPPED"
 
 
+def _fatal_failures(checks: Sequence[ConsistencyCheckResult]) -> int:
+    """致命の水準で不合格になった検査の件数（D07 §10.1）。"""
+    return sum(1 for item in checks if not item.passed and item.level is CheckLevel.FATAL)
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationReport:
     """1回の評価の結果（D07 §8.1・§10.1）。
@@ -429,6 +434,13 @@ class EvaluateRun:
                 checks.append(_check_opportunity_count(result, reads))
                 checks.append(_check_snapshot_order(reads, phases))
                 checks.append(_check_account_currency(result, currency, reads))
+                if result.status is RunStatus.COMPLETED and not _fatal_failures(checks):
+                    # 集計と指標も**同じ範囲の中で**組み立てる。集計は評価見送りの診断
+                    # （正規化エンコード文字列の列）を読むので、そこが壊れていれば例外に
+                    # なりうる。範囲の外で組み立てると、検査がすべて合格したあとで例外に
+                    # なり、失敗を説明する成果物が残らない。
+                    categories = _build_categories(reads)
+                    metrics = _build_metrics(result, manifest, reads, phases, trades, currency)
             except (KernelValueError, ValueError) as exc:
                 # **列の値が読めないことで評価を中断しない**（D07 §4.3 の趣旨）。列は
                 # 揃っていても、常に埋まるはずの値が空・語彙に無い列挙・十進数として
@@ -452,9 +464,11 @@ class EvaluateRun:
                 checks = [readable, *(item for item in checks[1:] if item.check != readable.check)]
                 trades = ()
                 diagnostics = ()
+                categories = ()
+                metrics = ()
 
         checks.sort(key=lambda item: CHECK_ORDER.index(item.check))
-        fatal = sum(1 for item in checks if not item.passed and item.level is CheckLevel.FATAL)
+        fatal = _fatal_failures(checks)
         warnings = sum(1 for item in checks if not item.passed and item.level is CheckLevel.WARNING)
 
         if result.status is not RunStatus.COMPLETED:
@@ -466,12 +480,13 @@ class EvaluateRun:
         else:
             status = EvaluationStatus.COMPLETED
 
-        if status is EvaluationStatus.COMPLETED:
-            categories = _build_categories(reads)
-            metrics = _build_metrics(result, manifest, reads, phases, trades, currency)
-        else:
+        if status is not EvaluationStatus.COMPLETED:
+            # 指標を出さない状態では4表を0行で書く（D07 §8.1・§10.1）。算出できた値も
+            # 出さない（採用してよい数値と不整合な判断履歴から出た数値を混ぜない）。
             trades = ()
             diagnostics = ()
+            categories = ()
+            metrics = ()
 
         report_rows = {
             EvaluationTable.METRICS: tuple(metrics),
