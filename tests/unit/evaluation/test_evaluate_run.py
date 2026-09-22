@@ -30,6 +30,7 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     TradeOutcome,
     Unavailable,
+    ratio_of,
 )
 from odyssey_fx.evaluation.domain.status import (
     CHECK_ID_CHAIN_COMPLETE,
@@ -141,7 +142,7 @@ def test_the_exposure_rate_counts_the_open_position_to_the_run_end(
 
     完了取引 8,100 秒 ＋ 残存建玉 734,400 秒（木曜 10:00Z → 金曜 22:00Z）を 12 日で割る。
     """
-    expected = decimal_from_str("742500") / decimal_from_str("1036800")
+    expected = ratio_of(decimal_from_str("742500"), decimal_from_str("1036800"))
     assert _ratio(report, MetricId.EXPOSURE_RATE) == expected
 
 

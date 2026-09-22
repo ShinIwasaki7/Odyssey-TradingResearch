@@ -21,6 +21,7 @@ from decimal import Decimal
 
 from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.time import UtcTime
+from odyssey_fx.evaluation.domain.metrics import ratio_of
 from tests.acceptance.conftest import Artifacts
 from tests.fixtures.acceptance.t01_market import EXPECTED, RUN_INTERVAL, WARMUP_END
 
@@ -215,7 +216,8 @@ def test_the_exposure_rate_counts_the_open_position_to_the_run_end(
         (RUN_INTERVAL.end - open_entry).total_seconds()
     )
     assert held_seconds == 742_500
-    expected = decimal_from_str(str(held_seconds)) / decimal_from_str("1036800")
+    # 比率は除算を1回だけカーネル精度で行う規則（D07 §5.1）に合わせて期待値を作る。
+    expected = ratio_of(decimal_from_str(str(held_seconds)), decimal_from_str("1036800"))
     assert _ratio(artifacts, "EXPOSURE_RATE") == expected
 
 
