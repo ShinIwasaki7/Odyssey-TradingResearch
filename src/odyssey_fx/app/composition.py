@@ -605,6 +605,18 @@ def open_snapshot_inputs(
                 f"the snapshot records the series {series} but the configuration has no"
                 f" definition for the timeframe {series.timeframe.id!r} (D03 §3.2)"
             )
+        if definition.ref != series.timeframe:
+            # **版まで揃っていることを確かめる**（D03 §3.1・§3.2）。系列の記録は定義の版を
+            # 持っており、承認済みの足はその版の整列規則で作られている。名前だけで引くと、
+            # 版を上げた定義で公開イベントの予定と足境界が変わり、**受入れをやり直さない
+            # まま評価の対象が変わる**。執行系列だけを見ていても、評価系列の定義が
+            # 差し替わっていれば戦略の判断が変わる。
+            raise MarketDataValueError(
+                f"the snapshot records the series {series} with the timeframe definition"
+                f" {series.timeframe} but the configuration supplies {definition.ref};"
+                " a different definition changes the bar boundaries the approved bars were"
+                " accepted with (D03 §3.1・§3.2)"
+            )
         schedules[series] = SeriesSchedule(
             series=series, timeframe_def=definition, calendar=calendar
         )

@@ -6,6 +6,7 @@ run manifest と結果 DTO を**読み戻せる**ことを確かめる。評価�
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import polars as pl
@@ -219,3 +220,21 @@ def test_writing_rows_that_differ_from_the_report_is_refused(tmp_path: Path) -> 
     tampered[EvaluationTable.METRICS] = ()
     with pytest.raises(KernelValueError, match="same rows"):
         FileSystemResultRepository(root=tmp_path).write_evaluation(report, tampered)
+
+
+def test_a_result_that_names_another_run_is_refused(saved_run: tuple[Path, object]) -> None:
+    """読んだ場所と中身の実行の識別子が食い違ったまま進めない（D07 §4.1）。
+
+    評価はこのあと結果 DTO の識別子で manifest と判断履歴を引くので、食い違ったまま通すと、
+    利用者が指した run とは**別の run** の指標を、しかも別の場所へ書いてしまう。整合検査
+    C2 はその別の run の中では辻褄が合うので気付けない。
+    """
+    root, output = saved_run
+    run_id = output.result.run_id  # type: ignore[attr-defined]
+    path = run_directory(root, run_id) / "result.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["run_id"] = "b" * 64
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(KernelValueError, match="different run"):
+        FileSystemResultRepository(root=root).read_result(run_id)

@@ -417,3 +417,25 @@ def test_a_calendar_that_the_snapshot_did_not_use_is_refused(
     message = capsys.readouterr().err
     assert "fx_ny17@v1" in message
     assert "fx_ny17@v2" in message
+
+
+def test_a_timeframe_definition_the_snapshot_did_not_use_is_refused(
+    artifacts: Artifacts, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """snapshot が記録した時間足定義と違う版では run を始めない（D03 §3.1・§3.2）。
+
+    版を上げた定義では足境界と公開イベントの予定が変わる。**執行系列でない系列**（ここでは
+    戦略が読む1時間足）の定義を差し替えても、承認済みの足が別の整列規則で読まれることに
+    なるので、実行する前に止める。
+    """
+    other = tmp_path / "timeframes_v2.yaml"
+    original = (artifacts.repo / "configs/calendars/timeframes_v1.yaml").read_text(encoding="utf-8")
+    # 1時間足の定義だけ版を上げる（執行系列の15分足はそのまま）。
+    changed = original.replace("- id: 1h\n    version: 1", "- id: 1h\n    version: 2", 1)
+    assert changed != original, "時間足定義の書き方が変わっている"
+    other.write_text(changed, encoding="utf-8")
+
+    argv = run_argv(artifacts.repo, tmp_path / "artifacts")
+    argv[argv.index("--timeframes") + 1] = str(other)
+    assert main(argv) == 1
+    assert "timeframe definition" in capsys.readouterr().err

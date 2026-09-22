@@ -587,8 +587,11 @@ def test_keys_outside_the_vocabulary_are_emitted_in_a_fixed_order() -> None:
 
     def tables_with(order: tuple[str, str]) -> dict[TraceTable, list[traces.Row]]:
         built = traces.t01_tables(str(manifest.run_id))
+        base = built[TraceTable.INTRABAR_RESOLUTIONS][0]
+        # 主キー（`fill_id`）は表ごとに一意なので、行ごとに別の約定を指す（D06 §9.2）。
         built[TraceTable.INTRABAR_RESOLUTIONS] = [
-            {**built[TraceTable.INTRABAR_RESOLUTIONS][0], "method": method} for method in order
+            {**base, "fill_id": fill_id, "method": method}
+            for fill_id, method in zip(("FIL:00000001", "FIL:00000002"), order, strict=True)
         ]
         return built
 
@@ -735,3 +738,56 @@ def test_a_duplicate_primary_key_is_reported_not_silently_resolved(
     failing = [check for check in report.checks if not check.passed]
     assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
     assert "must be unique" in failing[0].observed
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        TraceTable.EVALUATIONS,
+        TraceTable.OPPORTUNITY_TRANSITIONS,
+        TraceTable.ORDER_REQUESTS,
+        TraceTable.ATTEMPT_DECISIONS,
+        TraceTable.ORDERS,
+        TraceTable.FILLS,
+        TraceTable.POSITIONS,
+        TraceTable.INTRABAR_RESOLUTIONS,
+        TraceTable.LEDGER_SNAPSHOTS,
+    ],
+)
+def test_every_table_rejects_a_duplicated_primary_key(table: TraceTable) -> None:
+    """9表すべてで主キーの重複を不整合として扱う（D06 §9.2、D07 §9.1 の条件1）。
+
+    台帳 snapshot がとくに危うい。同じ処理点に違う残高の行が2つあると、Parquet の格納順で
+    最終残高も最大ドローダウンも変わる。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    rows = tables[table]
+    assert rows, table
+    tables[table] = [*rows, dict(rows[0])]
+
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    failing = [check for check in report.checks if not check.passed]
+    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert "must be unique" in failing[0].observed
+
+
+def test_two_ledger_snapshots_at_the_same_point_are_refused() -> None:
+    """同じ処理点に違う残高の台帳 snapshot があれば失敗させる（D06 §9.2）。
+
+    並びによって最終残高が変わるので、どちらを採るかを決める規則を作る代わりに、
+    不整合として止める。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    last = tables[TraceTable.LEDGER_SNAPSHOTS][-1]
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        *tables[TraceTable.LEDGER_SNAPSHOTS],
+        {**last, "balance_amount": "999999", "equity_amount": "999999"},
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()

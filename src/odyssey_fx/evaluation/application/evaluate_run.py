@@ -135,6 +135,9 @@ _COLUMNS: Final[dict[TraceTable, tuple[tuple[str, ColumnValueKind], ...]]] = {
     ),
     TraceTable.OPPORTUNITY_TRANSITIONS: (
         ("opportunity_id", _STRING),
+        ("at_time", _TIME),
+        ("at_phase", _STRING),
+        ("at_sequence", _INT),
         ("to_state", _ENUM),
         ("reason_code", _ENUM),
     ),
@@ -213,6 +216,25 @@ COLUMN_SPECS: Final[dict[TraceTable, tuple[TraceColumnSpec, ...]]] = {
     )
     for table, columns in _COLUMNS.items()
 }
+
+#: 表ごとの主キー（D06 §9.2 の「主キー」欄）。処理点は3列で1つの値である（D06 §9.1）。
+_PRIMARY_KEYS: Final[dict[TraceTable, tuple[str, ...]]] = {
+    TraceTable.EVALUATIONS: ("evaluation_id",),
+    TraceTable.OPPORTUNITY_TRANSITIONS: (
+        "opportunity_id",
+        "at_time",
+        "at_phase",
+        "at_sequence",
+    ),
+    TraceTable.ORDER_REQUESTS: ("attempt_id",),
+    TraceTable.ATTEMPT_DECISIONS: ("attempt_id",),
+    TraceTable.ORDERS: ("order_id",),
+    TraceTable.FILLS: ("fill_id",),
+    TraceTable.POSITIONS: ("position_id",),
+    TraceTable.INTRABAR_RESOLUTIONS: ("fill_id",),
+    TraceTable.LEDGER_SNAPSHOTS: ("at_time", "at_phase", "at_sequence"),
+}
+
 
 #: 注文の種別（D06 §3 の `AcceptedEntryTerms` / `AcceptedCloseTerms` の区分タグ）。
 _ENTRY_TERMS: Final = "ENTRY_TERMS"
@@ -421,6 +443,7 @@ class EvaluateRun:
 
         if readable.passed:
             try:
+                _require_unique_primary_keys(reads)
                 trades = _build_trades(reads, phases)
                 diagnostics = _build_fill_diagnostics(reads, phases)
                 checks.append(_check_trade_count(result, trades))
@@ -825,6 +848,30 @@ def _ordered_snapshots(
         for row in reads[TraceTable.LEDGER_SNAPSHOTS].records
     ]
     return tuple(sorted(snapshots, key=lambda item: item.at.sort_key))
+
+
+def _require_unique_primary_keys(reads: Mapping[TraceTable, _Rows]) -> None:
+    """9表それぞれの主キーが一意であることを確かめる（D06 §9.2）。
+
+    **行を1つでも組み立てる前に行う**。重複した主キーを後勝ちで解決すると、同じ判断履歴
+    でも Parquet の格納順によって辿り着く行が変わり、取引・集計・指標・結果のダイジェストが
+    変わる（D07 §9.1 の条件1 が禁じている状態）。とくに台帳 snapshot は、同じ処理点に
+    違う残高の行が2つあると、並びによって最終残高も最大ドローダウンも変わる。
+
+    値の誤りとして送出する。呼び出し元は検査の範囲の中にあり、必須列の検査（C1）の
+    不合格として結果に残る。
+    """
+    for table, columns in _PRIMARY_KEYS.items():
+        seen: set[tuple[str | None, ...]] = set()
+        for row in reads[table].records:
+            key = tuple(row.get(column) for column in columns)
+            if key in seen:
+                raise KernelValueError(
+                    f"the primary key {columns} of {table.value} must be unique but"
+                    f" {key} appears twice (D06 §9.2); resolving it by row order would make"
+                    " the result depend on how the table was stored"
+                )
+            seen.add(key)
 
 
 def _by_key(

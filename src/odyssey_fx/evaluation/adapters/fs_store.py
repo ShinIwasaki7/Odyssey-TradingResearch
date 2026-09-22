@@ -649,7 +649,20 @@ class FileSystemResultRepository:
                 " needed to read the series of the result (D03 §3.1)"
             )
         timeframes = _timeframes_of(json.loads(manifest_path.read_text(encoding="utf-8")))
-        return result_from_payload(json.loads(result_path.read_text(encoding="utf-8")), timeframes)
+        result = result_from_payload(
+            json.loads(result_path.read_text(encoding="utf-8")), timeframes
+        )
+        if result.run_id != run_id:
+            # **読んだ場所と中身の実行の識別子が食い違ったまま進めない**。評価はこのあと
+            # 結果 DTO の識別子で manifest と判断履歴を引くので、食い違ったまま通すと、
+            # 利用者が指した run とは**別の run** の指標を、しかも別の場所へ書いてしまう。
+            # 整合検査 C2 はその別の run の中では辻褄が合うので気付けない。
+            raise KernelValueError(
+                f"{result_path} holds the result of run {result.run_id} but it was read as"
+                f" {run_id}; evaluating it would produce metrics for a different run"
+                " (D07 §4.1・§10.2 の C2)"
+            )
+        return result
 
     def read_table(
         self, run_id: RunId, table: TraceTable, columns: tuple[TraceColumnSpec, ...]
