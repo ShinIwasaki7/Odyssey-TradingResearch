@@ -1,2 +1,2 @@
 trade_seq	position_id	opportunity_id	symbol	side	quantity	entry_fill_id	entry_price	entry_at_time	entry_at_phase	entry_at_sequence	close_fill_id	exit_price	exit_at_time	exit_at_phase	exit_at_sequence	close_cause	realized_amount	realized_currency	holding	outcome
-1	POS:00000001	OPP:00000001	USDJPY	BUY	32000	FIL:00000001	150.08	2026-01-06T09:00:00Z	EXECUTION_OPEN	0	FIL:00000002	151.23	2026-01-06T11:15:00Z	EXECUTION_BAR_COMPLETE	0	TAKE_PROFIT	36768	JPY	8100.000000	WIN
+1	POS:00000001	OPP:00000001	USDJPY	BUY	32000	FIL:00000001	150.08	2015-01-06T09:00:00Z	EXECUTION_OPEN	0	FIL:00000002	151.23	2015-01-06T11:15:00Z	EXECUTION_BAR_COMPLETE	0	TAKE_PROFIT	36768	JPY	8100.000000	WIN

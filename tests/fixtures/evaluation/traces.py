@@ -59,8 +59,8 @@ USDJPY = Symbol("USDJPY")
 
 #: T01 §1.1 の run 区間（12 日 = 1,036,800 秒）。
 RUN_INTERVAL = Interval(
-    start=UtcTime.parse("2026-01-04T22:00:00Z"),
-    end=UtcTime.parse("2026-01-16T22:00:00Z"),
+    start=UtcTime.parse("2015-01-04T22:00:00Z"),
+    end=UtcTime.parse("2015-01-16T22:00:00Z"),
 )
 
 #: 1行を列の辞書で表す。
@@ -189,11 +189,11 @@ def _row(table: TraceTable, run_id: str, **values: str | None) -> Row:
 def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
     """T01 第9節の run が9表へ残す行（数値は T01 §2・§9・§9.4）。"""
     ledger = [
-        ("2026-01-06T09:00:00Z", "LEDGER_UPDATE", "0", "1000000", "1000000"),
-        ("2026-01-06T09:00:00Z", "EXECUTION_OPEN", "1", "999968", "998688"),
-        ("2026-01-06T11:15:00Z", "LEDGER_UPDATE", "0", "1036736", "1036736"),
-        ("2026-01-08T10:00:00Z", "EXECUTION_OPEN", "1", "1036706", "1036706"),
-        ("2026-01-16T22:00:00Z", "RUN_END", "0", "1036706", "1051706"),
+        ("2015-01-06T09:00:00Z", "LEDGER_UPDATE", "0", "1000000", "1000000"),
+        ("2015-01-06T09:00:00Z", "EXECUTION_OPEN", "1", "999968", "998688"),
+        ("2015-01-06T11:15:00Z", "LEDGER_UPDATE", "0", "1036736", "1036736"),
+        ("2015-01-08T10:00:00Z", "EXECUTION_OPEN", "1", "1036706", "1036706"),
+        ("2015-01-16T22:00:00Z", "RUN_END", "0", "1036706", "1051706"),
     ]
     return {
         TraceTable.EVALUATIONS: [
@@ -220,7 +220,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 TraceTable.OPPORTUNITY_TRANSITIONS,
                 run_id,
                 opportunity_id="OPP:00000001",
-                at_time="2026-01-06T09:00:00Z",
+                at_time="2015-01-06T09:00:00Z",
                 at_phase="POST_FILL_EVALUATION",
                 at_sequence="0",
                 to_state="TERMINATED",
@@ -230,7 +230,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 TraceTable.OPPORTUNITY_TRANSITIONS,
                 run_id,
                 opportunity_id="OPP:00000002",
-                at_time="2026-01-08T10:00:00Z",
+                at_time="2015-01-08T10:00:00Z",
                 at_phase="POST_FILL_EVALUATION",
                 at_sequence="0",
                 to_state="TERMINATED",
@@ -276,18 +276,18 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 run_id,
                 order_id="ORD:00000001",
                 attempt_id="ATT:00000001",
-                accepted_at_time="2026-01-06T09:00:00Z",
+                accepted_at_time="2015-01-06T09:00:00Z",
                 side="BUY",
                 terms_kind="ENTRY_TERMS",
                 terms_reference_quote_price="150.06",
-                terms_reference_quote_observed_at="2026-01-06T09:00:00Z",
+                terms_reference_quote_observed_at="2015-01-06T09:00:00Z",
             ),
             _row(
                 TraceTable.ORDERS,
                 run_id,
                 order_id="ORD:00000002",
                 attempt_id="ATT:00000002",
-                accepted_at_time="2026-01-06T11:15:00Z",
+                accepted_at_time="2015-01-06T11:15:00Z",
                 side="SELL",
                 terms_kind="CLOSE_TERMS",
                 terms_cause="TAKE_PROFIT",
@@ -298,11 +298,11 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 run_id,
                 order_id="ORD:00000003",
                 attempt_id="ATT:00000003",
-                accepted_at_time="2026-01-08T10:00:00Z",
+                accepted_at_time="2015-01-08T10:00:00Z",
                 side="BUY",
                 terms_kind="ENTRY_TERMS",
                 terms_reference_quote_price="151.02",
-                terms_reference_quote_observed_at="2026-01-08T10:00:00Z",
+                terms_reference_quote_observed_at="2015-01-08T10:00:00Z",
             ),
         ],
         TraceTable.FILLS: [
@@ -312,7 +312,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 fill_id="FIL:00000001",
                 order_id="ORD:00000001",
                 position_id="POS:00000001",
-                processed_at_time="2026-01-06T09:00:00Z",
+                processed_at_time="2015-01-06T09:00:00Z",
                 processed_at_phase="EXECUTION_OPEN",
                 processed_at_sequence="0",
                 price="150.08",
@@ -324,7 +324,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 fill_id="FIL:00000002",
                 order_id="ORD:00000002",
                 position_id="POS:00000001",
-                processed_at_time="2026-01-06T11:15:00Z",
+                processed_at_time="2015-01-06T11:15:00Z",
                 processed_at_phase="EXECUTION_BAR_COMPLETE",
                 processed_at_sequence="0",
                 price="151.23",
@@ -336,7 +336,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 fill_id="FIL:00000003",
                 order_id="ORD:00000003",
                 position_id="POS:00000002",
-                processed_at_time="2026-01-08T10:00:00Z",
+                processed_at_time="2015-01-08T10:00:00Z",
                 processed_at_phase="EXECUTION_OPEN",
                 processed_at_sequence="0",
                 price="151",
@@ -353,7 +353,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 quantity="32000",
                 entry_price="150.08",
                 entry_fill_id="FIL:00000001",
-                opened_at_time="2026-01-06T09:00:00Z",
+                opened_at_time="2015-01-06T09:00:00Z",
                 opened_at_phase="EXECUTION_OPEN",
                 opened_at_sequence="0",
                 status="CLOSED",
@@ -370,7 +370,7 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 quantity="30000",
                 entry_price="151",
                 entry_fill_id="FIL:00000003",
-                opened_at_time="2026-01-08T10:00:00Z",
+                opened_at_time="2015-01-08T10:00:00Z",
                 opened_at_phase="EXECUTION_OPEN",
                 opened_at_sequence="0",
                 status="OPEN",

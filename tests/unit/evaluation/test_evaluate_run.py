@@ -787,7 +787,7 @@ def test_two_ledger_snapshots_at_the_same_point_are_refused() -> None:
 def test_the_same_moment_written_two_ways_counts_as_one_key() -> None:
     """主キーの構成要素は宣言した型に直してから比べる（D06 §9.2、D07 §9.1 の条件1）。
 
-    文字列のまま比べると `2026-01-06T09:00:00Z` と `2026-01-06T09:00:00+00:00` が別の鍵に
+    文字列のまま比べると `2015-01-06T09:00:00Z` と `2015-01-06T09:00:00+00:00` が別の鍵に
     見えるが、読み出したあとは同じ処理点になる。判定だけ文字列で行うと、**判定は通るのに
     使う側では同じ値**になる行が残り、並びで最大ドローダウンが変わる。
     """
@@ -798,7 +798,7 @@ def test_the_same_moment_written_two_ways_counts_as_one_key() -> None:
         first,
         {
             **first,
-            "at_time": "2026-01-06T09:00:00+00:00",
+            "at_time": "2015-01-06T09:00:00+00:00",
             "balance_amount": "999999",
             "equity_amount": "999999",
         },
