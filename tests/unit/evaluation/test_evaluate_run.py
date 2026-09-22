@@ -462,3 +462,35 @@ def test_the_report_carries_all_five_tables_in_every_state(report: EvaluationRep
     assert set(rejected.rows) == set(EvaluationTable)
     assert rejected.rows[EvaluationTable.METRICS] == ()
     assert rejected.rows[EvaluationTable.CONSISTENCY_CHECKS] != ()
+
+
+def test_a_fill_without_an_order_is_reported_not_silently_dropped() -> None:
+    """注文の無い約定は診断を作れないので、落としたことを検査に載せる（D07 §10.2 の C4）。
+
+    黙って落とすと、診断の表の行数が少ない理由が成果物から読めなくなる。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.ORDERS] = [
+        row for row in tables[TraceTable.ORDERS] if row["order_id"] != "ORD:00000003"
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    chain = [check for check in report.checks if check.check == CHECK_ID_CHAIN_COMPLETE]
+    assert chain[0].passed is False
+    assert "FIL:00000003" in chain[0].observed
+
+
+def test_an_incomplete_closed_position_is_reported_not_silently_dropped() -> None:
+    """完了取引の行を組み立てられない建玉も検査に載せる（D07 §10.2 の C4）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.POSITIONS] = [
+        {**tables[TraceTable.POSITIONS][0], "realized_amount": None},
+        tables[TraceTable.POSITIONS][1],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    chain = [check for check in report.checks if check.check == CHECK_ID_CHAIN_COMPLETE]
+    assert chain[0].passed is False
+    assert "POS:00000001" in chain[0].observed

@@ -201,3 +201,21 @@ def test_every_evaluation_table_keeps_its_columns_when_empty(tmp_path: Path) -> 
     # 検査の表だけは行が入る（失敗を成果物だけで説明できるようにするため）。
     assert pl.read_parquet(directory / "CONSISTENCY_CHECKS.parquet").height > 0
     assert pl.read_parquet(directory / "METRICS.parquet").height == 0
+
+
+def test_writing_rows_that_differ_from_the_report_is_refused(tmp_path: Path) -> None:
+    """ダイジェストの対象と保存する行が違う書き出しは拒否する（D07 §9.2）。
+
+    通してしまうと、結果のダイジェストが1つの内容を指し、保存された表が別の内容を持つ
+    成果物ができる。再現性の判定がダイジェストの一致で行われるので、これは黙って壊れる。
+    """
+    manifest = traces.manifest_for()
+    repository = traces.repository_for(manifest=manifest)
+    result = traces.result_for(manifest)
+    report = EvaluateRun(evaluation_code_digest=manifest.code_digest).evaluate(
+        result, repository, METRIC_SET_VERSION
+    )
+    tampered = dict(report.rows)
+    tampered[EvaluationTable.METRICS] = ()
+    with pytest.raises(KernelValueError, match="same rows"):
+        FileSystemResultRepository(root=tmp_path).write_evaluation(report, tampered)

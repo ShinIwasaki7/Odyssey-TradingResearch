@@ -460,6 +460,11 @@ class EvaluateRun:
                 result.run_id, metric_set_version, self._code_digest
             ),
             run_id=result.run_id,
+            # run manifest を**内容で**指す参照（D07 §8.3 の識別の群）。manifest の
+            # 入力とポリシーの群のダイジェスト（`ConfigDigest`、D06 §9.3）を使う。保存した
+            # JSON のバイト列のダイジェストにはしない。保存形式を変えると参照が変わり、
+            # 同じ実行を指せなくなるためである。D07 §8.3 はどちらとも書いていないので、
+            # 恒久的な形は人間の決定を要する（仮置き）。
             run_manifest_ref=manifest.config_digest.digest,
             metric_set_version=metric_set_version,
             evaluation_code_digest=self._code_digest,
@@ -570,15 +575,53 @@ def _check_trade_count(
 def _check_id_chain(
     reads: Mapping[TraceTable, _Rows], trades: Sequence[TradeRecord]
 ) -> ConsistencyCheckResult:
-    """C4: 完了取引の約定 → 注文 → 試行の外部キーが辿れる（D07 §10.2・§8.1）。"""
-    broken = tuple(trade.position_id for trade in trades if trade.opportunity_id is None)
+    """C4: 約定 → 注文 → 試行の外部キーが辿れる（D07 §10.2・§8.1）。
+
+    見るのは3つである。(a) 完了取引の取引機会まで辿れたか、(b) 完了取引の行を組み立て
+    られずに落とした建玉があるか、(c) 対応する注文が無いために診断を作れなかった約定が
+    あるか。(b) と (c) を載せるのは、**行を落としたことが結果から読めるようにする**ため
+    である。落としたまま黙っていると、表の行数が少ないことの理由が成果物から消える。
+    """
+    broken: list[str] = [str(trade.position_id) for trade in trades if trade.opportunity_id is None]
+    broken.extend(_unlinked_positions(reads, trades))
+    broken.extend(_unlinked_fills(reads))
     return _result_of(
         CHECK_ID_CHAIN_COMPLETE,
         passed=not broken,
         expected=canonical_text(()),
-        observed=canonical_text(tuple(str(item) for item in broken)),
+        observed=canonical_text(tuple(sorted(broken))),
         table=TraceTable.POSITIONS,
     )
+
+
+def _unlinked_positions(
+    reads: Mapping[TraceTable, _Rows], trades: Sequence[TradeRecord]
+) -> tuple[str, ...]:
+    """完了取引の行を組み立てられなかった建玉（入場・決済の約定か確定損益が欠けている）。"""
+    built = {str(trade.position_id) for trade in trades}
+    missing: list[str] = []
+    for row in reads[TraceTable.POSITIONS].records:
+        if row.get("status") != _CLOSED:
+            continue
+        position_id = row.get("position_id")
+        if position_id is not None and position_id not in built:
+            missing.append(f"{position_id}: incomplete closed position row")
+    return tuple(missing)
+
+
+def _unlinked_fills(reads: Mapping[TraceTable, _Rows]) -> tuple[str, ...]:
+    """対応する注文が判断履歴に無い約定（診断の行を作れない）。"""
+    orders = {
+        row["order_id"]
+        for row in reads[TraceTable.ORDERS].records
+        if row.get("order_id") is not None
+    }
+    missing: list[str] = []
+    for row in reads[TraceTable.FILLS].records:
+        order_id = row.get("order_id")
+        if order_id is None or order_id not in orders:
+            missing.append(f"{row.get('fill_id')}: fill without an accepted order")
+    return tuple(missing)
 
 
 def _check_realized_matches_balance(

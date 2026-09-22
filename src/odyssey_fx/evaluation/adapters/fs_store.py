@@ -692,6 +692,13 @@ class FileSystemResultRepository:
         すべてを書く**。表の有無で状態を表すと、書き出しが途中で落ちた成果物と区別できない。
         """
         manifest = report.manifest
+        if dict(rows) != report.rows:
+            # 結果のダイジェストは `EvaluationReport.rows` から作られている（D07 §9.2）。
+            # 別の行を書くと、ダイジェストと保存された表が食い違う成果物ができる。
+            raise KernelValueError(
+                "write_evaluation must save the same rows the result digest was built from"
+                " (D07 §9.2); the report and the rows given disagree"
+            )
         directory = evaluation_directory(self.root, manifest.run_id, manifest.run_evaluation_id)
         directory.mkdir(parents=True, exist_ok=True)
         for table in EvaluationTable:
