@@ -273,11 +273,11 @@ D01 §7.2 の 12 モジュールに `opportunity.py` を加える（サブパッ
 
 **待機できる欠損理由は宣言で選べず、遡りを許す欠損理由は宣言で選ぶ**【合意済み】（Q15・Q16 決定、いずれも選択肢1。意味論の正本は D05 §6.8・§6.9）。待機が解消しうるのは「期待される最新足が未到着」と「窓内の期待足が欠けている」の2つだけで、データ開始前と鮮度切れは待っても直らないため、選ばせる意味がない。遡りは逆に「どこまでを隠してよい欠損とみなすか」が戦略ごとの判断であり、破損データや計算例外まで一律に過去値で隠さないために宣言で絞る【合意済み】上位設計書 §4.3.13。**遡りは `LatestAvailable` にだけ書ける**（固定本数の窓の穴埋めには使えない。第12節 #10）。
 
-**参考（段階2 の記述。履歴として残す）**: 段階2の型は `SkipEvaluation` と `Error` の2区分だけを定義していた（Q8 決定）。これは第1.2節の境界表の行1に対する**明示の例外**であり、人間の決定による。残る2区分は宣言形だけを先に決めても、待機期限・遡り上限・記録といったフィールドが待機の意味論と一体でしか定まらないため、空の区分が残るだけになる。どちらも追加フィールドを持たない【提案】。どの欠損理由なら許容するかを宣言側で絞り込む機能は段階2では持たず（絞り込みは `WAIT_FOR_INPUT` の待機条件と一体で決まるため）、D05 で `WAIT_FOR_INPUT` / `USE_PREVIOUS` を足すときに合わせて検討する。`WAIT_FOR_INPUT` / `USE_PREVIOUS` は D05 でフィールドごと確定してから区分を追加し、その追加を**保存形式の版（第3節の `schema_version`）の引き上げ**として扱う。未確定のフィールドを先に固定しない。**不採用**: 4区分をフィールドなしで先に置く案（空の区分が残る）、4区分を今すぐ確定する案（D05 の検討を前倒しし段階2の範囲を超える）。
+**この2区分を段階2 で置かなかった経緯**（Q8 決定、選択肢1。第1.2節の境界表の行1 に対する明示の例外）。宣言形だけを先に決めても、待機期限・遡り上限・記録といったフィールドは待機の意味論と一体でしか定まらず、フィールドの無い空の区分が残るだけになる。そこで D05 がフィールドごと確定してから区分を足し、その追加を保存形式の版の引き上げとして扱うと決めていた。**v1.9 がそのとおりに実施したものである**。**不採用**: 4区分をフィールドなしで先に置く案（空の区分が残る）、段階2 で4区分を確定する案（D05 の検討を前倒しし段階2の範囲を超える）。
 
 診断理由は D02 §8.3 の `MissingInputReason`（`WARMUP_INSUFFICIENT` / `INPUT_MISSING_OR_INVALID` / `LATEST_BAR_UNAVAILABLE` / `MAX_AGE_EXCEEDED`）を再利用し、`declarations` 側で新しい語彙を作らない【提案】。`SKIP_EVALUATION` は False や価格 0 の出力ではなく、評価記録として残す【合意済み】。
 
-**段階2 だけの制限: 取引機会の有効性の再検査では、欠損を失敗扱いにできない（v1.8、2026-09-21 の人間の決定。PR #18）**。取引機会が発注要求まで有効であり続けることを求める束縛（第10.2節の `ValidityBinding(mode=REQUIRE_UNTIL_ORDER_REQUEST)`）に `Error` を書いた宣言は、**段階2 ではコンパイル時の能力検査で拒否する**（第12節 #7 の拒否一覧）。
+**段階2 だけの制限: 取引機会の有効性の再検査では、欠損を失敗扱いにできない（v1.8、2026-09-21 の人間の決定。PR #18）**。取引機会が発注要求まで有効であり続けることを求める束縛（第10.2節の `ValidityBinding(mode=REQUIRE_UNTIL_ORDER_REQUEST)`）に `Error` を書いた宣言は、**段階2 ではコンパイル時の能力検査で拒否していた**（第12節 #7 の拒否一覧。v1.9 で解除済み。下の「解除時期」を参照）。
 
 - 理由: この再検査は評価の外側（発注要求を組み立てる直前）で走るため、失敗を書き残す評価記録が存在しない（D05 §6.4・§7.3）。`Error` を許すと、判断履歴のどこにも残らないまま run が止まる経路ができる。「記録に残らない失敗を作らない」は上位設計書 §4.3.15 の要求である。
 - 影響範囲: 本節の欠損方針2区分そのものは変えない。`SkipEvaluation`（その回の再検査を行わず機会を残す）は再検査でも使える。制限がかかるのは「再検査 × `Error`」の組合せ1つだけであり、部品の評価における `Error` は従来どおり使える。検証戦略 A（第14節）は束縛を1件も持たないため、この制限にかからない。
@@ -434,7 +434,7 @@ ADR-0032 が挙げる4論点のうち「保持」と「同時競合」は `max_a
 | 5 | 役割フィールドの型要求（`trigger`→`opportunity`、`order`→`order_intent`、`protection`→`protection_levels`、`exit`→`management_action`、`market_state`→`market_permission`、`execution_filter`→`confirmation_result`）と、`execution_filter` の有無と `entry_policy` モードの整合、`opportunity_validity` の各 `ValidityBinding` が指す出力の存在と型（`condition_state@v1` であること。第10.2節） | `StrategyDefinition` の役割フィールド（型は上位設計書 §4.3.5 が正本）、`EntryPolicy` の区分、`ValidityBinding.source` と接続先の `OutputSpec.data_type` |
 | 6 | 依存グラフの構築（**明示入力の辺＋エンジン上の因果辺**）と循環検出、評価順の導出（時間足から順序を推測しない）【合意済み】全体計画 §5.3.4 の6 | 全 `ComponentInstance.inputs` の `OutputRef`（明示辺）、下表の因果辺 |
 | 6b | 出力仕様の付随条件: `data_type` が `opportunity` の出力は `retrigger_mode` が必須で `reference_schema` を持て、それ以外の出力は `retrigger_mode=None` かつ `reference_schema` が空であること（第4.1節）。`retrigger_mode=EDGE` の出力を持つ契約は、`state_spec` が `condition_state@v1` の `LiteralInitialState` 付きで宣言されていること（第10.4節） | `OutputSpec`（`data_type` / `retrigger_mode` / `reference_schema`）、`ComponentContract.state_spec`（`state_type` / `initial`） |
-| 7 | 能力検査（次の段落の拒否一覧） | 同段落が挙げる各型 |
+| 7 | 能力検査（本節末尾の「能力検査が拒否する構成」の2表） | 同2表が挙げる各型 |
 | 8 | **後続確認の部品が開始足の扱いを宣言していること**（v1.9）: `execution_filter` 役割に接続された出力を持つ使用箇所の契約が `include_start_bar`（`BOOL`、既定値なし）を持ち、使用箇所がその値を明示していること。持たない契約を `execution_filter` に接続した宣言は拒否する | 役割フィールド、`ComponentContract.parameters`、`ComponentInstance.parameters` |
 | 9 | **確認足の系列がただ1つに定まること**（v1.9）: `execution_filter` 役割の使用箇所が `OnBarClose` の起動条件を1件以上持ち、その系列が1つであること。系列が定まらないと確認の開始足も期限も決まらない | `EvaluationSchedule.triggers`、`OnBarClose.series` |
 | 10 | **待機・遡りと読み方の組合せが許可されたものであること**（v1.9）: `WaitForInput` は `LatestAvailable` と `HistoryWindow` に、`UsePrevious` は **`LatestAvailable` にだけ**書ける【合意済み】上位設計書 §4.3.13 | `InputSpec.read_spec`、`MissingInputPolicy` |
