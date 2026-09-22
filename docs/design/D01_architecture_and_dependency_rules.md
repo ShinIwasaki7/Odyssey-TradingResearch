@@ -440,8 +440,8 @@ odyssey_fx/
 | `tests/semantics/` | 意味論 | 上位文書 §7.2・§4.7.15E の項目を1件1テストで名前を付けて固定 |
 | `tests/property/` | プロパティ | hypothesis による不変条件（先読み不変、SL 単調性、台帳整合、冪等性） |
 | `tests/golden/` | golden | 人工データの固定 trace との突合 |
-| `tests/integration/` | 統合 | 複数の層を通した経路を、内部の関数を直接呼んで確かめる（コマンドは経由しない）。紙上トレース T01 の経路がここに入る |
-| `tests/acceptance/` | 受入 | **コマンド経由で**人工データを受入れから評価まで通し、段階の完了条件そのものを確かめる |
+| `tests/integration/` | 統合 | 複数の層を通した経路を確かめる。**内部の関数を直接呼んでも、コマンドを経由してもよい**。紙上トレース T01 の経路がここに入る |
+| `tests/acceptance/` | 受入 | **段階の完了条件そのもの**を、人工データを受入れから評価まで1本に通して確かめる |
 | `tests/architecture/` | 依存規則 | `lint-imports` の実行と、契約定義そのものの検査（第6節） |
 | `tests/fixtures/synthetic/` | 生成器 | DST 境界・週末・欠損・gap・SL/TP 同時到達を含む人工市場データ |
 

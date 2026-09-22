@@ -79,8 +79,8 @@ D04〜D07 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しな
 | **意味論** | `tests/semantics/<package>/` | 上位文書 §7.2・§4.7.15 E の項目を**1件1テストで名前を付けて固定**する。複数の部品をまたぐ振る舞いを、設計文書の契約行と1対1で対応させる | 5 | 115 |
 | **プロパティ** | `tests/property/<package>/` | 不変条件を `hypothesis` で確かめる（先読み不変、単調性、台帳の整合、冪等性、決定論） | 7 | 52 |
 | **golden** | `tests/golden/<package>/` | 人工データでの**固定出力**との突合。期待値は `expected/` にテキストで置く | 2 | 7 |
-| **統合** | `tests/integration/<package>/` | 複数の層を通した経路を、**内部の関数を直接呼んで**確かめる（CLI は経由しない）。T01 の8経路がここにある | 3 | 60 |
-| **受入** | `tests/acceptance/` | **コマンド経由で**人工データを受入れから評価まで通し、段階の完了条件そのものを確かめる | 1 | 20 |
+| **統合** | `tests/integration/<package>/` | 複数の層を通した経路を確かめる。**内部の関数を直接呼んでも、コマンドを経由してもよい**。T01 の8経路（`test_t01_paths.py`）は関数を直接呼び、受入れコマンドの経路（`test_data_cli.py`）はコマンドを通す | 3 | 60 |
+| **受入** | `tests/acceptance/` | **段階の完了条件そのもの**を、人工データを受入れから評価まで1本に通して確かめる | 1 | 20 |
 | **依存規則** | `tests/architecture/` | `lint-imports` の実行と、**契約定義そのもの**の検査（D01 §6） | 4 | 12 |
 
 補助として `tests/fixtures/` があり、これはテストではなく**テストが使う道具**である（第9節）。
@@ -95,8 +95,14 @@ D04〜D07 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しな
 2. **すべての入力について成り立つ性質**か（順序を入れ替えても、値を変えても） → プロパティ。
 3. **出力の形そのもの**を固定したいか（表の全行、集約した足の列） → golden。
 4. **1つの関数・1つの型の範囲**で閉じるか → 単体。
-5. **複数の層を通した経路**を確かめたいか → 統合。
-6. **段階の完了条件そのもの**か（コマンド経由・成果物の置き場所・再実行一致） → 受入。
+5. **段階の完了条件そのもの**か（全体計画 §8.2 の表の文言に対応するもの。成果物の置き場所、再実行一致、手計算との一致） → 受入。
+6. **複数の層を通した経路**を確かめたいか → 統合。
+
+**統合と受入の違いはコマンドを使うかどうかではない**。どちらもコマンドを経由してよい（実際に
+`tests/integration/app/test_data_cli.py` はコマンドを通す）。違いは**何を主張するか**である。
+受入は「**段階の完了条件を満たした**」と主張し、そのために受入れから評価まで1本に通す。
+統合は「**この経路がこう動く**」と主張し、通す範囲は経路ごとに決める。
+判断の順で受入を先に置いたのは、完了条件に当たるものが統合へ流れないようにするためである。
 7. **依存の向きや契約の定義**か → 依存規則。
 
 **例外**: warmup 中の注文ゼロのように**段階の完了条件でもあり契約行でもある**項目は、意味論と受入の両方に置いてよい【合意済み】（実際に `tests/semantics/backtest/test_engine_semantics.py::test_no_order_is_placed_while_the_warmup_is_incomplete` と `tests/acceptance/test_stage2_completion.py::test_no_order_is_placed_during_the_warmup` の両方にある）。**この重複は意図的**で、片方は契約の固定、もう片方は完了条件の証明という別の役割を持つ。
@@ -111,7 +117,7 @@ D04〜D07 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しな
 | 意味論 | `test_<対象>_semantics.py` / `test_<概念>_<名詞>.py` | `tests/semantics/backtest/test_engine_semantics.py`、`tests/semantics/strategy/test_opportunity_transitions.py` |
 | プロパティ | `test_<対象>_properties.py`（決定論だけ例外） | `tests/property/common/test_money_properties.py`、`tests/property/evaluation/test_determinism.py` |
 | golden | `test_<対象>_golden.py` | `tests/golden/evaluation/test_evaluation_golden.py` |
-| 統合 | `test_<対象>_<経路の呼び名>.py` | `tests/integration/backtest/test_t01_paths.py`、`tests/integration/app/test_data_cli.py` |
+| 統合 | `test_<対象>_<経路の呼び名>.py` | `tests/integration/backtest/test_t01_paths.py`（関数を直接呼ぶ）、`tests/integration/app/test_data_cli.py`（コマンドを通す） |
 | 受入 | `test_<段階>_completion.py` | `tests/acceptance/test_stage2_completion.py` |
 | 依存規則 | `test_<検査対象>.py` | `tests/architecture/test_import_contracts.py`、`tests/architecture/test_contract_definitions.py` |
 
