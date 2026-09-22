@@ -111,6 +111,7 @@ def test_mutating_the_supplied_list_does_not_change_the_execution_view() -> None
         series=HOURLY,
         allowed_partitions=frozenset({RESEARCH}),
         partition_bars={RESEARCH: mutable},
+        schedule=SCHEDULES[HOURLY],
     )
     before = view.next_bar_key_after(RESEARCH_WINDOW.start)
 

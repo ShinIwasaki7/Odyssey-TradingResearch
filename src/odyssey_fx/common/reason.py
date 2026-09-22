@@ -77,6 +77,10 @@ class ReasonCode(Enum):
     #: 保護水準の置き方が宣言として不正であることによる受付前拒否（D06 の Q6 決定）。
     #: 口座のリスク上限の違反である `RISK` とは原因も対処も異なる。
     PROTECTION_INVALID = "PROTECTION_INVALID"
+    #: 同じ判断時点の同じ建玉への決済要求が優先されたことによる、保護水準の更新の破棄
+    #: （D06 §8.3、上位設計書 §4.7.6）。取引機会が終端する `SUPERSEDED` とは対象
+    #: （建玉の保護水準の更新）も結果（建玉はそのまま決済される）も異なる。
+    SUPERSEDED_BY_EXIT = "SUPERSEDED_BY_EXIT"
 
 
 class MissingInputReason(Enum):

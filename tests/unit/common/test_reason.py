@@ -43,6 +43,8 @@ def test_reason_code_vocabulary_matches_the_design() -> None:
 
     後半8件は ADR-0031・ADR-0032・ADR-0033 と D06 の決定で語彙へ加わり、列挙への反映は
     取引機会の状態機械を実装する段階2 で行うと定められていたもの（D02 §8.1 v1.3〜v1.5）。
+    最後の1件は、同じ判断時点の決済要求に押しのけられた保護水準の更新を表す語で、
+    バックステスト基盤の実装で決めた（D02 §8.1 v1.7、D06 §8.3）。
     """
     assert {code.value for code in ReasonCode} == {
         "RISK",
@@ -60,6 +62,7 @@ def test_reason_code_vocabulary_matches_the_design() -> None:
         "FULFILLED_BY_ORDER_ACCEPTANCE",
         "REQUEST_SUPERSEDED",
         "PROTECTION_INVALID",
+        "SUPERSEDED_BY_EXIT",
     }
 
 
