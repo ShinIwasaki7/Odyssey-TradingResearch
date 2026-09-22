@@ -60,13 +60,7 @@ from odyssey_fx.marketdata.application.acceptance import (
     normalize_rows,
 )
 from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSION, aggregate
-from odyssey_fx.marketdata.application.asof import (
-    AsOfView,
-    BarsWindow,
-    DurationWindow,
-    ExecutionSeriesView,
-    MissingInput,
-)
+from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
 from odyssey_fx.marketdata.application.publication import build_feed
 from odyssey_fx.marketdata.application.snapshot_access import PartitionedBars, ReadableSnapshot
@@ -75,7 +69,7 @@ from odyssey_fx.marketdata.domain.access import (
     AccessBoundaries,
     AccessClass,
 )
-from odyssey_fx.marketdata.domain.bar import Bar, BarKey
+from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckResult
@@ -90,9 +84,6 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, CompileSucceeded
 from odyssey_fx.strategy.compiler.validate import compile_strategy
-from odyssey_fx.strategy.declarations.read_spec import BarsWindow as DeclaredBarsWindow
-from odyssey_fx.strategy.declarations.read_spec import DurationWindow as DeclaredDurationWindow
-from odyssey_fx.strategy.declarations.read_spec import ReadWindow as DeclaredWindow
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 
 __all__ = [
@@ -460,73 +451,6 @@ class _IntrabarBars:
 
 
 @dataclass(frozen=True, slots=True)
-class _StrategyMarketDataView:
-    """戦略ランタイムへ渡す as-of ビュー（D03 §6.2、D05 §6.3）。
-
-    `MarketDataView`（`strategy.runtime.ports`）を構造的に満たし、読み取りそのものは
-    `AsOfView` に委ねる。**足す処理は履歴窓の型の言い換えだけ**である。
-
-    **なぜ言い換えが要るか（仮置き。人間の決定が必要）**: 履歴窓の宣言型は D04 §6.2 が
-    `strategy.declarations.read_spec` に定め（本数はコンパイル時に解決するため
-    `int | ParameterRef`）、as-of ビューが受ける窓は D03 §6.2 が
-    `marketdata.application.asof` に定めている（本数は解決済みの `int`）。**同じ名前の別の型**
-    であり、どちらの型が境界を渡るかをどの設計文書も決めていない。`strategy` は
-    `marketdata.application` を参照できず（契約 F2）、`marketdata` は `strategy` を参照
-    できない（層順序）ため、両方を参照できる合成（`app`）で言い換える。恒久的な形は
-    人間の決定を要する（PR 本文の仮置き事項）。
-
-    本数が未解決（`ParameterRef`）の窓は拒否する。解決はコンパイラの仕事であり
-    （D04 §12、D05 §5.3「ランタイムが解決済みの窓だけを受け取る」）、ここで既定値を
-    当てはめると、宣言に無い本数で履歴を読むことになる。
-    """
-
-    view: AsOfView
-
-    def _window(self, window: DeclaredWindow) -> BarsWindow | DurationWindow:
-        """宣言の履歴窓を as-of ビューの履歴窓へ言い換える。"""
-        if isinstance(window, DeclaredBarsWindow):
-            if not isinstance(window.count, int):
-                raise MarketDataValueError(
-                    "the history window still refers to a parameter"
-                    f" ({window.count}); the compiler resolves window sizes before the run"
-                    " (D04 §12, D05 §5.3)"
-                )
-            return BarsWindow(count=window.count)
-        if isinstance(window, DeclaredDurationWindow):
-            return DurationWindow(duration=window.duration)
-        raise MarketDataValueError(
-            f"a history window must be a BarsWindow or DurationWindow, got {window!r}"
-        )
-
-    def latest_available(self, series: SeriesId, at: UtcTime) -> Bar | MissingInput:
-        """判断時刻に対し期待される最新足（D03 §6.2）。"""
-        return self.view.latest_available(series, at)
-
-    def history(
-        self,
-        series: SeriesId,
-        window: DeclaredWindow,
-        at: UtcTime,
-        *,
-        end_offset_bars: int = 0,
-    ) -> tuple[Bar, ...] | MissingInput:
-        """履歴窓を読む（D03 §6.2）。"""
-        return self.view.history(series, self._window(window), at, end_offset_bars=end_offset_bars)
-
-    def bar(self, series: SeriesId, bar_start: UtcTime, at: UtcTime) -> Bar | MissingInput:
-        """指定した足（D03 §6.2）。"""
-        return self.view.bar(series, bar_start, at)
-
-    def expected_latest_key(self, series: SeriesId, at: UtcTime) -> BarKey | None:
-        """判断時刻に対し存在すべき最新足の鍵（D03 §6.2）。"""
-        return self.view.expected_latest_key(series, at)
-
-    def freshness(self, series: SeriesId, bar: Bar) -> UtcTime:
-        """鮮度の基準時刻（D03 §6.2）。"""
-        return self.view.freshness(series, bar)
-
-
-@dataclass(frozen=True, slots=True)
 class SnapshotInputs:
     """承認済み snapshot から読んだ、run の入力一式（D03 §6・§7）。"""
 
@@ -694,13 +618,13 @@ def execute_run(
             " (D03 §6.3)"
         )
 
-    market_data = _StrategyMarketDataView(
-        view=AsOfView(
-            snapshot=inputs.snapshot,
-            allowed_partitions=inputs.allowed_partitions,
-            schedules=inputs.schedules,
-            partition_bars=inputs.partition_bars,
-        )
+    # 戦略ランタイムへは as-of ビューをそのまま渡す（D05 §6.3 v1.4、D03 §6.2 v1.5）。
+    # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
+    market_data = AsOfView(
+        snapshot=inputs.snapshot,
+        allowed_partitions=inputs.allowed_partitions,
+        schedules=inputs.schedules,
+        partition_bars=inputs.partition_bars,
     )
     execution_view = ExecutionSeriesView(
         snapshot=inputs.snapshot,

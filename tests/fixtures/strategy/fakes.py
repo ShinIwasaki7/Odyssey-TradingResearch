@@ -20,9 +20,9 @@ from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.strategy.declarations.read_spec import BarsWindow, DurationWindow
 from odyssey_fx.strategy.records.payloads import TradeDirection
 from odyssey_fx.strategy.records.records import OutputRecord
+from odyssey_fx.strategy.runtime.ports import BarsWindowView, HistoryWindowView
 
 __all__ = [
     "CollectingSink",
@@ -77,13 +77,13 @@ class FakeMarketDataView:
     def history(
         self,
         series: SeriesId,
-        window: BarsWindow | DurationWindow,
+        window: HistoryWindowView,
         at: UtcTime,
         *,
         end_offset_bars: int = 0,
     ) -> tuple[Bar, ...] | MissingInput:
         visible = self._visible(series, at)
-        if not isinstance(window, BarsWindow) or not isinstance(window.count, int):
+        if not isinstance(window, BarsWindowView):
             return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
         end = len(visible) - end_offset_bars
         start = end - window.count
