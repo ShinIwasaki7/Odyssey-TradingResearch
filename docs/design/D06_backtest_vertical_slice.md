@@ -153,7 +153,7 @@ D01 §7.2 の一覧をそのまま使い、モジュールの追加・分割は�
 | `RunManifest` | `trace.manifest` | レコード | 第9.3節の項目 | §9.3 |
 | `BacktestResult` | `trace.result` | レコード | 第9.4節の項目 | §9.4 |
 | `TraceSink` | `application.ports` | Protocol | `write(table: TraceTable, rows: tuple[object, ...]) -> None` | §9.1 |
-| `TraceTable` | `trace.recorder` | enum | 第9.2節の15件 | §9.2 |
+| `TraceTable` | `trace.recorder` | enum | 第9.2節の表（段階2 の15件と、**段階3 の3件**＝`WAIT_EVENTS` / `INPUT_SUBSTITUTIONS` / `CONFIRMATION_ATTEMPTS`。合計18件。v1.5） | §9.2 |
 | `CompositeRow` | `trace.recorder` | レコード | `primary: object` / `parts: tuple[tuple[str, type, object], ...]`（接頭辞・従の型・値）。複合表と区分タグ付き union の行を、記録層が受付層・執行層・台帳層を import せずに運ぶための入れ物 | §9.1・§9.2 |
 | `ManagementApplication` | `trace.recorder` | レコード | `at: ProcessingPoint` / `applied: bool` / `reason: Reason \| None` / `protection_version: int \| None` / `rounded_take_profit: Price \| None` / `realized_reward_risk: Decimal \| None` | §8.3・§9.2 |
 | `PublicationFeed` | `engine.loop` で構造を定義し `application.ports` が再公開 | Protocol | **反復できること**だけを要求する（`__iter__`）。要素は D03 §7.1 の4イベント。run 区間で絞るのはエンジン側で行う | §4.3 |
@@ -799,7 +799,7 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 |---|---|
 | `run_id` / `manifest_ref` | run manifest への参照 |
 | `status: RunStatus` | 正常完走か失敗か |
-| `trace_tables: Mapping[TraceTable, str]` | **第9.2節の15表すべての Parquet パス**。D07 は必要な表をここから開く |
+| `trace_tables: Mapping[TraceTable, str]` | **第9.2節の表すべての Parquet パス**（段階2 は15表、段階3 は18表。v1.5）。D07 は必要な表をここから開く。段階3 で足した3表も同じ `TraceTable` の列挙値で公開し、読む側が段階で場合分けしなくて済むようにする |
 | `summaries: FinalSummaries \| None` | 末尾3集計（第10.3節）。**`status` が `COMPLETED` のときだけ非 `None`** |
 | `swap_modeled: bool` | 常に `False`（ADR-0029）。D07 がユーザーへの明記に使う |
 | `unresolved_intrabar_count: int` | `UNRESOLVED_SL_PRIORITY` の件数（ADR-0030） |
@@ -828,7 +828,13 @@ JSON。項目は次のとおり【合意済み】全体計画 §5.4.5 を具体�
 | 6 | 残存する取引機会と、**残った待機中の評価要求**を `is_run_end=True` の `step` で終端する（第10.2節） | `RUN_END`（rank 14） |
 | 7 | 残存建玉は未決済のまま MTM 評価して最終 snapshot を保存する。建玉割当も解放しない | `RUN_END`（rank 14） |
 
-**run 末尾に残った待機要求も同じ `step` で決着させる**【提案】（v1.5、2026-09-22。D05 §12.1 の依頼5）。`is_run_end=True` の `step` は起動判定も評価も行わない（D05 §6.1）ので、待機中の評価要求はそのままでは何の記録も残さずに run が終わる。そこで、残存する取引機会を終端するのと同じ `step` の中で、**残った待機要求を `Skipped(Reason(RUN_END, ...))` の評価記録で決着させ、`WaitEvent(DEADLINE_REACHED)` ではなく run 末尾として残す**。決着の順序は、取引機会の終端（`opportunity_id.seq` の昇順）の後に `request_id` の昇順とする。順序を決めないと、同じ判断時点の通し番号が run ごとに変わり、「同一入力の再実行で trace が一致」（全体計画 §8.2）を満たせない。**不採用**: 待機要求を記録せずに捨てる案（何を待ったまま run が終わったのかが判断履歴に残らない）、`on_deadline` に従って `Error` で決着させる案（期限には到達しておらず、run が終わっただけであり、データ誤りとして集計されてしまう）。
+**run 末尾に残った待機要求も同じ `step` で決着させる**【提案】（v1.5、2026-09-22。D05 §12.1 の依頼5）。`is_run_end=True` の `step` は起動判定も評価も行わない（D05 §6.1）ので、待機中の評価要求はそのままでは何の記録も残さずに run が終わる。そこで、残存する取引機会を終端するのと同じ `step` の中で決着させる。**記録の形は D05 §6.1 が確定する**（v2.0）。本書が要求するのは次の3点である。
+
+1. 決着した評価記録を `RuntimeStepResult.evaluations` で返すこと。したがって**末尾のバッチの戻り値は `evaluations` が空ではない**（第10.2節の表）。
+2. その結末が、まだ足りていなかった入力の診断を持つ見送り（`Skipped(diagnoses)`）であること。期限には到達していないので、期限切れ（`on_deadline` に従った `Error`）としては扱わない。データ誤りとして集計されてしまう。
+3. 「run が終わったから閉じた」ことが**待機の出来事**（`WaitEvent`）の側に残ること。D05 §6.1 がそのための値（`RUN_END_CLOSED`）を足した。
+
+決着の順序は、取引機会の終端（`opportunity_id.seq` の昇順）の後に `request_id` の昇順とする。順序を決めないと、同じ判断時点の通し番号が run ごとに変わり、「同一入力の再実行で trace が一致」（全体計画 §8.2）を満たせない。**不採用**: 待機要求を記録せずに捨てる案（何を待ったまま run が終わったのかが判断履歴に残らない）、`on_deadline` に従って `Error` で決着させる案（期限には到達しておらず、run が終わっただけである）。
 
 手順5〜7 は rank 14 の中でこの順に行う【提案】。注文の取消を機会の終端より先に置くのは、機会の終端理由が注文の状態に依存しないためであり（D05 §7.2 の遷移9 は「run 末尾に残った」だけを発火条件にする）、順序を逆にすると、終端済みの機会に対応する注文が後から取り消される記録になる。最終 snapshot を最後に置くのは、取消と終端の結果を含んだ台帳を保存するためである。
 
@@ -853,6 +859,7 @@ D05 §7.2 の遷移9 は「run 末尾に残った取引機会を `RUN_END` で�
 | `decision_time` | run_end の判断時刻（`RunConfig.run_interval.end`） |
 | `phases` | `BACKTEST_PHASES` |
 | `available_bars` / `scheduled_closes` / `runtime_events` / `admissions` | すべて空（D05 §6.1 の構築時不変条件） |
+| 戻り値 | `transitions`（残存機会の終端）に加えて、**残っていた待機要求の決着**として `evaluations` と `wait_events` が非空になりうる（D05 §6.1 v2.0）。`outputs` / `proposals` / `management_requests` は空のままである |
 | `is_run_end` | `True` |
 
 - エンジンは戻り値の `transitions`（残存機会の `RUN_END` 終端）を表3 へ書き、`outputs` / `evaluations` / `proposals` / `management_requests` が空であることを検査する。空でなければ `KernelValueError`（末尾で新しい判断が生まれない規則、上位 §4.7.13 D の「終了だから未公開情報を解禁することはしない」の実施箇所）。

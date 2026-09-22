@@ -175,7 +175,7 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `WaitingRequest` | `runtime.waiting` | レコード | `request: EvaluationRequest` / `pinned_bars: Mapping[str, BarKey]`（入力名 → 固定した対象足） / `pinned_events: Mapping[str, tuple[EventDelivery, ...]]` / `opportunity: Opportunity \| None` / `missing: tuple[MissingInputDiagnosis, ...]` / `started_at: ProcessingPoint` / `deadline_at: WaitDeadline` / `on_deadline: WaitDeadlineAction` / `on_superseded: OnSuperseded` | §6.8 |
 | `WaitDeadline` | `runtime.waiting` | union | `WaitUntilTime(at: UtcTime)` / `WaitUntilBars(series: SeriesId, remaining: int)` | §6.8 |
 | `WaitEvent` | `runtime.waiting` | レコード | `request_id: RequestId` / `kind: WaitEventKind` / `at: ProcessingPoint` / `reason: Reason \| None` / `arrived: tuple[str, ...]`（到着した入力名） | §6.8 |
-| `WaitEventKind` | `runtime.waiting` | enum | `WAIT_STARTED` / `INPUT_ARRIVED` / `RESUMED` / `DEADLINE_REACHED` / `SUPERSEDED` | §6.8 |
+| `WaitEventKind` | `runtime.waiting` | enum | `WAIT_STARTED` / `INPUT_ARRIVED` / `RESUMED` / `DEADLINE_REACHED` / `SUPERSEDED` / `RUN_END_CLOSED`（run 末尾で閉じた。§6.1） | §6.8 |
 | `SubstitutedInput` | `runtime.requests` | レコード | `input_name: str` / `source: ResolvedSource` / `used_bar_key: BarKey \| None` / `used_output_id: OutputId \| None` / `freshness_time: UtcTime` / `reason: MissingInputReason` | §6.9 |
 | `ConfirmationPlan` | `compiler` | レコード | `filter_instance: str` / `series: SeriesId` / `include_start_bar: bool` / `deadline: BarsDeadline \| DurationDeadline` / `on_deadline: DeadlineAction` | §5.3・§7.7 |
 | `OutputRetentionPlan` | `compiler` | レコード | `by_output: Mapping[OutputRef, int]`（出力参照 → 保持する本数。1 以上。読み手が1つも無い出力は載せない） | §5.3・§6.12 |
@@ -407,7 +407,7 @@ D04 が登録した13件のデータ型識別子に、`records` 側の内容型�
 | 許可する起動条件 | `AllowedBarClose(timeframes=None)` |
 | 計算規則 | `ConditionState(left <operator> right)`。比較は `Price` 同士のみ（D02 §4.3）。等値は `GE` / `LE` が含み、`GT` / `LT` が含まない |
 
-読み取り条件（`max_age` と `on_missing`）は `InputSpec` だけが持ち、使用箇所は選べない【合意済み】D04 §4.1・§6.1。鮮度の上限や待機を使う戦略は、**同じ実装を別の読み取り条件で登録した契約の版**（`price_compare` v2 など）を使う。検証戦略 B が待機を必要とするのは日足を直接読む入力であり（第9.2節）、比較部品ではない。
+読み取り条件（`max_age` と `on_missing`）は `InputSpec` だけが持ち、使用箇所は選べない【合意済み】D04 §4.1・§6.1。鮮度の上限や待機を使う戦略は、**同じ実装を別の読み取り条件で登録した契約の版**（`price_compare` v2 など）を使う。**検証戦略 B は日足から市場状態を作る連鎖の全段で待機できる必要がある**ため、比較部品も論理合成の部品も待機できる版を使う（第9.2節）。上流が待機しているあいだ、その出力を読む下流の入力は「まだ出ていない」として扱われ、下流自身の `on_missing` に従うからである（第6.8節の「待機の伝播」）。下流が見送りを宣言していると、そこで連鎖が切れて復活しない。
 
 **(9) `all_conditions` v1 / (10) `any_condition` v1**（AND / OR）
 
@@ -645,11 +645,12 @@ D04 §12 の「段階2 で拒否する構成」のうち、**段階3 で解除�
 | 事項 | 規則 |
 |---|---|
 | 構築時の不変条件 | `is_run_end=True` のバッチは `available_bars` / `scheduled_closes` / `runtime_events` / `admissions` がすべて空でなければならない。違反は `KernelValueError`。末尾の合図と通常の公開・通知を同じバッチに混ぜない |
-| ランタイムの処理 | 起動判定・評価・出力の送出を行わない。非終端（`OPEN` / `CONFIRMED` / `ORDER_PENDING`）の取引機会をすべて `RUN_END` で終端し（遷移9）、`OpportunityTransition` だけを持つ `RuntimeStepResult` を返す。`outputs` / `evaluations` / `proposals` / `management_requests` は空 |
+| ランタイムの処理 | 起動判定・評価・出力の送出を行わない。非終端（`OPEN` / `CONFIRMED` / `ORDER_PENDING`）の取引機会をすべて `RUN_END` で終端し（遷移9）、**残っていた待機要求を決着させる**（次の行）。`outputs` / `proposals` / `management_requests` は空 |
+| 残った待機要求 | 待機中の各要求を `Skipped(まだ足りていなかった入力の診断)` で決着させ、`WaitEvent(RUN_END_CLOSED)` を1件ずつ残す【提案】。したがって**この `step` の戻り値は `evaluations` と `wait_events` が空ではない**。決着の順序は、取引機会の終端（`opportunity_id.seq` の昇順）の後に `request_id` の昇順。期限には到達していないので `DEADLINE_REACHED` を使わず、`on_deadline` にも従わない（run が終わっただけであり、データ誤りとして集計させない）。**不採用**: 待機要求を黙って捨てる案（何を待ったまま run が終わったのかが判断履歴に残らない）、`Skipped` の代わりに理由コードを運べる新しい結末を足す案（`Failed` との区別が集計で曖昧になり、結末の区分が1つ増える。「なぜ閉じたか」は待機の出来事の側で表せる） |
 | 終端の順序 | `opportunity_id.seq` の昇順。同じ判断時刻・同じフェーズの中で `sequence` が決定論的に決まるようにするため |
 | 1 run に1回 | `is_run_end=True` の `step` は1 run に1回だけ呼ばれる。2回目は `KernelValueError`（`RuntimeState` に記録する） |
 
-`is_run_end=True` でも `decision_time` と `phases` は通常どおり渡す（記録の `ProcessingPoint` を組み立てるため）。**不採用**: 末尾専用の操作をポートに足す案（呼び出し順の規則がもう1本要る）、エンジンが残存機会を直接終端させる案（取引機会の状態の所有者がランタイムとエンジンに割れる）。
+`is_run_end=True` でも `decision_time` と `phases` は通常どおり渡す（記録の `ProcessingPoint` を組み立てるため）。**「起動判定・評価を行わない」は「新しい評価要求を作らず、部品を呼ばない」ことであり、既に待機していた要求を記録として閉じることは行う**（上の表）。閉じるときに部品は呼ばない。**不採用**: 末尾専用の操作をポートに足す案（呼び出し順の規則がもう1本要る）、エンジンが残存機会を直接終端させる案（取引機会の状態の所有者がランタイムとエンジンに割れる）。
 
 **足の区間を `BarClosure` に載せる理由**【提案】: 取引機会の `signal_interval` は起動した足の区間であり（第4.2節）、系列と足の開始時刻だけでは、夏時間の切替日や短縮セッションで実際の区間を復元できない（D03 §3.3）。区間を決めるのはカレンダーを持つ `marketdata` 側であり、戦略側で再計算すると規則が2か所になる。
 
@@ -862,7 +863,14 @@ WaitForInput(
 
 **再開の契機と処理**【提案】（上位設計書 §4.3.14 の5手順の実施）。判断時点ごとに、評価より前の**ライフサイクル検査**（D06 の `OPPORTUNITY_LIFECYCLE` フェーズ）で次を行う。
 
-1. 待機中の各要求について、`missing` に挙がった入力が読めるようになったかを調べる。読めるようになる条件は、**その入力が指す系列の足が `PublicationBatch.available_bars` に含まれること**である。別の系列の足の到着は再開の理由にしない【合意済み】同節。
+1. 待機中の各要求について、`missing` に挙がった入力が読めるようになったかを調べる。条件は接続元によって違う。
+
+| 足りない入力の接続元 | 読めるようになる条件 |
+|---|---|
+| 市場データ参照（`MarketDataRef`） | **その入力が指す系列の足が `PublicationBatch.available_bars` に含まれること**。別の系列の足の到着は再開の理由にしない【合意済み】同節 |
+| 出力参照（`OutputRef`） | **上流の使用箇所が、同じ `step` の中でその出力を出したこと**【提案】。上流が待機していて同じ判断時点で再開した場合がこれに当たる |
+
+   **出力参照の再開は、評価の段で評価順に沿って判定する**【提案】。上流が出力を出すのは評価の段（P1〜P5）であり、その前に走るライフサイクル検査の時点では、上流が再開できるかどうかしか分からない。そこでライフサイクル検査では**市場データ参照の到着・期限・追い越し・機会の失効**だけを判定し、出力参照が読めるようになったかどうかは、評価順（第5.4節）に沿って各使用箇所の番が来たときに判定する。評価順は上流が先に来ることを保証しているので（依存グラフ）、上流が同じ `step` で再開して出力を出せば、その下流の待機要求も同じ `step` で再開できる。順序を逆にすると、日足の指標 → 条件 → 市場状態という連鎖が1段ずつ別の判断時点でしか進まず、上位設計書 §4.3.14 の確定例（遅れて届いた日足から同じ判断時点で取引機会まで進む）が成り立たない。
 2. 期限（`deadline_at`）と追い越し（第6.10節）と、受信済み機会の失効（第7.3節の `REQUIRE_UNTIL_ORDER_REQUEST` の再検査）を検査する。**期限・追い越し・失効は再開より先に判定する**。
 3. 足りない入力がまだ残っていれば、`missing` を更新して待機を続ける。**部分的に届いた入力で評価を始めない**【合意済み】同節。
 4. すべて読めるようになったら、**固定した対象足（`pinned_bars`）で市場入力を読み直し**、現在状態の入力（`CurrentContext`）は**今回の `decision_time`** で読み直す。配送イベントの入力は `pinned_events` から復元する。
@@ -1124,7 +1132,20 @@ Trigger の出力が出た評価では、必ず次の順で処理する。
 
 **終端理由は既存の `MARKET_STATE_INVALIDATED` を使い、新しい語を作らない**【提案】。上位設計書 §4.5 はこの語を「`REQUIRE_UNTIL_ORDER_REQUEST` の条件が成立しなくなって終端」と説明しているが、語そのものの意味は「市場状態によって無効になった」である。生成時点で許可が無かった場合と、確認待ちのあいだに条件が崩れた場合は、**遷移記録の `from_state`（生成時は `None`、待機中は `OPEN` か `CONFIRMED`）で区別できる**。語を増やすと、終端理由別の集計（D07）で同じ原因が2語に割れる。上位設計書 §4.5 の説明文を1行広げる改訂依頼として第12.1節に挙げる。**不採用**: 新しい終端理由 `MARKET_STATE_NOT_PERMITTED` を加える案（正本の語彙が8語になり、集計で「市場状態が原因」を数えるのに2語を足す必要が出る）、許可されない発火は取引機会を作らない案（ADR-0032 の「発火を捨てない」に反する）。
 
-**市場状態が待機中なら、取引機会を出す評価も待機する**【提案】。役割フィールドには `on_missing` を宣言する場所が無いため、この1件だけはランタイムが規則を持つ（第6.8節の「待機の伝播」の例外）。市場状態の使用箇所が**同じ対象区間について**待機中である（第6.8節）とき、`market_state` 役割を持つ戦略の取引機会を出す評価は、同じ判断時点では行わず、その市場状態の待機に連なる待機要求として保持する。期限と `on_superseded` は**市場状態の入力が宣言したもの**を引き継ぐ。上位設計書 §4.3.14 の確定例（22:00 に日足が未公開で市場状態が待機し、22:00:02 に再開して同じ判断時点で 21:00〜22:00 の1時間足を対象に Trigger を評価して O1 を生成する）がこの経路である。
+**市場状態が待機中なら、取引機会を出す評価も待機する**【提案】。役割フィールドには `on_missing` を宣言する場所が無いため、この1件だけはランタイムが規則を持つ（第6.8節の「待機の伝播」の例外）。
+
+**連鎖するかどうかは対象区間ではなく判断時点で判定する**【提案】。次の条件がそろったとき、取引機会を出す評価は同じ判断時点では行わず、待機要求として保持する。
+
+| # | 条件 |
+|---|---|
+| 1 | `CompiledRoles.market_state` が指す使用箇所**または、その使用箇所が依存グラフ上で（間接にでも）読む上流の使用箇所**のいずれかが、**同じ判断時点で待機中**である（第6.8節） |
+| 2 | その待機が、まだ決着していない（期限にも追い越しにも至っていない） |
+
+**対象区間の一致を条件にしない**のは、段階3 の主な使い方がまさに「市場状態は日足、取引機会は1時間足」だからである。区間の一致を求めると `target_interval` が日足と1時間足で食い違い、連鎖が一度も成立しない。その場合、取引許可を1件も読めない取引機会が下の規則で `MARKET_STATE_INVALIDATED` として終端し、日足が届いてから再開する経路が無くなる。上位設計書 §4.3.14 の確定例（22:00 に日足が未公開で市場状態が待機し、22:00:02 に再開して同じ判断時点で 21:00〜22:00 の1時間足を対象に Trigger を評価して O1 を生成する）は、まさに区間が違う2つを同じ判断時点でつなぐ例である。**上流までたどる**のは、待機に入るのが市場状態の使用箇所そのものとは限らないためである（検証戦略 B では日足の指数移動平均が先に待機し、市場状態はその出力を読めずに待機する。第9.2節）。
+
+期限と `on_superseded` は、**その連鎖の起点になった待機（いちばん上流の待機）が宣言したもの**を引き継ぐ。起点が複数あるときは、期限が最も早く来るものを採る。取引機会を出す評価に独自の期限を持たせないのは、役割フィールドには宣言する場所が無く、既定値を置けば ADR-0031 の「暗黙の既定値を設けない」に反するためである。
+
+**不採用**: 同じ対象区間の待機だけに連鎖させる案（上のとおり、時間足をまたぐ段階3 の主な使い方で一度も成立しない）、待機中でも取引機会の生成だけ先に進める案（許可を読まずに機会を作ることになり、上位設計書 §4.3.11 の因果順序に反する）。
 
 **最新の取引許可が一度も無い場合**は、`INPUT_MISSING_OR_INVALID` の欠損と同じに扱い、上の待機の規則が当てはまらなければ（市場状態が待機していなければ）**発火を遷移12 で終端する**【提案】。欠損を許可へ変換しない【合意済み】上位 §4.3.15。
 
@@ -1242,10 +1263,10 @@ T01（紙上トレース）で追う1回の突破は次のとおり【提案】�
 
 | 使用箇所 | 契約 | 起動条件 | 入力の接続 | 出力 | 役割 |
 |---|---|---|---|---|---|
-| `daily_ema` | `ema` v1（`period=20`、`window_bars=60`） | `OnBarClose("d1", USDJPY/1d/bid)` | `prices` ← `MarketDataRef(USDJPY/1d/bid, CLOSE)` | `value`: `price@v1` | — |
-| `daily_above_ema` | `price_compare` v1（`operator=GT`） | `OnBarClose("d1", USDJPY/1d/bid)` | `left` ← `MarketDataRef(USDJPY/1d/bid, CLOSE)`、`right` ← `daily_ema.value` | `condition`: `condition_state@v1` | — |
+| `daily_ema` | **`ema` v2**（`period=20`、`window_bars=60`。`prices` の `on_missing` が `WaitForInput`） | `OnBarClose("d1", USDJPY/1d/bid)` | `prices` ← `MarketDataRef(USDJPY/1d/bid, CLOSE)` | `value`: `price@v1` | — |
+| `daily_above_ema` | **`price_compare` v2**（`operator=GT`。`left` / `right` の `on_missing` が `WaitForInput`） | `OnBarClose("d1", USDJPY/1d/bid)` | `left` ← `MarketDataRef(USDJPY/1d/bid, CLOSE)`、`right` ← `daily_ema.value` | `condition`: `condition_state@v1` | — |
 | `no_short` | `constant_condition` v1（`value=False`） | `OnBarClose("d1", USDJPY/1d/bid)` | なし | `condition`: `condition_state@v1` | — |
-| `market_state` | `permission_from_condition` v1 | `OnBarClose("d1", USDJPY/1d/bid)` | `long_allowed` ← `daily_above_ema.condition`、`short_allowed` ← `no_short.condition` | `permission`: `market_permission@v1` | `market_state` |
+| `market_state` | **`permission_from_condition` v2**（`long_allowed` の `on_missing` が `WaitForInput`） | `OnBarClose("d1", USDJPY/1d/bid)` | `long_allowed` ← `daily_above_ema.condition`、`short_allowed` ← `no_short.condition` | `permission`: `market_permission@v1` | `market_state` |
 | `entry_trigger` | `breakout_trigger` v2（`direction=LONG`。`level` の `on_missing` が `WaitForInput`） | `OnBarClose("h1", USDJPY/1h/bid)` | `price` ← `MarketDataRef(USDJPY/1h/bid, CLOSE)`、`level` ← `MarketDataRef(USDJPY/1d/bid, HIGH)` | `opportunity`: `opportunity@v1` | `trigger` |
 | `m15_ema` | `ema` v1（`period=20`、`window_bars=60`） | `OnBarClose("m15", USDJPY/15m/bid)` | `prices` ← `MarketDataRef(USDJPY/15m/bid, CLOSE)` | `value`: `price@v1` | — |
 | `m15_above_ema` | `price_compare` v1（`operator=GT`） | `OnBarClose("m15", USDJPY/15m/bid)` | `left` ← `MarketDataRef(USDJPY/15m/bid, CLOSE)`、`right` ← `m15_ema.value` | `condition`: `condition_state@v1` | — |
@@ -1266,6 +1287,21 @@ T01（紙上トレース）で追う1回の突破は次のとおり【提案】�
 
 **注文意図と保護水準の部品は版を上げる**【提案】。段階2 の `market_order_intent` v1 と `level_stop_loss` v1 は取引機会の配送（`opportunity@v1` の `DeliveredEvent`）で起動する。段階3 の確認待ちの戦略では**確認結果の配送で起動する**（第7.7節）ため、入力の型と起動条件が変わる。読み取り条件と起動条件は契約が固定するので（D04 §4.1・§8）、版を上げるほかない。v2 は `confirmation: confirmation_result@v1 / EVENT / DeliveredEvent / arity=(1,1)` を入力に持ち、`AllowedInputEvent(("confirmation",))` を許可する。注文意図に必要な銘柄と方向は**確認結果ではなく機会から来る**ため、v2 も `RuntimeInputRef(OPPORTUNITY)` の入力を1つ持つ（第6.11節。評価要求の `opportunity_id` は確認結果の配送から引き継がれる。第6.2節 手順3）。
 
+**日足から市場状態を作る3段は、すべて待機できる契約の版を使う**【提案】。読み取り条件（`max_age` と `on_missing`）は契約が固定し、使用箇所は選べない【合意済み】D04 §4.1・§6.1。第4.5〜4.7節に書いた `ema` v1 / `price_compare` v1 / `permission_from_condition` v1 はいずれも `on_missing=SkipEvaluation` なので、**そのまま使うと日足が遅れた判断時点で3段とも評価が見送られて決着し、あとで日足が届いても復活しない**（見送りで決着した要求は復活させない【合意済み】上位 §4.3.14）。足の確定の起動は予定時刻（`ScheduledBoundary`）に結び付いており（D03 §7.2）、遅れて届いた `Publication` が `OnBarClose` を起動し直すこともない。それでは遅延シナリオ2（日足のみ2秒遅延、第9.3節）が成立しない。
+
+そこで日足の連鎖の各段に **`WaitForInput` を持つ契約の版（v2）**を登録し、待機したまま日足の到着で再開できるようにする。待機の期限はいずれも `BarsDeadline(bars=1)`（日足1本ぶん）、`on_deadline=SKIP_EVALUATION`、`on_superseded=EXPIRE_REQUEST` とする。連鎖が進む仕組みは次のとおりである。
+
+| 段 | T（日足が未到着） | T+2秒（日足が到着） |
+|---|---|---|
+| `daily_ema`（`ema` v2） | 履歴窓が読めず `Waiting` | 固定した対象足で読み直して評価（第6.8節 手順4） |
+| `daily_above_ema`（`price_compare` v2） | 上流が待機中なので `right` は「まだ出ていない」（`INPUT_MISSING_OR_INVALID`）として扱われ `Waiting`（第6.8節の「待機の伝播」） | 上流が同じ `step` で出力を出したので、評価順に沿って再開（第6.8節 手順1） |
+| `market_state`（`permission_from_condition` v2） | 同上で `Waiting` | 同上で再開し、取引許可を出す |
+| `entry_trigger`（`breakout_trigger` v2） | 市場状態の連鎖が待機中なので待機（第7.6節） | 再開して取引機会 O1 を生成 |
+
+`no_short`（`constant_condition` v1）は入力を持たないため待機しない。`short_allowed` は常に読めるので、`permission_from_condition` v2 で待機の対象にするのは `long_allowed` だけでよい。
+
+**版が増えても部品の件数は増えない**【提案】。Q12 が決めた「11件」は**実装の件数**である。v2 は同じ実装を別の読み取り条件の契約で登録したものであり（第4.1節の登録の単位）、新しい計算規則も新しいデータ型も足さない。段階2 の v1 は検証戦略 A のために残す（第4.9節と同じ扱い）。**不採用**: 読み取り条件を使用箇所が選べるようにする案（D04 §4.1 の確定を覆す）、遅れて届いた `Publication` でも `OnBarClose` を起動し直す案（D03 §7.2 が確定した「予定時点で起動する」を覆し、見送りと待機の区別が失われる）。
+
 **`breakout_trigger` も版を上げる**（第4.9節）。日足の高値を待つために `level` 入力の `on_missing` が `WaitForInput(deadline=BarsDeadline(bars=1), on_deadline=SKIP_EVALUATION, on_superseded=EXPIRE_REQUEST)` になる（日足1本ぶん待つ）。`on_superseded=EXPIRE_REQUEST` は上位設計書 §4.3.14 の「Trigger の標準方針: 古い対象足が追い越されたら、その待機評価を失効させる」の具体値である。
 
 **期間値を含む宣言はダイジェストを計算できないため、本数で数える形に統一する**【合意済み】D02 §9.3・D04 §13.2・本書 §5.5。起草時はこの待機期限を `DurationDeadline("30m")` と書いていたが、期間値を持つ宣言は内容ハッシュを計算できず、実験として固定できない。検証戦略 B は**期間値を使わない形（`BarsDeadline` と `BarsWindow` だけ）で書ける**ので、上のとおり本数で数える形に確定した。期間の符号化規則を共通カーネル（D02 §9.3）へ足す改訂は、これにより段階3 の受入れの前提ではなくなったため**見送る**（第12.1節）。待機期限や確認期限を「30分」のように時間で書きたい戦略は段階3 でも書けないままであり、その制約は段階4 以降へ持ち越す。
@@ -1281,7 +1317,7 @@ T01（紙上トレース）で追う1回の突破は次のとおり【提案】�
 | # | シナリオ | 日足の `available_at` | 判断履歴に出るもの |
 |---|---|---|---|
 | 1 | 遅延なし | T | `daily_ema` → `market_state` → `entry_trigger` がすべて T で評価される。取引機会 O1 が `decision_time=T` で生成（遷移1）。同じ T の15分足で確認が成立すれば遷移10、注文意図と保護水準が出て遷移4 |
-| 2 | 日足のみ2秒遅延 | T+2秒 | **T**: `daily_ema` は `latest_available` が `LATEST_BAR_UNAVAILABLE` を返し、宣言が待機なら `Waiting` の評価記録と `WaitEvent(WAIT_STARTED)`。`market_state` も同じ区間で待機。`entry_trigger` は第7.6節の規則で待機に連なる。`m15_ema` は独立なので通常どおり評価される。**T+2秒**: `WaitEvent(INPUT_ARRIVED)` と `WaitEvent(RESUMED)`、固定した日足を読み直して `daily_ema` が評価され、`market_state` と `entry_trigger` が続く。O1 の `created_decision_time` は **T+2秒**であり、`signal_interval` は **T で終わる1時間足の区間**のまま。確認の開始足は「T+2秒 時点で利用可能な最新の15分足」＝T で確定した15分足 |
+| 2 | 日足のみ2秒遅延 | T+2秒 | **T**: `daily_ema`（`ema` v2）は `history` が窓の末尾の足を読めず `INPUT_MISSING_OR_INVALID` を返すため、`Waiting` の評価記録と `WaitEvent(WAIT_STARTED)`。`daily_above_ema` と `market_state` は上流が待機中で出力が「まだ出ていない」ため、同じく待機（第6.8節の「待機の伝播」）。`entry_trigger` は第7.6節の規則で市場状態の連鎖に連なって待機する。`m15_ema` は独立なので通常どおり評価される。**T+2秒**: `WaitEvent(INPUT_ARRIVED)` と `WaitEvent(RESUMED)`、固定した日足を読み直して `daily_ema` が評価され、評価順に沿って `daily_above_ema` → `market_state` → `entry_trigger` が同じ判断時点で続く（第6.8節 手順1）。O1 の `created_decision_time` は **T+2秒**であり、`signal_interval` は **T で終わる1時間足の区間**のまま。確認の開始足は「T+2秒 時点で利用可能な最新の15分足」＝T で確定した15分足 |
 | 3 | 待機期限を超える遅延 | 期限より後 | **T**: 2 と同じく待機に入る。**期限に到達した判断時点**: `WaitEvent(DEADLINE_REACHED)` と、`on_deadline` に従って `Skipped`（`SKIP_EVALUATION`）または `Failed(DATA_ERROR)`（`ERROR`）の評価記録。取引機会は生成されず、その時刻の注文数は 0。日足がその後に届いても**この要求は復活しない**【合意済み】上位 §4.3.14 |
 | 4 | 次足まで到着しない | 次の日足の予定時刻より後 | **T**: 待機に入る。**次の1時間足が確定した判断時点**: `entry_trigger` の待機要求が追い越され、`on_superseded=EXPIRE_REQUEST` なら `Superseded(by_request_id)` の評価記録と `WaitEvent(SUPERSEDED)`、理由コードは `REQUEST_SUPERSEDED`。新しい1時間足を対象とする要求が改めて待機に入る。**古い突破を後から実行しない**【合意済み】同節 |
 
