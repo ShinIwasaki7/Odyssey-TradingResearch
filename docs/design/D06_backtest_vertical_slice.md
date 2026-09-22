@@ -760,11 +760,12 @@ D05 §7.2 の遷移5〜7 は、エンジンからの `AdmissionNotice` を次の
 | # | `TraceTable` | 正本の型 | 主キー | 辿れる先 |
 |---|---|---|---|---|
 | 16 | `WAIT_EVENTS` | `WaitEvent`（D05 §3） | `(request_id, at)` | `request_id` → 表2 の評価記録 |
-| 17 | `INPUT_SUBSTITUTIONS` | `SubstitutedInput`（D05 §3）＋ その要求の `evaluation_id` | `(evaluation_id, input_name)` | `evaluation_id` → 表2、`used_output_id` → 表1 |
+| 17 | `INPUT_SUBSTITUTIONS` | `SubstitutedInput`（D05 §3）＋ その要求の `evaluation_id` | `(evaluation_id, input_name, source_index)` | `evaluation_id` → 表2、`used_output_id` → 表1 |
 | 18 | `CONFIRMATION_ATTEMPTS` | `ConfirmationAttempt`（D05 §3） | `(opportunity_id, bar_key)` | `opportunity_id` → 表3、`request_id` → 表2 |
 | 19 | `VALIDITY_RECHECKS` | `ValidityRecheck`（D05 §3） | `(opportunity_id, at)` | `opportunity_id` → 表3、`output_id` → 表1 |
 
 - **待機の出来事（表16）を評価記録と別の表にする**【提案】。1つの評価要求が待機・到着・再開・期限到達・追い越しで複数の出来事を持つため、表2 の1行に畳めない。主キーを `(request_id, at)` にするのは、同じ要求の出来事が処理点で一意に並ぶからである（処理点の番号はエンジンが振り直す。第4.4節）。
+- **遡った入力（表17）の主キーに接続元の位置を含める**【提案】。1つの入力名に複数の接続元を書けるため（D04 §4.1 の `arity`）、同じ評価で同じ入力名の2つの系列を遡ると行が2件出る。入力名までを主キーにすると片方が上書きされ、実際に代用した観測が判断履歴から消える。`SubstitutedInput` が持つ `source_index`（D05 §3）を鍵に含めて一意にする。
 - **遡った入力（表17）を独立させる**【提案】。表2 の `EvaluationRecord.substitutions` は可変長の入れ子であり、第9.1節の規則なら正規化エンコード文字列の `list` 列になる。遡りは「どの足を代わりに読んだか」を区分別に集計する対象（D07）なので、復号せずに読める形が要る。表9 の費用を区分別の列へ開いたのと同じ理由である。
 - **確認試行（表18）を独立させる**【提案】。`OpportunityLifecycle.attempts` は機会1件につき期限までの本数だけ並ぶため、表3（取引機会の遷移）の行には収まらない。主キーを `(opportunity_id, bar_key)` にできるのは、**同じ機会・同じ確認足について作る評価要求が1件だけで、試行も1件だけだから**である【合意済み】D05 §7.7。入力が足りずに待機へ入った試行は `WAITING` で始まり、再開して決着したときに**同じ1件の結末が置き換わる**（D05 §7.7）。したがって待機をはさんでも行は増えず、表18 には**その確認足についての最後の結末**が1行だけ残る。待機の経過は表16（待機の出来事）と表2（評価記録）が処理点付きで持つ。
 - **損切り水準の更新は表12 をそのまま使う**【提案】。`UpdateStop` は `ManagementAction` の区分であり、表12 は既に区分タグ付き union を全変種のフィールドの和集合として開く規則を持つ（第9.1節の規則2）。新しい表を足すと、同じ建玉への保護水準の要求が2つの表に分かれる。

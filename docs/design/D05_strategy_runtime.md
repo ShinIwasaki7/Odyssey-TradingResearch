@@ -176,7 +176,7 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `WaitDeadline` | `runtime.waiting` | union | `WaitUntilTime(at: UtcTime)` / `WaitUntilBars(series: SeriesId, remaining: int)` | §6.8 |
 | `WaitEvent` | `runtime.waiting` | レコード | `request_id: RequestId` / `kind: WaitEventKind` / `at: ProcessingPoint` / `reason: Reason \| None` / `arrived: tuple[str, ...]`（到着した入力名） | §6.8 |
 | `WaitEventKind` | `runtime.waiting` | enum | `WAIT_STARTED` / `INPUT_ARRIVED` / `RESUMED` / `DEADLINE_REACHED` / `SUPERSEDED` / `RUN_END_CLOSED`（run 末尾で閉じた。§6.1） | §6.8 |
-| `SubstitutedInput` | `runtime.requests` | レコード | `input_name: str` / `source: ResolvedSource` / `used_bar_key: BarKey \| None` / `used_output_id: OutputId \| None` / `freshness_time: UtcTime` / `reason: MissingInputReason` | §6.9 |
+| `SubstitutedInput` | `runtime.requests` | レコード | `input_name: str` / `source_index: int`（その入力の `InputBinding.sources` の中での位置。0 起点） / `source: ResolvedSource` / `used_bar_key: BarKey \| None` / `used_output_id: OutputId \| None` / `freshness_time: UtcTime` / `reason: MissingInputReason` | §6.9 |
 | `ConfirmationPlan` | `compiler` | レコード | `filter_instance: str` / `series: SeriesId` / `include_start_bar: bool` / `deadline: BarsDeadline \| DurationDeadline` / `on_deadline: DeadlineAction` | §5.3・§7.7 |
 | `OutputRetentionPlan` | `compiler` | レコード | `by_output: Mapping[OutputRef, int]`（出力参照 → 保持する本数。1 以上。読み手が1つも無い出力は載せない） | §5.3・§6.12 |
 | `ValidityRecheck` | `runtime.opportunities` | レコード | `opportunity_id: OpportunityId` / `source: OutputRef` / `mode: ValidityMode` / `at: ProcessingPoint` / `outcome: ValidityRecheckOutcome` / `output_id: OutputId \| None`（読めた出力） / `reason: Reason \| None`（読めなかったときの理由） | §7.3 |
@@ -726,7 +726,7 @@ D04 §12 の「段階2 で拒否する構成」のうち、**段階3 で解除�
 - **段階3 は本数で数える窓に限って解除する**【合意済み】（Q18 決定、選択肢2）。2026-09-22 の人間の決定により、上流の出力を過去 N 本で読む仕組みを段階3 で作ることになった。保持する本数と捨てる時点の規則は第6.12節に置く。経過時間の窓（`DurationWindow`）で出力参照を読む接続は**拒否を続ける**（第5.6節の検査 f）。段階2 の拒否そのものは変えていない（段階2 の実行経路は最新1件の保持のままである）。
 - **履歴窓は受け口の側で構造だけを要求する**【確定】（v1.4、2026-09-22 の人間の決定）。`MarketDataView.history` が受ける窓の型を、宣言の履歴窓の具体クラスではなく**構造的な `Protocol`**（本数を読み出せる窓か、経過時間を読み出せる窓）とする。宣言の履歴窓（D04 §6.2、本数は `int | ParameterRef`）と as-of ビューの履歴窓（D03 §6.2、本数は解決済みの `int`）は同じ名前の別の型であり、`strategy` は `marketdata.application` を参照できず（D01 §3.2 の契約 F2）、`marketdata` は `strategy` を参照できない（層順序）。具体クラスを要求すると、両方を参照できる層（`app`）が層をまたいで窓を言い換えるほかなくなり、段階4 で別のビューへ差し替えるたびに言い換えを書き足すことになる。構造だけを要求すれば、as-of ビューをそのままランタイムへ渡せる。第4.4節（部品が上の層の型を構造だけの `Protocol` で受ける）と同じ手法である。ランタイムは、コンパイラが解決済みの本数（第5.3節）をその受け口の形にして渡す。**不採用**: 合成が言い換える案（層をまたぐ言い換えが恒久的に残り、ビューを差し替えるたびに増える）、宣言の型を `marketdata` 側へ移す案（宣言の型はパラメータ参照を持てる必要があり、コンパイル前の宣言を市場データ層に置くことになる）。
 - **市場データの足は項目を射影してから部品へ渡す**【提案】。`MarketDataView` が返すのは `Bar`（D03 §3.3）だが、部品の入力の型は `price@v1` などの単一の内容型である（D04 §5）。そこでランタイムが `ResolvedMarketSource.field` に従って1本ずつ射影し、`ValueSample.payload` に入れる。`OPEN` / `HIGH` / `LOW` / `CLOSE` は `Price`、`VOLUME` は `Decimal` であり、D04 §5 が定めた項目とデータ型の対応（`price@v1` / `volume@v1`）と一致する。`ValueSample.freshness_time` は `MarketDataView.freshness(series, bar)`（確定足なら足の終了時刻）。射影を履歴側でも行うのは、`extreme_price` が `Bar` ではなく `Price` の列から最大・最小を求める契約になっているためである。部品に `Bar` を渡さないことで、宣言していない項目（当該足の終値など）を部品が覗くこともできなくなる。
-- **`max_age` の判定はランタイムが行う**【合意済み】D03 §6.2。`decision_time - freshness_time > max_age` なら `MAX_AGE_EXCEEDED`。ビューは鮮度基準時刻を返すだけである。
+- **`max_age` の判定はランタイムが行う**【合意済み】D03 §6.2。`decision_time - freshness_time > max_age` なら `MAX_AGE_EXCEEDED`。ビューは鮮度基準時刻を返すだけである。**履歴窓（`HistoryWindow`）では、窓の末尾＝いちばん新しい要素の鮮度基準時刻だけで判定する**【合意済み】上位設計書 §4.3.10（`HistoryWindow` の追加の鮮度制約は履歴の末尾に適用する）。窓の全要素に当てると、60本の窓に2日の上限を書いた入力は最新の足が新しくても必ず欠損になり、上限がまったく使えない。第6.7節が「窓の代表の鮮度は末尾の要素」と決めたのと同じ考え方である。
 - **出力参照の鮮度基準時刻**は、その出力を生んだ評価の `decision_time` とする【提案】。上流の観測区間まで遡る鮮度の伝播は段階3（第10節）。段階2の5部品は `max_age=None` のため、この選択は検証戦略 A の結果を変えない。**不採用**: 上流の `Observation.freshness_time` を伝播させる案（複数系列を混ぜる部品が無い段階2では検証できない規則を先に固定することになる）。
 - 欠損は **`MissingInputDiagnosis` として集め**、`InputReadSpec.on_missing` に従う。`SkipEvaluation` なら評価を行わず `Skipped` を記録する。`Error` なら `Failed(Reason(DATA_ERROR, ...))` を記録し、以降の評価を行わずに `RuntimeStepResult` を返す（前節の「失敗は戻り値で返す」）。**欠損を False や 0 に変換しない**【合意済み】上位 §4.3.15。
 - ウォームアップ不足は `history` が返す `WARMUP_INSUFFICIENT` として現れ、`SkipEvaluation` により評価が飛ぶ。これで「warmup 中の注文ゼロ」（全体計画 §8.2）が成立する。
@@ -922,9 +922,8 @@ UsePrevious(
 
 | 事項 | 規則 |
 |---|---|
-| 呼び出し | `previous_available(series, before_bar_start=欠けた期待足の開始時刻, at=decision_time, max_lookback_bars=解決済みの遡り上限)` |
-| 本数での上限 | `BarsWindow(n)` なら `max_lookback_bars=n` をそのまま渡す |
-| 経過時間での上限 | `DurationWindow(d)` は本数へ直せないため、**ビューが返した足について `decision_time - freshness_time <= d` をランタイムが確かめる**。超えていれば遡らず、欠損のままにする。たどる本数の上限には、解決済みの窓が本数を持たない場合の安全弁として `resolved_window` が無いことを構造エラーにせず、`max_lookback_bars` に**その系列の予定足で `d` に収まる最大本数**を渡す（ビューがカレンダーから数える） |
+| 呼び出し | `previous_available(series, before_bar_start=欠けた期待足の開始時刻, at=decision_time, max_lookback=解決済みの遡り上限)` |
+| 上限の渡し方 | **解決済みの `max_lookback` をそのまま渡す**。本数の窓（`BarsWindow(n)`）でも経過時間の窓（`DurationWindow(d)`）でも変換しない。受け口は本数か経過時間のどちらかを読み出せる構造だけを要求し（D03 §6.2 v1.6）、**経過時間を本数へ直すのはビューの側**である。ランタイムはカレンダーにも時間足定義にも到達できないため、自分では直せない（第6.3節の履歴窓と同じ手法。v1.4 の決定） |
 | 見つからなかった | 上限の範囲に有効な足が無ければ遡らず、元の欠損理由のまま `on_missing` の残りの規則（この場合は遡りが成立しなかったので見送り）に従う |
 | 出力参照の遡り | 上流の出力については `RuntimeState.latest_outputs` が最新1件しか持たないため、**遡れるのは市場データ参照だけ**とする。出力参照に `UsePrevious` を書いた宣言は `UNSUPPORTED_CONFIGURATION` で拒否する（第5.6節の検査 c に含める） |
 
@@ -940,7 +939,7 @@ UsePrevious(
 
 | `SubstitutedInput` のフィールド | 中身 |
 |---|---|
-| `input_name` / `source` | どの入力の、どの接続元か |
+| `input_name` / `source_index` / `source` | どの入力の、何番目の接続元か（`source_index` は `InputBinding.sources` の中の位置。0 起点）。**位置を持たせるのは、1つの入力名に複数の接続元を書けるため**である（D04 §4.1 の `arity`）。同じ評価で同じ入力名の2つの接続元を遡ると記録が2件出るので、入力名だけでは一意に読めない。並びは構築時に並べ替えない【合意済み】D04 §3 |
 | `used_bar_key` / `used_output_id` | 実際に読んだ足、または上流の出力（どちらか一方が非 `None`） |
 | `freshness_time` | 読んだ値の鮮度基準時刻 |
 | `reason` | 遡りを発動させた欠損理由 |
@@ -1023,7 +1022,7 @@ UsePrevious(
 
 #### どう読むか【提案】
 
-`HistoryWindow(BarsWindow(n), exclude_latest_bars=k)` で出力参照を読む入力の解決は、`output_history[r]`（古い順）の**末尾から k 件を除いた、さらに末尾 n 件**を取り、それぞれを `ValueSample` にして `ValueWindow` を組み立てる（第6.3節の表の `ValueWindow` 行）。1件の `ValueSample` の中身は、`payload` が `Observation.value`（部品が返した内容）、`freshness_time` / `observation_interval` / `subject` が `Observation` の同名のフィールド、`source_output_id` がその出力記録の識別子である（第6.7節の「読む側の扱い」と同じで、最新1件を読む場合と揃える）。**部品は `Observation` を受け取らない**。`n + k` 件に満たなければ `INPUT_MISSING_OR_INVALID` の欠損とし、宣言した `on_missing` に従う（部分的な窓を渡さない規則は市場データと同じである【合意済み】D04 §6.2）。`max_age` の判定は窓の各要素の `freshness_time` に対して行う（第6.3節）。
+`HistoryWindow(BarsWindow(n), exclude_latest_bars=k)` で出力参照を読む入力の解決は、`output_history[r]`（古い順）の**末尾から k 件を除いた、さらに末尾 n 件**を取り、それぞれを `ValueSample` にして `ValueWindow` を組み立てる（第6.3節の表の `ValueWindow` 行）。1件の `ValueSample` の中身は、`payload` が `Observation.value`（部品が返した内容）、`freshness_time` / `observation_interval` / `subject` が `Observation` の同名のフィールド、`source_output_id` がその出力記録の識別子である（第6.7節の「読む側の扱い」と同じで、最新1件を読む場合と揃える）。**部品は `Observation` を受け取らない**。`n + k` 件に満たなければ `INPUT_MISSING_OR_INVALID` の欠損とし、宣言した `on_missing` に従う（部分的な窓を渡さない規則は市場データと同じである【合意済み】D04 §6.2）。`max_age` の判定は、市場データの履歴窓と同じく**窓の末尾＝いちばん新しい要素の `freshness_time`** に対してだけ行う（第6.3節）。
 
 #### いつ捨てるか【提案】
 
