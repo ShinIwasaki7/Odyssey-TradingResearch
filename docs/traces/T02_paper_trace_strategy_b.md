@@ -234,7 +234,7 @@ D05 §9.4 の経路1 に対応する。**ただし「同じ判断時点で市場
 
 **追えた要点**: 市場状態の許可は**11時間前の日足から作られた出力**（`freshness_time=01-06 22:00Z`、`observation_interval=[01-05 22:00Z, 01-06 22:00Z)`）であり、役割フィールドには `max_age` を宣言する場所が無いので鮮度の上限は課されない（D05 §7.6）。この「古い許可をそのまま使ってよい」という帰結が、段階3 で鮮度を `Observation` に載せた目的（D05 §6.7 の理由1）と表裏である点は追えた。
 
-**追えなかった点**: D05 §7.6 は「`Observation.freshness_time` と `observation_interval` を判断履歴に残す」と書くが、**残す先のフィールドが無い**。`OpportunityTransition` にも `ValidityRecheck` にもその欄は無い。実際には許可の出力記録が表1 に残っており、「判断時刻の直前の最新出力」として一意に復元できるが、それは本書が導いたことで文書には書かれていない。→ 第14節 #2（設計の選択を含まないので D05 v2.1 で明記した）。
+**追えなかった点**: D05 §7.6 は「`Observation.freshness_time` と `observation_interval` を判断履歴に残す」と書くが、**残す先のフィールドが無い**。`OpportunityTransition` にも `ValidityRecheck` にもその欄は無い。実際には許可の出力記録が表1 に残っており、「**その発火の遷移記録の処理点より前に出た最後の出力**」として一意に復元できるが、それは本書が導いたことで文書には書かれていなかった。**判断時刻だけで絞ると足りない**。日足と1時間足が同じ判断時点で確定する場合（第3.1節・第7.2節）は、同じ `step` の P2（rank 6）で出たばかりの許可を P3（rank 7）が適用するので、判断時刻より前で切るとその更新を取りこぼす。出力記録と遷移記録は同じ `step` の通し番号を共有する（D05 §6.6）ので、処理点の全順序 `(時刻, フェーズ順位, 通し番号)` で比べれば同じ判断時点の更新も入る。→ 第14節 #2（設計の選択を含まないので D05 v2.1 で明記した）。
 
 ### 3.3 rank 8（`P4_CONFIRMATION`）の中身
 
@@ -505,7 +505,7 @@ D05 §9.4 の経路8。第3節で開いた建玉 P1（`entry_price=149.390`、`q
 
 | rank | 何が起きるか | 記録 |
 |---|---|---|
-| 5 | `stop_level` → `Observation[Price](Price(149.150), subject=BarKey(1h, 11:00Z), observation_interval=Interval[11:00,12:00), freshness_time=12:00Z)` | 表1・表2 |
+| 5 | `stop_level` → `Observation[Price](Price(149.150), subject=BarKey(1h, 11:00Z), observation_interval=Interval[11:00,12:00), freshness_time=11:00Z)`。**`freshness_time` が 12:00Z ではなく 11:00Z になる**のは、`extreme_price` v1 が当該足を除いて読む（`exclude_latest_bars=1`）ため、窓の末尾が `[10:00,11:00)` の足になるからである。履歴窓の代表の鮮度は窓の末尾＝いちばん新しい要素の鮮度基準時刻（D05 §6.7）であり、その足の終了時刻は 11:00Z である。`subject` と `observation_interval` は評価を起こした足のもの（`[11:00,12:00)`）であり、鮮度とは別の足を指す | 表1・表2 |
 | 9 | `trailing` の要求 `EvaluationRequest(instance_id="trailing", trigger_names=("h1",), decision_time=12:00Z, target_interval=Interval[11:00,12:00), position_id=PositionId 00000001, attempt_index=0)`。入力 `position` は `RuntimeContextView.position_context(12:00Z, PositionId 00000001)` → `PositionContext(direction=LONG, entry_price=Price(149.390), effective_stop_loss=Price(148.950), …)`。`149.150 > 148.950` なので `UpdateStop(Price(149.150))` を返す | `OutputRecord(producer=("trailing","action"), payload=UpdateStop(stop_loss=Price(149.150)))` → 表1。`ManagementRequest(position_id=00000001, action=UpdateStop(Price(149.150)), decision_time=12:00Z, source_output_id=<その出力 ID>)` |
 | ? | **この管理要求をどのフェーズで建玉へ適用するかが決まっていない**（下記） | — |
 
@@ -616,7 +616,7 @@ D06 §9.2 の19表（段階2 の15表＋段階3 の4表）について、本書�
 | # | 分類 | 未記述だった点 | 発見した経路 | 対処 |
 |---|---|---|---|---|
 | 1 | 到達可否 | 突破水準が `LatestAvailable` で読む日足高値であるため、**日足境界では1時間足の終値が日足高値を超えられない**（日足は1時間足からの集約。D03 §5.1）。D05 §9.3 のケース2 の例と §9.4 の経路1・5 が置いた判断時点では取引機会が生まれない | 経路1・経路5 | **要決定 Q23** |
-| 2 | 型の不足 | D05 §7.6 が「取引許可の `freshness_time` と `observation_interval` を判断履歴に残す」と書くが、`OpportunityTransition` にも `ValidityRecheck` にもその欄が無い | 経路1・経路9 | **D05 v2.1 §7.6**: 残る先は表1 の出力記録であり、適用した許可は「判断時刻の直前の最新出力」として一意に復元できることを明記 |
+| 2 | 型の不足 | D05 §7.6 が「取引許可の `freshness_time` と `observation_interval` を判断履歴に残す」と書くが、`OpportunityTransition` にも `ValidityRecheck` にもその欄が無い | 経路1・経路9 | **D05 v2.1 §7.6**: 残る先は表1 の出力記録であり、適用した許可は「**その発火の遷移記録の処理点より前に出た最後の出力**」として一意に復元できることを明記（判断時刻だけで絞ると、日足と1時間足が同じ判断時点で確定したときに同じ `step` の更新を取りこぼす） |
 | 3 | 規則の帰結の未記述 | `BarsDeadline(n)` の n 本目の確認足は、期限の判定（rank 4）が確認の評価（rank 8）より先に来るため**確認に使われない**。したがって実際の確認試行の回数は `include_start_bar=True` で n 回、`False` で n-1 回になる | 経路3 | **D05 v2.1 §7.7**: 期限と確認試行の回数の対応を明記 |
 | 4 | 阻害要因 | 確認試行（`ConfirmationAttempt`）は `OpportunityLifecycle` の中にしか無く、`RuntimeStepResult` に列が無い。**エンジンが D06 表18 を書くための受け渡し経路が存在しない** | 経路1・経路2・経路3 | **要決定 Q26** |
 | 5 | 規則の欠落 | **足の確定で生まれた保護水準の更新（`UpdateStop`）を適用するフェーズが無い**。D06 §8.3 は `POST_FILL_EVALUATION` と定めるが、そのフェーズは受付通知か約定通知がある判断時点でしか動かない。D06 §4.2 の手順5 は第1回の `step` の管理要求を rank 10 へ渡すが、保護水準の更新は注文ではない | 経路8 | **要決定 Q25** |
@@ -755,7 +755,7 @@ D08 §9.1 は生成器を「汎用」と「T01 再現」の2つに分けてい�
 |---|---|
 | `daily_ema`（`01-06 22:00Z` / `01-07 22:00Z`） | 149.020 / 149.000 |
 | `m15_ema`（`01-07 09:00Z`） | 149.255 |
-| `stop_level`（`01-07 09:00Z` / `01-07 12:00Z`） | 148.950 / 149.150 |
+| `stop_level`（`01-07 09:00Z` / `01-07 12:00Z`） | 148.950 / 149.150。出力の `freshness_time` は **08:00Z / 11:00Z**（当該足を除いて読むので窓の末尾が1本手前の足になる。第10節） |
 | 建玉 P1 | 約定 149.390 / 数量 41,000 / 初期損切り 148.950 / 更新後の損切り 149.150 |
 | 決済 | 149.140、確定損益 −10,291 |
 | 末尾 | `balance = 989,668`、`NET_PROFIT = −10,332`、`TRADE_COUNT = 1`、`WIN_RATE = 0` |
