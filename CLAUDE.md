@@ -18,7 +18,7 @@
 複数セッションを別ブランチで安全に並行させるため、コミットを生むタスクを始めるなら、開始ブランチが何であれ`EnterWorktree` で `.claude/worktrees/<task>` に隔離する（base ref=origin/main・`worktree.baseRef=fresh`）。判断は二択: **コミットを生む→隔離 / read-only（質問・調査・分析・PR レビュー・相談）→現ディレクトリのまま**。
 
 - 完了/中断時は `ExitWorktree`（keep=再開 / remove=破棄）。PR は worktree から `gh pr create` まで完結可。
-- **実装後の Codex review ループは承認停止なしで自走すること。push→PR→`@codex review`→**4分間隔ポーリング**→修正→再依頼を都度承認なしで進め、**人間に確認するのは merge 前のみ**。**基本2巡・round1 で P0/P1 が0件なら2巡目省略**・最大2巡。
+- **Codex review ループは承認停止なしで自走すること**（push→PR→`@codex review`→ポーリング→分類→修正→再依頼）。**人間に確認するのは merge 前のみ**。**終了条件・対象範囲の決め方・安全弁・利用上限の扱いは `docs/pr_review_policy.md` が正本**（§3.1 対象範囲と3分類、§4 レビューの回し方、§7 merge 前提）。手順の並びは `.claude/skills/pr-review/SKILL.md`。
 
 ## 人間向け説明の用語ルール
 

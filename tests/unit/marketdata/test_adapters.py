@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -60,7 +61,7 @@ def test_the_csv_source_returns_strings_without_interpreting_them(tmp_path: Path
     (tmp_path / "USDJPY_1h_merged.csv").write_text(market.csv_text(bars), encoding="utf-8")
 
     source = CsvRawBarSource(root=tmp_path)
-    rows = source.read_rows("USDJPY_1h_merged.csv")
+    rows = source.read_file("USDJPY_1h_merged.csv").rows
     assert len(rows) == len(bars)
     for row in rows:
         assert all(isinstance(value, str) for value in row.values())
@@ -70,11 +71,36 @@ def test_the_csv_source_returns_strings_without_interpreting_them(tmp_path: Path
     assert rows[0]["source"] == "histdata"
 
 
-def test_the_csv_source_hashes_the_file_contents(tmp_path: Path) -> None:
-    (tmp_path / "a.csv").write_text(",open\n2026-01-01 00:00:00+00:00,1\n", encoding="utf-8")
-    digest = CsvRawBarSource(root=tmp_path).file_sha256("a.csv")
-    assert len(digest) == 64
-    assert digest == CsvRawBarSource(root=tmp_path).file_sha256("a.csv")
+def test_the_csv_source_hashes_the_bytes_it_read(tmp_path: Path) -> None:
+    """返すダイジェストは、行を作ったのと**同じバイト列**の sha256 である（D03 §3.7.1）。
+
+    ダイジェストと行を別々の読込から作ると、その間にファイルが差し替わったときに manifest
+    の出所の記録が実データと食い違い、「記録どおりでない snapshot」ができてしまう。
+    """
+    content = b",open,high,low,close,volume,source\n2026-01-01 00:00:00+00:00,1,1,1,1,0,histdata\n"
+    (tmp_path / "a.csv").write_bytes(content)
+
+    result = CsvRawBarSource(root=tmp_path).read_file("a.csv")
+    assert result.sha256 == hashlib.sha256(content).hexdigest()
+    assert len(result.sha256) == 64
+    assert len(result.rows) == 1
+
+
+def test_the_csv_source_reads_the_file_only_once(tmp_path: Path) -> None:
+    """読込は1回。ファイルを開いた回数で確かめる。"""
+    (tmp_path / "a.csv").write_bytes(
+        b",open,high,low,close,volume,source\n2026-01-01 00:00:00+00:00,1,1,1,1,0,histdata\n"
+    )
+    opened: list[str] = []
+    real_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(self: Path) -> bytes:
+        opened.append(self.name)
+        return real_read_bytes(self)
+
+    with mock.patch.object(Path, "read_bytes", counting_read_bytes):
+        CsvRawBarSource(root=tmp_path).read_file("a.csv")
+    assert opened == ["a.csv"]
 
 
 def test_the_csv_source_refuses_a_path_outside_its_root(tmp_path: Path) -> None:
@@ -82,7 +108,7 @@ def test_the_csv_source_refuses_a_path_outside_its_root(tmp_path: Path) -> None:
     (tmp_path / "market").mkdir()
     (tmp_path / "secret.csv").write_text("x\n", encoding="utf-8")
     with pytest.raises(ValueError, match="outside the raw data root"):
-        source.read_rows("../secret.csv")
+        source.read_file("../secret.csv")
 
 
 # --- Parquet の往復（D03 §8）------------------------------------------------

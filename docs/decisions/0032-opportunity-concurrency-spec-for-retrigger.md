@@ -1,6 +1,6 @@
 # ADR-0032: 再発火は常に新しい Opportunity を生成し、`OpportunityConcurrencySpec` を必須にする
 
-- 状態: 承認（2026-09-20）
+- 状態: 承認（2026-09-20）。最終改訂 2026-09-21（決定の補足4 を追加）
 - 決定者: ユーザー（リポジトリ所有者）
 - 関連: [上位設計書](../design/fx_research_platform_greenfield_design.md) §4.5・§4.3.5・§4.3.14・§4.7.12・§4.7.14、[全体計画書](../design/fx_research_platform_overall_plan.md) 第5.3節・第7.3節（D05）
 
@@ -38,11 +38,32 @@
 
 本 ADR が取引機会の終端を `SUPERSEDED` と定めた結果、上位設計書 §4.3.14 が既に確定していた**評価要求**の追い越し（supersession）と同じ語が別の対象を指すことになった。この衝突の解消は独立した決定として [ADR-0033](0033-rename-request-side-supersession.md) に記録する（評価要求側を `REQUEST_SUPERSEDED` へ改名。取引機会側の `SUPERSEDED` は変更しない）。
 
+**3. 同時保持上限で有効化されなかった取引機会の終端理由**
+
+`OpportunityConcurrencySpec` の `max_active`（同時に保持できる有効な取引機会の上限）に達している状態で、`on_new_trigger=KEEP_EXISTING`（既存を残す設定）のまま新しい発火が起きた場合の扱いを定める。その発火も原文どおり固有の `opportunity_id` を持つ取引機会として生成し、**有効にせずその場で終端する**。この終端には専用の終端理由 `CONCURRENCY_LIMIT_REACHED` を使う。
+
+既存4語彙のいずれも意味が合わない。`SUPERSEDED` は新しい発火を優先して**既存**を終わらせる場合の語であり、向きが逆である。補足1（受付起因の終了に専用の理由を与える）と同じ考え方で、判断履歴（trace）上「同時保持上限で見送った発火」を期限切れ・置き換え・受付起因の終了と集計上区別できるようにする。理由コードにも同名の項目を追加する。
+
+**4. 取引機会自身の発注試行の結末に対する終端理由**
+
+取引機会が自分で発注試行へ進んだあと、その試行がどう終わったかを表す終端理由を定める。補足1 が定めた `CLOSED_BY_ORDER_ACCEPTANCE` は「**他の**機会の注文が受け付けられたために終わった機会」の語であり、当の機会自身には使えない。既存5語のいずれも、次の2つの結末に当てはまらない。
+
+| 語 | いつ使うか |
+|---|---|
+| `ORDER_ATTEMPT_REJECTED` | その取引機会自身の発注試行が受付前の審査で拒否され、機会が終端した場合。初版は再審査なし（上位設計書 §4.3.14 の確定規則）のため、同じ機会から次の発注試行は生まれない |
+| `FULFILLED_BY_ORDER_ACCEPTANCE` | その取引機会自身の注文が受け付けられ、役目を終えて終端した場合 |
+
+補足1・補足3 と同じ考え方である。判断履歴（trace）上で「審査で通らなかった機会」「注文になった機会」「他の注文が通ったので終わった機会」「上限で見送った機会」を集計上区別できるようにする。理由コードにも同名の項目を追加する。
+
+拒否された機会を非終端のまま残さないのは、初版が再審査なしであり、残すと同時保持上限（`max_active`）を占有し続けて次の発火が記録できなくなるためである。受け付けられた機会を建玉が閉じるまで保持しないのは、上位設計書 §4.5 の「取引機会の状態と注文・建玉の状態は分離する」に反するためである。
+
+この補足は、D05（戦略ランタイム設計）の要決定 Q3・Q4 に対する人間の決定（2026-09-21、PR #15、いずれも選択肢1）を記録したものである。あわせて Q1・Q2 の決定により、本 ADR の「影響」が D05 へ委ねていた非終端の状態名が確定した（`OPEN` / `CONFIRMED` / `ORDER_PENDING`、完全な状態機械の正本は D05 §7）。
+
 ## 影響
 
 - `StrategyDefinition`（上位設計書 §4.3.5）に必須フィールド `opportunity_concurrency` を追加する。省略時の既定値を持たせない。
-- 取引機会の終端理由に `SUPERSEDED` と `CLOSED_BY_ORDER_ACCEPTANCE` を追加する。非終端の状態名を含む完全な状態機械は D05 で設計する。`ACTIVE` / `CONFIRMED` は説明用の仮置きであり、本 ADR が確定した語彙ではない。
-- 理由コード（上位設計書 §4.7.14）に `SUPERSEDED` と `CLOSED_BY_ORDER_ACCEPTANCE` を追加する。
+- 取引機会の終端理由に `SUPERSEDED`、`CLOSED_BY_ORDER_ACCEPTANCE`、`CONCURRENCY_LIMIT_REACHED`、`ORDER_ATTEMPT_REJECTED`、`FULFILLED_BY_ORDER_ACCEPTANCE` を追加する。非終端の状態名を含む完全な状態機械は D05 §7 が 2026-09-21 に確定した（`OPEN` / `CONFIRMED` / `ORDER_PENDING` と終端 `TERMINATED`）。上位設計書 §4.5 の `ACTIVE` / `CONFIRMED` という仮置きは `OPEN` / `CONFIRMED` に置き換えた。
+- 理由コード（上位設計書 §4.7.14）に `SUPERSEDED`、`CLOSED_BY_ORDER_ACCEPTANCE`、`CONCURRENCY_LIMIT_REACHED`、`ORDER_ATTEMPT_REJECTED`、`FULFILLED_BY_ORDER_ACCEPTANCE` を追加する。実装側の列挙の写しは D02 §8.1（v1.4）。
 - 本 ADR が `SUPERSEDED` を取引機会の終端理由として定めた結果、評価要求側の同名の語との衝突が生じる。その解消は [ADR-0033](0033-rename-request-side-supersession.md) が扱う。
 - 同時到達時の受付順は、上位設計書 §4.7.12 で既に確定している全順序化（`(decision_time, strategy_priority, opportunity_id, attempt_id)`）と `RiskPolicy` の審査に従う。新しい順序規則は導入しない。
 - 受付済み注文を理由に他の機会を終了させる規則は `OpportunityConcurrencySpec` の `on_order_accepted` に明示する。暗黙には終了させない。
@@ -57,3 +78,12 @@
   | `OpportunityConcurrencySpec` | 異なる Trigger イベントから生成された取引機会同士の保持、終了、同時競合、受付後処理 |
 
   上位設計書 §4.3.5（フィールド表と責務の切り分け）・§4.3.3（要約行）・§4.3.8（指定先の表）・§4.3.9、全体計画書 §7.3 の D04 バックログを、この切り分けに合わせて改訂した。同じ規則を2か所に書かない。
+
+## 改訂履歴
+
+| 日付 | 改訂 |
+|---|---|
+| 2026-09-20 | 承認。決定の原文（ユーザーの文言）を正本として採用 |
+| 2026-09-20 | 決定の補足1・2 を追加（受付起因の終了に専用の終端理由、評価要求側の追い越しの改名） |
+| 2026-09-20 | 決定の補足3 を追加し、終端理由の語彙に `CONCURRENCY_LIMIT_REACHED` を加えた（D04 設計時の要決定 Q10 に対する人間の決定。PR #14） |
+| 2026-09-21 | 決定の補足4 を追加し、終端理由の語彙に `ORDER_ATTEMPT_REJECTED` と `FULFILLED_BY_ORDER_ACCEPTANCE` を加えた。あわせて非終端の状態名が D05 §7 で確定したことを「影響」へ反映した（D05 設計時の要決定 Q1〜Q4 に対する人間の決定。PR #15） |

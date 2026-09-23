@@ -1,6 +1,11 @@
-"""strategy の実行時出力型。
+"""strategy の実行時出力型（D05 §3・§4.2、上位設計書 §4.3.15）。
 
-OutputRecord / Observation / ConditionState / MarketPermission / Opportunity /
-ConfirmationResult / OrderIntent / ProtectionLevels / ManagementAction を置く。
-共通メタデータ（output_id・decision_time・available_at 等）はランタイムが付与する。
+部品が計算する「中身」と、ランタイムが付ける共通メタデータを分けて持つ。
+
+- `payloads`: 役割ごとの内容型（条件の成否・取引機会・注文意図・保護水準・管理要求ほか）と、
+  データ型識別子との対応表
+- `records`: `OutputRecord` / `Observation`
+
+`declarations` の上、`catalog` の下の層であり、宣言型は参照するが `catalog` 以上は参照
+しない（D01 §3.3）。サブモジュールは明示的に import して使う。
 """

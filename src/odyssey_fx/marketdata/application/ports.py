@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 
-__all__ = ["RawBarSource", "RawRow", "SnapshotStore"]
+__all__ = ["RawBarSource", "RawFileContent", "RawRow", "SnapshotStore"]
 
 #: 原ファイルの1行。列名から**文字列**への mapping（D03 §4 の 3）。
 #: adapters は値を解釈せず、時刻も価格も文字列のまま渡す。時刻の見た目から規約を推測
@@ -26,18 +27,28 @@ __all__ = ["RawBarSource", "RawRow", "SnapshotStore"]
 RawRow = Mapping[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class RawFileContent:
+    """1ファイルを1回読んだ結果（D03 §4 の 1〜3）。
+
+    内容のダイジェストと行を**同じバイト列から**作る。別々に読むと、その間にファイルが
+    差し替わったときに manifest の出所の記録（sha256・行数）が実データと食い違い、
+    「記録どおりでない snapshot」ができてしまう。
+    """
+
+    sha256: str
+    rows: tuple[RawRow, ...]
+
+
 class RawBarSource(Protocol):
     """原データの読込ポート（D01 §4、D03 §8）。"""
 
-    def read_rows(self, path: str) -> Sequence[RawRow]:
-        """1ファイルの全行を、宣言された列名の文字列 mapping として読む。
+    def read_file(self, path: str) -> RawFileContent:
+        """1ファイルを1回読み、内容の sha256 と全行を同時に返す。
 
-        値の解釈（時刻・Decimal 化）は行わない。`path` はリポジトリからの相対パス。
+        値の解釈（時刻・Decimal 化）は行わない。`path` は原データの基点からの相対パス。
+        ダイジェストと行が同じ読込に由来することを保証するのがこのポートの役目である。
         """
-        ...
-
-    def file_sha256(self, path: str) -> str:
-        """ファイル内容の sha256（16進 64 文字）。manifest の `sources` に記録する。"""
         ...
 
 

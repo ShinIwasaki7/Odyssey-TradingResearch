@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from types import MappingProxyType
+from typing import Final, Protocol, runtime_checkable
 
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
@@ -41,10 +42,18 @@ from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 __all__ = [
     "AsOfView",
     "BarsWindow",
+    "BarsWindowLike",
     "DurationWindow",
+    "DurationWindowLike",
     "ExecutionSeriesView",
+    "HistoryWindowLike",
     "MissingInput",
 ]
+
+#: 予定上の足を先へ辿る上限の本数。開場中の足が1本も無いまま進む区間は休場であり、
+#: 15分足ならおよそ52日ぶんに当たる。run 区間より長い休場は扱わないので、これを超えたら
+#: 「次の予定は無い」として `None` を返す。
+_SCHEDULE_PROBE_LIMIT: Final = 5000
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +69,31 @@ class MissingInput:
     def __post_init__(self) -> None:
         if not isinstance(self.reason, MissingInputReason):
             raise MarketDataValueError("MissingInput.reason must be a MissingInputReason")
+
+
+@runtime_checkable
+class BarsWindowLike(Protocol):
+    """本数で指定する履歴窓として受け取れる形（D03 §6.2 v1.5）。"""
+
+    @property
+    def count(self) -> int: ...
+
+
+@runtime_checkable
+class DurationWindowLike(Protocol):
+    """経過時間で指定する履歴窓として受け取れる形（D03 §6.2 v1.5）。"""
+
+    @property
+    def duration(self) -> timedelta: ...
+
+
+#: `history()` が受け取る履歴窓（D03 §6.2 v1.5、2026-09-22 の人間の決定）。
+#:
+#: 呼び出し側（戦略ランタイム）は `marketdata.application` を参照できない（契約 F2）。
+#: 具体クラスを要求すると、両方を参照できる層で窓を言い換えるほかなくなるので、**構造**
+#: （本数か経過時間を読み出せること）だけを要求する。下の `BarsWindow` /
+#: `DurationWindow` は `marketdata` 自身が窓を組み立てるときの具体型である。
+HistoryWindowLike = BarsWindowLike | DurationWindowLike
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +272,7 @@ class AsOfView:
     def history(
         self,
         series: SeriesId,
-        window: BarsWindow | DurationWindow,
+        window: HistoryWindowLike,
         at: UtcTime,
         *,
         end_offset_bars: int = 0,
@@ -251,6 +285,7 @@ class AsOfView:
         `WARMUP_INSUFFICIENT`（欠損を削除して窓外の古い足を繰り上げることはしない）。
         """
         _require_utc(at, "history")
+        _require_window(window)
         if isinstance(end_offset_bars, bool) or not isinstance(end_offset_bars, int):
             raise MarketDataValueError(
                 f"history() end_offset_bars must be an int, got {end_offset_bars!r}"
@@ -277,7 +312,7 @@ class AsOfView:
             expected_starts = expected_starts[end_offset_bars:]
 
         wanted: tuple[UtcTime, ...]
-        if isinstance(window, BarsWindow):
+        if isinstance(window, BarsWindowLike):
             if len(expected_starts) < window.count:
                 return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
             wanted = expected_starts[: window.count]
@@ -312,18 +347,44 @@ def _require_utc(value: UtcTime, operation: str) -> None:
         raise MarketDataValueError(f"{operation}() requires a UtcTime")
 
 
-def _needed_bars(window: BarsWindow | DurationWindow, end_offset_bars: int) -> int:
+def _require_window(window: HistoryWindowLike) -> None:
+    """履歴窓が受け取れる形であることを確かめる（D03 §6.2 v1.5）。
+
+    構造だけを要求するので、具体クラスの `__post_init__` は通っていない。本数窓の本数が
+    解決済みの正の整数であることは、ここで確かめる（未解決のパラメータ参照を既定値で
+    埋めない）。
+    """
+    if isinstance(window, BarsWindowLike):
+        count = window.count
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise MarketDataValueError(
+                f"history() window count must be a resolved int, got {count!r}"
+            )
+        if count < 1:
+            raise MarketDataValueError(f"history() window count must be >= 1, got {count}")
+        return
+    if isinstance(window, DurationWindowLike):
+        duration = window.duration
+        if not isinstance(duration, timedelta):
+            raise MarketDataValueError(
+                f"history() window duration must be a timedelta, got {duration!r}"
+            )
+        if duration <= timedelta(0):
+            raise MarketDataValueError(f"history() window duration must be > 0, got {duration}")
+        return
+    raise MarketDataValueError(
+        f"history() window must expose a bar count or a duration, got {type(window).__name__}"
+    )
+
+
+def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:
     """遡って探索する足の本数の上限。
 
     本数窓は必要本数そのもの、経過時間窓は窓の長さを名目長で割った概算に余裕を足した値
     （DST で足の長さが伸縮するため、概算にしかならない）。
     """
-    if isinstance(window, BarsWindow):
+    if isinstance(window, BarsWindowLike):
         return window.count + end_offset_bars
-    if not isinstance(window, DurationWindow):
-        raise MarketDataValueError(
-            f"history() window must be a BarsWindow or DurationWindow, got {type(window).__name__}"
-        )
     return end_offset_bars + 1  # 経過時間窓は `_duration_selection` が必要なだけ伸ばす。
 
 
@@ -352,7 +413,7 @@ def _expected_starts_backwards(
 def _duration_selection(
     schedule: SeriesSchedule,
     expected_starts: tuple[UtcTime, ...],
-    window: DurationWindow,
+    window: DurationWindowLike,
 ) -> tuple[UtcTime, ...] | None:
     """経過時間窓に入る足の開始時刻を新しい順に返す（D03 §6.2）。
 
@@ -388,16 +449,27 @@ class ExecutionSeriesView:
     `ExecutionSeries`（`backtest.application.ports`）を同じ snapshot から構造的に満たす。
     戦略ビューとは**別インスタンス**で、足の始値だけを先に公開する段階（D03 §7.3）を持つ
     ため戦略側には渡さない。
+
+    `schedule` は**予定上の足**を答えるために持つ。注文の約定候補は予定から決めるので
+    （D06 §5.3）、実ファイルに足があるかどうかを候補選択に混ぜない。
     """
 
     snapshot: ReadableSnapshot
     series: SeriesId
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
+    schedule: SeriesSchedule
 
     def __post_init__(self) -> None:
         if not isinstance(self.series, SeriesId):
             raise MarketDataValueError("ExecutionSeriesView.series must be a SeriesId")
+        if not isinstance(self.schedule, SeriesSchedule):
+            raise MarketDataValueError("ExecutionSeriesView.schedule must be a SeriesSchedule")
+        if self.schedule.series != self.series:
+            raise MarketDataValueError(
+                f"ExecutionSeriesView of {self.series} was given a schedule for"
+                f" {self.schedule.series}"
+            )
         # 戦略側のビューと同じ関門を通す。執行系列だけ検査が緩いと、manifest に無い
         # partition を渡して未記録のデータを読む経路が残ってしまう。
         frozen = require_readable_snapshot(
@@ -449,4 +521,25 @@ class ExecutionSeriesView:
         for bar in self._bars():
             if moment < bar.bar_start:
                 return bar.key
+        return None
+
+    def next_scheduled_open_after(self, moment: UtcTime) -> BarKey | None:
+        """`moment` より後に始まる最初の**予定上の**執行足の鍵（D03 §6.3）。
+
+        カレンダーと時間足定義だけから決める。実ファイルに足があるかどうかは見ない。
+        注文の約定候補はこの操作で選ぶ（D06 §5.3 の「実ファイルの欠損を候補選択に
+        使わない」）。実在する足から選ぶと、休場でない区間で足が1本欠けているだけで候補が
+        先へずれ、データの欠損が受付結果を変えてしまう。
+
+        休場が続く区間は飛ばして次の開場中の足を返す。`_SCHEDULE_PROBE_LIMIT` 本ぶん進んでも
+        開場中の足が無ければ `None`（run 区間より長い休場は扱わない）。
+        """
+        _require_utc(moment, "next_scheduled_open_after")
+        definition = self.schedule.timeframe_def
+        probe = definition.boundaries(moment).end
+        for _ in range(_SCHEDULE_PROBE_LIMIT):
+            interval = definition.expected_interval(self.schedule.calendar, probe)
+            if interval is not None and moment < interval.start:
+                return BarKey(series=self.series, bar_start=interval.start)
+            probe = definition.boundaries(probe).end
         return None

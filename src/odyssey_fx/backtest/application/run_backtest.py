@@ -1,0 +1,364 @@
+"""1回の run を実行するユースケース（D06 §4.2・§9.3・§9.4・§10.5）。
+
+入力はコンパイル済み戦略と実行設定、出力は `BacktestResult`・run manifest・判断履歴である。
+手順は3段ある。
+
+1. 実行前のデータ能力検査（D06 §10.5）。解決済み戦略と設定の参照の照合、銘柄別ポリシーの
+   照合、解像度階層の適合検査を行い、不合格なら `FAILED_CAPABILITY` で開始しない。
+2. エンジンで判断時点を進める（D06 §4）。
+3. 判断履歴を `TraceSink` へ、結果と manifest を `ResultWriter` へ渡す。
+
+**解決済みのポリシーは構築時に受け取る**。`RunConfig` は版参照（`PolicyRef`）だけを持ち、
+参照を解決するのは合成の責務（`app`）だからである（D06 §3）。
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from decimal import Decimal, localcontext
+
+from odyssey_fx.backtest.application.ports import (
+    Calendar,
+    ExecutionSeries,
+    IntrabarSeries,
+    PublicationFeed,
+    ResultWriter,
+    TraceSink,
+)
+from odyssey_fx.backtest.domain.policies import (
+    ConversionPolicy,
+    CostModel,
+    ExecutionPolicy,
+    HierarchyCheckResult,
+    RiskPolicy,
+    RunConfig,
+)
+from odyssey_fx.backtest.engine.loop import BacktestEngine, EngineContext, TraceOutputSink
+from odyssey_fx.backtest.engine.phases import BACKTEST_PHASES
+from odyssey_fx.backtest.execution.protection_hits import hierarchy_checks
+from odyssey_fx.backtest.trace.manifest import (
+    DataCapabilityReport,
+    RunManifest,
+    config_digest_of,
+)
+from odyssey_fx.backtest.trace.recorder import TraceTable
+from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.ids import IdAllocator
+from odyssey_fx.common.money import decimal_from_int, kernel_context
+from odyssey_fx.common.reason import Reason, ReasonCode
+from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
+from odyssey_fx.common.refs import run_id as run_id_of
+from odyssey_fx.common.symbol import SymbolSpec, SymbolSpecRef
+from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
+from odyssey_fx.strategy.runtime.ports import StrategyRuntime
+
+__all__ = ["RunBacktest", "capability_report"]
+
+_ZERO = decimal_from_int(0)
+
+
+#: 「判断時刻と同じ時刻に始まる足も候補に含める」ための最小の後戻り（`engine.loop` と同じ）。
+_TINY = timedelta(microseconds=1)
+
+
+def _first_scheduled_open_is_missing(config: RunConfig, series: ExecutionSeries) -> bool:
+    """run 区間の最初の予定の執行足が実データに無いか（D06 §10.5）。
+
+    予定はカレンダーと時間足定義から決まり、実データを見ない（D03 §6.3）。両者を突き合わ
+    せることで、系列が空・run 区間の先頭が丸ごと欠けている、といった「完全性検査に1件も
+    載らない欠落」を実行前に捕まえる。
+    """
+    first = series.next_scheduled_open_after(config.run_interval.start - _TINY)
+    if first is None or first.bar_start >= config.run_interval.end:
+        # run 区間に予定の執行足が1本も無い場合（区間全体が休場のときなど）は、実行する
+        # ものが無いだけで欠落ではない。受け付けた注文は末尾で取り消される（D06 §5.3）。
+        return False
+    return series.open_of(first) is None
+
+
+def capability_report(
+    config: RunConfig,
+    compiled: CompiledStrategy,
+    *,
+    integrity: IntegrityReport,
+    execution_policy: ExecutionPolicy,
+    cost_model: CostModel,
+    symbol_spec: SymbolSpec,
+    intrabar_series: IntrabarSeries | None = None,
+    execution_series: ExecutionSeries | None = None,
+) -> DataCapabilityReport:
+    """実行前のデータ能力検査（D06 §10.5）。合格・不合格のどちらでも全体を保存する。"""
+    reasons: list[str] = []
+    compiled_match = compiled.compiled_ref == config.compiled_ref
+    if not compiled_match:
+        reasons.append("the compiled strategy does not match the reference in the run config")
+    if compiled.symbol != config.execution_series.symbol:
+        reasons.append("the compiled strategy and the execution series use different symbols")
+    if execution_policy.adverse_fill_limit(config.execution_series.symbol) is None:
+        reasons.append(
+            f"the execution policy has no adverse fill limit for {config.execution_series.symbol}"
+        )
+    if symbol_spec.symbol != config.execution_series.symbol:
+        reasons.append("the symbol spec does not describe the traded symbol")
+    if execution_policy.resolution_hierarchy.levels[0] != config.execution_series:
+        reasons.append("the first level of the resolution hierarchy is not the execution series")
+    if integrity.has_errors():
+        reasons.append("the snapshot integrity report contains errors")
+    # 執行に使う系列（執行系列と解像度階層の各段）の足が1本でも欠けていれば実行できない。
+    # 完全性検査は「カレンダー上存在すべき足の欠落」を**警告**として分類するが（受入れの
+    # 段では人間が休場かデータ欠損かを分ける、D03 §3.9）、執行モデルはそれらの系列の足を
+    # 1本ずつ読んで保護水準の到達を決めるので、欠落は run を続けられる状態ではない。
+    # 重大度だけを見ていると、欠落を知りながら実行可能と判定し、建玉が開いたまま欠落区間の
+    # 高値・安値が判定されず、古い評価価格のまま run が完走してしまう（D06 §10.5 の手順2）。
+    executed_series = {config.execution_series, *execution_policy.resolution_hierarchy.levels}
+    missing = tuple(
+        result
+        for result in integrity.results
+        if result.kind is CheckKind.MISSING_EXPECTED_BAR and result.series in executed_series
+    )
+    if missing:
+        reasons.append(
+            "the snapshot is missing expected bars on the series the execution model reads:"
+            f" {', '.join(sorted({str(result.series) for result in missing}))}"
+        )
+    if execution_series is not None and _first_scheduled_open_is_missing(config, execution_series):
+        # 系列そのものが空でも、完全性検査に欠落が1件も載らないことがある（比べる相手の
+        # 足が無いため）。run 区間の最初の予定の足が実データに無ければ、そもそも1本も
+        # 執行できない。
+        reasons.append(
+            "the execution series has no bar at the first scheduled open of the run interval"
+        )
+    if config.execution_series.symbol.quote != config.account.currency:
+        # 段階2 は恒等換算だけを通す（D06 §8.5）。決済通貨と口座通貨が違う組み合わせは、
+        # 換算の経路が無いまま予約額・損益・費用を口座通貨として記録してしまうので、
+        # 実行する前に止める。
+        reasons.append(
+            "stage 2 only settles in the account currency;"
+            f" {config.execution_series.symbol} settles in"
+            f" {config.execution_series.symbol.quote} but the account is"
+            f" {config.account.currency}"
+        )
+    if cost_model.commission_per_unit.currency != config.account.currency:
+        # 手数料は原通貨のまま口座へ計上される（D06 §7.6）。口座通貨と違う通貨で与えられると、
+        # 換算の経路を通さないまま数字だけが口座通貨として扱われ、予約額・費用・残高・末尾の
+        # 集計が静かにずれる。段階2 は恒等換算だけを通すので、実行する前に止める。
+        reasons.append(
+            "stage 2 charges commission in the account currency;"
+            f" the cost model gives it in {cost_model.commission_per_unit.currency}"
+            f" but the account is {config.account.currency}"
+        )
+
+    hierarchy = execution_policy.resolution_hierarchy
+    checks: tuple[HierarchyCheckResult, ...] = ()
+    if len(hierarchy.levels) > 1:
+        if intrabar_series is None:
+            # 下位足を宣言しているのに走査する手段が無ければ、検査1〜4 を1件も実行できない。
+            # 黙って親足の4本値へ落とさず実行不可にする（ADR-0030）。
+            reasons.append(
+                "the resolution hierarchy declares child levels but no series to scan them"
+            )
+        else:
+            # 親足を渡さないと検査が1件も走らず、被覆の欠けや価格基準の食い違いを
+            # 見逃したまま実行可能と報告してしまう（D06 §7.4 の検査1〜4）。
+            checks = hierarchy_checks(
+                hierarchy,
+                intrabar_series.bars_in(hierarchy.levels[0], config.run_interval),
+                intrabar_series.bars_in,
+            )
+            if not checks:
+                reasons.append(
+                    "the execution series has no bars in the run interval to check the hierarchy"
+                )
+    if any(not check.passed for check in checks):
+        reasons.append("the resolution hierarchy does not fit the data")
+    runnable = not reasons
+    return DataCapabilityReport(
+        compiled_match=compiled_match,
+        integrity=integrity,
+        hierarchy_checks=checks,
+        runnable=runnable,
+        reason=None if runnable else Reason(ReasonCode.DATA_ERROR),
+        diagnostics=tuple(reasons),
+    )
+
+
+class RunBacktest:
+    """`run(config, compiled) -> BacktestResult`（D06 §3・§4.2）。"""
+
+    def __init__(
+        self,
+        *,
+        runtime: StrategyRuntime,
+        context: EngineContext,
+        output_sink: TraceOutputSink,
+        allocator: IdAllocator,
+        feed: PublicationFeed,
+        execution_series: ExecutionSeries,
+        calendar: Calendar,
+        risk_policy: RiskPolicy,
+        execution_policy: ExecutionPolicy,
+        cost_model: CostModel,
+        conversion_policy: ConversionPolicy,
+        symbol_spec: SymbolSpec,
+        symbol_spec_ref: SymbolSpecRef,
+        calendar_ref: str,
+        integrity: IntegrityReport,
+        trace_sink: TraceSink,
+        result_writer: ResultWriter,
+        code_digest: CodeDigest,
+        lock_digest: LockDigest,
+        env_digest: EnvDigest,
+        git_commit: str = "",
+        git_dirty: bool = False,
+        intrabar_series: IntrabarSeries | None = None,
+        timeframe_refs: tuple[TimeframeRef, ...] = (),
+        strategy_priority: int = 0,
+    ) -> None:
+        """実行に要るポートとポリシー、そして**実行の出どころ**を受け取る。
+
+        コード・依存 lock・環境のダイジェストと git の状態は、実行環境の事実であって設定では
+        ない（D06 §9.3 の識別の群）。合成（`app`）が解決して渡す。これが無いと、成果物から
+        「どのコード・どの依存・どの環境で作られたか」を後から確かめられず、`RunId` が
+        ADR-0006 の4つのダイジェストから来ていることも検証できない。
+        """
+        self._runtime = runtime
+        self._context = context
+        self._sink = output_sink
+        self._allocator = allocator
+        self._feed = feed
+        self._execution_series = execution_series
+        self._calendar = calendar
+        self._risk_policy = risk_policy
+        self._execution_policy = execution_policy
+        self._cost_model = cost_model
+        self._conversion_policy = conversion_policy
+        self._symbol_spec = symbol_spec
+        self._symbol_spec_ref = symbol_spec_ref
+        self._calendar_ref = calendar_ref
+        self._integrity = integrity
+        self._trace_sink = trace_sink
+        self._result_writer = result_writer
+        self._code_digest = code_digest
+        self._lock_digest = lock_digest
+        self._env_digest = env_digest
+        self._git_commit = git_commit
+        self._git_dirty = git_dirty
+        self._intrabar = intrabar_series
+        self._timeframe_refs = timeframe_refs
+        self._priority = strategy_priority
+
+    def config_digest(self, config: RunConfig) -> ConfigDigest:
+        """この実行の `ConfigDigest`（D06 §9.3）。
+
+        合成（`app`）が `RunId` を組み立てるときにも同じ値が要るので、外から呼べるように
+        している。銘柄仕様・カレンダー・時間足定義の版参照も対象に含む。
+        """
+        return config_digest_of(
+            config,
+            symbol_spec_ref=self._symbol_spec_ref,
+            calendar_ref=self._calendar_ref,
+            timeframe_def_refs=self._timeframe_refs,
+        )
+
+    def run(self, config: RunConfig, compiled: CompiledStrategy) -> BacktestResult:
+        """1回の run を実行し、結果 DTO を返す。"""
+        if not isinstance(config, RunConfig):
+            raise KernelValueError("RunBacktest.run requires a RunConfig")
+        # 識別子の検査は**何かを書き出す前に**行う。manifest を作る段になって初めて気付くと、
+        # 表だけが書かれて manifest の無いディレクトリが残り、既存成果物の検査（ADR-0006）
+        # のせいで直した再実行まで塞がれてしまう。
+        config_digest = self.config_digest(config)
+        expected = run_id_of(config_digest, self._code_digest, self._lock_digest, self._env_digest)
+        if expected != self._allocator.run_id:
+            raise KernelValueError(
+                "the allocator's RunId must be digest(ConfigDigest, CodeDigest, LockDigest,"
+                f" EnvDigest) = {expected}, got {self._allocator.run_id} (ADR-0006)"
+            )
+        report = capability_report(
+            config,
+            compiled,
+            integrity=self._integrity,
+            execution_policy=self._execution_policy,
+            cost_model=self._cost_model,
+            symbol_spec=self._symbol_spec,
+            intrabar_series=self._intrabar,
+            execution_series=self._execution_series,
+        )
+        engine = BacktestEngine(
+            config=config,
+            compiled=compiled,
+            runtime=self._runtime,
+            context=self._context,
+            output_sink=self._sink,
+            allocator=self._allocator,
+            feed=self._feed,
+            execution_series=self._execution_series,
+            calendar=self._calendar,
+            risk_policy=self._risk_policy,
+            execution_policy=self._execution_policy,
+            cost_model=self._cost_model,
+            conversion_policy=self._conversion_policy,
+            symbol_spec=self._symbol_spec,
+            capability_report=report,
+            intrabar_series=self._intrabar,
+            strategy_priority=self._priority,
+        )
+        engine.execute()
+
+        rows = engine.rows
+        for table in TraceTable:
+            self._trace_sink.write(table, rows[table])
+
+        manifest = RunManifest(
+            run_id=self._allocator.run_id,
+            config=config,
+            config_digest=config_digest,
+            code_digest=self._code_digest,
+            lock_digest=self._lock_digest,
+            env_digest=self._env_digest,
+            git_commit=self._git_commit,
+            git_dirty=self._git_dirty,
+            phases=BACKTEST_PHASES,
+            id_allocator_snapshot=self._allocator.snapshot(),
+            capability_report=report,
+            resolution_hierarchy=self._execution_policy.resolution_hierarchy,
+            unresolved_intrabar_count=engine.unresolved_intrabar_count,
+            unresolved_intrabar_ratio=_ratio(
+                engine.unresolved_intrabar_count, engine.intrabar_conflict_count
+            ),
+            swap_modeled=self._cost_model.swap_modeled,
+            status=engine.status.value,
+            symbol_spec_ref=self._symbol_spec_ref,
+            calendar_ref=self._calendar_ref,
+            timeframe_def_refs=self._timeframe_refs,
+            reason=engine.failure_reason,
+            warnings=engine.warnings,
+        )
+        result = BacktestResult(
+            run_id=self._allocator.run_id,
+            status=engine.status,
+            trace_tables={
+                table: f"runs/{self._allocator.run_id}/{table.value}.parquet"
+                for table in TraceTable
+            },
+            capability_report=report,
+            manifest_ref=f"runs/{self._allocator.run_id}/manifest.json",
+            swap_modeled=self._cost_model.swap_modeled,
+            unresolved_intrabar_count=engine.unresolved_intrabar_count,
+            trade_count=engine.trade_count,
+            opportunity_count=engine.opportunity_count,
+            summaries=engine.summaries if engine.status is RunStatus.COMPLETED else None,
+        )
+        self._result_writer.write(result, manifest)
+        return result
+
+
+def _ratio(count: int, total: int) -> Decimal:
+    """全競合に対する割合（ADR-0030）。競合が無ければ 0。"""
+    if total <= 0:
+        return _ZERO
+    with localcontext(kernel_context()):
+        return decimal_from_int(count) / decimal_from_int(total)

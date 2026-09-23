@@ -39,6 +39,7 @@ from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.application.aggregation import aggregate
 from odyssey_fx.marketdata.application.integrity import SeriesUnderCheck, check_all
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.ports import RawRow
@@ -48,12 +49,13 @@ from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
-from odyssey_fx.marketdata.domain.integrity import CheckResult, IntegrityReport
+from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
     ClosureDecision,
+    ClosureDecisionKind,
     ConversionRecord,
     LegacyAccessRecord,
     PartitionId,
@@ -73,6 +75,7 @@ __all__ = [
     "finalize",
     "normalize_rows",
     "provisional_id",
+    "reaccept_with_calendar",
 ]
 
 
@@ -389,22 +392,53 @@ def approve(finalized: FinalizedSnapshot, approval: Approval) -> SnapshotManifes
 def finalize(
     pending: PendingSnapshot,
     decisions: Sequence[ClosureDecision],
+    *,
+    original_report: IntegrityReport | None = None,
+    original_conversion: ConversionRecord | None = None,
 ) -> FinalizedSnapshot:
     """人間の分類を記入して最終の manifest を作る（D03 §3.7.1 の 2、§4 の 9）。
 
     分類が確定した後の識別子が最終の `snapshot_id`。分類が異なれば別 snapshot である。
     未分類の警告が残っている場合は失敗させる（D03 §10 の `classify` コマンド）。
 
+    **カレンダーを変えた分類**（D03 §4 の 9）では `original_report` に暫定段階の報告を
+    渡す。分類で「休場だった」と判断してカレンダーへ追加し版を上げると、その欠落は新しい
+    カレンダーの下では欠落でなくなるため、**再受入れした報告からは警告が消える**。消えた
+    警告に対する分類を「対応する警告がない」と拒否すると、D03 §4 の 9 が定める主たる用途
+    （休場 → カレンダーへ追加して版を上げる）がそもそも成立しない。
+
+    そこで突き合わせを2段階にする。
+
+    1. **元の報告**に対して、未分類の警告が無く、余分な分類も無いことを確かめる。分類は
+       元の報告を見て人間が書いたものなので、正当性はここで判定する。
+    2. **再受入れ後の報告**に対して、残っている警告がすべて分類に含まれることを確かめる。
+       新しいカレンダーでも説明できない欠落を見落とさないため。こちらでは「余分な分類」を
+       許容する（段階1で正当と確かめた分類だから）。
+
+    `original_report` を渡さない通常の確定では、従来どおり1つの報告に対して両方を見る。
+    `original_conversion` には暫定段階の変換記録を渡す（カレンダーの版が上がったことを
+    確かめるため）。
+
+    **休場としての分類にはカレンダーの新版が要る**（D03 §3.4・§4 の 9）。「休場だった」と
+    記録しながらカレンダーがその足を期待し続けると、manifest と規則が矛盾した snapshot に
+    なる。そのため `CLOSURE` の分類が1件でもあれば、同じ識別子でより大きい版のカレンダーを
+    必須とし、さらに**その区間の欠落が新しい報告から実際に消えていること**（＝新カレンダー
+    がその休場を宣言していること）まで確かめる。`DATA_GAP`（データ欠損）はカレンダーを
+    変えずに確定できる。
+
     重大な違反の検査もここで重ねて行う（D03 §4 の 4）。暫定段階で中断しているので通常は
     到達しないが、`PendingSnapshot` を別経路で組み立てた場合に、構造的に無効なデータが
     確定・承認へ進む抜け道を残さないため。
     """
     _require_no_integrity_errors(pending.report)
+    if original_report is not None:
+        _require_no_integrity_errors(original_report)
 
     # 分類と警告の対応は**区間全体**で取る。突き合わせの規則は読み取りの関門と共有する
     # （`classification_mismatch`）。片方だけが検査していると、確定を経ずに組み立てた
     # manifest が読み取り側をすり抜ける。
-    undecided, extraneous = classification_mismatch(pending.report, decisions)
+    basis = pending.report if original_report is None else original_report
+    undecided, extraneous = classification_mismatch(basis, decisions)
     if undecided:
         raise MarketDataValueError(
             f"{len(undecided)} warning(s) are still unclassified;"
@@ -420,7 +454,94 @@ def finalize(
             f" warning: {list(extraneous)}; classify only the intervals the integrity check"
             " reported (D03 §4 の 9)"
         )
+
+    if original_report is not None:
+        # 再受入れ後も残る警告は、新しいカレンダーでも説明できない欠落である。分類から
+        # 漏れていれば確定させない。余分な分類はここでは見ない（段階1で確かめてある）。
+        still_undecided, _ = classification_mismatch(pending.report, decisions)
+        if still_undecided:
+            raise MarketDataValueError(
+                f"{len(still_undecided)} warning(s) remain after re-running the acceptance"
+                " with the new calendar and are still unclassified; the new calendar does not"
+                f" explain them (D03 §4 の 9): {list(still_undecided)}"
+            )
+
+    _require_closures_are_declared(
+        decisions,
+        report=pending.report,
+        conversion=pending.manifest.conversion,
+        original_conversion=original_conversion,
+    )
     return FinalizedSnapshot(manifest=pending.manifest.with_closure_decisions(tuple(decisions)))
+
+
+def _require_closures_are_declared(
+    decisions: Sequence[ClosureDecision],
+    *,
+    report: IntegrityReport,
+    conversion: ConversionRecord,
+    original_conversion: ConversionRecord | None,
+) -> None:
+    """休場としての分類が、カレンダーの新版に実際に宣言されていることを確かめる。
+
+    D03 §3.4・§4 の 9 は「休場 → カレンダーへ追加して版を上げる」と定める。休場と記録
+    しながらカレンダーがその足を期待し続ければ、manifest と規則が矛盾した snapshot に
+    なる。確かめるのは2つ。
+
+    1. `CLOSURE` の分類が1件でもあれば、**カレンダーの版が上がっている**こと（同じ
+       識別子で、より大きい版）。
+    2. 休場と分類した区間の「存在すべき足の欠落」が、**新しい報告から消えている**こと。
+       消えていなければ、新しいカレンダーはその休場を宣言していない。
+
+    `DATA_GAP`（データ欠損）はカレンダーを変えずに確定できる。欠損はカレンダーの規則の
+    問題ではなく、データそのものが無いという事実だからである。
+    """
+    closures = [decision for decision in decisions if decision.kind is ClosureDecisionKind.CLOSURE]
+    if not closures:
+        return
+
+    if original_conversion is None or original_conversion.calendar_version == (
+        conversion.calendar_version
+    ):
+        raise MarketDataValueError(
+            f"{len(closures)} interval(s) are classified as a closure, but the calendar was"
+            f" not revised (still {conversion.calendar_id} version"
+            f" {conversion.calendar_version}); a closure must be declared in the calendar and"
+            " its version raised, otherwise the manifest would record a closure while the"
+            " calendar keeps expecting those bars (D03 §3.4, §4 の 9)"
+        )
+    if original_conversion.calendar_id != conversion.calendar_id:
+        raise MarketDataValueError(
+            f"the calendar changed identity from {original_conversion.calendar_id!r} to"
+            f" {conversion.calendar_id!r}; a closure is declared by raising the version of the"
+            " same calendar, not by swapping in a different one (D03 §3.4)"
+        )
+    if conversion.calendar_version < original_conversion.calendar_version:
+        raise MarketDataValueError(
+            f"the calendar version went backwards, from"
+            f" {original_conversion.calendar_version} to {conversion.calendar_version}"
+            " (D03 §3.4)"
+        )
+
+    # 新しい報告に残る「存在すべき足の欠落」。ここに休場と分類した区間が残っていれば、
+    # 新しいカレンダーはその休場を宣言していない。
+    still_missing = {
+        f"{result.series} {result.interval}"
+        for result in report.warnings
+        if result.kind is CheckKind.MISSING_EXPECTED_BAR
+    }
+    undeclared = sorted(
+        f"{decision.series_id} {decision.interval}"
+        for decision in closures
+        if f"{decision.series_id} {decision.interval}" in still_missing
+    )
+    if undeclared:
+        raise MarketDataValueError(
+            f"{len(undeclared)} interval(s) are classified as a closure, but"
+            f" {conversion.calendar_id} version {conversion.calendar_version} still expects"
+            f" bars there: {undeclared}; declare the closure in the calendar so the check"
+            " stops reporting the gap (D03 §3.4, §4 の 9)"
+        )
 
 
 def build_pending_snapshot(
@@ -483,6 +604,40 @@ def build_pending_snapshot(
     for aggregated_series, generated in (aggregated_bars or {}).items():
         bars_by_series.setdefault(aggregated_series, []).extend(generated)
 
+    return _assemble_pending(
+        created_at=created_at,
+        bars_by_series={series: tuple(bars) for series, bars in bars_by_series.items()},
+        sources=tuple(sources),
+        timeframe_defs=timeframe_defs,
+        calendar=calendar,
+        boundaries=boundaries,
+        basis_declaration=basis_declaration,
+        conversion=conversion,
+        aggregated_findings=aggregated_findings,
+        legacy_access=legacy_access,
+    )
+
+
+def _assemble_pending(
+    *,
+    created_at: UtcTime,
+    bars_by_series: Mapping[SeriesId, tuple[Bar, ...]],
+    sources: tuple[SourceFile, ...],
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    calendar: TradingCalendar,
+    boundaries: AccessBoundaries,
+    basis_declaration: BasisDeclaration,
+    conversion: ConversionRecord,
+    aggregated_findings: Sequence[CheckResult] = (),
+    legacy_access: Sequence[LegacyAccessRecord] = (),
+) -> PendingSnapshot:
+    """系列ごとの足から検査・partition 分け・暫定 manifest を組み立てる（D03 §4 の 4〜8）。
+
+    受入れ（`build_pending_snapshot`）と、カレンダーを変えた再実行
+    （`reaccept_with_calendar`）が共有する。どちらも「足が揃った後」の手順は同じで、違うのは
+    足をどこから得るか（原ファイルを読むか、暫定 snapshot の partition から読み戻すか）
+    だけである。1箇所にまとめることで、両者の検査・ダイジェストの算法がずれない。
+    """
     targets = [
         SeriesUnderCheck(
             series=checked_series,
@@ -527,7 +682,7 @@ def build_pending_snapshot(
     manifest = SnapshotManifest(
         created_at=created_at,
         basis_declaration=basis_declaration,
-        sources=tuple(sources),
+        sources=sources,
         conversion=conversion,
         series=tuple(series_manifests),
         partitions=tuple(partitions),
@@ -553,3 +708,168 @@ def _timeframe_def_for(
 # 封印期間 partition の初期状態の判定は `application.access_log.initial_holdout_state` に
 # 一本化した。以前ここにあった同趣旨の関数は、系列が一致するだけで「未観測」と判定し、
 # partition の区間を完全に覆っているかを見ていなかった（ADR-0014 の fail-closed 違反）。
+
+
+def reaccept_with_calendar(
+    pending: PendingSnapshot,
+    *,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    boundaries: AccessBoundaries,
+    aggregation_targets: Sequence[tuple[str, str]],
+) -> PendingSnapshot:
+    """暫定 snapshot に対して受入れの 5〜7 だけを新しいカレンダーで再実行する（D03 §4 の 9）。
+
+    分類で「休場だった」と判断してカレンダーへ追加し版を上げたとき、報告と partition を
+    作り直す必要がある。そのとき**原ファイルは読み直さない**。読み直すと、人間が分類の
+    根拠にした報告には無かった内容——原ファイルの差し替え、価格の書き換え、設定の変更——が
+    最終 snapshot に入りうる。とくに価格だけの変更は構造検査もカレンダー照合も素通りする
+    ので、警告を1つも出さずに別のデータへ置き換わってしまう。
+
+    そこで**暫定 snapshot の partition から読み戻した原系列の足を再利用**する。D03 §4 の 9
+    が「5〜7 を再実行」と定めるのはこの意味であり、1〜4（原ファイルの登録・列対応・
+    正規化・構造検査）はやり直さない。
+
+    - 原系列の足（出所が `AGGREGATED` でないもの）だけを引き継ぐ。上位足は新しい
+      カレンダーで作り直すので捨てる。
+    - `sources`（原ファイルの sha256・行数・出所件数）は暫定 manifest のものをそのまま
+      引き継ぐ。原ファイルを読まない以上、記録も変えてはならない。
+    - `conversion` はカレンダーの識別と版だけを新しいものに置き換え、コード版・時刻規約・
+      集約規則の版は引き継ぐ。
+    - `created_at` も引き継ぐ（識別には使わないが、受入れの実行時刻は1つである）。
+
+    `aggregation_targets` は上位足を作る組（`(構成足の id, 上位足の id)`）。構成に属する
+    知識なので呼び出し側が渡す。
+    """
+    if not isinstance(pending, PendingSnapshot):
+        raise MarketDataValueError("reaccept_with_calendar requires a PendingSnapshot")
+    if not isinstance(calendar, TradingCalendar):
+        raise MarketDataValueError("reaccept_with_calendar requires a TradingCalendar")
+
+    source_bars = _source_series_bars(pending)
+    if not source_bars:
+        raise MarketDataValueError(
+            "the provisional snapshot carries no source-series bars; there is nothing to"
+            " re-check with the new calendar (D03 §4 の 9)"
+        )
+    _require_timeframes_match(pending.manifest, timeframe_defs)
+
+    aggregated, findings = _aggregate_targets(
+        source_bars,
+        calendar=calendar,
+        timeframe_defs=timeframe_defs,
+        aggregation_targets=aggregation_targets,
+    )
+
+    manifest = pending.manifest
+    return _assemble_pending(
+        created_at=manifest.created_at,
+        bars_by_series={**source_bars, **aggregated},
+        sources=manifest.sources,
+        timeframe_defs=timeframe_defs,
+        calendar=calendar,
+        boundaries=boundaries,
+        basis_declaration=manifest.basis_declaration,
+        conversion=ConversionRecord(
+            code_version=manifest.conversion.code_version,
+            time_convention=manifest.conversion.time_convention,
+            aggregation_rule_version=manifest.conversion.aggregation_rule_version,
+            calendar_id=calendar.id,
+            calendar_version=calendar.version,
+        ),
+        aggregated_findings=findings,
+        legacy_access=manifest.legacy_access,
+    )
+
+
+def _source_series_bars(pending: PendingSnapshot) -> dict[SeriesId, tuple[Bar, ...]]:
+    """暫定 snapshot の partition から原系列の足を集める（上位足は除く）。
+
+    上位足は本基盤が生成したもの（出所が `AGGREGATED`）なので、新しいカレンダーで作り
+    直す。原系列の足だけが「原ファイルから来た事実」であり、これを引き継ぐ。
+    """
+    by_series: dict[SeriesId, list[Bar]] = {}
+    for partition_id, bars in pending.partition_bars.items():
+        for bar in bars:
+            if bar.provenance.kind is ProvenanceKind.AGGREGATED:
+                continue
+            by_series.setdefault(partition_id.series, []).append(bar)
+    return {
+        series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
+        for series, bars in by_series.items()
+    }
+
+
+def _require_timeframes_match(
+    manifest: SnapshotManifest,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+) -> None:
+    """暫定 snapshot の**全系列**の時間足が、渡された定義と版まで一致することを確かめる。
+
+    見るのは原系列（15m・1h）だけでなく、**生成系列（4h_ny17・1d_ny17）も含む**。生成系列の
+    定義を差し替えた設定を渡せてしまうと、整列の違う上位足が黙って作られ、人間が分類の
+    根拠にした snapshot とは別の上位足を持つ snapshot が確定してしまう。
+
+    一致は `TimeframeRef`（id と版）で見る。定義の内容（整列・名目長）は版で識別される
+    という前提に立つ。同じ版で内容の違う設定を渡された場合は検出できない——それを塞ぐには
+    `conversion` に時間足定義集合のダイジェストを持たせる必要があり、識別子の対象が増える
+    設計変更になるので、ここでは行わない。
+    """
+    for record in sorted(manifest.series, key=lambda item: str(item.series_id)):
+        wanted = record.series_id.timeframe
+        definition = timeframe_defs.get(wanted.id)
+        if definition is None:
+            raise MarketDataValueError(
+                f"no timeframe definition was supplied for {wanted.id!r},"
+                " which the provisional snapshot uses (D03 §4 の 9)"
+            )
+        if definition.ref != wanted:
+            raise MarketDataValueError(
+                f"the timeframe definition for {wanted.id!r} is {definition.ref}, but the"
+                f" provisional snapshot was accepted with {wanted}; re-running with a"
+                " different definition version would produce a snapshot the classification"
+                " was not based on (D03 §4 の 9)"
+            )
+
+
+def _aggregate_targets(
+    source_bars: Mapping[SeriesId, tuple[Bar, ...]],
+    *,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    aggregation_targets: Sequence[tuple[str, str]],
+) -> tuple[dict[SeriesId, tuple[Bar, ...]], tuple[CheckResult, ...]]:
+    """引き継いだ原系列から上位足を作り直す（D03 §4 の 6、§5）。"""
+    generated: dict[SeriesId, tuple[Bar, ...]] = {}
+    findings: list[CheckResult] = []
+    for source_id, target_id in aggregation_targets:
+        source_def = timeframe_defs.get(source_id)
+        target_def = timeframe_defs.get(target_id)
+        if source_def is None or target_def is None:
+            raise MarketDataValueError(
+                f"no timeframe definition was supplied for the aggregation"
+                f" {source_id} -> {target_id} (D03 §5)"
+            )
+        for series in sorted(source_bars, key=str):
+            if series.timeframe.id != source_id:
+                continue
+            target_series = SeriesId(
+                symbol=series.symbol,
+                timeframe=target_def.ref,
+                basis=series.basis,
+            )
+            result = aggregate(
+                source_bars[series],
+                source_timeframe_def=source_def,
+                target_series=target_series,
+                target_timeframe_def=target_def,
+                calendar=calendar,
+            )
+            # 1本も生成できなかった系列は**記録しない**。構成足がすべて不完全なとき
+            # （端が切れた期間など）に起こる。空の系列を入れると、覆う区間も partition も
+            # 決められず、manifest の組み立てが壊れる。生成できなかった事実は `findings`
+            # （存在すべき足の欠落）が伝えるので、報告からは消えない（D03 §5.2）。
+            if result.bars:
+                generated[target_series] = result.bars
+            findings.extend(result.findings)
+    return generated, tuple(findings)

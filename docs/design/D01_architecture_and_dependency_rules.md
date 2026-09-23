@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-20 v2.4（§10.2 に確定 snapshot の `integrity_report.json` の git 管理を追記。ADR-0013 改訂、D03 v1.3。依存規則の変更なし）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**、**2026-09-23 v2.6（§10.2 の snapshot ディレクトリ図に、確定 snapshot の検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）を git 管理対象として追記。2026-09-20 の人間の決定3件を 2026-09-23 に main へ追随させて取り込んだもの。ADR-0013 改訂、D03 v1.7。依存規則の変更なし）**
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021, 0026](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -136,7 +136,8 @@ app → evaluation → backtest → strategy → marketdata → common
 | `RuntimeContextView` | `strategy.runtime.ports` | `backtest.engine` | 現在処理中の建玉・許可された口座情報 |
 | `OutputSink` | `strategy.runtime.ports` | `backtest.engine`（trace へ転送） | `OutputRecord` の受け取り |
 | `PublicationFeed` | `backtest.application.ports` | `marketdata.application.publication` | `available_at` 順の公開イベント列 |
-| `ExecutionSeries` | `backtest.application.ports` | `marketdata.application.asof` | 執行用系列の open/high/low/close |
+| `ExecutionSeries` | `backtest.application.ports` | `marketdata.application.asof` | 執行用系列の open/high/low/close と、予定上の次の足（D03 §6.3） |
+| `IntrabarSeries` | `backtest.application.ports` | `marketdata.application.asof` | 足内競合を解く下位足の供給（D06 §7.4） |
 | `Calendar` | `backtest.application.ports` | `marketdata.domain.calendar`（domain 型そのもの） | 期限・候補 open・休場の判定 |
 | `StrategyRuntime` | `backtest.application.ports` | `strategy.runtime.evaluator` | 公開バッチと現在状態を渡し、出力・注文意図・管理要求を受け取る |
 | `TraceSink` | `backtest.application.ports` | `evaluation.adapters.fs_store` または `app` | 記録の書き出し |
@@ -148,6 +149,8 @@ app → evaluation → backtest → strategy → marketdata → common
 | `HoldoutAccessLog` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | holdout 閲覧履歴の記録 |
 
 ポート名は D02 以降で変更されうるが、**所在（どのパッケージの application が定義するか）と実装者の層**は本書で確定する。
+
+**利用側が application より下の層なら、構造は下の層で定義し application が同じ名前で再公開する**（確定。v2.4、2026-09-22 の人間の決定。PR #19）。`PublicationFeed` / `ExecutionSeries` / `IntrabarSeries` / `Calendar` を実際に使うのは `backtest.engine` であり、エンジンは1つ上の `backtest.application` を import できない（第3.3節の層順序）。そこで構造（`Protocol`）を `backtest.engine.loop` に置き、`backtest.application.ports` がそれを再公開する。**表の「定義場所」は引き続きポートの所在の正本**であり、結線するのも `app.composition` のままである（実装者はどちらの名前も import せず、構造的に満たす）。この扱いは D06 §3 にも記載する。
 
 ## 5. 外部ライブラリの配置（確定）
 
@@ -437,10 +440,14 @@ odyssey_fx/
 | `tests/semantics/` | 意味論 | 上位文書 §7.2・§4.7.15E の項目を1件1テストで名前を付けて固定 |
 | `tests/property/` | プロパティ | hypothesis による不変条件（先読み不変、SL 単調性、台帳整合、冪等性） |
 | `tests/golden/` | golden | 人工データの固定 trace との突合 |
+| `tests/integration/` | 統合 | 複数の層を通した経路を確かめる。**内部の関数を直接呼んでも、コマンドを経由してもよい**。紙上トレース T01 の経路がここに入る |
+| `tests/acceptance/` | 受入 | **段階の完了条件そのもの**を、人工データを受入れから評価まで1本に通して確かめる |
 | `tests/architecture/` | 依存規則 | `lint-imports` の実行と、契約定義そのものの検査（第6節） |
 | `tests/fixtures/synthetic/` | 生成器 | DST 境界・週末・欠損・gap・SL/TP 同時到達を含む人工市場データ |
 
 テストは `uv run pytest` で実行し、外部データ・ネットワークに依存しない。実データを使うテストは段階4以降に別マーカーで分ける。
+
+各層の責務・命名・どの層に書くかの判断は [D08](D08_test_strategy.md) が定める。**本表はディレクトリと種別の対応の正本**であり、D08 はこれを参照して責務と命名を足す。
 
 ## 10. 設定・データ・成果物の配置（確定）
 
@@ -476,7 +483,7 @@ data/
     ├── manifest.json               # git 管理。digest・出所・銘柄・価格基準・期間・行数・変換コード版・
     │                               # partition ごとのアクセス分類
     ├── integrity_report.json       # git 管理。完全性検査の報告（検査種別・系列・区間・重大度・構造的な詳細のみ。
-    │                               # 価格統計を含めない）。manifest のダイジェスト対象（D03 v1.3、ADR-0013 改訂）。
+    │                               # 価格統計を含めない）。manifest のダイジェスト対象（D03 v1.7、ADR-0013 改訂）。
     │                               # 確定段階で再実行した snapshot は integrity_report_provisional.json も git 管理
     ├── access_log.jsonl            # git 管理。追記専用の閲覧・消費記録。HoldoutState はここから導出（ADR-0014）
     └── <partition>/…               # 実体。git 管理外。アクセス分類（RESEARCH_HISTORY /

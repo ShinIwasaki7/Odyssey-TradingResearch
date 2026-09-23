@@ -1,0 +1,154 @@
+# 検証戦略 A の単一実行の実験設定（D06 §3・§9.3、D04 §3、D05 §9）
+#
+# 1時間足の終値が直近20本の確定高値を上抜けたら、後続確認なしの成行で入り、直近20本の
+# 確定安値を初期の損切りに置き、約定後に固定リスクリワード比の利確を置く（上位設計書 §7.1）。
+# 値は紙上トレース T01 のもので、人工データで手計算と一致することを確かめるために使う。
+#
+# **`snapshot` は使う環境ごとに書き換える**。承認済み snapshot の識別子（16進64文字）で
+# あり、`odyssey-fx data classify` が最後に表示する値をそのまま入れる。既定値は「まだ
+# 指していない」ことが分かるようにゼロを並べてあり、そのままでは読み取りの関門が拒否する
+# （D03 §3.7.1）。
+#
+# **数値は文字列で書く**（ADR-0012）。浮動小数として書くと二進浮動小数の誤差が入る。
+# 例外は部品パラメータの `FLOAT` 型で、これは価格・pips・比率を単位付きで宣言するための
+# 型であり、価格への変換と丸めは執行の境界が行う（D04 §7）。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+id: strategy_a_t01
+version: 1
+
+snapshot: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# 12 日間（日曜 17:00 NY から金曜 17:00 NY）。T01 §1.1 の区間を研究履歴の年へずらしたもの。
+run_interval:
+  start: "2015-01-04T22:00:00Z"
+  end: "2015-01-16T22:00:00Z"
+
+# 約定の判定に使う系列（ADR-0015、D06 §3）。時間足の版は時間足定義の設定から解決する。
+execution_series: "USDJPY/15m/bid"
+
+# 足内競合を解決する解像度の階層（粗い順、ADR-0030）。段階2は執行系列の1段だけ。
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  # 許容不利約定幅 Δ（銘柄ごと）。これを超える約定は緊急決済になる（D06 §7.1.1）。
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  # 片道・1通貨あたりの手数料。往復2回ぶんが費用予算に入る（D06 §7.6）。
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  # 提示価格の幅（`ask = bid + offset`、D06 §7.2）。
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+strategy:
+  strategy_id: "strategy_a"
+  version: 1
+  entry_policy: "IMMEDIATE"
+
+  components:
+    - instance_id: "breakout_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:USDJPY/1h/bid:HIGH"
+      parameters:
+        lookback: {type: "INT", value: 20}
+        mode: {type: "STR", value: "MAX"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+    - instance_id: "stop_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:USDJPY/1h/bid:LOW"
+      parameters:
+        lookback: {type: "INT", value: 20}
+        mode: {type: "STR", value: "MIN"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+    - instance_id: "entry_trigger"
+      component: "breakout_trigger"
+      component_version: 1
+      inputs:
+        price:
+          - "market:USDJPY/1h/bid:CLOSE"
+        level:
+          - "output:breakout_level.level"
+      parameters:
+        direction: {type: "STR", value: "LONG"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+    - instance_id: "entry_order"
+      component: "market_order_intent"
+      component_version: 1
+      inputs:
+        opportunity:
+          - "output:entry_trigger.opportunity"
+      triggers:
+        - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+    - instance_id: "initial_stop"
+      component: "level_stop_loss"
+      component_version: 1
+      inputs:
+        opportunity:
+          - "output:entry_trigger.opportunity"
+        level:
+          - "output:stop_level.level"
+      triggers:
+        - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+    - instance_id: "take_profit"
+      component: "fixed_rr_take_profit"
+      component_version: 1
+      inputs:
+        position:
+          - "runtime:POSITION"
+      parameters:
+        reward_risk: {type: "FLOAT", value: 2.0}
+      triggers:
+        - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+
+  # どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。
+  roles:
+    trigger: "entry_trigger.opportunity"
+    order: "entry_order.intent"
+    protection: "initial_stop.protection"
+    exit: "take_profit.action"
+
+  # 取引機会を同時にいくつ保持するか（ADR-0032）。
+  opportunity_concurrency:
+    max_active: 1
+    on_new_trigger: "KEEP_EXISTING"
+    on_order_accepted: "KEEP_OTHERS"
