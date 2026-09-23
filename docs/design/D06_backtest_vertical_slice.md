@@ -213,21 +213,26 @@ D02 §3.3 は「フェーズの具体的な一覧は `backtest.engine` が定義
 2. rank 1: 1 で確定した台帳について含み損益（equity）を再評価し、`LedgerSnapshot` を1件残す（第8.1節）。約定そのものの台帳への反映は 1 の確定単位で済んでいる。
 3. rank 2: `expires_at <= T` の PENDING 注文を EXPIRED にする。
 4. rank 3: `available_at = T` の `Publication` と、`bar_end = T` の `ScheduledBoundary` から `PublicationBatch` を組み立てる（第4.3節）。
-5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。`evaluations` と `transitions` を trace へ渡し、**`wait_events` / `validity_rechecks` / `confirmation_attempts` も同じように trace へ渡す**（段階3。第9.2節の表16・18・19）。**`evaluations` に `Failed` が1件でもあれば、ここで run を止める**（下記）。無ければ `proposals` と `management_requests` を rank 10 へ渡す。
+5. rank 4〜9: **第1回の `step(batch)`** を呼ぶ。`evaluations` と `transitions` を trace へ渡し、**`wait_events` / `validity_rechecks` / `confirmation_attempts` も同じように trace へ渡す**（段階3。第9.2節の表16・18・19）。**下記の「停止判定」に当たれば、ここで run を止める**（条件の正本は下段落。ここには写さない）。当たらなければ `proposals` と `management_requests` を 6 へ渡す。
 6. **rank 10 の直前**: **5（第1回の `step`）が返した** `management_requests` のうち**保護水準の更新（`UpdateStop`）を建玉へ適用する**（第8.3節）【確定】（Q25 決定、2026-09-23、選択肢1。紙上トレース T02 §14 #5）。**第2回の `step` が返した更新はここでは扱わない**（9 で `POST_FILL_EVALUATION` に適用する）。適用の内容と `effective_from` は第8.3節のままで、**新しいフェーズは足さない**。処理点は `ADMISSION`（rank 10）であり、表12（`MANAGEMENT_APPLICATIONS`）の主キー `(position_id, at)` はそのまま使える。**同じ判断時点の決済要求との競合は、この適用より前に解決する**（決済が勝ち、更新は `SUPERSEDED_BY_EXIT` で適用しない。第8.3節）。全数量決済は従来どおり 9（rank 13）で受け付ける。
 7. rank 10: 要求組立から受付までを行い、`AttemptDecision` と `AdmissionNotice` を作る（第6節）。リスク審査（第6.4節）は、6 で適用し終えた保護水準を読む。
 8. rank 11: 執行系列の始値処理を行う（第7.1節）。
-9. rank 12: 7 の `AdmissionNotice` と 8 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。**第1回と同じく `evaluations` と `transitions`、および段階3 の `wait_events` / `validity_rechecks` / `confirmation_attempts` を trace へ渡す**（第2回で出る固定リスクリワード比の評価記録と、受付通知による取引機会の終端の遷移は、ここで保存しないと表2・表3から落ちる）。`management_requests` のうち保護水準の更新は建玉へ適用し（第8.3節）、全数量決済は rank 13 へ渡す。通知が1件もなければ呼ばない。
+9. rank 12: 7 の `AdmissionNotice` と 8 で生まれた `POSITION_OPENED` の通知があれば、**第2回の `step`** を呼ぶ。**第1回と同じく `evaluations` と `transitions`、および段階3 の `wait_events` / `validity_rechecks` / `confirmation_attempts` を trace へ渡す**（第2回で出る固定リスクリワード比の評価記録と、受付通知による取引機会の終端の遷移は、ここで保存しないと表2・表3から落ちる）。**停止判定は第1回とまったく同じ**（条件の正本は下段落）で、当たれば下記の第2回の停止範囲に従う。当たらなければ、`management_requests` のうち保護水準の更新は建玉へ適用し（第8.3節）、全数量決済は rank 13 へ渡す。通知が1件もなければ呼ばない。
 10. rank 13: 9 の `management_requests` のうち全数量決済を要求へ組み立て、第6節と同じ手順で受け付ける。要求が1件も無ければ何もしない。
 11. run_end の判断時点だけ rank 14 を行う（第10節）。**第3回の `step`** を `is_run_end=True` の公開バッチで呼び、残存する取引機会の終端（`RUN_END`）を受け取って trace へ渡す（Q2 決定、D05 §6.1 v1.1）。
 
-**評価の失敗は受付より前で run を止める**【提案】。D05 §6.2 は、部品の失敗・`on_missing=Error` の欠損・戻り値の検査違反を `Failed(Reason(DATA_ERROR, ...))` として評価記録に残し、**以降の評価を行わずに結果を返す**と定め、「run を終了させるのはエンジンの責務」と本書へ委ねている【合意済み】。そこでエンジンは、第1回・第2回のどちらの `step` でも `RuntimeStepResult.evaluations` に `Failed` があれば、次のとおり扱う。
+**停止判定（失敗は受付より前で run を止める）**【提案】。**本段落が停止判定の正本である**（v1.6 で1か所に集約した。上の手順5・手順9 はここを参照するだけで、条件を写さない）。条件を手順の側に写すと、条件を1つ足したときに片方だけ直る。
 
-**取引機会の有効性の再検査が失敗した場合も、同じ経路で止める**【提案】（v1.6。独立レビューの指摘。D05 §7.3 の `MISSING_FAILED` は「run を失敗させる」と定めている）。再検査は**評価の外側**（確認評価の直前と、注文意図を作る直前）で走るため、失敗しても評価記録（`EvaluationRecord`）は作られず、`RuntimeStepResult.validity_rechecks` に `ValidityRecheck(outcome=MISSING_FAILED)` が1件残るだけである。したがって**停止の条件は2つある**: `evaluations` に `Failed` があること、**または** `validity_rechecks` に `MISSING_FAILED` があること。どちらでも下の共通の2点と停止範囲の表をそのまま当てる（`MISSING_FAILED` の `reason` は `Reason(DATA_ERROR, ...)` なので、第10.4節の実行失敗の扱いも同じである）。`evaluations` だけを見ると、**発注要求まで有効であり続けることを求める束縛に `Error` を書いた宣言**（D04 §6.3 が段階2 で拒否し、D05 §7.3 の記録ができたことで段階3 で解除するもの）で、run が止まらないまま `proposals` が rank 10 へ渡り、**失敗した判断で注文が受け付けられる**。この経路は段階3 で初めて宣言できるようになるものであり、テスト戦略（D08 §13.2 の未整備6）が意味論テストで通す対象でもある。段階2 の挙動は変わらない（段階2 の `validity_rechecks` は常に空である）。
+> **停止判定**: その `step` の `RuntimeStepResult` について、次のどちらかが成り立つこと。
+> **(a) `evaluations` に `Failed` が1件以上ある**、**(b) `validity_rechecks` に `MISSING_FAILED` が1件以上ある**。
 
-どちらの `step` でも共通に行うことが2つある。
+(a) の根拠: D05 §6.2 は、部品の失敗・`on_missing=Error` の欠損・戻り値の検査違反を `Failed(Reason(DATA_ERROR, ...))` として評価記録に残し、**以降の評価を行わずに結果を返す**と定め、「run を終了させるのはエンジンの責務」と本書へ委ねている【合意済み】。
 
-1. その `RuntimeStepResult` の `outputs` / `evaluations` / `transitions` と、**段階3 の3つの列**（`wait_events` / `validity_rechecks` / `confirmation_attempts`）は trace へ保存する（失敗の診断を判断履歴から消さない。v1.6 で3列を明示した）。
+(b) の根拠【提案】（v1.6。独立レビューの指摘。D05 §7.3 の `MISSING_FAILED` は「run を失敗させる」と定めている）: 取引機会の有効性の再検査は**評価の外側**（確認評価の直前と、注文意図を作る直前）で走るため、失敗しても評価記録（`EvaluationRecord`）は作られず、`validity_rechecks` に `ValidityRecheck(outcome=MISSING_FAILED)` が1件残るだけである。(a) だけを見ると、**発注要求まで有効であり続けることを求める束縛に `Error` を書いた宣言**（D04 §6.3 が段階2 で拒否し、D05 §7.3 の記録ができたことで段階3 で解除するもの）で、run が止まらないまま `proposals` が受付へ渡り、**失敗した判断で注文が受け付けられる**。この経路は段階3 で初めて宣言でき、テスト戦略（D08 §13.2 の未整備6）が意味論テストで通す対象でもある。`MISSING_FAILED` の `reason` は `Reason(DATA_ERROR, ...)` なので、第10.4節の実行失敗の扱いも (a) と同じである。**段階2 の挙動は変わらない**（段階2 の `validity_rechecks` は常に空である）。
+
+停止判定に当たったとき、どちらの `step` でも共通に行うことが2つある。
+
+1. その `RuntimeStepResult` の `evaluations` / `transitions` と、**段階3 の3つの列**（`wait_events` / `validity_rechecks` / `confirmation_attempts`）を trace へ保存する（失敗の診断を判断履歴から消さない。v1.6 で3列を明示した）。**`outputs` は保存しない**。失敗より前に出た出力は、ランタイムが `OutputSink.emit` を呼んだ時点で既に表1 へ入っている（次段落）ので、戻り値からもう一度書くと同じ `output_id` の行が二重に入り、主キーが壊れる。成功した判断時点と同じ扱いであり、失敗時に例外を置かない。
 2. その `step` が返した `proposals` と `management_requests` は**一切使わない**。同じ `step` の中で失敗より前に生まれたものも使わない（どこまでが有効な判断だったかが宣言から読めないため）。**第1回で失敗したときは、手順6 の保護水準の更新の適用も行わない**（管理要求を一切使わないので、適用する対象が無い）。
 
 その先は、**どちらの呼び出しで失敗したかで分ける**。すでに確定した処理は巻き戻さない（第4.4節の確定単位は差し替え済みであり、シミュレーションであっても確定した約定を取り消さない【合意済み】上位 §4.7.13 A）。
