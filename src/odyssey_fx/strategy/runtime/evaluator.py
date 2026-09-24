@@ -1121,7 +1121,6 @@ class _StepRun:
                 by_interval.setdefault(closure.interval, []).append((trigger.name, closure.bar_key))
         out: list[tuple[EvaluationRequest, dict[str, tuple[OutputRecord[object], ...]]]] = []
         fanout = _fanout_kind(component)
-        attempt_index = 0
         for interval in sorted(by_interval, key=lambda item: str(item.start)):
             entries = by_interval[interval]
             # 観測した足（`Observation.subject`）は対象区間を与えた足（D05 §6.7）。区間が同じで
@@ -1146,9 +1145,7 @@ class _StepRun:
                     target_interval=interval,
                     opportunity_id=opportunity_id,
                     position_id=position_id,
-                    attempt_index=attempt_index,
                 )
-                attempt_index += 1
                 self._subjects[request.request_id] = subject
                 out.append((request, {}))
         return out
