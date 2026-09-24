@@ -454,7 +454,9 @@ def test_warnings_created_by_the_rerun_must_be_classified() -> None:
 
 
 def test_a_rerun_only_out_of_session_bar_is_not_excluded() -> None:
-    """再実行の報告にだけ現れる休場帯の足は除外しない（仮置き。人間の決定待ち）。
+    """再実行の報告にだけ現れる休場帯の足は除外せず、確定を止める。
+
+    D03 v1.8 §4 の除外規則（2026-09-24 の人間の決定）。
 
     D03 は確定の根拠を暫定報告と最終報告の2つで閉じるので、除外して最終報告から消えた警告の
     分類は2つの報告から検証できない。除外せずに、確定の検査で止める。

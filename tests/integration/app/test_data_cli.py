@@ -731,7 +731,8 @@ def test_an_out_of_session_bar_is_excluded_and_the_snapshot_reads(workspace: Pat
         for result in original.warnings
     )
 
-    # カレンダーは変えないので、暫定 snapshot と同じ版を指す（仮置き。D03 は未定義）。
+    # カレンダーは変えないので、暫定 snapshot と同じ版を指す
+    # （D03 v1.8 §10、2026-09-24 の人間の決定）。
     same_calendar = workspace / "configs/calendars/fx_ny17_v1.yaml"
     decisions = _out_of_session_decisions(workspace, store, pending, calendar=same_calendar)
     assert _classify(workspace, pending, decisions) == 0
@@ -759,7 +760,11 @@ def test_an_out_of_session_bar_is_excluded_and_the_snapshot_reads(workspace: Pat
 def test_out_of_session_data_without_a_calendar_fails_with_guidance(
     workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """再実行に使うカレンダーを書かなければ、何をすべきかを述べて失敗する（仮置き）。"""
+    """再実行に使うカレンダーを書かなければ、何をすべきかを述べて失敗する。
+
+    D03 v1.8 §10（2026-09-24 の人間の決定）: カレンダーを変えない再実行でも、分類ファイルの
+    `calendar` に暫定 snapshot と同じ版のカレンダーを書く。
+    """
     _add_an_early_bar(workspace)
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
