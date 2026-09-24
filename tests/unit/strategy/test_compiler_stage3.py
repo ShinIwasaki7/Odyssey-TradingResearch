@@ -761,3 +761,44 @@ def test_a_warmup_requirement_is_still_rejected() -> None:
     assert [(error.check_id, error.rejection) for error in errors] == [
         ("#7", CompileRejection.UNSUPPORTED_CONFIGURATION)
     ]
+
+
+# --- 指紋を計算できない宣言（D05 §5.5・§9.2） --------------------------------------
+
+
+def test_a_confirmation_deadline_in_time_is_rejected_not_raised() -> None:
+    """期間で書いた確認期限は指紋を計算できない。例外ではなく拒否として返す。"""
+    from datetime import timedelta
+
+    from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation, DurationDeadline
+
+    definition = _replace(
+        strategy_b(),
+        entry_policy=AwaitConfirmation(deadline=DurationDeadline(timedelta(hours=1))),
+    )
+
+    assert _failed(_compile(definition)) == [("#7", CompileRejection.UNSUPPORTED_CONFIGURATION)]
+
+
+def test_a_registered_contract_with_a_duration_is_rejected_not_raised() -> None:
+    """期間値を持つ契約も指紋を計算できない。段1 で拒否として返す。"""
+    from datetime import timedelta
+
+    contract = replace(
+        compare.CONTRACT,
+        version=95,
+        inputs={
+            **compare.CONTRACT.inputs,
+            "left": replace(
+                compare.CONTRACT.inputs["left"],
+                read_spec=LatestAvailable(max_age=timedelta(hours=2)),
+            ),
+        },
+    )
+    registration = replace(compare.REGISTRATION, contract=contract)
+    stand_in = replace(contract_ref_for(compare.CONTRACT), version=95)
+    definition = _swap(strategy_b(), "m15_above_ema", contract_ref=stand_in)
+
+    assert _failed(_compile(definition, _with_registrations(registration))) == [
+        ("#7", CompileRejection.UNSUPPORTED_CONFIGURATION)
+    ]

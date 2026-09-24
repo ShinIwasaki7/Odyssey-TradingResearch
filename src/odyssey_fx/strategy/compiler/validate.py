@@ -40,6 +40,7 @@ from collections.abc import Mapping
 from dataclasses import fields as dataclass_fields
 from decimal import Decimal
 
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.timeframe import TimeframeRef
@@ -226,12 +227,47 @@ def compile_strategy(
     errors += capability.check_temporal_constraints(contracts)
     errors += capability.check_missing_policies(definition, contracts)
     errors += capability.check_output_history_windows(definition, input_plans)
+    errors += _check_definition_hashable(definition)
     if errors:
         return CompileFailed(errors=errors)
 
     return _stage10_assemble(
         definition, resolved, parameters, symbols, input_plans, evaluation_order
     )
+
+
+def _unhashable(
+    instance_id: str | None, field_path: str, what: str, exc: KernelValueError
+) -> CompileError:
+    """指紋を計算できない宣言の拒否（D05 §5.5・§9.2、D04 §13.2）。
+
+    期間値（`timedelta`）は正規化エンコード（D02 §9.3）が符号化しないので、期間値を含む宣言は
+    契約・戦略定義・解決済み設定のどの指紋も計算できない。段階3 でも期間で書く期限や窓は
+    書けないまま（D05 §9.2）なので、実行できない構成として能力検査の番号で拒否する。例外の
+    まま外へ出すと、「失敗は `CompileFailed` で返す」（D05 §5.1）が崩れる。
+    """
+    return _error(
+        "#7",
+        CompileRejection.UNSUPPORTED_CONFIGURATION,
+        instance_id,
+        field_path,
+        f"the {what} cannot be fingerprinted, so it cannot be run as a fixed experiment;"
+        " durations (timedelta) are not encodable yet, so write deadlines and windows in bars"
+        f" (D05 §5.5・§9.2): {exc}",
+    )
+
+
+def _check_definition_hashable(definition: StrategyDefinition) -> tuple[CompileError, ...]:
+    """戦略定義の指紋を計算できることを、組み立て（段10）の前に確かめる（D05 §5.5）。
+
+    段階3 で後続確認の期限（`DurationDeadline`）や有効性束縛の待機・遡りを解除したため、
+    期間値を含む戦略定義が段10 まで届きうる。
+    """
+    try:
+        strategy_ref_for(definition)
+    except KernelValueError as exc:
+        return (_unhashable(None, "strategy", "strategy definition", exc),)
+    return ()
 
 
 # --- 段1: 契約の解決 ---------------------------------------------------------
@@ -257,7 +293,11 @@ def _stage1_contracts(
                 )
             )
             continue
-        expected = contract_digest(registration.contract)
+        try:
+            expected = contract_digest(registration.contract)
+        except KernelValueError as exc:
+            errors.append(_unhashable(instance.instance_id, "contract_ref", "contract", exc))
+            continue
         if ref.digest != expected:
             errors.append(
                 _error(
