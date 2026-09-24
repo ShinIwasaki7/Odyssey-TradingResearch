@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**、**2026-09-23 v2.6（§10.2 の snapshot ディレクトリ図に、確定 snapshot の検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）を git 管理対象として追記。2026-09-20 の人間の決定3件を 2026-09-23 に main へ追随させて取り込んだもの。ADR-0013 改訂、D03 v1.7。依存規則の変更なし）**
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021, 0026](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -482,6 +482,9 @@ data/
 └── snapshots/<snapshot_id>/
     ├── manifest.json               # git 管理。digest・出所・銘柄・価格基準・期間・行数・変換コード版・
     │                               # partition ごとのアクセス分類
+    ├── integrity_report.json       # git 管理。完全性検査の報告（検査種別・系列・区間・重大度・構造的な詳細のみ。
+    │                               # 価格統計を含めない）。manifest のダイジェスト対象（D03 v1.7、ADR-0013 改訂）。
+    │                               # 確定段階で再実行した snapshot は integrity_report_provisional.json も git 管理
     ├── access_log.jsonl            # git 管理。追記専用の閲覧・消費記録。HoldoutState はここから導出（ADR-0014）
     └── <partition>/…               # 実体。git 管理外。アクセス分類（RESEARCH_HISTORY /
                                     # LEGACY_HOLDOUT / QUARANTINED_UNASSIGNED）ごとに分ける
