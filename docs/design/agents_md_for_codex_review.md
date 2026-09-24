@@ -171,7 +171,7 @@ FX 戦略研究基盤（Python 3.12、import 名 `odyssey_fx`）。本ファイ�
 ### Determinism and reproducibility (F)
 
 - **ダイジェスト／ハッシュの入力**が、設計文書の入力一覧と一致するか。新しいフィールドの取りこぼし、タプル・集合の順序未正規化、格納順依存を疑う（PR #14・#16・#19・#20）。
-- `ProcessingPoint` の通し番号が run 内で一意か。フェーズ跨ぎ（RUN_END、約定後）で重複しないか（PR #19）。
+- 処理点 `ProcessingPoint` の組 `(time, phase.rank, sequence)` が run 内で一意か（D02 §3.3。`sequence` は判断時刻ごと・フェーズごとに 0 から採番されるので、数値単独の重複は正常）。同じ時刻・同じフェーズで組が衝突する経路（RUN_END、約定後の評価）を疑う（PR #19）。
 - domain / application が実時計・乱数・環境変数を読んでいないか（D01 §2.2 規則 2）。
 - 主キーの重複が黙って後勝ちにならないか。重複判定が型変換後の値で行われるか（PR #20）。
 
