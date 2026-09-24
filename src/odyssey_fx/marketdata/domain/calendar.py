@@ -123,11 +123,17 @@ class WeeklyMoment:
 
 @dataclass(frozen=True, slots=True)
 class ClosureRule:
-    """宣言した休場・短縮（D03 §3.4）。
+    """宣言した休場・短縮（D03 §3.4・§3.4.1）。
 
-    `local_date` は現地日付、`closed` はその日のうち市場が閉じている現地時刻の区間
-    （`[start, end)`）。終日休場は `time(0, 0)` から `time(0, 0)` の翌日までではなく、
-    `covers_whole_day=True` で表す（日付をまたぐ表現を避けるため）。
+    `local_date`（現地日付）と、次の3つの形のうち**ちょうど1つ**を持つ（D03 §3.4.1）。
+
+    - 短縮セッション: `start` / `end`。その日の `[start, end)`（現地時刻）を閉じる。
+    - 終日休場: `covers_whole_day=True`。その日の現地 0:00〜翌日 0:00 を閉じる。
+    - 取引日単位の休場（v1.9）: `covers_trading_day=True`。`local_date` の前日の取引日の
+      境界から `local_date` の取引日の境界までを閉じる（初版カレンダーでは前日 17:00〜
+      当日 17:00）。取引日の境界は本型が持たず、カレンダーの週の開閉時刻を
+      `utc_interval(tz, trading_day_boundary=...)` で受け取る（新しい時刻の定義を持ち込まない
+      ため。日足 `1d_ny17` の起点と同じ値）。
     """
 
     local_date: date
@@ -135,22 +141,29 @@ class ClosureRule:
     start: time | None = None
     end: time | None = None
     note: str = ""
+    covers_trading_day: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.local_date, date) or isinstance(self.local_date, datetime):
             raise MarketDataValueError("ClosureRule.local_date must be a date")
         if not isinstance(self.covers_whole_day, bool):
             raise MarketDataValueError("ClosureRule.covers_whole_day must be a bool")
-        if self.covers_whole_day:
+        if not isinstance(self.covers_trading_day, bool):
+            raise MarketDataValueError("ClosureRule.covers_trading_day must be a bool")
+        if self.covers_whole_day and self.covers_trading_day:
+            raise MarketDataValueError(
+                "ClosureRule cannot be both covers_whole_day and covers_trading_day;"
+                " choose exactly one form (D03 §3.4.1)"
+            )
+        if self.covers_whole_day or self.covers_trading_day:
             if self.start is not None or self.end is not None:
-                raise MarketDataValueError(
-                    "ClosureRule with covers_whole_day=True must not carry start/end"
-                )
+                form = "covers_whole_day" if self.covers_whole_day else "covers_trading_day"
+                raise MarketDataValueError(f"ClosureRule with {form}=True must not carry start/end")
         else:
             if not isinstance(self.start, time) or not isinstance(self.end, time):
                 raise MarketDataValueError(
                     "ClosureRule requires naive local start and end times"
-                    " unless covers_whole_day is True"
+                    " unless covers_whole_day or covers_trading_day is True"
                 )
             if self.start.tzinfo is not None or self.end.tzinfo is not None:
                 raise MarketDataValueError("ClosureRule.start / end must be naive local times")
@@ -161,9 +174,22 @@ class ClosureRule:
         if not isinstance(self.note, str):
             raise MarketDataValueError("ClosureRule.note must be a str")
 
-    def utc_interval(self, tz: ZoneInfo) -> Interval:
-        """休場区間を UTC の半開区間として返す。"""
-        if self.covers_whole_day:
+    def utc_interval(self, tz: ZoneInfo, *, trading_day_boundary: time | None = None) -> Interval:
+        """休場区間を UTC の半開区間として返す。
+
+        取引日単位の休場（`covers_trading_day=True`）は、取引日の境界（現地時刻）を
+        `trading_day_boundary` で受け取る。カレンダーが週の開閉時刻を渡す（D03 §3.4.1）。
+        他の形では使わない。
+        """
+        if self.covers_trading_day:
+            if trading_day_boundary is None:
+                raise MarketDataValueError(
+                    "a trading-day closure needs the trading-day boundary of its calendar"
+                    " (D03 §3.4.1)"
+                )
+            start = _resolve_local(self.local_date - timedelta(days=1), trading_day_boundary, tz)
+            end = _resolve_local(self.local_date, trading_day_boundary, tz)
+        elif self.covers_whole_day:
             start = _resolve_local(self.local_date, time(0, 0), tz)
             end = _resolve_local(self.local_date + timedelta(days=1), time(0, 0), tz)
         else:
@@ -172,12 +198,22 @@ class ClosureRule:
             end = _resolve_local(self.local_date, self.end, tz)
         return Interval(start=start, end=end)
 
-    def sort_key(self) -> tuple[str, str, str]:
-        """整列鍵（現地日付、開始、終了）。宣言順に依存しない記録のため。"""
+    def sort_key(self) -> tuple[str, str, str, str]:
+        """整列鍵（現地日付、開始、終了、形）。宣言順に依存しない記録のため。
+
+        終日休場と取引日単位の休場はどちらも開始・終了を持たないので、形を最後の鍵に
+        加えて順序を一意にする。
+        """
+        form = (
+            "trading_day"
+            if self.covers_trading_day
+            else ("whole_day" if self.covers_whole_day else "")
+        )
         return (
             self.local_date.isoformat(),
             "" if self.start is None else self.start.isoformat(),
             "" if self.end is None else self.end.isoformat(),
+            form,
         )
 
 
@@ -304,7 +340,55 @@ class TradingCalendar:
         normalized_openings = tuple(sorted(self.openings, key=lambda rule: rule.sort_key()))
         if normalized_openings != self.openings:
             object.__setattr__(self, "openings", normalized_openings)
+        self._validate_trading_day_closures()
         self._validate_openings()
+
+    @property
+    def trading_day_boundary(self) -> time | None:
+        """取引日の境界（現地時刻）。週の開閉時刻が一致するときだけ定まる（D03 §3.4.1）。
+
+        週の開閉時刻は「週の最初の取引日が始まり、最後の取引日が終わる時刻」であり、取引日の
+        境界そのものである。新しい時刻の定義は持たない（日足 `1d_ny17` の起点と同じ値）。
+        開始と終了の時刻が違うカレンダーでは境界が1つに決まらないので `None`。
+        """
+        if self.weekly_open.at != self.weekly_close.at:
+            return None
+        return self.weekly_open.at
+
+    def _closure_interval(self, closure: ClosureRule) -> Interval:
+        """休場1件の UTC 区間（取引日単位の休場には取引日の境界を渡す）。"""
+        return closure.utc_interval(self.tz, trading_day_boundary=self.trading_day_boundary)
+
+    def _validate_trading_day_closures(self) -> None:
+        """取引日単位の休場を検証する（D03 §3.4.1 の構築時の検証 1・2）。
+
+        1. 取引日の境界が定まる（週の開閉時刻が一致する）。
+        2. 他の休場（どの形でも）と重ならない。端で接するのは許す。
+
+        終日休場と短縮セッションどうしの重なりは検証しない（D03 v1.9 は変えていない）。
+        """
+        if not any(closure.covers_trading_day for closure in self.closures):
+            return
+        if self.trading_day_boundary is None:
+            raise MarketDataValueError(
+                "a trading-day closure needs a single trading-day boundary, but the weekly"
+                f" open ({self.weekly_open.at}) and close ({self.weekly_close.at}) differ"
+                " (D03 §3.4.1)"
+            )
+        # 位置で区別する（同じ値の宣言が2件あれば、それも重なりとして拒否するため）。
+        intervals = [self._closure_interval(closure) for closure in self.closures]
+        for index, rule in enumerate(self.closures):
+            if not rule.covers_trading_day:
+                continue
+            for other_index, other in enumerate(self.closures):
+                if other_index == index:
+                    continue
+                if intervals[index].overlaps(intervals[other_index]):
+                    raise MarketDataValueError(
+                        f"the trading-day closure on {rule.local_date} overlaps the closure on"
+                        f" {other.local_date}; a trading-day closure must not overlap another"
+                        " closure, touching is allowed (D03 §3.4.1)"
+                    )
 
     def _validate_openings(self) -> None:
         """営業例外の宣言を検証する（D03 §3.4 v1.7）。
@@ -312,7 +396,7 @@ class TradingCalendar:
         休場と重なる宣言と、通常の週の開場区間に接しも重なりもしない（離れた）宣言を
         拒否する。どちらも `closures` の不正な宣言と同じ `MarketDataValueError` である。
         """
-        closure_intervals = [closure.utc_interval(self.tz) for closure in self.closures]
+        closure_intervals = [self._closure_interval(closure) for closure in self.closures]
         for opening in self.openings:
             interval = opening.utc_interval(self.tz)
             for closure, closure_interval in zip(self.closures, closure_intervals, strict=True):
@@ -418,7 +502,7 @@ class TradingCalendar:
         """`window` と重なる宣言済み休場を返す。"""
         intervals: list[Interval] = []
         for closure in self.closures:
-            interval = closure.utc_interval(self.tz)
+            interval = self._closure_interval(closure)
             if interval.overlaps(window):
                 intervals.append(interval)
         return sorted(intervals, key=lambda interval: interval.start.value)

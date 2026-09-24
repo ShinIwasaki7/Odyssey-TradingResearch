@@ -6,6 +6,7 @@ v1.1（2026-09-23、PR #24）: 戦略ランタイム設計（D05）の要決定 
 v1.2（2026-09-24、段階3 実装 PR 1/5）: 段階3 実装の PR 分割が人間に承認されたことを受け、**第9.6節（遅延シナリオ4ケースへの生成器の拡張方針）を【提案】から【合意済み】へ改めた**。あわせて、紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) §16 が新しく必要とした拡張（日足を1時間足から集約する入り口）を第9.6節に1行足した。拡張1・2 と日足集約の入り口は同じ PR で実装した（`tests/fixtures/synthetic/market.py` の `apply_delay`、`tests/fixtures/acceptance/t02_market.py`）。本文の他の節は変えていない。
 v1.3（2026-09-24、PR #30）: 第15節の 1・2 を実装したことを記録した。**第9.3節の2つの入り口（gap・SL/TP 同時到達）**を汎用生成器に足し、上位 §7.2 #5 の手計算検証（週明けの窓開けで損切りを飛び越える決済価格、両方に触れた足が未解決として数えられること）と、上位 §7.2 #1 の**判断まで通した先読み不変テスト**を書いた。これに合わせて第4.1節の #1・#5 を「対応あり」に、第13.2節 #3・第13.3節 #1・#2 を「実装済み」に改めた（未整備 11件 → 8件）。第9.3節の仕様に書かれていなかった2点（先頭の足への gap、落とした足と「直前の足」）の扱いを同節の末尾に仮置きとして記録した。仕様そのものは変えていない。
 v1.4（2026-09-24）: 第15節の 3 を実装したことを記録した。**第13.1節の未整備3件**（バックテスト基盤 D06 §11 の #2 受付と約定の原子性、#3 同じ `event_id` の再配送、#6 期限と始値の同時刻）を、名前の付いた意味論テストとして `tests/semantics/backtest/test_commit_and_expiry_semantics.py` に固定した。あわせて第7.1節の #3 の備考に、**#3 は充足と数える**【決定 2026-09-24】という決定理由を記録した（エンジンは注文イベントの識別子を自分で採番するため同じ識別子が 2 度届く入口が無く、台帳は二度目の確定を例外で拒否し、1 run で各イベントがちょうど 1 回確定することは run の経路で固定した。上位設計書 §4.7.13 A の「二重に実行しない」はこれで満たす）。#6 は D06 §5.1 が「段階2 ではどの設定でも発生しない」とした遷移3 に当たるため、第6.2節末尾の規約（表現できることを1件で固定し、発生しない理由を docstring に書く）に従い、受付を経由せずに注文を台帳へ置く表現可能性のテストと、発生しない理由（受付が同時刻の候補を拒否すること）を実際の run で確かめるテストの2件で書いた。これに合わせて第7.1節の3行を「対応あり」に、第13.1節を0件に改めた（未整備 8件 → 5件）。テスト用の組み立て（`tests/fixtures/backtest/harness.py`）に、実行コンテキストを差し替える引数を1つ足した。`src/` と本文の他の節は変えていない。
+v1.5（2026-09-24、市場データ設計書 D03 v1.9 の実装 PR）: D03 が休場規則に**取引日単位の休場**（前日 17:00〜当日 17:00 NY を 1 件で閉じる形）を足したことに追随した。第9.2節の汎用生成器 `closure(...)` の入力に `trading_day=True` を足し（`start` / `end` は省略可能になった）、第5節の D03 意味論の表に D03 §11 が足した 1 行（#5）とそのテストを載せた。本文の他の節は変えていない。
 v0.1（2026-09-22 起草）: 全体計画書 §8.4「テスト戦略（D08 で具体化）」を、**段階1〜2 で実際に書かれたテスト資産を正本として**具体化する。新しいテストを書く文書ではなく、**すでにあるものを記述し、足りないところを名指しする**文書である。第13節に未整備10件の一覧、第14節に決定の一覧を置く。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15 E・§7.2、[全体計画書](fx_research_platform_overall_plan.md) §8.2・§8.4、[D01](D01_architecture_and_dependency_rules.md) §6・§9、[D02](D02_common_kernel.md) §11、[D03](D03_marketdata_and_time.md) §11、[D04](D04_strategy_declarations.md) §12、[D05](D05_strategy_runtime.md) §11、[D06](D06_backtest_vertical_slice.md) §11・§9.1・§10.1、[D07](D07_single_run_evaluation.md) §9・§11、[T01](../traces/T01_paper_trace.md)、ADR-0004（依存規則の機械検査）、ADR-0006（決定論的 ID）、ADR-0012（Decimal / float 境界）、ADR-0014（期間のアクセス分類）、ADR-0024（時間足の集約規則）、ADR-0027（成果物は Parquet 表＋JSON マニフェスト）
 対応段階: 段階1〜。段階3（遅延シナリオ4ケース・検証戦略 B）の拡張方針は第9.6節に置き、v1.2（2026-09-24）で確定した。
@@ -187,7 +188,7 @@ D04〜D07 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しな
 
 ## 5. 意味論テスト対応表: D03（市場データ・時刻基盤）
 
-D03 §11 の意味論4行。
+D03 §11 の意味論5行（#5 は D03 v1.9 で追加。本書 v1.5）。
 
 | # | 契約行（D03 §11） | 状態 | テスト |
 |---|---|---|---|
@@ -195,8 +196,9 @@ D03 §11 の意味論4行。
 | 2 | 遅延注入で `Publication` だけが動き OHLC が変わらない | 対応あり | 同ファイル `::test_injecting_a_delay_moves_only_the_availability_not_the_ohlc`。通常の公開遅延は `::test_a_normal_publication_delay_hides_the_bar_until_its_scheduled_time` と `::test_a_normal_publication_delay_also_hides_the_bar_from_history` |
 | 3 | 期待足未到着で古い足へ戻らない | 対応あり | 同ファイル `::test_a_missing_expected_bar_does_not_fall_back_to_an_older_one`、`::test_the_expected_latest_key_is_independent_of_arrival`、`::test_a_history_window_requires_every_expected_bar` |
 | 4 | 範囲外 partition で `HoldoutAccessViolation` | 対応あり | 同ファイル `::test_reading_a_series_outside_the_allowed_partitions_is_a_structural_error`、`::test_a_quarantined_partition_may_never_be_granted_to_a_view`、`::test_the_execution_view_also_refuses_a_quarantined_partition` |
+| 5 | 取引日単位の休場で前日 17:00〜当日 17:00 の足が期待されず、当日 17:00 以降の足が休場帯の足にならない（v1.5） | 対応あり | `tests/semantics/marketdata/test_trading_day_closure_semantics.py`（照合の2件と、受入れ→分類→再実行→確定を通す2件。終日休場では確定が止まることとの対比）。夏時間の切替を含む日付は `tests/property/marketdata/test_trading_day_closure_properties.py` |
 
-**D03 は意味論4行すべてに対応がある**。加えて、設計文書が挙げていない意味論テストが `tests/semantics/marketdata/` に多数ある（as-of 32件・承認関門 27件）。承認済み snapshot の関門（暫定ディレクトリ・未承認 manifest・未分類の警告・検査報告の改竄）は D03 §3.7.1 の内容で、**契約行としては §11 に挙がっていない**。第13節の未整備には数えないが、**D03 §11 の意味論の行が実態より少ない**ことは記録する（本書の指摘であり、D03 の改訂は本書の対象外）。
+**D03 は意味論5行すべてに対応がある**。加えて、設計文書が挙げていない意味論テストが `tests/semantics/marketdata/` に多数ある（as-of 32件・承認関門 27件）。承認済み snapshot の関門（暫定ディレクトリ・未承認 manifest・未分類の警告・検査報告の改竄）は D03 §3.7.1 の内容で、**契約行としては §11 に挙がっていない**。第13節の未整備には数えないが、**D03 §11 の意味論の行が実態より少ない**ことは記録する（本書の指摘であり、D03 の改訂は本書の対象外）。
 
 ## 6. 意味論テスト対応表: D04・D05（戦略宣言・ランタイム）
 
@@ -305,7 +307,7 @@ D01 §6 の方針（`lint-imports` は契約が空虚でも成功するため、
 | 関数 | 入力 | 出力 |
 |---|---|---|
 | `calendar(closures=(), version=1)` | 休場規則の列 | `TradingCalendar` |
-| `closure(local_day, start, end, note="")` | 現地日・時刻の範囲 | `ClosureRule`（短縮セッション・祝日の表現） |
+| `closure(local_day, start=None, end=None, note="", *, trading_day=False)` | 現地日と、時刻の範囲（短縮セッション）または `trading_day=True`（取引日単位の休場。v1.5） | `ClosureRule`（短縮セッション・祝日の表現。取引日単位の休場は前日 17:00〜当日 17:00 NY を閉じ、境界はカレンダーの週の開閉時刻から決まる。D03 §3.4.1） |
 | `series(symbol=USDJPY, timeframe_id="1h", basis=BID)` | 銘柄・時間足・価格基準 | `SeriesId` |
 | `make_bar(series_id, interval, *, volume, available_at, provenance_kind, source_ref)` | 1本分 | `Bar` |
 | `make_bars(series_id, timeframe_def, trading_calendar, window, *, skip_starts=(), volume, gaps={}, straddles={})` | 区間とカレンダー、**欠損させたい足の開始時刻**、gap と SL/TP 同時到達の指定（第9.3節、v1.3 で実装） | `Bar` の列 |
