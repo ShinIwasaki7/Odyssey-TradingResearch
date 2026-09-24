@@ -79,7 +79,7 @@ from odyssey_fx.strategy.declarations.read_spec import (
     LatestAvailable,
     ParameterRef,
 )
-from odyssey_fx.strategy.declarations.refs import OutputRef
+from odyssey_fx.strategy.declarations.refs import OutputRef, RuntimeInputRef, RuntimeTarget
 from odyssey_fx.strategy.declarations.specs import (
     InputArity,
     InputBinding,
@@ -101,8 +101,7 @@ from odyssey_fx.strategy.declarations.temporal import (
 from tests.fixtures.strategy import strategy_a as fixture_a
 from tests.fixtures.strategy.strategy_b import (
     DAILY_SERIES,
-    EVALUATION_ORDER_BY_RULE,
-    EVALUATION_ORDER_IN_DESIGN,
+    EVALUATION_ORDER,
     HOURLY_SERIES,
     M15_SERIES,
     TIMEFRAMES,
@@ -194,38 +193,66 @@ def test_strategy_b_compiles() -> None:
     assert compiled.roles.exit == OutputRef("trailing", "action")
 
 
-def test_strategy_b_is_ordered_by_the_stage_rule() -> None:
-    """D05 §5.4: 段ごとに `instance_id` 順（v1.3 の決定）で並べた評価順になる。
+def test_strategy_b_is_ordered_as_written_in_the_design() -> None:
+    """D05 §5.4・§9.2（T02 §1.3）: 段ごとに `instance_id` 順で並べた評価順が設計書の順と一致する。
 
-    市場状態 → 取引機会（D05 §7.6 の因果辺）と、注文意図 → 追従（D04 §12 の建玉の因果辺）
-    を含む。
+    市場状態 → 取引機会（D05 §7.6 の因果辺）、取引機会 → 確認・注文（D04 §12 の取引機会の
+    参照の因果辺、v1.13）、注文意図 → 追従（D04 §12 の建玉の因果辺）を含む。
     """
     compiled = _compiled(strategy_b())
 
-    assert compiled.evaluation_order == EVALUATION_ORDER_BY_RULE
+    assert compiled.evaluation_order == EVALUATION_ORDER
     order = compiled.evaluation_order
     assert order.index("market_state") < order.index("entry_trigger")
+    assert order.index("entry_trigger") < order.index("entry_filter")
+    assert order.index("entry_trigger") < order.index("entry_order")
     assert order.index("entry_order") < order.index("trailing")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "要決定: D05 §9.2 末尾・T02 §1.3 に書かれた評価順は、D05 §5.4 の段の規則からは導けない"
-        "（規則の出力は EVALUATION_ORDER_BY_RULE）。2026-09-24 に「設計書を規則に合わせる」と"
-        "決まったが、規則の出力では確認部品（entry_filter）が突破 Trigger（entry_trigger）より前に"
-        "来て、同じ判断時点で生まれた取引機会を開始足で確認できない（D05 §6.2 手順4・§7.7）ため、"
-        "再度人間の決定を待つ"
-    ),
-)
-def test_strategy_b_matches_the_order_written_in_the_design() -> None:
-    """D05 §9.2 末尾が書く評価順（`daily_ema` → … → `trailing`）。"""
-    assert _compiled(strategy_b()).evaluation_order == EVALUATION_ORDER_IN_DESIGN
+def test_the_opportunity_edges_are_drawn_for_strategy_b() -> None:
+    """D04 §12（v1.13）: 取引機会を出す使用箇所から、取引機会を読む使用箇所へ因果辺を引く。"""
+    definition = strategy_b()
+    graph = build_dependency_graph(
+        definition,
+        order_role=definition.order,
+        market_state_role=definition.market_state,
+        trigger_role=definition.trigger,
+    )
+
+    edges = [edge for edge in graph.edges if edge.kind is EdgeKind.OPPORTUNITY_CONTEXT]
+    assert [(edge.source_instance, edge.target_instance) for edge in edges] == [
+        ("entry_trigger", "entry_filter"),
+        ("entry_trigger", "entry_order"),
+    ]
 
 
-def test_the_design_order_and_the_rule_order_hold_the_same_components() -> None:
-    """2つの並びの違いは順序だけで、使用箇所の集合は同じである。"""
-    assert sorted(EVALUATION_ORDER_IN_DESIGN) == sorted(EVALUATION_ORDER_BY_RULE)
+def test_a_cycle_through_the_opportunity_edge_is_found() -> None:
+    """D04 §12 #6: 取引機会の参照の因果辺も循環検出に含める。
+
+    取引機会を出す使用箇所が自分で取引機会を読むと、その辺だけで自己ループになる。
+    """
+    base = strategy_b()
+    trigger = next(item for item in base.components if item.instance_id == "entry_trigger")
+    definition = _swap(
+        base,
+        "entry_trigger",
+        inputs={
+            **trigger.inputs,
+            "opportunity": InputBinding(sources=(RuntimeInputRef(RuntimeTarget.OPPORTUNITY),)),
+        },
+    )
+    graph = build_dependency_graph(
+        definition,
+        order_role=definition.order,
+        market_state_role=definition.market_state,
+        trigger_role=definition.trigger,
+    )
+
+    cycle = graph.find_cycle()
+    assert cycle is not None
+    assert [(edge.source_instance, edge.target_instance, edge.kind) for edge in cycle] == [
+        ("entry_trigger", "entry_trigger", EdgeKind.OPPORTUNITY_CONTEXT)
+    ]
 
 
 def test_the_market_state_edge_is_drawn_for_strategy_b() -> None:

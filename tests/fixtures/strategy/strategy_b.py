@@ -78,8 +78,7 @@ from tests.fixtures.synthetic.market import TIMEFRAME_DEFS, USDJPY, series
 
 __all__ = [
     "DAILY_SERIES",
-    "EVALUATION_ORDER_BY_RULE",
-    "EVALUATION_ORDER_IN_DESIGN",
+    "EVALUATION_ORDER",
     "HOURLY_SERIES",
     "M15_SERIES",
     "TIMEFRAMES",
@@ -96,38 +95,24 @@ M15_SERIES: Final[SeriesId] = series(USDJPY, "15m")
 #: 時間足定義（コンパイラの能力検査が足の細かさを見るために要る）。
 TIMEFRAMES: Final = {item.ref: item for item in TIMEFRAME_DEFS.values()}
 
-#: D05 §9.2 末尾と T02 §1.3 が書いている評価順。
-EVALUATION_ORDER_IN_DESIGN: Final[tuple[str, ...]] = (
-    "daily_ema",
-    "daily_above_ema",
-    "m15_ema",
-    "m15_above_ema",
-    "no_short",
-    "stop_level",
-    "market_state",
-    "entry_trigger",
-    "entry_filter",
-    "entry_order",
-    "initial_stop",
-    "trailing",
-)
-
-#: D05 §5.4 の規則（段ごとに `instance_id` 順。v1.3 の決定）をこの宣言に当てた評価順。
+#: D05 §9.2 末尾と T02 §1.3 が書いている評価順（D05 v2.4・T02 v1.1）。
 #:
-#: 段0 = 上流を持たない4件、段1 = その直下の2件、段2 = `entry_filter`・`market_state`、
-#: 段3 = `entry_order`・`entry_trigger`・`initial_stop`、段4 = `trailing`。
-#: 上の `EVALUATION_ORDER_IN_DESIGN` と一致しない（PR の要決定を参照）。
-EVALUATION_ORDER_BY_RULE: Final[tuple[str, ...]] = (
+#: D05 §5.4 の規則（段ごとに `instance_id` 順。v1.3 の決定）を、取引機会の参照の因果辺
+#: （`entry_trigger` → `entry_filter`・`entry_order`。D04 v1.13 §12、2026-09-24 の人間の
+#: 再決定）を含めてこの宣言に当てた出力である。段0 = 上流を持たない4件、段1 = その直下の
+#: 2件、段2 = `market_state`、段3 = `entry_trigger`、段4 = `entry_filter`、
+#: 段5 = `entry_order`・`initial_stop`、段6 = `trailing`。
+EVALUATION_ORDER: Final[tuple[str, ...]] = (
     "daily_ema",
     "m15_ema",
     "no_short",
     "stop_level",
     "daily_above_ema",
     "m15_above_ema",
-    "entry_filter",
     "market_state",
-    "entry_order",
     "entry_trigger",
+    "entry_filter",
+    "entry_order",
     "initial_stop",
     "trailing",
 )
