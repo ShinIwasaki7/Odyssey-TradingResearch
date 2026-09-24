@@ -10,7 +10,10 @@
 - `requests`: 評価要求・評価記録・解決済み入力・`step` の戻り値
 - `opportunities`: 取引機会の状態機械
 - `evaluator`: 1回の `step` の手順
+- `waiting`: 待機の記録と規則、欠損方針の強さ順（段階3、D05 §6.3・§6.8）
+- `supersession`: 評価要求の追い越しの検査（段階3、D05 §6.10）
+- `output_history`: 上流の出力を履歴窓で読むための保持と打ち切り（段階3、D05 §6.12）
 
-待機（`WAIT_FOR_INPUT`）と評価要求の追い越しは D05 v0.2（段階3）で足す。段階2では
-`waiting.py` / `supersession.py` を作らない。サブモジュールは明示的に import して使う。
+後続確認の制御（`confirmation`、D05 §7.7）は確認経路と一緒に足す。サブモジュールは明示的に
+import して使う。
 """

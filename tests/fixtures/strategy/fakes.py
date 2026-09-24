@@ -97,6 +97,49 @@ class FakeMarketDataView:
                 return candidate
         return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
 
+    def history_ending_at(
+        self,
+        series: SeriesId,
+        window: HistoryWindowView,
+        base_bar_start: UtcTime,
+        at: UtcTime,
+        *,
+        end_offset_bars: int = 0,
+    ) -> tuple[Bar, ...] | MissingInput:
+        """基準の足を末尾側の基準にした履歴窓（D03 §6.2 v1.6 と同じ欠損の返し方）。"""
+        visible = self._visible(series, at)
+        if not isinstance(window, BarsWindowView):
+            return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+        positions = [index for index, bar in enumerate(visible) if bar.bar_start == base_bar_start]
+        if not positions:
+            return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
+        end = positions[0] + 1 - end_offset_bars
+        start = end - window.count
+        if end <= 0 or start < 0:
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        return visible[start:end]
+
+    def previous_available(
+        self,
+        series: SeriesId,
+        before_bar_start: UtcTime,
+        at: UtcTime,
+        *,
+        max_lookback: HistoryWindowView,
+    ) -> Bar | MissingInput:
+        """基準の足より前の足を、上限の本数まで新しい側からたどる（予定表は足の列で代用）。"""
+        if not isinstance(max_lookback, BarsWindowView):
+            return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+        earlier = [
+            bar
+            for bar in self._bars.get(series, ())
+            if bar.bar_start.value < before_bar_start.value
+        ]
+        for bar in reversed(earlier[-max_lookback.count :]):
+            if bar.available_at <= at:
+                return bar
+        return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+
     def expected_latest_key(self, series: SeriesId, at: UtcTime) -> BarKey | None:
         visible = self._visible(series, at)
         return visible[-1].key if visible else None

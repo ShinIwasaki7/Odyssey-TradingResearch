@@ -36,13 +36,24 @@ class Observation[T]:
     """
 
     value: T
-    subject: BarKey
-    observation_interval: Interval
+    subject: BarKey | None
+    observation_interval: Interval | None
     freshness_time: UtcTime
 
     def __post_init__(self) -> None:
-        require_instance(self.subject, BarKey, "Observation.subject")
-        require_instance(self.observation_interval, Interval, "Observation.observation_interval")
+        # 対象区間を持たない評価（実行時イベントで起動した評価）の出力は観測した足が定まらない
+        # （D05 §6.12 の「subject が None の出力」、`RetainedOutput.subject: BarKey | None`）。
+        # そのときは足と区間の両方を空にする。片方だけ空の観測は作らない。
+        if (self.subject is None) != (self.observation_interval is None):
+            raise KernelValueError(
+                "Observation.subject and observation_interval are either both set or both empty"
+            )
+        if self.subject is not None:
+            require_instance(self.subject, BarKey, "Observation.subject")
+        if self.observation_interval is not None:
+            require_instance(
+                self.observation_interval, Interval, "Observation.observation_interval"
+            )
         require_instance(self.freshness_time, UtcTime, "Observation.freshness_time")
 
 
