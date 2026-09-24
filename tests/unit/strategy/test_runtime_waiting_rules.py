@@ -308,3 +308,28 @@ def test_the_window_ends_at_the_target_interval_and_excludes_the_latest() -> Non
     assert [row.record.output_id for row in window] == [OutputId(1), OutputId(2)]
     # 足りなければ部分的な窓を渡さない。
     assert window_ending_at(rows, target_end, count=3, exclude_latest=1) is None
+
+
+def test_an_observation_without_a_bar_leaves_both_the_bar_and_the_interval_empty() -> None:
+    """実行時イベントで起動した評価の出力は観測した足が定まらない（D05 §6.12）。"""
+    empty = Observation(
+        value=ConditionState(True), subject=None, observation_interval=None, freshness_time=T0
+    )
+    assert empty.subject is None
+    assert (
+        retain(
+            {},
+            {LEVEL: 2},
+            RetainedOutput(
+                record=_row(1, True, 1).record, subject=empty.subject, observation_interval=None
+            ),
+        )
+        == {}
+    )
+    with pytest.raises(KernelValueError):
+        Observation(
+            value=ConditionState(True),
+            subject=BarKey(series=HOURLY, bar_start=T0),
+            observation_interval=None,
+            freshness_time=T0,
+        )

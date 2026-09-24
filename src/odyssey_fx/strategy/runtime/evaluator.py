@@ -562,7 +562,7 @@ class _StepRun:
         self._latest_requests: dict[tuple[str, SeriesId], tuple[BarKey, RequestId]] = dict(
             state.latest_requests
         )
-        self._superseded: dict[str, list[tuple[WaitingRequest, SeriesId]]] = {}
+        self._superseded: dict[str, list[tuple[WaitingRequest, SeriesId, WaitEvent]]] = {}
         self._emitted: set[OutputRef] = set()
         self._deliveries: dict[OutputRef, list[OutputRecord[object]]] = {}
         self._origins: dict[
@@ -818,25 +818,33 @@ class _StepRun:
         要求 ID が決まった時点（その使用箇所の評価の段で新しい要求を作った直後）に残す。
         """
         request = waiting.request
-        self._wait_events.append(
-            WaitEvent(
-                request_id=request.request_id,
-                kind=WaitEventKind.SUPERSEDED,
-                at=self._point(PHASE_OPPORTUNITY_LIFECYCLE),
-                reason=Reason(code=ReasonCode.REQUEST_SUPERSEDED),
-            )
+        event = WaitEvent(
+            request_id=request.request_id,
+            kind=WaitEventKind.SUPERSEDED,
+            at=self._point(PHASE_OPPORTUNITY_LIFECYCLE),
+            reason=Reason(code=ReasonCode.REQUEST_SUPERSEDED),
         )
+        self._wait_events.append(event)
         del self._waiting[request.request_id]
-        self._superseded.setdefault(request.instance_id, []).append((waiting, series))
+        self._superseded.setdefault(request.instance_id, []).append((waiting, series, event))
 
     def _settle_superseded(self, instance_id: str | None) -> None:
-        """追い越した要求の評価記録を残す（`None` なら残っているものをすべて）。"""
+        """追い越した要求の評価記録を残す（`None` なら残っているものをすべて）。
+
+        押しのけた側の要求が**実際に作られていること**（固定した足より新しい足の要求）を
+        確かめてから記録する。この `step` がその使用箇所の番より前に失敗して新しい要求が
+        作られなかった場合は、追い越しを取り消して待機に戻す（出来事も残さない）。押しのけた
+        側を持たない `Superseded` を残すと、要求の連鎖が判断履歴で壊れるためである。
+        """
         names = list(self._superseded) if instance_id is None else [instance_id]
         for name in names:
-            for waiting, series in self._superseded.pop(name, []):
+            for waiting, series, event in self._superseded.pop(name, []):
                 latest = self._latest_requests.get((name, series))
-                if latest is None:  # pragma: no cover - `_newer_request_exists` が保証する
-                    raise KernelValueError(f"no newer request superseded {waiting.request}")
+                pinned = pinned_target_bar(waiting, series)
+                if latest is None or pinned is None or not pinned.bar_start < latest[0].bar_start:
+                    self._wait_events.remove(event)
+                    self._waiting[waiting.request.request_id] = waiting
+                    continue
                 self._record(waiting.request, Superseded(by_request_id=latest[1]))
 
     def _record_market_arrivals(self, waiting: WaitingRequest, published: set[SeriesId]) -> None:
@@ -1196,10 +1204,12 @@ class _StepRun:
             markets = [src for src in plan.sources if isinstance(src, ResolvedMarketSource)]
             if not markets:
                 continue
-            if len(markets) > 1:
+            if len({source.series for source in markets}) > 1:
+                # 同じ系列の複数の項目（高値と安値など）は1本の足の鍵で固定できる。系列が違う
+                # 接続元は入力名ごとに1本という待機記録の形（D05 §3）に収まらない。
                 raise KernelValueError(
-                    f"{component.instance_id}.{name} reads {len(markets)} market series; a"
-                    " waiting request pins one bar per input name (D05 §3 WaitingRequest)"
+                    f"{component.instance_id}.{name} reads several market series; a waiting"
+                    " request pins one bar per input name (D05 §3 WaitingRequest)"
                 )
             key = self._market_data.expected_latest_key(markets[0].series, self._now)
             if key is not None:
@@ -1699,11 +1709,13 @@ class _StepRun:
                 observation_interval=observed[1],
                 freshness_time=freshness,
             )
+        del component
         if subject is None or request.target_interval is None:
-            raise KernelValueError(
-                f"{component.instance_id} produced a VALUE output without a bar it observed;"
-                " a VALUE output is wrapped in an Observation of the bar that gave the target"
-                " interval (D05 §6.7)"
+            # 対象区間を持たない評価（実行時イベントとその連鎖で起動した評価）は観測した足が
+            # 定まらない。観測した足と区間を空にして包み、最新1件の保持だけを更新する
+            # （D05 §6.12「観測した足が定まらない出力は積まない」、`RetainedOutput.subject`）。
+            return Observation(
+                value=value, subject=None, observation_interval=None, freshness_time=freshness
             )
         return Observation(
             value=value,

@@ -66,6 +66,7 @@ from odyssey_fx.strategy.runtime.requests import (
     ResolvedInputs,
     RuntimeStepResult,
     Skipped,
+    Superseded,
     ValueSample,
     Waiting,
 )
@@ -86,6 +87,9 @@ LAST = UtcTime.parse("2026-01-06T06:00:00Z")
 #: 遅らせる1時間足（遡り・待機・強さ順の検査に使う）。
 LATE_START = UtcTime.parse("2026-01-06T05:00:00Z")
 LATE_CLOSE = UtcTime.parse("2026-01-06T06:00:00Z")
+#: 遅れた1時間足の次の足が公開される判断時点と、そこで欠ける15分足。
+NEXT_CLOSE = UtcTime.parse("2026-01-06T07:00:00Z")
+QUARTER_LATE = UtcTime.parse("2026-01-06T06:45:00Z")
 
 _WAIT = WaitForInput(
     deadline=BarsDeadline(bars=1),
@@ -124,6 +128,12 @@ PREVIOUS_BOTH = _compare_contract(90, _PREVIOUS, _PREVIOUS)
 ERROR_AND_SKIP = _compare_contract(91, Error(), SkipEvaluation())
 WAIT_AND_PREVIOUS = _compare_contract(92, _WAIT, _PREVIOUS)
 FRESH_READER = _compare_contract(93, SkipEvaluation(), SkipEvaluation())
+_WAIT_LONG = WaitForInput(
+    deadline=BarsDeadline(bars=3),
+    on_deadline=WaitDeadlineAction.SKIP_EVALUATION,
+    on_superseded=OnSuperseded.EXPIRE_REQUEST,
+)
+WAIT_LONG = _compare_contract(95, _WAIT_LONG, _WAIT_LONG)
 
 REGISTRY: ComponentRegistry = build_registry(
     (
@@ -132,6 +142,7 @@ REGISTRY: ComponentRegistry = build_registry(
         ERROR_AND_SKIP,
         WAIT_AND_PREVIOUS,
         FRESH_READER,
+        WAIT_LONG,
     )
 )
 
@@ -163,7 +174,7 @@ def _open() -> MarketDataRef:
     return MarketDataRef(SIGNAL_SERIES, MarketDataField.OPEN)
 
 
-def _bars(*, late: bool = False) -> dict[SeriesId, tuple[Bar, ...]]:
+def _bars(*, late: bool = False, late_quarter: bool = False) -> dict[SeriesId, tuple[Bar, ...]]:
     calendar = market.calendar()
     hourly = market.make_bars(SIGNAL_SERIES, market.TF_1H, calendar, DATA)
     if late:
@@ -176,6 +187,13 @@ def _bars(*, late: bool = False) -> dict[SeriesId, tuple[Bar, ...]]:
         )
         hourly = market.apply_delay(hourly, scenario)
     quarter = market.make_bars(M15_SERIES, market.TF_15M, calendar, DATA)
+    if late_quarter:
+        scenario = DelayScenario(
+            id="late_quarter",
+            version=1,
+            rules=(InjectedBarDelay(M15_SERIES, bar_start=QUARTER_LATE, delay=timedelta(hours=1)),),
+        )
+        quarter = market.apply_delay(quarter, scenario)
     return {SIGNAL_SERIES: hourly, M15_SERIES: quarter}
 
 
@@ -192,9 +210,10 @@ class _Run:
         self,
         *extra: ComponentInstance,
         late: bool = False,
+        late_quarter: bool = False,
         registry: ComponentRegistry = REGISTRY,
     ) -> None:
-        self.bars = _bars(late=late)
+        self.bars = _bars(late=late, late_quarter=late_quarter)
         self.compiled = _compiled(*extra)
         self.evaluator = StrategyEvaluator(
             compiled=self.compiled,
@@ -260,6 +279,7 @@ def test_an_output_window_ends_before_the_target_bar_and_propagates_freshness() 
         for record in result.outputs
         if record.producer == OutputRef("breakout_level", "level")
         and isinstance(record.payload, Observation)
+        and record.payload.subject is not None
     }
     floor = next(
         record.payload
@@ -432,3 +452,42 @@ def test_the_run_end_closes_waiting_requests_as_skipped() -> None:
     assert result.wait_events[0].at.phase.name == "RUN_END"
     assert run.evaluator.state.waiting == ()
     assert result.outputs == ()
+
+
+# --- 追い越しの押しのけた側（D05 §6.10）----------------------------------------------
+
+
+def test_a_supersession_is_withdrawn_when_the_step_fails_before_the_newer_request() -> None:
+    """押しのけた側の要求が作られないまま `step` が失敗したら、追い越しを記録しない。
+
+    07:00 は 06:00 の1時間足が公開され、待機中の要求（05:00 の足を固定）が追い越される判断
+    時点である。ところが評価順で先に来る使用箇所が失敗し、新しい足の要求は作られない。
+    押しのけた側を持たない追い越しを残すと要求の連鎖が壊れるので、待機に戻す。
+    """
+    failing = _compare("a_strict", ERROR_AND_SKIP, _close(M15_SERIES), _open_of(M15_SERIES))
+    patient = _compare("patient", WAIT_LONG, _close(), _open())
+    run = _Run(failing, patient, late=True, late_quarter=True)
+    run.until(NEXT_CLOSE)
+    waiting = run.record(LATE_CLOSE, "patient")
+    assert isinstance(waiting.outcome, Waiting)
+
+    result = run.results[NEXT_CLOSE]
+    assert any(isinstance(record.outcome, Failed) for record in result.evaluations)
+    assert [record for record in result.evaluations if record.instance_id == "patient"] == []
+    assert all(event.kind is not WaitEventKind.SUPERSEDED for event in result.wait_events)
+    assert waiting.request_id in {item.request.request_id for item in run.evaluator.state.waiting}
+
+
+def _open_of(series: SeriesId) -> MarketDataRef:
+    return MarketDataRef(series, MarketDataField.OPEN)
+
+
+def test_without_the_failure_the_same_request_is_superseded_by_the_newer_one() -> None:
+    """上のテストの対照: 失敗が無ければ 07:00 に新しい足の要求が古い要求を押しのける。"""
+    patient = _compare("patient", WAIT_LONG, _close(), _open())
+    run = _Run(patient, late=True).until(NEXT_CLOSE)
+    old = run.record(LATE_CLOSE, "patient")
+    records = [r for r in run.results[NEXT_CLOSE].evaluations if r.instance_id == "patient"]
+    closed = next(r for r in records if r.request_id == old.request_id)
+    fresh = next(r for r in records if r.request_id != old.request_id)
+    assert closed.outcome == Superseded(by_request_id=fresh.request_id)
