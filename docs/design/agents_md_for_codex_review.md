@@ -23,6 +23,21 @@ OpenAI の公開文書（2026-09-24 時点）から、本設計に効く事実�
 | GitHub の PR レビューでは、`## Code Review Rules` 節（`###` で小分け）を規則として使う | 見出し名はこの英語表記に固定する。本文は日本語でよい |
 | 良い規則の条件: 「結果に影響する・リポジトリ固有・安全な側の書き方（または例外）を示す・範囲が明確で長持ちする・CI で機械的に検査できる事柄は書かない」 | ruff / mypy / import-linter が止めるものは書かない。書くのは **設計文書との適合・決定論・先読み・記録の完全性**など、機械検査の外側 |
 
+### 1.1 公式の推奨と本設計の対応
+
+出典: [AGENTS.md の仕様](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、[Codex のベストプラクティス](https://learn.chatgpt.com/guides/best-practices)、[agents.md（形式の説明サイト）](https://agents.md/)。
+
+| 公式の推奨 | 本設計での扱い |
+|---|---|
+| 構成は `## Working agreements`（作業の約束）、`## Repository expectations`（リポジトリの決まり）、`## Code Review Rules`（`###` で分類） | 草案（§4）をこの 3 節で構成する |
+| 含める内容: リポジトリの配置、実行方法、build / test / lint のコマンド、規約と PR の期待、禁止事項、**「完了とは何か・どう確かめるか」** | Repository expectations に配置・コマンド・完了の定義（CI と同じ 5 検査＋PR 本文の範囲表と仮置き）を書く |
+| 各レビュー規則は「指摘すべき振る舞い」と「安全な側の書き方または例外」を説明する短文にする | §3.4 の書き方の規則にそのまま採る |
+| 「短く正確な AGENTS.md は、曖昧な規則で埋まった長いファイルより役に立つ」。基本から始め、**同じ誤りを 2 回見たら振り返りをして規則を足す** | §3.3 の更新契機（同型の指摘が 2 本の PR で再発）と一致。初版は再発した型だけを載せる |
+| 大きくなったら、計画・アーキテクチャなど話題ごとの Markdown を参照する形に分ける | 手順は方針文書、依存規則は D01、型は D02〜D08 を参照し、AGENTS.md には写さない（§3.1） |
+| チームに code review の指針ファイルがあれば AGENTS.md から参照する | 方針 §3・§3.1（優先度と範囲の分類）を参照する |
+| 整形・lint の検査は CI に任せる | Do not report 節に明記 |
+| ネストした AGENTS.md は近いものが優先。モノレポで有効 | Q1 の決定どおりルート 1 本。32 KiB に近づいたらパッケージ別に分ける |
+
 ## 2. 過去 PR の指摘の分類（PR #1〜#24、Codex の inline 指摘 338 件）
 
 集計元: GitHub API から取得した全 PR の review / inline / issue comment。1 指摘 1 行の分類表は本 PR には含めない（作業用。必要なら再生成できる）。
@@ -95,24 +110,39 @@ Codex は 2026-09-23 に「リポジトリ用の環境を作成してくださ�
 | 大きさ | 12 KB 以下を維持（上限 32 KiB の 4 割） | — |
 | 更新の契機 | **同じ型の指摘が 2 本以上の PR で再発したとき**に規則を 1 つ足す。規則には出典 PR 番号を残す | 各 PR ごとに足す（膨らむ） |
 
-### 3.4 書き方の規則
+### 3.4 書き方の規則（公式の推奨 §1.1 に従う）
 
-- 各規則は「**何を確かめるか → 安全な側はどちらか → 根拠の設計節**」の順で 1〜3 行。
-- ruff / mypy / lint-imports / pytest が止めるものは書かない。
-- 「指摘するな」型の規則は、**範囲外・不採用の判定を Codex 側に求めない**ために書く（判定は方針 §3.1 で作業役が行う）。Codex には「範囲外なら担当文書名を添えて 1 行にまとめよ」とだけ求める。
+- 構成は公式の 3 節: `## Working agreements`（設計が正本・前提を決めない・merge は人間、の約束）、`## Repository expectations`（配置・コマンド・**完了の定義**・PR の期待）、`## Code Review Rules`（`###` で分類）。
+- 各レビュー規則は「**指摘すべき振る舞い → 安全な側の書き方または例外 → 根拠の設計節**」の順で 1〜3 行。公式の言い方では「flag する振る舞いと、安全な経路や例外を説明する」。
+- 規則は再発した型だけ載せる（出典 PR 番号を付ける）。理屈上ありうるだけの事項は載せない。
+- ruff / mypy / lint-imports / pytest が止めるものは書かない（公式: 整形・lint は CI に任せる）。
+- 範囲外・不採用の**判定**は Codex に求めない（判定は方針 §3.1 で作業役が行う）。Codex には範囲の中だけを指摘させる（Q6）。
+- 12 KB を超えそうになったら、話題ごとの文書への参照に置き換えるか、パッケージ別の AGENTS.md に分ける（公式の分割の勧め）。
 
 ## 4. AGENTS.md 草案（承認後にこのままルートへ置く）
 
 ````markdown
 # AGENTS.md
 
-このリポジトリは FX 戦略研究基盤（Python 3.12、`src/odyssey_fx/`）。
-**設計文書が正本**であり、コードは `docs/design/D01〜D08` と `docs/decisions/`（ADR）に従う。
-設計への異論は PR で直さず「要決定」として人間に上げる（`docs/pr_review_policy.md` §1・§4.3）。
+FX 戦略研究基盤（Python 3.12、import 名 `odyssey_fx`）。本ファイルの役割と更新規則は `docs/design/agents_md_for_codex_review.md`。
+レビュー手順の正本は `docs/pr_review_policy.md`（以下「方針」）、依存規則の正本は `docs/design/D01_architecture_and_dependency_rules.md`（以下「D01」）。本ファイルはどちらも写さず参照する。
 
-- 検査は CI と同じ並び: `uv run ruff check .` / `uv run ruff format --check .` / `uv run mypy` / `uv run lint-imports` / `uv run pytest`
-- 依存規則の正本は D01 §6。`pyproject.toml` の import-linter 契約はそれを実装した検査であり、契約の追加・緩和には D01 の改訂が要る（D01 §12）。層の意味は D01 §2、ポートの所在は D01 §4
-- 用語: 「範囲表」= PR 本文のレビュー対象範囲。「仮置き」= 設計に無い振る舞いを実装が決めた箇所（方針 §6）
+## Working agreements
+
+- **設計文書が正本**。コードは `docs/design/D01〜D08` と `docs/decisions/`（決定記録 ADR）に従う。設計に無い振る舞いを決めざるを得ないときは実装で確定させず、PR 本文の「仮置き」に番号付きで列挙する（方針 §6）。
+- **前提を silent に決めない**。設計への異論や設計判断が要る事項は PR で直さず「要決定」として人間に上げる（方針 §1・§4.3）。承認済みの ADR・設計文書に反する変更は提案しない。
+- **merge は人間が判断する**。レビューは欠陥と設計違反を見つける作業で、merge 判断を含まない（方針 §1）。
+- 人間向けの説明では内部識別子（F5c、ADR-0006、D05、P1 など）を単独で使わず、初出時に意味を日本語で書いてから括弧書きする（CLAUDE.md）。
+
+## Repository expectations
+
+- 配置: `src/odyssey_fx/{common, marketdata, strategy, backtest, evaluation, app}`（下位から上位への一方向依存。D01 §1・§3）。`tests/{unit, semantics, property, golden, integration, acceptance, architecture, fixtures}`（D01 §9）。`docs/design`（設計）・`docs/decisions`（ADR）・`docs/traces`（紙上トレース）。`configs/`（YAML 設定）。`data/` と `runs/` は実体が git 管理外。
+- Python 3.12 を uv で固定。すべて `uv run` 経由で実行する（シェルの `python3` は使わない）。
+- **完了の定義**: 次の 5 つが CI と同じ並びで通り、PR 本文に **レビュー対象範囲の表**（方針 §3.1）と **仮置きの一覧**（無ければ「なし」）がある。
+  `uv run ruff check .` / `uv run ruff format --check .` / `uv run mypy` / `uv run lint-imports` / `uv run pytest`
+- 依存規則の正本は D01 §6。`pyproject.toml` の import-linter 契約はそれを実装した検査で、契約の追加・緩和には D01 の改訂が要る（D01 §12）。層の意味は D01 §2、ポートの所在は D01 §4。
+- PR は `main` 向け。Codex レビューは全 PR 種別で必須で、対象範囲内の P0/P1 が 0 件の巡が出るまで続ける（方針 §2・§4）。
+- 用語: 「範囲表」= PR 本文のレビュー対象範囲。「仮置き」= 設計に無い振る舞いを実装が決めた箇所（方針 §6）。
 
 ## Code Review Rules
 
