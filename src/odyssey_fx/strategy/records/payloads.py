@@ -291,16 +291,15 @@ class UpdateStop:
         require_instance(self.stop_loss, Price, "UpdateStop.stop_loss")
 
 
-#: 区分タグ付き union（D04 §11.2）。**まだ段階2 の2区分のままである**。
+#: 区分タグ付き union（D04 §11.2）。段階2 の2区分に、段階3 の損切り水準の更新（`UpdateStop`）を
+#: 足した3区分である（D05 §3、T02 §19 の引き渡し #2）。
 #:
-#: 設計上は損切り水準の更新（`UpdateStop`）を足した3区分になる（D05 §3 の改訂）。ただし
 #: この union は管理要求（`runtime.requests.ManagementRequest.action`）の型であり、判断履歴の
-#: 表12（`MANAGEMENT_APPLICATIONS`、D06 §9.2）の列はこの型から導かれる。ここへ足した時点で
-#: 段階2 の run の表12 に列が1つ増えるので、足すのは**エンジンが損切り水準の更新を適用する
-#: 変更と同じ PR**（段階3 実装 PR 5/5、T02 §19 の引き渡し #2）とする。それまでは、部品が
-#: `UpdateStop` を返せることを内容型の対応表（下の `_ADDITIONAL_PAYLOAD_TYPES`）で表し、
-#: 管理要求としての受け入れはランタイムが拒否したままにする（黙って通さない）。
-ManagementAction = SetTakeProfit | ClosePosition
+#: 表12（`MANAGEMENT_APPLICATIONS`、D06 §9.2）の列はこの型から導かれる（区分タグ付き union は
+#: 全変種のフィールドの和集合を列にする。D06 §9.1 の規則2）。3区分目を足すと表12 に列
+#: `action_stop_loss` が増えるので、足したのはエンジンが損切り水準の更新を建玉へ適用する変更
+#: （D06 §4.2 の手順6・§8.3）と同じ段階3 実装 PR 5/5 である（2026-09-24 の人間の決定）。
+ManagementAction = SetTakeProfit | ClosePosition | UpdateStop
 
 
 @dataclass(frozen=True, slots=True)

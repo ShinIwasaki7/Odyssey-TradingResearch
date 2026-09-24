@@ -8,7 +8,7 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 - `odyssey-fx data classify`: 人間の分類を記入し、最終の識別子を計算して
   `data/snapshots/<最終 ID>/` へ確定する。
 - `odyssey-fx data approve`: 確定済み snapshot に承認と価格基準の宣言記録を記入する。
-- `odyssey-fx run`: 実験設定から1回の run を実行し、`runs/<run_id>/` に判断履歴15表・
+- `odyssey-fx run`: 実験設定から1回の run を実行し、`runs/<run_id>/` に判断履歴19表・
   run manifest・結果を書く。
 - `odyssey-fx evaluate`: 保存済みの run を評価し、`runs/<run_id>/eval/<評価 ID>/` に
   指標・集計・取引・診断・整合検査の5表と評価 manifest を書く。

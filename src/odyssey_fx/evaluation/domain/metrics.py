@@ -458,8 +458,19 @@ ADMISSION_REJECTION_KEYS: Final[tuple[str, ...]] = tuple(
     }
 )
 
-#: 評価の結果区分3語（D05 §6.4 の `EvaluationOutcome`）。判断履歴の `outcome_kind` 列の値。
-EVALUATION_OUTCOME_KEYS: Final[tuple[str, ...]] = ("EVALUATED", "SKIPPED", "FAILED")
+#: 評価の結果区分5語（D05 §6.4 の `EvaluationOutcome`）。判断履歴の `outcome_kind` 列の値。
+#:
+#: 段階3 で待機中（`WAITING`）と追い越しで閉じた（`SUPERSEDED`）が加わった（D07 §6.1 v1.4）。
+#: 語彙に無い鍵として後ろに足す扱いにはせず、**0件でも行として出す**。そうしないと待機だけが
+#: 起きた run で `SUPERSEDED` の行が出ず、遅延シナリオごとに集計の行の集合が変わって並べて
+#: 比べられない。その帰結として段階2 の run の集計にも0件の行が2行増える。
+EVALUATION_OUTCOME_KEYS: Final[tuple[str, ...]] = (
+    "EVALUATED",
+    "SKIPPED",
+    "FAILED",
+    "WAITING",
+    "SUPERSEDED",
+)
 
 #: 評価見送りの診断コード4語（D02 §8.3）。
 MISSING_INPUT_KEYS: Final[tuple[str, ...]] = tuple(reason.value for reason in MissingInputReason)

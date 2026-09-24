@@ -29,7 +29,6 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.bar import BarKey
 from odyssey_fx.marketdata.domain.schedule import FixedSeriesDelay, InjectedBarDelay
 from odyssey_fx.strategy.catalog.conditions import compare
-from odyssey_fx.strategy.catalog.exits import trailing_stop
 from odyssey_fx.strategy.catalog.features import ema
 from odyssey_fx.strategy.catalog.filters import condition_filter
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
@@ -75,7 +74,12 @@ from odyssey_fx.strategy.runtime.opportunities import (
     ValidityRecheckOutcome,
 )
 from odyssey_fx.strategy.runtime.ports import PublicationBatch
-from odyssey_fx.strategy.runtime.requests import Evaluated, Failed, Skipped, Waiting
+from odyssey_fx.strategy.runtime.requests import (
+    Evaluated,
+    ManagementRequest,
+    Skipped,
+    Waiting,
+)
 from odyssey_fx.strategy.runtime.waiting import WaitEventKind, WaitUntilBars
 from tests.fixtures.strategy.confirmation_harness import ConfirmationRun
 from tests.fixtures.strategy.phases import BACKTEST_PHASES
@@ -347,21 +351,12 @@ def test_route_8_one_trailing_request_per_open_position_on_each_hour() -> None:
 def test_route_8_the_trailing_stop_returns_update_stop_at_noon() -> None:
     """T02 §10: 12:00Z の `stop_level` は 149.150（鮮度 11:00Z）で、`UpdateStop(149.150)` を返す。
 
-    損切り水準の更新を管理要求として建玉へ通すのは段階3 実装 PR 5/5 である（2026-09-24 の
-    人間の決定）。それまでは黙って捨てず評価の失敗として残すので、ここでは部品が返した値を
-    部品の呼び出しの記録から確かめ、評価記録が失敗であることを確かめる。
+    損切り水準の更新は段階3 実装 PR 5/5 で管理要求の区分になった（2026-09-24 の人間の決定。
+    T02 §19 の引き渡し #2）。ランタイムは決済役割の出力を付番して判断履歴に残し、宛先の建玉を
+    付けた管理要求として返す。建玉への適用はエンジンが受付（rank 10）の直前に行う（D06 §4.2 の
+    手順6。`tests/acceptance/test_stage3_completion.py` が確かめる）。
     """
-    returned: list[object] = []
-
-    def spy(inputs: object, parameters: object) -> ComponentOutputs:
-        result = trailing_stop.evaluate(inputs, parameters)  # type: ignore[arg-type]
-        returned.extend(result.outputs.values())
-        return result
-
-    registry = _replacing(
-        replace(trailing_stop.REGISTRATION, implementation=StatelessImplementation(evaluate=spy))
-    )
-    run = ConfirmationRun(registry=registry).run(START, AT_1200)
+    run = ConfirmationRun().run(START, AT_1200)
 
     stop_level = run.payloads(AT_1200)["stop_level"]
     assert isinstance(stop_level, Observation)
@@ -369,13 +364,22 @@ def test_route_8_the_trailing_stop_returns_update_stop_at_noon() -> None:
         _price("149.150"),
         UtcTime.parse("2015-01-07T11:00:00Z"),
     )
-    assert returned == [UpdateStop(stop_loss=_price("149.150"))]
     (record,) = run.evaluations(AT_1200, "trailing")
     assert record.position_id == P1
-    assert isinstance(record.outcome, Failed)
-    assert run.results[AT_1200].management_requests == ()
-    # 付番の前に止めるので、判断履歴に管理要求の無い出力が残らない。
-    assert all(item.producer.instance_id != "trailing" for item in run.sink.records)
+    assert isinstance(record.outcome, Evaluated)
+    (output,) = [
+        item for item in run.results[AT_1200].outputs if item.producer.instance_id == "trailing"
+    ]
+    assert output.payload == UpdateStop(stop_loss=_price("149.150"))
+    assert record.outcome.output_ids == (output.output_id,)
+    assert run.results[AT_1200].management_requests == (
+        ManagementRequest(
+            position_id=P1,
+            action=UpdateStop(stop_loss=_price("149.150")),
+            decision_time=AT_1200,
+            source_output_id=output.output_id,
+        ),
+    )
 
 
 # --- 経路9（T02 §11）----------------------------------------------------------------

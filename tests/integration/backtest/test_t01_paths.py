@@ -213,7 +213,7 @@ def test_path1_costs_are_split_by_kind() -> None:
 
 
 def test_path1_writes_all_fifteen_tables() -> None:
-    """D06 §9.4: 15表すべてのパスを結果 DTO が持つ。"""
+    """D06 §9.4: 19表すべてのパスを結果 DTO が持つ。"""
     output = _run_take_profit()
 
     assert set(output.result.trace_tables) == set(TraceTable)
