@@ -11,7 +11,7 @@
 - `datatypes`: `DataTypeRef` のレジストリと、市場データ項目・現在コンテキストの対応表
 - `refs`: `OutputRef` / `MarketDataRef` / `RuntimeInputRef`
 - `read_spec`: `InputReadSpec` の4区分と窓型
-- `missing`: `MissingInputPolicy`（段階2の2区分と段階3 の待機 `WaitForInput`）
+- `missing`: `MissingInputPolicy`（段階2の2区分と段階3 の待機 `WaitForInput`・遡り `UsePrevious`）
 - `specs`: `InputSpec` / `OutputSpec` / `InputBinding` / `InputArity` / `RetriggerMode` /
   `ParameterSpec` / `ParameterValue`
 - `evaluation`: `EvaluationSpec` / `EvaluationSchedule`

@@ -17,6 +17,7 @@ from datetime import timedelta
 import pytest
 
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.refs import ContentDigest, ImplementationRef
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.strategy.catalog.features import extreme
@@ -40,7 +41,7 @@ from odyssey_fx.strategy.declarations.evaluation import (
     EvaluationSpec,
     OnBarClose,
 )
-from odyssey_fx.strategy.declarations.missing import Error, SkipEvaluation
+from odyssey_fx.strategy.declarations.missing import Error, SkipEvaluation, UsePrevious
 from odyssey_fx.strategy.declarations.opportunity import (
     OnNewTrigger,
     OnOrderAccepted,
@@ -231,14 +232,15 @@ def test_volume_is_not_a_price() -> None:
 
 
 def test_the_runtime_targets_map_to_their_context_types() -> None:
-    """D04 §5: 建玉・口座を読む入力にも型が要る。"""
+    """D04 §5: 建玉・口座・取引機会を読む入力にも型が要る（取引機会は v1.9）。"""
     assert RUNTIME_TARGET_TYPES[RuntimeTarget.POSITION].type_id == "position_context"
     assert RUNTIME_TARGET_TYPES[RuntimeTarget.ACCOUNT].type_id == "account_context"
+    assert RUNTIME_TARGET_TYPES[RuntimeTarget.OPPORTUNITY] == DataTypeRef("opportunity", 1)
 
 
 def test_a_pending_order_target_cannot_be_declared() -> None:
-    """D04 §4.3: 未約定注文の参照は列挙に含めない（宣言できない）。"""
-    assert [item.value for item in RuntimeTarget] == ["POSITION", "ACCOUNT"]
+    """D04 §4.3: 未約定注文の参照は列挙に含めない（宣言できない）。取引機会は v1.9 で追加。"""
+    assert [item.value for item in RuntimeTarget] == ["POSITION", "ACCOUNT", "OPPORTUNITY"]
     with pytest.raises(KernelValueError, match="must be a RuntimeTarget"):
         RuntimeInputRef("PENDING_ORDER")  # type: ignore[arg-type]
 
@@ -389,3 +391,57 @@ def test_the_condition_state_type_is_what_edge_triggers_remember() -> None:
     assert CONDITION_STATE_V1.type_id == "condition_state"
     assert BoolValue(False).value is False
     assert IntValue(3).value == 3
+
+
+# --- 遡り（D04 §6.3 v1.9） -----------------------------------------------------
+
+
+def test_going_back_needs_at_least_one_allowed_reason() -> None:
+    """D04 §6.3: 遡りを許す欠損理由は1件以上を宣言で選ぶ（Q16 決定）。"""
+    with pytest.raises(KernelValueError, match="non-empty tuple"):
+        UsePrevious(max_lookback=BarsWindow(3), allowed_reasons=())
+
+
+def test_the_allowed_reasons_are_a_set() -> None:
+    """D04 §3: 並びに意味の無い列は構築時に整列し、重複を拒否する。"""
+    first = UsePrevious(
+        max_lookback=BarsWindow(3),
+        allowed_reasons=(
+            MissingInputReason.LATEST_BAR_UNAVAILABLE,
+            MissingInputReason.INPUT_MISSING_OR_INVALID,
+        ),
+    )
+    second = UsePrevious(
+        max_lookback=BarsWindow(3),
+        allowed_reasons=(
+            MissingInputReason.INPUT_MISSING_OR_INVALID,
+            MissingInputReason.LATEST_BAR_UNAVAILABLE,
+        ),
+    )
+    assert first == second
+    with pytest.raises(KernelValueError, match="duplicates"):
+        UsePrevious(
+            max_lookback=BarsWindow(3),
+            allowed_reasons=(
+                MissingInputReason.LATEST_BAR_UNAVAILABLE,
+                MissingInputReason.LATEST_BAR_UNAVAILABLE,
+            ),
+        )
+
+
+def test_going_back_is_limited_by_a_window() -> None:
+    """D04 §6.3: 遡りの上限は窓型（本数か経過時間）で書く。"""
+    with pytest.raises(KernelValueError, match="max_lookback"):
+        UsePrevious(
+            max_lookback=3,  # type: ignore[arg-type]
+            allowed_reasons=(MissingInputReason.LATEST_BAR_UNAVAILABLE,),
+        )
+
+
+def test_going_back_can_be_written_on_a_latest_value_read() -> None:
+    """D04 §6.3: 遡りは欠損方針の4区分のひとつとして読み方に書ける。"""
+    policy = UsePrevious(
+        max_lookback=BarsWindow(2),
+        allowed_reasons=(MissingInputReason.LATEST_BAR_UNAVAILABLE,),
+    )
+    assert LatestAvailable(on_missing=policy).on_missing == policy
