@@ -366,6 +366,31 @@ def test_out_of_session_data_without_a_rerun_is_rejected() -> None:
         finalize(pending, (_gap(), _out_of_session()))
 
 
+def test_an_exclusion_that_empties_a_source_series_is_rejected() -> None:
+    """除外で原系列が空になるなら、他の原系列が残っていても再実行を止める。
+
+    止めないと、その系列と partition だけが黙って消え、`sources` には原ファイルが残る
+    （他に原系列が無いときだけ失敗する、という結果の食い違いになる）。
+    """
+    pending = _pending()
+    every_eur_bar = frozenset(
+        (bar.series, bar.interval)
+        for partition, bars in pending.partition_bars.items()
+        if partition.series == EUR_HOURLY
+        for bar in bars
+    )
+    assert every_eur_bar
+    with pytest.raises(MarketDataValueError, match="every bar of source series"):
+        reaccept_with_calendar(
+            pending,
+            calendar=CALENDAR,
+            timeframe_defs=market.TIMEFRAME_DEFS,
+            boundaries=INITIAL_ACCESS_BOUNDARIES,
+            aggregation_targets=AGGREGATION_TARGETS,
+            excluded=every_eur_bar,
+        )
+
+
 def test_a_bar_that_disappears_without_a_classification_is_rejected() -> None:
     """除外以外の理由で原系列の足が消えた再実行は確定させない。"""
     pending = _pending()

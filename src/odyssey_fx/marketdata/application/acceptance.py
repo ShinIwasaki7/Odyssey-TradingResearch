@@ -526,7 +526,7 @@ _EFFECT_REASONS = {
     ClassificationOutcome.OUT_OF_SESSION_DATA: (
         "the bars were not excluded; only out-of-session bars reported by the provisional"
         " report are excluded when steps 5-7 are re-run (a bar that first appears in the"
-        " re-run report is not excluded: provisional arrangement pending a human decision)"
+        " re-run report is not excluded; D03 v1.8 §4, human decision of 2026-09-24)"
     ),
 }
 
@@ -922,15 +922,30 @@ def _source_series_bars(
     上位足は本基盤が生成したもの（出所が `AGGREGATED`）なので、新しいカレンダーで作り
     直す。原系列の足だけが「原ファイルから来た事実」であり、これを引き継ぐ。`excluded` に
     挙げた足（セッション外データ異常、D03 §4 の除外規則）は引き継がない。
+
+    除外で原系列の足が1本も残らない系列があれば失敗する。そのまま進めると、他に原系列が
+    あるかどうかで結果が分かれる（他に無ければ「原系列の足が無い」で失敗し、他にあれば
+    その系列と partition だけが黙って消え、`sources` には原ファイルが残る）。どちらの場合も
+    同じ理由で止める。
     """
     by_series: dict[SeriesId, list[Bar]] = {}
+    source_series: set[SeriesId] = set()
     for partition_id, bars in pending.partition_bars.items():
         for bar in bars:
             if bar.provenance.kind is ProvenanceKind.AGGREGATED:
                 continue
+            source_series.add(partition_id.series)
             if (bar.series, bar.interval) in excluded:
                 continue
             by_series.setdefault(partition_id.series, []).append(bar)
+    emptied = sorted(str(series) for series in source_series - by_series.keys())
+    if emptied:
+        raise MarketDataValueError(
+            "out-of-session exclusions would remove every bar of source series"
+            f" {', '.join(emptied)}; a snapshot cannot keep a source file without its"
+            " series (D03 §4 exclusion rule). Narrow the OUT_OF_SESSION_DATA"
+            " classification or leave the series out of the data source"
+        )
     return {
         series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
         for series, bars in by_series.items()
