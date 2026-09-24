@@ -5,19 +5,25 @@
 
 1回の `step` で行うこと（D05 §6.2・§6.8）:
 
-1. 受付結果の通知を適用する（遷移5〜7）。
-2. **ライフサイクル検査**（段階3、D05 §6.8 の手順1・2）。待機中の評価要求について、期限 →
-   追い越し → 失効の順に判定し（Q29 決定）、どれも成立しなければ市場データの到着を調べる。
+1. 受付結果の通知を適用する（遷移5〜7）。約定通知が運ぶ建玉を覚える（D05 §6.11）。
+2. **ライフサイクル検査**（段階3、D05 §6.8 の手順1・2、§7.7）。取引機会の確認期限を数えて
+   到達したものを `EXPIRED` で終端し（遷移11）、次に待機中の評価要求について、期限 → 追い越し
+   → 失効の順に判定し（Q29 決定）、どれも成立しなければ市場データの到着を調べる。
 3. 起動判定と評価要求の生成（足の確定は対象区間ごとに1件、イベントは1件につき1要求）。
+   取引機会・建玉を読む使用箇所の足の確定は、対象1件につき1要求を作る（段階3、D05 §6.11）。
+   確認部品の要求を作る前に、その機会の有効性を読み直す（D05 §7.7 の末尾）。
 4. 評価順に、起動した使用箇所と、再開できる待機要求だけを評価する。上流の更新だけで下流を
    自動評価しない。出力参照の到着はここで評価順に沿って判定する（D05 §6.8 の手順1）。
 5. 入力解決 → 欠損方針の適用（強い方針が勝つ。Q27 決定）→ 観測区間の一致の検査 → 部品の
    呼び出し → 戻り値の検査（付番の前）。
-6. 取引機会の組み立てと同時保持の判定（付番より前。識別子の無い内容を判断履歴に残さない）。
+6. 取引機会の組み立て、市場状態の適用（段階3、D05 §7.6。許されない方向の発火は遷移12）、
+   同時保持の判定（付番より前。識別子の無い内容を判断履歴に残さない）。確認結果も部品の
+   成否からランタイムが組み立てる（D05 §4.8）。
 7. 出力の付番と送出、状態の更新。繰り返し参照する値（`VALUE`）の出力は `Observation` で
    包み（段階3、D05 §6.7）、履歴窓で読まれる出力は保持する（D05 §6.12）。
-8. 終端しなかった機会のイベントだけを下流へ配送する。
-9. 役割出力から発注提案と管理要求を組み立てる。
+8. 終端しなかった機会のイベントと、成立した確認結果だけを下流へ配送する。確認が成立したら
+   機会を `CONFIRMED` へ進める（遷移10、確認結果の出力記録の後）。
+9. 役割出力から発注提案と管理要求を組み立てる（発注提案の直前に有効性を読み直す）。
 
 **失敗は例外ではなく戻り値で返す**（D05 §6.2）。入力欠損（`Error` 方針）も、待機の期限切れ
 （`on_deadline=ERROR`）も、戻り値の検査違反も、部品の呼び出しが例外で終わった場合も、評価
@@ -79,16 +85,18 @@ from odyssey_fx.strategy.compiler.compiled import (
     ResolvedParameter,
     ResolvedSource,
 )
-from odyssey_fx.strategy.declarations.datatypes import OPPORTUNITY_V1
+from odyssey_fx.strategy.declarations.datatypes import CONFIRMATION_RESULT_V1, OPPORTUNITY_V1
 from odyssey_fx.strategy.declarations.entry_policy import BarsDeadline
 from odyssey_fx.strategy.declarations.evaluation import (
     OnBarClose,
     OnInputEvent,
     OnRuntimeEvent,
+    RuntimeEventKind,
 )
 from odyssey_fx.strategy.declarations.missing import Error as ErrorPolicy
 from odyssey_fx.strategy.declarations.missing import (
     MissingInputPolicy,
+    OnSuperseded,
     SkipEvaluation,
     UsePrevious,
     WaitDeadlineAction,
@@ -118,18 +126,32 @@ from odyssey_fx.strategy.declarations.specs import (
 )
 from odyssey_fx.strategy.declarations.state_spec import StateSpec
 from odyssey_fx.strategy.records.payloads import (
+    ClosePosition,
     ConditionState,
+    ConfirmationOutcome,
+    ConfirmationResult,
+    MarketPermission,
     Opportunity,
     OpportunityContent,
     OrderIntent,
     ProtectionLevels,
+    SetTakeProfit,
+    TradeDirection,
     payload_type_for,
 )
 from odyssey_fx.strategy.records.records import Observation, OutputRecord
+from odyssey_fx.strategy.runtime.confirmation import (
+    ConfirmationAttempt,
+    ConfirmationAttemptOutcome,
+    confirmation_deadline,
+    wants_confirmation,
+)
 from odyssey_fx.strategy.runtime.opportunities import (
     OpportunityLifecycle,
     OpportunityState,
     OpportunityTerminal,
+    ValidityRecheck,
+    ValidityRecheckOutcome,
     ValiditySnapshot,
 )
 from odyssey_fx.strategy.runtime.opportunities import (
@@ -174,9 +196,12 @@ from odyssey_fx.strategy.runtime.supersession import pinned_target_bar, supersed
 from odyssey_fx.strategy.runtime.waiting import (
     LifecycleVerdict,
     PolicyStrength,
+    WaitDeadline,
     WaitEvent,
     WaitEventKind,
     WaitingRequest,
+    WaitUntilBars,
+    WaitUntilTime,
     deadline_reached,
     deadline_series,
     effective_strength,
@@ -224,9 +249,14 @@ PHASE_NAMES: Final[tuple[str, ...]] = (
     PHASE_RUN_END,
 )
 
-#: 足の確定で起動した要求のうち、同じ使用箇所・同じ系列でいちばん新しい足の要求。
-#: 追い越しの `by_request_id`（押しのけた側）を決めるのに使う（D05 §6.10 の3）。
-_LatestRequests = Mapping[tuple[str, SeriesId], tuple[BarKey, RequestId]]
+#: 足の確定で1件ずつ対象にする取引機会・建玉（D05 §6.11）。対象を持たない要求は `None`。
+_Target = OpportunityId | PositionId | None
+
+#: 足の確定で起動した要求のうち、同じ使用箇所・同じ系列・同じ対象でいちばん新しい足の要求。
+#: 追い越しの `by_request_id`（押しのけた側）を決めるのに使う（D05 §6.10 の3）。対象ごとに
+#: 分けるのは、確認の追い越しが「同じ機会に新しい対象足の要求を作る」ことだからである
+#: （D05 §7.7）。別の機会の要求が押しのける側になると、追い越しの連鎖が機会をまたいでしまう。
+_LatestRequests = Mapping[tuple[str, SeriesId, _Target], tuple[BarKey, RequestId]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +272,12 @@ class RuntimeState:
     - `waiting`: 待機中の評価要求（段階3、D05 §6.8）。判断履歴には出ない（T02 §7.1）。
     - `request_subjects`: 待機中の要求が対象にした足（出力の `Observation.subject` と、追い越し
       の対象系列の材料。D05 §6.7・§6.10）。
-    - `latest_requests`: 使用箇所・系列ごとのいちばん新しい足の要求（追い越しの押しのけた側）。
+    - `latest_requests`: 使用箇所・系列・対象ごとのいちばん新しい足の要求（追い越しの押しのけた
+      側）。
+    - `open_positions`: 約定通知（`POSITION_OPENED`）で知った建玉のうち、まだ閉じていないと
+      みなしているもの（段階3、D05 §6.11）。建玉を読む使用箇所は足の確定のたびに、この建玉
+      1件につき1要求を作る。閉じたかどうかは要求を作る時点で現在コンテキストに問い合わせ、
+      読めなくなった建玉はここから外す。
     """
 
     component_states: Mapping[str, object] = field(default_factory=dict)
@@ -254,6 +289,7 @@ class RuntimeState:
     waiting: tuple[WaitingRequest, ...] = ()
     request_subjects: Mapping[RequestId, BarKey] = field(default_factory=dict)
     latest_requests: _LatestRequests = field(default_factory=dict)
+    open_positions: tuple[PositionId, ...] = ()
 
     def __post_init__(self) -> None:
         # 可変参照はランタイム1インスタンスにつき1つだけ（D05 §1・§6.5）。対応表は読み取り
@@ -360,6 +396,9 @@ class StrategyEvaluator:
         いなかった入力の診断）で決着させ、`WaitEvent(RUN_END_CLOSED)` を1件ずつ残す。期限には
         到達していないので `DEADLINE_REACHED` を使わず、`on_deadline` にも従わない（run が
         終わっただけであり、データ誤りとして集計させない）。部品は呼ばない。
+
+        決着した要求が確認評価のものなら、その確認試行の結末も `WAITING` から `SKIPPED` へ
+        置き換え、差分を `confirmation_attempts` で返す（D06 §10.1 の要求4）。
         """
         if self.state.run_end_seen:
             raise KernelValueError(
@@ -389,6 +428,7 @@ class StrategyEvaluator:
             )
         evaluations: list[EvaluationRecord] = []
         wait_events: list[WaitEvent] = []
+        attempts: list[ConfirmationAttempt] = []
         for waiting in sorted(self.state.waiting, key=lambda item: item.request.request_id.seq):
             at = ProcessingPoint(time=batch.decision_time, phase=phase, sequence=sequence)
             sequence += 1
@@ -413,6 +453,17 @@ class StrategyEvaluator:
                     position_id=request.position_id,
                 )
             )
+            attempt = _confirmation_attempt(
+                self._compiled,
+                request,
+                self.state.request_subjects.get(request.request_id),
+                ConfirmationAttemptOutcome.SKIPPED,
+            )
+            if attempt is not None and attempt.opportunity_id in lifecycles:
+                lifecycles[attempt.opportunity_id] = lifecycles[
+                    attempt.opportunity_id
+                ].with_attempt(attempt)
+                attempts.append(attempt)
         self._state = replace(
             self.state,
             opportunities=tuple(lifecycles.values()),
@@ -425,7 +476,36 @@ class StrategyEvaluator:
             evaluations=tuple(evaluations),
             transitions=tuple(transitions),
             wait_events=tuple(wait_events),
+            confirmation_attempts=tuple(attempts),
         )
+
+
+def _confirmation_attempt(
+    compiled: CompiledStrategy,
+    request: EvaluationRequest,
+    bar_key: BarKey | None,
+    outcome: ConfirmationAttemptOutcome,
+) -> ConfirmationAttempt | None:
+    """確認評価の要求なら、その結末の確認試行を作る（D05 §7.7）。確認評価でなければ `None`。
+
+    確認評価の要求とは、確認の計画が指す使用箇所の、取引機会を対象にした要求である
+    （D05 §6.11）。確認足は要求が対象にした足（`Observation.subject` と同じ足）である。
+    """
+    plan = compiled.roles.confirmation
+    if plan is None or request.instance_id != plan.filter_instance:
+        return None
+    if request.opportunity_id is None:
+        return None
+    if bar_key is None:  # pragma: no cover - 足の確定で作った要求は必ず対象の足を持つ
+        raise KernelValueError(
+            f"confirmation request {request.request_id} has no confirmation bar (D05 §7.7)"
+        )
+    return ConfirmationAttempt(
+        opportunity_id=request.opportunity_id,
+        bar_key=bar_key,
+        request_id=request.request_id,
+        outcome=outcome,
+    )
 
 
 def _build_state(state_spec: StateSpec) -> object:
@@ -572,9 +652,12 @@ class _StepRun:
             item.request.request_id: item for item in state.waiting
         }
         self._subjects: dict[RequestId, BarKey] = dict(state.request_subjects)
-        self._latest_requests: dict[tuple[str, SeriesId], tuple[BarKey, RequestId]] = dict(
+        self._latest_requests: dict[tuple[str, SeriesId, _Target], tuple[BarKey, RequestId]] = dict(
             state.latest_requests
         )
+        self._positions: list[PositionId] = list(state.open_positions)
+        self._rechecks: list[ValidityRecheck] = []
+        self._attempts: dict[tuple[OpportunityId, BarKey], ConfirmationAttempt] = {}
         self._superseded: dict[str, list[tuple[WaitingRequest, SeriesId, WaitEvent]]] = {}
         self._emitted: set[OutputRef] = set()
         self._deliveries: dict[OutputRef, list[OutputRecord[object]]] = {}
@@ -589,8 +672,13 @@ class _StepRun:
     # --- 進行 --------------------------------------------------------------
 
     def execute(self) -> RuntimeStepResult:
-        """1回ぶんの評価を行う（D05 §6.2 の手順1〜10）。"""
+        """1回ぶんの評価を行う（D05 §6.2 の手順1〜10）。
+
+        有効性の再検査は、確認部品の要求を作るとき（P4）と発注提案を作る直前（P5）の2か所
+        でだけ行う（D05 §7.7 の末尾、ADR-0031）。確認評価の無い戦略では P5 の1か所になる。
+        """
         self._apply_admissions()
+        self._note_positions()
         self._lifecycle_check()
         for component in self._compiled.components:
             if self._failed:
@@ -598,7 +686,6 @@ class _StepRun:
             self._evaluate_component(component)
         self._settle_superseded(None)
         if not self._failed:
-            self._recheck_validity(PHASE_P4_CONFIRMATION)
             self._assemble_proposals()
         self._commit()
         return RuntimeStepResult(
@@ -608,6 +695,8 @@ class _StepRun:
             management_requests=tuple(self._management),
             transitions=tuple(self._transitions),
             wait_events=tuple(self._wait_events),
+            validity_rechecks=tuple(self._rechecks),
+            confirmation_attempts=tuple(self._attempts.values()),
         )
 
     def _next_sequence(self) -> int:
@@ -636,6 +725,7 @@ class _StepRun:
                 key: value for key, value in self._subjects.items() if key in waiting_ids
             },
             latest_requests=self._latest_requests,
+            open_positions=tuple(self._positions),
         )
 
     def _phase_of(self, component: CompiledComponent) -> str:
@@ -683,6 +773,32 @@ class _StepRun:
             )
             if notice.accepted:
                 self._close_others(notice)
+
+    def _note_positions(self) -> None:
+        """約定通知が運ぶ建玉を覚える（D05 §6.11）。
+
+        建玉を読む使用箇所は足の確定のたびに開いている建玉1件につき1要求を作るが、現在
+        コンテキストのポートは建玉の一覧を返さない（D05 §6.1）。そこで、建玉が生まれるたびに
+        届く約定通知（`POSITION_OPENED`、D05 §8）から建玉の識別子を覚える。
+        """
+        for notice in self._batch.runtime_events:
+            if notice.kind is not RuntimeEventKind.POSITION_OPENED:
+                continue
+            if notice.position_id not in self._positions:
+                self._positions.append(notice.position_id)
+
+    def _open_positions(self) -> list[PositionId]:
+        """いま開いている建玉（識別子の昇順）。閉じた建玉は覚えている一覧から外す（D05 §6.11）。
+
+        閉じたかどうかは、この判断時刻で現在コンテキストを読めるかどうかで決める。
+        """
+        alive = [
+            position_id
+            for position_id in sorted(self._positions, key=lambda item: item.seq)
+            if self._context.position_context(self._now, position_id) is not None
+        ]
+        self._positions = alive
+        return alive
 
     def _close_others(self, notice: AdmissionNotice) -> None:
         """他の機会を閉じる設定なら、残りの非終端の機会を終端する（D05 §7.2 の遷移7）。"""
@@ -741,9 +857,13 @@ class _StepRun:
         規則(c)（Q29 決定）: 同じ判断時点で2つ以上が成立したら、先に成立したものだけで決着
         させ、後ろの判定は行わない。**市場データ参照の到着だけ**をここで判定し、出力参照の
         到着は評価の段で評価順に沿って判定する（D05 §6.8 の手順1）。
+
+        待機要求より先に、取引機会の確認期限を数える（遷移11、D05 §7.7）。期限で終端した機会を
+        受け取って待っていた要求は、同じ検査の「失効」で決着する。
         """
         closed = frozenset(closure.bar_key.series for closure in self._batch.scheduled_closes)
         published_series = {key.series for key in self._batch.available_bars}
+        self._expire_opportunities(closed)
         for request_id in sorted(self._waiting, key=lambda item: item.seq):
             if self._failed:
                 return
@@ -755,10 +875,11 @@ class _StepRun:
             superseded = supersedes(
                 waiting, target_series, self._batch.available_bars
             ) and self._newer_request_exists(waiting, target_series)
+            ended = self._opportunity_ended(waiting)
             verdict = judge_lifecycle(
                 deadline_reached=deadline_reached(waiting.deadline_at, self._now),
                 superseded=superseded,
-                invalidated=self._opportunity_ended(waiting),
+                invalidated=ended is not None,
             )
             if verdict is LifecycleVerdict.DEADLINE:
                 self._close_on_deadline(waiting)
@@ -766,13 +887,31 @@ class _StepRun:
                 assert target_series is not None  # noqa: S101 - supersedes() が保証する
                 self._close_on_supersession(waiting, target_series)
             elif verdict is LifecycleVerdict.INVALIDATED:
-                raise KernelValueError(
-                    f"waiting request {request_id} carries an opportunity that has ended; how"
-                    " such a waiting request is settled is not decided yet (D05 §6.8 step 2"
-                    " names the check but not the outcome)"
-                )
+                assert ended is not None  # noqa: S101 - 直前の判定が保証する
+                self._close_on_opportunity_end(waiting, ended)
             else:
                 self._record_market_arrivals(waiting, published_series)
+
+    def _expire_opportunities(self, closed: frozenset[SeriesId]) -> None:
+        """確認期限を数え、到達した機会を `EXPIRED` で終端する（遷移11、D05 §7.7、Q19 決定）。
+
+        本数の期限は確認足の系列の足の終了予定を1本受けるごとに1減らし、0 になった判断時点で
+        到達する。経過時間の期限は判断時刻が期限の時刻に達した時点で到達する。判定は確認の
+        評価（P4）より先なので、同じ判断時点で確認条件が成立していても期限が勝つ。対象は確認を
+        待つ `OPEN` と、確認済みで発注試行に進んでいない `CONFIRMED` である（遷移11 の始点）。
+        終端の順序は機会の連番の昇順とする。
+        """
+        for opportunity_id in sorted(self._lifecycles, key=lambda item: item.seq):
+            lifecycle = self._lifecycles[opportunity_id]
+            if lifecycle.deadline_at is None or not lifecycle.is_replaceable:
+                continue
+            ticked = tick_deadline(lifecycle.deadline_at, closed)
+            lifecycle = lifecycle.with_deadline(ticked)
+            self._lifecycles[opportunity_id] = lifecycle
+            if deadline_reached(ticked, self._now):
+                self._terminate(
+                    lifecycle, Reason(code=ReasonCode.EXPIRED), PHASE_OPPORTUNITY_LIFECYCLE
+                )
 
     def _newer_request_exists(
         self, waiting: WaitingRequest, target_series: SeriesId | None
@@ -782,30 +921,79 @@ class _StepRun:
         追い越しは「新しい足の要求が古い足の要求を押しのける」後着優先であり（D05 §6.10 の
         2・3）、押しのけた側の要求 ID を記録する。その要求は、足の終了予定がこの判断時点に
         あるなら評価の段で作られる（新しい要求を作るのは追い越しの判定より後。同4）。
+
+        取引機会・建玉を1件ずつ対象にする要求（D05 §6.11）では、押しのける側も**同じ対象**の
+        要求である。対象がもう確認待ちでない（建玉が閉じた）なら新しい要求は作られないので、
+        追い越しは成立しない（受け取った機会が終わった要求は、失効の判定で決着する）。
         """
         pinned = pinned_target_bar(waiting, target_series)
         if pinned is None or target_series is None:
             return False
         instance = waiting.request.instance_id
-        latest = self._latest_requests.get((instance, target_series))
+        component = self._compiled.component(instance)
+        target = _fanout_target(component, waiting.request)
+        latest = self._latest_requests.get((instance, target_series, target))
         if latest is not None and pinned.bar_start < latest[0].bar_start:
             return True
-        component = self._compiled.component(instance)
         triggered = any(
             isinstance(trigger, OnBarClose) and trigger.series == target_series
             for trigger in component.triggers
         )
+        if target is not None and not self._target_still_open(target):
+            return False
         return triggered and any(
             closure.bar_key.series == target_series and pinned.bar_start < closure.bar_key.bar_start
             for closure in self._batch.scheduled_closes
         )
 
-    def _opportunity_ended(self, waiting: WaitingRequest) -> bool:
-        """受信済みの取引機会が終わっているか（失効の判定の材料。D05 §6.8 の手順2）。"""
-        if waiting.opportunity is None:
-            return False
-        lifecycle = self._lifecycles.get(waiting.opportunity.opportunity_id)
-        return lifecycle is not None and not lifecycle.is_active
+    def _target_still_open(self, target: OpportunityId | PositionId) -> bool:
+        """1件ずつ対象にする要求の対象が、まだ要求を作る対象か（D05 §6.11）。"""
+        if isinstance(target, OpportunityId):
+            lifecycle = self._lifecycles.get(target)
+            return lifecycle is not None and lifecycle.state is OpportunityState.OPEN
+        return target in self._positions
+
+    def _opportunity_ended(self, waiting: WaitingRequest) -> OpportunityLifecycle | None:
+        """待機要求が受け取った取引機会が終わっていれば、その機会（D05 §6.8 の手順2）。
+
+        受け取った機会は、配送で受け取った機会（`WaitingRequest.opportunity`）と、要求が対象と
+        して指す機会（`EvaluationRequest.opportunity_id`。確認評価など、D05 §6.11）の両方である。
+        終わっていなければ `None`。
+        """
+        candidates: list[OpportunityId] = []
+        if waiting.opportunity is not None:
+            candidates.append(waiting.opportunity.opportunity_id)
+        if waiting.request.opportunity_id is not None:
+            candidates.append(waiting.request.opportunity_id)
+        for opportunity_id in candidates:
+            lifecycle = self._lifecycles.get(opportunity_id)
+            if lifecycle is not None and not lifecycle.is_active:
+                return lifecycle
+        return None
+
+    def _close_on_opportunity_end(
+        self, waiting: WaitingRequest, lifecycle: OpportunityLifecycle
+    ) -> None:
+        """受け取った取引機会が待機中に終わった要求を見送りで閉じる（D05 §6.8 の手順2）。
+
+        2026-09-24 の人間の決定。結末は見送り（`Skipped`、まだ足りていなかった入力の診断）で、
+        待機の出来事 `OPPORTUNITY_ENDED` を残し、その `reason` に機会の終端理由を写す。構造
+        エラーにすると、確認待ちのあいだに期限で終わった機会を待つ要求が1件あるだけで run が
+        止まる。
+        """
+        request = waiting.request
+        terminal = lifecycle.terminal
+        assert terminal is not None  # noqa: S101 - 終端した機会は必ず終端理由を持つ
+        self._wait_events.append(
+            WaitEvent(
+                request_id=request.request_id,
+                kind=WaitEventKind.OPPORTUNITY_ENDED,
+                at=self._point(PHASE_OPPORTUNITY_LIFECYCLE),
+                reason=terminal.reason,
+            )
+        )
+        del self._waiting[request.request_id]
+        self._record(request, Skipped(diagnoses=waiting.missing))
 
     def _close_on_deadline(self, waiting: WaitingRequest) -> None:
         """期限に到達した要求を `on_deadline` に従って決着させる（D05 §6.8）。"""
@@ -852,7 +1040,8 @@ class _StepRun:
         names = list(self._superseded) if instance_id is None else [instance_id]
         for name in names:
             for waiting, series, event in self._superseded.pop(name, []):
-                latest = self._latest_requests.get((name, series))
+                target = _fanout_target(self._compiled.component(name), waiting.request)
+                latest = self._latest_requests.get((name, series, target))
                 pinned = pinned_target_bar(waiting, series)
                 if latest is None or pinned is None or not pinned.bar_start < latest[0].bar_start:
                     self._wait_events.remove(event)
@@ -896,16 +1085,24 @@ class _StepRun:
 
         足の確定は**対象区間が同じものだけを1件に集約**し（Q6 決定）、イベントは配送1件・
         通知1件につき1要求を作る。
+
+        要求の通し番号（`attempt_index`、D05 §3・§6.11）は、同じ `step` の中でこの使用箇所が
+        作った要求に、作った順（足の確定 → 入力イベント → 実行時イベント。足の確定の中は対象
+        区間の順、同じ区間の中は対象の識別子の昇順）で 0 から振る。要求 ID の採番も同じ順である。
         """
-        requests: list[tuple[EvaluationRequest, dict[str, tuple[OutputRecord[object], ...]]]] = []
-        requests.extend(self._bar_close_requests(component))
-        requests.extend(self._input_event_requests(component))
-        requests.extend(self._runtime_event_requests(component))
+        built: list[tuple[EvaluationRequest, dict[str, tuple[OutputRecord[object], ...]]]] = []
+        built.extend(self._bar_close_requests(component))
+        built.extend(self._input_event_requests(component))
+        built.extend(self._runtime_event_requests(component))
+        requests = [
+            (replace(request, attempt_index=index), delivered)
+            for index, (request, delivered) in enumerate(built)
+        ]
         for request, _ in requests:
             subject = self._subjects.get(request.request_id)
             if subject is None:
                 continue
-            key = (request.instance_id, subject.series)
+            key = (request.instance_id, subject.series, _fanout_target(component, request))
             latest = self._latest_requests.get(key)
             if latest is None or latest[0].bar_start < subject.bar_start:
                 self._latest_requests[key] = (subject, request.request_id)
@@ -923,20 +1120,64 @@ class _StepRun:
                     continue
                 by_interval.setdefault(closure.interval, []).append((trigger.name, closure.bar_key))
         out: list[tuple[EvaluationRequest, dict[str, tuple[OutputRecord[object], ...]]]] = []
+        fanout = _fanout_kind(component)
         for interval in sorted(by_interval, key=lambda item: str(item.start)):
             entries = by_interval[interval]
-            request = EvaluationRequest(
-                request_id=self._allocator.next(RequestId),
-                instance_id=component.instance_id,
-                trigger_names=tuple(sorted(name for name, _ in entries)),
-                decision_time=self._now,
-                target_interval=interval,
-            )
             # 観測した足（`Observation.subject`）は対象区間を与えた足（D05 §6.7）。区間が同じで
             # 系列の違う起動を集約したときは、系列の正規表記がいちばん小さい足を採る。
             keys = sorted({key for _, key in entries}, key=lambda key: str(key.series))
-            self._subjects[request.request_id] = keys[0]
-            out.append((request, {}))
+            subject = keys[0]
+            targets: list[tuple[OpportunityId | None, PositionId | None]]
+            if fanout is RuntimeTarget.OPPORTUNITY:
+                targets = [(item, None) for item in self._opportunity_targets(component, subject)]
+            elif fanout is RuntimeTarget.POSITION:
+                targets = [(None, item) for item in self._open_positions()]
+            else:
+                targets = [(None, None)]
+            for opportunity_id, position_id in targets:
+                if self._failed:
+                    return out
+                request = EvaluationRequest(
+                    request_id=self._allocator.next(RequestId),
+                    instance_id=component.instance_id,
+                    trigger_names=tuple(sorted(name for name, _ in entries)),
+                    decision_time=self._now,
+                    target_interval=interval,
+                    opportunity_id=opportunity_id,
+                    position_id=position_id,
+                )
+                self._subjects[request.request_id] = subject
+                out.append((request, {}))
+        return out
+
+    def _opportunity_targets(
+        self, component: CompiledComponent, target_bar: BarKey
+    ) -> list[OpportunityId]:
+        """足の確定で取引機会を1件ずつ対象にする要求の対象（D05 §6.11・§7.7）。
+
+        確認待ち（`OPEN`）の機会を識別子の昇順に並べる。数えるのはこの使用箇所の番（確認部品
+        なら P4）なので、同じ `step` の P3 で生まれたばかりの機会も含む。確認部品では、対象の
+        足が開始足で開始足を確認に使わない設定の機会を外し（D05 §7.7 の表）、残った機会ごとに
+        **確認評価の前に有効性を読み直す**（D05 §7.7 の末尾）。不成立で終端した機会には要求を
+        作らない（確認を始める前に機会が終わったので、確認試行も積まない）。読み直しが run を
+        失敗させたら、そこで要求の生成をやめる。
+        """
+        plan = self._compiled.roles.confirmation
+        is_filter = plan is not None and plan.filter_instance == component.instance_id
+        out: list[OpportunityId] = []
+        for opportunity_id in sorted(self._lifecycles, key=lambda item: item.seq):
+            lifecycle = self._lifecycles[opportunity_id]
+            if lifecycle.state is not OpportunityState.OPEN:
+                continue
+            if is_filter:
+                assert plan is not None  # noqa: S101 - is_filter が保証する
+                if not wants_confirmation(plan, lifecycle.confirmation_start_bar, target_bar):
+                    continue
+                if not self._recheck(lifecycle, PHASE_P4_CONFIRMATION):
+                    if self._failed:
+                        return out
+                    continue
+            out.append(opportunity_id)
         return out
 
     def _input_event_requests(
@@ -1096,6 +1337,9 @@ class _StepRun:
                     return
                 self._record(request, Skipped(diagnoses=resolution.diagnoses()))
                 return
+        if self._waits_for_market_state(component):
+            self._wait_on_market_state(component, request, delivered, phase, resumed)
+            return
         self._mark_resumed(resumed, phase)
         inputs = resolution.inputs()
         evaluation_id = self._allocator.next(EvaluationId)
@@ -1171,6 +1415,29 @@ class _StepRun:
             else None
         )
         deadline_at = resolve_deadline(policy.deadline, started=self._now, series=series)
+        self._start_waiting(
+            component,
+            request,
+            delivered,
+            missing,
+            deadline_at,
+            policy.on_deadline,
+            policy.on_superseded,
+            phase,
+        )
+
+    def _start_waiting(
+        self,
+        component: CompiledComponent,
+        request: EvaluationRequest,
+        delivered: Mapping[str, tuple[OutputRecord[object], ...]],
+        missing: tuple[MissingInputDiagnosis, ...],
+        deadline_at: WaitDeadline,
+        on_deadline: WaitDeadlineAction,
+        on_superseded: OnSuperseded,
+        phase: str,
+    ) -> None:
+        """待機記録を作り、`Waiting` の評価記録と待機開始の出来事を残す（D05 §6.8）。"""
         started_at = self._point(phase)
         opportunity = next(
             (
@@ -1186,8 +1453,8 @@ class _StepRun:
             missing=missing,
             started_at=started_at,
             deadline_at=deadline_at,
-            on_deadline=policy.on_deadline,
-            on_superseded=policy.on_superseded,
+            on_deadline=on_deadline,
+            on_superseded=on_superseded,
             pinned_bars=self._pin_bars(component),
             pinned_events={
                 name: tuple(
@@ -1201,6 +1468,108 @@ class _StepRun:
         self._record(request, Waiting(diagnoses=missing, deadline_at=deadline_at))
         self._wait_events.append(
             WaitEvent(request_id=request.request_id, kind=WaitEventKind.WAIT_STARTED, at=started_at)
+        )
+
+    # --- 市場状態の連鎖による待機（D05 §7.6） --------------------------------
+
+    def _market_state_chain(self) -> frozenset[str]:
+        """市場状態の使用箇所と、それが依存グラフ上で（間接にでも）読む上流の使用箇所。"""
+        ref = self._compiled.roles.market_state
+        if ref is None:
+            return frozenset()
+        return frozenset({ref.instance_id, *_upstream_of(self._compiled, ref.instance_id)})
+
+    def _waits_for_market_state(self, component: CompiledComponent) -> bool:
+        """取引機会を出す評価が、市場状態の連鎖の待機に連なって待機するか（D05 §7.6）。
+
+        条件は「市場状態の使用箇所か、その上流のいずれかが**この判断時点で**待機中である」
+        こと。対象区間の一致は条件にしない（市場状態は日足、取引機会は1時間足という段階3 の
+        主な使い方で、連鎖が一度も成立しなくなる）。決着した待機（期限・追い越し・失効）は
+        待機中の一覧から既に外れている。
+        """
+        if component.instance_id != self._compiled.roles.trigger.instance_id:
+            return False
+        chain = self._market_state_chain()
+        return any(item.request.instance_id in chain for item in self._waiting.values())
+
+    def _wait_on_market_state(
+        self,
+        component: CompiledComponent,
+        request: EvaluationRequest,
+        delivered: Mapping[str, tuple[OutputRecord[object], ...]],
+        phase: str,
+        resumed: WaitingRequest | None,
+    ) -> None:
+        """市場状態の連鎖が待機中なので、取引機会を出す評価を待機させる（D05 §7.6）。
+
+        役割フィールドには欠損方針を宣言する場所が無いので、この1件だけはランタイムが規則を
+        持つ（D05 §6.8 の「待機の伝播」の例外）。足りないものは「市場状態の役割が指す出力」
+        とし、その出力が同じ `step` で出たら再開する（出力参照の再開と同じ判定。D05 §6.8 の
+        手順1）。期限と `on_superseded` は、連鎖の起点になった待機（いちばん上流の待機）が
+        宣言したものを引き継ぐ。取引機会を出す評価に独自の期限を持たせない。
+        """
+        ref = self._compiled.roles.market_state
+        assert ref is not None  # noqa: S101 - _waits_for_market_state が保証する
+        missing = (
+            MissingInputDiagnosis(
+                input_name=_MARKET_STATE_INPUT,
+                source=ResolvedOutputSource(ref.instance_id, ref.output_name),
+                reason=MissingInputReason.INPUT_MISSING_OR_INVALID,
+            ),
+        )
+        if resumed is not None:
+            # 自分の入力は届いたが、連鎖はまだ待機中。同じ期限のまま待機を続ける。
+            self._waiting[request.request_id] = replace(resumed, missing=missing)
+            return
+        origin = self._chain_origin()
+        self._start_waiting(
+            component,
+            request,
+            delivered,
+            missing,
+            origin.deadline_at,
+            origin.on_deadline,
+            origin.on_superseded,
+            phase,
+        )
+
+    def _chain_origin(self) -> WaitingRequest:
+        """市場状態の連鎖の起点になった待機（いちばん上流の待機）を1件選ぶ（D05 §7.6）。
+
+        起点は、連鎖の中で自分より上流に待機中の使用箇所を持たない待機である。起点が複数
+        あるときは、期限が最も早く来るものを採る。本数の期限どうしは同じ系列の残り本数、
+        時刻の期限どうしは時刻で比べる。系列の違う本数の期限や、本数と時刻の期限が並んだ
+        場合は、どちらが早く来るかが判断時点より前には決まらないので構造エラーにする。
+        """
+        chain = self._market_state_chain()
+        waits = [item for item in self._waiting.values() if item.request.instance_id in chain]
+        instances = {item.request.instance_id for item in waits}
+        origins = sorted(
+            (
+                item
+                for item in waits
+                if not (_upstream_of(self._compiled, item.request.instance_id) & instances)
+            ),
+            key=lambda item: item.request.request_id.seq,
+        )
+        by_time = [
+            (item.deadline_at.at.value, item)
+            for item in origins
+            if isinstance(item.deadline_at, WaitUntilTime)
+        ]
+        by_bars = [
+            (item.deadline_at.remaining, item.deadline_at.series, item)
+            for item in origins
+            if isinstance(item.deadline_at, WaitUntilBars)
+        ]
+        if by_time and not by_bars:
+            return min(by_time, key=lambda pair: pair[0])[1]
+        if by_bars and not by_time and len({series for _, series, _ in by_bars}) == 1:
+            return min(by_bars, key=lambda triple: triple[0])[2]
+        raise KernelValueError(
+            "the market-state chain waits on deadlines that cannot be ordered before they are"
+            f" reached ({[item.deadline_at for item in origins]}); which one comes first is not"
+            " decided (D05 §7.6)"
         )
 
     def _pin_bars(self, component: CompiledComponent) -> dict[str, BarKey]:
@@ -1289,6 +1658,61 @@ class _StepRun:
                 position_id=request.position_id,
                 substitutions=substitutions,
             )
+        )
+        self._note_attempt(request, outcome)
+
+    def _note_attempt(self, request: EvaluationRequest, outcome: EvaluationOutcome) -> None:
+        """確認評価の結末を、その確認足の確認試行へ写す（D05 §7.7、Q26 決定）。
+
+        同じ機会・同じ確認足の試行は1件で、決着したら同じ1件の結末を置き換える。失敗
+        （`Failed`）は試行の結末の区分に無く、run はそこで止まるので写さない。
+        """
+        plan = self._compiled.roles.confirmation
+        if (
+            plan is None
+            or request.instance_id != plan.filter_instance
+            or request.opportunity_id is None
+        ):
+            return
+        attempt_outcome: ConfirmationAttemptOutcome
+        if isinstance(outcome, Evaluated):
+            attempt_outcome = (
+                ConfirmationAttemptOutcome.CONFIRMED
+                if self._confirmed_in(outcome)
+                else ConfirmationAttemptOutcome.NOT_CONFIRMED
+            )
+        elif isinstance(outcome, Skipped):
+            attempt_outcome = ConfirmationAttemptOutcome.SKIPPED
+        elif isinstance(outcome, Waiting):
+            attempt_outcome = ConfirmationAttemptOutcome.WAITING
+        elif isinstance(outcome, Superseded):
+            attempt_outcome = ConfirmationAttemptOutcome.SUPERSEDED
+        else:
+            return
+        attempt = _confirmation_attempt(
+            self._compiled, request, self._subjects.get(request.request_id), attempt_outcome
+        )
+        if attempt is None:
+            return
+        lifecycle = self._lifecycles.get(attempt.opportunity_id)
+        if lifecycle is None:  # pragma: no cover - 確認評価は保持している機会だけを対象にする
+            raise KernelValueError(f"unknown opportunity {attempt.opportunity_id}")
+        self._lifecycles[attempt.opportunity_id] = lifecycle.with_attempt(attempt)
+        self._attempts[attempt.key] = attempt
+
+    def _confirmed_in(self, outcome: Evaluated) -> bool:
+        """確認評価が出した確認結果の成否（D05 §4.8）。"""
+        produced = set(outcome.output_ids)
+        role = self._compiled.roles.execution_filter
+        for record in self._outputs:
+            if (
+                record.output_id in produced
+                and record.producer == role
+                and isinstance(record.payload, ConfirmationResult)
+            ):
+                return record.payload.confirmed
+        raise KernelValueError(  # pragma: no cover - _publish が確認結果の無い評価を失敗にする
+            "a confirmation evaluation settled without a confirmation result (D05 §7.7)"
         )
 
     # --- 入力解決（D05 §6.3・§6.7・§6.8・§6.12） -----------------------------
@@ -1534,8 +1958,11 @@ class _StepRun:
         for index, source in enumerate(plan.sources):
             if not isinstance(source, ResolvedContextSource):  # pragma: no cover
                 continue
+            payload: object | None
             if source.target is RuntimeTarget.POSITION:
                 payload = self._context.position_context(self._now, request.position_id)
+            elif source.target is RuntimeTarget.OPPORTUNITY:
+                payload = self._opportunity_context(request)
             else:
                 payload = self._context.account_context(self._now)
             if payload is None:
@@ -1544,6 +1971,19 @@ class _StepRun:
                 )
                 continue
             self._add(resolution, name, index, ContextSnapshot(payload=payload, read_at=self._now))
+
+    def _opportunity_context(self, request: EvaluationRequest) -> Opportunity | None:
+        """評価要求が指す取引機会を、ランタイム自身が保持する機会から渡す（D05 §6.11）。
+
+        取引機会の所有者はランタイムであり、エンジンに問い合わせない（`RuntimeContextView` を
+        使わない）。要求が機会を指していないか、機会が既に終端していれば読めない（欠損）。
+        """
+        if request.opportunity_id is None:
+            return None
+        lifecycle = self._lifecycles.get(request.opportunity_id)
+        if lifecycle is None or not lifecycle.is_active:
+            return None
+        return lifecycle.opportunity
 
     def _substitute(
         self,
@@ -1672,6 +2112,9 @@ class _StepRun:
             opportunities[output_name] = opportunity
             if not admitted:
                 withheld.add(output_name)
+        confirmations = self._confirmation_results(component, request, contract, result)
+        # 成立しなかった確認結果は付番して判断履歴に残すが、下流へ配送しない（D05 §7.7）。
+        withheld.update(name for name, item in confirmations.items() if not item.confirmed)
 
         subject = self._subjects.get(request.request_id)
         observed = _substituted_observation(inputs, substitutions)
@@ -1679,7 +2122,9 @@ class _StepRun:
         records: list[OutputRecord[object]] = []
         for output_name in sorted(result.outputs):
             spec = contract[output_name]
-            payload: object = opportunities.get(output_name, result.outputs[output_name])
+            payload: object = opportunities.get(
+                output_name, confirmations.get(output_name, result.outputs[output_name])
+            )
             if spec.kind is PortKind.VALUE:
                 payload = self._observe(component, request, subject, freshness, payload, observed)
             producer = OutputRef(component.instance_id, output_name)
@@ -1710,8 +2155,86 @@ class _StepRun:
             elif spec.kind is PortKind.EVENT and output_name not in withheld:
                 self._deliveries.setdefault(producer, []).append(record)
             self._capture_role_output(producer, record, request)
+        # 遷移10 は確認結果の出力記録の後に刻む（D05 §7.7、T02 §14 #11）。
+        # 遷移を決めるのは `execution_filter` 役割が指す出力だけである（D05 §7.7）。
+        role = self._compiled.roles.execution_filter
+        if role is not None and role.instance_id == component.instance_id:
+            decisive = confirmations.get(role.output_name)
+            if decisive is not None and decisive.confirmed:
+                self._confirm(decisive.opportunity_id)
         self._sink.emit(tuple(records))
         return tuple(record.output_id for record in records)
+
+    def _confirmation_results(
+        self,
+        component: CompiledComponent,
+        request: EvaluationRequest,
+        contract: Mapping[str, OutputSpec],
+        result: ComponentOutputs,
+    ) -> dict[str, ConfirmationResult]:
+        """部品の成否から確認結果を組み立てる（D05 §4.8。付番より前）。
+
+        機会の識別子は評価要求が指す機会、確認足の区間はその評価の対象区間であり、どちらも
+        ランタイムが持つ。部品には成否だけを返させ、別の機会の確認結果を作れないようにする。
+        確認の成否（遷移10 と確認試行）を決めるのは `execution_filter` 役割が指す出力だけで
+        ある（D05 §7.7）。同じ使用箇所が同じ型の出力を他にも返しても、それは記録に残るだけで
+        成否を決めない。確認部品の評価が役割の出力を出さなかった場合は、確認試行の結末を
+        決められないので失敗にする。
+        """
+        out: dict[str, ConfirmationResult] = {}
+        for output_name in sorted(result.outputs):
+            if contract[output_name].data_type != CONFIRMATION_RESULT_V1:
+                continue
+            content = result.outputs[output_name]
+            if not isinstance(content, ConfirmationOutcome):  # pragma: no cover - 検査済み
+                raise _EvaluationFailure(_data_error(f"{output_name} is not a ConfirmationOutcome"))
+            if request.opportunity_id is None or request.target_interval is None:
+                raise _EvaluationFailure(
+                    _data_error(
+                        f"{component.instance_id} produced a confirmation result without an"
+                        " opportunity and a confirmation bar to attach it to (D05 §4.8)"
+                    )
+                )
+            out[output_name] = ConfirmationResult(
+                opportunity_id=request.opportunity_id,
+                confirmation_interval=request.target_interval,
+                confirmed=content.confirmed,
+            )
+        role = self._compiled.roles.execution_filter
+        if (
+            role is not None
+            and role.instance_id == component.instance_id
+            and request.opportunity_id is not None
+            and role.output_name not in out
+        ):
+            raise _EvaluationFailure(
+                _data_error(
+                    f"{component.instance_id} returned no confirmation result for"
+                    f" {request.opportunity_id} (D05 §4.8)"
+                )
+            )
+        return out
+
+    def _confirm(self, opportunity_id: OpportunityId) -> None:
+        """遷移10: 確認が成立した機会を `CONFIRMED` へ進める（D05 §7.2・§7.7）。
+
+        確認評価は確認待ち（`OPEN`）の機会にだけ作るので、通常は必ず `OPEN` である。既に
+        確認済みの機会（待ち続けた古い確認足の要求が後から成立した場合）は、状態を変えない。
+        """
+        lifecycle = self._lifecycles.get(opportunity_id)
+        if lifecycle is None or lifecycle.state is not OpportunityState.OPEN:
+            return
+        at = self._point(PHASE_P4_CONFIRMATION)
+        self._lifecycles[opportunity_id] = lifecycle.moved_to(OpportunityState.CONFIRMED, at=at)
+        self._transitions.append(
+            Transition(
+                opportunity_id=opportunity_id,
+                from_state=OpportunityState.OPEN,
+                to_state=OpportunityState.CONFIRMED,
+                at=at,
+                phase=at.phase,
+            )
+        )
 
     def _observe(
         self,
@@ -1791,7 +2314,33 @@ class _StepRun:
                 )
             if isinstance(value, OpportunityContent):
                 self._check_reference_values(component, output_name, spec, value)
+        self._check_management_action(component, result)
         self._check_new_state(component, result)
+
+    def _check_management_action(
+        self, component: CompiledComponent, result: ComponentOutputs
+    ) -> None:
+        """決済役割の出力が、管理要求の運べる区分であることを付番の前に確かめる。
+
+        管理要求（`ManagementRequest.action`）が運べるのは、まだ段階2 の2区分（初期の利確・
+        全数量決済）である。損切り水準の更新（`UpdateStop`）を管理要求に通すのは、エンジンが
+        それを建玉へ適用する変更と同じ段階3 実装 PR 5/5 である（2026-09-24 の人間の決定。
+        `records.payloads.ManagementAction` の注記）。それまでは黙って捨てず、評価の失敗と
+        して残す。付番の前に確かめるのは、判断履歴に出た出力と管理要求が食い違わないように
+        するためである。
+        """
+        exit_ref = self._compiled.roles.exit
+        if exit_ref is None or exit_ref.instance_id != component.instance_id:
+            return
+        action = result.outputs.get(exit_ref.output_name)
+        if action is None or isinstance(action, (SetTakeProfit, ClosePosition)):
+            return
+        raise _EvaluationFailure(
+            _data_error(
+                f"{component.instance_id} returned {type(action).__name__}; a management request"
+                " carries it only once the engine applies it (stage-3 implementation PR 5/5)"
+            )
+        )
 
     def _check_reference_values(
         self,
@@ -1865,6 +2414,11 @@ class _StepRun:
             signal_interval=request.target_interval,
             reference_values=content.reference_values,
         )
+        # 手順2a（段階3、D05 §7.6）: 同時保持の数え方より先に市場状態の許可を読む。許されない
+        # 発火が同時保持の枠を消費しないようにするためである。
+        if not self._market_permits(opportunity.direction):
+            self._reject(opportunity, Reason(code=ReasonCode.MARKET_STATE_INVALIDATED))
+            return opportunity, False
         concurrency = self._compiled.opportunity_concurrency
         active = [item for item in self._lifecycles.values() if item.is_active]
         if len(active) < concurrency.max_active:
@@ -1886,18 +2440,52 @@ class _StepRun:
                 )
                 self._open(opportunity, snapshots)
                 return opportunity, True
-        self._reject(opportunity)
+        self._reject(opportunity, Reason(code=ReasonCode.CONCURRENCY_LIMIT_REACHED))
         return opportunity, False
 
+    def _market_permits(self, direction: TradeDirection) -> bool:
+        """市場状態の役割が指す出力の最新の取引許可が、この方向を許すか（D05 §7.6）。
+
+        市場状態を持たない戦略では適用しない（常に許す）。許可が一度も出ていなければ、欠損を
+        許可へ変換しない（上位設計書 §4.3.15）ので許さない。市場状態が待機中の場合は、この
+        評価そのものが待機に入っているのでここへは来ない。
+        """
+        ref = self._compiled.roles.market_state
+        if ref is None:
+            return True
+        record = self._latest_outputs.get(ref)
+        if record is None:
+            return False
+        permission = _value_of(record.payload)
+        if not isinstance(permission, MarketPermission):  # pragma: no cover - 接続検証が保証
+            raise _EvaluationFailure(_data_error(f"{ref} is not a MarketPermission"))
+        if direction is TradeDirection.LONG:
+            return permission.allow_long
+        return permission.allow_short
+
     def _open(self, opportunity: Opportunity, snapshots: tuple[ValiditySnapshot, ...]) -> None:
-        """遷移1: 生成して有効にする（D05 §7.2）。"""
+        """遷移1: 生成して有効にする（D05 §7.2）。
+
+        確認待ちの戦略では、確認の開始足と確認期限をここで決める（D05 §7.7）。開始足は
+        **実際に生成された判断時刻**に利用可能な確認足の系列の最新の確定足で、読めなければ
+        開始足なし（古い足へ黙って戻らない）。一度決めたら変えない。
+        """
         at = self._point(PHASE_P3_TRIGGER)
+        start_bar: BarKey | None = None
+        deadline_at: WaitDeadline | None = None
+        plan = self._compiled.roles.confirmation
+        if plan is not None:
+            latest = self._market_data.latest_available(plan.series, self._now)
+            start_bar = latest.key if isinstance(latest, Bar) else None
+            deadline_at = confirmation_deadline(plan, self._now)
         lifecycle = OpportunityLifecycle(
             opportunity=opportunity,
             state=OpportunityState.OPEN,
             created_at=at,
             created_decision_time=self._now,
             snapshots=snapshots,
+            confirmation_start_bar=start_bar,
+            deadline_at=deadline_at,
         )
         self._lifecycles[opportunity.opportunity_id] = lifecycle
         self._transitions.append(
@@ -1910,10 +2498,14 @@ class _StepRun:
             )
         )
 
-    def _reject(self, opportunity: Opportunity) -> None:
-        """遷移2: 発火を記録したうえで有効にせず終端する（D04 §10.3）。"""
+    def _reject(self, opportunity: Opportunity, reason: Reason) -> None:
+        """遷移2・12: 発火を記録したうえで有効にせず終端する（D04 §10.3、D05 §7.6）。
+
+        同時保持の上限に達していた（遷移2、`CONCURRENCY_LIMIT_REACHED`）か、市場状態が方向を
+        許さなかった（遷移12、`MARKET_STATE_INVALIDATED`）かを理由で区別する。どちらも生成
+        直後の終端（`from_state=None`）であり、発火は捨てない（ADR-0032）。
+        """
         at = self._point(PHASE_P3_TRIGGER)
-        reason = Reason(code=ReasonCode.CONCURRENCY_LIMIT_REACHED)
         lifecycle = OpportunityLifecycle(
             opportunity=opportunity,
             state=OpportunityState.TERMINATED,
@@ -1962,41 +2554,84 @@ class _StepRun:
 
     # --- 有効性の再検査（D05 §7.3、遷移8） ---------------------------------
 
-    def _recheck_validity(self, phase_name: str, only: OpportunityId | None = None) -> None:
-        """継続成立を要求した条件を読み直す（ADR-0031、D05 §7.3）。"""
+    def _recheck(self, lifecycle: OpportunityLifecycle, phase_name: str) -> bool:
+        """発注要求まで成立し続けることを求めた条件を読み直す（ADR-0031、D05 §7.3）。
+
+        読み直すのは確認評価のたび（P4）と発注提案を作る直前（P5）で、1回の読み直しにつき
+        束縛1件ごとに記録（`ValidityRecheck`）を1件残す。4つの結末は次のとおり。
+
+        - 読めて成立: そのまま進む。
+        - 読めて不成立: 遷移8 で `MARKET_STATE_INVALIDATED` で終端する（`False` を返す）。
+        - 読めず、欠損方針が見送り: 今回の再検査を行わず、機会は残る。
+        - 読めず、欠損方針が失敗: run を失敗させる（`False` を返し、以降の評価を行わない）。
+
+        **欠損を不成立に変換しない**（ADR-0031）。「読めない」は、束縛が指す出力がまだ一度も
+        出ていないか、その使用箇所が**より新しい足について待機中**であること（D05 §6.8 の
+        「待機の伝播」で入力が「まだ出ていない」とされるのと同じ判定）である。
+        """
         bindings = [
             binding
             for binding in self._compiled.opportunity_validity.bindings
             if binding.mode is ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST
         ]
-        if not bindings:
-            return
-        for lifecycle in list(self._lifecycles.values()):
-            if not lifecycle.is_replaceable:
-                continue
-            if only is not None and lifecycle.opportunity_id != only:
-                continue
-            for binding in bindings:
-                record = self._latest_outputs.get(binding.source)
-                if record is None:
-                    if isinstance(binding.on_missing, ErrorPolicy):
-                        raise KernelValueError(
-                            f"validity binding {binding.source} has no output to re-check and"
-                            " its missing-input policy is Error (D05 §7.3)"
+        for binding in bindings:
+            record = self._latest_outputs.get(binding.source)
+            at = self._point(phase_name)
+            if record is None or self._upstream_pending(binding.source):
+                if isinstance(binding.on_missing, ErrorPolicy):
+                    self._rechecks.append(
+                        ValidityRecheck(
+                            opportunity_id=lifecycle.opportunity_id,
+                            source=binding.source,
+                            mode=binding.mode,
+                            at=at,
+                            outcome=ValidityRecheckOutcome.MISSING_FAILED,
+                            reason=_data_error(f"validity binding {binding.source} is missing"),
                         )
-                    continue
-                payload = _value_of(record.payload)
-                if not isinstance(payload, ConditionState):
+                    )
+                    self._failed = True
+                    return False
+                if not isinstance(binding.on_missing, SkipEvaluation):
                     raise KernelValueError(
-                        f"validity binding {binding.source} must produce a ConditionState"
+                        f"validity binding {binding.source} declares {binding.on_missing!r};"
+                        " how a recheck settles a missing binding under that policy is not"
+                        " decided (D05 §7.3 names SkipEvaluation and Error)"
                     )
-                if not payload.satisfied:
-                    self._terminate(
-                        lifecycle,
-                        Reason(code=ReasonCode.MARKET_STATE_INVALIDATED),
-                        phase_name,
+                self._rechecks.append(
+                    ValidityRecheck(
+                        opportunity_id=lifecycle.opportunity_id,
+                        source=binding.source,
+                        mode=binding.mode,
+                        at=at,
+                        outcome=ValidityRecheckOutcome.MISSING_SKIPPED,
                     )
-                    break
+                )
+                continue
+            payload = _value_of(record.payload)
+            if not isinstance(payload, ConditionState):
+                raise KernelValueError(
+                    f"validity binding {binding.source} must produce a ConditionState"
+                )
+            self._rechecks.append(
+                ValidityRecheck(
+                    opportunity_id=lifecycle.opportunity_id,
+                    source=binding.source,
+                    mode=binding.mode,
+                    at=at,
+                    outcome=(
+                        ValidityRecheckOutcome.SATISFIED
+                        if payload.satisfied
+                        else ValidityRecheckOutcome.NOT_SATISFIED
+                    ),
+                    output_id=record.output_id,
+                )
+            )
+            if not payload.satisfied:
+                self._terminate(
+                    lifecycle, Reason(code=ReasonCode.MARKET_STATE_INVALIDATED), phase_name
+                )
+                return False
+        return True
 
     # --- 役割出力と発注提案（手順9） ---------------------------------------
 
@@ -2049,10 +2684,11 @@ class _StepRun:
             lifecycle = self._lifecycles.get(opportunity_id)
             if lifecycle is None or not lifecycle.is_replaceable:
                 continue
-            self._recheck_validity(PHASE_P5_ORDER_INTENT, only=opportunity_id)
-            lifecycle = self._lifecycles[opportunity_id]
-            if not lifecycle.is_replaceable:
+            if not self._recheck(lifecycle, PHASE_P5_ORDER_INTENT):
+                if self._failed:
+                    return
                 continue
+            lifecycle = self._lifecycles[opportunity_id]
             intent_record = self._role_intents[opportunity_id]
             protection_record = self._role_protections[opportunity_id]
             intent = _value_of(intent_record.payload)
@@ -2086,6 +2722,65 @@ class _StepRun:
 
 
 # --- 補助 ----------------------------------------------------------------------
+
+#: 市場状態の連鎖に連なって待機した取引機会の評価が「まだ届いていない」とするものの名前
+#: （D05 §7.6）。役割フィールドは入力ではないので入力名を持たない。待機の診断と到着の出来事が
+#: 役割フィールドの名前でそれを指す。
+_MARKET_STATE_INPUT: Final = "market_state"
+
+
+def _fanout_kind(component: CompiledComponent) -> RuntimeTarget | None:
+    """足の確定で対象1件につき1要求を作る使用箇所なら、その対象の区分（D05 §6.11）。
+
+    取引機会（`RuntimeInputRef(OPPORTUNITY)`）か建玉（`RuntimeInputRef(POSITION)`）を読み、
+    足の確定で起動する使用箇所がこれに当たる。両方を読む使用箇所は、どちらの1件につき
+    1要求かが決まらないので構造エラーにする。
+    """
+    if not any(isinstance(trigger, OnBarClose) for trigger in component.triggers):
+        return None
+    kinds = {
+        source.target
+        for plan in component.input_plans.values()
+        for source in plan.sources
+        if isinstance(source, ResolvedContextSource)
+        and source.target in (RuntimeTarget.OPPORTUNITY, RuntimeTarget.POSITION)
+    }
+    if len(kinds) > 1:
+        raise KernelValueError(
+            f"{component.instance_id} reads both an opportunity and a position; one request"
+            " per target is not defined for two kinds of target (D05 §6.11)"
+        )
+    return next(iter(kinds), None)
+
+
+def _fanout_target(component: CompiledComponent, request: EvaluationRequest) -> _Target:
+    """要求が足の確定で1件ずつ対象にした取引機会・建玉（D05 §6.11）。そうでなければ `None`。"""
+    kind = _fanout_kind(component)
+    if kind is None:
+        return None
+    bar_close_names = {
+        trigger.name for trigger in component.triggers if isinstance(trigger, OnBarClose)
+    }
+    if not bar_close_names.intersection(request.trigger_names):
+        return None
+    if kind is RuntimeTarget.OPPORTUNITY:
+        return request.opportunity_id
+    return request.position_id
+
+
+def _upstream_of(compiled: CompiledStrategy, instance_id: str) -> frozenset[str]:
+    """使用箇所が明示の接続で（間接にでも）読む上流の使用箇所（自分は含めない）。"""
+    seen: set[str] = set()
+    pending = [instance_id]
+    while pending:
+        current = compiled.component(pending.pop())
+        for plan in current.input_plans.values():
+            for source in plan.sources:
+                if isinstance(source, ResolvedOutputSource) and source.instance_id not in seen:
+                    seen.add(source.instance_id)
+                    pending.append(source.instance_id)
+    seen.discard(instance_id)
+    return frozenset(seen)
 
 
 def _on_missing(plan: InputPlan) -> MissingInputPolicy:

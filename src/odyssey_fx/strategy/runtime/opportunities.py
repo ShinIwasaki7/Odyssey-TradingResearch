@@ -32,6 +32,12 @@
 | 9 | 非終端 → `TERMINATED` | run 末尾に残った | `RUN_END` |
 | 10 | `OPEN` → `CONFIRMED` | 後続確認が成立した（段階3） | なし |
 | 11 | `OPEN`/`CONFIRMED` → `TERMINATED` | 確認期限に到達した（段階3） | `EXPIRED` |
+| 12 | （生成）→ `TERMINATED` | 市場状態が方向を許さない（段階3） | 市場状態が無効 |
+
+**有効性の再検査の記録**（段階3、D05 §7.3）: 発注要求まで成立し続けることを求めた条件
+（`REQUIRE_UNTIL_ORDER_REQUEST`）を読み直すたびに、結果を1件残す（成立 / 不成立 / 読めず
+見送り / 読めず失敗 の4区分）。遷移記録は不成立の場合にしか作られず、「読めなかった」を
+表せないためである。
 
 **生成時点を2つで表す**（D05 §7.1）: 処理点（どのフェーズで処理されたか）と判断時刻。置換
 する相手を選ぶ鍵には**判断時刻**を使う。処理点を鍵にすると、フェーズ順位（D06）が決まるまで
@@ -40,13 +46,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import AttemptId, OpportunityId, OutputId
 from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.time import PhaseRank, ProcessingPoint, UtcTime
+from odyssey_fx.marketdata.domain.bar import BarKey
+from odyssey_fx.strategy.declarations.opportunity import ValidityMode
 from odyssey_fx.strategy.declarations.refs import OutputRef
 from odyssey_fx.strategy.declarations.validation import (
     require_bool,
@@ -54,6 +62,8 @@ from odyssey_fx.strategy.declarations.validation import (
     require_tuple_of,
 )
 from odyssey_fx.strategy.records.payloads import Opportunity
+from odyssey_fx.strategy.runtime.confirmation import ConfirmationAttempt
+from odyssey_fx.strategy.runtime.waiting import WaitDeadline, WaitUntilBars, WaitUntilTime
 
 __all__ = [
     "NON_TERMINAL_STATES",
@@ -62,6 +72,8 @@ __all__ = [
     "OpportunityState",
     "OpportunityTerminal",
     "OpportunityTransition",
+    "ValidityRecheck",
+    "ValidityRecheckOutcome",
     "ValiditySnapshot",
 ]
 
@@ -110,6 +122,71 @@ class ValiditySnapshot:
         require_instance(self.source, OutputRef, "ValiditySnapshot.source")
         require_instance(self.output_id, OutputId, "ValiditySnapshot.output_id")
         require_bool(self.satisfied, "ValiditySnapshot.satisfied")
+
+
+class ValidityRecheckOutcome(Enum):
+    """有効性の再検査の結末（D05 §3・§7.3 の表）。"""
+
+    #: 読めて成立していた。機会はそのまま進む。
+    SATISFIED = "SATISFIED"
+    #: 読めて成立していなかった。遷移8 で `MARKET_STATE_INVALIDATED` で終端する。
+    NOT_SATISFIED = "NOT_SATISFIED"
+    #: 読めず、欠損方針が見送りだったので今回の再検査を行わなかった。機会は残る。
+    MISSING_SKIPPED = "MISSING_SKIPPED"
+    #: 読めず、欠損方針が失敗だったので run を失敗させる。
+    MISSING_FAILED = "MISSING_FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class ValidityRecheck:
+    """有効性の再検査1回の記録（D05 §3・§7.3、判断履歴の表19 の行）。
+
+    再検査は評価の外側（確認評価の P4 と、発注提案を作る直前の P5）で走るので評価記録を
+    持たない。読めた場合の根拠は `output_id` が指す出力記録である。読めずに run を失敗させた
+    場合だけ `reason` に `Reason(DATA_ERROR)` を入れる（D05 §7.3 の表）。読めずに見送った場合は
+    `reason` を空にする。欠損を表す理由コードは語彙（上位設計書 §4.7.14）に無く、見送ったこと
+    は結末の区分そのものが表すためである。主キーは `(opportunity_id, at)` である（D06 §9.2）。
+    処理点の通し番号は出力記録・遷移記録・待機の出来事と同じ1本を共有する（D05 §6.6）。
+    """
+
+    opportunity_id: OpportunityId
+    source: OutputRef
+    mode: ValidityMode
+    at: ProcessingPoint
+    outcome: ValidityRecheckOutcome
+    output_id: OutputId | None = None
+    reason: Reason | None = None
+
+    def __post_init__(self) -> None:
+        require_instance(self.opportunity_id, OpportunityId, "ValidityRecheck.opportunity_id")
+        require_instance(self.source, OutputRef, "ValidityRecheck.source")
+        require_instance(self.mode, ValidityMode, "ValidityRecheck.mode")
+        require_instance(self.at, ProcessingPoint, "ValidityRecheck.at")
+        require_instance(self.outcome, ValidityRecheckOutcome, "ValidityRecheck.outcome")
+        if self.output_id is not None:
+            require_instance(self.output_id, OutputId, "ValidityRecheck.output_id")
+        if self.reason is not None:
+            require_instance(self.reason, Reason, "ValidityRecheck.reason")
+        read = self.outcome in (
+            ValidityRecheckOutcome.SATISFIED,
+            ValidityRecheckOutcome.NOT_SATISFIED,
+        )
+        if read != (self.output_id is not None):
+            raise KernelValueError(
+                "ValidityRecheck.output_id names the output that was read, so it is set exactly"
+                " when the binding could be read (D05 §7.3)"
+            )
+        if self.outcome is not ValidityRecheckOutcome.MISSING_FAILED and self.reason is not None:
+            raise KernelValueError(
+                "only a recheck that fails the run carries a reason (D05 §7.3);"
+                f" {self.outcome.value} must not"
+            )
+        if self.outcome is ValidityRecheckOutcome.MISSING_FAILED and (
+            self.reason is None or self.reason.code is not ReasonCode.DATA_ERROR
+        ):
+            raise KernelValueError(
+                "a recheck that fails the run records Reason(DATA_ERROR) (D05 §7.3)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +272,9 @@ class OpportunityLifecycle:
     snapshots: tuple[ValiditySnapshot, ...] = ()
     attempt_id: AttemptId | None = None
     terminal: OpportunityTerminal | None = None
+    confirmation_start_bar: BarKey | None = None
+    deadline_at: WaitDeadline | None = None
+    attempts: tuple[ConfirmationAttempt, ...] = ()
 
     def __post_init__(self) -> None:
         require_instance(self.opportunity, Opportunity, "OpportunityLifecycle.opportunity")
@@ -206,6 +286,26 @@ class OpportunityLifecycle:
         require_tuple_of(self.snapshots, ValiditySnapshot, "OpportunityLifecycle.snapshots")
         if self.attempt_id is not None:
             require_instance(self.attempt_id, AttemptId, "OpportunityLifecycle.attempt_id")
+        if self.confirmation_start_bar is not None:
+            require_instance(
+                self.confirmation_start_bar, BarKey, "OpportunityLifecycle.confirmation_start_bar"
+            )
+        if self.deadline_at is not None and not isinstance(
+            self.deadline_at, (WaitUntilTime, WaitUntilBars)
+        ):
+            raise KernelValueError(
+                f"OpportunityLifecycle.deadline_at must be a WaitDeadline, got {self.deadline_at!r}"
+            )
+        require_tuple_of(self.attempts, ConfirmationAttempt, "OpportunityLifecycle.attempts")
+        keys = [attempt.key for attempt in self.attempts]
+        if len(set(keys)) != len(keys):
+            raise KernelValueError(
+                "OpportunityLifecycle.attempts holds one attempt per confirmation bar (D05 §7.7)"
+            )
+        if any(attempt.opportunity_id != self.opportunity_id for attempt in self.attempts):
+            raise KernelValueError(
+                "OpportunityLifecycle.attempts must all belong to this opportunity"
+            )
         if self.state is OpportunityState.TERMINATED:
             if self.terminal is None:
                 raise KernelValueError(
@@ -273,12 +373,24 @@ class OpportunityLifecycle:
                 "only a terminating transition carries a reason"
                 f" (state={state.value}, reason={reason.code.value})"
             )
-        return OpportunityLifecycle(
-            opportunity=self.opportunity,
+        return replace(
+            self,
             state=state,
-            created_at=self.created_at,
-            created_decision_time=self.created_decision_time,
-            snapshots=self.snapshots,
             attempt_id=self.attempt_id if attempt_id is None else attempt_id,
             terminal=terminal,
         )
+
+    def with_deadline(self, deadline_at: WaitDeadline | None) -> OpportunityLifecycle:
+        """確認期限の残りを差し替えた姿を返す（D05 §7.7。状態は変えない）。"""
+        return replace(self, deadline_at=deadline_at)
+
+    def with_attempt(self, attempt: ConfirmationAttempt) -> OpportunityLifecycle:
+        """確認試行を積む。同じ確認足の試行があれば**その1件を置き換える**（D05 §7.7）。
+
+        状態の遷移ではないので、終端した機会にも適用できる（run 末尾で待機中の確認要求を
+        決着させたときに、試行の結末だけを書き換えるため。D06 §10.1 の要求4）。並びは確認足の
+        開始時刻の昇順である（D05 §9.3 の「確認試行の並び」）。
+        """
+        kept = tuple(item for item in self.attempts if item.key != attempt.key)
+        ordered = sorted((*kept, attempt), key=lambda item: item.bar_key.bar_start.value)
+        return replace(self, attempts=tuple(ordered))
