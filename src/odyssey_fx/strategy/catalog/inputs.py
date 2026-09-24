@@ -23,12 +23,13 @@ from typing import Protocol, runtime_checkable
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import Price
 from odyssey_fx.strategy.declarations.specs import (
+    BoolValue,
     IntValue,
     ParameterValue,
     StrValue,
     UnitRef,
 )
-from odyssey_fx.strategy.records.payloads import TradeDirection
+from odyssey_fx.strategy.records.payloads import ConditionState, TradeDirection
 
 __all__ = [
     "ContextSnapshotView",
@@ -39,6 +40,9 @@ __all__ = [
     "ResolvedParameterView",
     "ValueSampleView",
     "ValueWindowView",
+    "bool_parameter",
+    "condition_payload",
+    "condition_payloads",
     "decimal_parameter",
     "int_parameter",
     "position_context",
@@ -178,6 +182,40 @@ def price_window(inputs: ResolvedInputsView, name: str) -> tuple[Price, ...]:
     return tuple(prices)
 
 
+def condition_payload(inputs: ResolvedInputsView, name: str) -> ConditionState:
+    """1件で読む入力を条件の成否として取り出す（D05 §4.6、段階3）。
+
+    上流の条件出力はランタイムが `Observation` で包んで配送するが、部品に渡す時点で中身
+    （`Observation.value`）だけにする（D05 §6.7）。ここで受けるのはその中身である。
+    """
+    payload = single_payload(inputs, name)
+    if not isinstance(payload, ConditionState):
+        raise KernelValueError(f"input {name!r} must carry a ConditionState, got {payload!r}")
+    return payload
+
+
+def condition_payloads(inputs: ResolvedInputsView, name: str) -> tuple[ConditionState, ...]:
+    """可変個数で読む入力を、接続の並び（`InputBinding.sources` の順）のまま取り出す。
+
+    並べ替えない（D04 §3）。論理積・論理和は並びに依存しないが、判断履歴で「どの条件が
+    偽だったか」を接続の並びから読むためである（D05 §4.6）。
+    """
+    elements = inputs.by_name.get(name)
+    if elements is None:
+        raise KernelValueError(f"input {name!r} was not resolved")
+    if not elements:
+        raise KernelValueError(f"input {name!r} must have at least 1 source")
+    conditions: list[ConditionState] = []
+    for index, element in enumerate(elements):
+        payload = getattr(element, "payload", None)
+        if not isinstance(payload, ConditionState):
+            raise KernelValueError(
+                f"input {name!r} source {index} must carry a ConditionState, got {payload!r}"
+            )
+        conditions.append(payload)
+    return tuple(conditions)
+
+
 def position_context(inputs: ResolvedInputsView, name: str) -> PositionContextView:
     """現在コンテキストの入力を建玉として取り出す（D05 §4.3(5)）。
 
@@ -208,6 +246,14 @@ def int_parameter(parameters: Mapping[str, ResolvedParameterView], name: str) ->
     value = _parameter(parameters, name).value
     if not isinstance(value, IntValue):
         raise KernelValueError(f"parameter {name!r} must be an integer, got {value!r}")
+    return value.value
+
+
+def bool_parameter(parameters: Mapping[str, ResolvedParameterView], name: str) -> bool:
+    """真偽値パラメータを取り出す。"""
+    value = _parameter(parameters, name).value
+    if not isinstance(value, BoolValue):
+        raise KernelValueError(f"parameter {name!r} must be a boolean, got {value!r}")
     return value.value
 
 

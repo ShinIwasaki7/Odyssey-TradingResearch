@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.strategy.declarations.missing import Error, MissingInputPolicy, SkipEvaluation
+from odyssey_fx.strategy.declarations.missing import (
+    Error,
+    MissingInputPolicy,
+    SkipEvaluation,
+    WaitForInput,
+)
 from odyssey_fx.strategy.declarations.refs import require_kind
 from odyssey_fx.strategy.declarations.validation import require_identifier, require_int
 
@@ -45,9 +50,15 @@ __all__ = [
 
 
 def require_missing_policy(value: object, label: str) -> MissingInputPolicy:
-    """段階2の欠損方針2区分のいずれかであることを要求する（D04 §6.3）。"""
-    if not isinstance(value, (SkipEvaluation, Error)):
-        raise KernelValueError(f"{label} must be SkipEvaluation() or Error(), got {value!r}")
+    """欠損方針の区分のいずれかであることを要求する（D04 §6.3）。
+
+    段階2の2区分に、段階3 の待機（`WaitForInput`、D04 v1.9）を足した3区分を受け付ける。
+    待機を**実行してよいか**はコンパイラの能力検査が決める（D04 §12）。
+    """
+    if not isinstance(value, (SkipEvaluation, Error, WaitForInput)):
+        raise KernelValueError(
+            f"{label} must be SkipEvaluation(), Error() or WaitForInput(...), got {value!r}"
+        )
     return value
 
 

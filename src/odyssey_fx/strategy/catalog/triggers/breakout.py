@@ -15,6 +15,12 @@
 同じ実装を `retrigger_mode=LEVEL` の契約として登録すると、成立している評価ごとに出力を
 出し、状態を持たない形になる。段階2ではその契約を作らない（D04 §10.4 は宣言としては両方を
 許す）。
+
+**v2**（D05 §4.9・§9.2）: 同じ実装を、`level` が読めないときに日足1本ぶん待つ読み取り条件
+（`WaitForInput`）で登録した版である。検証戦略 B は `level` に日足の高値を接続するので、日足が
+未到着のまま1時間足だけが確定する判断時点がある。v1 はそこで見送りに決着して復活しないため、
+待てる版が要る。読み取り条件は契約が固定するので版を分けるほかない（D04 §4.1）。`price` の
+読み取り条件は v1 と同じである。v1 は段階2 の検証戦略 A のために残す。
 """
 
 from __future__ import annotations
@@ -36,8 +42,15 @@ from odyssey_fx.strategy.catalog.registry import (
 )
 from odyssey_fx.strategy.declarations.contract import ComponentContract
 from odyssey_fx.strategy.declarations.datatypes import CONDITION_STATE_V1, OPPORTUNITY_V1, PRICE_V1
+from odyssey_fx.strategy.declarations.entry_policy import BarsDeadline
 from odyssey_fx.strategy.declarations.evaluation import AllowedBarClose, EvaluationSpec
-from odyssey_fx.strategy.declarations.missing import SkipEvaluation
+from odyssey_fx.strategy.declarations.missing import (
+    MissingInputPolicy,
+    OnSuperseded,
+    SkipEvaluation,
+    WaitDeadlineAction,
+    WaitForInput,
+)
 from odyssey_fx.strategy.declarations.read_spec import LatestAvailable
 from odyssey_fx.strategy.declarations.specs import (
     BoolValue,
@@ -65,8 +78,10 @@ from odyssey_fx.strategy.records.payloads import (
 __all__ = [
     "BREAKOUT_LEVEL_KEY",
     "CONTRACT",
+    "CONTRACT_V2",
     "IMPLEMENTATION_REF",
     "REGISTRATION",
+    "REGISTRATION_V2",
     "evaluate",
 ]
 
@@ -75,49 +90,63 @@ BREAKOUT_LEVEL_KEY = "breakout_level"
 
 IMPLEMENTATION_REF = declared_implementation_ref("breakout_trigger", 1)
 
-CONTRACT = ComponentContract(
-    component_id="breakout_trigger",
-    version=1,
-    implementation_ref=IMPLEMENTATION_REF,
-    inputs={
-        "price": InputSpec(
-            data_type=PRICE_V1,
-            kind=PortKind.VALUE,
-            arity=InputArity(min_count=1, max_count=1),
-            read_spec=LatestAvailable(max_age=None, on_missing=SkipEvaluation()),
-        ),
-        "level": InputSpec(
-            data_type=PRICE_V1,
-            kind=PortKind.VALUE,
-            arity=InputArity(min_count=1, max_count=1),
-            read_spec=LatestAvailable(max_age=None, on_missing=SkipEvaluation()),
-        ),
-    },
-    outputs={
-        "opportunity": OutputSpec(
-            data_type=OPPORTUNITY_V1,
-            kind=PortKind.EVENT,
-            reference_schema={BREAKOUT_LEVEL_KEY: PRICE_V1},
-            retrigger_mode=RetriggerMode.EDGE,
-        )
-    },
-    parameters={
-        "direction": ParameterSpec(
-            value_type=ParameterType.STR,
-            allowed_values=(
-                StrValue(TradeDirection.LONG.value),
-                StrValue(TradeDirection.SHORT.value),
-            ),
-        )
-    },
-    evaluation_spec=EvaluationSpec(allowed=(AllowedBarClose(timeframes=None),), fixed=False),
-    state_spec=StateSpec(
-        state_type=CONDITION_STATE_V1,
-        initial=LiteralInitialState({"satisfied": BoolValue(False)}),
-        reset_on=(ResetTrigger.RUN_START,),
-    ),
-    temporal_constraints=TemporalConstraints(warmup=None, alignment=()),
+#: v2 の待機（D05 §9.2）: 日足1本ぶん待ち、期限では見送り、追い越されたら失効させる
+#: （上位設計書 §4.3.14 の「Trigger の標準方針」の具体値）。
+_WAIT_ONE_BAR = WaitForInput(
+    deadline=BarsDeadline(bars=1),
+    on_deadline=WaitDeadlineAction.SKIP_EVALUATION,
+    on_superseded=OnSuperseded.EXPIRE_REQUEST,
 )
+
+
+def _contract(version: int, level_on_missing: MissingInputPolicy) -> ComponentContract:
+    return ComponentContract(
+        component_id="breakout_trigger",
+        version=version,
+        implementation_ref=IMPLEMENTATION_REF,
+        inputs={
+            "price": InputSpec(
+                data_type=PRICE_V1,
+                kind=PortKind.VALUE,
+                arity=InputArity(min_count=1, max_count=1),
+                read_spec=LatestAvailable(max_age=None, on_missing=SkipEvaluation()),
+            ),
+            "level": InputSpec(
+                data_type=PRICE_V1,
+                kind=PortKind.VALUE,
+                arity=InputArity(min_count=1, max_count=1),
+                read_spec=LatestAvailable(max_age=None, on_missing=level_on_missing),
+            ),
+        },
+        outputs={
+            "opportunity": OutputSpec(
+                data_type=OPPORTUNITY_V1,
+                kind=PortKind.EVENT,
+                reference_schema={BREAKOUT_LEVEL_KEY: PRICE_V1},
+                retrigger_mode=RetriggerMode.EDGE,
+            )
+        },
+        parameters={
+            "direction": ParameterSpec(
+                value_type=ParameterType.STR,
+                allowed_values=(
+                    StrValue(TradeDirection.LONG.value),
+                    StrValue(TradeDirection.SHORT.value),
+                ),
+            )
+        },
+        evaluation_spec=EvaluationSpec(allowed=(AllowedBarClose(timeframes=None),), fixed=False),
+        state_spec=StateSpec(
+            state_type=CONDITION_STATE_V1,
+            initial=LiteralInitialState({"satisfied": BoolValue(False)}),
+            reset_on=(ResetTrigger.RUN_START,),
+        ),
+        temporal_constraints=TemporalConstraints(warmup=None, alignment=()),
+    )
+
+
+CONTRACT = _contract(1, SkipEvaluation())
+CONTRACT_V2 = _contract(2, _WAIT_ONE_BAR)
 
 
 def evaluate(
@@ -150,6 +179,12 @@ def evaluate(
 
 REGISTRATION = ComponentRegistration(
     contract=CONTRACT,
+    implementation=StatefulImplementation(evaluate=evaluate, state_type=CONDITION_STATE_V1),
+    implementation_ref=IMPLEMENTATION_REF,
+)
+
+REGISTRATION_V2 = ComponentRegistration(
+    contract=CONTRACT_V2,
     implementation=StatefulImplementation(evaluate=evaluate, state_type=CONDITION_STATE_V1),
     implementation_ref=IMPLEMENTATION_REF,
 )

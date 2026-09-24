@@ -5,11 +5,17 @@
 
 生成する足は決定論的で、乱数を使わない。価格は足の開始時刻から機械的に決めるので、同じ
 区間を2度生成すれば必ず同じ値になる（受入れの決定論性をテストするため）。
+
+**遅延の当て込み**（D08 §9.6 の1・2）: 素の足を作る関数（`make_bars` など）と、遅延シナリオ
+（`DelayScenario`、D03 §3.6）を当てる関数（`apply_delay`）を分けてある。同じ素の足に別々の
+シナリオを当てられるので、遅延シナリオ別の比較で「差が遅延だけであること」が構造で保証
+される。`apply_delay` は `available_at` だけを動かし、OHLC と対象区間は変えない。
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from datetime import date, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -20,6 +26,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import ClosureRule, TradingCalendar, WeeklyMoment
+from odyssey_fx.marketdata.domain.schedule import DelayScenario
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.timeframe_def import (
     FixedUtcAlignment,
@@ -164,6 +171,24 @@ def make_bars(
         assert interval is not None  # noqa: S101 - expected_bar_starts が保証する
         bars.append(make_bar(series_id, interval, volume=volume))
     return tuple(bars)
+
+
+def apply_delay(bars: Sequence[Bar], scenario: DelayScenario) -> tuple[Bar, ...]:
+    """遅延シナリオを当て、各足の `available_at` だけを遅らせる（D08 §9.6 の1）。
+
+    素の足の `available_at` を公開予定の時刻（D03 §3.5 の `scheduled_at`）とみなし、その足に
+    当たる遅延（`DelayScenario.delay_for`。複数の規則が当たれば最大）を足す。人工データの素の
+    足は通常の公開遅延を 0 として `available_at = bar_end` で作ってあるので、D03 §3.6 の
+    `available_at = scheduled_at + delay` と一致する。
+
+    OHLC・対象区間・系列・出所は1つも変えない。遅延が非負であることは規則の型が構築時に保証
+    する（D03 §3.6）ので、ここでは検査しない。入力の列は変更せず、新しい列を返す。
+    """
+    delayed: list[Bar] = []
+    for bar in bars:
+        delay = scenario.delay_for(bar.series, bar.bar_start)
+        delayed.append(replace(bar, available_at=bar.available_at + delay))
+    return tuple(delayed)
 
 
 def csv_rows(bars: Sequence[Bar]) -> tuple[dict[str, str], ...]:
