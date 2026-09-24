@@ -1352,14 +1352,30 @@ class _StepRun:
         )
 
     def _upstream_pending(self, ref: OutputRef) -> bool:
-        """上流がこの出力をまだ出していないか（D05 §6.8 の「待機の伝播」）。
+        """上流がこの出力を**まだ出していない**か（D05 §6.8 の「待機の伝播」）。
 
         上流が待機中なら、その出力を読む入力は「まだ出ていない」として扱い、下流自身が宣言
-        した欠損方針に従う。同じ `step` の中で上流が出力を出していれば読める。
+        した欠損方針に従う。ただし「まだ出ていない」のは、待機中の問いが**保持済みの最新
+        出力より新しい足**についてのものだけである。追い越されても待ち続ける設定
+        （`KEEP_WAITING`、D05 §6.10）で古い足の要求が残っていても、新しい足の出力が既に
+        あればそれを読む（最新1件の読み方の意味を変えない。D05 §6.5）。同じ `step` の中で
+        上流が出力を出していれば読める。観測した足が定まらない待機・出力は比べられないので、
+        待機中として扱う。
         """
         if ref in self._emitted:
             return False
-        return any(item.request.instance_id == ref.instance_id for item in self._waiting.values())
+        latest = self._latest_outputs.get(ref)
+        latest_payload = None if latest is None else latest.payload
+        latest_subject = latest_payload.subject if isinstance(latest_payload, Observation) else None
+        for item in self._waiting.values():
+            if item.request.instance_id != ref.instance_id:
+                continue
+            asked = self._subjects.get(item.request.request_id)
+            if asked is None or latest_subject is None:
+                return True
+            if latest_subject.bar_start < asked.bar_start:
+                return True
+        return False
 
     def _resolve_latest(
         self,

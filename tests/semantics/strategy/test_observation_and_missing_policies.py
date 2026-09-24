@@ -29,6 +29,7 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.catalog.conditions import compare
 from odyssey_fx.strategy.catalog.features import atr, extreme
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+from odyssey_fx.strategy.catalog.permissions import from_condition
 from odyssey_fx.strategy.catalog.registry import (
     ComponentOutputs,
     ComponentRegistration,
@@ -134,6 +135,12 @@ _WAIT_LONG = WaitForInput(
     on_superseded=OnSuperseded.EXPIRE_REQUEST,
 )
 WAIT_LONG = _compare_contract(95, _WAIT_LONG, _WAIT_LONG)
+_KEEP = WaitForInput(
+    deadline=BarsDeadline(bars=3),
+    on_deadline=WaitDeadlineAction.SKIP_EVALUATION,
+    on_superseded=OnSuperseded.KEEP_WAITING,
+)
+KEEP_WAITING = _compare_contract(96, _KEEP, _KEEP)
 
 REGISTRY: ComponentRegistry = build_registry(
     (
@@ -143,6 +150,7 @@ REGISTRY: ComponentRegistry = build_registry(
         WAIT_AND_PREVIOUS,
         FRESH_READER,
         WAIT_LONG,
+        KEEP_WAITING,
     )
 )
 
@@ -491,3 +499,36 @@ def test_without_the_failure_the_same_request_is_superseded_by_the_newer_one() -
     closed = next(r for r in records if r.request_id == old.request_id)
     fresh = next(r for r in records if r.request_id != old.request_id)
     assert closed.outcome == Superseded(by_request_id=fresh.request_id)
+
+
+def test_an_old_keep_waiting_request_does_not_hide_a_newer_output() -> None:
+    """D05 §6.5・§6.10: 追い越されても待ち続ける古い足の要求が残っていても、同じ使用箇所の
+    新しい足の出力が既にあれば、最新1件の読み取りはそれを読む。
+
+    05:00 の足が遅れ、06:00 の問いは待ち続ける。07:00 には 06:00 の足の問いが評価されて
+    出力を出す。上流が出力を出さない 07:15（15分足だけの判断時点）でも、15分足で起動する
+    下流はその新しい出力を読めなければならない。
+    """
+    keeper = _compare("keeper", KEEP_WAITING, _close(), _open())
+    reader = ComponentInstance(
+        instance_id="reader",
+        contract_ref=contract_ref_for(from_condition.CONTRACT),
+        inputs={
+            "long_allowed": InputBinding(sources=(OutputRef("keeper", "condition"),)),
+            "short_allowed": InputBinding(sources=(OutputRef("keeper", "condition"),)),
+        },
+        parameters={},
+        evaluation=EvaluationSchedule(triggers=(OnBarClose("m15", M15_SERIES),)),
+    )
+    quarter_past = NEXT_CLOSE + timedelta(minutes=15)
+    run = _Run(keeper, reader, late=True).until(quarter_past)
+
+    old = run.record(LATE_CLOSE, "keeper")
+    assert isinstance(old.outcome, Waiting)
+    records = [r for r in run.results[NEXT_CLOSE].evaluations if r.instance_id == "keeper"]
+    fresh = [r for r in records if r.request_id != old.request_id]
+    assert [type(r.outcome) for r in fresh] == [Evaluated]
+    assert old.request_id in {item.request.request_id for item in run.evaluator.state.waiting}
+    assert run.results[quarter_past].outputs
+    assert not [r for r in run.results[quarter_past].evaluations if r.instance_id == "keeper"]
+    assert isinstance(run.record(quarter_past, "reader").outcome, Evaluated)
