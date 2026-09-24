@@ -1706,8 +1706,13 @@ class _StepRun:
     def _confirmed_in(self, outcome: Evaluated) -> bool:
         """確認評価が出した確認結果の成否（D05 §4.8）。"""
         produced = set(outcome.output_ids)
-        for record in reversed(self._outputs):
-            if record.output_id in produced and isinstance(record.payload, ConfirmationResult):
+        role = self._compiled.roles.execution_filter
+        for record in self._outputs:
+            if (
+                record.output_id in produced
+                and record.producer == role
+                and isinstance(record.payload, ConfirmationResult)
+            ):
                 return record.payload.confirmed
         raise KernelValueError(  # pragma: no cover - _publish が確認結果の無い評価を失敗にする
             "a confirmation evaluation settled without a confirmation result (D05 §7.7)"
@@ -2154,9 +2159,12 @@ class _StepRun:
                 self._deliveries.setdefault(producer, []).append(record)
             self._capture_role_output(producer, record, request)
         # 遷移10 は確認結果の出力記録の後に刻む（D05 §7.7、T02 §14 #11）。
-        for item in confirmations.values():
-            if item.confirmed:
-                self._confirm(item.opportunity_id)
+        # 遷移を決めるのは `execution_filter` 役割が指す出力だけである（D05 §7.7）。
+        role = self._compiled.roles.execution_filter
+        if role is not None and role.instance_id == component.instance_id:
+            decisive = confirmations.get(role.output_name)
+            if decisive is not None and decisive.confirmed:
+                self._confirm(decisive.opportunity_id)
         self._sink.emit(tuple(records))
         return tuple(record.output_id for record in records)
 
@@ -2171,8 +2179,10 @@ class _StepRun:
 
         機会の識別子は評価要求が指す機会、確認足の区間はその評価の対象区間であり、どちらも
         ランタイムが持つ。部品には成否だけを返させ、別の機会の確認結果を作れないようにする。
-        確認部品の評価が確認結果を出さなかった場合は、確認試行の結末を決められないので失敗に
-        する。
+        確認の成否（遷移10 と確認試行）を決めるのは `execution_filter` 役割が指す出力だけで
+        ある（D05 §7.7）。同じ使用箇所が同じ型の出力を他にも返しても、それは記録に残るだけで
+        成否を決めない。確認部品の評価が役割の出力を出さなかった場合は、確認試行の結末を
+        決められないので失敗にする。
         """
         out: dict[str, ConfirmationResult] = {}
         for output_name in sorted(result.outputs):
@@ -2193,12 +2203,12 @@ class _StepRun:
                 confirmation_interval=request.target_interval,
                 confirmed=content.confirmed,
             )
-        plan = self._compiled.roles.confirmation
+        role = self._compiled.roles.execution_filter
         if (
-            not out
-            and plan is not None
-            and plan.filter_instance == component.instance_id
+            role is not None
+            and role.instance_id == component.instance_id
             and request.opportunity_id is not None
+            and role.output_name not in out
         ):
             raise _EvaluationFailure(
                 _data_error(

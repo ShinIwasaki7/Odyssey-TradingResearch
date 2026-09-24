@@ -55,6 +55,7 @@ from odyssey_fx.strategy.declarations.read_spec import LatestAvailable
 from odyssey_fx.strategy.declarations.refs import MarketDataField, MarketDataRef
 from odyssey_fx.strategy.declarations.specs import InputBinding
 from odyssey_fx.strategy.records.payloads import (
+    ConfirmationOutcome,
     ConfirmationResult,
     MarketPermission,
     Opportunity,
@@ -583,6 +584,26 @@ def test_the_run_end_settles_a_waiting_confirmation_and_its_attempt() -> None:
     assert lifecycle.attempts[-1].outcome is ConfirmationAttemptOutcome.SKIPPED
 
 
+def test_only_the_execution_filter_output_decides_the_confirmation() -> None:
+    """D05 §7.7: 同じ使用箇所が同じ型の出力を他にも返しても、成否は役割の出力だけで決まる。
+
+    役割の出力が未成立（開始足で EMA を上回らない）で、もう1つの出力が成立を返す試験用の
+    契約を使う。機会は `OPEN` のまま、確認試行は未成立で、注文意図は起動しない。
+    """
+    echo = _filter_with_an_inverted_echo()
+    definition = _swap(strategy_b(), "entry_filter", contract_ref=contract_ref_for(echo.contract))
+    run = ConfirmationRun(
+        m15_variant="route2", definition=definition, registry=_extended(echo)
+    ).run(START, AT_0900)
+    result = run.results[AT_0900]
+
+    assert [item.to_state for item in result.transitions] == [OpportunityState.OPEN]
+    assert [item.outcome for item in result.confirmation_attempts] == [
+        ConfirmationAttemptOutcome.NOT_CONFIRMED
+    ]
+    assert result.proposals == ()
+
+
 # --- 補助 ----------------------------------------------------------------------
 
 
@@ -638,6 +659,31 @@ def _filter_waiting_for_the_condition() -> ComponentRegistration:
         },
     )
     return replace(condition_filter.REGISTRATION, contract=contract)
+
+
+def _filter_with_an_inverted_echo() -> ComponentRegistration:
+    """役割の出力 `confirmation` のほかに、成否を反転した `echo` も返す確認部品（試験用）。"""
+    contract = replace(
+        condition_filter.CONTRACT,
+        version=91,
+        outputs={
+            **condition_filter.CONTRACT.outputs,
+            "echo": condition_filter.CONTRACT.outputs["confirmation"],
+        },
+    )
+
+    def evaluate(inputs: object, parameters: object) -> ComponentOutputs:
+        result = condition_filter.evaluate(inputs, parameters)  # type: ignore[arg-type]
+        outcome = result.outputs["confirmation"]
+        assert isinstance(outcome, ConfirmationOutcome)
+        inverted = ConfirmationOutcome(confirmed=not outcome.confirmed, reference_values={})
+        return ComponentOutputs(outputs={"confirmation": outcome, "echo": inverted})
+
+    return replace(
+        condition_filter.REGISTRATION,
+        contract=contract,
+        implementation=StatelessImplementation(evaluate=evaluate),
+    )
 
 
 def _extended(*extra: ComponentRegistration) -> ComponentRegistry:
