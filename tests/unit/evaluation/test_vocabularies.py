@@ -12,6 +12,8 @@ import 規則の対象外である）。
 
 from __future__ import annotations
 
+import typing
+
 from odyssey_fx.backtest.domain.orders import CloseCause
 from odyssey_fx.backtest.execution.protection_hits import ResolutionMethod
 from odyssey_fx.backtest.trace.recorder import table_columns
@@ -28,7 +30,14 @@ from odyssey_fx.evaluation.domain.metrics import (
     CategoryKind,
 )
 from odyssey_fx.strategy.runtime.opportunities import TERMINAL_REASONS
-from odyssey_fx.strategy.runtime.requests import Evaluated, Failed, Skipped
+from odyssey_fx.strategy.runtime.requests import (
+    Evaluated,
+    EvaluationOutcome,
+    Failed,
+    Skipped,
+    Superseded,
+    Waiting,
+)
 
 
 def test_the_intrabar_method_keys_match_the_implementation() -> None:
@@ -61,11 +70,21 @@ def test_the_admission_rejection_keys_are_the_six_of_the_design() -> None:
 
 
 def test_the_evaluation_outcome_keys_match_the_runtime_union() -> None:
-    """評価の結果区分3語が判断履歴へ書かれる区分タグと一致する（D05 §6.4）。"""
+    """評価の結果区分5語が判断履歴へ書かれる区分タグと一致する（D05 §6.4、D07 §6.1 v1.4）。
+
+    段階3 で待機中（`Waiting`）と追い越しで閉じた（`Superseded`）の2区分が足された。並びは
+    `EvaluationOutcome` の union の宣言順である。
+    """
+    assert EVALUATION_OUTCOME_KEYS == tuple(
+        variant.__dataclass_fields__["kind"].default
+        for variant in typing.get_args(EvaluationOutcome)
+    )
     assert EVALUATION_OUTCOME_KEYS == (
         Evaluated().kind,
         Skipped.__dataclass_fields__["kind"].default,
         Failed.__dataclass_fields__["kind"].default,
+        Waiting.__dataclass_fields__["kind"].default,
+        Superseded.__dataclass_fields__["kind"].default,
     )
 
 

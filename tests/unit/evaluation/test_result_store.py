@@ -40,7 +40,7 @@ from tests.fixtures.evaluation import traces
 
 @pytest.fixture
 def saved_run(tmp_path: Path) -> tuple[Path, object]:
-    """バックテストの成果物を1件保存した状態（判断履歴15表・manifest・結果）。"""
+    """バックテストの成果物を1件保存した状態（判断履歴19表・manifest・結果）。"""
     output = run_backtest(
         signal_bars=signal_bars(), execution_bars=execution_bars(), run_interval=RUN_INTERVAL
     )

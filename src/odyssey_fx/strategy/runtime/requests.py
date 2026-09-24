@@ -71,7 +71,14 @@ from odyssey_fx.strategy.declarations.validation import (
     require_instance,
     require_tuple_of,
 )
-from odyssey_fx.strategy.records.payloads import ManagementAction, OrderIntent, ProtectionLevels
+from odyssey_fx.strategy.records.payloads import (
+    ClosePosition,
+    ManagementAction,
+    OrderIntent,
+    ProtectionLevels,
+    SetTakeProfit,
+    UpdateStop,
+)
 from odyssey_fx.strategy.records.records import OutputRecord
 from odyssey_fx.strategy.runtime.confirmation import ConfirmationAttempt
 from odyssey_fx.strategy.runtime.opportunities import OpportunityTransition, ValidityRecheck
@@ -467,7 +474,7 @@ class ManagementRequest:
 
     def __post_init__(self) -> None:
         require_instance(self.position_id, PositionId, "ManagementRequest.position_id")
-        if getattr(self.action, "kind", None) not in ("SET_TAKE_PROFIT", "CLOSE_POSITION"):
+        if not isinstance(self.action, (SetTakeProfit, ClosePosition, UpdateStop)):
             raise KernelValueError(
                 f"ManagementRequest.action must be a ManagementAction, got {self.action!r}"
             )

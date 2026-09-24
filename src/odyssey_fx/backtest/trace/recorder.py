@@ -1,7 +1,7 @@
 """判断履歴の表と平坦化（D06 §9.1・§9.2）。
 
-段階2で書き出す表は15件で、行は**平坦化**して保存する。列は本書・D05 の型のフィールドに
-1対1で対応させ、入れ子は次の規則で開く（D06 §9.1、Q14 決定）。
+判断履歴の表は19件（段階2 の15件と段階3 の4件）で、行は**平坦化**して保存する。列は本書・
+D05 の型のフィールドに1対1で対応させ、入れ子は次の規則で開く（D06 §9.1、Q14 決定）。
 
 1. 行そのものの型のフィールドには接頭辞を付けず、入れ子は `<フィールド名>_` を接頭辞として
    再帰的に開く。
@@ -75,6 +75,7 @@ __all__ = [
     "EvidenceRecord",
     "ManagementApplication",
     "MarketObservationRef",
+    "SubstitutionOwner",
     "TraceTable",
     "canonical_text",
     "cost_columns",
@@ -91,7 +92,11 @@ __all__ = [
 
 
 class TraceTable(Enum):
-    """段階2で書き出す15表（D06 §9.2）。"""
+    """判断履歴の19表（D06 §9.2）。段階2 の15表に、段階3 の4表（16〜19）を足した。
+
+    段階3 の4表は戦略ランタイムの記録（待機の出来事・遡った入力・確認試行・有効性の再検査）
+    の置き場所であり、段階2 の宣言では常に空である（段階2 の15表は1つも変えない）。
+    """
 
     OUTPUTS = "OUTPUTS"
     EVALUATIONS = "EVALUATIONS"
@@ -108,6 +113,10 @@ class TraceTable(Enum):
     INTRABAR_RESOLUTIONS = "INTRABAR_RESOLUTIONS"
     LEDGER_SNAPSHOTS = "LEDGER_SNAPSHOTS"
     EVIDENCE = "EVIDENCE"
+    WAIT_EVENTS = "WAIT_EVENTS"
+    INPUT_SUBSTITUTIONS = "INPUT_SUBSTITUTIONS"
+    CONFIRMATION_ATTEMPTS = "CONFIRMATION_ATTEMPTS"
+    VALIDITY_RECHECKS = "VALIDITY_RECHECKS"
 
 
 class EvidenceKind(Enum):
@@ -177,6 +186,11 @@ class ManagementApplication:
     D06 §3 の型表には「適用結果」としか書かれていないため、その項目を表12 の列として
     保存できる形にしたものである。適用しなかった要求も**記録は残す**（`applied=False` と
     理由）。建玉は利確を持たないまま損切りだけで継続する。
+
+    段階3 の損切り水準の更新（`UpdateStop`、D06 §8.3）を適用したときは、丸めた後の水準を
+    `rounded_stop_loss` に残す（初期の利確の `rounded_take_profit` と同じ扱い）。要求の値
+    （表12 の `action_stop_loss`）と丸めた後の値が違いうるので、実際に建玉へ入った水準を
+    判断履歴から読めるようにするためである。
     """
 
     at: ProcessingPoint
@@ -185,6 +199,7 @@ class ManagementApplication:
     protection_version: int | None = None
     rounded_take_profit: Price | None = None
     realized_reward_risk: Decimal | None = None
+    rounded_stop_loss: Price | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.at, ProcessingPoint):
@@ -197,6 +212,25 @@ class ManagementApplication:
             )
         if not self.applied and self.reason is None:
             raise KernelValueError("a request that was not applied must record why (D06 §8.3)")
+
+
+@dataclass(frozen=True, slots=True)
+class SubstitutionOwner:
+    """表17（`INPUT_SUBSTITUTIONS`）の行が属する評価（D06 §9.2）。
+
+    遡った入力の記録（`SubstitutedInput`、D05 §3）そのものは `evaluation_id` を持たない
+    （評価記録 `EvaluationRecord.substitutions` の要素である）。表17 を独立させると親の評価が
+    行から読めなくなるので、エンジンが評価記録の識別子を組み合わせて1行にする。この型は
+    その組み合わせの主の側で、行は `CompositeRow(primary=SubstitutionOwner(...),
+    parts=(("", SubstitutedInput, 値),))` として運ぶ（接頭辞が空なので遡った入力の項目は
+    接頭辞なしで並ぶ）。
+    """
+
+    evaluation_id: EvaluationId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evaluation_id, EvaluationId):
+            raise KernelValueError("SubstitutionOwner.evaluation_id must be an EvaluationId")
 
 
 # --- 平坦化 -----------------------------------------------------------------
@@ -593,7 +627,7 @@ def flatten_row(row: object) -> dict[str, object]:
     return columns
 
 
-#: 記録層から型を参照できる11表の「正本の型」（D06 §9.2 の表）。複合表は従の型を接頭辞と
+#: 記録層から型を参照できる8表の「正本の型」（D06 §9.2 の表）。複合表は従の型を接頭辞と
 #: 一緒に並べる（規則3）。
 _TABLE_TYPES: Final[Mapping[TraceTable, tuple[type, tuple[tuple[str, type], ...]]]] = {
     TraceTable.OUTPUTS: (OutputRecord, ()),
@@ -615,12 +649,13 @@ _TABLE_TYPES: Final[Mapping[TraceTable, tuple[type, tuple[tuple[str, type], ...]
     TraceTable.EVIDENCE: (EvidenceRecord, ()),
 }
 
-#: 型をここから参照できない7表の列。理由は2つある。
+#: 型をここから参照できない11表の列。理由は2つある。
 #:
 #: 1. `admission` / `execution` / `portfolio` は記録層と同じ中間層で、相互に import できない
 #:    （D01 §3.3 の契約 L2c）: 表5・6・13・14
 #: 2. `strategy.runtime` は記録層からは見えるが、この表を読む書き出し実装
-#:    （`evaluation.adapters`）が `strategy.runtime` を参照できない（契約 F8）: 表2・3・12
+#:    （`evaluation.adapters`）が `strategy.runtime` を参照できない（契約 F8）: 表2・3・12 と、
+#:    段階3 の表16〜19
 #:
 #: `tests/unit/backtest/test_fs_store.py` が、実際の行の列と一致することを機械検査する。
 _BORROWED_COLUMNS: Final[Mapping[TraceTable, tuple[str, ...]]] = {
@@ -646,7 +681,8 @@ _BORROWED_COLUMNS: Final[Mapping[TraceTable, tuple[str, ...]]] = {
         "target_interval_end",
         "opportunity_id",
         "position_id",
-        # 段階3 の遡った入力（D05 §6.9）。表17 に独立させるまでは可変長の入れ子の列。
+        # 段階3 の遡った入力（D05 §6.9）。評価記録の項目なので平坦化の規則どおり可変長の
+        # 入れ子の列として残る。区分別に読める形は表17（`INPUT_SUBSTITUTIONS`）が持つ。
         "substitutions",
     ),
     TraceTable.OPPORTUNITY_TRANSITIONS: (
@@ -666,6 +702,9 @@ _BORROWED_COLUMNS: Final[Mapping[TraceTable, tuple[str, ...]]] = {
         "position_id",
         "action_kind",
         "action_price",
+        # 段階3 の損切り水準の更新（`UpdateStop`、D06 §8.3）。管理要求の区分が3つになった
+        # ので、union の和集合の列が1つ増える（D06 §9.1 の規則2）。
+        "action_stop_loss",
         "decision_time",
         "source_output_id",
         "application_at_time",
@@ -677,6 +716,55 @@ _BORROWED_COLUMNS: Final[Mapping[TraceTable, tuple[str, ...]]] = {
         "application_protection_version",
         "application_rounded_take_profit",
         "application_realized_reward_risk",
+        "application_rounded_stop_loss",
+    ),
+    # --- 段階3 の4表（D06 §9.2 の表16〜19）。正本の型は `strategy.runtime` にある ---
+    TraceTable.WAIT_EVENTS: (
+        "request_id",
+        "kind",
+        "at_time",
+        "at_phase",
+        "at_sequence",
+        "reason_code",
+        "reason_detail",
+        "arrived",
+    ),
+    TraceTable.INPUT_SUBSTITUTIONS: (
+        "evaluation_id",
+        "input_name",
+        "source_index",
+        "source_kind",
+        "source_instance_id",
+        "source_output_name",
+        "source_series",
+        "source_field",
+        "source_target",
+        "freshness_time",
+        "reason",
+        "used_bar_key_series",
+        "used_bar_key_bar_start",
+        "used_output_id",
+    ),
+    TraceTable.CONFIRMATION_ATTEMPTS: (
+        "opportunity_id",
+        "bar_key_series",
+        "bar_key_bar_start",
+        "request_id",
+        "outcome",
+    ),
+    TraceTable.VALIDITY_RECHECKS: (
+        "opportunity_id",
+        "source_instance_id",
+        "source_output_name",
+        "source_kind",
+        "mode",
+        "at_time",
+        "at_phase",
+        "at_sequence",
+        "outcome",
+        "output_id",
+        "reason_code",
+        "reason_detail",
     ),
     TraceTable.ATTEMPT_DECISIONS: (
         "kind",
@@ -774,7 +862,7 @@ def _with_run_id(names: Sequence[str]) -> tuple[str, ...]:
     return ("run_id", *(name for name in names if name != "run_id"))
 
 
-#: 書き写した7表のうち、文字列にならない列。ここに無い列は文字列である。
+#: 書き写した11表のうち、文字列にならない列。ここに無い列は文字列である。
 #: `tests/unit/backtest/test_fs_store.py` が、実際の行の型と一致することを機械検査する。
 _BORROWED_KINDS: Final[Mapping[TraceTable, Mapping[str, str]]] = {
     TraceTable.EVALUATIONS: {
@@ -798,6 +886,9 @@ _BORROWED_KINDS: Final[Mapping[TraceTable, Mapping[str, str]]] = {
     },
     TraceTable.INTRABAR_RESOLUTIONS: {"series_used": "list"},
     TraceTable.LEDGER_SNAPSHOTS: {"at_sequence": "int", "open_position_ids": "list"},
+    TraceTable.WAIT_EVENTS: {"at_sequence": "int", "arrived": "list"},
+    TraceTable.INPUT_SUBSTITUTIONS: {"source_index": "int"},
+    TraceTable.VALIDITY_RECHECKS: {"at_sequence": "int"},
 }
 
 
