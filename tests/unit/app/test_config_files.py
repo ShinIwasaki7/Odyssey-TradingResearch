@@ -378,3 +378,56 @@ def test_the_loaders_return_domain_types_not_pydantic_models() -> None:
     for value in loaded:
         module = type(value).__module__
         assert not module.startswith("pydantic"), f"{type(value)} は Pydantic の型である"
+
+
+# --- 取引日単位の休場（D03 §3.4.1・§9 v1.9）----------------------------------
+
+
+def _calendar_with_closures(tmp_path: Path, closures: str) -> Path:
+    """実物のカレンダーの `closures` だけを差し替えた版 2 を書く。"""
+    text = CALENDAR_FILE.read_text(encoding="utf-8").replace("\nversion: 1\n", "\nversion: 2\n")
+    assert "closures: []" in text
+    path = tmp_path / "fx_ny17_v2.yaml"
+    path.write_text(text.replace("closures: []", closures), encoding="utf-8")
+    return path
+
+
+def test_a_trading_day_closure_is_read_without_a_new_schema_version(tmp_path: Path) -> None:
+    """`covers_trading_day: true` を形式の版 1 のまま読める（D03 §9 v1.9）。"""
+    path = _calendar_with_closures(
+        tmp_path,
+        'closures:\n  - local_date: "2020-01-01"\n    covers_trading_day: true\n    note: 元日\n',
+    )
+    (closure,) = load_calendar(path).closures
+    assert closure.covers_trading_day
+    assert not closure.covers_whole_day
+    assert closure.start is None and closure.end is None
+
+
+def test_an_existing_whole_day_closure_still_reads_the_same(tmp_path: Path) -> None:
+    """キーを省略した既存の書き方は従来の意味のまま読める。"""
+    path = _calendar_with_closures(
+        tmp_path, 'closures:\n  - local_date: "2020-01-01"\n    covers_whole_day: true\n'
+    )
+    (closure,) = load_calendar(path).closures
+    assert closure.covers_whole_day
+    assert not closure.covers_trading_day
+
+
+def test_two_closure_forms_in_one_entry_are_a_configuration_error(tmp_path: Path) -> None:
+    path = _calendar_with_closures(
+        tmp_path,
+        'closures:\n  - local_date: "2020-01-01"\n    covers_whole_day: true\n'
+        "    covers_trading_day: true\n",
+    )
+    with pytest.raises(ConfigError, match="休場の宣言として成立しない"):
+        load_calendar(path)
+
+
+def test_the_weekly_time_is_the_daily_bar_anchor() -> None:
+    """取引日の境界（週の開閉時刻）は日足 `1d_ny17` の起点と同じ値である（D03 §3.4.1）。"""
+    calendar = load_calendar(CALENDAR_FILE)
+    daily = load_timeframes(TIMEFRAMES_FILE)["1d_ny17"]
+    assert isinstance(daily.alignment, SessionAlignment)
+    assert daily.alignment.tz == calendar.tz
+    assert daily.alignment.anchors_local == (calendar.trading_day_boundary,)

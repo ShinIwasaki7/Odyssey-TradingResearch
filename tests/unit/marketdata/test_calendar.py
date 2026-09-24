@@ -505,3 +505,188 @@ def test_openings_are_normalized_into_a_canonical_order() -> None:
     backward = _with_openings(LATE_OPENING, EARLY_OPENING)
     assert forward == backward
     assert forward.openings == (EARLY_OPENING, LATE_OPENING)
+
+
+# --- 取引日単位の休場（D03 §3.4.1 v1.9）--------------------------------------
+
+#: 2020 年の元日（水曜）。取引日は 2019-12-31 17:00 NY（22:00Z）〜2020-01-01 17:00 NY。
+NEW_YEAR = date(2020, 1, 1)
+NEW_YEAR_BAND = Interval(
+    start=UtcTime.parse("2019-12-31T22:00:00Z"), end=UtcTime.parse("2020-01-01T22:00:00Z")
+)
+
+
+def _trading_day(local_day: date = NEW_YEAR) -> ClosureRule:
+    return market.closure(local_day, trading_day=True, note="元日")
+
+
+def test_a_trading_day_closure_closes_from_the_previous_17_to_17() -> None:
+    """前日 17:00〜当日 17:00（NY）だけを閉じる（D03 §3.4.1）。"""
+    calendar = market.calendar(closures=(_trading_day(),))
+    assert calendar.is_open(UtcTime.parse("2019-12-31T21:59:59Z"))
+    assert not calendar.is_open(NEW_YEAR_BAND.start)
+    assert not calendar.is_open(UtcTime.parse("2020-01-01T21:59:59Z"))
+    # 当日 17:00 以降は開いている（終日休場との違い）。
+    assert calendar.is_open(NEW_YEAR_BAND.end)
+    assert calendar.is_open(UtcTime.parse("2020-01-02T04:00:00Z"))
+
+
+def test_a_trading_day_closure_equals_the_daily_bar_of_that_day() -> None:
+    """閉じる区間は、その日の 17:00 に終わる日足（`1d_ny17`）の整列上の区間と一致する。"""
+    calendar = market.calendar(closures=(_trading_day(),))
+    interval = _trading_day().utc_interval(
+        calendar.tz, trading_day_boundary=calendar.trading_day_boundary
+    )
+    assert interval == NEW_YEAR_BAND
+    assert market.TF_1D_NY17.boundaries(interval.start) == interval
+
+
+@pytest.mark.parametrize(
+    ("local_day", "hours"),
+    [
+        (date(2021, 3, 14), 23),  # 夏時間の開始（日曜 02:00）を含む取引日
+        (date(2021, 11, 7), 25),  # 夏時間の終了（日曜 02:00）を含む取引日
+        (date(2021, 3, 15), 24),  # 切替直後の取引日
+    ],
+)
+def test_a_trading_day_closure_follows_the_dst_switch(local_day: date, hours: int) -> None:
+    """夏時間の切替を含む取引日は 23 / 25 時間になる（D03 §3.2 の解決規則と同じ）。"""
+    interval = _trading_day(local_day).utc_interval(
+        market.NEW_YORK, trading_day_boundary=time(17, 0)
+    )
+    assert interval.duration.total_seconds() == hours * 3600
+    assert market.TF_1D_NY17.boundaries(interval.start) == interval
+
+
+def test_a_trading_day_closure_removes_the_bars_of_that_trading_day() -> None:
+    """その取引日の足（1h・4h・1d）は存在すべきでなく、17:00 以降の足は存在すべき。"""
+    calendar = market.calendar(closures=(_trading_day(),))
+    window = Interval(
+        start=UtcTime.parse("2019-12-31T12:00:00Z"), end=UtcTime.parse("2020-01-02T12:00:00Z")
+    )
+    for timeframe in (market.TF_1H, market.TF_4H_NY17, market.TF_1D_NY17):
+        base = set(market.calendar().expected_bar_starts(timeframe, window))
+        with_closure = set(calendar.expected_bar_starts(timeframe, window))
+        assert with_closure == {start for start in base if not NEW_YEAR_BAND.contains(start)}
+        # 切り詰められた足は生じない（取引日の境界が足の境界に一致するため）。
+        for start in with_closure:
+            assert timeframe.expected_interval(calendar, start) == timeframe.boundaries(start)
+    assert UtcTime.parse("2020-01-01T22:00:00Z") in calendar.expected_bar_starts(
+        market.TF_1H, window
+    )
+
+
+def test_a_trading_day_closure_leaves_the_weekly_session_intact() -> None:
+    """`weekly_session_at` は休場を適用しない（形によらず同じ。D03 §3.4）。"""
+    moment = UtcTime.parse("2020-01-01T12:00:00Z")
+    closed = market.calendar(closures=(_trading_day(),))
+    assert closed.weekly_session_at(moment) == market.calendar().weekly_session_at(moment)
+
+
+def test_the_whole_day_closure_keeps_its_meaning() -> None:
+    """終日休場は従来どおり現地 0:00〜翌日 0:00 を閉じる（v1.9 で意味を変えない）。"""
+    calendar = market.calendar(closures=(ClosureRule(local_date=NEW_YEAR, covers_whole_day=True),))
+    assert calendar.is_open(UtcTime.parse("2019-12-31T23:00:00Z"))  # 前日 18:00 NY
+    assert not calendar.is_open(UtcTime.parse("2020-01-01T05:00:00Z"))  # 当日 0:00 NY
+    assert not calendar.is_open(UtcTime.parse("2020-01-02T04:59:59Z"))  # 当日 23:59 NY
+
+
+def test_a_trading_day_closure_rejects_another_form() -> None:
+    """3つの形はちょうど1つ（D03 §3.4.1）。"""
+    with pytest.raises(MarketDataValueError, match="exactly one form"):
+        ClosureRule(local_date=NEW_YEAR, covers_whole_day=True, covers_trading_day=True)
+    with pytest.raises(MarketDataValueError, match="must not carry start/end"):
+        ClosureRule(local_date=NEW_YEAR, covers_trading_day=True, start=time(3, 0), end=time(4, 0))
+    with pytest.raises(MarketDataValueError, match="must be a bool"):
+        ClosureRule(local_date=NEW_YEAR, covers_trading_day=1)  # type: ignore[arg-type]
+
+
+def test_a_trading_day_closure_needs_the_boundary() -> None:
+    """取引日の境界を渡さずに区間を求めることはできない（境界はカレンダーが持つ）。"""
+    with pytest.raises(MarketDataValueError, match="trading-day boundary"):
+        _trading_day().utc_interval(market.NEW_YORK)
+
+
+def test_the_trading_day_boundary_is_the_weekly_open_and_close_time() -> None:
+    """取引日の境界は週の開閉時刻であり、新しい時刻の定義は持たない。"""
+    assert market.calendar().trading_day_boundary == time(17, 0)
+
+
+def test_a_trading_day_closure_needs_a_single_weekly_time() -> None:
+    """週の開始と終了の時刻が違うカレンダーでは取引日の境界が定まらないので拒否する。"""
+    kwargs: dict[str, Any] = {
+        "id": "odd",
+        "version": 1,
+        "tz": market.NEW_YORK,
+        "weekly_open": WeeklyMoment(weekday=6, at=time(17, 0)),
+        "weekly_close": WeeklyMoment(weekday=4, at=time(16, 0)),
+    }
+    # 取引日単位の休場が無ければ従来どおり作れる。
+    assert TradingCalendar(**kwargs).trading_day_boundary is None
+    with pytest.raises(MarketDataValueError, match="single trading-day boundary"):
+        TradingCalendar(**kwargs, closures=(_trading_day(),))
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        ClosureRule(local_date=NEW_YEAR, covers_whole_day=True),
+        ClosureRule(local_date=date(2019, 12, 31), start=time(18, 0), end=time(20, 0)),
+        ClosureRule(local_date=NEW_YEAR, start=time(3, 0), end=time(17, 0)),
+        ClosureRule(local_date=NEW_YEAR, covers_trading_day=True, note="重複"),
+        ClosureRule(local_date=NEW_YEAR, covers_trading_day=True, note="元日"),
+    ],
+    ids=[
+        "whole_day_same_date",
+        "shortened_previous_evening",
+        "shortened_same_day",
+        "same_date",
+        "identical",
+    ],
+)
+def test_a_trading_day_closure_overlapping_another_closure_is_rejected(
+    other: ClosureRule,
+) -> None:
+    """取引日単位の休場は他の休場と重ならない（D03 §3.4.1 の検証 2）。"""
+    with pytest.raises(MarketDataValueError, match="must not overlap another closure"):
+        market.calendar(closures=(_trading_day(), other))
+
+
+def test_touching_closures_are_allowed_next_to_a_trading_day_closure() -> None:
+    """端で接する休場は許す（連続する取引日、当日 17:00 からの短縮）。"""
+    calendar = market.calendar(
+        closures=(
+            _trading_day(date(2019, 12, 25)),
+            _trading_day(date(2019, 12, 26)),
+            ClosureRule(local_date=date(2019, 12, 26), start=time(17, 0), end=time(18, 0)),
+        )
+    )
+    assert not calendar.is_open(UtcTime.parse("2019-12-26T22:30:00Z"))  # 26日 17:30 NY
+    assert calendar.is_open(UtcTime.parse("2019-12-26T23:00:00Z"))  # 26日 18:00 NY
+
+
+def test_whole_day_and_shortened_overlaps_are_not_newly_rejected() -> None:
+    """終日休場と短縮セッションどうしの重なりは v1.9 でも検証しない（従来どおり）。"""
+    calendar = market.calendar(
+        closures=(
+            ClosureRule(local_date=NEW_YEAR, covers_whole_day=True),
+            ClosureRule(local_date=NEW_YEAR, start=time(3, 0), end=time(4, 0)),
+        )
+    )
+    assert not calendar.is_open(UtcTime.parse("2020-01-01T09:00:00Z"))
+
+
+def test_an_opening_overlapping_a_trading_day_closure_is_rejected() -> None:
+    """営業例外との重なりは他の形と同じく拒否する（D03 §3.4.1 の検証 3）。"""
+    # 月曜の元日（2018-01-01）: 取引日は日曜 17:00〜月曜 17:00。日曜 16:00〜17:30 の営業
+    # 例外は週の開場に接するが、取引日単位の休場と重なる。
+    opening = OpeningRule(local_date=date(2017, 12, 31), start=time(16, 0), end=time(17, 30))
+    with pytest.raises(MarketDataValueError, match="overlaps the closure"):
+        _with_openings(opening, closures=(_trading_day(date(2018, 1, 1)),))
+
+
+def test_trading_day_closures_are_normalized_into_a_canonical_order() -> None:
+    """宣言順は同値性に影響しない（形の違いも整列鍵に入る）。"""
+    first = _trading_day(date(2019, 12, 25))
+    second = _trading_day(NEW_YEAR)
+    assert market.calendar(closures=(first, second)) == market.calendar(closures=(second, first))
