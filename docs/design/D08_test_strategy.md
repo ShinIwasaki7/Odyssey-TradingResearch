@@ -5,6 +5,7 @@
 v1.1（2026-09-23、PR #24）: 戦略ランタイム設計（D05）の要決定 Q24 に対する人間の決定（選択肢1）を受け、**未整備を1件足した**（第13.2節の #6、合計 10件 → 11件）。確認待ちのあいだに市場状態が失効する経路が検証戦略 B では構造的に到達しないと分かったため（紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) §6）、**取引機会の有効性の再検査の4つの結末を、確認期限だけを長くした小さな戦略で意味論テストする**ことになった。本文の他の節は変えていない。
 v1.2（2026-09-24、段階3 実装 PR 1/5）: 段階3 実装の PR 分割が人間に承認されたことを受け、**第9.6節（遅延シナリオ4ケースへの生成器の拡張方針）を【提案】から【合意済み】へ改めた**。あわせて、紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) §16 が新しく必要とした拡張（日足を1時間足から集約する入り口）を第9.6節に1行足した。拡張1・2 と日足集約の入り口は同じ PR で実装した（`tests/fixtures/synthetic/market.py` の `apply_delay`、`tests/fixtures/acceptance/t02_market.py`）。本文の他の節は変えていない。
 v1.3（2026-09-24、PR #30）: 第15節の 1・2 を実装したことを記録した。**第9.3節の2つの入り口（gap・SL/TP 同時到達）**を汎用生成器に足し、上位 §7.2 #5 の手計算検証（週明けの窓開けで損切りを飛び越える決済価格、両方に触れた足が未解決として数えられること）と、上位 §7.2 #1 の**判断まで通した先読み不変テスト**を書いた。これに合わせて第4.1節の #1・#5 を「対応あり」に、第13.2節 #3・第13.3節 #1・#2 を「実装済み」に改めた（未整備 11件 → 8件）。第9.3節の仕様に書かれていなかった2点（先頭の足への gap、落とした足と「直前の足」）の扱いを同節の末尾に仮置きとして記録した。仕様そのものは変えていない。
+v1.4（2026-09-24）: 第15節の 3 を実装したことを記録した。**第13.1節の未整備3件**（バックテスト基盤 D06 §11 の #2 受付と約定の原子性、#3 同じ `event_id` の再配送、#6 期限と始値の同時刻）を、名前の付いた意味論テストとして `tests/semantics/backtest/test_commit_and_expiry_semantics.py` に固定した。#6 は D06 §5.1 が「段階2 ではどの設定でも発生しない」とした遷移3 に当たるため、第6.2節末尾の規約（表現できることを1件で固定し、発生しない理由を docstring に書く）に従い、受付を経由せずに注文を台帳へ置く表現可能性のテストと、発生しない理由（受付が同時刻の候補を拒否すること）を実際の run で確かめるテストの2件で書いた。これに合わせて第7.1節の3行を「対応あり」に、第13.1節を0件に改めた（未整備 8件 → 5件）。テスト用の組み立て（`tests/fixtures/backtest/harness.py`）に、実行コンテキストを差し替える引数を1つ足した。`src/` と本文の他の節は変えていない。
 v0.1（2026-09-22 起草）: 全体計画書 §8.4「テスト戦略（D08 で具体化）」を、**段階1〜2 で実際に書かれたテスト資産を正本として**具体化する。新しいテストを書く文書ではなく、**すでにあるものを記述し、足りないところを名指しする**文書である。第13節に未整備10件の一覧、第14節に決定の一覧を置く。
 上位文書: [上位設計書](fx_research_platform_greenfield_design.md) §4.7.15 E・§7.2、[全体計画書](fx_research_platform_overall_plan.md) §8.2・§8.4、[D01](D01_architecture_and_dependency_rules.md) §6・§9、[D02](D02_common_kernel.md) §11、[D03](D03_marketdata_and_time.md) §11、[D04](D04_strategy_declarations.md) §12、[D05](D05_strategy_runtime.md) §11、[D06](D06_backtest_vertical_slice.md) §11・§9.1・§10.1、[D07](D07_single_run_evaluation.md) §9・§11、[T01](../traces/T01_paper_trace.md)、ADR-0004（依存規則の機械検査）、ADR-0006（決定論的 ID）、ADR-0012（Decimal / float 境界）、ADR-0014（期間のアクセス分類）、ADR-0024（時間足の集約規則）、ADR-0027（成果物は Parquet 表＋JSON マニフェスト）
 対応段階: 段階1〜。段階3（遅延シナリオ4ケース・検証戦略 B）の拡張方針は第9.6節に置き、v1.2（2026-09-24）で確定した。
@@ -229,16 +230,16 @@ D03 §11 の意味論4行。
 | # | 契約行（D06 §11） | 状態 | テスト |
 |---|---|---|---|
 | 1 | 受付拒否で注文と予約が残らない | 対応あり | `tests/semantics/backtest/test_engine_semantics.py::test_a_rejected_attempt_leaves_no_order_and_no_reservation` |
-| 2 | 受付と約定の原子性 | **未整備** | 見当たらない。近いのは `tests/semantics/backtest/…::test_a_failed_run_records_the_ledger_state_after_the_cancellations`（失敗時の台帳）だが、**1判断時点の中で受付と約定が分割不能であること**は押さえていない |
-| 3 | 同じ `event_id` の再配送 | **未整備** | `tests/integration/strategy/test_strategy_a_trace.py::test_a_batch_is_not_processed_twice` がバッチ単位の重複を押さえるが、**`event_id` 単位ではなく、層も統合**である |
+| 2 | 受付と約定の原子性 | 対応あり（v1.4） | `tests/semantics/backtest/test_commit_and_expiry_semantics.py`::test_no_ledger_ever_shows_half_of_a_commit_unit`（run の中で台帳が差し替えられるたびに値を残し、どの台帳にも確定単位の半分だけが入った状態が無いこと。損切り・利確の2経路）、`::test_an_engine_close_is_accepted_and_filled_in_one_replacement`（エンジン生成の決済は、初めて現れた台帳で既に約定済み）、`::test_a_failing_fill_leaves_the_engine_close_unaccepted`（約定側の検査に失敗したら受付も台帳に入らない） |
+| 3 | 同じ `event_id` の再配送 | 対応あり（v1.4） | 同ファイル `::test_every_order_event_of_a_run_is_committed_exactly_once`（1 run の注文イベントに重複が無く、全部が台帳の処理済み記録に入る）、`::test_a_redelivered_order_event_is_never_applied_twice`（run の中で確定した決済のイベントを同じ `event_id` のまま再び確定させようとしても、約定・残高・割当が二重に動かない）。エンジンは注文イベントの識別子を自分で採番するため、1 run の中で同じ識別子が2度届く入口は無い。バッチ単位の重複は従来どおり `tests/integration/strategy/test_strategy_a_trace.py::test_a_batch_is_not_processed_twice` |
 | 4 | 終端後の別イベント | **対応あり（層は意味論の外）** | `tests/semantics/strategy/test_opportunity_transitions.py::test_nothing_is_accepted_after_the_run_end_batch`、`::test_an_admission_notice_for_an_unknown_opportunity_is_rejected` が**戦略側**にある。バックテスト側の意味論としては無い |
 | 5 | 予約移管の二重計上 | **対応あり（層は意味論の外）** | `tests/unit/backtest/test_portfolio.py::test_a_transferred_reservation_is_not_counted_twice`、`::test_the_consumed_budget_counts_held_reservations`（**単体層**） |
-| 6 | 期限と始値の同時刻 | **未整備** | `tests/unit/backtest/test_orders.py::test_transition3_expiry_records_the_reason` は期限切れそのもの。**期限到来と候補の始値が同時刻に並んだときの順序**は押さえていない。D06 §5.1 は「遷移3 はどの設定でも発生しない」と書いており、§6.2 の表現可能性テストの形で書くのが筋 |
+| 6 | 期限と始値の同時刻 | 対応あり（v1.4。第6.2節の表現可能性の形） | 同ファイル `::test_an_expiry_at_the_candidate_open_is_expressible_and_expires_first`（受付を経由せずに、期限と候補の始値が同時刻の注文を台帳へ置いて run を走らせ、期限切れ（rank 2）が始値処理（rank 11）より先に確定し、約定せず、予約が解放されること。発生しない理由を docstring に書く）、`::test_a_candidate_open_at_the_expiry_is_refused_at_admission`（発生しない理由の側: 候補の始値が期限と同時刻なら受付前に `NO_CANDIDATE` で拒否され、注文が作られない）。期限切れの遷移そのものは `tests/unit/backtest/test_orders.py::test_transition3_expiry_records_the_reason` |
 | 7 | 保護決済と通常決済の競合 | 対応あり | `tests/semantics/backtest/test_engine_semantics.py::test_a_close_request_supersedes_a_protection_update_on_the_same_position`、`::test_the_end_of_run_rule_wins_over_the_close_collision` |
 | 8 | 末尾の非執行 | 対応あり | 同ファイル `::test_the_decision_points_stop_at_the_run_end`、`::test_the_final_snapshot_comes_after_the_end_of_run_cancellations`、`::test_the_end_of_run_transitions_get_their_own_processing_points` |
 | 9 | warmup 中の注文ゼロ | 対応あり | 同ファイル `::test_no_order_is_placed_while_the_warmup_is_incomplete`（受入層にも `tests/acceptance/test_stage2_completion.py::test_no_order_is_placed_during_the_warmup`。第2.2節の意図的な重複） |
 
-**9行のうち、契約行として充足しているのは6行**（対応あり5行＝#1・#7・#8・#9 と、層が意味論の外の #5）。**未整備は3行**（#2 受付と約定の原子性、#3 同じ `event_id` の再配送、#6 期限と始値の同時刻）。#4 は戦略側の意味論層にあり充足している。
+**9行すべてが契約行として充足している**（v1.4）。対応あり7行（#1・#2・#3・#6・#7・#8・#9）と、層が意味論の外の2行（#4 は戦略側の意味論層、#5 は単体層）である。v1.3 までは #2 受付と約定の原子性、#3 同じ `event_id` の再配送、#6 期限と始値の同時刻の3行が未整備だった。
 
 なお `tests/semantics/backtest/test_engine_semantics.py` には契約行に挙がっていない意味論テストが多数ある（全32件）。台帳の恒等式（`::test_the_ledger_identity_holds_at_every_snapshot`）、実行識別子の完全一致（`::test_a_run_id_unlike_the_complete_input_fails_before_anything_is_written`）、根拠の出どころ（`::test_the_evidence_rows_carry_their_provenance`、`::test_only_the_child_bars_actually_read_become_evidence`）などで、これらは D06 の他の節の契約を押さえている。
 
@@ -489,13 +490,13 @@ D07 §9.1 の決定論の3条件（壁時計の時刻を入れない、行の順
 
 本書は**直す文書ではない**。ここに挙げたものは、本書の承認後に別の PR で埋める候補である。
 
-### 13.1 意味論テストの対応（3件）
+### 13.1 意味論テストの対応（0件）
 
-Q1 の決定（契約行の充足は層を問わない）により、**従来「層違い」として数えていた10件は充足しているものとして数える**。したがって未整備は3件である。
+Q1 の決定（契約行の充足は層を問わない）により、**従来「層違い」として数えていた10件は充足しているものとして数える**。したがって未整備は3件だったが、**v1.4 で3件とも埋めた**ので0件である。
 
 | 区分 | 件数 | 内訳 |
 |---|---|---|
-| **未整備** | 3 | D06 §11 の #2 受付と約定の原子性、#3 同じ `event_id` の再配送、#6 期限と始値の同時刻 |
+| **未整備** | 0 | **実装済み（v1.4、`tests/semantics/backtest/test_commit_and_expiry_semantics.py`）**: D06 §11 の #2 受付と約定の原子性、#3 同じ `event_id` の再配送、#6 期限と始値の同時刻（第7.1節の表） |
 
 参考（未整備ではないが、どこにあるかを追うための記録）: **契約行を充足しているがテストが `tests/semantics/` の外にあるのは10件**。D04 §12 の3行すべて（単体層）、D06 §11 の #4 終端後の別イベント（戦略側の意味論層）・#5 予約移管の二重計上（単体層）、D07 §11 の5行すべて（単体層）。
 
@@ -517,7 +518,7 @@ Q1 の決定（契約行の充足は層を問わない）により、**従来「
 | 1 | **実装済み（PR #30、v1.3。`tests/semantics/backtest/test_lookahead_semantics.py`）**。**部品の出力と意思決定まで通した先読み不変のテストが無い**。市場データの見え方（`tests/property/marketdata/test_asof_properties.py`）までは押さえているが、**同じ run を未来の足を足した入力でもう一度回して trace が一致すること**は確かめていない。これは上位 §7.2 の筆頭項目であり、先読み防止の中心にある | 上位 §7.2・本書 §4.1 #1 |
 | 2 | **実装済み（PR #30、v1.3。`tests/semantics/backtest/test_gap_and_straddle_semantics.py`）**。**gap を含む足での手計算検証が無い**（生成器の入り口が無いため。13.2 #3 と同じ原因） | 上位 §7.2・本書 §4.1 #5 |
 
-**未整備は合計 11件**（意味論の対応 3件、その他 6件、上位由来 2件）。起草時は20件だったが、**Q1 の決定で10件が「充足」に変わった**ため 10件になり、**2026-09-23 の Q24 の決定で1件（その他 #6）が加わって 11件**になった。テストが増えたわけではない。**v1.3 で3件（その他 #3、上位由来 #1・#2）を実装したので、残る未整備は 8件**（意味論の対応 3件、その他 5件）。実装済みの行は経緯を追えるように表に残している。
+**未整備は合計 11件**（意味論の対応 3件、その他 6件、上位由来 2件）。起草時は20件だったが、**Q1 の決定で10件が「充足」に変わった**ため 10件になり、**2026-09-23 の Q24 の決定で1件（その他 #6）が加わって 11件**になった。テストが増えたわけではない。**v1.3 で3件（その他 #3、上位由来 #1・#2）を実装したので、残る未整備は 8件**（意味論の対応 3件、その他 5件）。**v1.4 で意味論の対応3件を実装したので、残る未整備は 5件**（その他 5件）。実装済みの行は経緯を追えるように表に残している。
 
 ## 14. 決定の一覧（2026-09-23、3件すべて決定済み）
 
@@ -539,7 +540,7 @@ Q1 の決定により、**充足の判定は層を問わない**ことになっ�
 
 1. **第9.3節の2つの入り口（gap・SL/TP 同時到達）を実装する**。別 PR で `tests/fixtures/synthetic/market.py` に足し、上位 §7.2 #5 の手計算検証を1件ずつ書く。**済（PR #30、v1.3）**。
 2. **上位 §7.2 #1 の先読み不変テストを書く**（未来の足を足した入力で同じ run を回し、trace が一致すること）。第13.3節 #1。**済（PR #30、v1.3）**。
-3. **未整備の残り3件**（第13.1節。受付と約定の原子性、同じイベント識別子の再配送、期限と始値の同時刻）を埋める。D06 §5.1 が「どの設定でも発生しない」と書いた遷移は、第6.2節の表現可能性テストの形で書く。
+3. **未整備の残り3件**（第13.1節。受付と約定の原子性、同じイベント識別子の再配送、期限と始値の同時刻）を埋める。D06 §5.1 が「どの設定でも発生しない」と書いた遷移は、第6.2節の表現可能性テストの形で書く。**済（v1.4、`tests/semantics/backtest/test_commit_and_expiry_semantics.py`）**。
 4. **上位設計書 §7.2 の文言の改訂依頼**（第14.1節）を、上位設計書の次の改訂に渡す。
 5. 第13節の残りを、埋める順に並べて全体計画 §10 の「次のアクション」へ渡す。
 6. 段階3 の着手時に、第9.6節の3点を D08 v0.2 として確定させる（遅延シナリオ4ケースの生成器の入り口・比較の置き場所）。
