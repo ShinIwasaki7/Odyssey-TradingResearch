@@ -42,6 +42,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
@@ -253,6 +254,18 @@ class RuntimeState:
     waiting: tuple[WaitingRequest, ...] = ()
     request_subjects: Mapping[RequestId, BarKey] = field(default_factory=dict)
     latest_requests: _LatestRequests = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # 可変参照はランタイム1インスタンスにつき1つだけ（D05 §1・§6.5）。対応表は読み取り
+        # 専用の写しにして持ち、`state` を読んだ側が保持や履歴を書き換えられないようにする。
+        for name in (
+            "component_states",
+            "latest_outputs",
+            "output_history",
+            "request_subjects",
+            "latest_requests",
+        ):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
 
 
 class _EvaluationFailure(Exception):

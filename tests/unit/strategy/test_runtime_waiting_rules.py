@@ -333,3 +333,21 @@ def test_an_observation_without_a_bar_leaves_both_the_bar_and_the_interval_empty
             observation_interval=None,
             freshness_time=T0,
         )
+
+
+def test_the_runtime_state_exposes_read_only_mappings() -> None:
+    """D05 §6.5: 可変参照は評価器の1つだけ。状態を読んだ側は保持や履歴を書き換えられない。"""
+    from odyssey_fx.strategy.runtime.evaluator import RuntimeState
+
+    row = _row(1, True, 1)
+    state = RuntimeState(output_history={LEVEL: (row,)}, latest_outputs={LEVEL: row.record})
+    mappings: tuple[object, ...] = (
+        state.output_history,
+        state.latest_outputs,
+        state.component_states,
+        state.request_subjects,
+        state.latest_requests,
+    )
+    for mapping in mappings:
+        with pytest.raises(TypeError):
+            mapping[LEVEL] = row  # type: ignore[index]
