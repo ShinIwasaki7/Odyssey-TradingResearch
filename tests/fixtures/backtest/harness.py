@@ -361,6 +361,7 @@ def build_run(
     execution_view_bars: Sequence[Bar] | None = None,
     allocator_run_id: RunId | None = None,
     calendar: TradingCalendar = CALENDAR,
+    context: EngineContext | None = None,
 ) -> RunSetup:
     """run を組み立てるだけで実行はしない。
 
@@ -370,6 +371,10 @@ def build_run(
     `calendar` を差し替えると、休場（祝日・短縮セッション）を宣言したカレンダーで run を
     組める。足のスケジュールと受付の判定が同じカレンダーを見ることを保つため、執行系列の
     ビューにも同じものを渡す（D03 §3.5・§6.3）。
+
+    `context` を渡すと、エンジンと戦略ランタイムが共有する実行コンテキストを差し替えられる。
+    台帳の差し替えを1回ずつ観測するテスト（D06 §4.4 の確定単位）と、受付を経由しない注文を
+    台帳に置いてから走らせる表現可能性のテスト（D08 §6.2）が使う。
     """
     compiled = compiled_strategy(definition)
     config = RunConfig(
@@ -399,7 +404,7 @@ def build_run(
         else allocator_run_id
     )
     sink = TraceOutputSink()
-    context = EngineContext(account)
+    context = EngineContext(account) if context is None else context
     evaluator = StrategyEvaluator(
         compiled=compiled,
         registry=INITIAL_CATALOG,
@@ -464,12 +469,14 @@ def run_backtest(
     intrabar: Mapping[SeriesId, Sequence[Bar]] | None = None,
     execution_view_bars: Sequence[Bar] | None = None,
     calendar: TradingCalendar = CALENDAR,
+    context: EngineContext | None = None,
 ) -> RunOutput:
     """人工データで1回の run を通す。
 
     `execution_view_bars` に別の列を渡すと、公開フィードは足の到着を知らせるのに執行系列に
     その足が無い状態を作れる（実行中のデータ不整合の検証に使う）。`calendar` に休場を宣言
-    したカレンダーを渡すと、祝日・短縮セッションのある run を組める。
+    したカレンダーを渡すと、祝日・短縮セッションのある run を組める。`context` は
+    `build_run` と同じ。
     """
     setup = build_run(
         signal_bars=signal_bars,
@@ -483,6 +490,7 @@ def run_backtest(
         intrabar=intrabar,
         execution_view_bars=execution_view_bars,
         calendar=calendar,
+        context=context,
     )
     result = setup.use_case.run(setup.config, setup.compiled)
     assert setup.result_writer.manifest is not None

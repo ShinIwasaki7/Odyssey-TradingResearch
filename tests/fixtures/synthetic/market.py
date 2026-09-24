@@ -10,17 +10,23 @@
 （`DelayScenario`、D03 §3.6）を当てる関数（`apply_delay`）を分けてある。同じ素の足に別々の
 シナリオを当てられるので、遅延シナリオ別の比較で「差が遅延だけであること」が構造で保証
 される。`apply_delay` は `available_at` だけを動かし、OHLC と対象区間は変えない。
+
+**gap と SL/TP 同時到達**（D08 §9.3）: `make_bars` の `gaps` と `straddles` で指定する。どちらも
+既定は空で、指定しなければ従来と同じ足が出る。gap は値の水準を飛ばし（以降の足も新しい水準から
+続く）、straddle は1本の足の高値・安値を広げて2つの価格を包ませる。どちらも対象区間と
+`available_at` を動かさない。同じ足に両方を指定したときの適用順は gap → straddle。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, time, timedelta
 from decimal import Decimal
+from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
-from odyssey_fx.common.money import Price, decimal_from_int, decimal_from_str
+from odyssey_fx.common.money import Price, PriceOffset, decimal_from_int, decimal_from_str
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
@@ -148,6 +154,11 @@ def make_bar(
     )
 
 
+#: `make_bars` の `gaps` / `straddles` の既定（空。書き換えられない写像にしておく）。
+NO_GAPS: Mapping[UtcTime, PriceOffset] = MappingProxyType({})
+NO_STRADDLES: Mapping[UtcTime, tuple[Price, Price]] = MappingProxyType({})
+
+
 def make_bars(
     series_id: SeriesId,
     timeframe_def: TimeframeDefinition,
@@ -156,21 +167,91 @@ def make_bars(
     *,
     skip_starts: Iterable[UtcTime] = (),
     volume: str = "1000",
+    gaps: Mapping[UtcTime, PriceOffset] = NO_GAPS,
+    straddles: Mapping[UtcTime, tuple[Price, Price]] = NO_STRADDLES,
 ) -> tuple[Bar, ...]:
     """カレンダー上存在すべき足をすべて作る（`skip_starts` に挙げたものは作らない）。
 
     欠損のテストは、生成する足を間引くことで作る。カレンダー側を変えないので、検査は
     「存在すべきなのに無い」と正しく判定できる。
+
+    `gaps`（D08 §9.3.1）: 鍵は飛ばす足の開始時刻、値は直前の足の終値からの差（符号付き。
+    正で上、負で下）。その足の始値を「直前の足の終値 ＋ 差」に置き、**その足と以降の足を同じ
+    幅だけずらす**（1本だけ飛ばして戻る形にはしない）。足の形（始値・高値・安値・終値の
+    相互の差）は変えない。直前の足は、この関数が返す列の1つ前の足である。
+
+    `straddles`（D08 §9.3.2）: 鍵は足の開始時刻、値はその足が必ず包む2つの価格（順不同）。
+    高値を2値の高い方以上、安値を低い方以下に広げ、始値と終値は動かさない。どちらが先に
+    到達したことにするかは決めない（足内競合の解決は ADR-0030・D06 §7.4 の担当）。
+
+    次の指定は `ValueError` で拒否する: 差が 0 の gap、2値が等しい straddle、作る足の無い時刻
+    （カレンダーが区間を持たない時刻・窓の外・`skip_starts` で落とした時刻）、返す列の先頭の足
+    への gap（直前の足が無く、差の起点が決まらない）。
     """
     skipped = set(skip_starts)
+    starts = trading_calendar.expected_bar_starts(timeframe_def, window)
+    _check_targets(gaps, starts, skipped, "gap")
+    _check_targets(straddles, starts, skipped, "straddle")
+    for at, offset in gaps.items():
+        if offset.value == 0:
+            raise ValueError(f"gap at {at} must be non-zero (D08 §9.3.1)")
+    for at, (first, second) in straddles.items():
+        if first == second:
+            raise ValueError(f"straddle at {at} needs two different prices (D08 §9.3.2)")
+
     bars: list[Bar] = []
-    for bar_start in trading_calendar.expected_bar_starts(timeframe_def, window):
+    shift = PriceOffset(decimal_from_int(0))
+    for bar_start in starts:
         if bar_start in skipped:
             continue
         interval = timeframe_def.expected_interval(trading_calendar, bar_start)
         assert interval is not None  # noqa: S101 - expected_bar_starts が保証する
-        bars.append(make_bar(series_id, interval, volume=volume))
+        bar = make_bar(series_id, interval, volume=volume)
+        # 適用順は gap → straddle（D08 §9.3.3）。gap が水準を動かし、straddle が幅を広げる。
+        if bar_start in gaps:
+            if not bars:
+                raise ValueError(
+                    f"gap at {bar_start} is on the first bar; there is no previous close"
+                )
+            shift = (bars[-1].close + gaps[bar_start]) - bar.open
+        bar = _shifted(bar, shift)
+        if bar_start in straddles:
+            bar = _straddled(bar, straddles[bar_start])
+        bars.append(bar)
     return tuple(bars)
+
+
+def _check_targets(
+    targets: Mapping[UtcTime, object],
+    starts: Sequence[UtcTime],
+    skipped: set[UtcTime],
+    label: str,
+) -> None:
+    """gap / straddle の鍵が、この呼び出しで作る足の開始時刻であることを確かめる。"""
+    known = set(starts)
+    for at in targets:
+        if at in skipped:
+            raise ValueError(f"{label} at {at} targets a bar dropped by skip_starts")
+        if at not in known:
+            raise ValueError(f"{label} at {at} is not the start of a bar in the window")
+
+
+def _shifted(bar: Bar, shift: PriceOffset) -> Bar:
+    """足の4本値を同じ幅だけずらす（形を保つので OHLC の整合は崩れない）。"""
+    if shift.value == 0:
+        return bar
+    return replace(
+        bar,
+        open=bar.open + shift,
+        high=bar.high + shift,
+        low=bar.low + shift,
+        close=bar.close + shift,
+    )
+
+
+def _straddled(bar: Bar, prices: tuple[Price, Price]) -> Bar:
+    """高値・安値を広げて2つの価格を包ませる。始値・終値は動かさない。"""
+    return replace(bar, high=max(bar.high, *prices), low=min(bar.low, *prices))
 
 
 def apply_delay(bars: Sequence[Bar], scenario: DelayScenario) -> tuple[Bar, ...]:

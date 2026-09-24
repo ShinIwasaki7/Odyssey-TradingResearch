@@ -37,3 +37,4 @@
 | [0031](0031-opportunity-validity-spec-for-waiting-conditions.md) | 確認待ち中の条件は固定／継続要求に明示分類し `OpportunityValiditySpec` を必須にする | E-2 |
 | [0032](0032-opportunity-concurrency-spec-for-retrigger.md) | 再発火は常に新しい Opportunity を生成し `OpportunityConcurrencySpec` を必須にする | E-3 |
 | [0033](0033-rename-request-side-supersession.md) | 評価要求側の追い越しを `REQUEST_SUPERSEDED` へ改名する | E-3 |
+| [0034](0034-review-rules-in-agents-md.md) | レビュー観点は AGENTS.md を正本とし両レーンで共有する | PR レビュー方針 §5 |
