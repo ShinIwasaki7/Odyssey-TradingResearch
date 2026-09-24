@@ -25,6 +25,15 @@
 4. **登録の実装参照が契約の実装参照と一致すること**。静的テーブルで取り違えると、契約が
    指す実装と実際に呼ぶ関数、さらに解決済み設定の指紋（D05 §5.5）に入る実装の同一性が
    食い違い、再現性の識別が壊れる。
+5. **パラメータどうしの関係（`parameter_constraint`）を持つ登録では、その関係が読む
+   パラメータ名がすべて契約にあり、1件以上あること**（D05 §4.1 の (e)、Q22 決定）。
+
+**2つのパラメータの関係は、登録が持つ検証の純粋関数1つに書く**（Q22 決定、選択肢1）。
+契約は各パラメータの範囲しか持てないため、`window_bars >= 2 * period` のような関係は解決
+済みの値でしか確かめられない。関数を呼ぶのはコンパイラのパラメータ解決の後である
+（D05 §5.1 の段3・§5.6 の検査 e）。この関係は契約ではなく登録に載るので、契約の指紋にも
+実装参照の指紋にも入らない（構成を通すか拒むかを決めるだけで、通った構成の計算結果を
+変えないため）。
 """
 
 from __future__ import annotations
@@ -54,6 +63,7 @@ __all__ = [
     "ComponentRegistration",
     "ComponentRegistry",
     "ContractKey",
+    "ParameterConstraint",
     "StatefulImplementation",
     "StatelessImplementation",
     "build_registry",
@@ -145,6 +155,42 @@ class StatefulImplementation:
 ComponentImplementation = StatelessImplementation | StatefulImplementation
 
 
+#: パラメータどうしの関係を確かめる純粋関数の形（D05 §3・§4.1）。解決済みのパラメータの
+#: 写像だけを読み、関係が成り立てば `True` を返す。
+ParameterCheck = Callable[[Mapping[str, ResolvedParameterView]], bool]
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterConstraint:
+    """登録が持つパラメータどうしの関係（D05 §3・§4.1、Q22 決定）。
+
+    関数は登録1件につき1つだけで、関係が複数あってもその1つの中で全部を確かめる（拒否の
+    理由を1件のコンパイルエラーにまとめるため）。`check` は他の実装と同じ純粋関数で、
+    実時計・乱数・I/O・グローバル可変状態を読まない。`False` を返した場合も例外で終わった
+    場合も、コンパイラは構成を拒否する（D05 §4.1・§5.6 の検査 e）。
+    """
+
+    reads: tuple[str, ...]
+    check: ParameterCheck
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reads, tuple):
+            raise KernelValueError("ParameterConstraint.reads must be a tuple")
+        if not self.reads:
+            raise KernelValueError("ParameterConstraint.reads must name at least one parameter")
+        for name in self.reads:
+            require_identifier(name, "ParameterConstraint.reads item")
+        if len(set(self.reads)) != len(self.reads):
+            raise KernelValueError(
+                f"ParameterConstraint.reads must not repeat a name, got {self.reads!r}"
+            )
+        if not callable(self.check):
+            raise KernelValueError("ParameterConstraint.check must be callable")
+        if not isinstance(self.message, str) or not self.message:
+            raise KernelValueError("ParameterConstraint.message must be a non-empty str")
+
+
 @dataclass(frozen=True, slots=True)
 class ContractKey:
     """レジストリの鍵（D05 §4.1）。部品 ID と版の組。"""
@@ -162,11 +208,16 @@ class ContractKey:
 
 @dataclass(frozen=True, slots=True)
 class ComponentRegistration:
-    """契約・実装・実装参照の1組（D05 §4.1）。"""
+    """契約・実装・実装参照の1組（D05 §4.1）。
+
+    段階3 でパラメータどうしの関係（`parameter_constraint`、既定 `None`）を足した
+    （D05 §3 の改訂、Q22 決定）。
+    """
 
     contract: ComponentContract
     implementation: ComponentImplementation
     implementation_ref: ImplementationRef
+    parameter_constraint: ParameterConstraint | None = None
 
     def __post_init__(self) -> None:
         require_instance(self.contract, ComponentContract, "ComponentRegistration.contract")
@@ -183,6 +234,7 @@ class ComponentRegistration:
         self._require_registered_data_types()
         self._require_state_agreement()
         self._require_matching_implementation_ref()
+        self._require_constraint_reads_declared_parameters()
 
     @property
     def key(self) -> ContractKey:
@@ -240,6 +292,21 @@ class ComponentRegistration:
                 f"{self.key}: the registered implementation_ref ({self.implementation_ref})"
                 f" must match the contract's ({self.contract.implementation_ref})"
             )
+
+    def _require_constraint_reads_declared_parameters(self) -> None:
+        """(e) 関係が読むパラメータ名がすべて契約にあること（D05 §4.1、Q22 決定）。"""
+        constraint = self.parameter_constraint
+        if constraint is None:
+            return
+        require_instance(
+            constraint, ParameterConstraint, "ComponentRegistration.parameter_constraint"
+        )
+        for name in constraint.reads:
+            if name not in self.contract.parameters:
+                raise KernelValueError(
+                    f"{self.key}: parameter_constraint reads {name!r}, which is not declared in"
+                    " the contract's parameters"
+                )
 
 
 @dataclass(frozen=True, slots=True)

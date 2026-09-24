@@ -10,6 +10,11 @@
 
 初期の利確は持たない（`take_profit=None`）。利確は Exit の責務であり、約定価格が決まって
 から評価する（D05 §8）。
+
+**v2**（D05 §9.2）: 後続確認を待つ戦略では、保護水準は取引機会ではなく**確認結果の配送**で
+起動する（D05 §7.7）。入力の型と起動条件は契約が固定するので（D04 §4.1・§8）、`opportunity`
+の代わりに `confirmation`（`confirmation_result@v1` の配送）を持つ版を登録する。計算は
+`level` だけを読むので、実装は v1 と同じである。v1 は段階2 の検証戦略 A のために残す。
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from odyssey_fx.strategy.catalog.registry import (
 )
 from odyssey_fx.strategy.declarations.contract import ComponentContract
 from odyssey_fx.strategy.declarations.datatypes import (
+    CONFIRMATION_RESULT_V1,
     OPPORTUNITY_V1,
     PRICE_V1,
     PROTECTION_LEVELS_V1,
@@ -45,7 +51,14 @@ from odyssey_fx.strategy.declarations.specs import (
 from odyssey_fx.strategy.declarations.temporal import TemporalConstraints
 from odyssey_fx.strategy.records.payloads import ProtectionLevels
 
-__all__ = ["CONTRACT", "IMPLEMENTATION_REF", "REGISTRATION", "evaluate"]
+__all__ = [
+    "CONTRACT",
+    "CONTRACT_V2",
+    "IMPLEMENTATION_REF",
+    "REGISTRATION",
+    "REGISTRATION_V2",
+    "evaluate",
+]
 
 IMPLEMENTATION_REF = declared_implementation_ref("level_stop_loss", 1)
 
@@ -83,6 +96,41 @@ CONTRACT = ComponentContract(
     temporal_constraints=TemporalConstraints(warmup=None, alignment=()),
 )
 
+#: 確認結果の配送で起動する版（D05 §9.2）。
+CONTRACT_V2 = ComponentContract(
+    component_id="level_stop_loss",
+    version=2,
+    implementation_ref=IMPLEMENTATION_REF,
+    inputs={
+        "confirmation": InputSpec(
+            data_type=CONFIRMATION_RESULT_V1,
+            kind=PortKind.EVENT,
+            arity=InputArity(min_count=1, max_count=1),
+            read_spec=DeliveredEvent(),
+        ),
+        "level": InputSpec(
+            data_type=PRICE_V1,
+            kind=PortKind.VALUE,
+            arity=InputArity(min_count=1, max_count=1),
+            read_spec=LatestAvailable(max_age=None, on_missing=SkipEvaluation()),
+        ),
+    },
+    outputs={
+        "protection": OutputSpec(
+            data_type=PROTECTION_LEVELS_V1,
+            kind=PortKind.COMMAND,
+            reference_schema={},
+            retrigger_mode=None,
+        )
+    },
+    parameters={},
+    evaluation_spec=EvaluationSpec(
+        allowed=(AllowedInputEvent(input_names=("confirmation",)),), fixed=False
+    ),
+    state_spec=None,
+    temporal_constraints=TemporalConstraints(warmup=None, alignment=()),
+)
+
 
 def evaluate(
     inputs: ResolvedInputsView, parameters: Mapping[str, ResolvedParameterView]
@@ -96,6 +144,12 @@ def evaluate(
 
 REGISTRATION = ComponentRegistration(
     contract=CONTRACT,
+    implementation=StatelessImplementation(evaluate=evaluate),
+    implementation_ref=IMPLEMENTATION_REF,
+)
+
+REGISTRATION_V2 = ComponentRegistration(
+    contract=CONTRACT_V2,
     implementation=StatelessImplementation(evaluate=evaluate),
     implementation_ref=IMPLEMENTATION_REF,
 )

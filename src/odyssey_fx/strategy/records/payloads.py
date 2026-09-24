@@ -10,6 +10,10 @@
 復元できない。そこで**部品は `OpportunityContent` を返し、ランタイムが残り3つを付けて
 `Opportunity` を組み立てる**。
 
+**確認結果も同じ手法をとる**（D05 §4.8、段階3）。`ConfirmationResult` の3項目のうち部品が
+計算できるのは成否だけなので、部品は `ConfirmationOutcome` を返し、ランタイムが機会の
+識別子と確認足の区間を付けて `ConfirmationResult` を組み立てる。
+
 データ型識別子（D04 §5）と本モジュールの型の対応表（`PAYLOAD_BINDINGS`）も本モジュールが
 正本として持つ。`declarations` はこの表を持てない（`records` への上向き参照になるため。
 D04 §5）。登録時の照合は `catalog` が行う（D05 §4.1）。
@@ -44,6 +48,7 @@ __all__ = [
     "AccountContext",
     "ClosePosition",
     "ConditionState",
+    "ConfirmationOutcome",
     "ConfirmationResult",
     "DataTypePayloadBinding",
     "ManagementAction",
@@ -56,6 +61,7 @@ __all__ = [
     "ProtectionLevels",
     "SetTakeProfit",
     "TradeDirection",
+    "UpdateStop",
     "payload_type_for",
 ]
 
@@ -174,6 +180,29 @@ class ConfirmationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfirmationOutcome:
+    """部品が返す後続確認の中身（D05 §4.2・§4.8、段階3）。
+
+    成否と根拠値だけを持ち、機会の識別子と確認足の区間は持たない。それらはランタイムが
+    評価要求から付けて `ConfirmationResult` を組み立てる（部品が別の機会の確認結果を作れ
+    ないようにするため）。
+    """
+
+    confirmed: bool
+    reference_values: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        require_bool(self.confirmed, "ConfirmationOutcome.confirmed")
+        object.__setattr__(
+            self,
+            "reference_values",
+            _require_reference_values(
+                self.reference_values, "ConfirmationOutcome.reference_values"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OrderIntent:
     """注文意図（D05 §3）。
 
@@ -245,7 +274,32 @@ class ClosePosition:
         require_kind(self.kind, "CLOSE_POSITION", "ClosePosition.kind")
 
 
-#: 区分タグ付き union（D04 §11.2）。トレーリング（`UPDATE_STOP`）は段階3。
+@dataclass(frozen=True, slots=True)
+class UpdateStop:
+    """損切り水準の更新要求（D04 §11.2 の `UPDATE_STOP`、D05 §4.2。段階3）。
+
+    水準は**解決済みの絶対価格**で渡し、距離型は使わない（上位設計書 §4.7.1・§4.7.3）。
+    不利な向きへ動かさない判定は部品側（D05 §4.10）、適用の意味論（どの執行足から有効か、
+    同じ判断時点の決済要求との競合、価格刻みへの丸め）は D06 §8.3 が持つ。
+    """
+
+    stop_loss: Price
+    kind: str = "UPDATE_STOP"
+
+    def __post_init__(self) -> None:
+        require_kind(self.kind, "UPDATE_STOP", "UpdateStop.kind")
+        require_instance(self.stop_loss, Price, "UpdateStop.stop_loss")
+
+
+#: 区分タグ付き union（D04 §11.2）。**まだ段階2 の2区分のままである**。
+#:
+#: 設計上は損切り水準の更新（`UpdateStop`）を足した3区分になる（D05 §3 の改訂）。ただし
+#: この union は管理要求（`runtime.requests.ManagementRequest.action`）の型であり、判断履歴の
+#: 表12（`MANAGEMENT_APPLICATIONS`、D06 §9.2）の列はこの型から導かれる。ここへ足した時点で
+#: 段階2 の run の表12 に列が1つ増えるので、足すのは**エンジンが損切り水準の更新を適用する
+#: 変更と同じ PR**（段階3 実装 PR 5/5、T02 §19 の引き渡し #2）とする。それまでは、部品が
+#: `UpdateStop` を返せることを内容型の対応表（下の `_ADDITIONAL_PAYLOAD_TYPES`）で表し、
+#: 管理要求としての受け入れはランタイムが拒否したままにする（黙って通さない）。
 ManagementAction = SetTakeProfit | ClosePosition
 
 
@@ -344,14 +398,16 @@ PAYLOAD_BINDINGS: Final[tuple[DataTypePayloadBinding, ...]] = (
     DataTypePayloadBinding(datatypes.MANAGEMENT_ACTION_V1, SetTakeProfit),
 )
 
-#: 部品が返す型が、配送される型と異なるデータ型（D05 §4.2）。
+#: 部品が返す型が、配送される型と異なるデータ型（D05 §4.2）。確認結果は段階3 で足した。
 _COMPONENT_RETURN_TYPES: Final[dict[DataTypeRef, type]] = {
     datatypes.OPPORTUNITY_V1: OpportunityContent,
+    datatypes.CONFIRMATION_RESULT_V1: ConfirmationOutcome,
 }
 
-#: 同じデータ型を複数の実行時クラスが満たす場合の追加の許容（`ManagementAction` の2区分）。
+#: 同じデータ型を複数の実行時クラスが満たす場合の追加の許容（管理要求の2区分と、段階3 の
+#: 損切り水準の更新）。
 _ADDITIONAL_PAYLOAD_TYPES: Final[dict[DataTypeRef, tuple[type, ...]]] = {
-    datatypes.MANAGEMENT_ACTION_V1: (SetTakeProfit, ClosePosition),
+    datatypes.MANAGEMENT_ACTION_V1: (SetTakeProfit, ClosePosition, UpdateStop),
 }
 
 
@@ -360,8 +416,9 @@ def payload_type_for(
 ) -> tuple[type, ...]:
     """データ型に対応する実行時クラスを返す（D05 §4.2）。
 
-    `as_component_return=True` は「部品が返す型」を問う。取引機会だけ、部品が返す型
-    （`OpportunityContent`）と配送される型（`Opportunity`）が異なる。
+    `as_component_return=True` は「部品が返す型」を問う。取引機会と確認結果だけ、部品が
+    返す型（`OpportunityContent` / `ConfirmationOutcome`）と配送される型（`Opportunity` /
+    `ConfirmationResult`）が異なる。
 
     対応の無いデータ型（入力専用の `position_context@v1` / `account_context@v1`）では
     空の組を返す。呼び出し側が「検査できない」ことを明示的に扱えるようにするためで、
