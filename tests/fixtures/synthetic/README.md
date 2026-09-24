@@ -7,8 +7,8 @@ DST 境界・週末・欠損・gap・SL/TP 同時到達を意図的に含むケ�
 |---|---|---|
 | DST 境界・週末・短縮セッション | `calendar(closures=...)` と `make_bars` の `window` | D08 §9.2 |
 | 欠損 | `make_bars(..., skip_starts=[...])` | D08 §9.2 |
-| gap（前の足の終値と次の足の始値が飛ぶ） | `make_bars(..., gaps={開始時刻: PriceOffset(差)})`。その足の始値を「直前の足の終値 ＋ 差」に置き、以降の足も新しい水準から続く | D08 §9.3.1（実装済み、PR #PRNUM） |
-| SL/TP 同時到達（1本の足で損切りと利確の両方に触れる） | `make_bars(..., straddles={開始時刻: (Price, Price)})`。高値・安値を広げて2値を包ませ、始値・終値は動かさない。どちらが先かは決めない | D08 §9.3.2（実装済み、PR #PRNUM） |
+| gap（前の足の終値と次の足の始値が飛ぶ） | `make_bars(..., gaps={開始時刻: PriceOffset(差)})`。その足の始値を「直前の足の終値 ＋ 差」に置き、以降の足も新しい水準から続く | D08 §9.3.1（実装済み、PR #30） |
+| SL/TP 同時到達（1本の足で損切りと利確の両方に触れる） | `make_bars(..., straddles={開始時刻: (Price, Price)})`。高値・安値を広げて2値を包ませ、始値・終値は動かさない。どちらが先かは決めない | D08 §9.3.2（実装済み、PR #30） |
 | 公開の遅延 | `apply_delay(bars, scenario)`。`available_at` だけを動かす | D08 §9.6 |
 
 - gap と straddle は**どちらも既定は空**。同じ足に両方を指定したときの適用順は gap → straddle。
