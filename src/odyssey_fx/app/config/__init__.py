@@ -18,18 +18,19 @@
 | `load_timeframes` | `configs/calendars/timeframes_v1.yaml` | `id` → `TimeframeDefinition` |
 | `load_datasource` | `configs/datasources/legacy_merged_csv_v1.yaml` | `DataSourceConfig` |
 | `load_symbol_specs` | `configs/symbols/` | `Symbol` → `SymbolSpec` |
-| `load_closure_decisions` | 利用者が指定する分類ファイル | `ClosureDecisionFile` |
+| `load_classification_decisions` | 利用者が指定する分類ファイル | `ClassificationDecisionFile` |
 
-分類ファイルの系列表記（`USDJPY/1h/bid`）は時間足の版を含まないので、`load_closure_decisions`
-には暫定 snapshot の系列一覧を渡し、そこから文字列一致で解決する。版を決め打つと、版 2 以降の
-時間足定義を使った snapshot で分類の系列が記録と食い違う。
+分類ファイルの系列表記（`USDJPY/1h/bid`）は時間足の版を含まないので、
+`load_classification_decisions` には暫定 snapshot の系列一覧を渡し、そこから文字列一致で
+解決する（「全系列」`all` もこの一覧へ解決する）。版を決め打つと、版 2 以降の時間足定義を
+使った snapshot で分類の系列が記録と食い違う。
 """
 
 from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
 from odyssey_fx.app.config.datasources import DataSourceConfig, load_datasource, parse_file_name
 from odyssey_fx.app.config.decisions import (
-    ClosureDecisionFile,
-    load_closure_decisions,
+    ClassificationDecisionFile,
+    load_classification_decisions,
     parse_series_id,
     resolve_series_id,
 )
@@ -37,11 +38,11 @@ from odyssey_fx.app.config.loader import ConfigError
 from odyssey_fx.app.config.symbols import load_symbol_spec, load_symbol_specs
 
 __all__ = [
-    "ClosureDecisionFile",
+    "ClassificationDecisionFile",
     "ConfigError",
     "DataSourceConfig",
     "load_calendar",
-    "load_closure_decisions",
+    "load_classification_decisions",
     "load_datasource",
     "load_symbol_spec",
     "load_symbol_specs",

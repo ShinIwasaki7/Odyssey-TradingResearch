@@ -26,7 +26,12 @@ from odyssey_fx.app.config.models import StrictModel, require_schema_version, va
 from odyssey_fx.app.config.scalars import parse_duration, parse_local_date, parse_local_time
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.timeframe import TimeframeRef
-from odyssey_fx.marketdata.domain.calendar import ClosureRule, TradingCalendar, WeeklyMoment
+from odyssey_fx.marketdata.domain.calendar import (
+    ClosureRule,
+    OpeningRule,
+    TradingCalendar,
+    WeeklyMoment,
+)
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.timeframe_def import (
     FixedUtcAlignment,
@@ -62,6 +67,19 @@ class _ClosureModel(StrictModel):
     note: str = ""
 
 
+class _OpeningModel(StrictModel):
+    """宣言した営業例外1件（D03 §3.4 v1.7）。
+
+    週の休場時間帯のうち市場が開いていた現地日付と区間。通常の週の開場区間に接するか
+    重なること、休場と重ならないことは domain の `TradingCalendar` が検証する。
+    """
+
+    local_date: str
+    start: str
+    end: str
+    note: str = ""
+
+
 class _CalendarModel(StrictModel):
     """`configs/calendars/*.yaml` の形（D03 §9）。"""
 
@@ -72,6 +90,7 @@ class _CalendarModel(StrictModel):
     weekly_open: _WeeklyMomentModel
     weekly_close: _WeeklyMomentModel
     closures: list[_ClosureModel] = Field(default_factory=list)
+    openings: list[_OpeningModel] = Field(default_factory=list)
 
 
 class _FixedUtcAlignmentModel(StrictModel):
@@ -138,11 +157,28 @@ def _closure_rule(model: _ClosureModel, path: Path, index: int) -> ClosureRule:
         raise ConfigError(f"{path}: {label} は休場の宣言として成立しない: {exc}") from exc
 
 
+def _opening_rule(model: _OpeningModel, path: Path, index: int) -> OpeningRule:
+    """宣言した営業例外をドメインの型へ変換する（D03 §3.4 v1.7）。"""
+    label = f"openings[{index}]"
+    try:
+        return OpeningRule(
+            local_date=parse_local_date(model.local_date, f"{path}: {label}.local_date"),
+            start=parse_local_time(model.start, f"{path}: {label}.start"),
+            end=parse_local_time(model.end, f"{path}: {label}.end"),
+            note=model.note,
+        )
+    except MarketDataValueError as exc:
+        raise ConfigError(f"{path}: {label} は営業例外の宣言として成立しない: {exc}") from exc
+
+
 def load_calendar(path: Path) -> TradingCalendar:
     """取引カレンダーを読む（D03 §3.4・§9）。
 
-    週の開閉と宣言した休場を持つ `TradingCalendar` を返す。土日の扱いも週の開閉から導かれ
-    るのであって、UTC の曜日判定では決めない（D03 §3.4）。
+    週の開閉と宣言した休場・営業例外（`openings`、v1.7）を持つ `TradingCalendar` を返す。
+    土日の扱いも週の開閉から導かれるのであって、UTC の曜日判定では決めない（D03 §3.4）。
+
+    `openings` は省略できる（既存のカレンダーファイルはそのまま読める）。離れた営業例外と
+    休場に重なる営業例外は domain の構築時検証が拒否し、ここで設定の誤りとして報告する。
     """
     payload = load_yaml_mapping(path)
     model = validate(_CalendarModel, payload, path)
@@ -164,6 +200,9 @@ def load_calendar(path: Path) -> TradingCalendar:
             ),
             closures=tuple(
                 _closure_rule(closure, path, index) for index, closure in enumerate(model.closures)
+            ),
+            openings=tuple(
+                _opening_rule(opening, path, index) for index, opening in enumerate(model.openings)
             ),
         )
     except MarketDataValueError as exc:

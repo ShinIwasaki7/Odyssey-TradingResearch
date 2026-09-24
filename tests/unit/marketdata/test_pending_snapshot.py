@@ -37,15 +37,15 @@ from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ClassificationOutcome,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import (
-    Approval,
-    ClosureDecision,
-    ClosureDecisionKind,
-    ConversionRecord,
-)
+from odyssey_fx.marketdata.domain.snapshot import Approval, ConversionRecord
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from tests.fixtures.synthetic import market, snapshots
 
@@ -164,16 +164,22 @@ def test_the_provisional_id_ignores_the_acceptance_time() -> None:
     assert morning.provisional_id == evening.provisional_id
 
 
+DROPPED_INTERVAL = Interval(start=DROPPED, end=DROPPED + market.TF_1H.nominal_length)
+
+
 def test_a_provisional_id_cannot_be_taken_after_the_decisions_are_recorded() -> None:
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
-    decided = pending.manifest.with_closure_decisions(
-        (
-            ClosureDecision(
+    decided = pending.manifest.with_classification(
+        decisions=(_decision(ClassificationOutcome.DATA_GAP),),
+        resolved=(
+            ResolvedClassification(
+                kind=CheckKind.MISSING_EXPECTED_BAR,
                 series_id=HOURLY,
-                interval=Interval(start=DROPPED, end=DROPPED + market.TF_1H.nominal_length),
-                kind=ClosureDecisionKind.DATA_GAP,
+                interval=DROPPED_INTERVAL,
+                outcome=ClassificationOutcome.DATA_GAP,
             ),
-        )
+        ),
+        provisional_report_ref=pending.manifest.integrity_report_ref,
     )
     with pytest.raises(MarketDataValueError, match="already carries decisions"):
         provisional_id(decided)
@@ -182,11 +188,11 @@ def test_a_provisional_id_cannot_be_taken_after_the_decisions_are_recorded() -> 
 # --- 確定段階（D03 §3.7.1 の 2、§4 の 9）-----------------------------------
 
 
-def _decision(kind: ClosureDecisionKind) -> ClosureDecision:
-    return ClosureDecision(
-        series_id=HOURLY,
-        interval=Interval(start=DROPPED, end=DROPPED + market.TF_1H.nominal_length),
-        kind=kind,
+def _decision(
+    outcome: ClassificationOutcome, interval: Interval = DROPPED_INTERVAL
+) -> ClassificationDecision:
+    return ClassificationDecision(
+        kind=CheckKind.MISSING_EXPECTED_BAR, interval=interval, series=(HOURLY,), outcome=outcome
     )
 
 
@@ -199,7 +205,7 @@ def test_an_unclassified_warning_blocks_the_finalization() -> None:
 
 def test_recording_the_decision_yields_a_different_snapshot_id() -> None:
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
-    final = finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
+    final = finalize(pending, (_decision(ClassificationOutcome.DATA_GAP),))
     assert final.snapshot_id != pending.provisional_id
 
 
@@ -211,16 +217,15 @@ def test_classifying_the_gap_differently_yields_a_different_snapshot_id() -> Non
     なので、それ以外の条件は揃える必要がない（そもそも版が違えば識別子も違う）。
     """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
-    as_gap = finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
+    as_gap = finalize(pending, (_decision(ClassificationOutcome.DATA_GAP),))
 
     revised = _build_with_revised_calendar(UtcTime.parse("2026-09-20T09:00:00Z"))
-    as_closure = finalize(
-        revised,
-        (_decision(ClosureDecisionKind.CLOSURE),),
-        original_report=pending.report,
-        original_conversion=pending.manifest.conversion,
-    )
+    as_closure = finalize(revised, (_decision(ClassificationOutcome.CLOSURE),), provisional=pending)
     assert as_gap.snapshot_id != as_closure.snapshot_id
+    # 休場の分類は暫定報告の警告に対して解決され、その報告のダイジェストが残る。
+    (resolved,) = as_closure.manifest.resolved_classifications
+    assert resolved.outcome is ClassificationOutcome.CLOSURE
+    assert as_closure.manifest.provisional_report_ref == pending.manifest.integrity_report_ref
 
 
 def test_a_closure_needs_the_calendar_to_be_revised() -> None:
@@ -231,7 +236,7 @@ def test_a_closure_needs_the_calendar_to_be_revised() -> None:
     """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     with pytest.raises(MarketDataValueError, match="calendar was not revised"):
-        finalize(pending, (_decision(ClosureDecisionKind.CLOSURE),))
+        finalize(pending, (_decision(ClassificationOutcome.CLOSURE),))
 
 
 def test_a_data_gap_does_not_need_a_calendar_revision() -> None:
@@ -240,7 +245,7 @@ def test_a_data_gap_does_not_need_a_calendar_revision() -> None:
     欠損はカレンダーの規則の問題ではなく、データそのものが無いという事実だからである。
     """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
-    assert finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),)).snapshot_id
+    assert finalize(pending, (_decision(ClassificationOutcome.DATA_GAP),)).snapshot_id
 
 
 def test_a_closure_the_new_calendar_does_not_declare_is_rejected() -> None:
@@ -250,24 +255,20 @@ def test_a_closure_the_new_calendar_does_not_declare_is_rejected() -> None:
     記録すると、やはり manifest と規則が矛盾する。
     """
     # 版だけ上げ、休場は宣言しないカレンダーで組み立てる（欠落はそのまま残る）。
+    original = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), calendar_version=2)
     with pytest.raises(MarketDataValueError, match="still expects bars there"):
-        finalize(
-            pending,
-            (_decision(ClosureDecisionKind.CLOSURE),),
-            original_report=pending.report,
-            original_conversion=snapshots.CONVERSION,
-        )
+        finalize(pending, (_decision(ClassificationOutcome.CLOSURE),), provisional=original)
 
 
 def test_the_final_snapshot_id_ignores_the_acceptance_time() -> None:
     morning = finalize(
         _build(UtcTime.parse("2026-09-20T09:00:00Z")),
-        (_decision(ClosureDecisionKind.DATA_GAP),),
+        (_decision(ClassificationOutcome.DATA_GAP),),
     )
     evening = finalize(
         _build(UtcTime.parse("2026-09-20T21:30:00Z")),
-        (_decision(ClosureDecisionKind.DATA_GAP),),
+        (_decision(ClassificationOutcome.DATA_GAP),),
     )
     assert morning.snapshot_id == evening.snapshot_id
 
@@ -432,7 +433,7 @@ def test_a_non_check_result_in_the_findings_is_refused() -> None:
         )
 
 
-# --- 分類と警告の対応（D03 §4 の 9）-----------------------------------------
+# --- 分類と警告の対応（D03 §4 の 9 v1.7）------------------------------------
 
 
 def _warned_interval() -> Interval:
@@ -442,21 +443,27 @@ def _warned_interval() -> Interval:
     return warning.interval
 
 
-def test_a_decision_with_the_wrong_end_leaves_the_warning_unclassified() -> None:
-    """分類の対応は区間**全体**で取る（D03 §4 の 9）。
+def test_a_decision_that_does_not_contain_the_warning_leaves_it_unclassified() -> None:
+    """分類は、区間に**完全に含まれる**警告だけを分類する（D03 §4 の 9 v1.7）。
 
-    開始時刻だけで突き合わせると、終端の違う分類（別の足を指す分類）が対応済みとして
-    通ってしまう。
+    警告の区間の一部しか覆わない分類（開始は同じだが終端が手前）は、その警告を分類しない。
     """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     warned = _warned_interval()
-    wrong_end = ClosureDecision(
-        series_id=HOURLY,
-        interval=Interval(start=warned.start, end=warned.end + market.TF_1H.nominal_length),
-        kind=ClosureDecisionKind.DATA_GAP,
+    short = _decision(
+        ClassificationOutcome.DATA_GAP,
+        Interval(start=warned.start, end=warned.start + market.TF_1H.nominal_length / 2),
     )
     with pytest.raises(MarketDataValueError, match="still unclassified"):
-        finalize(pending, (wrong_end,))
+        finalize(pending, (short,))
+
+
+def test_a_wider_decision_classifies_the_warning_inside() -> None:
+    """区間をまとめて書いた分類は、その中の警告を分類する（D03 §4 v1.7）。"""
+    pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
+    final = finalize(pending, (_decision(ClassificationOutcome.DATA_GAP, WINDOW),))
+    (resolved,) = final.manifest.resolved_classifications
+    assert resolved.interval == _warned_interval()
 
 
 def test_a_decision_without_a_matching_warning_is_refused() -> None:
@@ -465,16 +472,15 @@ def test_a_decision_without_a_matching_warning_is_refused() -> None:
     余分な分類は識別子を変えるので、放置すると内容の同じ snapshot が別物として記録される。
     """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
-    extra = ClosureDecision(
-        series_id=HOURLY,
-        interval=Interval(
+    extra = _decision(
+        ClassificationOutcome.CLOSURE,
+        Interval(
             start=UtcTime.parse("2022-01-06T20:00:00Z"),
             end=UtcTime.parse("2022-01-06T21:00:00Z"),
         ),
-        kind=ClosureDecisionKind.CLOSURE,
     )
     with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
-        finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP), extra))
+        finalize(pending, (_decision(ClassificationOutcome.DATA_GAP), extra))
 
 
 def test_a_decision_for_another_series_is_refused() -> None:
@@ -484,11 +490,12 @@ def test_a_decision_for_another_series_is_refused() -> None:
     """
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     warned = _warned_interval()
-    correct = ClosureDecision(series_id=HOURLY, interval=warned, kind=ClosureDecisionKind.DATA_GAP)
-    foreign = ClosureDecision(
-        series_id=market.series(symbol=market.EURUSD),
+    correct = _decision(ClassificationOutcome.DATA_GAP, warned)
+    foreign = ClassificationDecision(
+        kind=CheckKind.MISSING_EXPECTED_BAR,
         interval=warned,
-        kind=ClosureDecisionKind.DATA_GAP,
+        series=(market.series(symbol=market.EURUSD),),
+        outcome=ClassificationOutcome.DATA_GAP,
     )
     with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
         finalize(pending, (correct, foreign))
@@ -498,7 +505,7 @@ def test_a_decision_matching_the_full_interval_is_accepted() -> None:
     """区間が完全に一致する分類は受理される。"""
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"))
     warned = _warned_interval()
-    decision = ClosureDecision(series_id=HOURLY, interval=warned, kind=ClosureDecisionKind.DATA_GAP)
+    decision = _decision(ClassificationOutcome.DATA_GAP, warned)
     final = finalize(pending, (decision,))
     assert final.manifest.closure_decisions == (decision,)
 
@@ -508,7 +515,7 @@ def test_a_clean_report_refuses_any_decision() -> None:
     pending = _build(UtcTime.parse("2026-09-20T09:00:00Z"), skip_starts=())
     assert pending.report.warnings == ()
     with pytest.raises(MarketDataValueError, match="do not correspond to any reported"):
-        finalize(pending, (_decision(ClosureDecisionKind.DATA_GAP),))
+        finalize(pending, (_decision(ClassificationOutcome.DATA_GAP),))
 
 
 # --- ダイジェストは受入れが自分で計算する（D03 §3.7.1）---------------------

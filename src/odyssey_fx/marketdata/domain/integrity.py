@@ -1,8 +1,9 @@
 """完全性検査の結果（D03 §3.9）。
 
 受入れで行う検査の種別・重大度・結果を表す。重大な違反（`ERROR`）が1件でもあれば受入れを
-失敗させる。人間の判断を要するもの（`WARN`）は、欠落区間の分類（休場 / データ欠損）として
-manifest に残す（D03 §4 の 9）。
+失敗させる。警告（`WARN`）のうち人間の分類を要するのは、明示集合
+（`classification.CLASSIFIABLE_KINDS`: 存在すべき足の欠落と休場帯の足）だけであり、分類は
+manifest に残す（D03 §3.9・§4 の 9 v1.7）。他の警告は報告に保存するだけである。
 
 封印期間・未分類の隔離期間の partition に対する検査結果は、**構造情報（件数・区間・種別）
 だけ**を含め、価格の統計を含めない（D03 §3.9）。`CheckResult.detail` は文字列のキーと値の
@@ -183,7 +184,7 @@ class IntegrityReport:
 
     @property
     def warnings(self) -> tuple[CheckResult, ...]:
-        """人間が分類する結果（D03 §4 の 9）。"""
+        """警告（WARN）の結果。分類を要するのはこのうち分類対象の2種別だけ（D03 §3.9）。"""
         return self.of_severity(Severity.WARN)
 
     def has_errors(self) -> bool:

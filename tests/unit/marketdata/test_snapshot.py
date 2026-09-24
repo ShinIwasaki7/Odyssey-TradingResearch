@@ -5,7 +5,8 @@
 - 識別子が受入れ実行時刻（`created_at`）に依存しない。
 - 識別子が原ファイルの列挙順・検査の実行順に依存しない（列を正規順序へ整列するため）。
 - 宣言者・宣言日時と承認が識別子に影響しない。
-- 欠落区間の分類が違えば識別子が変わる（分類が異なれば別 snapshot）。
+- 警告ごとに解決した分類が違えば識別子が変わる（分類が異なれば別 snapshot）。
+- 記入されたままの分類（`closure_decisions`）は識別子に入らない（D03 §3.7.1 v1.7）。
 """
 
 from __future__ import annotations
@@ -14,11 +15,15 @@ import pytest
 
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ClassificationOutcome,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
-    ClosureDecision,
-    ClosureDecisionKind,
     DeclarationRecord,
     PartitionId,
     SeriesManifest,
@@ -83,14 +88,36 @@ def test_the_snapshot_id_ignores_the_approval() -> None:
     assert approved.is_approved
 
 
-# --- 分類が識別子を変える（D03 §3.7.1）--------------------------------------
+# --- 分類が識別子を変える（D03 §3.7.1 v1.7）---------------------------------
+
+LATER = Interval(
+    start=UtcTime.parse("2020-06-01T10:00:00Z"), end=UtcTime.parse("2020-06-01T11:00:00Z")
+)
 
 
-def test_recording_a_closure_decision_changes_the_snapshot_id() -> None:
+def _resolved(
+    interval: Interval, outcome: ClassificationOutcome = ClassificationOutcome.DATA_GAP
+) -> ResolvedClassification:
+    return ResolvedClassification(
+        kind=CheckKind.MISSING_EXPECTED_BAR, series_id=SERIES, interval=interval, outcome=outcome
+    )
+
+
+def _decision(
+    interval: Interval, outcome: ClassificationOutcome = ClassificationOutcome.DATA_GAP
+) -> ClassificationDecision:
+    return ClassificationDecision(
+        kind=CheckKind.MISSING_EXPECTED_BAR, interval=interval, series=(SERIES,), outcome=outcome
+    )
+
+
+def test_recording_a_resolved_classification_changes_the_snapshot_id() -> None:
     """分類が異なれば別 snapshot である（D03 §3.7.1）。"""
     pending = snapshots.manifest()
-    decided = pending.with_closure_decisions(
-        (ClosureDecision(series_id=SERIES, interval=GAP, kind=ClosureDecisionKind.CLOSURE),)
+    decided = pending.with_classification(
+        decisions=(_decision(GAP),),
+        resolved=(_resolved(GAP),),
+        provisional_report_ref=pending.integrity_report_ref,
     )
     assert pending.snapshot_id() != decided.snapshot_id()
 
@@ -98,28 +125,69 @@ def test_recording_a_closure_decision_changes_the_snapshot_id() -> None:
 def test_classifying_the_same_gap_differently_changes_the_snapshot_id() -> None:
     """同じ欠落区間を「休場」と「データ欠損」のどちらに分類したかで識別子が変わる。"""
     as_closure = snapshots.manifest(
-        closure_decisions=(
-            ClosureDecision(series_id=SERIES, interval=GAP, kind=ClosureDecisionKind.CLOSURE),
-        )
+        resolved_classifications=(_resolved(GAP, ClassificationOutcome.CLOSURE),)
     )
-    as_gap = snapshots.manifest(
-        closure_decisions=(
-            ClosureDecision(series_id=SERIES, interval=GAP, kind=ClosureDecisionKind.DATA_GAP),
-        )
-    )
+    as_gap = snapshots.manifest(resolved_classifications=(_resolved(GAP),))
     assert as_closure.snapshot_id() != as_gap.snapshot_id()
 
 
-def test_the_closure_decision_order_does_not_change_the_snapshot_id() -> None:
-    later = Interval(
-        start=UtcTime.parse("2020-06-01T10:00:00Z"),
-        end=UtcTime.parse("2020-06-01T11:00:00Z"),
-    )
-    first = ClosureDecision(series_id=SERIES, interval=GAP, kind=ClosureDecisionKind.CLOSURE)
-    second = ClosureDecision(series_id=SERIES, interval=later, kind=ClosureDecisionKind.DATA_GAP)
-    forward = snapshots.manifest(closure_decisions=(first, second))
-    backward = snapshots.manifest(closure_decisions=(second, first))
+def test_the_resolved_classification_order_does_not_change_the_snapshot_id() -> None:
+    first = _resolved(GAP, ClassificationOutcome.CLOSURE)
+    second = _resolved(LATER)
+    forward = snapshots.manifest(resolved_classifications=(first, second))
+    backward = snapshots.manifest(resolved_classifications=(second, first))
     assert forward.snapshot_id() == backward.snapshot_id()
+    assert forward.resolved_classifications == backward.resolved_classifications
+
+
+def test_the_written_decisions_do_not_enter_the_snapshot_id() -> None:
+    """記入されたままの分類は監査用の記録で、識別子の対象外（D03 §3.7.1 v1.7）。
+
+    同じ警告集合を1件の広い区間で書いても、複数の狭い区間で書いても識別子が変わらない
+    ようにするためである。
+    """
+    wide = Interval(start=GAP.start, end=LATER.end)
+    resolved = (_resolved(GAP), _resolved(LATER))
+    one_wide = snapshots.manifest(
+        closure_decisions=(_decision(wide),), resolved_classifications=resolved
+    )
+    two_narrow = snapshots.manifest(
+        closure_decisions=(_decision(GAP), _decision(LATER)), resolved_classifications=resolved
+    )
+    assert one_wide.snapshot_id() == two_narrow.snapshot_id()
+    assert one_wide.closure_decisions != two_narrow.closure_decisions
+
+
+def test_the_written_decisions_are_stored_in_the_canonical_order() -> None:
+    """保存時の整列鍵は `(kind, interval.start, interval.end, 系列, outcome)`（D03 §3.7.1）。"""
+    forward = snapshots.manifest(closure_decisions=(_decision(LATER), _decision(GAP)))
+    assert [decision.interval for decision in forward.closure_decisions] == [GAP, LATER]
+
+
+def test_the_provisional_report_ref_defaults_to_the_final_report() -> None:
+    """再実行しなかった snapshot では、暫定報告と最終報告のダイジェストが同じ（D03 §3.7）。"""
+    manifest = snapshots.manifest()
+    assert manifest.provisional_report_ref == manifest.integrity_report_ref
+
+
+def test_a_different_provisional_report_changes_the_snapshot_id() -> None:
+    """暫定報告のダイジェストは識別子の対象（D03 §3.7.1 v1.7）。"""
+    from dataclasses import replace
+
+    base = snapshots.manifest()
+    rerun = replace(base, provisional_report_ref=snapshots.digest_for("provisional"))
+    assert base.snapshot_id() != rerun.snapshot_id()
+
+
+def test_a_warning_cannot_be_resolved_twice() -> None:
+    """解決済みの分類は警告1件に1件（D03 §4 の 9）。"""
+    with pytest.raises(MarketDataValueError, match="twice"):
+        snapshots.manifest(
+            resolved_classifications=(
+                _resolved(GAP),
+                _resolved(GAP, ClassificationOutcome.CLOSURE),
+            )
+        )
 
 
 # --- 識別子の対象（D03 §3.7.1）----------------------------------------------
@@ -129,11 +197,12 @@ def test_the_identity_payload_excludes_the_non_deterministic_fields() -> None:
     payload = snapshots.approved().identity_payload()
     assert set(payload) == {
         "basis_declaration",
-        "closure_decisions",
         "conversion",
         "integrity_report_ref",
         "legacy_access",
         "partitions",
+        "provisional_report_ref",
+        "resolved_classifications",
         "series",
         "sources",
     }

@@ -77,6 +77,9 @@ class _StubStore:
     def write_integrity_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
         raise NotImplementedError("構成の試験では検査報告を書かない")
 
+    def write_provisional_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
+        raise NotImplementedError("構成の試験では暫定報告を書かない")
+
 
 def _service(
     timeframe_defs: dict[str, TimeframeDefinition],

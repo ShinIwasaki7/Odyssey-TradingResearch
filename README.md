@@ -29,9 +29,11 @@ uv run odyssey-fx data accept \
     --timeframes configs/calendars/timeframes_v1.yaml \
     --symbols configs/symbols --out data/snapshots
 
-# 2. 欠落区間の分類を記入して確定する（D03 §4 の 9）
+# 2. 分類対象の警告（存在すべき足の欠落・休場帯の足）の分類を記入して確定する
+#    （D03 §4 の 9。分類ファイルは形式版 2、D03 §10）
 uv run odyssey-fx data classify --pending <暫定 ID> \
-    --decisions <分類ファイル> --out data/snapshots
+    --decisions <分類ファイル> \
+    --timeframes configs/calendars/timeframes_v1.yaml --out data/snapshots
 
 # 3. 承認を記入する。承認するまで読み取り対象にならない（D03 §3.7.1）
 uv run odyssey-fx data approve --snapshot <最終 ID> --by <名前> --out data/snapshots

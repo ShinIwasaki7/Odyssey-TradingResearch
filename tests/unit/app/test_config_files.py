@@ -72,6 +72,42 @@ def test_the_real_calendar_matches_the_one_the_tests_use() -> None:
     assert load_calendar(CALENDAR_FILE) == market.calendar()
 
 
+def _calendar_with(tmp_path: Path, openings: str) -> Path:
+    """実物のカレンダーの `openings` だけを差し替えた版 2 を書く。"""
+    text = CALENDAR_FILE.read_text(encoding="utf-8").replace("\nversion: 1\n", "\nversion: 2\n")
+    assert "openings: []" in text
+    path = tmp_path / "fx_ny17_v2.yaml"
+    path.write_text(text.replace("openings: []", openings), encoding="utf-8")
+    return path
+
+
+def test_the_real_calendar_declares_no_opening_yet() -> None:
+    """営業例外も宣言制で、分類が確定するまで空である（D03 §3.4 v1.7）。"""
+    assert load_calendar(CALENDAR_FILE).openings == ()
+
+
+def test_an_opening_is_read(tmp_path: Path) -> None:
+    """営業例外（`openings`）を読める（D03 §3.4 v1.7）。"""
+    path = _calendar_with(
+        tmp_path,
+        'openings:\n  - local_date: "2022-01-09"\n    start: "16:00:00"\n'
+        '    end: "17:00:00"\n    note: 早期開場\n',
+    )
+    (opening,) = load_calendar(path).openings
+    assert opening.start == time(16, 0)
+    assert opening.note == "早期開場"
+
+
+def test_a_detached_opening_is_a_configuration_error(tmp_path: Path) -> None:
+    """通常の週の開場区間から離れた営業例外は設定の誤りとして拒否する（2026-09-24）。"""
+    path = _calendar_with(
+        tmp_path,
+        'openings:\n  - local_date: "2022-01-08"\n    start: "10:00:00"\n    end: "11:00:00"\n',
+    )
+    with pytest.raises(ConfigError, match="カレンダーとして成立しない"):
+        load_calendar(path)
+
+
 # --- 実物の時間足定義 -------------------------------------------------------
 
 

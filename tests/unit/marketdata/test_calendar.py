@@ -20,6 +20,7 @@ from odyssey_fx.common import canonical
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.calendar import (
     ClosureRule,
+    OpeningRule,
     TradingCalendar,
     WeeklyMoment,
 )
@@ -255,7 +256,15 @@ def test_the_calendar_has_no_cache_field() -> None:
     直接確かめる。
     """
     names = [field.name for field in dataclasses.fields(TradingCalendar)]
-    assert names == ["id", "version", "tz", "weekly_open", "weekly_close", "closures"]
+    assert names == [
+        "id",
+        "version",
+        "tz",
+        "weekly_open",
+        "weekly_close",
+        "closures",
+        "openings",
+    ]
 
 
 def test_the_calendar_rejects_an_extra_constructor_argument() -> None:
@@ -303,7 +312,7 @@ def test_the_canonical_form_does_not_depend_on_past_queries() -> None:
                 payload[field.name] = value.key
             elif field.name in ("weekly_open", "weekly_close"):
                 payload[field.name] = f"{value.weekday}@{value.at.isoformat()}"
-            elif field.name == "closures":
+            elif field.name in ("closures", "openings"):
                 payload[field.name] = tuple("/".join(rule.sort_key()) for rule in value)
             else:
                 payload[field.name] = value
@@ -392,3 +401,107 @@ def test_a_declared_closure_still_applies_after_the_cache_is_warm() -> None:
 
     assert not calendar.is_open(UtcTime.parse("2026-01-14T15:00:00Z"))
     assert calendar.is_open(UtcTime.parse("2026-01-14T18:00:00Z"))
+
+
+# --- 営業例外（D03 §3.4 v1.7）----------------------------------------------
+
+#: 日曜 16:00〜17:00 NY（冬時間の 21:00〜22:00Z）。週の開場（日曜 17:00 NY）に接する。
+EARLY_OPENING = OpeningRule(local_date=date(2022, 1, 9), start=time(16, 0), end=time(17, 0))
+#: 金曜 17:00〜18:00 NY（冬時間の 22:00〜23:00Z）。週の終了（金曜 17:00 NY）に接する。
+LATE_OPENING = OpeningRule(local_date=date(2022, 1, 14), start=time(17, 0), end=time(18, 0))
+SUNDAY_21Z = UtcTime.parse("2022-01-09T21:00:00Z")
+WEEK_2022 = Interval(
+    start=UtcTime.parse("2022-01-09T22:00:00Z"), end=UtcTime.parse("2022-01-14T22:00:00Z")
+)
+
+
+def _with_openings(
+    *openings: OpeningRule, closures: tuple[ClosureRule, ...] = ()
+) -> TradingCalendar:
+    return TradingCalendar(
+        id="fx_ny17",
+        version=2,
+        tz=market.NEW_YORK,
+        weekly_open=WeeklyMoment(weekday=6, at=time(17, 0)),
+        weekly_close=WeeklyMoment(weekday=4, at=time(17, 0)),
+        closures=closures,
+        openings=openings,
+    )
+
+
+def test_an_opening_is_open() -> None:
+    """営業例外の区間は開場（D03 §3.4 v1.7）。"""
+    assert not market.calendar().is_open(SUNDAY_21Z)
+    assert _with_openings(EARLY_OPENING).is_open(SUNDAY_21Z)
+
+
+def test_sessions_include_the_opening_joined_to_the_week() -> None:
+    """`sessions()` は週の開場区間に営業例外を加える（接するなら連結する）。"""
+    calendar = _with_openings(EARLY_OPENING)
+    window = Interval(start=UtcTime.parse("2022-01-09T20:00:00Z"), end=WEEK_2022.end)
+    assert calendar.sessions(window) == (Interval(start=SUNDAY_21Z, end=WEEK_2022.end),)
+
+
+def test_an_opening_after_the_weekly_close_extends_the_session() -> None:
+    calendar = _with_openings(LATE_OPENING)
+    window = Interval(start=WEEK_2022.start, end=UtcTime.parse("2022-01-15T00:00:00Z"))
+    assert calendar.sessions(window) == (
+        Interval(start=WEEK_2022.start, end=UtcTime.parse("2022-01-14T23:00:00Z")),
+    )
+
+
+def test_an_opening_makes_the_bar_expected() -> None:
+    """営業例外の時間帯の足は存在すべき足になる（休場帯の足ではなくなる）。"""
+    window = Interval(start=SUNDAY_21Z, end=WEEK_2022.start)
+    assert market.calendar().expected_bar_starts(market.TF_1H, window) == ()
+    assert _with_openings(EARLY_OPENING).expected_bar_starts(market.TF_1H, window) == (SUNDAY_21Z,)
+
+
+def test_weekly_session_at_includes_the_opening() -> None:
+    """`weekly_session_at` は営業例外を含めて連結した区間を返す（2026-09-24 の決定）。"""
+    calendar = _with_openings(EARLY_OPENING, LATE_OPENING)
+    extended = Interval(start=SUNDAY_21Z, end=UtcTime.parse("2022-01-14T23:00:00Z"))
+    # 営業例外の中の時刻も、通常の週の開場区間の中の時刻も、同じ連結した区間を返す。
+    assert calendar.weekly_session_at(SUNDAY_21Z) == extended
+    assert calendar.weekly_session_at(UtcTime.parse("2022-01-12T12:00:00Z")) == extended
+    assert calendar.weekly_session_at(UtcTime.parse("2022-01-14T22:30:00Z")) == extended
+    # 連結した区間の外は週と週のあいだ。
+    assert calendar.weekly_session_at(UtcTime.parse("2022-01-14T23:00:00Z")) is None
+    assert calendar.weekly_session_at(UtcTime.parse("2022-01-09T20:59:00Z")) is None
+
+
+def test_a_closure_still_applies_inside_a_week_extended_by_an_opening() -> None:
+    """休場は営業例外で広げた週にもそのまま効く（`weekly_session_at` は休場を取り除かない）。"""
+    holiday = ClosureRule(local_date=date(2022, 1, 12), covers_whole_day=True)
+    calendar = _with_openings(EARLY_OPENING, closures=(holiday,))
+    assert not calendar.is_open(UtcTime.parse("2022-01-12T12:00:00Z"))
+    assert calendar.weekly_session_at(UtcTime.parse("2022-01-12T12:00:00Z")) == Interval(
+        start=SUNDAY_21Z, end=WEEK_2022.end
+    )
+
+
+def test_a_detached_opening_is_rejected() -> None:
+    """通常の週の開場区間に接しも重なりもしない営業例外は拒否する（2026-09-24 の決定）。"""
+    detached = OpeningRule(local_date=date(2022, 1, 8), start=time(10, 0), end=time(11, 0))
+    with pytest.raises(MarketDataValueError, match="neither touches nor overlaps"):
+        _with_openings(detached)
+
+
+def test_an_opening_overlapping_a_closure_is_rejected() -> None:
+    """休場と重なる営業例外は拒否する（D03 §3.4 v1.7）。"""
+    closure = ClosureRule(local_date=date(2022, 1, 9), start=time(16, 30), end=time(17, 30))
+    with pytest.raises(MarketDataValueError, match="overlaps the closure"):
+        _with_openings(EARLY_OPENING, closures=(closure,))
+
+
+def test_an_opening_requires_start_before_end() -> None:
+    with pytest.raises(MarketDataValueError, match="start < end"):
+        OpeningRule(local_date=date(2022, 1, 9), start=time(17, 0), end=time(16, 0))
+
+
+def test_openings_are_normalized_into_a_canonical_order() -> None:
+    """宣言順は意味を持たないので、現地日付・区間の順に正規化する。"""
+    forward = _with_openings(EARLY_OPENING, LATE_OPENING)
+    backward = _with_openings(LATE_OPENING, EARLY_OPENING)
+    assert forward == backward
+    assert forward.openings == (EARLY_OPENING, LATE_OPENING)

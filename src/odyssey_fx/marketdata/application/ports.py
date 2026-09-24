@@ -76,3 +76,11 @@ class SnapshotStore(Protocol):
     def write_integrity_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
         """完全性検査の報告を書き出し、内容のダイジェスト（16進 64 文字）を返す。"""
         ...
+
+    def write_provisional_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
+        """暫定段階の検査報告（人間が分類の根拠にした報告）を書き出す（D03 §3.7 v1.7）。
+
+        確定段階で 5〜7 を再実行し、最終報告と異なる場合だけ書く。内容のダイジェスト
+        （16進 64 文字）を返す。
+        """
+        ...

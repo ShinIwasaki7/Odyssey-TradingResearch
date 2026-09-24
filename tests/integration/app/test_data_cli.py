@@ -11,6 +11,9 @@
 - 暫定 snapshot は承認できない（D03 §3.7.1 の 1）。
 - 未分類の警告が残る状態では確定できない（D03 §4 の 9）。
 - 分類の内容が違えば最終の識別子が変わる（D03 §3.7.1）。
+- 分類ファイルは形式版 2（D03 §10 v1.7）。確定段階で再実行した snapshot は暫定報告を
+  `integrity_report_provisional.json` として残し、セッション外データ異常と分類した休場帯の
+  足は除外される（D03 §3.7・§4 v1.7）。
 """
 
 from __future__ import annotations
@@ -24,9 +27,12 @@ import pytest
 from odyssey_fx.app.cli.main import main
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+from odyssey_fx.marketdata.application.classification import classifiable_warnings
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
+from odyssey_fx.marketdata.domain.classification import ClassificationOutcome
 from odyssey_fx.marketdata.domain.errors import SnapshotNotApproved
+from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from tests.fixtures.synthetic import market
 
@@ -125,37 +131,42 @@ def _pending_id(repo: Path) -> str:
     return pending[0].name
 
 
-def _decisions_file(repo: Path, store: ParquetSnapshotStore, pending: str, kind: str) -> Path:
-    """報告に出たすべての警告を、指定した分類で記入したファイルを書く。
+def _decision_lines(report: IntegrityReport, missing_outcome: str) -> list[str]:
+    """報告の分類対象の警告1件ごとに、分類1件を書く行（形式版 2、D03 §10 v1.7）。
 
+    存在すべき足の欠落は `missing_outcome`、休場帯の足はセッション外データ異常とする。
     分類は人間の判断だが、この試験が見たいのは「分類が記入されれば確定できる」ことと
-    「分類が違えば別 snapshot になる」ことなので、全件を同じ分類にする。
+    「分類が違えば別 snapshot になる」ことなので、種別ごとに同じ結果にする。
 
-    **分類は系列と区間の組ごとに1件**書く。報告は同じ系列・同じ区間・同じ種別でも
-    詳細（`detail`）が違えば別の記録になる（D03 §3.7.1 の整列鍵に詳細が入る）。上位足の
-    欠落は、カレンダー照合が「足が無い」として1件、上位足の生成が「構成足が足りず生成
-    できなかった」として1件、同じ区間に対して報告する。一方で警告と分類の突き合わせは
-    区間全体で取るので、その区間に対する分類は1件でよい。区間ごとに2件書くと、余分な
-    分類として拒否される。
+    **分類は種別・系列・区間の組ごとに1件**書く。上位足の欠落はカレンダー照合と上位足の
+    生成が詳細違いで2件報告するが、突き合わせは種別・系列・区間で取るので1件でよい。
+    2件書くと、同じ警告を2件の分類が覆う（競合）として拒否される。
     """
-    report = store.read_integrity_report(f"_pending/{pending}")
-    lines = ["schema_version: 1", "decisions:"]
-    for series_text, start, end in sorted(
-        {
-            (str(result.series), str(result.interval.start), str(result.interval.end))
-            for result in report.warnings
-        }
-    ):
+    outcomes = {
+        CheckKind.MISSING_EXPECTED_BAR: missing_outcome,
+        CheckKind.UNEXPECTED_BAR: ClassificationOutcome.OUT_OF_SESSION_DATA.value,
+    }
+    lines: list[str] = []
+    for result in classifiable_warnings((report,)):
+        outcome = outcomes[result.kind]
         lines.extend(
             [
-                f"  - series: {series_text}",
+                f"  - kind: {result.kind.value}",
                 "    interval:",
-                f'      start: "{start}"',
-                f'      end: "{end}"',
-                f"    kind: {kind}",
-                f"    note: {kind} として分類",
+                f'      start: "{result.interval.start}"',
+                f'      end: "{result.interval.end}"',
+                f"    series: [{result.series}]",
+                f"    outcome: {outcome}",
+                f"    note: {outcome} として分類",
             ]
         )
+    return lines
+
+
+def _decisions_file(repo: Path, store: ParquetSnapshotStore, pending: str, kind: str) -> Path:
+    """報告に出たすべての分類対象の警告を、指定した分類で記入したファイルを書く。"""
+    report = store.read_integrity_report(f"_pending/{pending}")
+    lines = ["schema_version: 2", "decisions:", *_decision_lines(report, kind)]
     path = repo / f"decisions_{kind}.yaml"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -170,6 +181,8 @@ def _classify(repo: Path, pending: str, decisions: Path) -> int:
             pending,
             "--decisions",
             str(decisions),
+            "--timeframes",
+            str(repo / "configs/calendars/timeframes_v1.yaml"),
             "--out",
             str(repo / "data/snapshots"),
         ]
@@ -265,7 +278,7 @@ def test_classify_fails_while_warnings_are_unclassified(workspace: Path) -> None
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     empty = workspace / "empty.yaml"
-    empty.write_text("schema_version: 1\ndecisions: []\n", encoding="utf-8")
+    empty.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
     assert _classify(workspace, pending, empty) == 1
 
 
@@ -483,23 +496,14 @@ def _calendar_v2(workspace: Path) -> Path:
 def _decisions_with_calendar(
     workspace: Path, store: ParquetSnapshotStore, pending: str, calendar: Path
 ) -> Path:
-    """元の報告の全警告を「休場」と分類し、新しいカレンダーを指すファイルを書く。"""
+    """元の報告の全欠落を「休場」と分類し、新しいカレンダーを指すファイルを書く。"""
     report = store.read_integrity_report(f"_pending/{pending}")
-    lines = ["schema_version: 1", f"calendar: {calendar}", "decisions:"]
-    for series_text, start, end in sorted(
-        {
-            (str(result.series), str(result.interval.start), str(result.interval.end))
-            for result in report.warnings
-        }
-    ):
-        lines += [
-            f"  - series: {series_text}",
-            "    interval:",
-            f'      start: "{start}"',
-            f'      end: "{end}"',
-            "    kind: CLOSURE",
-            "    note: 新しいカレンダーで休場と宣言",
-        ]
+    lines = [
+        "schema_version: 2",
+        f"calendar: {calendar}",
+        "decisions:",
+        *_decision_lines(report, "CLOSURE"),
+    ]
     path = workspace / "decisions_calendar_v2.yaml"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -537,8 +541,8 @@ def test_a_closure_declared_in_a_new_calendar_version_settles_and_reads(
 
     original = store.read_integrity_report(f"_pending/{pending}")
     assert original.warnings, "この試験は警告のある状態を前提にしている"
-    # 分類は「系列 × 区間」ごとに1件（同じ区間に対する重複した報告は1件にまとめる）。
-    expected_decisions = len({(str(r.series), str(r.interval)) for r in original.warnings})
+    # 分類は「種別 × 系列 × 区間」ごとに1件（同じ区間に対する重複した報告は1件にまとめる）。
+    expected_decisions = len(classifiable_warnings((original,)))
 
     decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
     assert _classify_with_calendar(workspace, pending, decisions) == 0
@@ -551,6 +555,13 @@ def test_a_closure_declared_in_a_new_calendar_version_settles_and_reads(
     assert not store.read_integrity_report(final).warnings
     # 分類そのものは manifest に残る（人間の判断の記録）。
     assert len(manifest.closure_decisions) == expected_decisions
+    # 警告ごとに解決した分類は、暫定報告の警告に対して作られ、カレンダーの新版を参照する。
+    assert len(manifest.resolved_classifications) == expected_decisions
+    assert {decision.calendar_ref for decision in manifest.closure_decisions} == {"fx_ny17@v2"}
+    # 人間が分類の根拠にした暫定報告を残し、そのダイジェストを記録する（D03 §3.7 v1.7）。
+    provisional_file = workspace / "data/snapshots" / final / "integrity_report_provisional.json"
+    assert provisional_file.is_file()
+    assert manifest.provisional_report_ref != manifest.integrity_report_ref
 
     # 承認でき、読み取りの関門も通る（余分な分類で拒否されない）。
     assert _approve(workspace, final) == 0
@@ -570,7 +581,7 @@ def test_a_gap_the_new_calendar_does_not_explain_still_blocks_settling(
     pending = _pending_id(workspace)
     calendar = _calendar_v2(workspace)
     empty = workspace / "empty_with_calendar.yaml"
-    empty.write_text(f"schema_version: 1\ncalendar: {calendar}\ndecisions: []\n", encoding="utf-8")
+    empty.write_text(f"schema_version: 2\ncalendar: {calendar}\ndecisions: []\n", encoding="utf-8")
     # 元の報告に未分類の警告が残るので、段階1で止まる。
     assert _classify_with_calendar(workspace, pending, empty) == 1
 
@@ -654,14 +665,14 @@ def test_the_calendar_change_path_does_not_reread_the_raw_files(workspace: Path)
     assert manifest.conversion.time_convention == provisional.conversion.time_convention
 
 
-def test_the_calendar_change_path_needs_only_the_timeframes(workspace: Path) -> None:
-    """時間足定義を渡さなければ、何をすべきかを述べて失敗する。"""
+def test_classify_requires_the_timeframes(workspace: Path) -> None:
+    """時間足定義は必須の引数である（D03 §10 v1.7 の `classify`）。"""
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
     decisions = _decisions_with_calendar(workspace, store, pending, _calendar_v2(workspace))
 
-    assert (
+    with pytest.raises(SystemExit):
         main(
             [
                 "data",
@@ -674,8 +685,90 @@ def test_the_calendar_change_path_needs_only_the_timeframes(workspace: Path) -> 
                 str(workspace / "data/snapshots"),
             ]
         )
-        == 1
+
+
+# --- セッション外データ異常の除外（D03 §4 の除外規則 v1.7）------------------
+
+#: 日曜 16:00 NY（冬時間の 21:00Z）に始まる、開場前の「休場帯の足」。
+EARLY = Interval(
+    start=UtcTime.parse("2022-01-09T21:00:00Z"), end=UtcTime.parse("2022-01-09T22:00:00Z")
+)
+
+
+def _add_an_early_bar(workspace: Path) -> None:
+    """1時間足の原 CSV に、週の開場前の足を1本足す。"""
+    calendar = market.calendar()
+    bars = (*_bars(market.TF_1H, "1h", calendar), market.make_bar(market.series(), EARLY))
+    ordered = tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
+    (workspace / "data/raw/market/USDJPY_1h_merged.csv").write_text(
+        market.csv_text(ordered), encoding="utf-8"
     )
+
+
+def _out_of_session_decisions(
+    workspace: Path, store: ParquetSnapshotStore, pending: str, *, calendar: Path | None
+) -> Path:
+    report = store.read_integrity_report(f"_pending/{pending}")
+    head = ["schema_version: 2"] + ([] if calendar is None else [f"calendar: {calendar}"])
+    lines = [*head, "decisions:", *_decision_lines(report, "DATA_GAP")]
+    path = workspace / "decisions_out_of_session.yaml"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_an_out_of_session_bar_is_excluded_and_the_snapshot_reads(workspace: Path) -> None:
+    """休場帯の足をセッション外データ異常と分類すると、除外して確定・承認・読み取りできる。
+
+    この分類は、カレンダーを変えなくても受入れの 5〜7 を再実行する（D03 §4 の除外規則）。
+    """
+    _add_an_early_bar(workspace)
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    original = store.read_integrity_report(f"_pending/{pending}")
+    assert any(
+        result.kind is CheckKind.UNEXPECTED_BAR and result.interval == EARLY
+        for result in original.warnings
+    )
+
+    # カレンダーは変えないので、暫定 snapshot と同じ版を指す（仮置き。D03 は未定義）。
+    same_calendar = workspace / "configs/calendars/fx_ny17_v1.yaml"
+    decisions = _out_of_session_decisions(workspace, store, pending, calendar=same_calendar)
+    assert _classify(workspace, pending, decisions) == 0
+
+    final = _final_id(workspace)
+    manifest = store.read_manifest(final)
+    excluded = {
+        resolved.interval: resolved.excluded_bar_count
+        for resolved in manifest.resolved_classifications
+        if resolved.outcome is ClassificationOutcome.OUT_OF_SESSION_DATA
+    }
+    assert excluded == {EARLY: 1}
+    hourly = next(
+        record.partition_id
+        for record in manifest.partitions
+        if record.partition_id.series.timeframe.id == "1h"
+    )
+    assert EARLY not in {bar.interval for bar in store.read_partition(final, hourly)}
+    assert manifest.conversion.calendar_version == 1
+
+    assert _approve(workspace, final) == 0
+    assert str(store.open_readable(final).snapshot_id) == final
+
+
+def test_out_of_session_data_without_a_calendar_fails_with_guidance(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """再実行に使うカレンダーを書かなければ、何をすべきかを述べて失敗する（仮置き）。"""
+    _add_an_early_bar(workspace)
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _out_of_session_decisions(workspace, store, pending, calendar=None)
+
+    assert _classify(workspace, pending, decisions) == 1
+    assert "calendar" in capsys.readouterr().err
+    assert _no_final_snapshot(workspace)
 
 
 # --- 暫定 snapshot の内容照合（D03 §3.7.1）----------------------------------

@@ -16,12 +16,15 @@ from odyssey_fx.marketdata.application.report_digest import integrity_report_dig
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
-    ClosureDecision,
     ConversionRecord,
     LegacyAccessRecord,
     PartitionId,
@@ -91,7 +94,8 @@ def manifest(
     sources: Sequence[SourceFile] | None = None,
     series_records: Sequence[SeriesManifest] | None = None,
     partitions: Sequence[PartitionRecord] | None = None,
-    closure_decisions: Sequence[ClosureDecision] = (),
+    closure_decisions: Sequence[ClassificationDecision] = (),
+    resolved_classifications: Sequence[ResolvedClassification] = (),
     legacy_access: Sequence[LegacyAccessRecord] = (),
     approval: Approval | None = None,
 ) -> SnapshotManifest:
@@ -119,6 +123,7 @@ def manifest(
         partitions=tuple(partitions),
         integrity_report_ref=REPORT_DIGEST,
         closure_decisions=tuple(closure_decisions),
+        resolved_classifications=tuple(resolved_classifications),
         legacy_access=tuple(legacy_access),
         approval=approval,
     )
@@ -211,7 +216,8 @@ def approved(
     sources: Sequence[SourceFile] | None = None,
     series_records: Sequence[SeriesManifest] | None = None,
     partitions: Sequence[PartitionRecord] | None = None,
-    closure_decisions: Sequence[ClosureDecision] = (),
+    closure_decisions: Sequence[ClassificationDecision] = (),
+    resolved_classifications: Sequence[ResolvedClassification] = (),
     legacy_access: Sequence[LegacyAccessRecord] = (),
 ) -> SnapshotManifest:
     """承認済みの manifest（as-of ビューが読める状態、D03 §3.7.1 の3）。"""
@@ -221,6 +227,7 @@ def approved(
         series_records=series_records,
         partitions=partitions,
         closure_decisions=closure_decisions,
+        resolved_classifications=resolved_classifications,
         legacy_access=legacy_access,
         approval=Approval(
             approved_by="reviewer",

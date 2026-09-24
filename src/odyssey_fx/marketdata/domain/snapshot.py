@@ -4,12 +4,15 @@ snapshot は「受入れが固定した市場データの1つの版」であり�
 再現するための記録である。識別子（`SnapshotId`）は決定論的な内容だけから作り、実行時刻・
 操作者・承認者は含めない（D03 §3.7.1）。
 
-**`SnapshotId` の対象**: `sources`、`conversion`（カレンダー版を含む）、
+**`SnapshotId` の対象**（D03 §3.7.1 v1.7）: `sources`、`conversion`（カレンダー版を含む）、
 `basis_declaration`（値と `verified` のみ）、`series`、`partitions`、
-`integrity_report_ref`、`closure_decisions`、`legacy_access`。
+`integrity_report_ref`、`provisional_report_ref`、`resolved_classifications`、
+`legacy_access`。
 
-**対象外**: `created_at`、`declaration_record`（宣言者・宣言日時）、`access_log`、
-`approval`。同じ宣言内容なら誰がいつ宣言・承認しても同じ `snapshot_id` になる。
+**対象外**: `created_at`、`declaration_record`（宣言者・宣言日時）、`closure_decisions`
+（記入されたままの分類。v1.7 で対象外に変更）、`access_log`、`approval`。同じ宣言内容なら
+誰がいつ宣言・承認しても同じ `snapshot_id` になり、同じ警告集合に同じ結果を与える分類は
+区間のまとめ方によらず同じ `snapshot_id` になる。
 
 **列の正規順序**（D03 §3.7.1）: ファイルシステムの列挙順や検査の実行順に依存しないよう、
 符号化前に次の鍵で整列する。
@@ -17,7 +20,10 @@ snapshot は「受入れが固定した市場データの1つの版」であり�
 - `sources`: `path`（POSIX 相対パス、コードポイント順）
 - `series`: `SeriesId` の文字列
 - `partitions`: `(series_id 文字列, access_class, interval.start)`
-- `closure_decisions` / `legacy_access`: `(series_id 文字列, interval.start)`
+- `legacy_access`: `(series_id 文字列, interval.start)`
+- `resolved_classifications`: `(kind, series_id 文字列, interval.start, outcome)`
+- `closure_decisions`（識別子の対象外）: `(kind, interval.start, interval.end,
+  series 文字列の整列済み列, outcome)`
 
 manifest の保存形式（`manifest.json`）も同じ順序で書く（D03 §3.7.1）。
 """
@@ -36,14 +42,16 @@ from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 
 __all__ = [
     "Approval",
     "BasisDeclaration",
-    "ClosureDecision",
-    "ClosureDecisionKind",
     "ConversionRecord",
     "DeclarationRecord",
     "LegacyAccessRecord",
@@ -295,42 +303,10 @@ class SeriesManifest:
         return str(self.series_id)
 
 
-# --- 欠落区間の分類と旧基盤の履歴（D03 §3.4・§3.7）--------------------------
-
-
-class ClosureDecisionKind(Enum):
-    """欠落区間に対する人間の分類（D03 §3.4・§4 の 9）。
-
-    - `CLOSURE`: 休場だった。カレンダーへ追加して版を上げる。
-    - `DATA_GAP`: データ欠損。そのまま欠損として扱う。
-    """
-
-    CLOSURE = "CLOSURE"
-    DATA_GAP = "DATA_GAP"
-
-
-@dataclass(frozen=True, slots=True)
-class ClosureDecision:
-    """欠落区間1件の分類（D03 §3.7）。`SnapshotId` の対象。"""
-
-    series_id: SeriesId
-    interval: Interval
-    kind: ClosureDecisionKind
-    note: str = ""
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.series_id, SeriesId):
-            raise MarketDataValueError("ClosureDecision.series_id must be a SeriesId")
-        if not isinstance(self.interval, Interval):
-            raise MarketDataValueError("ClosureDecision.interval must be an Interval")
-        if not isinstance(self.kind, ClosureDecisionKind):
-            raise MarketDataValueError("ClosureDecision.kind must be a ClosureDecisionKind")
-        if not isinstance(self.note, str):
-            raise MarketDataValueError("ClosureDecision.note must be a str")
-
-    def sort_key(self) -> tuple[str, str]:
-        """D03 §3.7.1 の整列鍵 `(series_id 文字列, interval.start)`。"""
-        return (str(self.series_id), str(self.interval.start))
+# --- 旧基盤の履歴（D03 §3.7）------------------------------------------------
+#
+# 人間の分類（`ClassificationDecision` / `ResolvedClassification`）は
+# `marketdata.domain.classification` にある（D03 §3.9 v1.7）。
 
 
 class LegacyObservation(Enum):
@@ -403,7 +379,11 @@ class SnapshotManifest:
 
     各列は構築時に D03 §3.7.1 の正規順序へ並べ替える。`snapshot_id` は
     `identity_payload()` のダイジェストであり、`created_at`・`declaration_record`・
-    `approval`・閲覧記録は対象に含めない。
+    記入されたままの分類（`closure_decisions`）・`approval`・閲覧記録は対象に含めない。
+
+    `provisional_report_ref` は暫定段階の検査報告（人間が分類の根拠にした報告）のダイジェスト
+    （D03 §3.7 v1.7）。確定段階で受入れの 5〜7 を再実行しなかった場合は
+    `integrity_report_ref` と同じ値で、省略（`None`）するとその値で埋める。
     """
 
     created_at: UtcTime
@@ -413,10 +393,12 @@ class SnapshotManifest:
     series: tuple[SeriesManifest, ...]
     partitions: tuple[PartitionRecord, ...]
     integrity_report_ref: ContentDigest
-    closure_decisions: tuple[ClosureDecision, ...] = ()
+    closure_decisions: tuple[ClassificationDecision, ...] = ()
     legacy_access: tuple[LegacyAccessRecord, ...] = ()
     declaration_record: DeclarationRecord | None = None
     approval: Approval | None = None
+    provisional_report_ref: ContentDigest | None = None
+    resolved_classifications: tuple[ResolvedClassification, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.created_at, UtcTime):
@@ -431,6 +413,12 @@ class SnapshotManifest:
             raise MarketDataValueError(
                 "SnapshotManifest.integrity_report_ref must be a ContentDigest"
             )
+        if self.provisional_report_ref is None:
+            object.__setattr__(self, "provisional_report_ref", self.integrity_report_ref)
+        elif not isinstance(self.provisional_report_ref, ContentDigest):
+            raise MarketDataValueError(
+                "SnapshotManifest.provisional_report_ref must be a ContentDigest or None"
+            )
         if self.declaration_record is not None and not isinstance(
             self.declaration_record, DeclarationRecord
         ):
@@ -443,8 +431,22 @@ class SnapshotManifest:
         self._normalize("sources", SourceFile, lambda item: item.sort_key())
         self._normalize("series", SeriesManifest, lambda item: item.sort_key())
         self._normalize("partitions", PartitionRecord, lambda item: item.sort_key())
-        self._normalize("closure_decisions", ClosureDecision, lambda item: item.sort_key())
+        self._normalize("closure_decisions", ClassificationDecision, lambda item: item.sort_key())
+        self._normalize(
+            "resolved_classifications", ResolvedClassification, lambda item: item.sort_key()
+        )
         self._normalize("legacy_access", LegacyAccessRecord, lambda item: item.sort_key())
+
+        # 解決済みの分類は警告1件に1件（同じ警告に2つの結果を記録しない、D03 §4 の 9）。
+        seen: set[tuple[str, str, str]] = set()
+        for resolved in self.resolved_classifications:
+            key = resolved.warning_key()
+            if key in seen:
+                raise MarketDataValueError(
+                    f"SnapshotManifest.resolved_classifications records the warning {key}"
+                    " twice; each warning resolves to exactly one classification (D03 §4 の 9)"
+                )
+            seen.add(key)
 
         declared = {record.series_id for record in self.series}
         for partition in self.partitions:
@@ -474,17 +476,20 @@ class SnapshotManifest:
         """`SnapshotId` のダイジェスト対象（D03 §3.7.1）。
 
         含めるもの: `sources`、`conversion`、`basis_declaration`、`series`、`partitions`、
-        `integrity_report_ref`、`closure_decisions`、`legacy_access`。
+        `integrity_report_ref`、`provisional_report_ref`、`resolved_classifications`、
+        `legacy_access`。
 
-        含めないもの: `created_at`、`declaration_record`、`access_log`、`approval`。
+        含めないもの: `created_at`、`declaration_record`、`closure_decisions`（記入された
+        ままの分類、v1.7）、`access_log`、`approval`。
         """
         return {
             "basis_declaration": self.basis_declaration,
-            "closure_decisions": self.closure_decisions,
             "conversion": self.conversion,
             "integrity_report_ref": self.integrity_report_ref,
             "legacy_access": self.legacy_access,
             "partitions": self.partitions,
+            "provisional_report_ref": self.provisional_report_ref,
+            "resolved_classifications": self.resolved_classifications,
             "series": self.series,
             "sources": self.sources,
         }
@@ -509,10 +514,18 @@ class SnapshotManifest:
                 return record
         return None
 
-    def with_closure_decisions(self, decisions: tuple[ClosureDecision, ...]) -> SnapshotManifest:
+    def with_classification(
+        self,
+        *,
+        decisions: tuple[ClassificationDecision, ...],
+        resolved: tuple[ResolvedClassification, ...],
+        provisional_report_ref: ContentDigest,
+    ) -> SnapshotManifest:
         """分類を記入した manifest を返す（D03 §3.7.1 の確定段階）。
 
-        分類が変われば `snapshot_id` も変わる。分類が異なれば別 snapshot である。
+        識別子に効くのは警告1件ごとに解決した `resolved` と、暫定報告のダイジェスト
+        （`provisional_report_ref`）である。記入されたままの分類（`decisions`）は監査用の
+        記録で、識別子には入らない。解決した結果が異なれば別 snapshot である。
         """
         return SnapshotManifest(
             created_at=self.created_at,
@@ -526,6 +539,8 @@ class SnapshotManifest:
             legacy_access=self.legacy_access,
             declaration_record=self.declaration_record,
             approval=self.approval,
+            provisional_report_ref=provisional_report_ref,
+            resolved_classifications=resolved,
         )
 
     def with_approval(self, approval: Approval) -> SnapshotManifest:
@@ -542,4 +557,6 @@ class SnapshotManifest:
             legacy_access=self.legacy_access,
             declaration_record=self.declaration_record,
             approval=approval,
+            provisional_report_ref=self.provisional_report_ref,
+            resolved_classifications=self.resolved_classifications,
         )

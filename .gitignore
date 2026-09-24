@@ -1,13 +1,20 @@
 # --- データ（ADR-0013、ADR-0014） --------------------------------------------
 # 原データ・snapshot 実体・実行成果物は git 管理外。
-# snapshot の manifest.json と access_log.jsonl だけは追跡する。access log は
+# snapshot の manifest.json・検査報告・access_log.jsonl だけは追跡する。access log は
 # holdout の消費遷移の正本で、origin に到達して初めて「記録された」とみなすため、
 # 追跡されていない追記は未記録として扱われる（ADR-0014 の消費遷移の直列化）。
+# 検査報告（integrity_report.json、確定段階で再実行した snapshot は暫定報告
+# integrity_report_provisional.json も）は manifest のダイジェスト対象であり、承認と
+# 読み取りの関門が照合するので、追跡しないと別クローンで snapshot を検証できない
+# （ADR-0013 2026-09-20 改訂、D03 v1.7）。
 # 再包含規則の順序に注意: 親ディレクトリ自体を除外すると中身を再包含できないため、
-# `data/snapshots/*/*` の形で「中身」を除外してから2ファイルを許可する。
+# `data/snapshots/*/*` の形で「中身」を除外してからファイルを許可する。暫定 snapshot
+# （data/snapshots/_pending/<id>/）は1段深いので、`_pending/<id>` ごと除外されたまま。
 data/raw/
 data/snapshots/*/*
 !data/snapshots/*/manifest.json
+!data/snapshots/*/integrity_report.json
+!data/snapshots/*/integrity_report_provisional.json
 !data/snapshots/*/access_log.jsonl
 runs/
 

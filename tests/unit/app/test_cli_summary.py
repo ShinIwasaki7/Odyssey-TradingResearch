@@ -167,12 +167,12 @@ def test_the_price_basis_is_part_of_the_series_key() -> None:
 # --- 表示と確定の対象を揃える（D03 §4 の 9）---------------------------------
 
 
-def test_every_warning_kind_appears_in_the_summary() -> None:
-    """要約は WARN の**全種類**を出す。
+def test_only_the_classifiable_warning_kinds_appear_in_the_summary() -> None:
+    """要約は**分類対象の2種別**だけを「分類が要る」として出す（D03 §3.9 v1.7）。
 
-    確定（`finalize`）は報告のすべての警告に分類を求める。表示が一部の種別だけを
-    「分類が要る」として見せると、そこに出ていない警告（銘柄間の足境界のずれ、夏時間
-    切替週の異常）で確定が失敗し、人間には理由が分からない。
+    確定（`finalize`）が分類を求めるのは存在すべき足の欠落と休場帯の足だけである。
+    銘柄間の足境界のずれと夏時間切替週の異常は保存するだけで分類を要しないので、
+    「分類が要る」として見せると人間が不要な分類を書いてしまう。
     """
     window = Interval(
         start=UtcTime.parse("2022-01-06T10:00:00Z"),
@@ -189,8 +189,6 @@ def test_every_warning_kind_appears_in_the_summary() -> None:
     assert shown == {
         CheckKind.MISSING_EXPECTED_BAR.value,
         CheckKind.UNEXPECTED_BAR.value,
-        CheckKind.CROSS_SYMBOL_MISALIGNMENT.value,
-        CheckKind.DST_BOUNDARY_ANOMALY.value,
     }
 
 
