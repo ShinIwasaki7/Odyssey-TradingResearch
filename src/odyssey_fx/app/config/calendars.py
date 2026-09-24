@@ -54,14 +54,18 @@ class _WeeklyMomentModel(StrictModel):
 
 
 class _ClosureModel(StrictModel):
-    """宣言した休場・短縮1件（D03 §3.4）。
+    """宣言した休場・短縮1件（D03 §3.4・§3.4.1）。
 
-    終日休場は `covers_whole_day: true`、短縮は `start` / `end` で書く。両方を書く、
-    どちらも書かない、といった組合せは domain の `ClosureRule` が拒否する。
+    終日休場は `covers_whole_day: true`、取引日単位の休場（前日の取引日の境界〜当日の
+    取引日の境界。v1.9）は `covers_trading_day: true`、短縮は `start` / `end` で書く。
+    2つ以上の形を書く、どれも書かない、といった組合せは domain の `ClosureRule` が拒否する。
+    `covers_trading_day` は省略可能なキーで、省略すれば従来の意味のまま読める（形式の版は
+    上げない。D03 §9）。
     """
 
     local_date: str
     covers_whole_day: bool = False
+    covers_trading_day: bool = False
     start: str | None = None
     end: str | None = None
     note: str = ""
@@ -149,6 +153,7 @@ def _closure_rule(model: _ClosureModel, path: Path, index: int) -> ClosureRule:
         return ClosureRule(
             local_date=local_day,
             covers_whole_day=model.covers_whole_day,
+            covers_trading_day=model.covers_trading_day,
             start=start,
             end=end,
             note=model.note,

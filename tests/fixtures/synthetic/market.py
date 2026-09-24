@@ -96,9 +96,23 @@ def calendar(closures: Sequence[ClosureRule] = (), version: int = 1) -> TradingC
     )
 
 
-def closure(local_day: date, start: time, end: time, note: str = "") -> ClosureRule:
-    """短縮セッションの宣言を作る。"""
-    return ClosureRule(local_date=local_day, start=start, end=end, note=note)
+def closure(
+    local_day: date,
+    start: time | None = None,
+    end: time | None = None,
+    note: str = "",
+    *,
+    trading_day: bool = False,
+) -> ClosureRule:
+    """休場の宣言を作る（D03 §3.4.1）。
+
+    `start` / `end` を渡せば短縮セッション、`trading_day=True` なら取引日単位の休場
+    （前日 17:00〜当日 17:00。時刻はカレンダーの週の開閉時刻から決まる）。両方を渡す、
+    どちらも渡さない組合せは `ClosureRule` が拒否する。
+    """
+    return ClosureRule(
+        local_date=local_day, start=start, end=end, note=note, covers_trading_day=trading_day
+    )
 
 
 def series(
