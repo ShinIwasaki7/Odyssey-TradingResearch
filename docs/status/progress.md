@@ -10,7 +10,7 @@
 - なし（PR #26 の要決定 Q1〜Q5 は解消。AGENTS.md は PR #29 で main に導入済み）
 
 ## 進行中（最大2行）
-- 段階3 PR 5/5「エンジン＋受入」: 表18 への確認試行・損切り更新（UpdateStop）の型と適用（引き渡し #2）・表16 の書き出し・T02 検算値の受入テスト・遅延 4 ケース突き合わせ・評価集計 golden・#33 の仮置き 14 件の D05 追記。Opus、ブランチ stage3/pr5-engine-acceptance、Codex ループ自走
+- 段階3 PR 5/5「エンジン＋受入」: PR #35 作成（2026-09-24T15:54Z）。T02 検算値すべて一致、遅延 4 ケース突き合わせ済み、golden 1 件（評価集計の 0 件 2 行）、pytest 1,814 passed。T02 の記述誤り 4 件を v1.2 で訂正。Codex 1 巡目を依頼中。Opus、ブランチ stage3/pr5-engine-acceptance
 - 段階4 分類の PR（第 1 弾）: 決定 1〜5 を取引日単位の休場で実装。Opus、既存 worktree agent-ac2b4e3318df16f1c（ブランチ stage4/classification-round-1）で再開、Codex ループ自走
 
 ## 未回答の質問
