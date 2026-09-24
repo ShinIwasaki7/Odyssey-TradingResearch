@@ -30,7 +30,7 @@ OpenAI の公開文書（2026-09-24 時点）から、本設計に効く事実�
 | 公式の推奨 | 本設計での扱い |
 |---|---|
 | 構成は `## Working agreements`（作業の約束）、`## Repository expectations`（リポジトリの決まり）、`## Code Review Rules`（`###` で分類） | 草案（§4）をこの 3 節で構成する |
-| 含める内容: リポジトリの配置、実行方法、build / test / lint のコマンド、規約と PR の期待、禁止事項、**「完了とは何か・どう確かめるか」** | Repository expectations に配置・コマンド・完了の定義（CI と同じ 5 検査＋PR 本文の範囲表と仮置き）を書く |
+| 含める内容: リポジトリの配置、実行方法、build / test / lint のコマンド、規約と PR の期待、禁止事項、**「完了とは何か・どう確かめるか」** | Repository expectations に配置・コマンド・完了の定義（CI と同じ 5 検査＋PR 本文の範囲表と仮置き）・PR の期待・**してはいけないこと**（設計の書き換え、原データと確定 snapshot の上書き、実時計・乱数、`Decimal(float)`）を書く |
 | 各レビュー規則は「指摘すべき振る舞い」と「安全な側の書き方または例外」を説明する短文にする | §3.4 の書き方の規則にそのまま採る |
 | 「短く正確な AGENTS.md は、曖昧な規則で埋まった長いファイルより役に立つ」。基本から始め、**同じ誤りを 2 回見たら振り返りをして規則を足す** | §3.3 の更新契機（同型の指摘が 2 本の PR で再発）と一致。初版は再発した型だけを載せる |
 | 大きくなったら、計画・アーキテクチャなど話題ごとの Markdown を参照する形に分ける | 手順は方針文書、依存規則は D01、型は D02〜D08 を参照し、AGENTS.md には写さない（§3.1） |
@@ -129,20 +129,21 @@ FX 戦略研究基盤（Python 3.12、import 名 `odyssey_fx`）。本ファイ�
 
 ## Working agreements
 
-- **設計文書が正本**。コードは `docs/design/D01〜D08` と `docs/decisions/`（決定記録 ADR）に従う。設計に無い振る舞いを決めざるを得ないときは実装で確定させず、PR 本文の「仮置き」に番号付きで列挙する（方針 §6）。
-- **前提を silent に決めない**。設計への異論や設計判断が要る事項は PR で直さず「要決定」として人間に上げる（方針 §1・§4.3）。承認済みの ADR・設計文書に反する変更は提案しない。
-- **merge は人間が判断する**。レビューは欠陥と設計違反を見つける作業で、merge 判断を含まない（方針 §1）。
-- 人間向けの説明では内部識別子（F5c、ADR-0006、D05、P1 など）を単独で使わず、初出時に意味を日本語で書いてから括弧書きする（CLAUDE.md）。
+- **設計文書が正本**（方針 §1）。設計に無い振る舞いを決めざるを得ないときは、PR 本文の「仮置き」に番号付きで列挙する（方針 §6）。
+- **前提を silent に決めない**（方針 §1・§4.3）。設計判断が要る事項は「要決定」として人間に上げる。
+- **merge は人間が判断する**（方針 §1）。
+- 人間向けの説明では、契約 ID（F5c）・決定記録（ADR-0006）・設計文書番号（D05）・指摘の優先度（P1）のような識別子を単独で使わず、初出時に意味を日本語で書いてから括弧書きする（CLAUDE.md）。
 
 ## Repository expectations
 
-- 配置: `src/odyssey_fx/{common, marketdata, strategy, backtest, evaluation, app}`（下位から上位への一方向依存。D01 §1・§3）。`tests/{unit, semantics, property, golden, integration, acceptance, architecture, fixtures}`（D01 §9）。`docs/design`（設計）・`docs/decisions`（ADR）・`docs/traces`（紙上トレース）。`configs/`（YAML 設定）。`data/` と `runs/` は実体が git 管理外。
+- 配置: `src/odyssey_fx/{common, marketdata, strategy, backtest, evaluation, app}`（上位から下位への一方向依存。下位は上位を知らない。D01 §1・§3）。`tests/{unit, semantics, property, golden, integration, acceptance, architecture, fixtures}`（D01 §9）。`docs/design`（設計）・`docs/decisions`（ADR）・`docs/traces`（紙上トレース）。`configs/`（YAML 設定）。`data/` と `runs/` は実体が git 管理外。
 - Python 3.12 を uv で固定。すべて `uv run` 経由で実行する（シェルの `python3` は使わない）。
 - **完了の定義**: 次の 5 つが CI と同じ並びで通り、PR 本文に **レビュー対象範囲の表**（方針 §3.1）と **仮置きの一覧**（無ければ「なし」）がある。
   `uv run ruff check .` / `uv run ruff format --check .` / `uv run mypy` / `uv run lint-imports` / `uv run pytest`
-- 依存規則の正本は D01 §6。`pyproject.toml` の import-linter 契約はそれを実装した検査で、契約の追加・緩和には D01 の改訂が要る（D01 §12）。層の意味は D01 §2、ポートの所在は D01 §4。
+- 依存規則の正本は D01 §6。`pyproject.toml` の import-linter 契約はそれを実装した検査で、契約の追加・緩和には D01 の改訂が要り、CI で一時的に無効化しない（D01 §12）。層の意味は D01 §2、ポートの所在は D01 §4。
 - PR は `main` 向け。Codex レビューは全 PR 種別で必須で、対象範囲内の P0/P1 が 0 件の巡が出るまで続ける（方針 §2・§4）。
 - 用語: 「範囲表」= PR 本文のレビュー対象範囲。「仮置き」= 設計に無い振る舞いを実装が決めた箇所（方針 §6）。
+- **してはいけないこと**: 指摘を消すために承認済みの設計文書・ADR を書き換える（方針 §4.3）。原データ `data/raw/` と確定済み snapshot を上書きする（D03 §3.7.1、ADR-0013）。domain / application で実時計・乱数・環境変数を読む（D01 §2.2）。`Decimal(float)` を書く（ADR-0012）。
 
 ## Code Review Rules
 
