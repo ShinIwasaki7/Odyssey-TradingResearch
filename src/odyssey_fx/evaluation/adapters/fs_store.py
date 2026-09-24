@@ -162,7 +162,7 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
 
 @dataclass(slots=True)
 class FileSystemTraceSink:
-    """15表を `runs/<run_id>/<TABLE>.parquet` へ書く（D06 §9.1・§9.2）。
+    """19表を `runs/<run_id>/<TABLE>.parquet` へ書く（D06 §9.1・§9.2）。
 
     最初の書き出しの前に置き場所を確保し、既存の成果物があれば失敗する（ADR-0006）。
     """

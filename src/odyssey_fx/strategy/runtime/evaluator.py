@@ -126,7 +126,6 @@ from odyssey_fx.strategy.declarations.specs import (
 )
 from odyssey_fx.strategy.declarations.state_spec import StateSpec
 from odyssey_fx.strategy.records.payloads import (
-    ClosePosition,
     ConditionState,
     ConfirmationOutcome,
     ConfirmationResult,
@@ -135,7 +134,6 @@ from odyssey_fx.strategy.records.payloads import (
     OpportunityContent,
     OrderIntent,
     ProtectionLevels,
-    SetTakeProfit,
     TradeDirection,
     payload_type_for,
 )
@@ -2314,33 +2312,7 @@ class _StepRun:
                 )
             if isinstance(value, OpportunityContent):
                 self._check_reference_values(component, output_name, spec, value)
-        self._check_management_action(component, result)
         self._check_new_state(component, result)
-
-    def _check_management_action(
-        self, component: CompiledComponent, result: ComponentOutputs
-    ) -> None:
-        """決済役割の出力が、管理要求の運べる区分であることを付番の前に確かめる。
-
-        管理要求（`ManagementRequest.action`）が運べるのは、まだ段階2 の2区分（初期の利確・
-        全数量決済）である。損切り水準の更新（`UpdateStop`）を管理要求に通すのは、エンジンが
-        それを建玉へ適用する変更と同じ段階3 実装 PR 5/5 である（2026-09-24 の人間の決定。
-        `records.payloads.ManagementAction` の注記）。それまでは黙って捨てず、評価の失敗と
-        して残す。付番の前に確かめるのは、判断履歴に出た出力と管理要求が食い違わないように
-        するためである。
-        """
-        exit_ref = self._compiled.roles.exit
-        if exit_ref is None or exit_ref.instance_id != component.instance_id:
-            return
-        action = result.outputs.get(exit_ref.output_name)
-        if action is None or isinstance(action, (SetTakeProfit, ClosePosition)):
-            return
-        raise _EvaluationFailure(
-            _data_error(
-                f"{component.instance_id} returned {type(action).__name__}; a management request"
-                " carries it only once the engine applies it (stage-3 implementation PR 5/5)"
-            )
-        )
 
     def _check_reference_values(
         self,
@@ -2660,11 +2632,10 @@ class _StepRun:
                 " address it to; in stage 2 the exit role is started by a position-opened"
                 " notice, which carries the position (D05 §8)"
             )
+        # 管理要求の区分（`ManagementAction` の3区分）であることは、付番の前の戻り値の検査
+        # （`_check_outputs`。決済役割のデータ型 `management_action@v1` の実行時クラス）が
+        # 保証している。ここで同じ検査を重ねない。
         action = _value_of(record.payload)
-        if getattr(action, "kind", None) not in ("SET_TAKE_PROFIT", "CLOSE_POSITION"):
-            raise _EvaluationFailure(
-                _data_error(f"{request.instance_id} did not produce a management action")
-            )
         self._management.append(
             ManagementRequest(
                 position_id=request.position_id,

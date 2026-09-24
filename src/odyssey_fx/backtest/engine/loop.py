@@ -129,6 +129,7 @@ from odyssey_fx.backtest.trace.recorder import (
     EvidenceRecord,
     ManagementApplication,
     MarketObservationRef,
+    SubstitutionOwner,
     TraceTable,
 )
 from odyssey_fx.backtest.trace.result import FinalSummaries, RunStatus
@@ -176,8 +177,15 @@ from odyssey_fx.strategy.records.payloads import (
     PositionContext,
     SetTakeProfit,
     TradeDirection,
+    UpdateStop,
 )
 from odyssey_fx.strategy.records.records import OutputRecord
+from odyssey_fx.strategy.runtime.confirmation import ConfirmationAttempt
+from odyssey_fx.strategy.runtime.opportunities import (
+    OpportunityTransition,
+    ValidityRecheck,
+    ValidityRecheckOutcome,
+)
 from odyssey_fx.strategy.runtime.ports import (
     AdmissionNotice,
     BarClosure,
@@ -190,7 +198,9 @@ from odyssey_fx.strategy.runtime.requests import (
     Failed,
     ManagementRequest,
     RuntimeStepResult,
+    SubstitutedInput,
 )
+from odyssey_fx.strategy.runtime.waiting import WaitEvent
 
 __all__ = [
     "BacktestEngine",
@@ -461,6 +471,10 @@ class BacktestEngine:
         self._clock: PhaseClock | None = None
         self._last_snapshot_at: ProcessingPoint | None = None
         self._output_evaluations: dict[OutputId, EvaluationId] = {}
+        # 表18（確認試行）の主キー `(opportunity_id, bar_key)` から、その行の位置へ。
+        # ランタイムは `step` ごとに作った・書き換えた試行だけを返すので、同じ鍵の2件目は
+        # 行を足さずに置き換える（D06 §9.2、Q26 決定）。
+        self._attempt_rows: dict[tuple[OpportunityId, BarKey], int] = {}
         self._warnings: list[str] = []
 
     # --- 読み出し -----------------------------------------------------------
@@ -645,6 +659,11 @@ class BacktestEngine:
             proposals = first.proposals
             management = first.management_requests
 
+        # rank 10 の直前: 第1回の `step` が返した損切り水準の更新を建玉へ適用する（D06 §4.2 の
+        # 手順6・§8.3、Q25 決定）。受付のリスク審査は適用し終えた保護水準を読む。
+        self._apply_protection_updates(
+            clock, management, phase=PHASE_ADMISSION, is_run_end=is_run_end
+        )
         notices = self._phase_admission(clock, proposals, management, is_run_end=is_run_end)
 
         opened: list[RuntimeEventNotice] = []
@@ -829,27 +848,91 @@ class BacktestEngine:
         番号だけを engine の採番列へ載せ替える。
         """
         result = self._runtime.step(batch)
+        self._record_step(result, clock)
+        # 停止判定（D06 §4.2 の「停止判定」段落が正本）。記録を判断履歴へ移した後に行う
+        # （失敗の診断を判断履歴から消さない）。失敗した `step` の提案と管理要求は一切
+        # 使わない。
+        # (a) 評価の失敗（`Failed`）が1件以上ある。
+        failed = next(
+            (record.outcome for record in result.evaluations if isinstance(record.outcome, Failed)),
+            None,
+        )
+        if failed is not None:
+            raise _RunFailure(failed.reason, phase)
+        # (b) 有効性の再検査が「読めず失敗した」（`MISSING_FAILED`）。再検査は評価の外側で
+        # 走るので評価記録を作らず、この列にしか失敗が現れない（D05 §7.3）。
+        missing = next(
+            (
+                recheck
+                for recheck in result.validity_rechecks
+                if recheck.outcome is ValidityRecheckOutcome.MISSING_FAILED
+            ),
+            None,
+        )
+        if missing is not None:
+            assert missing.reason is not None  # noqa: S101 - `ValidityRecheck` の不変条件
+            raise _RunFailure(missing.reason, phase)
+        return result
+
+    def _record_step(
+        self, result: RuntimeStepResult, clock: PhaseClock, *, phase: str | None = None
+    ) -> None:
+        """1回の `step` の記録を判断履歴へ移す（D06 §4.2 の手順5・9・11、§9.2）。
+
+        - 表1: `OutputSink` で受け取った出力記録（戻り値の `outputs` は再送しない）。
+        - 表2: 評価記録。表17: 評価記録が持つ遡った入力を、その評価の `evaluation_id` と
+          組み合わせて1件ずつ（D06 §9.2 の「＋ その要求の `evaluation_id`」）。
+        - 表3・16・19: 取引機会の遷移・待機の出来事・有効性の再検査。**処理点の番号をエンジン
+          の時計で振り直す**（D06 §4.4）。3種類はランタイムの `step` 内で1本の通し番号を
+          共有している（D05 §6.6）ので、ランタイムが刻んだ処理点の順に並べてから振り直し、
+          3種類をまたいだ前後関係を保つ。フェーズはランタイムが選んだものをそのまま使う
+          （`phase` を渡したときだけ、そのフェーズで刻む。run 末尾の第3回）。
+        - 表18: 確認試行。主キー `(opportunity_id, bar_key)` で既存の行を置き換える。
+        """
         for record in self._sink.drain():
             # 出力から評価へ辿れるようにしておく（根拠記録の `evaluation_ids`）。
             self._output_evaluations[record.output_id] = record.evaluation_id
             self._emit(TraceTable.OUTPUTS, record)
         for evaluation in result.evaluations:
             self._emit(TraceTable.EVALUATIONS, evaluation)
-        for transition in result.transitions:
-            self._opportunities.add(transition.opportunity_id)
-            self._emit(
-                TraceTable.OPPORTUNITY_TRANSITIONS,
-                replace(transition, at=clock.next(transition.phase.name)),
-            )
-        if any(isinstance(record.outcome, Failed) for record in result.evaluations):
-            # 失敗した `step` の提案と管理要求は一切使わない（D06 §4.2）。
-            failed = next(
-                record for record in result.evaluations if isinstance(record.outcome, Failed)
-            )
-            outcome = failed.outcome
-            assert isinstance(outcome, Failed)  # noqa: S101 - 直前の絞り込みが保証する
-            raise _RunFailure(outcome.reason, phase)
-        return result
+            for substitution in evaluation.substitutions:
+                self._emit(
+                    TraceTable.INPUT_SUBSTITUTIONS,
+                    CompositeRow(
+                        primary=SubstitutionOwner(evaluation_id=evaluation.evaluation_id),
+                        parts=(("", SubstitutedInput, substitution),),
+                    ),
+                )
+        stamped: list[OpportunityTransition | WaitEvent | ValidityRecheck] = [
+            *result.transitions,
+            *result.wait_events,
+            *result.validity_rechecks,
+        ]
+        stamped.sort(key=lambda stamp: (stamp.at.phase.rank, stamp.at.sequence))
+        for stamp in stamped:
+            at = clock.next(stamp.at.phase.name if phase is None else phase)
+            if isinstance(stamp, OpportunityTransition):
+                self._opportunities.add(stamp.opportunity_id)
+                self._emit(
+                    TraceTable.OPPORTUNITY_TRANSITIONS,
+                    replace(stamp, at=at, phase=at.phase),
+                )
+            elif isinstance(stamp, WaitEvent):
+                self._emit(TraceTable.WAIT_EVENTS, replace(stamp, at=at))
+            else:
+                self._emit(TraceTable.VALIDITY_RECHECKS, replace(stamp, at=at))
+        for attempt in result.confirmation_attempts:
+            self._record_attempt(attempt)
+
+    def _record_attempt(self, attempt: ConfirmationAttempt) -> None:
+        """確認試行を表18 へ書く。同じ主キーの行があれば置き換える（D06 §9.2、Q26 決定）。"""
+        rows = self._rows[TraceTable.CONFIRMATION_ATTEMPTS]
+        index = self._attempt_rows.get(attempt.key)
+        if index is None:
+            self._attempt_rows[attempt.key] = len(rows)
+            rows.append(attempt)
+        else:
+            rows[index] = attempt
 
     # --- rank 10: 受付 -------------------------------------------------------
 
@@ -1690,107 +1773,252 @@ class BacktestEngine:
             admissions=tuple(notices),
         )
         result = self._step(batch, PHASE_POST_FILL_EVALUATION, clock)
-        # 同じ判断時点で同じ建玉への決済要求が返っていれば、決済を優先し、保護水準の更新は
-        # 理由を記録して破棄する（上位設計書 §4.7.6、D06 §8.3）。理由は `SUPERSEDED_BY_EXIT`
-        # （D02 §8.1、上位設計書 §4.7.14）。建玉が決済される以上、その更新は一度も有効に
-        # ならないので、適用して直後に捨てるのではなく適用そのものを行わない。
+        # 第2回の `step` が返した保護水準の更新は、約定後の評価起動点で適用する（D06 §4.2 の
+        # 手順9・§8.3）。
+        self._apply_protection_updates(
+            clock,
+            result.management_requests,
+            phase=PHASE_POST_FILL_EVALUATION,
+            is_run_end=is_run_end,
+        )
+        return result
+
+    # --- 保護水準の更新（D06 §8.3） -----------------------------------------
+
+    def _apply_protection_updates(
+        self,
+        clock: PhaseClock,
+        requests: Sequence[ManagementRequest],
+        *,
+        phase: str,
+        is_run_end: bool,
+    ) -> None:
+        """1回の `step` が返した保護水準の更新（利確の設定・損切りの更新）を建玉へ適用する。
+
+        **適用フェーズはその要求を返した `step` で決まる**（D06 §8.3、Q25 決定）。第1回の
+        `step` の要求は受付（rank 10）の直前に `ADMISSION` の処理点で、第2回の要求は
+        `POST_FILL_EVALUATION` の処理点で適用する。全数量決済はここでは扱わない（受付へ
+        渡す。第1回は rank 10、第2回は rank 13）。
+
+        同じ判断時点で同じ建玉への決済要求が返っていれば、決済を優先し、保護水準の更新は
+        理由を記録して破棄する（上位設計書 §4.7.6、D06 §8.3）。理由は `SUPERSEDED_BY_EXIT`
+        （D02 §8.1、上位設計書 §4.7.14）。建玉が決済される以上、その更新は一度も有効に
+        ならないので、適用して直後に捨てるのではなく適用そのものを行わない。この競合は
+        適用より前に解決する（D06 §4.2 の手順6）。
+        """
         closing = {
-            request.position_id
-            for request in result.management_requests
-            if isinstance(request.action, ClosePosition)
+            request.position_id for request in requests if isinstance(request.action, ClosePosition)
         }
-        for request in result.management_requests:
-            if not isinstance(request.action, SetTakeProfit):
+        for request in requests:
+            if isinstance(request.action, ClosePosition):
                 continue
             # run 末尾では、衝突があってもなくても更新は `RUN_END` で適用しない
             # （D06 §10.1 の手順3 の表）。末尾では決済要求も `RUN_END` で受付前拒否される
             # ので、そこで更新を `SUPERSEDED_BY_EXIT` にすると「押しのけた決済」が存在
             # しないまま記録が残る。末尾の規則を先に見る。
             if request.position_id in closing and not is_run_end:
-                self._discard_take_profit(clock, request)
+                self._discard_protection_update(clock, request, phase=phase)
                 continue
-            self._apply_take_profit(clock, request, is_run_end=is_run_end)
-        return result
+            if isinstance(request.action, UpdateStop):
+                self._apply_stop_update(clock, request, phase=phase, is_run_end=is_run_end)
+            else:
+                self._apply_take_profit(clock, request, phase=phase, is_run_end=is_run_end)
 
-    def _discard_take_profit(self, clock: PhaseClock, request: ManagementRequest) -> None:
-        """決済要求に押しのけられた保護水準の更新を、適用せずに記録する（D06 §8.3）。"""
+    def _record_application(
+        self, request: ManagementRequest, application: ManagementApplication
+    ) -> None:
+        """管理要求と適用結果を表12 へ1行残す（D06 §9.2）。"""
         self._emit(
             TraceTable.MANAGEMENT_APPLICATIONS,
             CompositeRow(
                 primary=request,
-                parts=(
-                    (
-                        "application",
-                        ManagementApplication,
-                        ManagementApplication(
-                            at=clock.next(PHASE_POST_FILL_EVALUATION),
-                            applied=False,
-                            reason=Reason(ReasonCode.SUPERSEDED_BY_EXIT),
+                parts=(("application", ManagementApplication, application),),
+            ),
+        )
+
+    def _discard_protection_update(
+        self, clock: PhaseClock, request: ManagementRequest, *, phase: str
+    ) -> None:
+        """決済要求に押しのけられた保護水準の更新を、適用せずに記録する（D06 §8.3）。"""
+        self._record_application(
+            request,
+            ManagementApplication(
+                at=clock.next(phase),
+                applied=False,
+                reason=Reason(ReasonCode.SUPERSEDED_BY_EXIT),
+            ),
+        )
+
+    def _not_applicable(
+        self, request: ManagementRequest, at: ProcessingPoint, *, is_run_end: bool
+    ) -> ManagementApplication | None:
+        """適用の前に決まる「適用しない」理由（run 末尾・閉じた建玉。D06 §8.3・§10.1）。
+
+        run 末尾では保護水準の更新を**記録するが適用しない**（D06 §10.1 の手順3 の表、
+        上位設計書 §4.7.13 D）。終了だから未公開の判断を建玉へ反映することはしない。
+        """
+        if is_run_end:
+            return ManagementApplication(
+                at=at,
+                applied=False,
+                reason=Reason(
+                    ReasonCode.RUN_END, RunEndDetail(run_end=self._config.run_interval.end)
+                ),
+            )
+        position = self._context.ledger.positions.get(request.position_id)
+        if position is None or not position.is_open:
+            return ManagementApplication(
+                at=at,
+                applied=False,
+                reason=Reason(
+                    ReasonCode.POSITION_CLOSED,
+                    PositionClosedDetail(position_id=request.position_id, closed_at=at),
+                ),
+            )
+        return None
+
+    def _replace_protection(self, position: Position, protection: ProtectionState) -> None:
+        """建玉の保護水準を差し替えた台帳へ参照を移す（D06 §4.4 の1文の差し替え）。"""
+        updated = Position(
+            position_id=position.position_id,
+            account_id=position.account_id,
+            strategy_id=position.strategy_id,
+            symbol=position.symbol,
+            side=position.side,
+            quantity=position.quantity,
+            entry_fill_id=position.entry_fill_id,
+            entry_price=position.entry_price,
+            opened_at=position.opened_at,
+            protection=protection,
+            status=position.status,
+        )
+        self._context.ledger = self._context.ledger.committed(
+            positions={updated.position_id: updated}
+        )
+
+    def _apply_stop_update(
+        self,
+        clock: PhaseClock,
+        request: ManagementRequest,
+        *,
+        phase: str,
+        is_run_end: bool,
+    ) -> None:
+        """損切り水準の更新（`UpdateStop`）を建玉へ適用する（D06 §8.3 の適用意味論の表）。
+
+        1. 参照価格は受付と同じ `ReferenceQuote` の出どころ（その判断時点までに rank 0 で
+           処理し終えた最新の執行足の終値）で、買いの損切りは bid、売りの損切りは ask と
+           比べる。完了した執行足が無ければ適用せず `DATA_ERROR`。
+        2. 価格刻みへ**建玉にとって不利にならない側**へ丸める（買いは切り下げ、売りは切り
+           上げ。D06 §6.5）。
+        3. 買いなら `丸めた水準 < bid`、売りなら `ask < 丸めた水準`。丸めた結果が現在の
+           水準より不利になる更新も適用しない。どちらも `PROTECTION_INVALID` で残し、run
+           は止めない。
+        4. `effective_from` は**次の執行足**（初期の保護水準の例外は当たらない。上位設計書
+           §4.7.7）。既存の利確は触らない。
+        """
+        at = clock.next(phase)
+        action = request.action
+        if not isinstance(action, UpdateStop):  # pragma: no cover - 呼び出し側が絞る
+            return
+        skipped = self._not_applicable(request, at, is_run_end=is_run_end)
+        if skipped is not None:
+            self._record_application(request, skipped)
+            return
+        position = self._context.ledger.positions[request.position_id]
+        bar = self._last_complete
+        effective_from = self._first_candidate_key(clock.decision_time)
+        if bar is None or effective_from is None:
+            self._record_application(
+                request,
+                ManagementApplication(
+                    at=at,
+                    applied=False,
+                    reason=Reason(
+                        ReasonCode.DATA_ERROR,
+                        DataErrorDetail(
+                            symbol=self._config.execution_series.symbol,
+                            timeframe=self._config.execution_series.timeframe,
+                            field="close",
+                            expected_interval=None,
+                            observed_interval=None,
+                            cause=(
+                                "no completed execution bar is available to check the stop update"
+                                if bar is None
+                                else "no scheduled execution bar follows the stop update"
+                            ),
                         ),
                     ),
                 ),
+            )
+            return
+        is_buy = position.side is OrderSide.BUY
+        rounded = action.stop_loss.round_to_tick(
+            self._symbol_spec.price_tick,
+            RoundingDirection.DOWN if is_buy else RoundingDirection.UP,
+        )
+        current = position.protection.stop_loss
+        if is_buy:
+            valid = rounded < bar.close and not rounded < current
+        else:
+            ask = self._cost_model.spread_model.ask_from_bid(bar.close)
+            valid = ask < rounded and not current < rounded
+        if not valid:
+            self._record_application(
+                request,
+                ManagementApplication(
+                    at=at, applied=False, reason=Reason(ReasonCode.PROTECTION_INVALID)
+                ),
+            )
+            return
+        protection = ProtectionState(
+            version=position.protection.version + 1,
+            stop_loss=rounded,
+            effective_from=effective_from,
+            take_profit=position.protection.take_profit,
+            owner_instance_id=position.protection.owner_instance_id,
+        )
+        self._replace_protection(position, protection)
+        self._evidence(
+            at,
+            EvidenceKind.PROTECTION_UPDATE,
+            position_id=position.position_id,
+            output_ids=(request.source_output_id,),
+            market_refs=self._reference_market_refs(),
+            policy_refs=(self._config.execution_policy_ref,),
+        )
+        self._record_application(
+            request,
+            ManagementApplication(
+                at=at,
+                applied=True,
+                protection_version=protection.version,
+                rounded_stop_loss=rounded,
             ),
         )
 
     def _apply_take_profit(
-        self, clock: PhaseClock, request: ManagementRequest, *, is_run_end: bool = False
+        self,
+        clock: PhaseClock,
+        request: ManagementRequest,
+        *,
+        phase: str = PHASE_POST_FILL_EVALUATION,
+        is_run_end: bool = False,
     ) -> None:
         """初期の利確を建玉へ適用する（D06 §8.3）。
 
         run 末尾では保護水準の更新を**記録するが適用しない**（D06 §10.1 の手順3 の表、
         上位設計書 §4.7.13 D）。終了だから未公開の判断を建玉へ反映することはしない。
         """
-        at = clock.next(PHASE_POST_FILL_EVALUATION)
-        position = self._context.ledger.positions.get(request.position_id)
+        at = clock.next(phase)
         action = request.action
         if not isinstance(action, SetTakeProfit):  # pragma: no cover - 呼び出し側が絞る
             return
-        if is_run_end:
-            self._emit(
-                TraceTable.MANAGEMENT_APPLICATIONS,
-                CompositeRow(
-                    primary=request,
-                    parts=(
-                        (
-                            "application",
-                            ManagementApplication,
-                            ManagementApplication(
-                                at=at,
-                                applied=False,
-                                reason=Reason(
-                                    ReasonCode.RUN_END,
-                                    RunEndDetail(run_end=self._config.run_interval.end),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            )
+        skipped = self._not_applicable(request, at, is_run_end=is_run_end)
+        if skipped is not None:
+            self._record_application(request, skipped)
             return
-        if position is None or not position.is_open:
-            self._emit(
-                TraceTable.MANAGEMENT_APPLICATIONS,
-                CompositeRow(
-                    primary=request,
-                    parts=(
-                        (
-                            "application",
-                            ManagementApplication,
-                            ManagementApplication(
-                                at=at,
-                                applied=False,
-                                reason=Reason(
-                                    ReasonCode.POSITION_CLOSED,
-                                    PositionClosedDetail(
-                                        position_id=request.position_id, closed_at=at
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            )
-            return
+        position = self._context.ledger.positions[request.position_id]
         direction = (
             RoundingDirection.DOWN if position.side is OrderSide.BUY else RoundingDirection.UP
         )
@@ -1812,22 +2040,7 @@ class BacktestEngine:
                 take_profit=rounded,
                 owner_instance_id=position.protection.owner_instance_id,
             )
-            updated = Position(
-                position_id=position.position_id,
-                account_id=position.account_id,
-                strategy_id=position.strategy_id,
-                symbol=position.symbol,
-                side=position.side,
-                quantity=position.quantity,
-                entry_fill_id=position.entry_fill_id,
-                entry_price=position.entry_price,
-                opened_at=position.opened_at,
-                protection=protection,
-                status=position.status,
-            )
-            self._context.ledger = self._context.ledger.committed(
-                positions={updated.position_id: updated}
-            )
+            self._replace_protection(position, protection)
             with localcontext(kernel_context()):
                 risk = abs(position.entry_price.value - position.protection.stop_loss.value)
                 reward = abs(rounded.value - position.entry_price.value)
@@ -1846,13 +2059,7 @@ class BacktestEngine:
                 output_ids=(request.source_output_id,),
                 policy_refs=(self._config.execution_policy_ref,),
             )
-        self._emit(
-            TraceTable.MANAGEMENT_APPLICATIONS,
-            CompositeRow(
-                primary=request,
-                parts=(("application", ManagementApplication, application),),
-            ),
-        )
+        self._record_application(request, application)
 
     # --- rank 13: 約定後の受付 -----------------------------------------------
 
@@ -1903,20 +2110,14 @@ class BacktestEngine:
                 " transitions of the remaining opportunities and the closing of the waiting"
                 " requests belong there (D06 §10.2, D05 §6.1)"
             )
-        # 残っていた待機要求は見送りで決着する（D05 §6.1）。その評価記録を表2 へ渡す
-        # （D06 §4.2 の手順11）。
-        for evaluation in result.evaluations:
-            self._emit(TraceTable.EVALUATIONS, evaluation)
-        for transition in result.transitions:
-            self._opportunities.add(transition.opportunity_id)
-            # 末尾の処理点だけは**エンジンとランタイムが同じフェーズを使う**。ランタイムは
-            # 自分の `step` の中で 0 から数えるので、そのまま残すと取消・最終 snapshot と
-            # 同じ `(時刻, RUN_END, 通し番号)` になり、D06 §10.1 が定めた順（取消 → 機会の
-            # 終端 → 最終 snapshot）を処理点の順で読み直せない。番号だけ振り直す。
-            self._emit(
-                TraceTable.OPPORTUNITY_TRANSITIONS,
-                replace(transition, at=clock.next(PHASE_RUN_END)),
-            )
+        # 残っていた待機要求は見送りで決着する（D05 §6.1）。その評価記録を表2 へ、段階3 の
+        # 3列（待機の出来事・有効性の再検査・確認試行）も判断履歴へ渡す（D06 §4.2 の手順11。
+        # 閉じた確認要求の試行は `WAITING` から `SKIPPED` へ置き換わる）。
+        # 末尾の処理点だけは**エンジンとランタイムが同じフェーズを使う**。ランタイムは
+        # 自分の `step` の中で 0 から数えるので、そのまま残すと取消・最終 snapshot と
+        # 同じ `(時刻, RUN_END, 通し番号)` になり、D06 §10.1 が定めた順（取消 → 機会の
+        # 終端 → 最終 snapshot）を処理点の順で読み直せない。番号だけ振り直す。
+        self._record_step(result, clock, phase=PHASE_RUN_END)
 
         self._record_snapshot(clock.next(PHASE_RUN_END))
         self._summaries = self._final_summaries()
