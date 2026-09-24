@@ -29,6 +29,7 @@ from odyssey_fx.strategy.declarations.missing import (
     Error,
     MissingInputPolicy,
     SkipEvaluation,
+    UsePrevious,
     WaitForInput,
 )
 from odyssey_fx.strategy.declarations.refs import require_kind
@@ -52,12 +53,14 @@ __all__ = [
 def require_missing_policy(value: object, label: str) -> MissingInputPolicy:
     """欠損方針の区分のいずれかであることを要求する（D04 §6.3）。
 
-    段階2の2区分に、段階3 の待機（`WaitForInput`、D04 v1.9）を足した3区分を受け付ける。
-    待機を**実行してよいか**はコンパイラの能力検査が決める（D04 §12）。
+    段階2の2区分に、段階3 の待機（`WaitForInput`）と遡り（`UsePrevious`）を足した4区分を
+    受け付ける（D04 v1.9）。どの読み方・接続元に書けるかはコンパイラが検査する
+    （D04 §12 #10）。
     """
-    if not isinstance(value, (SkipEvaluation, Error, WaitForInput)):
+    if not isinstance(value, (SkipEvaluation, Error, WaitForInput, UsePrevious)):
         raise KernelValueError(
-            f"{label} must be SkipEvaluation(), Error() or WaitForInput(...), got {value!r}"
+            f"{label} must be SkipEvaluation(), Error(), WaitForInput(...) or UsePrevious(...),"
+            f" got {value!r}"
         )
     return value
 

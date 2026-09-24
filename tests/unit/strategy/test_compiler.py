@@ -13,7 +13,9 @@ D04 §12 の検査1〜7（＋6b）が、それぞれ**どの宣言の誤りを�
 | #5 | 役割フィールドの型要求と、後続確認と発注方針の整合 |
 | #6 | 依存グラフの循環（明示辺＋エンジン上の因果辺） |
 | #6b | 出力仕様の付随条件（再武装・根拠値・状態） |
-| #7 | 能力検査（段階2で対応しない構成） |
+| #7 | 能力検査（対応しない構成） |
+
+段階3 で解除した構成と新しい検査（D04 §12 #8〜#15）は `test_compiler_stage3.py` が確かめる。
 """
 
 from __future__ import annotations
@@ -63,7 +65,6 @@ from odyssey_fx.strategy.declarations.evaluation import (
     RuntimeEventKind,
 )
 from odyssey_fx.strategy.declarations.instance import ComponentInstance
-from odyssey_fx.strategy.declarations.missing import Error as MissingPolicyError
 from odyssey_fx.strategy.declarations.opportunity import (
     OpportunityValiditySpec,
     ValidityBinding,
@@ -77,8 +78,6 @@ from odyssey_fx.strategy.declarations.refs import (
 from odyssey_fx.strategy.declarations.specs import BoolValue, InputBinding, IntValue, StrValue
 from odyssey_fx.strategy.declarations.state_spec import LiteralInitialState, StateSpec
 from odyssey_fx.strategy.declarations.temporal import (
-    AlignmentRequirement,
-    AlignmentRule,
     TemporalConstraints,
     WarmupSpec,
 )
@@ -482,7 +481,7 @@ def _registry_with(contract: ComponentContract) -> ComponentRegistry:
 
 
 def test_a_declared_warmup_requirement_is_rejected_instead_of_being_ignored() -> None:
-    """D04 §9.2・§12 #7: 段階2 は宣言されたウォームアップ本数を守らせる仕組みを持たない。
+    """D04 §9.2・§12 #7: 宣言されたウォームアップ本数は段階3 でも拒否を続ける（D05 §5.6）。
 
     通してしまうと、ウォームアップ中に出力を出す部品が宣言どおりに動いていないまま結果を
     変える。段階2 のウォームアップは履歴窓が返す不足（`WARMUP_INSUFFICIENT`）で成立する。
@@ -498,29 +497,6 @@ def test_a_declared_warmup_requirement_is_rejected_instead_of_being_ignored() ->
     )
 
     result = compile_strategy(definition, _registry_with(with_warmup), TIMEFRAMES)
-
-    assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(result)
-
-
-def test_a_declared_alignment_requirement_is_rejected_instead_of_being_ignored() -> None:
-    """D04 §9.2・§12 #7: 入力どうしの観測区間を揃える要求も段階2 では守らせられない。"""
-    with_alignment = replace(
-        breakout_contract,
-        temporal_constraints=TemporalConstraints(
-            warmup=None,
-            alignment=(
-                AlignmentRequirement(
-                    input_names=("price", "level"),
-                    rule=AlignmentRule.SAME_OBSERVATION_INTERVAL,
-                ),
-            ),
-        ),
-    )
-    definition = _swap_component(
-        strategy_a(), "entry_trigger", contract_ref=contract_ref_for(with_alignment)
-    )
-
-    result = compile_strategy(definition, _registry_with(with_alignment), TIMEFRAMES)
 
     assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(result)
 
@@ -633,24 +609,6 @@ def test_a_validity_binding_must_point_at_a_value_output() -> None:
     )
 
     assert CompileRejection.ROLE_MISMATCH in _rejections(_compile(definition))
-
-
-def test_treating_a_missing_recheck_as_a_failure_is_not_supported_yet() -> None:
-    """D05 §6.4・§7.3: 再検査は評価の外側で走るので、失敗を残す評価記録が無い。"""
-    definition = _replace(
-        strategy_a(),
-        opportunity_validity=OpportunityValiditySpec(
-            bindings=(
-                ValidityBinding(
-                    source=OutputRef("breakout_level", "level"),
-                    mode=ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST,
-                    on_missing=MissingPolicyError(),
-                ),
-            )
-        ),
-    )
-
-    assert CompileRejection.UNSUPPORTED_CONFIGURATION in _rejections(_compile(definition))
 
 
 def test_a_malformed_initial_state_is_rejected_for_any_stateful_component() -> None:

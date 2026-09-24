@@ -9,18 +9,29 @@
 | 段 | 内容 | D04 §12 の検査 |
 |---|---|---|
 | 1 | 契約の解決（レジストリ参照、版と内容ハッシュの照合） | #1 |
-| 2 | 参照の解決（出力参照・役割フィールド・有効性束縛） | #1・#5 |
-| 3 | パラメータの解決（型・範囲・列挙値・パラメータ参照） | #3 |
+| 2 | 参照の解決（出力参照・役割フィールド・有効性束縛・確認部品の開始足の宣言） | #1・#5・#8 |
+| 3 | パラメータの解決（型・範囲・列挙値・パラメータ参照）と、パラメータどうしの関係 | #3・#12 |
 | 4 | 銘柄の伝播と単一銘柄の検査 | #2 |
 | 5 | 型と接続の検査（データ型・口の区分・接続数・読み方の組合せ） | #2 |
 | 6 | 出力仕様の付随条件 | #6b |
-| 7 | 評価スケジュールの検査 | #4 |
-| 8 | 依存グラフの構築と循環検出、評価順の導出 | #6 |
-| 9 | 能力検査 | #7 |
-| 10 | ハッシュ計算と組み立て | — |
+| 7 | 評価スケジュールの検査（確認足・決済部品・待機期限の起動系列を含む） | #4・#9・#14・#15 |
+| 8 | 依存グラフの構築と循環検出（市場状態の因果辺を含む）、評価順の導出 | #6・#11 |
+| 9 | 能力検査と、待機・遡り・出力の履歴窓の組合せ検査 | #7・#10・#13 |
+| 10 | ハッシュ計算と組み立て（確認の計画・出力の保持本数の計画を含む） | — |
 
 検査項目そのものの正本は D04 §12 であり、本モジュールは実行順と失敗時の扱いを足している
-（D05 §5.1）。
+（D05 §5.1）。段階3 で足した検査 a〜h（D05 §5.6）と D04 §12 の番号の対応は次のとおり。
+
+| D05 §5.6 | D04 §12 | 段 | 拒否の区分 |
+|---|---|---|---|
+| a 確認部品が開始足の扱いを宣言している | #8 | 2 | `ROLE_MISMATCH` |
+| b 確認足の系列がただ1つ | #9 | 7 | `SCHEDULE_NOT_ALLOWED` |
+| c 待機・遡りと読み方・接続元の組合せ | #10 | 9 | `UNSUPPORTED_CONFIGURATION` |
+| d 市場状態の因果辺を含めた循環検出 | #11 | 8 | `DEPENDENCY_CYCLE` |
+| e パラメータどうしの関係 | #12 | 3 | `PARAMETER_INVALID` |
+| f 出力参照を履歴窓で読む接続の保持本数と主キー | #13 | 9 | `UNSUPPORTED_CONFIGURATION` |
+| g 決済部品の起動系列がただ1つ | #14 | 7 | `SCHEDULE_NOT_ALLOWED` |
+| h 出力参照だけの入力の本数の待機期限を数える系列がただ1つ | #15 | 7 | `SCHEDULE_NOT_ALLOWED` |
 """
 
 from __future__ import annotations
@@ -29,9 +40,11 @@ from collections.abc import Mapping
 from dataclasses import fields as dataclass_fields
 from decimal import Decimal
 
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.registry import (
     ComponentRegistration,
@@ -48,22 +61,24 @@ from odyssey_fx.strategy.compiler.compiled import (
     CompileRejection,
     CompileResult,
     CompileSucceeded,
+    ConfirmationPlan,
     DeclarationLocation,
     InputPlan,
+    OutputRetentionPlan,
     ResolvedContextSource,
     ResolvedMarketSource,
     ResolvedOutputSource,
     ResolvedParameter,
     ResolvedSource,
 )
-from odyssey_fx.strategy.compiler.graph import build_dependency_graph
+from odyssey_fx.strategy.compiler.graph import EdgeKind, build_dependency_graph
 from odyssey_fx.strategy.compiler.hashing import compiled_strategy_ref
 from odyssey_fx.strategy.declarations import datatypes
 from odyssey_fx.strategy.declarations.contract import ComponentContract
 from odyssey_fx.strategy.declarations.datatypes import DataTypeRef
 from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.declarations.digest import contract_digest, strategy_ref_for
-from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation
+from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation, BarsDeadline
 from odyssey_fx.strategy.declarations.evaluation import (
     AllowedBarClose,
     AllowedInputEvent,
@@ -75,8 +90,7 @@ from odyssey_fx.strategy.declarations.evaluation import (
     OnRuntimeEvent,
 )
 from odyssey_fx.strategy.declarations.instance import ComponentInstance
-from odyssey_fx.strategy.declarations.missing import Error as ErrorPolicy
-from odyssey_fx.strategy.declarations.opportunity import ValidityMode
+from odyssey_fx.strategy.declarations.missing import UsePrevious, WaitForInput
 from odyssey_fx.strategy.declarations.read_spec import (
     BarsWindow,
     CurrentContext,
@@ -97,6 +111,7 @@ from odyssey_fx.strategy.declarations.specs import (
     InputSpec,
     IntValue,
     OutputSpec,
+    ParameterType,
     ParameterValue,
     PortKind,
     RetriggerMode,
@@ -107,7 +122,7 @@ from odyssey_fx.strategy.declarations.specs import (
 from odyssey_fx.strategy.declarations.state_spec import LiteralInitialState
 from odyssey_fx.strategy.records.payloads import payload_type_for
 
-__all__ = ["ROLE_DATA_TYPES", "ROLE_PORT_KINDS", "compile_strategy"]
+__all__ = ["INCLUDE_START_BAR", "ROLE_DATA_TYPES", "ROLE_PORT_KINDS", "compile_strategy"]
 
 #: 役割フィールドが要求する出力のデータ型（D04 §12 #5）。
 ROLE_DATA_TYPES: Mapping[str, DataTypeRef] = {
@@ -128,6 +143,9 @@ ROLE_PORT_KINDS: Mapping[str, PortKind] = {
     "protection": PortKind.COMMAND,
     "exit": PortKind.COMMAND,
 }
+
+#: 確認部品が開始足の扱いを宣言するパラメータの名前（D04 §12 #8、D05 §4.8）。
+INCLUDE_START_BAR = "include_start_bar"
 
 #: 単位ごとに、部品へ渡す前に厳密な10進数へ変換するかどうか（D05 §4.4）。
 _DECIMAL_UNITS = frozenset({UnitRef.RATIO, UnitRef.PRICE, UnitRef.PIPS})
@@ -200,34 +218,56 @@ def compile_strategy(
     if errors:
         return CompileFailed(errors=errors)
 
-    graph = build_dependency_graph(definition, order_role=definition.order)
-    cycle = graph.find_cycle()
-    if cycle is not None:
-        path = " -> ".join(str(edge) for edge in cycle)
-        return CompileFailed(
-            errors=(
-                _error(
-                    "#6",
-                    CompileRejection.DEPENDENCY_CYCLE,
-                    None,
-                    "components",
-                    f"the dependency graph has a cycle: {path}",
-                ),
-            )
-        )
-    evaluation_order = graph.evaluation_order()
+    evaluation_order, errors = _stage8_graph(definition)
+    if errors:
+        return CompileFailed(errors=errors)
 
+    contracts = {instance_id: item.contract for instance_id, item in resolved.items()}
     errors = capability.check_capabilities(definition, timeframes)
-    errors += capability.check_temporal_constraints(
-        {instance_id: item.contract for instance_id, item in resolved.items()}
-    )
-    errors += _stage9_history_windows(definition, resolved)
+    errors += capability.check_temporal_constraints(contracts)
+    errors += capability.check_missing_policies(definition, contracts)
+    errors += capability.check_output_history_windows(definition, input_plans)
+    errors += _check_definition_hashable(definition)
     if errors:
         return CompileFailed(errors=errors)
 
     return _stage10_assemble(
         definition, resolved, parameters, symbols, input_plans, evaluation_order
     )
+
+
+def _unhashable(
+    instance_id: str | None, field_path: str, what: str, exc: KernelValueError
+) -> CompileError:
+    """指紋を計算できない宣言の拒否（D05 §5.5・§9.2、D04 §13.2）。
+
+    期間値（`timedelta`）は正規化エンコード（D02 §9.3）が符号化しないので、期間値を含む宣言は
+    契約・戦略定義・解決済み設定のどの指紋も計算できない。段階3 でも期間で書く期限や窓は
+    書けないまま（D05 §9.2）なので、実行できない構成として能力検査の番号で拒否する。例外の
+    まま外へ出すと、「失敗は `CompileFailed` で返す」（D05 §5.1）が崩れる。
+    """
+    return _error(
+        "#7",
+        CompileRejection.UNSUPPORTED_CONFIGURATION,
+        instance_id,
+        field_path,
+        f"the {what} cannot be fingerprinted, so it cannot be run as a fixed experiment;"
+        " durations (timedelta) are not encodable yet, so write deadlines and windows in bars"
+        f" (D05 §5.5・§9.2): {exc}",
+    )
+
+
+def _check_definition_hashable(definition: StrategyDefinition) -> tuple[CompileError, ...]:
+    """戦略定義の指紋を計算できることを、組み立て（段10）の前に確かめる（D05 §5.5）。
+
+    段階3 で後続確認の期限（`DurationDeadline`）や有効性束縛の待機・遡りを解除したため、
+    期間値を含む戦略定義が段10 まで届きうる。
+    """
+    try:
+        strategy_ref_for(definition)
+    except KernelValueError as exc:
+        return (_unhashable(None, "strategy", "strategy definition", exc),)
+    return ()
 
 
 # --- 段1: 契約の解決 ---------------------------------------------------------
@@ -253,7 +293,11 @@ def _stage1_contracts(
                 )
             )
             continue
-        expected = contract_digest(registration.contract)
+        try:
+            expected = contract_digest(registration.contract)
+        except KernelValueError as exc:
+            errors.append(_unhashable(instance.instance_id, "contract_ref", "contract", exc))
+            continue
         if ref.digest != expected:
             errors.append(
                 _error(
@@ -390,7 +434,50 @@ def _check_roles(
                 f" policy={type(definition.entry_policy).__name__})",
             )
         )
+    errors.extend(_check_start_bar_declaration(definition, resolved))
     return errors
+
+
+def _check_start_bar_declaration(
+    definition: StrategyDefinition, resolved: Mapping[str, ComponentRegistration]
+) -> list[CompileError]:
+    """確認部品が開始足の扱いを宣言していることを確かめる（D04 §12 #8、D05 §5.6 の検査 a）。
+
+    `execution_filter` 役割が指す出力の持ち主の契約が `include_start_bar`（真偽値、既定値
+    なし）を持ち、使用箇所がその値を明示していなければならない。開始足で確認を始めるかどうか
+    は戦略の意図であり、契約の既定値や実装の既定に委ねない（上位設計書 §4.3.13）。値の型は
+    段3 のパラメータの解決が確かめる。
+    """
+    ref = definition.execution_filter
+    if ref is None or ref.instance_id not in resolved:
+        return []
+    contract = resolved[ref.instance_id].contract
+    spec = contract.parameters.get(INCLUDE_START_BAR)
+    if spec is None or spec.value_type is not ParameterType.BOOL or spec.default is not None:
+        return [
+            _error(
+                "#8",
+                CompileRejection.ROLE_MISMATCH,
+                None,
+                "execution_filter",
+                f"the confirmation component {contract.component_id}@v{contract.version} must"
+                f" declare a boolean parameter {INCLUDE_START_BAR!r} without a default, so that"
+                " each use states whether the start bar counts (D05 §4.8)",
+            )
+        ]
+    instance = next(item for item in definition.components if item.instance_id == ref.instance_id)
+    if INCLUDE_START_BAR not in instance.parameters:
+        return [
+            _error(
+                "#8",
+                CompileRejection.ROLE_MISMATCH,
+                ref.instance_id,
+                f"parameters.{INCLUDE_START_BAR}",
+                f"the confirmation component must state {INCLUDE_START_BAR!r} explicitly"
+                " (D05 §4.8)",
+            )
+        ]
+    return []
 
 
 def _check_validity_bindings(
@@ -438,23 +525,9 @@ def _check_validity_bindings(
                     " would never constrain an opportunity (D05 §6.5)",
                 )
             )
-        if binding.mode is ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST and isinstance(
-            binding.on_missing, ErrorPolicy
-        ):
-            # 再検査は評価の外側で走るため、失敗を評価記録として残す先が無い（D05 §6.4）。
-            # 判断履歴に残せない失敗の経路を作らないよう、この組合せは段階2 では拒否する
-            # （D04 §6.3 v1.8 の制限。解除は段階3、再検査の記録型を足してから）。
-            errors.append(
-                _error(
-                    "#7",
-                    CompileRejection.UNSUPPORTED_CONFIGURATION,
-                    None,
-                    f"opportunity_validity.bindings[{index}].on_missing",
-                    "treating a missing re-check as a run failure is not supported in stage 2;"
-                    " the re-check runs outside an evaluation, so the failure has no evaluation"
-                    " record to be reported in (D05 §6.4・§7.3)",
-                )
-            )
+    # 段階2 は発注要求まで有効であり続けることを求める束縛に `Error` を書いた宣言をここで
+    # 拒否していた（D04 §6.3 v1.8）。段階3 で再検査の記録（`ValidityRecheck`、D05 §7.3）が
+    # 失敗の書き先になったので解除した（D05 §5.6）。
     return errors
 
 
@@ -474,7 +547,57 @@ def _stage3_parameters(
     if errors:
         return table, tuple(errors)
     errors.extend(_resolve_parameter_refs(definition, resolved, table))
+    if errors:
+        return table, tuple(errors)
+    errors.extend(_check_parameter_constraints(definition, resolved, table))
     return table, tuple(errors)
+
+
+def _check_parameter_constraints(
+    definition: StrategyDefinition,
+    resolved: Mapping[str, ComponentRegistration],
+    parameters: Mapping[str, Mapping[str, ResolvedParameter]],
+) -> list[CompileError]:
+    """パラメータどうしの関係を確かめる（D04 §12 #12、D05 §4.1・§5.6 の検査 e、Q22 決定）。
+
+    各パラメータが自分の範囲を満たし、パラメータ参照が解決できたあとに、部品の登録が持つ
+    検証の純粋関数を**1回だけ**呼ぶ。`True` 以外が返った場合も、関数が例外で終わった場合も
+    拒否する。黙って通す経路を作らない（D05 §5.2）。
+    """
+    errors: list[CompileError] = []
+    for instance in definition.components:
+        constraint = resolved[instance.instance_id].parameter_constraint
+        if constraint is None:
+            continue
+        values = parameters[instance.instance_id]
+        shown = ", ".join(
+            f"{name}={values[name].value.value!r}" for name in constraint.reads if name in values
+        )
+        try:
+            holds = constraint.check(values)
+        except Exception as exc:  # 関数の失敗はすべて拒否に変える（D05 §5.6 の検査 e）
+            errors.append(
+                _error(
+                    "#12",
+                    CompileRejection.PARAMETER_INVALID,
+                    instance.instance_id,
+                    "parameters",
+                    f"{constraint.message} (the relation could not be checked for {shown}:"
+                    f" {type(exc).__name__}: {exc})",
+                )
+            )
+            continue
+        if holds is not True:
+            errors.append(
+                _error(
+                    "#12",
+                    CompileRejection.PARAMETER_INVALID,
+                    instance.instance_id,
+                    "parameters",
+                    f"{constraint.message} (got {shown})",
+                )
+            )
+    return errors
 
 
 def _resolve_instance_parameters(
@@ -579,6 +702,18 @@ def _resolve_parameter_refs(
     for instance in definition.components:
         contract = resolved[instance.instance_id].contract
         for input_name, spec in contract.inputs.items():
+            on_missing = getattr(spec.read_spec, "on_missing", None)
+            if isinstance(on_missing, UsePrevious):
+                lookback = on_missing.max_lookback
+                if isinstance(lookback, BarsWindow) and isinstance(lookback.count, ParameterRef):
+                    error = _resolve_bars_reference(
+                        instance.instance_id,
+                        f"inputs.{input_name}.read_spec.on_missing.max_lookback.count",
+                        lookback.count,
+                        parameters[instance.instance_id],
+                    )
+                    if error is not None:
+                        errors.append(error)
             if not isinstance(spec.read_spec, HistoryWindow):
                 continue
             window = spec.read_spec.window
@@ -793,6 +928,9 @@ def _stage5_types(
                 read_spec=spec.read_spec,
                 sources=sources,
                 resolved_window=_resolved_window(spec, parameters[instance.instance_id]),
+                resolved_max_lookback=_resolved_max_lookback(
+                    spec, parameters[instance.instance_id]
+                ),
             )
         plans[instance.instance_id] = instance_plans
     return plans, tuple(errors)
@@ -899,7 +1037,27 @@ def _resolved_window(
     """パラメータ参照を解決した窓を返す（D05 §5.3）。窓を使わない読み方では `None`。"""
     if not isinstance(spec.read_spec, HistoryWindow):
         return None
-    window = spec.read_spec.window
+    return _resolve_window(spec.read_spec.window, parameters)
+
+
+def _resolved_max_lookback(
+    spec: InputSpec, parameters: Mapping[str, ResolvedParameter]
+) -> BarsWindow | DurationWindow | None:
+    """遡り（`UsePrevious`）の上限をパラメータ参照を解決した窓で返す（D05 §5.3・§6.9）。
+
+    2026-09-24 の人間の決定により、解決値をコンパイル結果（入力の計画）に載せる。ランタイムは
+    これを読み、パラメータを読み直さない。遡りでない欠損方針では `None`。
+    """
+    on_missing = getattr(spec.read_spec, "on_missing", None)
+    if not isinstance(on_missing, UsePrevious):
+        return None
+    return _resolve_window(on_missing.max_lookback, parameters)
+
+
+def _resolve_window(
+    window: BarsWindow | DurationWindow, parameters: Mapping[str, ResolvedParameter]
+) -> BarsWindow | DurationWindow:
+    """本数のパラメータ参照を具体値へ置き換えた窓を返す。解決できることは段3 が確かめ済み。"""
     if isinstance(window, BarsWindow) and isinstance(window.count, ParameterRef):
         parameter = parameters[window.count.parameter_name]
         assert isinstance(parameter.value, IntValue)  # 段3 が保証する
@@ -1191,7 +1349,105 @@ def _stage7_schedules(
                 )
             )
         errors.extend(_check_required_inputs(instance, contract))
+        errors.extend(_check_output_only_wait_series(instance, contract))
+    errors.extend(_check_role_series(definition))
     return tuple(errors)
+
+
+def _bar_close_series(instance: ComponentInstance) -> set[SeriesId]:
+    triggers = instance.evaluation.triggers
+    return {trigger.series for trigger in triggers if isinstance(trigger, OnBarClose)}
+
+
+def _describe_series(series: set[SeriesId]) -> str:
+    return ", ".join(sorted(str(item) for item in series)) or "none"
+
+
+#: 足の確定の系列をただ1つに限る役割（D05 §5.6 の検査 b・g）。
+#: （役割, D04 §12 の番号, 足の確定を1件以上要求するか, 理由）
+_SINGLE_SERIES_ROLES: tuple[tuple[str, str, bool, str], ...] = (
+    (
+        "execution_filter",
+        "#9",
+        True,
+        "the confirmation series decides the start bar and the deadline (D05 §7.7)",
+    ),
+    (
+        "exit",
+        "#14",
+        False,
+        "two series closing at the same decision time would issue two stop updates for the"
+        " same position, and the final stop would depend on processing order (D05 §5.6)",
+    ),
+)
+
+
+def _check_role_series(definition: StrategyDefinition) -> list[CompileError]:
+    """確認部品と決済部品の足の確定の系列がただ1つであることを確かめる（D04 §12 #9・#14）。
+
+    確認部品（検査 b）は足の確定の起動条件を1件以上持ち、その系列が1つでなければならない。
+    決済部品（検査 g）は、足の確定で起動するなら、その系列が1つでなければならない。
+    """
+    instances = {instance.instance_id: instance for instance in definition.components}
+    errors: list[CompileError] = []
+    for role, check_id, required, reason in _SINGLE_SERIES_ROLES:
+        ref = getattr(definition, role)
+        if ref is None or ref.instance_id not in instances:
+            continue
+        series = _bar_close_series(instances[ref.instance_id])
+        if not series and not required:
+            continue
+        if len(series) != 1:
+            errors.append(
+                _error(
+                    check_id,
+                    CompileRejection.SCHEDULE_NOT_ALLOWED,
+                    ref.instance_id,
+                    "evaluation",
+                    f"the {role} component must start from bar closes of exactly one series,"
+                    f" got {_describe_series(series)}; {reason}",
+                )
+            )
+    return errors
+
+
+def _check_output_only_wait_series(
+    instance: ComponentInstance, contract: ComponentContract
+) -> list[CompileError]:
+    """出力参照だけの入力の本数の待機期限を数える系列がただ1つであることを確かめる（#15）。
+
+    D05 §5.6 の検査 h。出力参照の入力には系列が無いため、本数で数える待機期限はその使用箇所の
+    足の確定の系列で数える（D05 §6.8、Q28 決定）。系列が1つでなければ、期限に到達する判断
+    時点が処理順や系列名の並びで変わる（Q30 決定）。
+    """
+    series = _bar_close_series(instance)
+    if len(series) == 1:
+        return []
+    errors: list[CompileError] = []
+    for input_name, spec in contract.inputs.items():
+        on_missing = getattr(spec.read_spec, "on_missing", None)
+        if not isinstance(on_missing, WaitForInput):
+            continue
+        if not isinstance(on_missing.deadline, BarsDeadline):
+            continue
+        binding = instance.inputs.get(input_name)
+        if binding is None or not binding.sources:
+            continue
+        if not all(isinstance(source, OutputRef) for source in binding.sources):
+            continue
+        errors.append(
+            _error(
+                "#15",
+                CompileRejection.SCHEDULE_NOT_ALLOWED,
+                instance.instance_id,
+                f"inputs.{input_name}",
+                "an input fed only by other components' outputs waits with a deadline counted"
+                " in bars, which is counted on this component's bar-close series; it must start"
+                f" from bar closes of exactly one series, got {_describe_series(series)}"
+                " (D05 §6.8)",
+            )
+        )
+    return errors
 
 
 def _check_required_inputs(
@@ -1245,26 +1501,37 @@ def _check_required_inputs(
     return errors
 
 
-# --- 段9: 能力検査のうち契約を要するもの -------------------------------------
+# --- 段8: 依存グラフ ---------------------------------------------------------
 
 
-def _stage9_history_windows(
-    definition: StrategyDefinition, resolved: Mapping[str, ComponentRegistration]
-) -> tuple[CompileError, ...]:
-    errors: list[CompileError] = []
-    for instance in definition.components:
-        contract = resolved[instance.instance_id].contract
-        for input_name, spec in contract.inputs.items():
-            binding = instance.inputs.get(input_name)
-            if binding is None:  # pragma: no cover - 段5 が先に拒否する
-                continue
-            has_output_source = any(isinstance(source, OutputRef) for source in binding.sources)
-            error = capability.check_output_history_window(
-                instance.instance_id, input_name, spec.read_spec, has_output_source
-            )
-            if error is not None:
-                errors.append(error)
-    return tuple(errors)
+def _stage8_graph(
+    definition: StrategyDefinition,
+) -> tuple[tuple[str, ...], tuple[CompileError, ...]]:
+    """依存グラフを組み立て、循環を検出し、評価順を導く（D04 §12 #6・#11、D05 §5.4）。
+
+    市場状態の役割がある戦略では、市場状態から取引機会を出す使用箇所への因果辺を含めて循環を
+    検出する（D05 §5.6 の検査 d）。閉路がその辺を通るなら検査の番号は #11 とする。
+    """
+    graph = build_dependency_graph(
+        definition,
+        order_role=definition.order,
+        market_state_role=definition.market_state,
+        trigger_role=definition.trigger,
+    )
+    cycle = graph.find_cycle()
+    if cycle is None:
+        return graph.evaluation_order(), ()
+    path = " -> ".join(str(edge) for edge in cycle)
+    through_market_state = any(edge.kind is EdgeKind.MARKET_STATE for edge in cycle)
+    return (), (
+        _error(
+            "#11" if through_market_state else "#6",
+            CompileRejection.DEPENDENCY_CYCLE,
+            None,
+            "components",
+            f"the dependency graph has a cycle: {path}",
+        ),
+    )
 
 
 # --- 段10: 組み立て ----------------------------------------------------------
@@ -1303,6 +1570,7 @@ def _stage10_assemble(
         market_state=definition.market_state,
         execution_filter=definition.execution_filter,
         exit=definition.exit,
+        confirmation=_confirmation_plan(definition, by_id, parameters),
     )
     compiled = CompiledStrategy(
         schema_version=definition.schema_version,
@@ -1315,5 +1583,70 @@ def _stage10_assemble(
         entry_policy=definition.entry_policy,
         opportunity_validity=definition.opportunity_validity,
         opportunity_concurrency=definition.opportunity_concurrency,
+        output_retention=_output_retention_plan(input_plans),
     )
     return CompileSucceeded(compiled=compiled)
+
+
+def _confirmation_plan(
+    definition: StrategyDefinition,
+    by_id: Mapping[str, ComponentInstance],
+    parameters: Mapping[str, Mapping[str, ResolvedParameter]],
+) -> ConfirmationPlan | None:
+    """検査 a・b で読んだ値を確認の計画にまとめる（D05 §5.3・§5.6・§7.7）。
+
+    確認部品が無い戦略では `None`。ある戦略では、段2 が発注方針との整合と開始足の宣言を、
+    段3 が値の型を、段7 が確認足の系列がただ1つであることを確かめ済みである。
+    """
+    ref = definition.execution_filter
+    if ref is None:
+        return None
+    policy = definition.entry_policy
+    assert isinstance(policy, AwaitConfirmation)  # 段2 の #5 が保証する
+    (series,) = _bar_close_series(by_id[ref.instance_id])  # 段7 の #9 が保証する
+    include_start_bar = parameters[ref.instance_id][INCLUDE_START_BAR].value
+    assert isinstance(include_start_bar, BoolValue)  # 段2 の #8 と段3 が保証する
+    return ConfirmationPlan(
+        filter_instance=ref.instance_id,
+        series=series,
+        include_start_bar=include_start_bar.value,
+        deadline=policy.deadline,
+        on_deadline=policy.on_deadline,
+    )
+
+
+def _output_retention_plan(
+    input_plans: Mapping[str, Mapping[str, InputPlan]],
+) -> OutputRetentionPlan:
+    """出力参照ごとの保持本数を、読み手の入力の計画から導く（D05 §6.12）。
+
+    | 読み方 | その読み手が要求する本数 |
+    |---|---|
+    | 本数で数える履歴窓（`BarsWindow(n)`、当該足を除く本数 `k`） | `n + k` |
+    | 最新1件（`LatestAvailable`） | 1 |
+
+    出力参照ごとに**最大値**を採る。保持するのは繰り返し参照する値（`VALUE`）の出力だけで、
+    配送イベントの読み手（`DeliveredEvent`）は数えない（D05 §6.5・§6.12）。読み手が1つも無い
+    出力参照は載せない。経過時間の窓は段9 の検査 f が拒否済みなので、ここには来ない。
+    """
+    by_output: dict[OutputRef, int] = {}
+    for plans in input_plans.values():
+        for plan in plans.values():
+            refs = [
+                source.ref for source in plan.sources if isinstance(source, ResolvedOutputSource)
+            ]
+            if not refs:
+                # 市場データだけを読む入力は出力を保持させない（窓の本数は市場データビューが読む）。
+                continue
+            if isinstance(plan.read_spec, LatestAvailable):
+                wanted = 1
+            elif isinstance(plan.read_spec, HistoryWindow):
+                window = plan.resolved_window
+                assert isinstance(window, BarsWindow)  # 段9 の #13 が保証する
+                assert isinstance(window.count, int)  # 入力の計画が保証する
+                wanted = window.count + plan.read_spec.exclude_latest_bars
+            else:
+                continue
+            for ref in refs:
+                by_output[ref] = max(by_output.get(ref, 0), wanted)
+    return OutputRetentionPlan(by_output=by_output)

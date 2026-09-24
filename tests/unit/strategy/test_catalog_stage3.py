@@ -37,7 +37,6 @@ from odyssey_fx.strategy.catalog.registry import (
     ComponentRegistration,
     ParameterConstraint,
     StatelessImplementation,
-    build_registry,
 )
 from odyssey_fx.strategy.catalog.triggers import breakout
 from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource, ResolvedParameter
@@ -579,11 +578,9 @@ STAGE3_REGISTRATIONS = (
 )
 
 
-def test_the_stage_3_registrations_fit_in_one_table_with_stage_2() -> None:
+def test_the_catalog_holds_stage_2_and_stage_3_in_one_table() -> None:
     """D05 §4.1: 同じ鍵が2度現れない。段階3 は新しい部品10件と v2 の契約6件。"""
-    registry = build_registry((*INITIAL_CATALOG.registrations.values(), *STAGE3_REGISTRATIONS))
-
-    assert sorted(str(key) for key in registry.registrations) == [
+    assert sorted(str(key) for key in INITIAL_CATALOG.registrations) == [
         "all_conditions@v1",
         "any_condition@v1",
         "atr@v1",
@@ -608,9 +605,11 @@ def test_the_stage_3_registrations_fit_in_one_table_with_stage_2() -> None:
     ]
 
 
-def test_the_stage_2_catalog_is_unchanged() -> None:
-    """段階3 の登録はコンパイラとランタイムが動かせるようになるまで部品テーブルに入れない。"""
-    assert len(INITIAL_CATALOG.registrations) == 5
+def test_every_stage_3_registration_is_in_the_catalog() -> None:
+    """段階3 の登録は、コンパイラが新しい検査を備えた変更で部品テーブルに載せた（D05 §5.6）。"""
+    for registration in STAGE3_REGISTRATIONS:
+        assert INITIAL_CATALOG.get(registration.key) is registration
+    assert len(INITIAL_CATALOG.registrations) == 5 + len(STAGE3_REGISTRATIONS)
 
 
 def test_a_parameter_constraint_must_read_declared_parameters() -> None:

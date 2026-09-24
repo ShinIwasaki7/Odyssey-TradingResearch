@@ -322,14 +322,19 @@ def test_the_ratio_must_arrive_as_a_decimal() -> None:
 
 
 def test_the_initial_catalog_holds_the_five_stage_2_components() -> None:
-    """D05 §4.3（Q8 決定）: 役割ごとに1部品、高値と安値は1部品を2使用箇所で使う。"""
-    assert sorted(str(key) for key in INITIAL_CATALOG.registrations) == [
-        "breakout_trigger@v1",
-        "extreme_price@v1",
-        "fixed_rr_take_profit@v1",
-        "level_stop_loss@v1",
-        "market_order_intent@v1",
-    ]
+    """D05 §4.3（Q8 決定）: 役割ごとに1部品、高値と安値は1部品を2使用箇所で使う。
+
+    段階3 の登録が加わっても、段階2 の5部品は v1 のまま同じ登録で残る（D05 §9.2）。
+    """
+    stage_2 = (
+        extreme.REGISTRATION,
+        breakout.REGISTRATION,
+        market.REGISTRATION,
+        level_stop.REGISTRATION,
+        fixed_rr.REGISTRATION,
+    )
+    for registration in stage_2:
+        assert INITIAL_CATALOG.get(registration.key) is registration
 
 
 def test_none_of_the_stage_2_components_use_numpy() -> None:

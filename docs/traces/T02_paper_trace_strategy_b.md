@@ -1,7 +1,7 @@
 # T02: 紙上トレース（検証戦略 B・段階3）
 
 作成日: 2026-09-23
-状態: **承認（2026-09-23、PR #24）v1.0**。第15節の要決定 Q23〜Q29 を人間がすべて決定し（7件とも提示時の推奨案である選択肢1）、本文と関係する設計文書へ反映した。決定に伴い**同じ PR で正本を3件改訂した**: 戦略ランタイム設計（[D05](../design/D05_strategy_runtime.md) v2.2。Q23・Q24・Q26〜Q29）、バックテスト基盤（[D06](../design/D06_backtest_vertical_slice.md) v1.6。Q25・Q26）、テスト戦略（[D08](../design/D08_test_strategy.md) v1.1。Q24 の意味論テスト）。**その反映の途中で新しく生じた Q30 も同じ日に決定した**（第15.2節。コンパイル時の検査を1件足す。D04 v1.11）。**未決の要決定は残っていない**。既存実装との差は第19節に「段階3 実装への引き渡し」として並べた。
+状態: **承認（2026-09-23、PR #24）v1.0**。**v1.1（2026-09-24、PR #27）**: 検証戦略 B の評価順についての人間の再決定を受け、第1.3節の評価順を D05 v2.4 §9.2 の規則の出力（取引機会の参照の因果辺を含む）に合わせ、並びが変わった箇所（第3.2節 rank 5 の `stop_level` と `m15_above_ema` の出力 ID・通し番号、第7.1節の評価順の列）を直した。市場状態 → 取引機会 → 確認 → 注文 の並びと、各経路の結論・検算値（第16節）は変わらない。第15節の要決定 Q23〜Q29 を人間がすべて決定し（7件とも提示時の推奨案である選択肢1）、本文と関係する設計文書へ反映した。決定に伴い**同じ PR で正本を3件改訂した**: 戦略ランタイム設計（[D05](../design/D05_strategy_runtime.md) v2.2。Q23・Q24・Q26〜Q29）、バックテスト基盤（[D06](../design/D06_backtest_vertical_slice.md) v1.6。Q25・Q26）、テスト戦略（[D08](../design/D08_test_strategy.md) v1.1。Q24 の意味論テスト）。**その反映の途中で新しく生じた Q30 も同じ日に決定した**（第15.2節。コンパイル時の検査を1件足す。D04 v1.11）。**未決の要決定は残っていない**。既存実装との差は第19節に「段階3 実装への引き渡し」として並べた。
 v0.1（2026-09-23 起草）: 段階3 の戦略ランタイム設計（D05 v2.0）が §9.4 で挙げた**9経路**を、D03〜D07 の型とフィールド名で1判断時点ずつ追ったものである。T01（検証戦略 A の紙上トレース）§11.2 が「B を紙上で最後まで通せるようになるのは D05 v2.0 の承認後」として残した7件と、§14 の後続版の計画（検証戦略 B の時刻表・遅延シナリオ4ケース）を引き取る。置き場所は D05 §14 が起草時に決めるとした選択であり、**T01 への追記ではなく新しい文書（T02）**とした（理由は第18節）。追う run の日付は 2015年1月であり、T01 v1.3 と D08 §9.5 の扱いに合わせている（2026年以降は未分類の隔離期間で、いかなる経路でも読めない。D03 §3.8、ADR-0014）。
 
 上位文書: [上位設計書](../design/fx_research_platform_greenfield_design.md) §4.3.11・§4.3.13・§4.3.14・§4.5・§7.1、[全体計画書](../design/fx_research_platform_overall_plan.md) §8.2、[D03](../design/D03_marketdata_and_time.md)、[D04](../design/D04_strategy_declarations.md)、[D05](../design/D05_strategy_runtime.md) §9.2〜§9.4、[D06](../design/D06_backtest_vertical_slice.md)、[D07](../design/D07_single_run_evaluation.md)、[D08](../design/D08_test_strategy.md) §9、[T01](T01_paper_trace.md)、ADR-0014・ADR-0030・ADR-0031・ADR-0032・ADR-0033
@@ -86,7 +86,7 @@ T01 §1.2 と同じ値を使う。段階3 で値を変える理由が無く、�
 
 待機の宣言（D05 §9.2）は、日足の連鎖の3段と突破 Trigger のいずれも `WaitForInput(deadline=BarsDeadline(bars=1), on_deadline=SKIP_EVALUATION, on_superseded=EXPIRE_REQUEST)` である。
 
-評価順は D05 §5.4 の規則で一意に定まり、`daily_ema` → `daily_above_ema` → `m15_ema` → `m15_above_ema` → `no_short` → `stop_level` → `market_state` → `entry_trigger` → `entry_filter` → `entry_order` → `initial_stop` → `trailing` になる（D05 §9.2 と同じ）。
+評価順は D05 §5.4 の規則で一意に定まり、`daily_ema` → `m15_ema` → `no_short` → `stop_level` → `daily_above_ema` → `m15_above_ema` → `market_state` → `entry_trigger` → `entry_filter` → `entry_order` → `initial_stop` → `trailing` になる（D05 v2.4 §9.2 と同じ。v1.1 で、取引機会を出す部品 → 取引機会を読む部品の因果辺を含めた規則の出力に合わせた）。
 
 コンパイル結果のうち本書が値を使うもの:
 
@@ -236,7 +236,7 @@ D05 §9.4 の経路1 に対応する。**ただし「同じ判断時点で市場
 | 2 | `ORDER_EXPIRY` | `PENDING` なし | 記録なし |
 | 3 | `PUBLICATION` | 公開バッチの組み立て | `PublicationBatch(batch_id=EventId 00000010, decision_time=09:00Z, phases=BACKTEST_PHASES, available_bars=(BarKey(1h, 08:00Z), BarKey(15m, 08:45Z)), scheduled_closes=(BarClosure(BarKey(1h,08:00Z), Interval[08:00,09:00)), BarClosure(BarKey(15m,08:45Z), Interval[08:45,09:00))), runtime_events=(), admissions=(), is_run_end=False)` |
 | 4 | `OPPORTUNITY_LIFECYCLE` | 待機中の要求なし、有効な機会なし | 記録なし |
-| 5 | `P1_FEATURE` | `m15_ema` → `Observation[Price](Price(149.255), subject=BarKey(15m,08:45Z), observation_interval=Interval[08:45,09:00), freshness_time=09:00Z)`（`OutputId 00000001`、`sequence=0`）。`m15_above_ema` → `Observation[ConditionState](ConditionState(True), 同じ subject と区間, freshness_time=09:00Z)`（`00000002`、`sequence=1`）。`stop_level` → `Observation[Price](Price(148.950), subject=BarKey(1h,08:00Z), observation_interval=Interval[08:00,09:00), freshness_time=08:00Z)`（`00000003`、`sequence=2`） | `EvaluationRecord` 3件 → 表2 |
+| 5 | `P1_FEATURE` | `m15_ema` → `Observation[Price](Price(149.255), subject=BarKey(15m,08:45Z), observation_interval=Interval[08:45,09:00), freshness_time=09:00Z)`（`OutputId 00000001`、`sequence=0`）。`stop_level` → `Observation[Price](Price(148.950), subject=BarKey(1h,08:00Z), observation_interval=Interval[08:00,09:00), freshness_time=08:00Z)`（`00000002`、`sequence=1`）。`m15_above_ema` → `Observation[ConditionState](ConditionState(True), 同じ subject と区間, freshness_time=09:00Z)`（`00000003`、`sequence=2`）。評価順（第1.3節）で `stop_level` は `m15_above_ema` より前の段にある | `EvaluationRecord` 3件 → 表2 |
 | 6 | `P2_MARKET_STATE` | 起動なし（日足は終わっていない） | 記録なし |
 | 7 | `P3_TRIGGER` | `price=149.350 > level=149.300` かつ直前状態が `ConditionState(False)` → 発火。**D05 §7.4 の手順2a** で `CompiledRoles.market_state` が指す出力の最新（`01-06 22:00Z` の `Observation[MarketPermission]`、`allow_long=True`）を読み、`LONG` が許されているので遷移1 へ進む | `Opportunity(opportunity_id=OpportunityId 00000001, symbol=USDJPY, signal_interval=Interval[08:00,09:00), direction=LONG, reference_values={"breakout_level": Price(149.300)})`。`OpportunityTransition(00000001, None → OPEN, at=ProcessingPoint(09:00Z, P3_TRIGGER, 3), phase=P3_TRIGGER, reason=None)` → 表3。`OutputRecord(00000004, producer=("entry_trigger","opportunity"), payload=Opportunity(…), sequence=4)` → 表1 |
 | 8 | `P4_CONFIRMATION` | 第3.3節 | |
@@ -416,10 +416,11 @@ D05 §9.4 の経路5、§9.3 のケース2。判断時刻 T = `2015-01-07T22:00Z
 |---|---|---|---|
 | 1 | `daily_ema` | `history(1d, BarsWindow(60), 22:00Z, end_offset_bars=0)` が窓の末尾の足を読めず `INPUT_MISSING_OR_INVALID`。この理由は待機に入れる（D05 §6.8 の表） | `EvaluationRecord(request_id=RequestId 00000041, evaluation_id=…, instance_id="daily_ema", trigger_names=("d1",), decision_time=22:00Z, target_interval=Interval[01-06 22:00Z, 01-07 22:00Z), attempt_index=0, outcome=Waiting(diagnoses=(MissingInputDiagnosis("prices", ResolvedMarketSource(USDJPY/1d/bid, CLOSE), INPUT_MISSING_OR_INVALID),), deadline_at=WaitUntilBars(USDJPY/1d/bid, remaining=1)))` → 表2。`WaitEvent(00000041, WAIT_STARTED, at=ProcessingPoint(22:00Z, P1_FEATURE, 0), reason=None, arrived=())` → 表16 |
 | — | （待機記録） | `WaitingRequest(request=…, pinned_bars={"prices": BarKey(1d, 01-06 22:00Z)}, pinned_events={}, opportunity=None, missing=(…), started_at=ProcessingPoint(22:00Z, P1_FEATURE, 0), deadline_at=WaitUntilBars(USDJPY/1d/bid, 1), on_deadline=SKIP_EVALUATION, on_superseded=EXPIRE_REQUEST)`。**`pinned_bars` は「オフセットを適用する前の基準足」**（D05 §6.8）であり、`exclude_latest_bars=0` なのでそのまま窓の末尾になる | 判断履歴には出ない（`RuntimeState` の中） |
-| 2 | `daily_above_ema` | `left`（日足終値）は `LATEST_BAR_UNAVAILABLE`、`right`（`daily_ema.value`）は上流が待機中なので「まだ出ていない」＝`INPUT_MISSING_OR_INVALID`（D05 §6.8 の「待機の伝播」）。どちらも `WaitForInput` → `Waiting`。期限は**最初に足りなくなった入力の系列**で数える → `WaitUntilBars(USDJPY/1d/bid, 1)` | `Waiting(diagnoses=2件, …)` → 表2、`WaitEvent(WAIT_STARTED)` → 表16 |
-| 3・4 | `m15_ema` / `m15_above_ema` | 15分足は遅れていないので通常どおり評価 | `Evaluated` |
-| 5 | `no_short` | 入力を持たないので待機しない。`Observation[ConditionState](ConditionState(False), subject=BarKey(1d, 01-06 22:00Z), observation_interval=Interval[01-06 22:00Z, 01-07 22:00Z), freshness_time=22:00Z)` | `Evaluated` |
-| 6 | `stop_level` | 通常どおり評価 | `Evaluated` |
+| 2 | `m15_ema` | 15分足は遅れていないので通常どおり評価 | `Evaluated` |
+| 3 | `no_short` | 入力を持たないので待機しない。`Observation[ConditionState](ConditionState(False), subject=BarKey(1d, 01-06 22:00Z), observation_interval=Interval[01-06 22:00Z, 01-07 22:00Z), freshness_time=22:00Z)` | `Evaluated` |
+| 4 | `stop_level` | 通常どおり評価 | `Evaluated` |
+| 5 | `daily_above_ema` | `left`（日足終値）は `LATEST_BAR_UNAVAILABLE`、`right`（`daily_ema.value`）は上流が待機中なので「まだ出ていない」＝`INPUT_MISSING_OR_INVALID`（D05 §6.8 の「待機の伝播」）。どちらも `WaitForInput` → `Waiting`。期限は**最初に足りなくなった入力の系列**で数える → `WaitUntilBars(USDJPY/1d/bid, 1)` | `Waiting(diagnoses=2件, …)` → 表2、`WaitEvent(WAIT_STARTED)` → 表16 |
+| 6 | `m15_above_ema` | 15分足は遅れていないので通常どおり評価 | `Evaluated` |
 | 7 | `market_state` | `long_allowed` が「まだ出ていない」→ `Waiting`。`short_allowed` は読めている | `Waiting(diagnoses=1件, deadline_at=…)` → 表2 |
 | 8 | `entry_trigger` | 2つの理由で待機する。(a) 自身の `level`（日足高値）が `LATEST_BAR_UNAVAILABLE` で `on_missing=WaitForInput`、(b) D05 §7.6 の「市場状態が待機中なら、取引機会を出す評価も待機する」 | `Waiting(diagnoses=1件, deadline_at=WaitUntilBars(USDJPY/1d/bid, 1))` → 表2。`pinned_bars={"price": BarKey(1h, 21:00Z), "level": BarKey(1d, 01-06 22:00Z)}` |
 | 9 | `entry_filter` | 確認待ちの機会が0件 → 要求なし | 記録なし |
@@ -770,7 +771,8 @@ T01 への追記ではなく新しい文書にしたのは、追う run が違�
 | 版 | 追記する内容 | 前提 |
 |---|---|---|
 | ~~v0.2~~ → **v1.0**（2026-09-23、PR #24） | 要決定 Q23〜Q29 の決定と、その反映から生じた Q30 の決定を反映した（到達しない2経路の扱い、トレーリングの適用フェーズ、確認試行の受け渡し、欠損方針と待機の3規則、待機期限を数える系列のコンパイル時検査）。**起草時に予定していた v0.2 の内容がそのまま決定の反映で埋まったので、v0.2 を置かずに v1.0 とした** | Q23〜Q30 の決定（**済**） |
-| v1.1 | 段階3 の実装が出たあと、受入れテストの実測値と本書の検算値（第16節）を突き合わせ、食い違いがあれば本書側の誤りを直す | 段階3 の実装 |
+| **v1.1**（2026-09-24、PR #27） | 検証戦略 B の評価順についての人間の再決定（取引機会を出す部品 → 取引機会を読む部品の因果辺を足す。D04 v1.13・D05 v2.4）を受け、評価順（第1.3節）と、並びが変わった箇所の出力 ID・通し番号（第3.2節）と評価順の列（第7.1節）を直した。各経路の結論と検算値は変わらない | 再決定（**済**） |
+| v1.2 | 段階3 の実装が出たあと、受入れテストの実測値と本書の検算値（第16節）を突き合わせ、食い違いがあれば本書側の誤りを直す | 段階3 の実装 |
 
 ## 19. 段階3 実装への引き渡し（既存実装との差）
 

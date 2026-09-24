@@ -112,13 +112,14 @@ MARKET_DATA_FIELD_TYPES: Final[dict[MarketDataField, DataTypeRef]] = {
     MarketDataField.VOLUME: VOLUME_V1,
 }
 
-#: 建玉・口座を読む入力の対象とデータ型の対応（D04 §5）。
+#: 建玉・口座・取引機会を読む入力の対象とデータ型の対応（D04 §5。取引機会は v1.9）。
 #:
 #: payload に何の項目が入るかは「エンジンが評価時点に供給してよい情報の範囲」そのもの
 #: であるため D06 が確定し、`declarations` は識別子と版だけを持つ。
 RUNTIME_TARGET_TYPES: Final[dict[RuntimeTarget, DataTypeRef]] = {
     RuntimeTarget.POSITION: POSITION_CONTEXT_V1,
     RuntimeTarget.ACCOUNT: ACCOUNT_CONTEXT_V1,
+    RuntimeTarget.OPPORTUNITY: OPPORTUNITY_V1,
 }
 
 

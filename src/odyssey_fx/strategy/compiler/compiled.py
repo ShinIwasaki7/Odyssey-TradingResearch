@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
+from types import MappingProxyType
 
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.refs import (
@@ -32,10 +33,14 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.declarations.datatypes import DataTypeRef
 from odyssey_fx.strategy.declarations.entry_policy import (
     AwaitConfirmation,
+    BarsDeadline,
+    DeadlineAction,
+    DurationDeadline,
     EntryPolicy,
     ImmediateEntry,
 )
 from odyssey_fx.strategy.declarations.evaluation import EvaluationTrigger
+from odyssey_fx.strategy.declarations.missing import UsePrevious
 from odyssey_fx.strategy.declarations.opportunity import (
     OpportunityConcurrencySpec,
     OpportunityValiditySpec,
@@ -53,6 +58,7 @@ from odyssey_fx.strategy.declarations.validation import (
     freeze_mapping,
     require_identifier,
     require_instance,
+    require_int,
     require_tuple_of,
 )
 
@@ -65,8 +71,10 @@ __all__ = [
     "CompiledComponent",
     "CompiledRoles",
     "CompiledStrategy",
+    "ConfirmationPlan",
     "DeclarationLocation",
     "InputPlan",
+    "OutputRetentionPlan",
     "ResolvedContextSource",
     "ResolvedMarketSource",
     "ResolvedOutputSource",
@@ -92,7 +100,7 @@ class CompileRejection(Enum):
     OUTPUT_SPEC_INVALID = "OUTPUT_SPEC_INVALID"
     #: 明示辺と因果辺の和に閉路がある。
     DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
-    #: 段階2で対応しない構成（能力検査）。
+    #: 対応しない構成（能力検査と、待機・遡り・履歴窓の組合せの検査。D05 §5.6）。
     UNSUPPORTED_CONFIGURATION = "UNSUPPORTED_CONFIGURATION"
 
 
@@ -225,6 +233,12 @@ class InputPlan:
 
     `resolved_window` はパラメータ参照を解決した後の窓で、ランタイムはこれをそのまま
     市場データビューへ渡す（D05 §6.3）。窓を使わない読み方では `None`。
+
+    `resolved_max_lookback` は欠損方針が過去値への遡り（`UsePrevious`）のときの遡りの上限を、
+    パラメータ参照を解決した後の窓で持つ（D05 §5.3・§6.9、2026-09-24 の人間の決定）。
+    ランタイムはこれをそのまま市場データビューへ渡し、パラメータを読み直さない。遡りでない
+    欠損方針では `None`。解決値は読み方（`read_spec`）とパラメータの解決値から一意に決まるので、
+    解決済み設定の指紋（D05 §5.5）の対象には入れない。
     """
 
     input_name: str
@@ -233,6 +247,7 @@ class InputPlan:
     read_spec: InputReadSpec
     sources: tuple[ResolvedSource, ...]
     resolved_window: ReadWindow | None = None
+    resolved_max_lookback: ReadWindow | None = None
 
     def __post_init__(self) -> None:
         require_identifier(self.input_name, "InputPlan.input_name")
@@ -260,6 +275,28 @@ class InputPlan:
                 "InputPlan.resolved_window must have a concrete bar count"
                 f" (got {self.resolved_window.count!r})"
             )
+        _require_concrete_window(self.resolved_max_lookback, "InputPlan.resolved_max_lookback")
+        going_back = isinstance(getattr(self.read_spec, "on_missing", None), UsePrevious)
+        if going_back and self.resolved_max_lookback is None:
+            raise KernelValueError(
+                "InputPlan.resolved_max_lookback is required when the input goes back to a"
+                " previous value (UsePrevious)"
+            )
+        if not going_back and self.resolved_max_lookback is not None:
+            raise KernelValueError(
+                "InputPlan.resolved_max_lookback must be None unless the input goes back to a"
+                " previous value (UsePrevious)"
+            )
+
+
+def _require_concrete_window(window: object, label: str) -> None:
+    """解決済みの窓（本数が整数の本数窓か経過時間の窓）か `None` であることを確かめる。"""
+    if window is None:
+        return
+    if not isinstance(window, (BarsWindow, DurationWindow)):
+        raise KernelValueError(f"{label} must be a window or None, got {window!r}")
+    if isinstance(window, BarsWindow) and not isinstance(window.count, int):
+        raise KernelValueError(f"{label} must have a concrete bar count (got {window.count!r})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,11 +331,81 @@ class CompiledComponent:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfirmationPlan:
+    """後続確認の制御に要る値をまとめた計画（D05 §3・§5.3・§5.6・§7.7）。
+
+    コンパイラが検査 a・b（D04 §12 #8・#9）で読んだ値を1件にまとめる。ランタイムはこの1件
+    だけを読んで確認を制御し、宣言と契約を実行時に読み直さない（D05 §5.3）。
+
+    - `filter_instance`: 確認部品の使用箇所（`execution_filter` 役割が指す出力の持ち主）
+    - `series`: 確認足の系列（その使用箇所の足の確定の系列。検査 b でただ1つと確かめた）
+    - `include_start_bar`: 開始足で確認を始めるか（使用箇所が明示した値。検査 a）
+    - `deadline` / `on_deadline`: 確認待ちの発注方針（`AwaitConfirmation`）の期限と動作
+    """
+
+    filter_instance: str
+    series: SeriesId
+    include_start_bar: bool
+    deadline: BarsDeadline | DurationDeadline
+    on_deadline: DeadlineAction
+
+    def __post_init__(self) -> None:
+        require_identifier(self.filter_instance, "ConfirmationPlan.filter_instance")
+        require_instance(self.series, SeriesId, "ConfirmationPlan.series")
+        require_instance(self.include_start_bar, bool, "ConfirmationPlan.include_start_bar")
+        if not isinstance(self.deadline, (BarsDeadline, DurationDeadline)):
+            raise KernelValueError(
+                "ConfirmationPlan.deadline must be a BarsDeadline or DurationDeadline,"
+                f" got {self.deadline!r}"
+            )
+        require_instance(self.on_deadline, DeadlineAction, "ConfirmationPlan.on_deadline")
+
+
+@dataclass(frozen=True, slots=True)
+class OutputRetentionPlan:
+    """出力参照ごとに何本の出力をため込むかの計画（D05 §3・§5.3・§6.12、Q18 決定）。
+
+    本数は**その出力参照を読む入力の計画のうち最大の要求**から導く（D05 §6.12）。最新1件の
+    読み方は 1 本、本数で数える履歴窓は「窓の本数＋当該足を除く本数」。読み手が1つも無い
+    出力参照は載せない（鍵を作らない）。ランタイムはこの1件だけを読んで保持本数を決める。
+    """
+
+    by_output: Mapping[OutputRef, int]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.by_output, Mapping):
+            raise KernelValueError("OutputRetentionPlan.by_output must be a Mapping")
+        for ref, count in self.by_output.items():
+            require_instance(ref, OutputRef, "OutputRetentionPlan.by_output key")
+            if require_int(count, f"OutputRetentionPlan.by_output[{ref}]") < 1:
+                raise KernelValueError(
+                    f"OutputRetentionPlan.by_output[{ref}] must be at least 1, got {count}"
+                )
+        object.__setattr__(
+            self,
+            "by_output",
+            # 鍵は出力参照（文字列ではない）なので、使用箇所 ID・出力名の順に並べてから包む。
+            MappingProxyType(
+                dict(
+                    sorted(
+                        self.by_output.items(),
+                        key=lambda item: (item[0].instance_id, item[0].output_name),
+                    )
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledRoles:
     """役割フィールドの解決結果（D05 §5.3）。
 
     `trigger` / `order` / `protection` は段階2で必須、`market_state` / `execution_filter` /
     `exit` は `None` を許す。
+
+    `confirmation` は段階3 で足した確認の計画である（D05 §5.6）。`execution_filter` が
+    `None` の戦略では `None`、そうでなければ必ず持ち、その確認部品の使用箇所は
+    `execution_filter` が指す出力の持ち主と一致する。
     """
 
     trigger: OutputRef
@@ -307,6 +414,7 @@ class CompiledRoles:
     market_state: OutputRef | None = None
     execution_filter: OutputRef | None = None
     exit: OutputRef | None = None
+    confirmation: ConfirmationPlan | None = None
 
     def __post_init__(self) -> None:
         require_instance(self.trigger, OutputRef, "CompiledRoles.trigger")
@@ -319,6 +427,20 @@ class CompiledRoles:
         ):
             if value is not None:
                 require_instance(value, OutputRef, f"CompiledRoles.{label}")
+        if self.execution_filter is None:
+            if self.confirmation is not None:
+                raise KernelValueError(
+                    "CompiledRoles.confirmation must be None when there is no execution_filter"
+                )
+            return
+        require_instance(self.confirmation, ConfirmationPlan, "CompiledRoles.confirmation")
+        assert self.confirmation is not None  # require_instance が保証する
+        if self.confirmation.filter_instance != self.execution_filter.instance_id:
+            raise KernelValueError(
+                "CompiledRoles.confirmation.filter_instance must be the execution_filter's"
+                f" instance ({self.execution_filter.instance_id!r}),"
+                f" got {self.confirmation.filter_instance!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +448,7 @@ class CompiledStrategy:
     """実行できる形に解決した戦略（D05 §5.3）。
 
     `components` は `evaluation_order` と同じ並びで保持する（並びが2つあると食い違う）。
+    `output_retention` は段階3 で足した出力の保持本数の計画である（D05 §5.3・§6.12）。
     """
 
     schema_version: int
@@ -338,6 +461,7 @@ class CompiledStrategy:
     entry_policy: EntryPolicy
     opportunity_validity: OpportunityValiditySpec
     opportunity_concurrency: OpportunityConcurrencySpec
+    output_retention: OutputRetentionPlan
 
     def __post_init__(self) -> None:
         require_instance(self.strategy_ref, StrategyRef, "CompiledStrategy.strategy_ref")
@@ -365,6 +489,9 @@ class CompiledStrategy:
             self.opportunity_concurrency,
             OpportunityConcurrencySpec,
             "CompiledStrategy.opportunity_concurrency",
+        )
+        require_instance(
+            self.output_retention, OutputRetentionPlan, "CompiledStrategy.output_retention"
         )
 
     def component(self, instance_id: str) -> CompiledComponent:
