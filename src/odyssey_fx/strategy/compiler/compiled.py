@@ -40,6 +40,7 @@ from odyssey_fx.strategy.declarations.entry_policy import (
     ImmediateEntry,
 )
 from odyssey_fx.strategy.declarations.evaluation import EvaluationTrigger
+from odyssey_fx.strategy.declarations.missing import UsePrevious
 from odyssey_fx.strategy.declarations.opportunity import (
     OpportunityConcurrencySpec,
     OpportunityValiditySpec,
@@ -232,6 +233,12 @@ class InputPlan:
 
     `resolved_window` はパラメータ参照を解決した後の窓で、ランタイムはこれをそのまま
     市場データビューへ渡す（D05 §6.3）。窓を使わない読み方では `None`。
+
+    `resolved_max_lookback` は欠損方針が過去値への遡り（`UsePrevious`）のときの遡りの上限を、
+    パラメータ参照を解決した後の窓で持つ（D05 §5.3・§6.9、2026-09-24 の人間の決定）。
+    ランタイムはこれをそのまま市場データビューへ渡し、パラメータを読み直さない。遡りでない
+    欠損方針では `None`。解決値は読み方（`read_spec`）とパラメータの解決値から一意に決まるので、
+    解決済み設定の指紋（D05 §5.5）の対象には入れない。
     """
 
     input_name: str
@@ -240,6 +247,7 @@ class InputPlan:
     read_spec: InputReadSpec
     sources: tuple[ResolvedSource, ...]
     resolved_window: ReadWindow | None = None
+    resolved_max_lookback: ReadWindow | None = None
 
     def __post_init__(self) -> None:
         require_identifier(self.input_name, "InputPlan.input_name")
@@ -267,6 +275,28 @@ class InputPlan:
                 "InputPlan.resolved_window must have a concrete bar count"
                 f" (got {self.resolved_window.count!r})"
             )
+        _require_concrete_window(self.resolved_max_lookback, "InputPlan.resolved_max_lookback")
+        going_back = isinstance(getattr(self.read_spec, "on_missing", None), UsePrevious)
+        if going_back and self.resolved_max_lookback is None:
+            raise KernelValueError(
+                "InputPlan.resolved_max_lookback is required when the input goes back to a"
+                " previous value (UsePrevious)"
+            )
+        if not going_back and self.resolved_max_lookback is not None:
+            raise KernelValueError(
+                "InputPlan.resolved_max_lookback must be None unless the input goes back to a"
+                " previous value (UsePrevious)"
+            )
+
+
+def _require_concrete_window(window: object, label: str) -> None:
+    """解決済みの窓（本数が整数の本数窓か経過時間の窓）か `None` であることを確かめる。"""
+    if window is None:
+        return
+    if not isinstance(window, (BarsWindow, DurationWindow)):
+        raise KernelValueError(f"{label} must be a window or None, got {window!r}")
+    if isinstance(window, BarsWindow) and not isinstance(window.count, int):
+        raise KernelValueError(f"{label} must have a concrete bar count (got {window.count!r})")
 
 
 @dataclass(frozen=True, slots=True)

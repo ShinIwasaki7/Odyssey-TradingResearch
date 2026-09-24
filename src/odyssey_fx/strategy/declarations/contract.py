@@ -40,7 +40,8 @@ from odyssey_fx.strategy.declarations.validation import (
 
 __all__ = ["SCHEMA_VERSION", "ComponentContract"]
 
-#: 段階2で扱う保存形式の版（D04 §3）。区分を足すときに引き上げる。
+#: 保存形式の版（D04 §3）。保存形式が変わったときに上げる。段階3 では 1 のまま
+#: （2026-09-24 の人間の決定。欠損方針の区分の追加では上げない）。
 SCHEMA_VERSION = 1
 
 

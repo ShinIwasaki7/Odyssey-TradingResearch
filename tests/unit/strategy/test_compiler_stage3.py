@@ -15,6 +15,7 @@ from dataclasses import replace
 
 import pytest
 
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.catalog.conditions import compare
@@ -84,8 +85,13 @@ from odyssey_fx.strategy.declarations.specs import (
     InputBinding,
     InputSpec,
     IntValue,
+    NumericBounds,
     OutputSpec,
+    ParameterSpec,
+    ParameterType,
     PortKind,
+    StrValue,
+    UnitRef,
 )
 from odyssey_fx.strategy.declarations.temporal import (
     AlignmentRequirement,
@@ -206,7 +212,10 @@ def test_strategy_b_is_ordered_by_the_stage_rule() -> None:
     strict=True,
     reason=(
         "要決定: D05 §9.2 末尾・T02 §1.3 に書かれた評価順は、D05 §5.4 の段の規則からは導けない"
-        "（規則の出力は EVALUATION_ORDER_BY_RULE）。どちらに合わせるかは人間の決定を待つ"
+        "（規則の出力は EVALUATION_ORDER_BY_RULE）。2026-09-24 に「設計書を規則に合わせる」と"
+        "決まったが、規則の出力では確認部品（entry_filter）が突破 Trigger（entry_trigger）より前に"
+        "来て、同じ判断時点で生まれた取引機会を開始足で確認できない（D05 §6.2 手順4・§7.7）ため、"
+        "再度人間の決定を待つ"
     ),
 )
 def test_strategy_b_matches_the_order_written_in_the_design() -> None:
@@ -370,6 +379,126 @@ def test_going_back_on_a_market_data_latest_read_is_accepted() -> None:
     )
 
     assert isinstance(_compile(definition, _with_registrations(registration)), CompileSucceeded)
+
+
+def _go_back_by_parameter(version: int) -> ComponentRegistration:
+    """左入力の遡りの上限をパラメータ参照（`go_back_bars`）で書いた試験用の契約を登録する。"""
+    registration = _compare_with_left(
+        UsePrevious(
+            max_lookback=BarsWindow(ParameterRef("go_back_bars")),
+            allowed_reasons=(MissingInputReason.LATEST_BAR_UNAVAILABLE,),
+        ),
+        version=version,
+    )
+    contract = replace(
+        registration.contract,
+        parameters={
+            **registration.contract.parameters,
+            "go_back_bars": ParameterSpec(
+                value_type=ParameterType.INT,
+                unit=UnitRef.BARS,
+                bounds=NumericBounds(minimum=1, maximum=10),
+            ),
+        },
+    )
+    return replace(registration, contract=contract)
+
+
+def _plan_of(compiled: CompiledStrategy, instance_id: str, input_name: str) -> InputPlan:
+    return compiled.component(instance_id).input_plans[input_name]
+
+
+def test_the_resolved_lookback_is_carried_on_the_input_plan() -> None:
+    """D05 §5.3（2026-09-24 の人間の決定）: 遡りの上限のパラメータ参照を解決した値を載せる。
+
+    ランタイムはこの値だけを読み、パラメータを読み直さない。遡りでない入力は `None`。
+    """
+    registration = _go_back_by_parameter(version=96)
+    definition = _swap(
+        strategy_b(),
+        "m15_above_ema",
+        contract_ref=contract_ref_for(registration.contract),
+        parameters={"operator": StrValue("GT"), "go_back_bars": IntValue(3)},
+    )
+
+    result = _compile(definition, _with_registrations(registration))
+
+    assert isinstance(result, CompileSucceeded), str(result)
+    plan = _plan_of(result.compiled, "m15_above_ema", "left")
+    assert plan.resolved_max_lookback == BarsWindow(3)
+    assert _plan_of(result.compiled, "m15_above_ema", "right").resolved_max_lookback is None
+
+
+def test_a_literal_lookback_is_carried_as_written() -> None:
+    """遡りの上限を具体値で書いた場合は、その窓をそのまま載せる。"""
+    registration = _compare_with_left(_GO_BACK, version=97)
+    definition = _swap(
+        strategy_b(), "m15_above_ema", contract_ref=contract_ref_for(registration.contract)
+    )
+
+    result = _compile(definition, _with_registrations(registration))
+
+    assert isinstance(result, CompileSucceeded), str(result)
+    assert _plan_of(result.compiled, "m15_above_ema", "left").resolved_max_lookback == (
+        BarsWindow(2)
+    )
+
+
+def test_strategy_b_has_no_lookback_on_any_input_plan() -> None:
+    """検証戦略 B は遡りを1件も宣言しないので、どの入力の計画も `None` を持つ。"""
+    compiled = _compiled(strategy_b())
+
+    assert all(
+        plan.resolved_max_lookback is None
+        for component in compiled.components
+        for plan in component.input_plans.values()
+    )
+
+
+def test_the_lookback_value_changes_the_compiled_fingerprint_through_the_parameters() -> None:
+    """解決値そのものは指紋の対象から外すが、元のパラメータが対象なので構成の違いは区別される。"""
+    registration = _go_back_by_parameter(version=98)
+    registry = _with_registrations(registration)
+
+    def compiled_ref(bars: int) -> object:
+        definition = _swap(
+            strategy_b(),
+            "m15_above_ema",
+            contract_ref=contract_ref_for(registration.contract),
+            parameters={"operator": StrValue("GT"), "go_back_bars": IntValue(bars)},
+        )
+        result = _compile(definition, registry)
+        assert isinstance(result, CompileSucceeded), str(result)
+        return result.compiled.compiled_ref
+
+    assert compiled_ref(3) != compiled_ref(4)
+
+
+def _latest_plan(on_missing: object, lookback: object) -> InputPlan:
+    return InputPlan(
+        input_name="left",
+        data_type=PRICE_V1,
+        kind=PortKind.VALUE,
+        read_spec=LatestAvailable(max_age=None, on_missing=on_missing),  # type: ignore[arg-type]
+        sources=(ResolvedOutputSource("m15_ema", "value"),),
+        resolved_max_lookback=lookback,  # type: ignore[arg-type]
+    )
+
+
+def test_an_input_plan_that_goes_back_requires_the_resolved_lookback() -> None:
+    """遡りの入力に解決値が無い計画は作れない（ランタイムが読み直しに戻らないため）。"""
+    with pytest.raises(KernelValueError, match="resolved_max_lookback is required"):
+        _latest_plan(_GO_BACK, None)
+
+
+def test_an_input_plan_without_going_back_rejects_a_lookback() -> None:
+    with pytest.raises(KernelValueError, match="must be None unless"):
+        _latest_plan(MissingPolicyError(), BarsWindow(2))
+
+
+def test_an_input_plan_rejects_an_unresolved_lookback() -> None:
+    with pytest.raises(KernelValueError, match="concrete bar count"):
+        _latest_plan(_GO_BACK, BarsWindow(ParameterRef("go_back_bars")))
 
 
 def test_an_alignment_requirement_is_now_accepted() -> None:

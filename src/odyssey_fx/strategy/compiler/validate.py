@@ -928,6 +928,9 @@ def _stage5_types(
                 read_spec=spec.read_spec,
                 sources=sources,
                 resolved_window=_resolved_window(spec, parameters[instance.instance_id]),
+                resolved_max_lookback=_resolved_max_lookback(
+                    spec, parameters[instance.instance_id]
+                ),
             )
         plans[instance.instance_id] = instance_plans
     return plans, tuple(errors)
@@ -1034,7 +1037,27 @@ def _resolved_window(
     """パラメータ参照を解決した窓を返す（D05 §5.3）。窓を使わない読み方では `None`。"""
     if not isinstance(spec.read_spec, HistoryWindow):
         return None
-    window = spec.read_spec.window
+    return _resolve_window(spec.read_spec.window, parameters)
+
+
+def _resolved_max_lookback(
+    spec: InputSpec, parameters: Mapping[str, ResolvedParameter]
+) -> BarsWindow | DurationWindow | None:
+    """遡り（`UsePrevious`）の上限をパラメータ参照を解決した窓で返す（D05 §5.3・§6.9）。
+
+    2026-09-24 の人間の決定により、解決値をコンパイル結果（入力の計画）に載せる。ランタイムは
+    これを読み、パラメータを読み直さない。遡りでない欠損方針では `None`。
+    """
+    on_missing = getattr(spec.read_spec, "on_missing", None)
+    if not isinstance(on_missing, UsePrevious):
+        return None
+    return _resolve_window(on_missing.max_lookback, parameters)
+
+
+def _resolve_window(
+    window: BarsWindow | DurationWindow, parameters: Mapping[str, ResolvedParameter]
+) -> BarsWindow | DurationWindow:
+    """本数のパラメータ参照を具体値へ置き換えた窓を返す。解決できることは段3 が確かめ済み。"""
     if isinstance(window, BarsWindow) and isinstance(window.count, ParameterRef):
         parameter = parameters[window.count.parameter_name]
         assert isinstance(parameter.value, IntValue)  # 段3 が保証する

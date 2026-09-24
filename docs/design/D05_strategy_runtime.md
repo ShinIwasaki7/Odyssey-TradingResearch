@@ -1,7 +1,8 @@
 # D05: 戦略ランタイム・部品カタログ・コンパイラ設計（`odyssey_fx.strategy.runtime` / `strategy.catalog` / `strategy.compiler` / `strategy.records`）
 
 作成日: 2026-09-21
-状態: **v2.2（2026-09-23、PR #24）。段階3 範囲の Q10〜Q30 はすべて決定済み（承認待ち）。未決の項目は残っていない**（第15節）。段階2 で承認済みの範囲（**承認（2026-09-21、PR #15）**、v1.0〜v1.4）は本改訂で変えていない。
+状態: **v2.3（2026-09-24、PR #27）。段階3 範囲の Q10〜Q30 はすべて決定済み（承認待ち）**（第15節）。段階3 実装 PR 2/5（コンパイラ）が仮置きした点への人間の決定（2026-09-24）を反映した。段階2 で承認済みの範囲（**承認（2026-09-21、PR #15）**、v1.0〜v1.4）は本改訂で変えていない。
+v2.3（2026-09-24、PR #27）: 段階3 実装 PR 2/5（コンパイラ）が仮置きした点に対する**人間の決定（2026-09-24）**を反映した。(1) **遡りの上限のパラメータ参照を解決した値をコンパイル結果に載せる**。置き場所は入力の計画（`InputPlan.resolved_max_lookback`）の1項目で、ランタイムはこれを読みパラメータを読み直さない（第3節の型表・第5.3節・第5.5節・第6.9節）。(2) **市場状態の因果辺の種類名を `MARKET_STATE` とし**、依存辺の種類（`EdgeKind`）の一覧に加えた（第3節・第5.4節）。(3) 宣言の保存形式の版（`schema_version`）は **1 のまま**とする決定（D04 v1.12 §3）に合わせ、第12.1節の「2 へ上げる」の記述に注記した。**検証戦略 B の評価順を規則の出力に合わせる決定は、本版では反映していない**（第9.2節末尾の評価順は v2.2 のまま。PR #27 の要決定を参照）。
 v2.2（2026-09-23、PR #24）: 紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) が立てた**要決定 Q23〜Q29 をユーザーがすべて決定**した（7件とも提示時の推奨案である選択肢1）。本文への反映は次の5件である。(1) **日足境界では突破が構造的に成立しない**ので、宣言は変えずに遅延シナリオの例文のほうを改め、取引機会が生まれるのは日足境界でない1時間足の確定だと明記した（Q23。第9.3節・第9.4節）。(2) **確認待ちのあいだに市場状態が失効する経路は段階3 の宣言では到達しない**と到達可否の記述に改め、再検査そのものの検証は宣言を変えた小さな戦略を使う意味論テストへ渡した（Q24。第9.4節、D08 v1.1）。(3) **確認試行をエンジンへ渡す列**（`RuntimeStepResult.confirmation_attempts`）を足し、その `step` の差分だけを返して主キーで置き換える形にした（Q26。第3節・第6.2節 手順10・第7.7節）。(4) **欠損方針が食い違うときは強い方針が勝つ**順序を置いた（Q27。第6.3節）。(5) **出力参照だけが欠けた待機の本数期限は、その使用箇所の起動条件の系列で数える**ことと、**期限 → 追い越し → 失効が判定順である**ことを明記した（Q28・Q29。第6.8節）。トレーリングの適用フェーズ（Q25）は本書ではなく D06 v1.6 が受け取った。**Q28 の反映で新しく生じた Q30 も同じ日に決定した**（選択肢1。第15.4節）。出力参照だけが欠けうる入力に本数で数える待機期限を書いた使用箇所は、**足の確定の起動条件の系列がただ1つ**でなければならないというコンパイル時の検査を1件足した（第5.6節の検査 h、D04 v1.11 の検査 #15）。**段階3 の宣言は1つも狭まらない**。
 v2.1（2026-09-23）: 検証戦略 B の紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) が、本改訂を1判断時点ずつ追って**未記述を20件**見つけた。そのうち**設計の選択を含まない13件を本文へ明記した**（新しい規則は置かず、既に確定している規則の帰結と適用範囲を書いただけである）。おもなものは、(1) 待機中と追い越しで閉じた評価でも部品の状態を更新しないこと（第6.5節）、(2) 待機の出来事と有効性の再検査も `step` 内の通し番号を共有すること（第6.6節）、(3) 段階3 のランタイムは戦略の宣言によらず `VALUE` の出力を包むので**段階2 の固定出力（golden）が更新対象になる**こと（第6.7節）、(4) 待機記録が足を固定するのは市場データ参照の入力だけであること（第6.8節）、(5) 確認期限の n 本目の確認足は確認に使われないこと（第7.7節）である。**設計の選択を含む7件は確定させず、要決定 Q23〜Q29 として第15.3節に残した**（選択肢と推奨の正本は T02 §15）。あわせて、9経路のうち**経路4 の全体と、経路1・5 の「日足境界で取引機会が生まれる」部分が到達しない**ことを第9.4節に記した。
 v2.0（2026-09-23、PR #22）: 第15.2節の要決定 **Q19〜Q22 をユーザーがすべて決定**した（4件とも提示時の推奨案である選択肢1）。(1) 後続確認の期限は**確認足の系列**の確定足で数える（Q19。第7.2節の遷移11・第7.7節・第11節の差異6）。承認済みの戦略宣言モデル D04 §10.1 の「Trigger の系列で数える」という記述を、同じ決定により **D04 v1.10** で改めた（第12.1節の依頼4 を見送りから反映へ）。(2) 保持した上流の出力は**観測した足ごとに1件**とし、同じ足の2件目は置き換える（Q20。第6.12節）。(3) 待機から再開した評価は、**固定した対象足に対応する観測まで遡って窓を切る**（Q21。第6.12節・第6.8節）。(4) 2つのパラメータの関係は、**契約の登録（`ComponentRegistration`）が持つ検証の純粋関数1つ**に書き、コンパイラがパラメータ解決の後に呼ぶ（Q22。第4.1節の登録時検査 (e)・第4.5節・第5.1節 段3・第5.6節の検査 e）。この決定により、`ema` と `atr` の登録を保留していた条件を解除した。あわせて、**保持の主キー（観測した足）が定まらない上流との接続**と、**窓の末尾を決める対象区間を持たない読み手からの接続**を拒否する条件を第5.6節の検査 f に足し（D04 §12 の検査 #13 も同じ形にした）、他文書が本改訂を「D05 v0.2」と呼んでいた箇所を「**D05 v2.0**」へ揃えた（第14節。全体計画書・T01）。**本改訂に未決の項目は残っていない**。
@@ -133,7 +134,7 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `ResolvedParameter` | `compiler` | レコード | `name: str` / `value: ParameterValue` / `unit: UnitRef \| None` / `decimal_value: Decimal \| None` | §4.4 |
 | `DependencyGraph` | `compiler` | レコード | `nodes: tuple[str, ...]` / `edges: tuple[DependencyEdge, ...]` | §5.4 |
 | `DependencyEdge` | `compiler` | レコード | `source_instance: str` / `target_instance: str` / `kind: EdgeKind` | §5.4 |
-| `EdgeKind` | `compiler` | enum | `EXPLICIT_INPUT` / `FILL_TRIGGER` / `POSITION_CONTEXT`（後2者は D04 §12 の因果辺） | §5.4 |
+| `EdgeKind` | `compiler` | enum | `EXPLICIT_INPUT` / `FILL_TRIGGER` / `POSITION_CONTEXT` / `MARKET_STATE`（後3者は D04 §12 の因果辺。`MARKET_STATE` は市場状態から取引機会を出す使用箇所への辺で、v2.3、2026-09-24 の人間の決定。第7.6節） | §5.4 |
 | `CompileError` | `compiler` | レコード | `check_id: str` / `rejection: CompileRejection` / `location: DeclarationLocation` / `message: str` | §5.2 |
 | `CompileRejection` | `compiler` | enum | `REFERENCE_NOT_FOUND` / `TYPE_MISMATCH` / `PARAMETER_INVALID` / `SCHEDULE_NOT_ALLOWED` / `ROLE_MISMATCH` / `OUTPUT_SPEC_INVALID` / `DEPENDENCY_CYCLE` / `UNSUPPORTED_CONFIGURATION` | §5.2 |
 | `DeclarationLocation` | `compiler` | レコード | `instance_id: str \| None` / `field_path: str` | §5.2 |
@@ -194,6 +195,7 @@ D01 §7.2 の `runtime/` の一覧にある `waiting.py` / `supersession.py` を
 | `EvaluationRecord` | `runtime.requests` | レコード（**改訂**） | 段階2 の9項目に `substitutions: tuple[SubstitutedInput, ...]`（既定は空）を足す | §6.9 |
 | `EvaluationOutcome` | `runtime.requests` | union（**改訂**） | 段階2 の3区分に `Waiting(diagnoses: tuple[MissingInputDiagnosis, ...], deadline_at: WaitDeadline)` と `Superseded(by_request_id: RequestId)` を足す | §6.8・§6.10 |
 | `OpportunityLifecycle` | `runtime.opportunities` | レコード（**改訂**） | 段階2 の7項目に `confirmation_start_bar: BarKey \| None` / `deadline_at: WaitDeadline \| None` / `attempts: tuple[ConfirmationAttempt, ...]` を足す | §7.7 |
+| `InputPlan` | `compiler` | レコード（**改訂**、v2.3） | 段階2 の6項目に `resolved_max_lookback: BarsWindow \| DurationWindow \| None` を足す（欠損方針が遡り（`UsePrevious`）のときの遡りの上限を、パラメータ参照を解決した窓で持つ。遡りでない入力は `None`。2026-09-24 の人間の決定） | §5.3・§6.9 |
 | `CompiledRoles` | `compiler` | レコード（**改訂**） | 段階2 の6項目に `confirmation: ConfirmationPlan \| None` を足す | §5.3 |
 | `CompiledStrategy` | `compiler` | レコード（**改訂**） | 段階2 の9項目に `output_retention: OutputRetentionPlan` を足す（読み手が1つも無ければ空の `by_output`） | §5.3・§6.12 |
 | `RuntimeState` | `runtime` | レコード（**改訂**） | 段階2 の4項目に `output_history: Mapping[OutputRef, tuple[RetainedOutput, ...]]`（古い順。`OutputRetentionPlan` に載る出力参照だけを持つ）を足す | §6.5・§6.12 |
@@ -580,13 +582,14 @@ D04 §12 は「拒否は `ReasonCode`（D02 §8.1）付きの構造エラー」�
 
 - `components` は `evaluation_order` と同じ並びで保持する（並びが2つあると食い違う）。`evaluation_order` は `instance_id` の列で、第5.4節の規則で一意に定まる。
 - `InputPlan.resolved_window` は `ParameterRef` を解決した後の窓で、ランタイムはこれをそのまま `MarketDataView.history` へ渡す。
+- **`InputPlan.resolved_max_lookback` は、欠損方針が遡り（`UsePrevious`）の入力について、遡りの上限（`max_lookback`）の `ParameterRef` を解決した後の窓である**（v2.3、2026-09-24 の人間の決定）。ランタイムはこれをそのまま `MarketDataView.previous_available` へ渡し（第6.9節）、パラメータを読み直さない。遡りでない入力では `None` であり、遡りの入力で `None`、遡りでない入力で値あり、解決していない本数を持つ窓は、いずれも構築時に拒否する。**不採用**: ランタイムが実行時に `parameters` から引いて解決する案（本節の「ランタイムは `CompiledStrategy` だけを読み、宣言を再解釈しない」が崩れ、解決がコンパイラとランタイムの2か所に分かれる）、`CompiledStrategy` に使用箇所と入力名を鍵にした写像を置く案（同じ入力の読み方が `InputPlan` と別の場所に分かれる）。
 - `CompiledStrategy.symbol` は第5.1節 段4 で伝播させた単一銘柄。
 - `CompiledRoles.trigger` / `order` / `protection` は段階2で必須、`market_state` / `execution_filter` / `exit` は `None` を許す（検証戦略 A は `exit` を持つ）。
 - **`CompiledStrategy.output_retention` は、上流の出力を履歴窓で読む接続から導いた保持本数の計画**である（第6.12節。Q18 決定、選択肢2）。ランタイムはこの1件だけを読んで何本ため込むかを決め、宣言と契約を実行時に読み直さない（本節の「ランタイムは `CompiledStrategy` だけを読む」）。読み手が1つも無ければ `by_output` は空で、段階2 の挙動（最新1件だけ保持）と一致する。
 
 ### 5.4 依存グラフと評価順【提案】
 
-- 節点は使用箇所（`instance_id`）。辺は D04 §12 が確定した3種類（明示入力＋因果辺2本）で、`EdgeKind` で区別して保持する。因果辺も**種類を残したまま**保持するのは、循環が明示接続によるものか帰還路によるものかを `CompileError.message` で示すためである。
+- 節点は使用箇所（`instance_id`）。辺は D04 §12 が確定した4種類（明示入力＋因果辺3本。3本目の市場状態の辺は段階3 で足した `EdgeKind.MARKET_STATE`。v2.3）で、`EdgeKind` で区別して保持する。因果辺も**種類を残したまま**保持するのは、循環が明示接続によるものか帰還路によるものかを `CompileError.message` で示すためである。
 - 循環検出は3種の和の上で行う。閉路があれば `DEPENDENCY_CYCLE`。
 - 評価順は**トポロジカル順、同順位は `instance_id` の Unicode コードポイント順**とする【提案】。**「同順位」とは同じ段のことである**（v1.3、2026-09-21 の人間の決定。PR #18）。段は Kahn 法で作る: 先に評価すべき相手がもう残っていない使用箇所を1つの段としてまとめ、その段を `instance_id` 順に並べてから次の段へ進む。これを繰り返して連結したものが評価順である。「同順位」を定義しないと、トポロジカル順の作り方（深さ優先か幅優先か）だけで並びが変わり、同じ宣言から別の通し番号が出る。同順位の並びを固定しないと、同じ宣言から出力の `sequence`（第6.6節）が変わり、「同一入力の再実行で trace が一致」（全体計画 §8.2）を満たせない。時間足の大小から順序を推測しない【合意済み】全体計画 §5.3.4 の6。
 - 評価順は使用箇所の全件を含む（起動しない使用箇所も並びには含め、実行時に起動判定で落とす）。
@@ -597,7 +600,7 @@ D04 §13.2 が決めた3つの対象を、D02 §9.3 の `canonical.digest` で�
 
 1. `ContractRef.digest`: 契約から `implementation_ref` を除いた値を正規化エンコードして計算する。カタログ登録時に計算し、レジストリの鍵と一緒に保持する。
 2. `StrategyRef.digest`: `StrategyDefinition` 全体。各 `ComponentInstance` が持つ `contract_ref` を通じて 1 を含む。
-3. `CompiledStrategyRef.digest`: 解決済みパラメータ・評価順・各部品の `ImplementationRef` を含む。**`CompiledStrategy` 全体をそのまま対象にしない**のは、`strategy_ref` と `compiled_ref` 自身を含む自己参照になるためで、対象は `(strategy_ref, evaluation_order, 各 CompiledComponent の (instance_id, contract_ref, implementation_ref, parameters, input_plans, triggers))` とする。
+3. `CompiledStrategyRef.digest`: 解決済みパラメータ・評価順・各部品の `ImplementationRef` を含む。**`CompiledStrategy` 全体をそのまま対象にしない**のは、`strategy_ref` と `compiled_ref` 自身を含む自己参照になるためで、対象は `(strategy_ref, evaluation_order, 各 CompiledComponent の (instance_id, contract_ref, implementation_ref, parameters, input_plans, triggers))` とする。**ただし `input_plans` のうち遡りの上限の解決値（`InputPlan.resolved_max_lookback`、v2.3）は対象から外す**。読み方（`read_spec`。遡りの上限のパラメータ参照を含む）とパラメータの解決値から一意に決まり、どちらも対象に入っているので、指紋が区別する構成は変わらない。外すことで、この項目を足す前の指紋（検証戦略 A の `compiled_ref`）を保つ。
 4. 順序に意味を持たせないコレクションは D04 §3 の表に従って構築時に正規化済みであり、ここで並べ替えを重複実装しない【合意済み】D04 §13.2。
 5. `ImplementationRef.digest`: **宣言した実装識別子（`implementation_id`）と改訂番号（`revision`）の2項目だけ**を対象に `canonical.digest` で計算する（v1.3、2026-09-21 の人間の決定。PR #18。規則の正本は D02 §9.2）。カタログ登録時に計算し、登録の一部として保持する。実装のソース内容を読まないのは `catalog` が I/O を持てないためであり（D01 §5）、run 全体のソース内容は `CodeDigest`（D02 §9.4）が別に識別している。したがって **`revision` は実装の計算規則を変えたら必ず上げる**という運用上の約束と対になる。上げ忘れると、計算規則が変わったのに 3 の解決済み設定の指紋が同じままになる。
 
@@ -954,7 +957,7 @@ UsePrevious(
 | 事項 | 規則 |
 |---|---|
 | 呼び出し | `previous_available(series, before_bar_start=欠けた期待足の開始時刻, at=decision_time, max_lookback=解決済みの遡り上限)` |
-| 上限の渡し方 | **解決済みの `max_lookback` をそのまま渡す**。本数の窓（`BarsWindow(n)`）でも経過時間の窓（`DurationWindow(d)`）でも変換しない。受け口は本数か経過時間のどちらかを読み出せる構造だけを要求し（D03 §6.2 v1.6）、**経過時間を本数へ直すのはビューの側**である。ランタイムはカレンダーにも時間足定義にも到達できないため、自分では直せない（第6.3節の履歴窓と同じ手法。v1.4 の決定） |
+| 上限の渡し方 | **解決済みの `max_lookback`（コンパイル結果の `InputPlan.resolved_max_lookback`。第5.3節、v2.3）をそのまま渡す**。本数の窓（`BarsWindow(n)`）でも経過時間の窓（`DurationWindow(d)`）でも変換しない。受け口は本数か経過時間のどちらかを読み出せる構造だけを要求し（D03 §6.2 v1.6）、**経過時間を本数へ直すのはビューの側**である。ランタイムはカレンダーにも時間足定義にも到達できないため、自分では直せない（第6.3節の履歴窓と同じ手法。v1.4 の決定） |
 | 見つからなかった | 上限の範囲に有効な足が無ければ遡らず、元の欠損理由のまま `on_missing` の残りの規則（この場合は遡りが成立しなかったので見送り）に従う |
 | 出力参照の遡り | **遡れるのは市場データ参照だけ**とする。出力参照に `UsePrevious` を書いた宣言は `UNSUPPORTED_CONFIGURATION` で拒否する（第5.6節の検査 c に含める）。段階3 は上流の出力の履歴も持つようになったが（第6.12節。Q18 決定）、**履歴を持つのは履歴窓で読む相手がいる出力参照だけ**である。遡りを許すと、同じ入力の宣言が**別の使用箇所の宣言の有無**で遡れたり遡れなかったりする。遡りは `LatestAvailable` の読み方に対する例外であり（下の「適用範囲」）、その読み方が保持するのは最新1件のままである（第6.5節） |
 
@@ -1524,7 +1527,7 @@ v1.4 の本節が「本書 v0.2」（本改訂 v2.0 の当時の呼び方。第1
 | D07 | 取引機会の終端理由別の集計と、`Skipped` の診断理由別の集計（全体計画 §7.5 の「診断」） |
 | D04（次回改訂） | §12 の「拒否は `ReasonCode` 付きの構造エラー」を、コンパイラ専用の区分 `CompileRejection` を使う形へ言い換える（第5.2節、Q9 決定）。§5 の `position_context@v1` の例示に損切り水準を足す件（第11節の1）は、**第12.1節の依頼9 として 2026-09-22 に反映済み**（D04 v1.9） |
 | `common`（段階2の実装） | `ReasonCode` 列挙への取引機会の終端理由5件と `REQUEST_SUPERSEDED` の追加。設計側は D02 §8.1（v1.3）で確定済み【合意済み】D04 §18 |
-| `strategy`（**段階3 の実装への改訂依頼**） | 段階2 の実装（PR #18）と本改訂の設計が食い違う箇所はないが、段階3 では次を足す必要がある。いずれも本改訂で設計が確定した範囲である。(1) `declarations/missing.py` に「入力を待つ」（`WaitForInput`）と「過去値へ遡る」（`UsePrevious`）の2区分と2つの列挙を足し、`declarations/contract.py` の保存形式の版（`SCHEMA_VERSION`）を 1 から 2 へ上げる（D04 §6.3 v1.9）。(2) `declarations/refs.py` の `RuntimeTarget` に取引機会（`OPPORTUNITY`）を足す（D04 §4.3 v1.9）。(3) `records/payloads.py` に `ConfirmationOutcome` と `UpdateStop` を足す（第4.2節）。(4) `compiler/capability.py` の拒否一覧を D04 §12 の新しい2表に合わせて分ける。(5) `runtime` に `waiting.py` / `supersession.py` / `confirmation.py` / `output_history.py` を足す（第2節）。(6) `catalog` の `ComponentRegistration` に `parameter_constraint` を足し、`compiler` がパラメータ解決の後に呼ぶ（第4.1節・第5.1節 段3・第5.6節の検査 e）。**Q19〜Q22 の決定（2026-09-23）により、実装を保留する部分は残っていない**: 確認期限は確認足の系列で数え（Q19）、保持した出力は観測した足ごとに1件で同じ足の2件目は置き換え（Q20）、待機から再開した窓は固定した対象足に対応する観測まで遡って切り（Q21）、2つのパラメータの関係は部品の登録が持つ検証関数で確かめる（Q22。`ema` / `atr` の登録も行う）。**Q23〜Q29 の決定（2026-09-23、PR #24）で足すものが3件ある**: (7) `records` の `RuntimeStepResult` に確認試行の列（`confirmation_attempts`）を足し、`runtime/confirmation.py` がその `step` の差分だけを載せる（Q26。第3節・第6.2節 手順10）。(8) `runtime` の入力解決に、欠損方針が食い違うときの優先順位（`Error` > `SkipEvaluation` > `WaitForInput` > `UsePrevious`）を1つの純粋関数として置く（Q27。第6.3節）。(9) `runtime/waiting.py` に、出力参照だけが欠けた待機の本数期限を使用箇所の起動系列で数える解決と、期限 → 追い越し → 失効の判定順を置く（Q28・Q29。第6.8節）。**いずれも段階2 の実装（PR #18）には存在しない経路であり、既存の振る舞いを変えない** |
+| `strategy`（**段階3 の実装への改訂依頼**） | 段階2 の実装（PR #18）と本改訂の設計が食い違う箇所はないが、段階3 では次を足す必要がある。いずれも本改訂で設計が確定した範囲である。(1) `declarations/missing.py` に「入力を待つ」（`WaitForInput`）と「過去値へ遡る」（`UsePrevious`）の2区分と2つの列挙を足し、`declarations/contract.py` の保存形式の版（`SCHEMA_VERSION`）を 1 から 2 へ上げる（D04 §6.3 v1.9）。**版の引き上げは 2026-09-24 の人間の決定により行わず、1 のままとした**（D04 v1.12 §3）。(2) `declarations/refs.py` の `RuntimeTarget` に取引機会（`OPPORTUNITY`）を足す（D04 §4.3 v1.9）。(3) `records/payloads.py` に `ConfirmationOutcome` と `UpdateStop` を足す（第4.2節）。(4) `compiler/capability.py` の拒否一覧を D04 §12 の新しい2表に合わせて分ける。(5) `runtime` に `waiting.py` / `supersession.py` / `confirmation.py` / `output_history.py` を足す（第2節）。(6) `catalog` の `ComponentRegistration` に `parameter_constraint` を足し、`compiler` がパラメータ解決の後に呼ぶ（第4.1節・第5.1節 段3・第5.6節の検査 e）。**Q19〜Q22 の決定（2026-09-23）により、実装を保留する部分は残っていない**: 確認期限は確認足の系列で数え（Q19）、保持した出力は観測した足ごとに1件で同じ足の2件目は置き換え（Q20）、待機から再開した窓は固定した対象足に対応する観測まで遡って切り（Q21）、2つのパラメータの関係は部品の登録が持つ検証関数で確かめる（Q22。`ema` / `atr` の登録も行う）。**Q23〜Q29 の決定（2026-09-23、PR #24）で足すものが3件ある**: (7) `records` の `RuntimeStepResult` に確認試行の列（`confirmation_attempts`）を足し、`runtime/confirmation.py` がその `step` の差分だけを載せる（Q26。第3節・第6.2節 手順10）。(8) `runtime` の入力解決に、欠損方針が食い違うときの優先順位（`Error` > `SkipEvaluation` > `WaitForInput` > `UsePrevious`）を1つの純粋関数として置く（Q27。第6.3節）。(9) `runtime/waiting.py` に、出力参照だけが欠けた待機の本数期限を使用箇所の起動系列で数える解決と、期限 → 追い越し → 失効の判定順を置く（Q28・Q29。第6.8節）。**いずれも段階2 の実装（PR #18）には存在しない経路であり、既存の振る舞いを変えない** |
 
 ### 12.1 段階3（v2.0）のための他文書への改訂（**反映済み**。2026-09-22・2026-09-23、PR #22）
 
@@ -1542,7 +1545,7 @@ v1.4 の本節が「本書 v0.2」（本改訂 v2.0 の当時の呼び方。第1
 
 | # | 改訂 | 本書のどこ | 状態 |
 |---|---|---|---|
-| 1 | §6.3 の `MissingInputPolicy` に `WaitForInput` / `UsePrevious` の2区分と、`WaitDeadlineAction` / `OnSuperseded` の2つの列挙を足し、§3.1 の型表にも載せ、**保存形式の版（`schema_version`）を 2 へ上げた** | §6.8・§6.9 | **反映**（Q15・Q16 が選択肢1 で決まり、フィールドが推奨案どおり確定したため） |
+| 1 | §6.3 の `MissingInputPolicy` に `WaitForInput` / `UsePrevious` の2区分と、`WaitDeadlineAction` / `OnSuperseded` の2つの列挙を足し、§3.1 の型表にも載せ、**保存形式の版（`schema_version`）を 2 へ上げた**（2026-09-24 の人間の決定により、版は 1 のままに改めた。D04 v1.12 §3） | §6.8・§6.9 | **反映**（Q15・Q16 が選択肢1 で決まり、フィールドが推奨案どおり確定したため） |
 | 2 | §4.3 の `RuntimeTarget` に `OPPORTUNITY` を足した（対応するデータ型は登録済みの `opportunity@v1`） | §6.11 | **反映**（Q14 が選択肢1） |
 | 3 | §11.2 の `ManagementAction` の要求種別に `UPDATE_STOP`（`UpdateStop(stop_loss: Price)`）を足した | §4.2・§4.10 | **反映**（Q12 が選択肢1 でトレーリングを段階3 で作る） |
 | 4 | §10.1 の `BarsDeadline` の説明を「Trigger の系列の確定足で数える」から「確認足の系列の確定足で数える」へ改めた | §7.7・第11節の6 | **反映**（**D04 v1.10**）。確認期限を数える系列の変更は設計の選択だったため決定を待っていたが、2026-09-23 に Q19 が選択肢1 で決まったので同じ PR で改訂した |
@@ -1622,7 +1625,8 @@ v1.4 の本節が「本書 v0.2」（本改訂 v2.0 の当時の呼び方。第1
 | **v2.0**（本改訂） | 段階3 の範囲（第1.2節の「段階3 で本改訂（v2.0）が決めること」の列）。複数の時間足・市場状態・後続確認・待機・遡り・追い越し・上流の出力の履歴窓・段階3 のカタログ・検証戦略 B | **Q10〜Q18 は 2026-09-22 に、Q19〜Q22 は 2026-09-23 に決定済み**（第15節）。第12.1節の他文書への反映も同じ2日で済ませた（反映17件・見送り1件）。承認待ちである |
 | **v2.1**（2026-09-23） | 紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) が見つけた未記述のうち、**設計の選択を含まないもの**の明記（第6.5節・第6.6節・第6.7節・第6.8節・第6.12節・第7.6節・第7.7節・第8節・第9.4節）。**新しい規則は置かず、既に確定している規則の帰結と適用範囲を書いただけである** | 承認待ち（v2.0 と同じ PR ではなく T02 の PR で提案） |
 | **v2.2**（2026-09-23、PR #24） | 紙上トレース T02 が立てた**要決定 Q23〜Q29 に対する人間の決定**（7件とも選択肢1）の反映（第3節の型表・第6.2節 手順10・第6.3節・第6.8節・第7.7節・第9.3節・第9.4節・第15.3節）。Q25 は本書ではなく D06 v1.6 が受け取り、Q24 の意味論テストは D08 v1.1 が受け取る | 承認待ち（T02 と同じ PR）。**Q30 も同じ日に決定済み**（第15.4節。コンパイル時の検査を1件足す。D04 v1.11）。**本書に未決の項目は残っていない** |
-| v2.3 以降 | 第10.2節が段階4 以降へ送った項目 | 未起草 |
+| **v2.3**（2026-09-24、PR #27） | 段階3 実装 PR 2/5（コンパイラ）が仮置きした点に対する**人間の決定**の反映（第3節の型表・第5.3節・第5.4節・第5.5節・第6.9節・第12.1節）。遡りの上限の解決値を入力の計画に載せること、市場状態の因果辺の種類名 `MARKET_STATE`、保存形式の版を 1 のままとすることの3件 | 承認待ち（PR #27）。**検証戦略 B の評価順（第9.2節末尾）は未反映**で、PR #27 の要決定として残る |
+| v2.4 以降 | 第10.2節が段階4 以降へ送った項目 | 未起草 |
 
 承認の範囲は第1.2節の表の**「段階3 で本改訂（v2.0）が決めること」の列**である。「段階2 で確定」の列は、Q18 の決定に伴う出力の保持の改訂（第11節の差異10）を除いて変えていない。「後続が決めること」の列は担当文書が決める。
 
