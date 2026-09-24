@@ -1085,11 +1085,19 @@ class _StepRun:
 
         足の確定は**対象区間が同じものだけを1件に集約**し（Q6 決定）、イベントは配送1件・
         通知1件につき1要求を作る。
+
+        要求の通し番号（`attempt_index`、D05 §3・§6.11）は、同じ `step` の中でこの使用箇所が
+        作った要求に、作った順（足の確定 → 入力イベント → 実行時イベント。足の確定の中は対象
+        区間の順、同じ区間の中は対象の識別子の昇順）で 0 から振る。要求 ID の採番も同じ順である。
         """
-        requests: list[tuple[EvaluationRequest, dict[str, tuple[OutputRecord[object], ...]]]] = []
-        requests.extend(self._bar_close_requests(component))
-        requests.extend(self._input_event_requests(component))
-        requests.extend(self._runtime_event_requests(component))
+        built: list[tuple[EvaluationRequest, dict[str, tuple[OutputRecord[object], ...]]]] = []
+        built.extend(self._bar_close_requests(component))
+        built.extend(self._input_event_requests(component))
+        built.extend(self._runtime_event_requests(component))
+        requests = [
+            (replace(request, attempt_index=index), delivered)
+            for index, (request, delivered) in enumerate(built)
+        ]
         for request, _ in requests:
             subject = self._subjects.get(request.request_id)
             if subject is None:
