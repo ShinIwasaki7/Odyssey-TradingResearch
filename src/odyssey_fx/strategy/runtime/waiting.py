@@ -249,6 +249,10 @@ class WaitEventKind(Enum):
     SUPERSEDED = "SUPERSEDED"
     #: run 末尾で閉じた（D05 §6.1）。期限には到達していないので `DEADLINE_REACHED` を使わない。
     RUN_END_CLOSED = "RUN_END_CLOSED"
+    #: 受け取った取引機会が待機のあいだに終わったので閉じた（D05 §6.8 の手順2。2026-09-24 の
+    #: 人間の決定）。要求は見送り（`Skipped`）で決着し、`WaitEvent.reason` に機会の終端理由を
+    #: 写す。取引機会の終端理由（上位設計書 §4.5）は語彙を増やさずに使う。
+    OPPORTUNITY_ENDED = "OPPORTUNITY_ENDED"
 
 
 @dataclass(frozen=True, slots=True)

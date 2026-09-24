@@ -52,6 +52,7 @@ from odyssey_fx.strategy.declarations.evaluation import (
     OnInputEvent,
 )
 from odyssey_fx.strategy.declarations.instance import ComponentInstance
+from odyssey_fx.strategy.declarations.missing import Error as MissingPolicyError
 from odyssey_fx.strategy.declarations.missing import SkipEvaluation
 from odyssey_fx.strategy.declarations.opportunity import (
     OnNewTrigger,
@@ -126,8 +127,19 @@ def _on_confirmation() -> EvaluationSchedule:
     return EvaluationSchedule(triggers=(OnInputEvent("conf", "confirmation"),))
 
 
-def strategy_b(*, include_start_bar: bool = True, deadline_bars: int = 4) -> StrategyDefinition:
-    """検証戦略 B の宣言を作る（D05 §9.2）。"""
+def strategy_b(
+    *,
+    include_start_bar: bool = True,
+    deadline_bars: int = 4,
+    binding_on_missing: SkipEvaluation | MissingPolicyError | None = None,
+) -> StrategyDefinition:
+    """検証戦略 B の宣言を作る（D05 §9.2）。
+
+    引数は意味論テストが宣言を少しだけ変えるためのもので、既定値が検証戦略 B そのものである。
+    有効性の再検査の4区分を通す意味論テスト（D08 §13.2 #6）は、確認期限（`deadline_bars`）を
+    長くし、有効性束縛の欠損方針（`binding_on_missing`）を見送りと失敗の2通りにした宣言を使う。
+    """
+    on_missing = SkipEvaluation() if binding_on_missing is None else binding_on_missing
     daily_close = MarketDataRef(DAILY_SERIES, MarketDataField.CLOSE)
     components = (
         ComponentInstance(
@@ -263,7 +275,7 @@ def strategy_b(*, include_start_bar: bool = True, deadline_bars: int = 4) -> Str
                 ValidityBinding(
                     source=OutputRef("daily_above_ema", "condition"),
                     mode=ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST,
-                    on_missing=SkipEvaluation(),
+                    on_missing=on_missing,
                 ),
             )
         ),

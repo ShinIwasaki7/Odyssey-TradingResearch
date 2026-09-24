@@ -36,6 +36,10 @@
 出力記録・評価記録・発注提案・管理要求・取引機会の遷移を返す。**発注提案と管理要求には
 根拠になった出力の識別子を載せる**（D05 §6.2 の手順9、v1.2）。受け取る側がこの識別子を
 持たないと、正常経路でも注文要求を組み立てられない（上位設計書 §4.7.8 の根拠の連鎖）。
+
+段階3 で3つの列を足した（D05 §3）。待機の出来事（表16）、有効性の再検査（表19）、確認試行
+（表18）である。確認試行は**その `step` で作った・書き換えた試行だけ**を返し、エンジンが主キー
+`(opportunity_id, bar_key)` で置き換えとして書く（Q26 決定、D05 §6.2 の手順10）。
 """
 
 from __future__ import annotations
@@ -69,7 +73,8 @@ from odyssey_fx.strategy.declarations.validation import (
 )
 from odyssey_fx.strategy.records.payloads import ManagementAction, OrderIntent, ProtectionLevels
 from odyssey_fx.strategy.records.records import OutputRecord
-from odyssey_fx.strategy.runtime.opportunities import OpportunityTransition
+from odyssey_fx.strategy.runtime.confirmation import ConfirmationAttempt
+from odyssey_fx.strategy.runtime.opportunities import OpportunityTransition, ValidityRecheck
 from odyssey_fx.strategy.runtime.waiting import (
     WaitDeadline,
     WaitEvent,
@@ -219,7 +224,14 @@ class ResolvedInputs:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationRequest:
-    """1回の評価の依頼（D05 §6.2・§6.4）。"""
+    """1回の評価の依頼（D05 §6.2・§6.4）。
+
+    `attempt_index` は段階3 で足した（D05 §6.11）。足の確定で起動しながら取引機会・建玉を
+    1件ずつ対象にする使用箇所は、同じ `step` で同じ使用箇所の要求を複数作る。その並びを
+    判断履歴で読めるようにする、同じ `step` の中での使用箇所ごとの通し番号（0 起点）である。
+    番号の順は対象区間の順、同じ区間の中では対象の識別子の昇順で、要求 ID の採番もその順に
+    行う。
+    """
 
     request_id: RequestId
     instance_id: str
@@ -228,6 +240,7 @@ class EvaluationRequest:
     target_interval: Interval | None = None
     opportunity_id: OpportunityId | None = None
     position_id: PositionId | None = None
+    attempt_index: int = 0
 
     def __post_init__(self) -> None:
         require_instance(self.request_id, RequestId, "EvaluationRequest.request_id")
@@ -242,6 +255,14 @@ class EvaluationRequest:
             require_instance(self.opportunity_id, OpportunityId, "EvaluationRequest.opportunity_id")
         if self.position_id is not None:
             require_instance(self.position_id, PositionId, "EvaluationRequest.position_id")
+        if isinstance(self.attempt_index, bool) or not isinstance(self.attempt_index, int):
+            raise KernelValueError(
+                f"EvaluationRequest.attempt_index must be an int, got {self.attempt_index!r}"
+            )
+        if self.attempt_index < 0:
+            raise KernelValueError(
+                f"EvaluationRequest.attempt_index must be >= 0, got {self.attempt_index}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,9 +479,12 @@ class ManagementRequest:
 class RuntimeStepResult:
     """1回の `step` が返すもの（D05 §6.2 の手順10）。
 
-    段階3 で待機の出来事の列（`wait_events`）を足した（D05 §3・§6.8）。エンジンはこれを
-    判断履歴の表16 へ渡す（D06 §4.2・§9.2）。取引機会の有効性の再検査と確認試行の列は、
-    確認経路と一緒に足す。
+    段階3 で3つの列を足した（D05 §3）。いずれも既定は空で、段階2 の宣言では常に空である。
+
+    - `wait_events`: 待機の出来事（D05 §6.8）→ 判断履歴の表16
+    - `validity_rechecks`: 取引機会の有効性の再検査（D05 §7.3）→ 表19
+    - `confirmation_attempts`: **その `step` で作った・書き換えた**確認試行だけ（D05 §7.7、
+      Q26 決定）→ 表18（主キー `(opportunity_id, bar_key)` で置き換え）
     """
 
     outputs: tuple[OutputRecord[object], ...] = ()
@@ -469,6 +493,8 @@ class RuntimeStepResult:
     management_requests: tuple[ManagementRequest, ...] = ()
     transitions: tuple[OpportunityTransition, ...] = ()
     wait_events: tuple[WaitEvent, ...] = ()
+    validity_rechecks: tuple[ValidityRecheck, ...] = ()
+    confirmation_attempts: tuple[ConfirmationAttempt, ...] = ()
 
     def __post_init__(self) -> None:
         require_tuple_of(self.outputs, OutputRecord, "RuntimeStepResult.outputs")
@@ -479,3 +505,17 @@ class RuntimeStepResult:
         )
         require_tuple_of(self.transitions, OpportunityTransition, "RuntimeStepResult.transitions")
         require_tuple_of(self.wait_events, WaitEvent, "RuntimeStepResult.wait_events")
+        require_tuple_of(
+            self.validity_rechecks, ValidityRecheck, "RuntimeStepResult.validity_rechecks"
+        )
+        require_tuple_of(
+            self.confirmation_attempts,
+            ConfirmationAttempt,
+            "RuntimeStepResult.confirmation_attempts",
+        )
+        keys = [attempt.key for attempt in self.confirmation_attempts]
+        if len(set(keys)) != len(keys):
+            raise KernelValueError(
+                "RuntimeStepResult.confirmation_attempts carries the last outcome of each"
+                " (opportunity, confirmation bar) once (D05 §7.7, D06 §9.2 table 18)"
+            )

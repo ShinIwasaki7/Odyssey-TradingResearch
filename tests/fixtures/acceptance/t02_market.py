@@ -31,6 +31,20 @@ T01 再現生成器（`t01_market`）とは**別の生成器**である（D08 §
   （T02 は直前の行を持たない区間の値を書いていない。検算値の窓はこの区間に届かない）。最後の行
   （`[01-07 13:00, 13:15)`）より後は、その行と同じ値が続く。
 
+**15分足の差し替え**（T02 §4・§5「日足・1時間足を共有し、15分足だけを差し替える」）:
+`bars_for` の `m15_variant` で15分足の表を選ぶ。1時間足と日足はどの版でも同じである。
+
+| 版 | 中身 | 使う経路 |
+|---|---|---|
+| `route1` | T02 §2.3 の表（既定） | 経路1・5〜9 |
+| `route2` | 開始足の終値 149.161、1本目 149.426（T02 §4 の表） | 経路2 |
+| `route3` | 開始足 149.161、1〜3本目 149.153 / 149.145 / 149.137（T02 §5 の表） | 経路3 |
+| `unconfirmed` | 開始足以降の終値をすべて 149.161（EMA を上回らない） | 再検査の意味論テスト |
+
+T02 は差し替えた足の終値だけを書いている。始値・高値・安値は足の不変条件（D03 §3.3）を満たす
+ように本生成器が置いた値であり、検算値（終値と15分足 EMA）には効かない。`route3` の4本目
+（`[09:45, 10:00)`）以降は、確認に使われないので `route1` の表の値に戻す。
+
 日付は 2015年1月である。人工データはアクセス分類の対象外であり、snapshot の partition は
 日付によらず研究履歴として作る（D08 §9.5 の規則1）。
 """
@@ -115,6 +129,41 @@ _TABLE_15M: tuple[tuple[UtcTime, _Ohlc], ...] = (
 )
 
 
+#: 経路2 の15分足（T02 §4）。開始足と1本目だけを差し替える。
+_TABLE_15M_ROUTE_2: tuple[tuple[UtcTime, _Ohlc], ...] = (
+    _TABLE_15M[0],
+    (_t("2015-01-07T08:45:00Z"), ("149.245", "149.280", "149.150", "149.161")),
+    (_t("2015-01-07T09:00:00Z"), ("149.161", "149.430", "149.150", "149.426")),
+    *_TABLE_15M[3:],
+)
+
+#: 経路3 の15分足（T02 §5）。開始足と1〜3本目を差し替え、4本目以降は `route1` に戻す。
+_TABLE_15M_ROUTE_3: tuple[tuple[UtcTime, _Ohlc], ...] = (
+    _TABLE_15M[0],
+    (_t("2015-01-07T08:45:00Z"), ("149.245", "149.280", "149.150", "149.161")),
+    (_t("2015-01-07T09:00:00Z"), ("149.161", "149.200", "149.140", "149.153")),
+    (_t("2015-01-07T09:15:00Z"), ("149.153", "149.200", "149.140", "149.145")),
+    (_t("2015-01-07T09:30:00Z"), ("149.145", "149.200", "149.130", "149.137")),
+    (_t("2015-01-07T09:45:00Z"), _TABLE_15M[3][1]),
+    *_TABLE_15M[4:],
+)
+
+#: 確認が1度も成立しない15分足（有効性の再検査の意味論テスト用。D08 §13.2 #6）。
+_TABLE_15M_UNCONFIRMED: tuple[tuple[UtcTime, _Ohlc], ...] = (
+    _TABLE_15M[0],
+    (_t("2015-01-07T08:45:00Z"), ("149.245", "149.280", "149.150", "149.161")),
+    (_t("2015-01-07T09:00:00Z"), ("149.161", "149.200", "149.150", "149.161")),
+)
+
+#: 15分足の版（モジュールの説明の表）。
+_M15_TABLES: Mapping[str, tuple[tuple[UtcTime, _Ohlc], ...]] = {
+    "route1": _TABLE_15M,
+    "route2": _TABLE_15M_ROUTE_2,
+    "route3": _TABLE_15M_ROUTE_3,
+    "unconfirmed": _TABLE_15M_UNCONFIRMED,
+}
+
+
 def _chooser(table: tuple[tuple[UtcTime, _Ohlc], ...]) -> Callable[[UtcTime], _Ohlc]:
     def choose(bar_start: UtcTime) -> _Ohlc:
         chosen = table[0][1]
@@ -173,6 +222,8 @@ def bars_for(
     definition: TimeframeDefinition,
     calendar: TradingCalendar,
     window: Interval = GENERATION_INTERVAL,
+    *,
+    m15_variant: str = "route1",
 ) -> tuple[Bar, ...]:
     """素の系列（1時間足・15分足）の足を、カレンダー上存在すべき分だけすべて作る。
 
@@ -180,8 +231,15 @@ def bars_for(
     **日足はここでは作らない**。日足は `aggregate` で1時間足から集約する（T02 §16 の
     不変条件1）。テーブルで与える経路を用意すると、日足高値が1時間足の高値を含むこと
     （T02 §3.1）が規則の帰結ではなく人工データの設定になってしまう。
+
+    `m15_variant` は15分足の表の版（モジュールの説明の表）で、15分足にだけ効く。
     """
-    chooser = _RULES.get(timeframe_id)
+    if m15_variant not in _M15_TABLES:
+        raise AssertionError(f"unknown 15m variant {m15_variant!r}; use one of {list(_M15_TABLES)}")
+    if timeframe_id == "15m":
+        chooser: Callable[[UtcTime], _Ohlc] | None = _chooser(_M15_TABLES[m15_variant])
+    else:
+        chooser = _RULES.get(timeframe_id)
     if chooser is None:
         raise AssertionError(
             f"no raw synthetic rule for the timeframe {timeframe_id!r};"
