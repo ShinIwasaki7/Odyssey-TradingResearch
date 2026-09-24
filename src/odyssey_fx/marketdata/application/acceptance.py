@@ -483,6 +483,21 @@ def _require_calendar_revision(
         {outcome.value for outcome in outcomes if outcome in CALENDAR_CHANGING_OUTCOMES}
     )
     if not changing:
+        # カレンダーを変える分類が1件も無いのに、再実行のカレンダーが暫定 snapshot と違えば
+        # 拒否する。どの分類にも裏付けられないカレンダー変更が、セッション判定・上位足・
+        # partition・識別子を黙って変えてしまうためである（再実行はセッション外データ異常
+        # だけでも起きる）。
+        if (original_conversion.calendar_id, original_conversion.calendar_version) != (
+            conversion.calendar_id,
+            conversion.calendar_version,
+        ):
+            raise MarketDataValueError(
+                f"the calendar changed from {original_conversion.calendar_id} version"
+                f" {original_conversion.calendar_version} to {conversion.calendar_id} version"
+                f" {conversion.calendar_version}, but no classification is a closure or a"
+                " calendar exception; only those outcomes authorize a calendar change"
+                " (D03 §3.4, §3.9)"
+            )
         return
     if original_conversion.calendar_id != conversion.calendar_id:
         raise MarketDataValueError(

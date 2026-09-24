@@ -459,16 +459,61 @@ def test_a_rerun_only_out_of_session_bar_is_not_excluded() -> None:
     D03 は確定の根拠を暫定報告と最終報告の2つで閉じるので、除外して最終報告から消えた警告の
     分類は2つの報告から検証できない。除外せずに、確定の検査で止める。
     """
-    pending = _pending(usd_early=False, usd_missing=False)
+    # USDJPY だけ月曜 10:00Z の足が欠ける。これを休場と分類してカレンダーへ宣言すると、
+    # 同じ時間の EURUSD の足が再実行で初めて「休場帯の足」になる。
+    usd, eur = _raw_file(HOURLY), _raw_file(EUR_HOURLY)
+    pending = build_pending_snapshot(
+        created_at=CREATED_AT,
+        raw_files=(usd, eur),
+        bars_by_file={
+            usd.path: market.make_bars(
+                HOURLY, market.TF_1H, CALENDAR, WINDOW, skip_starts=(MONDAY_10Z.start,)
+            ),
+            eur.path: _bars(EUR_HOURLY, early=False, missing=False),
+        },
+        timeframe_defs=market.TIMEFRAME_DEFS,
+        calendar=CALENDAR,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        basis_declaration=snapshots.BASIS,
+        conversion=snapshots.CONVERSION,
+    )
     decisions = (
+        _decision(CheckKind.MISSING_EXPECTED_BAR, MONDAY_10Z, ClassificationOutcome.CLOSURE),
         _decision(
             CheckKind.UNEXPECTED_BAR,
             MONDAY_10Z,
             ClassificationOutcome.OUT_OF_SESSION_DATA,
-            (EUR_HOURLY, HOURLY),
+            (EUR_HOURLY,),
         ),
     )
     assert out_of_session_exclusions(pending, decisions) == frozenset()
     final = _rerun(pending, decisions, _closure_on_monday())
     with pytest.raises(MarketDataValueError, match="were not excluded"):
+        finalize(final, decisions, provisional=pending)
+
+
+# --- 分類に裏付けられないカレンダー変更（D03 §3.4・§3.9）-------------------
+
+
+def test_a_calendar_change_without_a_calendar_changing_outcome_is_rejected() -> None:
+    """セッション外データ異常・データ欠損だけの分類で、カレンダーを変えた再実行は拒否する。"""
+    pending = _pending()
+    decisions = (_gap(), _out_of_session())
+    final = _rerun(pending, decisions, market.calendar(version=2))
+    with pytest.raises(MarketDataValueError, match="authorize a calendar change"):
+        finalize(final, decisions, provisional=pending)
+
+
+def test_a_different_calendar_identity_without_a_calendar_changing_outcome_is_rejected() -> None:
+    pending = _pending()
+    decisions = (_gap(), _out_of_session())
+    other = TradingCalendar(
+        id="other",
+        version=1,
+        tz=CALENDAR.tz,
+        weekly_open=CALENDAR.weekly_open,
+        weekly_close=CALENDAR.weekly_close,
+    )
+    final = _rerun(pending, decisions, other)
+    with pytest.raises(MarketDataValueError, match="authorize a calendar change"):
         finalize(final, decisions, provisional=pending)

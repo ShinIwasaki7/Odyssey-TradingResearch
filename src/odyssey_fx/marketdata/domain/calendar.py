@@ -225,6 +225,17 @@ class OpeningRule:
         return (self.local_date.isoformat(), self.start.isoformat(), self.end.isoformat())
 
 
+@lru_cache(maxsize=_SESSION_CACHE_SIZE)
+def _opening_interval(tz_key: str, rule: OpeningRule) -> Interval:
+    """営業例外の UTC 区間（純粋関数なので覚えておける）。
+
+    `sessions()` は受入れで足1本ごとに呼ばれ、そのたびに全営業例外を UTC へ変換すると
+    重い。`_weekly_session` と同じく、覚え書きはカレンダーの外に置く（不変の値型の正規形を
+    問い合わせの有無で変えないため）。
+    """
+    return rule.utc_interval(ZoneInfo(tz_key))
+
+
 def _touches(first: Interval, second: Interval) -> bool:
     """2つの半開区間が重なるか、端で接するか（あいだに隙間が無いか）。"""
     return first.start <= second.end and second.start <= first.end
@@ -386,7 +397,7 @@ class TradingCalendar:
         """`window` と重なるか端で接する宣言済み営業例外を返す。"""
         intervals: list[Interval] = []
         for opening in self.openings:
-            interval = opening.utc_interval(self.tz)
+            interval = _opening_interval(self.tz.key, opening)
             if _touches(interval, window):
                 intervals.append(interval)
         return sorted(intervals, key=lambda interval: interval.start.value)
