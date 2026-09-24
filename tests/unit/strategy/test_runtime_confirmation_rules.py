@@ -236,6 +236,7 @@ def test_the_four_recheck_outcomes_have_their_own_evidence() -> None:
     [
         (ValidityRecheckOutcome.SATISFIED, None, None),
         (ValidityRecheckOutcome.MISSING_SKIPPED, OutputId(1), None),
+        (ValidityRecheckOutcome.MISSING_SKIPPED, None, Reason(code=ReasonCode.DATA_ERROR)),
         (ValidityRecheckOutcome.MISSING_FAILED, None, None),
         (ValidityRecheckOutcome.MISSING_FAILED, None, Reason(code=ReasonCode.EXPIRED)),
         (

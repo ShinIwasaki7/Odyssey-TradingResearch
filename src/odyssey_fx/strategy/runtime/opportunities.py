@@ -176,8 +176,11 @@ class ValidityRecheck:
                 "ValidityRecheck.output_id names the output that was read, so it is set exactly"
                 " when the binding could be read (D05 §7.3)"
             )
-        if read and self.reason is not None:
-            raise KernelValueError("a recheck that could read its binding carries no reason")
+        if self.outcome is not ValidityRecheckOutcome.MISSING_FAILED and self.reason is not None:
+            raise KernelValueError(
+                "only a recheck that fails the run carries a reason (D05 §7.3);"
+                f" {self.outcome.value} must not"
+            )
         if self.outcome is ValidityRecheckOutcome.MISSING_FAILED and (
             self.reason is None or self.reason.code is not ReasonCode.DATA_ERROR
         ):
