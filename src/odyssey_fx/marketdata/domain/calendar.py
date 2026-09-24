@@ -1,11 +1,18 @@
 """取引カレンダー（D03 §3.4）。
 
 週の開閉（ニューヨーク現地の日曜 17:00 開始・金曜 17:00 終了）と、明示的に宣言した休場・
-短縮を持ち、「いつ市場が開いているか」「ある時間足でどの足が存在すべきか」を答える。
+短縮、および営業例外（v1.7）を持ち、「いつ市場が開いているか」「ある時間足でどの足が存在
+すべきか」を答える。
 
 **休場は宣言制**（D03 §3.4）。土日を UTC で一律に除外しない。受入れの検査で見つかった
 「足が存在すべきなのに無い区間」は、人間が「休場（カレンダーへ追加して版を上げる）」か
 「データ欠損（そのまま欠損として扱う）」に分類し、結果を manifest に残す。
+
+**営業例外も宣言制**（D03 §3.4 v1.7）。週の休場時間帯（例: 日曜 17:00 前）に足がある区間は
+「休場帯の足」として報告され、人間が「カレンダー側の営業例外（`openings` へ追加して版を
+上げる）」か「セッション外データ異常（足を除外する）」に分類する。営業例外は通常の週の
+開場区間に**接するか重なる**ものだけを許し、離れたものと休場に重なるものは構築時に拒否する
+（2026-09-24 の人間の決定）。
 
 `Calendar` ポート（`backtest.application.ports`、D01 §4）はこの domain 型そのものが
 満たす。ポート定義は import せず、構造的に満たす（D01 §2.2 規則7）。
@@ -26,7 +33,7 @@ from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 if TYPE_CHECKING:
     from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
-__all__ = ["ClosureRule", "TradingCalendar", "WeeklyMoment"]
+__all__ = ["ClosureRule", "OpeningRule", "TradingCalendar", "WeeklyMoment"]
 
 #: 週境界の探索で前後に見る日数。週の開閉の両端を必ず含むよう8日ぶん見る。
 _WEEK_SEARCH_DAYS = 8
@@ -175,12 +182,81 @@ class ClosureRule:
 
 
 @dataclass(frozen=True, slots=True)
+class OpeningRule:
+    """宣言した営業例外（D03 §3.4 v1.7）。
+
+    週の休場時間帯のうち、市場が開いていた現地日付と区間（`[start, end)`）。人間が受入れの
+    「休場帯の足」（`UNEXPECTED_BAR`）を「カレンダー側の営業例外」（`CALENDAR_EXCEPTION`）と
+    分類したときにカレンダーへ追加し、版を上げる。
+
+    D03 §3.4 は営業例外を「現地日付と区間」と定めるので、休場（`ClosureRule`）の短縮の形と
+    同じく `start < end` の現地時刻で書く。終日の形は持たない。通常の週の開場区間に接する
+    ことが条件（`TradingCalendar` の構築時検証）なので、日付をまたがない1日内の区間で足りる。
+    """
+
+    local_date: date
+    start: time
+    end: time
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.local_date, date) or isinstance(self.local_date, datetime):
+            raise MarketDataValueError("OpeningRule.local_date must be a date")
+        if not isinstance(self.start, time) or not isinstance(self.end, time):
+            raise MarketDataValueError("OpeningRule requires naive local start and end times")
+        if self.start.tzinfo is not None or self.end.tzinfo is not None:
+            raise MarketDataValueError("OpeningRule.start / end must be naive local times")
+        if not self.start < self.end:
+            raise MarketDataValueError(
+                f"OpeningRule requires start < end, got {self.start} .. {self.end}"
+            )
+        if not isinstance(self.note, str):
+            raise MarketDataValueError("OpeningRule.note must be a str")
+
+    def utc_interval(self, tz: ZoneInfo) -> Interval:
+        """営業例外の区間を UTC の半開区間として返す。"""
+        return Interval(
+            start=_resolve_local(self.local_date, self.start, tz),
+            end=_resolve_local(self.local_date, self.end, tz),
+        )
+
+    def sort_key(self) -> tuple[str, str, str]:
+        """整列鍵（現地日付、開始、終了）。宣言順に依存しない記録のため。"""
+        return (self.local_date.isoformat(), self.start.isoformat(), self.end.isoformat())
+
+
+@lru_cache(maxsize=_SESSION_CACHE_SIZE)
+def _opening_interval(tz_key: str, rule: OpeningRule) -> Interval:
+    """営業例外の UTC 区間（純粋関数なので覚えておける）。
+
+    `sessions()` は受入れで足1本ごとに呼ばれ、そのたびに全営業例外を UTC へ変換すると
+    重い。`_weekly_session` と同じく、覚え書きはカレンダーの外に置く（不変の値型の正規形を
+    問い合わせの有無で変えないため）。
+    """
+    return rule.utc_interval(ZoneInfo(tz_key))
+
+
+def _touches(first: Interval, second: Interval) -> bool:
+    """2つの半開区間が重なるか、端で接するか（あいだに隙間が無いか）。"""
+    return first.start <= second.end and second.start <= first.end
+
+
+@dataclass(frozen=True, slots=True)
 class TradingCalendar:
     """取引カレンダー（D03 §3.4）。
 
-    `weekly_open` から `weekly_close` までを開場とし、`closures` で宣言した区間をそこから
-    取り除く。土日の扱いも `weekly_open` / `weekly_close` から導かれるのであり、UTC の
-    曜日判定では決めない（D03 §3.4、上位設計書 §4.3.10）。
+    `weekly_open` から `weekly_close` までを開場とし、`openings` で宣言した営業例外を
+    加え、`closures` で宣言した区間を取り除く。土日の扱いも `weekly_open` /
+    `weekly_close` から導かれるのであり、UTC の曜日判定では決めない（D03 §3.4、上位設計書
+    §4.3.10）。
+
+    営業例外は構築時に2点を検証する（D03 §3.4 v1.7、`MarketDataValueError`）。
+
+    1. 休場（`closures`）と重ならない。同じ時刻を「開いている」と「閉じている」の両方で
+       宣言すると、どちらを採るかが宣言から決まらない。
+    2. 通常の週の開場区間（`weekly_open`〜`weekly_close`）に接するか重なる。離れた営業例外を
+       許すと、`weekly_session_at` の戻り値が単一の区間に定まらない（2026-09-24 の人間の
+       決定。必要になれば D03 の改訂で緩める）。
     """
 
     id: str
@@ -189,6 +265,7 @@ class TradingCalendar:
     weekly_open: WeeklyMoment
     weekly_close: WeeklyMoment
     closures: tuple[ClosureRule, ...] = ()
+    openings: tuple[OpeningRule, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id:
@@ -218,6 +295,40 @@ class TradingCalendar:
         normalized = tuple(sorted(self.closures, key=lambda rule: rule.sort_key()))
         if normalized != self.closures:
             object.__setattr__(self, "closures", normalized)
+
+        if not isinstance(self.openings, tuple):
+            raise MarketDataValueError("TradingCalendar.openings must be a tuple")
+        for opening in self.openings:
+            if not isinstance(opening, OpeningRule):
+                raise MarketDataValueError("TradingCalendar.openings must contain OpeningRule")
+        normalized_openings = tuple(sorted(self.openings, key=lambda rule: rule.sort_key()))
+        if normalized_openings != self.openings:
+            object.__setattr__(self, "openings", normalized_openings)
+        self._validate_openings()
+
+    def _validate_openings(self) -> None:
+        """営業例外の宣言を検証する（D03 §3.4 v1.7）。
+
+        休場と重なる宣言と、通常の週の開場区間に接しも重なりもしない（離れた）宣言を
+        拒否する。どちらも `closures` の不正な宣言と同じ `MarketDataValueError` である。
+        """
+        closure_intervals = [closure.utc_interval(self.tz) for closure in self.closures]
+        for opening in self.openings:
+            interval = opening.utc_interval(self.tz)
+            for closure, closure_interval in zip(self.closures, closure_intervals, strict=True):
+                if interval.overlaps(closure_interval):
+                    raise MarketDataValueError(
+                        f"the opening on {opening.local_date} {opening.start}..{opening.end}"
+                        f" overlaps the closure on {closure.local_date}; a moment cannot be"
+                        " declared both open and closed (D03 §3.4)"
+                    )
+            if not self._regular_near(interval):
+                raise MarketDataValueError(
+                    f"the opening on {opening.local_date} {opening.start}..{opening.end}"
+                    " neither touches nor overlaps the regular weekly session; a detached"
+                    " opening is rejected so that weekly_session_at stays a single interval"
+                    " (D03 §3.4)"
+                )
 
     # --- 週の開閉 -----------------------------------------------------------
 
@@ -270,6 +381,39 @@ class TradingCalendar:
             day += timedelta(days=7)
         return sorted(sessions, key=lambda interval: interval.start.value)
 
+    def _regular_near(self, interval: Interval) -> list[Interval]:
+        """`interval` と重なるか端で接する通常の週の開場区間（休場・営業例外は未適用）。
+
+        `_weekly_sessions` は重なる区間だけを返すので、探索窓を前後に 1 マイクロ秒ずつ
+        広げて端で接する区間も拾い、そのうえで接するか重なるものに絞る。
+        """
+        probe = Interval(
+            start=interval.start - timedelta(microseconds=1),
+            end=interval.end + timedelta(microseconds=1),
+        )
+        return [session for session in self._weekly_sessions(probe) if _touches(session, interval)]
+
+    def _opening_intervals(self, window: Interval) -> list[Interval]:
+        """`window` と重なるか端で接する宣言済み営業例外を返す。"""
+        intervals: list[Interval] = []
+        for opening in self.openings:
+            interval = _opening_interval(self.tz.key, opening)
+            if _touches(interval, window):
+                intervals.append(interval)
+        return sorted(intervals, key=lambda interval: interval.start.value)
+
+    def _open_hull(self, anchor: Interval) -> Interval:
+        """`anchor`（通常の週の開場区間）に、接するか重なる営業例外を連結した区間。
+
+        営業例外は通常の週の開場区間に接するか重なることを構築時に検証してあるので、連結の
+        結果は常に1つの区間になる（D03 §3.4 v1.7）。
+        """
+        start, end = anchor.start, anchor.end
+        for opening in self._opening_intervals(anchor):
+            start = min(start, opening.start, key=lambda value: value.value)
+            end = max(end, opening.end, key=lambda value: value.value)
+        return Interval(start=start, end=end)
+
     def _closure_intervals(self, window: Interval) -> list[Interval]:
         """`window` と重なる宣言済み休場を返す。"""
         intervals: list[Interval] = []
@@ -279,6 +423,23 @@ class TradingCalendar:
                 intervals.append(interval)
         return sorted(intervals, key=lambda interval: interval.start.value)
 
+    def _sessions_with_openings(self, window: Interval) -> list[Interval]:
+        """`window` と重なる「営業例外で広げた週の開場区間」を昇順で返す（休場は未適用）。
+
+        営業例外は週の開場区間の外側へ広がるので、窓の外にある週の開場区間に接する営業例外
+        が窓に掛かる場合がある。そのため週の開場区間は、窓と重なる営業例外が接するものも
+        拾う。
+        """
+        anchors = {session.start.value: session for session in self._weekly_sessions(window)}
+        for opening in self._opening_intervals(window):
+            for session in self._regular_near(opening):
+                anchors.setdefault(session.start.value, session)
+        hulls = [self._open_hull(session) for session in anchors.values()]
+        return sorted(
+            (hull for hull in hulls if hull.overlaps(window)),
+            key=lambda interval: interval.start.value,
+        )
+
     # --- 問い合わせ ---------------------------------------------------------
 
     def is_open(self, moment: UtcTime) -> bool:
@@ -286,21 +447,20 @@ class TradingCalendar:
         if not isinstance(moment, UtcTime):
             raise MarketDataValueError("TradingCalendar.is_open requires a UtcTime")
         probe = Interval(start=moment, end=moment + timedelta(microseconds=1))
-        for session in self._weekly_sessions(probe):
-            if not session.contains(moment):
-                continue
-            for closure in self._closure_intervals(probe):
-                if closure.contains(moment):
-                    return False
-            return True
-        return False
+        in_session = any(session.contains(moment) for session in self._weekly_sessions(probe))
+        in_opening = any(opening.contains(moment) for opening in self._opening_intervals(probe))
+        if not (in_session or in_opening):
+            return False
+        return not any(closure.contains(moment) for closure in self._closure_intervals(probe))
 
     def weekly_session_at(self, moment: UtcTime) -> Interval | None:
         """`moment` を含む**休場を適用する前の**週の開場区間を返す（D03 §3.4）。
 
-        週の開閉（日曜 17:00 開始・金曜 17:00 終了）だけで決まる区間であり、宣言した休場や
-        短縮は取り除かない。`moment` がどの週の開場区間にも入らない（週と週のあいだにある）
-        なら `None`。
+        週の開閉（日曜 17:00 開始・金曜 17:00 終了）で決まる区間であり、宣言した休場や
+        短縮は取り除かない。**営業例外（`openings`）は含める**（D03 §3.4 v1.7、2026-09-24
+        の人間の決定）。営業例外が週の開場区間に接するか重なるなら両者を連結した区間を返し、
+        `moment` が営業例外の区間に入るときもその連結した区間を返す。`moment` がどの週の
+        開場区間（営業例外で広げたものを含む）にも入らないなら `None`。
 
         `sessions()` との違いが本操作の存在理由である。`sessions()` は休場を取り除くので、
         祝日を1日宣言すると週が2つに割れて見える。**週末をまたぐかどうかだけ**を知りたい
@@ -312,17 +472,29 @@ class TradingCalendar:
         if not isinstance(moment, UtcTime):
             raise MarketDataValueError("TradingCalendar.weekly_session_at requires a UtcTime")
         probe = Interval(start=moment, end=moment + timedelta(microseconds=1))
-        for session in self._weekly_sessions(probe):
-            if session.contains(moment):
-                return session
+        anchors = [session for session in self._weekly_sessions(probe) if session.contains(moment)]
+        for opening in self._opening_intervals(probe):
+            if opening.contains(moment):
+                # 営業例外の区間に入る時刻は、その営業例外が接する週の開場区間へ連結して
+                # 答える（接することは構築時に検証済み）。
+                anchors.extend(self._regular_near(opening))
+        for anchor in sorted(anchors, key=lambda interval: interval.start.value):
+            hull = self._open_hull(anchor)
+            if hull.contains(moment):
+                return hull
         return None
 
     def sessions(self, window: Interval) -> tuple[Interval, ...]:
-        """`window` 内の取引セッション（休場を取り除いた開場区間）を昇順で返す。"""
+        """`window` 内の取引セッションを昇順で返す（D03 §3.4）。
+
+        `weekly_open`〜`weekly_close` に営業例外（`openings`）を加え、休場（`closures`）を
+        取り除いた区間である。営業例外は接するか重なる週の開場区間へ連結する。週の開場区間
+        どうしは（営業例外を介して接しない限り）連結しない。
+        """
         if not isinstance(window, Interval):
             raise MarketDataValueError("TradingCalendar.sessions requires an Interval")
         open_parts: list[Interval] = []
-        for session in self._weekly_sessions(window):
+        for session in self._sessions_with_openings(window):
             start = max(session.start, window.start, key=lambda value: value.value)
             end = min(session.end, window.end, key=lambda value: value.value)
             if start < end:

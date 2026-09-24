@@ -37,9 +37,10 @@ from typing import TextIO
 from odyssey_fx.app import composition
 from odyssey_fx.app.cli import summary
 from odyssey_fx.app.config import (
+    ClassificationDecisionFile,
     ConfigError,
     load_calendar,
-    load_closure_decisions,
+    load_classification_decisions,
     load_datasource,
     load_symbol_specs,
     load_timeframes,
@@ -57,22 +58,25 @@ from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
     approve,
     finalize,
+    out_of_session_exclusions,
     reaccept_with_calendar,
+    requires_rerun,
 )
+from odyssey_fx.marketdata.application.classification import require_recorded_classification
 from odyssey_fx.marketdata.application.ports import SnapshotStore
-from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import (
     PENDING_DIRECTORY,
-    classification_mismatch,
-    require_matching_partition_content,
+    require_recorded_content,
 )
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
+from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
     DeclarationRecord,
+    PartitionId,
     SnapshotManifest,
 )
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
@@ -118,21 +122,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     classify = data.add_parser(
         "classify",
-        help="欠落区間の分類を記入して snapshot を確定する（D03 §4 の 9）",
+        help="分類対象の警告の分類を記入して snapshot を確定する（D03 §4 の 9）",
     )
     classify.add_argument("--pending", required=True, help="暫定の識別子（provisional_id）")
-    classify.add_argument("--decisions", type=Path, required=True, help="欠落区間の分類（YAML）")
+    classify.add_argument(
+        "--decisions", type=Path, required=True, help="分類ファイル（YAML、形式版 2）"
+    )
+    # 再実行（カレンダーの新版・セッション外データ異常の除外）では、上位足の生成と
+    # カレンダー照合に時間足定義が要る（D03 §10 v1.7 は必須の引数として定める）。原データは
+    # 読み直さない（暫定 snapshot の partition を再利用する）ので、列対応の宣言・銘柄仕様・
+    # リポジトリの位置は要らない（D03 §4 の 9）。
+    classify.add_argument("--timeframes", type=Path, required=True, help="時間足定義（YAML）")
     classify.add_argument(
         "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
-    )
-    # カレンダーを変える分類では、上位足の生成とカレンダー照合に時間足定義が要る。
-    # 原データは読み直さない（暫定 snapshot の partition を再利用する）ので、列対応の
-    # 宣言・銘柄仕様・リポジトリの位置は要らない（D03 §4 の 9）。
-    classify.add_argument(
-        "--timeframes",
-        type=Path,
-        default=None,
-        help="時間足定義（カレンダーを変える分類で 5〜7 を再実行する場合に必要）",
     )
 
     approve_command = data.add_parser(
@@ -207,14 +209,24 @@ def _write_snapshot(
     directory: str,
     pending: PendingSnapshot,
     manifest: SnapshotManifest,
+    *,
+    provisional_report: IntegrityReport | None = None,
 ) -> None:
     """検査報告・partition の実体・manifest をこの順で書く（D03 §4 の 7〜8）。
 
     manifest を最後に書くのは、manifest があるのに実体や報告が無い状態を残さないため
     である。読み取りの関門は manifest と報告の両方を照合するので、manifest が先にできて
     いると「開けない snapshot」が残る。
+
+    `provisional_report` は確定段階で 5〜7 を再実行した場合の暫定報告（人間が分類の根拠に
+    した報告）。最終報告と異なるときだけ `integrity_report_provisional.json` として残す
+    （D03 §3.7 v1.7。同じなら manifest の2つのダイジェストが一致し、ファイルは要らない）。
     """
     store.write_integrity_report(directory, pending.report)
+    if provisional_report is not None and manifest.provisional_report_ref != (
+        manifest.integrity_report_ref
+    ):
+        store.write_provisional_report(directory, provisional_report)
     for partition_id, bars in sorted(pending.partition_bars.items(), key=lambda pair: str(pair[0])):
         store.write_partition(directory, partition_id, bars)
     store.write_manifest(directory, manifest)
@@ -266,14 +278,14 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
     warning_lines = summary.warning_summary_lines(pending.report)
     if warning_lines:
         out.line("")
-        out.line("人間の分類が要る警告の件数規模:")
+        out.line("人間の分類が要る警告（分類対象の2種別）の件数規模:")
         out.lines(warning_lines)
 
     out.line("")
     out.line(
         "暫定 snapshot は as-of ビュー・公開フィードから読めない。"
-        " 警告を休場 / 欠損に分類して `odyssey-fx data classify` を実行すること"
-        "（D03 §3.7.1 の 1・2）"
+        " 分類対象の警告（存在すべき足の欠落・休場帯の足）を分類して"
+        " `odyssey-fx data classify` を実行すること（D03 §3.7.1 の 1・2、§3.9）"
     )
     return _EXIT_OK
 
@@ -281,73 +293,37 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
 # --- classify ---------------------------------------------------------------
 
 
-def _require_recorded_content(
-    store: SnapshotStore,
-    snapshot_dir: str,
-    manifest: SnapshotManifest,
-    report: IntegrityReport,
-) -> None:
-    """実体と検査報告が manifest の記録どおりであることを確かめる（D03 §3.7.1）。
+def _read_partitions(
+    store: SnapshotStore, snapshot_dir: str, manifest: SnapshotManifest
+) -> dict[PartitionId, tuple[Bar, ...]]:
+    """manifest に記録された partition の足をすべて読む。"""
+    return {
+        record.partition_id: tuple(store.read_partition(snapshot_dir, record.partition_id))
+        for record in manifest.partitions
+    }
 
-    **分類の前と承認の前**に行う。保存されている内容が manifest の記録と食い違ったまま
-    先へ進めると、次の2つが起こる。
 
-    - 分類（`classify`）: 暫定 partition を読み戻して最終 snapshot を組み立てるので、
-      書き換えられた内容がそのまま正当な partition として記録される。しかも `sources` は
-      元の原ファイルの sha256 を保持したままなので、**出所の記録と実データが一致しない
-      snapshot** ができ、それを承認できてしまう。
-    - 承認（`approve`）: 承認は「この内容でよい」という人間の確認である。食い違ったまま
-      承認を記入すると、**承認済みなのに読み取りの関門で拒否される snapshot** になる。
+def _rerun_calendar(
+    decisions_file: ClassificationDecisionFile, manifest: SnapshotManifest
+) -> TradingCalendar:
+    """確定段階の再実行に使うカレンダーを決める（D03 §4 の 9・除外規則）。
 
-    確かめるのは2つ。
-
-    1. 検査報告の内容から再計算したダイジェストが、manifest の `integrity_report_ref` と
-       一致する（報告が差し替えられていない）。
-    2. partition ごとの実体が manifest の記録どおりである（系列・足数・区間・内容
-       ダイジェストの4点）。照合の規則は読み取りの関門と同じ関数を使う。
+    分類ファイルがカレンダーを指していればそれを使う。指していないのに再実行が要る
+    （セッション外データ異常の分類がある）場合は失敗させる。カレンダーを変えない再実行でも、
+    暫定 snapshot と同じ版のカレンダーを分類ファイルの `calendar` に書いてもらう
+    （D03 v1.8 §10、2026-09-24 の人間の決定）。
     """
-    recomputed = integrity_report_digest_hex(report)
-    if recomputed != manifest.integrity_report_ref.hex:
+    if decisions_file.calendar is None:
         raise ConfigError(
-            f"{snapshot_dir} の検査報告は {recomputed} になるが、manifest は"
-            f" {manifest.integrity_report_ref.hex} を記録している。報告が manifest と"
-            " 食い違ったまま承認すると、承認済みでも読めない snapshot になる"
-            "（D03 §3.7.1）"
+            "セッション外データ異常（OUT_OF_SESSION_DATA）の分類があるので、受入れの 5〜7 を"
+            " 再実行して足を除外する必要がある（D03 §4 の除外規則）。分類ファイルの"
+            " `calendar` に再実行で使うカレンダーを書くこと。カレンダーを変えない場合は"
+            f" 暫定 snapshot と同じ {manifest.conversion.calendar_id} 版"
+            f" {manifest.conversion.calendar_version} のファイルを指す"
         )
-
-    for record in manifest.partitions:
-        bars = store.read_partition(snapshot_dir, record.partition_id)
-        require_matching_partition_content(manifest, record.partition_id, bars)
-
-
-def _pending_from_store(
-    store: SnapshotStore,
-    snapshot_dir: str,
-    manifest: SnapshotManifest,
-    report: IntegrityReport,
-) -> PendingSnapshot:
-    """保存済みの暫定 snapshot を読み戻す（manifest・報告・partition ごとの足）。"""
-    return PendingSnapshot(
-        manifest=manifest,
-        report=report,
-        partition_bars={
-            record.partition_id: tuple(store.read_partition(snapshot_dir, record.partition_id))
-            for record in manifest.partitions
-        },
-    )
-
-
-def _require_timeframes_argument(args: argparse.Namespace) -> None:
-    """カレンダーを変える分類に必要な引数が揃っているか確かめる（D03 §4 の 9）。
-
-    要るのは時間足定義だけである。上位足の生成とカレンダー照合に使う。原データは
-    読み直さないので、列対応の宣言も銘柄仕様も要らない。
-    """
-    if args.timeframes is None:
-        raise ConfigError(
-            "分類がカレンダーの新版を指しているので、受入れの 5〜7 を再実行する必要がある。"
-            " 時間足定義（--timeframes）を指定すること（D03 §4 の 9）"
-        )
+    # カレンダーの識別と版の検査（休場・営業例外には同じカレンダーの版の引き上げが要る）は
+    # 確定（`acceptance.finalize`）が分類の内容と合わせて行う。
+    return decisions_file.calendar
 
 
 def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
@@ -363,58 +339,49 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             f" 表しており、指定された {args.pending} と一致しない（D03 §3.7.1）"
         )
 
-    # **暫定 snapshot の内容が記録どおりかを、何かを読み直す前に確かめる**（D03 §3.7.1）。
-    # 分類は暫定 partition を読み戻して最終 snapshot を組み立てるので、ここで照合しないと、
-    # 書き換えられた足がそのまま正当な partition として記録される。しかも `sources` は元の
-    # 原ファイルの sha256 を保持したままなので、出所の記録と実データが一致しない snapshot が
-    # できてしまう。カレンダーを変える分類かどうかに関わらず行う。
-    _require_recorded_content(store, pending_directory, manifest, report)
+    # **暫定 snapshot の内容が記録どおりかを、何かを再利用する前に確かめる**（D03 §4
+    # 「再実行の入力」）。分類は暫定 partition を読み戻して最終 snapshot を組み立てるので、
+    # 照合しないと、書き換えられた足がそのまま正当な partition として記録される。
+    provisional = PendingSnapshot(
+        manifest=manifest,
+        report=report,
+        partition_bars=_read_partitions(store, pending_directory, manifest),
+    )
+    require_recorded_content(manifest, report, provisional.partition_bars)
 
-    # 分類の系列は、暫定 snapshot が実際に持つ系列から解決する。分類ファイルの系列表記
-    # （`USDJPY/1h/bid`）には時間足の版が含まれないので、版を決め打つと版 2 以降の定義を
-    # 使った snapshot で記録が食い違う（D03 §3.1）。
-    decisions_file = load_closure_decisions(
+    # 分類の系列（`all` を含む）は、暫定 snapshot が実際に持つ系列から解決する。
+    decisions_file = load_classification_decisions(
         args.decisions, [record.series_id for record in manifest.series]
     )
+    decisions = decisions_file.decisions
 
-    if decisions_file.calendar_path is not None:
-        # カレンダーを変える分類は、受入れの 5〜7（カレンダー照合・上位足の生成・
-        # partition 分け）を新しいカレンダーで再実行する（D03 §4 の 9）。報告も
-        # partition も変わるので、暫定段階からやり直すのと同じ手順になる。
-        _require_timeframes_argument(args)
-        out.line(f"分類がカレンダーの新版を指している: {decisions_file.calendar_path}")
-        out.line("受入れの 5〜7 を新しいカレンダーで再実行する（D03 §4 の 9）")
+    if requires_rerun(decisions, calendar_changed=decisions_file.calendar is not None):
+        # カレンダーの新版を伴う分類、またはセッション外データ異常の分類があれば、受入れの
+        # 5〜7（カレンダー照合・上位足の生成・partition 分け）を再実行する（D03 §4 の 9）。
+        calendar = _rerun_calendar(decisions_file, manifest)
+        excluded = out_of_session_exclusions(provisional, decisions)
+        out.line(
+            f"受入れの 5〜7 を再実行する（カレンダー {calendar.id} 版 {calendar.version}、"
+            f"除外する休場帯の足 {len(excluded)} 本）（D03 §4 の 9）"
+        )
         out.line("原ファイルは読み直さず、暫定 snapshot の足をそのまま使う")
-
         # **原ファイルを読み直さない**。読み直すと、人間が分類の根拠にした報告には無かった
         # 内容（原ファイルの差し替え・価格の書き換え・設定の変更）が最終 snapshot に
-        # 入りうる。価格だけの変更は構造検査もカレンダー照合も素通りするので、警告を1つも
-        # 出さずに別のデータへ置き換わってしまう（D03 §4 の 9 は「5〜7 を再実行」と定める）。
-        pending = reaccept_with_calendar(
-            _pending_from_store(store, pending_directory, manifest, report),
-            calendar=load_calendar(decisions_file.calendar_path),
+        # 入りうる。
+        final = reaccept_with_calendar(
+            provisional,
+            calendar=calendar,
             timeframe_defs=load_timeframes(args.timeframes),
             boundaries=INITIAL_ACCESS_BOUNDARIES,
             aggregation_targets=composition.AGGREGATION_TARGETS,
+            excluded=excluded,
         )
-        # 分類の正当性は**元の報告**（人間が見た報告）に対して判定する。新しいカレンダーが
-        # 休場として説明した欠落は、再受入れ後の報告から正当に消えるためである
-        # （D03 §4 の 9）。突き合わせの2段階は application 側が行う。
-        original_report: IntegrityReport | None = report
-        resolved = len(report.warnings) - len(pending.report.warnings)
-        out.line(f"新しいカレンダーで説明が付いた警告: {resolved} 件")
+        # 突き合わせは暫定報告と再実行後の報告の和集合に対して行う。再実行が新たな警告を
+        # 生んだ場合は、未分類として列挙されて失敗する（D03 §4 の反復的な分類）。
+        finalized = finalize(final, decisions, provisional=provisional)
     else:
-        original_report = None
-        pending = _pending_from_store(store, pending_directory, manifest, report)
-
-    finalized: FinalizedSnapshot = finalize(
-        pending,
-        decisions_file.decisions,
-        original_report=original_report,
-        # 暫定段階のカレンダーの版。休場としての分類には版が上がっていることが要る
-        # （D03 §3.4・§4 の 9）。
-        original_conversion=manifest.conversion,
-    )
+        final = provisional
+        finalized = finalize(final, decisions)
     final_id = str(finalized.snapshot_id)
 
     # 既に確定済みの snapshot は**上書きしない**。同じ原ファイル・設定・分類なら同じ最終
@@ -428,16 +395,24 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             f" 移動または削除すること（暫定 snapshot は {pending_directory} に残している）"
         )
 
-    _write_snapshot(store, final_id, pending, finalized.manifest)
+    _write_snapshot(
+        store,
+        final_id,
+        final,
+        finalized.manifest,
+        provisional_report=None if final is provisional else provisional.report,
+    )
 
     # 実体を最終ディレクトリへ書き終えてから暫定ディレクトリを畳む。先に消すと、
     # 書き出しが途中で失敗したときに暫定も確定も残らない。
     shutil.rmtree(args.out / PENDING_DIRECTORY / args.pending, ignore_errors=True)
 
+    resolved = finalized.manifest.resolved_classifications
     out.line("")
     out.line(f"最終の識別子（snapshot_id）: {final_id}")
     out.line(f"確定先: {args.out / final_id}")
-    out.line(f"記入した分類: {len(decisions_file.decisions)} 件")
+    out.line(f"記入した分類: {len(decisions)} 件（警告ごとに解決すると {len(resolved)} 件）")
+    out.lines(summary.resolved_lines(finalized.manifest))
     out.line("")
     out.line(
         "確定しただけでは読めない。`odyssey-fx data approve` で承認を記入するまで、"
@@ -475,23 +450,26 @@ def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
     # 承認は「この内容でよい」という人間の確認なので、**承認の時点で**内容が manifest の
     # 記録どおりであることを確かめる。読み取りの関門でも同じ検査をするが、そこで初めて
     # 気づく形だと「承認済みなのに読めない snapshot」ができてしまう（D03 §3.7.1）。
-    _require_recorded_content(store, args.snapshot, manifest, report)
+    # 確定段階で再実行した snapshot は暫定報告も照合する（D03 §3.7 v1.7）。
+    provisional_report = store.read_provisional_report_for(args.snapshot, manifest)
+    require_recorded_content(
+        manifest,
+        report,
+        _read_partitions(store, args.snapshot, manifest),
+        provisional_report=provisional_report,
+    )
+
+    # 確定段階を経た snapshot だけが承認できる形にする。分類を飛ばした承認を防ぐため、
+    # 読み取りの関門と同じ規則で、暫定報告と最終報告の和集合の分類対象の警告に分類が過不足
+    # なく対応し、解決済みの分類がそれと一致することを確かめる（D03 §4 の 9 v1.7）。
+    require_recorded_classification(
+        manifest,
+        report,
+        report if provisional_report is None else provisional_report,
+        error=ConfigError,
+    )
 
     approved_at = composition.now_utc()
-    # 確定段階を経た snapshot だけが承認できる形にする。分類を飛ばした承認を防ぐため、
-    # **未分類の警告が残っていないこと**をここでも確かめる。
-    #
-    # 見るのは未分類の警告だけで、対応する警告の無い分類（余分な分類）は見ない。読み取りの
-    # 関門と同じ判断にするためである。カレンダーを変えた分類（D03 §4 の 9）では、休場と
-    # して説明が付いた区間の警告が再受入れ後の報告から正当に消えるので、その分類を余分と
-    # 見なすと、設計の主たる用途で作った snapshot を承認できなくなる。分類が正当かどうかの
-    # 判定は確定（`acceptance.finalize`）が「人間が見た報告」に対して行っている。
-    undecided, _ = classification_mismatch(report, manifest.closure_decisions)
-    if undecided:
-        raise ConfigError(
-            f"{args.snapshot} には未分類の警告が {len(undecided)} 件残っている:"
-            f" {list(undecided)}。分類を済ませてから承認すること（D03 §4 の 9）"
-        )
     finalized = FinalizedSnapshot(manifest=manifest)
     approved = approve(
         finalized,
@@ -541,6 +519,8 @@ def _with_declaration_record(
         legacy_access=manifest.legacy_access,
         declaration_record=record,
         approval=manifest.approval,
+        provisional_report_ref=manifest.provisional_report_ref,
+        resolved_classifications=manifest.resolved_classifications,
     )
 
 

@@ -24,6 +24,7 @@ from odyssey_fx.evaluation.domain.metrics import (
     TradeRecord,
 )
 from odyssey_fx.evaluation.domain.status import ConsistencyCheckResult
+from odyssey_fx.marketdata.domain.classification import CLASSIFIABLE_KINDS
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 
@@ -35,6 +36,7 @@ __all__ = [
     "merged_warning_spans",
     "metric_lines",
     "partition_lines",
+    "resolved_lines",
     "series_lines",
     "severity_totals",
     "trade_lines",
@@ -156,25 +158,44 @@ def classifiable_intervals(report: IntegrityReport, kind_value: str) -> int:
 def warning_summary_lines(report: IntegrityReport) -> list[str]:
     """分類が必要な警告の件数規模を種別ごとに示す行。
 
-    対象は**報告の警告（WARN）すべて**である。確定（`acceptance.finalize`）は報告のすべての
-    警告に分類を求めるので、表示が一部の種別だけを「分類が要る」として見せると、そこに
-    出ていない警告（銘柄間の足境界のずれ、夏時間切替週の異常）で確定が失敗し、人間には
-    理由が分からない。表示と確定の対象を揃える。
-
-    分類の対象そのものを狭めるかどうかは設計上の判断なので、ここでは行わない。狭める決定が
-    出れば、`finalize` 側と合わせて別途変更する。
+    対象は**分類対象の検査種別**（`CLASSIFIABLE_KINDS`: 存在すべき足の欠落と休場帯の足、
+    D03 §3.9 v1.7）の警告だけである。確定（`acceptance.finalize`）が分類を求めるのもこの
+    2種別だけなので、表示と確定の対象が揃う。他の警告（銘柄間の足境界のずれ、夏時間切替週の
+    異常）は検査報告に保存するだけで分類を要しない（`findings_lines` の件数には現れる）。
 
     各行は「報告の件数」「分類の記入が必要な区間」「連続する塊」の3つを出す（同じ区間に
     対する重複した報告があるため、3つは一致しない）。
     """
+    classifiable = [result for result in report.warnings if result.kind in CLASSIFIABLE_KINDS]
     lines: list[str] = []
-    for kind_value in sorted({result.kind.value for result in report.warnings}):
-        reported = sum(1 for result in report.warnings if result.kind.value == kind_value)
+    for kind_value in sorted({result.kind.value for result in classifiable}):
+        reported = sum(1 for result in classifiable if result.kind.value == kind_value)
         lines.append(
             f"  {kind_value}: 報告 {reported} 件"
             f" / 分類の記入が必要な区間 {classifiable_intervals(report, kind_value)} 件"
             f" / 連続する区間にまとめると {merged_warning_spans(report, kind_value)} 区間"
         )
+    return lines
+
+
+def resolved_lines(manifest: SnapshotManifest) -> list[str]:
+    """確定した分類の内訳（検査種別 × 分類結果ごとの警告の件数と、除外した足の本数）。
+
+    `resolved_classifications`（警告1件ごとに解決した分類、D03 §3.7 v1.7）から数える。
+    """
+    counts: dict[tuple[str, str], int] = {}
+    excluded: dict[tuple[str, str], int] = {}
+    for resolved in manifest.resolved_classifications:
+        key = (resolved.kind.value, resolved.outcome.value)
+        counts[key] = counts.get(key, 0) + 1
+        excluded[key] = excluded.get(key, 0) + resolved.excluded_bar_count
+    lines: list[str] = []
+    for kind_value, outcome_value in sorted(counts):
+        key = (kind_value, outcome_value)
+        line = f"  {kind_value} -> {outcome_value}: 警告 {counts[key]} 件"
+        if excluded[key]:
+            line += f"（除外した足 {excluded[key]} 本）"
+        lines.append(line)
     return lines
 
 

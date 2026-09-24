@@ -34,14 +34,14 @@ from odyssey_fx.marketdata.application.access_log import (
 )
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ClassificationOutcome,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
-from odyssey_fx.marketdata.domain.snapshot import (
-    ClosureDecision,
-    ClosureDecisionKind,
-    PartitionId,
-    SnapshotManifest,
-)
+from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -427,9 +427,8 @@ def test_open_readable_accepts_a_snapshot_whose_warnings_are_classified(
         series=base.series,
         partitions=base.partitions,
         integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
-        closure_decisions=(
-            ClosureDecision(series_id=HOURLY, interval=WINDOW, kind=ClosureDecisionKind.DATA_GAP),
-        ),
+        closure_decisions=(_gap_decision(),),
+        resolved_classifications=(_gap_resolved(),),
         approval=base.approval,
     )
     store = ParquetSnapshotStore(root=tmp_path)
@@ -438,3 +437,119 @@ def test_open_readable_accepts_a_snapshot_whose_warnings_are_classified(
     readable = store.open_readable(directory)
     assert readable.snapshot_id == manifest.snapshot_id()
     assert readable.report == report
+
+
+def _gap_decision(
+    outcome: ClassificationOutcome = ClassificationOutcome.DATA_GAP,
+) -> ClassificationDecision:
+    return ClassificationDecision(
+        kind=CheckKind.MISSING_EXPECTED_BAR,
+        interval=WINDOW,
+        series=(HOURLY,),
+        outcome=outcome,
+        note="試験用",
+        calendar_ref="fx_ny17@v2" if outcome is ClassificationOutcome.CLOSURE else None,
+    )
+
+
+def _gap_resolved(
+    outcome: ClassificationOutcome = ClassificationOutcome.DATA_GAP,
+) -> ResolvedClassification:
+    return ResolvedClassification(
+        kind=CheckKind.MISSING_EXPECTED_BAR, series_id=HOURLY, interval=WINDOW, outcome=outcome
+    )
+
+
+# --- 分類と暫定報告の保存（D03 §3.7 v1.7）-----------------------------------
+
+
+def _rerun_manifest(provisional: IntegrityReport, final: IntegrityReport) -> SnapshotManifest:
+    """確定段階で再実行した snapshot の manifest（暫定報告を別に記録する）。"""
+    bars = market.make_bars(HOURLY, market.TF_1H, CALENDAR, WINDOW)
+    base = snapshots.approved_for({PARTITION: bars})
+    return SnapshotManifest(
+        created_at=base.created_at,
+        basis_declaration=base.basis_declaration,
+        sources=base.sources,
+        conversion=base.conversion,
+        series=base.series,
+        partitions=base.partitions,
+        integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(final)),
+        provisional_report_ref=ContentDigest.sha256(integrity_report_digest_hex(provisional)),
+        closure_decisions=(_gap_decision(ClassificationOutcome.CLOSURE),),
+        resolved_classifications=(_gap_resolved(ClassificationOutcome.CLOSURE),),
+        approval=base.approval,
+    )
+
+
+def _provisional_report() -> IntegrityReport:
+    return IntegrityReport(
+        results=(CheckResult.create(CheckKind.MISSING_EXPECTED_BAR, HOURLY, WINDOW),)
+    )
+
+
+def test_the_classification_round_trips_through_the_manifest(tmp_path: Path) -> None:
+    """分類・解決済みの分類・暫定報告のダイジェストが manifest.json を往復する。"""
+    manifest = _rerun_manifest(_provisional_report(), IntegrityReport())
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("snap", manifest)
+    restored = store.read_manifest("snap")
+    assert restored == manifest
+    assert restored.closure_decisions[0].calendar_ref == "fx_ny17@v2"
+    assert restored.provisional_report_ref != restored.integrity_report_ref
+
+
+def test_the_manifest_is_written_with_schema_version_two(tmp_path: Path) -> None:
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("snap", snapshots.manifest())
+    payload = json.loads((tmp_path / "snap" / "manifest.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert "resolved_classifications" in payload
+    assert "provisional_report_ref" in payload
+
+
+def test_a_version_one_manifest_is_refused(tmp_path: Path) -> None:
+    """形式版 1 の manifest は読み替えずに拒否する（識別子の計算対象が異なる）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    store.write_manifest("snap", snapshots.manifest())
+    path = tmp_path / "snap" / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version"):
+        store.read_manifest("snap")
+
+
+def test_open_readable_reads_the_provisional_report(tmp_path: Path) -> None:
+    """再実行した snapshot は暫定報告も読んで照合し、分類の対応を暫定報告で取る。"""
+    provisional = _provisional_report()
+    manifest = _rerun_manifest(provisional, IntegrityReport())
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest, report=IntegrityReport())
+    store.write_provisional_report(directory, provisional)
+
+    readable = store.open_readable(directory)
+    assert readable.provisional_report == provisional
+    assert (tmp_path / directory / "integrity_report_provisional.json").is_file()
+
+
+def test_open_readable_refuses_a_missing_provisional_report(tmp_path: Path) -> None:
+    manifest = _rerun_manifest(_provisional_report(), IntegrityReport())
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest, report=IntegrityReport())
+
+    with pytest.raises(MarketDataValueError, match="is missing"):
+        store.open_readable(directory)
+
+
+def test_open_readable_refuses_an_altered_provisional_report(tmp_path: Path) -> None:
+    manifest = _rerun_manifest(_provisional_report(), IntegrityReport())
+    store = ParquetSnapshotStore(root=tmp_path)
+    directory = _write_snapshot(store, manifest, report=IntegrityReport())
+    store.write_provisional_report(
+        directory,
+        IntegrityReport(results=(CheckResult.create(CheckKind.UNEXPECTED_BAR, HOURLY, WINDOW),)),
+    )
+
+    with pytest.raises(MarketDataValueError, match="provisional report has been altered"):
+        store.open_readable(directory)

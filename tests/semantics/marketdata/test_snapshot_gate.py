@@ -22,18 +22,21 @@ from odyssey_fx.marketdata.application.asof import (
     ExecutionSeriesView,
     MissingInput,
 )
+from odyssey_fx.marketdata.application.classification import match_classifications
 from odyssey_fx.marketdata.application.publication import (
     PublicationKind,
     build_feed,
     build_publication_log,
 )
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
-from odyssey_fx.marketdata.application.snapshot_access import (
-    ReadableSnapshot,
-    classification_mismatch,
-)
+from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ClassificationOutcome,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
     MarketDataValueError,
@@ -42,12 +45,7 @@ from odyssey_fx.marketdata.domain.errors import (
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
-from odyssey_fx.marketdata.domain.snapshot import (
-    ClosureDecision,
-    ClosureDecisionKind,
-    PartitionId,
-    SnapshotManifest,
-)
+from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 from tests.fixtures.synthetic import market, snapshots
 
 HOURLY = market.series()
@@ -300,23 +298,32 @@ def test_a_feed_without_any_granted_partition_is_refused() -> None:
         build_feed(readable, frozenset(), {}, SCHEDULES, RESEARCH_WINDOW)
 
 
-# --- 報告と分類の突き合わせ（D03 §3.7.1 の2・§4 の 9）-----------------------
+# --- 報告と分類の突き合わせ（D03 §3.7.1 の2・§4 の 9 v1.7）-----------------
 
 
 def _warned_report() -> IntegrityReport:
-    """未分類の警告を1件持つ報告。"""
+    """分類対象の警告を1件持つ報告。"""
     return IntegrityReport(
         results=(CheckResult.create(CheckKind.MISSING_EXPECTED_BAR, HOURLY, RESEARCH_WINDOW),)
     )
 
 
-def _decision_for(report: IntegrityReport) -> ClosureDecision:
-    """その報告の警告に対応する分類。"""
-    (warning,) = report.warnings
-    return ClosureDecision(
-        series_id=HOURLY,
-        interval=warning.interval,
-        kind=ClosureDecisionKind.DATA_GAP,
+def _decision_for(
+    interval: Interval = RESEARCH_WINDOW,
+    outcome: ClassificationOutcome = ClassificationOutcome.DATA_GAP,
+) -> ClassificationDecision:
+    """区間の欠落を分類する宣言。"""
+    return ClassificationDecision(
+        kind=CheckKind.MISSING_EXPECTED_BAR, interval=interval, series=(HOURLY,), outcome=outcome
+    )
+
+
+def _resolved_for(
+    interval: Interval = RESEARCH_WINDOW,
+    outcome: ClassificationOutcome = ClassificationOutcome.DATA_GAP,
+) -> ResolvedClassification:
+    return ResolvedClassification(
+        kind=CheckKind.MISSING_EXPECTED_BAR, series_id=HOURLY, interval=interval, outcome=outcome
     )
 
 
@@ -336,86 +343,162 @@ def test_an_unclassified_warning_makes_the_snapshot_unreadable() -> None:
 
 
 def test_a_classified_warning_makes_the_snapshot_readable() -> None:
-    """分類が記入されていれば読める（関門が正しいものまで拒まないことの確認）。"""
+    """分類と解決済みの分類が揃っていれば読める（関門が正しいものまで拒まないことの確認）。"""
     report = _warned_report()
-    decided = _manifest_for(report, (_decision_for(report),))
+    decided = _manifest_for(report, (_decision_for(),), (_resolved_for(),))
     readable = ReadableSnapshot(
         manifest=decided, directory_name=str(decided.snapshot_id()), report=report
     )
     assert readable.snapshot_id == decided.snapshot_id()
 
 
-def test_a_decision_without_a_matching_warning_does_not_block_reading() -> None:
-    """報告に対応する警告の無い分類があっても、読み取りは拒否しない。
+def test_a_decision_without_a_matching_warning_blocks_reading() -> None:
+    """両報告のどの警告にも対応しない分類は、読み取りでも拒否する（D03 §4 v1.7）。
 
-    **読み取りの関門が見るのは「未分類の警告が無いこと」だけ**である（D03 §4 の 9）。
-    余分な分類を読み取りで拒否すると、設計が定める主たる用途が成立しない。分類で
-    「休場だった」と判断してカレンダーへ追加し版を上げると、その区間の警告は再受入れ後の
-    報告から**正当に消える**。消えた警告に対応する分類を余分と見なせば、その snapshot が
-    読めなくなってしまう。
-
-    分類が正当かどうかは「人間が見た報告」に対して判定すべきもので、その検査は確定
-    （`acceptance.finalize`）が担っている（`test_pending_snapshot.py`）。
-    """
-    extra = ClosureDecision(
-        series_id=HOURLY,
-        interval=HOLDOUT_WINDOW,
-        kind=ClosureDecisionKind.CLOSURE,
-    )
-    decided = snapshots.approved_for({RESEARCH: _research_bars()}).with_closure_decisions((extra,))
-    readable = ReadableSnapshot(
-        manifest=decided,
-        directory_name=str(decided.snapshot_id()),
-        report=IntegrityReport(),
-    )
-    assert readable.snapshot_id == decided.snapshot_id()
-
-
-def test_an_unclassified_warning_still_blocks_reading_even_with_extra_decisions() -> None:
-    """余分な分類を許しても、**未分類の警告**は引き続き読み取りを止める。
-
-    上の緩和が「分類の検査そのものを無くした」のではないことを確かめる。
+    v1.7 は暫定報告（人間が分類の根拠にした報告）を確定 snapshot に残すので、カレンダーの
+    新版で最終報告から消えた警告に対する分類も、暫定報告の側で対応が取れる。和集合に
+    対応しない分類は、報告されていない警告を捏造した分類である。
     """
     report = _warned_report()
-    extra = ClosureDecision(
-        series_id=HOURLY,
-        interval=HOLDOUT_WINDOW,
-        kind=ClosureDecisionKind.CLOSURE,
+    extra = _decision_for(HOLDOUT_WINDOW, ClassificationOutcome.CLOSURE)
+    manifest = _manifest_for(report, (_decision_for(), extra), (_resolved_for(),))
+    with pytest.raises(SnapshotNotApproved, match="do not correspond to any reported"):
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+        )
+
+
+def test_conflicting_decisions_block_reading() -> None:
+    """同じ警告を2件の分類が覆う manifest は読めない（D03 §4 の確定時の検査2）。"""
+    report = _warned_report()
+    wide = Interval(start=RESEARCH_WINDOW.start, end=HOLDOUT_WINDOW.end)
+    manifest = _manifest_for(report, (_decision_for(), _decision_for(wide)), (_resolved_for(),))
+    with pytest.raises(SnapshotNotApproved, match="more than one classification"):
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+        )
+
+
+def test_resolved_classifications_must_match_the_decisions() -> None:
+    """解決済みの分類が、分類を報告に当てた結果と食い違う manifest は読めない。
+
+    識別子に入るのは解決済みの分類なので、記入された分類と食い違ったまま読めると、人間の
+    判断と違う内容の snapshot を識別子で指せてしまう。
+    """
+    report = _warned_report()
+    manifest = _manifest_for(
+        report, (_decision_for(),), (_resolved_for(outcome=ClassificationOutcome.CLOSURE),)
     )
-    manifest = _manifest_for(report, (extra,))
-    with pytest.raises(SnapshotNotApproved, match="still unclassified"):
+    with pytest.raises(SnapshotNotApproved, match="different outcome"):
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+        )
+
+
+def test_a_decision_explained_only_by_the_provisional_report_is_readable() -> None:
+    """カレンダーの新版で最終報告から消えた警告の分類も、暫定報告で対応が取れて読める。
+
+    D03 §4 v1.7: 突き合わせは暫定報告と最終報告の和集合に対して行う。
+    """
+    provisional = _warned_report()
+    final = IntegrityReport()
+    closure = _decision_for(outcome=ClassificationOutcome.CLOSURE)
+    manifest = _manifest_for(
+        final,
+        (closure,),
+        (_resolved_for(outcome=ClassificationOutcome.CLOSURE),),
+        provisional=provisional,
+    )
+    readable = ReadableSnapshot(
+        manifest=manifest,
+        directory_name=str(manifest.snapshot_id()),
+        report=final,
+        provisional_report=provisional,
+    )
+    assert readable.snapshot_id == manifest.snapshot_id()
+
+
+def test_a_rerun_snapshot_requires_its_provisional_report() -> None:
+    """暫定報告を別に記録した snapshot は、暫定報告なしでは開けない（D03 §3.7 v1.7）。"""
+    provisional = _warned_report()
+    final = IntegrityReport()
+    manifest = _manifest_for(
+        final,
+        (_decision_for(outcome=ClassificationOutcome.CLOSURE),),
+        (_resolved_for(outcome=ClassificationOutcome.CLOSURE),),
+        provisional=provisional,
+    )
+    with pytest.raises(MarketDataValueError, match="provisional integrity report"):
+        ReadableSnapshot(
+            manifest=manifest, directory_name=str(manifest.snapshot_id()), report=final
+        )
+
+
+def test_a_swapped_provisional_report_is_refused() -> None:
+    """manifest が記録していない暫定報告を渡しても拒否される。"""
+    provisional = _warned_report()
+    final = IntegrityReport()
+    manifest = _manifest_for(
+        final,
+        (_decision_for(outcome=ClassificationOutcome.CLOSURE),),
+        (_resolved_for(outcome=ClassificationOutcome.CLOSURE),),
+        provisional=provisional,
+    )
+    other = IntegrityReport(
+        results=(CheckResult.create(CheckKind.MISSING_EXPECTED_BAR, HOURLY, HOLDOUT_WINDOW),)
+    )
+    with pytest.raises(MarketDataValueError, match="not this snapshot's report"):
         ReadableSnapshot(
             manifest=manifest,
             directory_name=str(manifest.snapshot_id()),
-            report=report,
+            report=final,
+            provisional_report=other,
         )
+
+
+def test_warnings_outside_the_classifiable_kinds_do_not_need_a_decision() -> None:
+    """銘柄間の境界ずれ・夏時間の異常は保存するだけで、読み取りの条件にしない（D03 §3.9）。"""
+    report = IntegrityReport(
+        results=(
+            CheckResult.create(CheckKind.CROSS_SYMBOL_MISALIGNMENT, HOURLY, RESEARCH_WINDOW),
+            CheckResult.create(CheckKind.DST_BOUNDARY_ANOMALY, HOURLY, HOLDOUT_WINDOW),
+        )
+    )
+    manifest = _manifest_for(report)
+    readable = ReadableSnapshot(
+        manifest=manifest, directory_name=str(manifest.snapshot_id()), report=report
+    )
+    assert readable.report == report
 
 
 def test_the_matching_rule_is_shared_with_finalize() -> None:
     """突き合わせは共通の純粋関数で行う（確定と読み取りで規則がずれない）。"""
     report = _warned_report()
-    (warning,) = report.warnings
-    # 終端の違う分類は対応しない（`finalize` と同じ判定）。
-    wrong_end = ClosureDecision(
-        series_id=HOURLY,
-        interval=Interval(start=warning.interval.start, end=HOLDOUT_WINDOW.end),
-        kind=ClosureDecisionKind.DATA_GAP,
+    # 警告の区間を含まない分類は対応しない（区間は完全に含まれなければならない）。
+    narrower = _decision_for(
+        Interval(start=RESEARCH_WINDOW.start, end=RESEARCH_WINDOW.start + timedelta(hours=1))
     )
-    undecided, extraneous = classification_mismatch(report, (wrong_end,))
-    assert undecided and extraneous
+    match = match_classifications((report,), (narrower,))
+    assert match.undecided and match.extraneous
 
-    # 区間が完全に一致すれば対応する。
-    undecided, extraneous = classification_mismatch(report, (_decision_for(report),))
-    assert not undecided and not extraneous
+    # 区間を含む分類は対応する（区間をまとめて書いてよい）。
+    wider = _decision_for(Interval(start=RESEARCH_WINDOW.start, end=HOLDOUT_WINDOW.end))
+    match = match_classifications((report,), (wider,))
+    assert match.complete
 
 
 def _manifest_for(
-    report: IntegrityReport, decisions: tuple[ClosureDecision, ...] = ()
+    report: IntegrityReport,
+    decisions: tuple[ClassificationDecision, ...] = (),
+    resolved: tuple[ResolvedClassification, ...] = (),
+    *,
+    provisional: IntegrityReport | None = None,
 ) -> SnapshotManifest:
     """その報告を参照する承認済み manifest（ダイジェストを報告から作る）。
 
     `ReadableSnapshot` は報告のダイジェストが manifest の記録と一致することを要求する
-    （D03 §3.7.1）ので、テストの manifest も報告から作る。
+    （D03 §3.7.1）ので、テストの manifest も報告から作る。`provisional` を渡すと、確定段階で
+    再実行した snapshot（暫定報告を別に記録するもの）になる。
     """
     base = snapshots.approved_for({RESEARCH: _research_bars()})
     return SnapshotManifest(
@@ -427,6 +510,10 @@ def _manifest_for(
         partitions=base.partitions,
         integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
         closure_decisions=decisions,
+        resolved_classifications=resolved,
+        provisional_report_ref=None
+        if provisional is None
+        else ContentDigest.sha256(integrity_report_digest_hex(provisional)),
         approval=base.approval,
     )
 

@@ -7,6 +7,8 @@
   （Decimal を二進浮動小数へ落とさないため、ADR-0012）。
 - `manifest.json` を D03 §3.7.1 の**正規順序**で書く。manifest の各列は domain 型の構築時に
   既に正規順序へ整列しているので、ここでは JSON のキーを整列し、その順で書き出すだけでよい。
+- 最終の検査報告を `integrity_report.json`、確定段階で再実行した場合の暫定報告を
+  `integrity_report_provisional.json` に書く（D03 §3.7 v1.7。どちらも git 管理、ADR-0013）。
 - DataFrame はこのモジュールの外へ出さない（D01 §2.2 規則1）。
 
 Parquet の入出力は polars で行う（pyarrow は polars の依存として入るが直接は使わない、
@@ -44,6 +46,11 @@ from odyssey_fx.marketdata.application.snapshot_access import (
 )
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationDecision,
+    ClassificationOutcome,
+    ResolvedClassification,
+)
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
@@ -55,8 +62,6 @@ from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
-    ClosureDecision,
-    ClosureDecisionKind,
     ConversionRecord,
     DeclarationRecord,
     LegacyAccessRecord,
@@ -71,13 +76,21 @@ from odyssey_fx.marketdata.domain.snapshot import (
 __all__ = ["MANIFEST_SCHEMA_VERSION", "ParquetSnapshotStore"]
 
 #: `manifest.json` の形式版。読み込み時に未知の版を拒否する。
-MANIFEST_SCHEMA_VERSION = 1
+#:
+#: 版 2（D03 v1.7）: 分類の要素を `ClassificationDecision`（検査種別・区間・対象系列の集合・
+#: 分類結果・注記・カレンダー参照）に改め、警告ごとに解決した `resolved_classifications` と
+#: 暫定報告のダイジェスト `provisional_report_ref` を足した。版 1 の manifest とは識別子の
+#: 計算対象が異なるので読み替えずに拒否する（版 1 の確定 snapshot は存在しない）。
+MANIFEST_SCHEMA_VERSION = 2
 
 #: partition の Parquet ファイル名。
 _PARTITION_FILE = "bars.parquet"
 
 #: 完全性検査の報告のファイル名。
 _INTEGRITY_FILE = "integrity_report.json"
+
+#: 確定段階で再実行した snapshot の、暫定段階の検査報告のファイル名（D03 §3.7 v1.7）。
+_PROVISIONAL_INTEGRITY_FILE = "integrity_report_provisional.json"
 
 #: `manifest.json` のファイル名。
 _MANIFEST_FILE = "manifest.json"
@@ -133,6 +146,8 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
 
     列は domain 型の構築時に正規順序へ整列済みなので、その順のまま書く。
     """
+    provisional_ref = manifest.provisional_report_ref
+    assert provisional_ref is not None  # noqa: S101 - SnapshotManifest の構築時に埋まる
     payload: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "snapshot_id": str(manifest.snapshot_id()),
@@ -148,10 +163,8 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             "code_version": manifest.conversion.code_version,
             "time_convention": manifest.conversion.time_convention,
         },
-        "integrity_report_ref": {
-            "algorithm": manifest.integrity_report_ref.algorithm,
-            "hex": manifest.integrity_report_ref.hex,
-        },
+        "integrity_report_ref": _digest_payload(manifest.integrity_report_ref),
+        "provisional_report_ref": _digest_payload(provisional_ref),
         "sources": [
             {
                 "declared_basis": source.declared_basis.value,
@@ -186,12 +199,24 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
         ],
         "closure_decisions": [
             {
+                "calendar_ref": decision.calendar_ref,
                 "interval": _interval_payload(decision.interval),
                 "kind": decision.kind.value,
                 "note": decision.note,
-                "series_id": _series_payload(decision.series_id),
+                "outcome": decision.outcome.value,
+                "series": [_series_payload(series) for series in decision.series],
             }
             for decision in manifest.closure_decisions
+        ],
+        "resolved_classifications": [
+            {
+                "excluded_bar_count": resolved.excluded_bar_count,
+                "interval": _interval_payload(resolved.interval),
+                "kind": resolved.kind.value,
+                "outcome": resolved.outcome.value,
+                "series_id": _series_payload(resolved.series_id),
+            }
+            for resolved in manifest.resolved_classifications
         ],
         "legacy_access": [
             {
@@ -215,6 +240,14 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             "comment": manifest.approval.comment,
         }
     return payload
+
+
+def _digest_payload(digest: ContentDigest) -> Mapping[str, str]:
+    return {"algorithm": digest.algorithm, "hex": digest.hex}
+
+
+def _digest_from_payload(payload: Mapping[str, Any]) -> ContentDigest:
+    return ContentDigest(algorithm=str(payload["algorithm"]), hex=str(payload["hex"]))
 
 
 def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
@@ -279,18 +312,30 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
             )
             for record in payload["partitions"]
         ),
-        integrity_report_ref=ContentDigest(
-            algorithm=str(payload["integrity_report_ref"]["algorithm"]),
-            hex=str(payload["integrity_report_ref"]["hex"]),
-        ),
+        integrity_report_ref=_digest_from_payload(payload["integrity_report_ref"]),
+        provisional_report_ref=_digest_from_payload(payload["provisional_report_ref"]),
         closure_decisions=tuple(
-            ClosureDecision(
-                series_id=_series_from_payload(decision["series_id"]),
+            ClassificationDecision(
+                kind=CheckKind(str(decision["kind"])),
                 interval=_interval_from_payload(decision["interval"]),
-                kind=ClosureDecisionKind(str(decision["kind"])),
+                series=tuple(_series_from_payload(series) for series in decision["series"]),
+                outcome=ClassificationOutcome(str(decision["outcome"])),
                 note=str(decision["note"]),
+                calendar_ref=None
+                if decision["calendar_ref"] is None
+                else str(decision["calendar_ref"]),
             )
             for decision in payload["closure_decisions"]
+        ),
+        resolved_classifications=tuple(
+            ResolvedClassification(
+                kind=CheckKind(str(resolved["kind"])),
+                series_id=_series_from_payload(resolved["series_id"]),
+                interval=_interval_from_payload(resolved["interval"]),
+                outcome=ClassificationOutcome(str(resolved["outcome"])),
+                excluded_bar_count=int(resolved["excluded_bar_count"]),
+            )
+            for resolved in payload["resolved_classifications"]
         ),
         legacy_access=tuple(
             LegacyAccessRecord(
@@ -452,7 +497,9 @@ class ParquetSnapshotStore:
 
         同じディレクトリの完全性検査の報告（`integrity_report.json`）も読み、**再計算した
         ダイジェストが manifest の `integrity_report_ref` と一致する**ことを確かめる。報告が
-        無い、または内容が書き換えられていれば開けない。
+        無い、または内容が書き換えられていれば開けない。確定段階で再実行した snapshot
+        （`provisional_report_ref` が `integrity_report_ref` と異なるもの）は、暫定報告
+        （`integrity_report_provisional.json`）も同じく読んで照合する（D03 §3.7 v1.7）。
 
         そのうえで `ReadableSnapshot` を作るので、暫定ディレクトリ（`_pending/`）配下の
         snapshot、承認の無い snapshot、**未分類の警告が残る snapshot** は開けない
@@ -481,7 +528,38 @@ class ParquetSnapshotStore:
                 f" ({manifest.integrity_report_ref.hex}); the report has been altered"
                 " (D03 §3.7.1)"
             )
-        return ReadableSnapshot(manifest=manifest, directory_name=snapshot_id, report=report)
+        provisional = self.read_provisional_report_for(snapshot_id, manifest)
+        return ReadableSnapshot(
+            manifest=manifest,
+            directory_name=snapshot_id,
+            report=report,
+            provisional_report=provisional,
+        )
+
+    def read_provisional_report_for(
+        self, snapshot_dir: str, manifest: SnapshotManifest
+    ) -> IntegrityReport | None:
+        """manifest が別の暫定報告を記録していれば、それを読んで照合して返す。
+
+        暫定報告と最終報告が同じ snapshot（再実行しなかったもの）では `None` を返す。
+        記録しているのにファイルが無い、または内容が記録と食い違う場合は失敗する。
+        """
+        recorded = manifest.provisional_report_ref
+        if recorded is None or recorded == manifest.integrity_report_ref:
+            return None
+        path = self._snapshot_path(snapshot_dir) / _PROVISIONAL_INTEGRITY_FILE
+        if not path.is_file():
+            raise MarketDataValueError(
+                f"{path} is missing; this snapshot was re-run during classification and its"
+                " manifest refers to the provisional report (D03 §3.7・§4 の 9)"
+            )
+        report = _report_from_payload(json.loads(path.read_text(encoding="utf-8")))
+        if integrity_report_digest_hex(report) != recorded.hex:
+            raise MarketDataValueError(
+                f"{path} does not match the digest recorded in the manifest ({recorded.hex});"
+                " the provisional report has been altered (D03 §3.7.1)"
+            )
+        return report
 
     def write_integrity_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
         """検査の報告を書き出し、内容のダイジェストを返す。
@@ -494,6 +572,20 @@ class ParquetSnapshotStore:
         target.mkdir(parents=True, exist_ok=True)
         text = integrity_report_text(report)
         (target / _INTEGRITY_FILE).write_text(text, encoding="utf-8")
+        return integrity_report_digest_hex(report)
+
+    def write_provisional_report(self, snapshot_dir: str, report: IntegrityReport) -> str:
+        """暫定段階の検査報告を `integrity_report_provisional.json` に書く（D03 §3.7 v1.7）。
+
+        確定段階で 5〜7 を再実行し、最終報告と異なる場合に、人間が分類の根拠にした報告を
+        確定 snapshot に残す。再実行で消えた警告に対する分類の根拠を、別のクローンでも
+        検証できるようにするためである（ADR-0013 改訂で git 管理）。
+        """
+        target = self._snapshot_path(snapshot_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / _PROVISIONAL_INTEGRITY_FILE).write_text(
+            integrity_report_text(report), encoding="utf-8"
+        )
         return integrity_report_digest_hex(report)
 
     def read_integrity_report(self, snapshot_dir: str) -> IntegrityReport:

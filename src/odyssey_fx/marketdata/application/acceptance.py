@@ -15,7 +15,8 @@
 6. 上位足の生成            1h → 4h_ny17 / 1d_ny17
 7. アクセス分類と partition  bar_end 基準で partition に分ける
 8. 暫定 manifest 生成      暫定の識別子を計算する
-9. 分類と確定              人間が警告を休場 / 欠損に分類し、最終の識別子を計算する
+9. 分類と確定              人間が分類対象の警告を分類し、必要なら 5〜7 を再実行して
+                           最終の識別子を計算する
 ```
 
 **決定論**（D03 §4）: 同じ原ファイル・設定・コード版・分類なら同じ最終識別子になる。
@@ -24,12 +25,18 @@
 
 **二段階フロー**（D03 §3.7.1）: 分類が空の状態で計算するのが暫定の識別子
 （`provisional_id`）、人間の分類を記入した後に計算するのが最終の識別子（`snapshot_id`）。
-分類が異なれば別 snapshot である。
+識別子に入るのは警告1件ごとに解決した分類（`resolved_classifications`）であり、区間の
+まとめ方によらず、同じ警告集合に同じ結果を与える分類は同じ識別子になる（v1.7）。
+
+**確定段階の再実行**（D03 §4 の 9 v1.7）: カレンダーの新版を伴う分類、またはセッション外
+データ異常（`OUT_OF_SESSION_DATA`）の分類が1件でもあれば、暫定 snapshot の原系列の足を
+再利用して 5〜7 を再実行する（`reaccept_with_calendar`）。セッション外データ異常と分類した
+休場帯の足はこのとき原系列から除外する（`out_of_session_exclusions`）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -40,22 +47,32 @@ from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.application.aggregation import aggregate
+from odyssey_fx.marketdata.application.classification import (
+    WarningKey,
+    classifiable_warnings,
+    match_classifications,
+    require_complete_match,
+    resolved_from,
+    warning_key,
+)
 from odyssey_fx.marketdata.application.integrity import SeriesUnderCheck, check_all
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.ports import RawRow
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
-from odyssey_fx.marketdata.application.snapshot_access import classification_mismatch
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
+from odyssey_fx.marketdata.domain.classification import (
+    CALENDAR_CHANGING_OUTCOMES,
+    ClassificationDecision,
+    ClassificationOutcome,
+)
 from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
-    ClosureDecision,
-    ClosureDecisionKind,
     ConversionRecord,
     LegacyAccessRecord,
     PartitionId,
@@ -74,8 +91,10 @@ __all__ = [
     "classify_partitions",
     "finalize",
     "normalize_rows",
+    "out_of_session_exclusions",
     "provisional_id",
     "reaccept_with_calendar",
+    "requires_rerun",
 ]
 
 
@@ -330,7 +349,7 @@ def _require_no_integrity_errors(report: IntegrityReport) -> None:
 
 def provisional_id(manifest: SnapshotManifest) -> SnapshotId:
     """分類が空の manifest から暫定の識別子を計算する（D03 §3.7.1 の 1）。"""
-    if manifest.closure_decisions:
+    if manifest.closure_decisions or manifest.resolved_classifications:
         raise MarketDataValueError(
             "a provisional id is computed before the closure decisions are recorded;"
             " this manifest already carries decisions (D03 §3.7.1)"
@@ -390,158 +409,263 @@ def approve(finalized: FinalizedSnapshot, approval: Approval) -> SnapshotManifes
 
 
 def finalize(
-    pending: PendingSnapshot,
-    decisions: Sequence[ClosureDecision],
+    final: PendingSnapshot,
+    decisions: Sequence[ClassificationDecision],
     *,
-    original_report: IntegrityReport | None = None,
-    original_conversion: ConversionRecord | None = None,
+    provisional: PendingSnapshot | None = None,
 ) -> FinalizedSnapshot:
-    """人間の分類を記入して最終の manifest を作る（D03 §3.7.1 の 2、§4 の 9）。
+    """人間の分類を記入して最終の manifest を作る（D03 §3.7.1 の 2、§4 の 9 v1.7）。
 
-    分類が確定した後の識別子が最終の `snapshot_id`。分類が異なれば別 snapshot である。
-    未分類の警告が残っている場合は失敗させる（D03 §10 の `classify` コマンド）。
+    `final` は確定する内容（再実行した場合はその結果、しなかった場合は暫定 snapshot その
+    もの）、`provisional` は再実行した場合の暫定 snapshot（人間が分類の根拠にした報告と
+    足）。再実行しなかった場合は省略し、暫定報告と最終報告は同じになる。
 
-    **カレンダーを変えた分類**（D03 §4 の 9）では `original_report` に暫定段階の報告を
-    渡す。分類で「休場だった」と判断してカレンダーへ追加し版を上げると、その欠落は新しい
-    カレンダーの下では欠落でなくなるため、**再受入れした報告からは警告が消える**。消えた
-    警告に対する分類を「対応する警告がない」と拒否すると、D03 §4 の 9 が定める主たる用途
-    （休場 → カレンダーへ追加して版を上げる）がそもそも成立しない。
+    突き合わせは**暫定報告と最終報告の和集合**の分類対象の警告に対して行う（D03 §4）。
 
-    そこで突き合わせを2段階にする。
+    1. 重大な違反（ERROR）がどちらの報告にも無い（D03 §4 の 4。別経路で組み立てた場合の
+       抜け道を塞ぐ）。
+    2. 分類対象の警告がすべてちょうど1件の分類に含まれ、競合も対応なしも無い。再実行が
+       新たな警告を生んだ場合も、ここで未分類として列挙される（反復的な分類）。
+    3. カレンダーを変える分類（休場 `CLOSURE`・営業例外 `CALENDAR_EXCEPTION`）があれば、
+       カレンダーが同じ識別子で版を上げている。
+    4. 分類の効果が最終報告に表れている。休場・営業例外と分類した警告はカレンダーの新版で
+       説明が付いて最終報告から消えており、セッション外データ異常と分類した休場帯の足は
+       除外されて最終報告から消えている。
+    5. 再実行で原系列から消えた足は、すべてセッション外データ異常として除外した足であり、
+       足が増えてもいない（除外以外の理由でデータが変わっていない）。
 
-    1. **元の報告**に対して、未分類の警告が無く、余分な分類も無いことを確かめる。分類は
-       元の報告を見て人間が書いたものなので、正当性はここで判定する。
-    2. **再受入れ後の報告**に対して、残っている警告がすべて分類に含まれることを確かめる。
-       新しいカレンダーでも説明できない欠落を見落とさないため。こちらでは「余分な分類」を
-       許容する（段階1で正当と確かめた分類だから）。
-
-    `original_report` を渡さない通常の確定では、従来どおり1つの報告に対して両方を見る。
-    `original_conversion` には暫定段階の変換記録を渡す（カレンダーの版が上がったことを
-    確かめるため）。
-
-    **休場としての分類にはカレンダーの新版が要る**（D03 §3.4・§4 の 9）。「休場だった」と
-    記録しながらカレンダーがその足を期待し続けると、manifest と規則が矛盾した snapshot に
-    なる。そのため `CLOSURE` の分類が1件でもあれば、同じ識別子でより大きい版のカレンダーを
-    必須とし、さらに**その区間の欠落が新しい報告から実際に消えていること**（＝新カレンダー
-    がその休場を宣言していること）まで確かめる。`DATA_GAP`（データ欠損）はカレンダーを
-    変えずに確定できる。
-
-    重大な違反の検査もここで重ねて行う（D03 §4 の 4）。暫定段階で中断しているので通常は
-    到達しないが、`PendingSnapshot` を別経路で組み立てた場合に、構造的に無効なデータが
-    確定・承認へ進む抜け道を残さないため。
+    解決済みの分類（`resolved_classifications`）はこの突き合わせから作り、除外した足の件数
+    （`excluded_bar_count`）は暫定と最終の原系列の差から数える（D03 §3.7・§4 の除外規則）。
     """
-    _require_no_integrity_errors(pending.report)
-    if original_report is not None:
-        _require_no_integrity_errors(original_report)
+    if not isinstance(final, PendingSnapshot):
+        raise MarketDataValueError("finalize requires a PendingSnapshot")
+    before = final if provisional is None else provisional
+    if not isinstance(before, PendingSnapshot):
+        raise MarketDataValueError("finalize requires the provisional PendingSnapshot")
+    _require_no_integrity_errors(final.report)
+    _require_no_integrity_errors(before.report)
 
-    # 分類と警告の対応は**区間全体**で取る。突き合わせの規則は読み取りの関門と共有する
-    # （`classification_mismatch`）。片方だけが検査していると、確定を経ずに組み立てた
-    # manifest が読み取り側をすり抜ける。
-    basis = pending.report if original_report is None else original_report
-    undecided, extraneous = classification_mismatch(basis, decisions)
-    if undecided:
-        raise MarketDataValueError(
-            f"{len(undecided)} warning(s) are still unclassified;"
-            " every warning must be recorded as a closure or a data gap before the snapshot"
-            f" can be finalized (D03 §4 の 9): {list(undecided)}"
-        )
+    match = match_classifications((before.report, final.report), decisions)
+    require_complete_match(match, error=MarketDataValueError)
 
-    # 対応する警告のない分類も拒否する。余分な分類は識別子（`snapshot_id`）を変えるので、
-    # 検査が見つけていない区間を人間が書き足せば、内容の同じ snapshot が別物になってしまう。
-    if extraneous:
-        raise MarketDataValueError(
-            f"{len(extraneous)} closure decision(s) do not correspond to any reported"
-            f" warning: {list(extraneous)}; classify only the intervals the integrity check"
-            " reported (D03 §4 の 9)"
-        )
-
-    if original_report is not None:
-        # 再受入れ後も残る警告は、新しいカレンダーでも説明できない欠落である。分類から
-        # 漏れていれば確定させない。余分な分類はここでは見ない（段階1で確かめてある）。
-        still_undecided, _ = classification_mismatch(pending.report, decisions)
-        if still_undecided:
-            raise MarketDataValueError(
-                f"{len(still_undecided)} warning(s) remain after re-running the acceptance"
-                " with the new calendar and are still unclassified; the new calendar does not"
-                f" explain them (D03 §4 の 9): {list(still_undecided)}"
-            )
-
-    _require_closures_are_declared(
-        decisions,
-        report=pending.report,
-        conversion=pending.manifest.conversion,
-        original_conversion=original_conversion,
+    outcomes = {result: decision.outcome for result, decision in match.assignments}
+    _require_calendar_revision(
+        outcomes.values(),
+        conversion=final.manifest.conversion,
+        original_conversion=before.manifest.conversion,
     )
-    return FinalizedSnapshot(manifest=pending.manifest.with_closure_decisions(tuple(decisions)))
+    _require_effects(outcomes, final_report=final.report)
+    excluded_counts = _excluded_counts(before, final, outcomes)
+
+    manifest = final.manifest.with_classification(
+        decisions=tuple(decisions),
+        resolved=resolved_from(match, excluded_counts),
+        provisional_report_ref=ContentDigest.sha256(integrity_report_digest_hex(before.report)),
+    )
+    return FinalizedSnapshot(manifest=manifest)
 
 
-def _require_closures_are_declared(
-    decisions: Sequence[ClosureDecision],
+def _require_calendar_revision(
+    outcomes: Iterable[ClassificationOutcome],
     *,
-    report: IntegrityReport,
     conversion: ConversionRecord,
-    original_conversion: ConversionRecord | None,
+    original_conversion: ConversionRecord,
 ) -> None:
-    """休場としての分類が、カレンダーの新版に実際に宣言されていることを確かめる。
+    """カレンダーを変える分類には、同じカレンダーの版の引き上げが要る（D03 §3.4・§3.9）。
 
-    D03 §3.4・§4 の 9 は「休場 → カレンダーへ追加して版を上げる」と定める。休場と記録
-    しながらカレンダーがその足を期待し続ければ、manifest と規則が矛盾した snapshot に
-    なる。確かめるのは2つ。
-
-    1. `CLOSURE` の分類が1件でもあれば、**カレンダーの版が上がっている**こと（同じ
-       識別子で、より大きい版）。
-    2. 休場と分類した区間の「存在すべき足の欠落」が、**新しい報告から消えている**こと。
-       消えていなければ、新しいカレンダーはその休場を宣言していない。
-
-    `DATA_GAP`（データ欠損）はカレンダーを変えずに確定できる。欠損はカレンダーの規則の
-    問題ではなく、データそのものが無いという事実だからである。
+    休場（`CLOSURE`）は `closures` へ、営業例外（`CALENDAR_EXCEPTION`）は `openings` へ
+    追加して版を上げる。版を上げずに記録すると、manifest は「休場だった」「営業していた」と
+    言いながら、カレンダーはその足を期待し続ける（または休場帯と見なし続ける）。データ欠損
+    （`DATA_GAP`）とセッション外データ異常（`OUT_OF_SESSION_DATA`）はカレンダーを変えずに
+    確定できる。
     """
-    closures = [decision for decision in decisions if decision.kind is ClosureDecisionKind.CLOSURE]
-    if not closures:
+    changing = sorted(
+        {outcome.value for outcome in outcomes if outcome in CALENDAR_CHANGING_OUTCOMES}
+    )
+    if not changing:
+        # カレンダーを変える分類が1件も無いのに、再実行のカレンダーが暫定 snapshot と違えば
+        # 拒否する。どの分類にも裏付けられないカレンダー変更が、セッション判定・上位足・
+        # partition・識別子を黙って変えてしまうためである（再実行はセッション外データ異常
+        # だけでも起きる）。
+        if (original_conversion.calendar_id, original_conversion.calendar_version) != (
+            conversion.calendar_id,
+            conversion.calendar_version,
+        ):
+            raise MarketDataValueError(
+                f"the calendar changed from {original_conversion.calendar_id} version"
+                f" {original_conversion.calendar_version} to {conversion.calendar_id} version"
+                f" {conversion.calendar_version}, but no classification is a closure or a"
+                " calendar exception; only those outcomes authorize a calendar change"
+                " (D03 §3.4, §3.9)"
+            )
         return
-
-    if original_conversion is None or original_conversion.calendar_version == (
-        conversion.calendar_version
-    ):
-        raise MarketDataValueError(
-            f"{len(closures)} interval(s) are classified as a closure, but the calendar was"
-            f" not revised (still {conversion.calendar_id} version"
-            f" {conversion.calendar_version}); a closure must be declared in the calendar and"
-            " its version raised, otherwise the manifest would record a closure while the"
-            " calendar keeps expecting those bars (D03 §3.4, §4 の 9)"
-        )
     if original_conversion.calendar_id != conversion.calendar_id:
         raise MarketDataValueError(
             f"the calendar changed identity from {original_conversion.calendar_id!r} to"
-            f" {conversion.calendar_id!r}; a closure is declared by raising the version of the"
-            " same calendar, not by swapping in a different one (D03 §3.4)"
+            f" {conversion.calendar_id!r}; {changing} are declared by raising the version of"
+            " the same calendar, not by swapping in a different one (D03 §3.4)"
         )
-    if conversion.calendar_version < original_conversion.calendar_version:
+    if conversion.calendar_version <= original_conversion.calendar_version:
         raise MarketDataValueError(
-            f"the calendar version went backwards, from"
-            f" {original_conversion.calendar_version} to {conversion.calendar_version}"
-            " (D03 §3.4)"
+            f"warnings are classified as {changing}, but the calendar was not revised"
+            f" ({conversion.calendar_id} version {original_conversion.calendar_version} ->"
+            f" {conversion.calendar_version}); declare them in the calendar and raise its"
+            " version, otherwise the manifest would contradict the calendar (D03 §3.4, §3.9)"
         )
 
-    # 新しい報告に残る「存在すべき足の欠落」。ここに休場と分類した区間が残っていれば、
-    # 新しいカレンダーはその休場を宣言していない。
-    still_missing = {
-        f"{result.series} {result.interval}"
-        for result in report.warnings
-        if result.kind is CheckKind.MISSING_EXPECTED_BAR
-    }
-    undeclared = sorted(
-        f"{decision.series_id} {decision.interval}"
-        for decision in closures
-        if f"{decision.series_id} {decision.interval}" in still_missing
-    )
-    if undeclared:
-        raise MarketDataValueError(
-            f"{len(undeclared)} interval(s) are classified as a closure, but"
-            f" {conversion.calendar_id} version {conversion.calendar_version} still expects"
-            f" bars there: {undeclared}; declare the closure in the calendar so the check"
-            " stops reporting the gap (D03 §3.4, §4 の 9)"
+
+#: 分類結果ごとの「最終報告に警告が残っていてはならない理由」（D03 §3.9・§4）。
+_EFFECT_REASONS = {
+    ClassificationOutcome.CLOSURE: (
+        "the revised calendar still expects bars there; declare the closure in the calendar"
+    ),
+    ClassificationOutcome.CALENDAR_EXCEPTION: (
+        "the revised calendar still treats them as outside its sessions; declare the"
+        " opening in the calendar"
+    ),
+    ClassificationOutcome.OUT_OF_SESSION_DATA: (
+        "the bars were not excluded; only out-of-session bars reported by the provisional"
+        " report are excluded when steps 5-7 are re-run (a bar that first appears in the"
+        " re-run report is not excluded; D03 v1.8 §4, human decision of 2026-09-24)"
+    ),
+}
+
+
+def _require_effects(
+    outcomes: Mapping[CheckResult, ClassificationOutcome], *, final_report: IntegrityReport
+) -> None:
+    """分類の効果が最終報告に表れていることを確かめる（D03 §3.9・§4 の 9）。
+
+    休場・営業例外はカレンダーの新版で、セッション外データ異常は足の除外で、それぞれ
+    最終報告から警告が消えるはずである。消えていない警告にその分類を記録すると、manifest と
+    データ・カレンダーが矛盾する。データ欠損は警告が残ってよい。
+    """
+    remaining = {warning_key(result) for result in classifiable_warnings((final_report,))}
+    problems: dict[ClassificationOutcome, list[str]] = {}
+    for result, outcome in outcomes.items():
+        if outcome in _EFFECT_REASONS and warning_key(result) in remaining:
+            problems.setdefault(outcome, []).append(" ".join(warning_key(result)))
+    if problems:
+        details = "; ".join(
+            f"{len(labels)} warning(s) classified as {outcome.value} remain in the final"
+            f" report ({_EFFECT_REASONS[outcome]}): {sorted(labels)[:50]}"
+            for outcome, labels in sorted(problems.items(), key=lambda pair: pair[0].value)
         )
+        raise MarketDataValueError(details + " (D03 §3.9, §4 の 9)")
+
+
+def _excluded_counts(
+    before: PendingSnapshot,
+    final: PendingSnapshot,
+    outcomes: Mapping[CheckResult, ClassificationOutcome],
+) -> dict[WarningKey, int]:
+    """除外した足の件数を警告ごとに数え、除外以外でデータが変わっていないことを確かめる。
+
+    暫定 snapshot の原系列の足と、確定する内容の原系列の足を比べる（D03 §4 の除外規則）。
+
+    - 確定する内容の原系列に、暫定に無い足があってはならない（原ファイルを読み直さない）。
+    - 暫定から消えた足は、すべてセッション外データ異常と分類した警告の区間に入って
+      いなければならない（除外以外の理由で足が消えていない）。
+
+    件数は、その警告と同じ系列で、警告の区間に完全に含まれる消えた足の数である。
+    再実行しなかった場合（`before` と `final` が同じ）は足が変わらないので数えない。
+    """
+    if before is final:
+        return {}
+    before_bars = _source_series_bars(before)
+    final_bars = _source_series_bars(final)
+    removed: dict[SeriesId, list[Bar]] = {}
+    for series in sorted(set(before_bars) | set(final_bars), key=str):
+        kept = set(before_bars.get(series, ()))
+        current = final_bars.get(series, ())
+        added = [bar for bar in current if bar not in kept]
+        if added:
+            raise MarketDataValueError(
+                f"{len(added)} bar(s) of {series} are not in the provisional snapshot; the"
+                " re-run must reuse the provisional source bars and never add data (D03 §4)"
+            )
+        remaining = set(current)
+        gone = [bar for bar in before_bars.get(series, ()) if bar not in remaining]
+        if gone:
+            removed[series] = gone
+
+    counts: dict[WarningKey, int] = {}
+    explained: set[Bar] = set()
+    for result, outcome in outcomes.items():
+        if outcome is not ClassificationOutcome.OUT_OF_SESSION_DATA:
+            continue
+        inside = [
+            bar
+            for bar in removed.get(result.series, ())
+            if result.interval.start <= bar.bar_start and bar.bar_end <= result.interval.end
+        ]
+        if inside:
+            counts[warning_key(result)] = len(inside)
+            explained.update(inside)
+    unexplained = sorted(
+        f"{bar.series} {bar.interval}"
+        for bars in removed.values()
+        for bar in bars
+        if bar not in explained
+    )
+    if unexplained:
+        raise MarketDataValueError(
+            f"{len(unexplained)} source bar(s) disappeared in the re-run without being"
+            f" classified as out-of-session data: {unexplained[:50]} (D03 §4)"
+        )
+    return counts
+
+
+def requires_rerun(decisions: Sequence[ClassificationDecision], *, calendar_changed: bool) -> bool:
+    """確定段階で受入れの 5〜7 を再実行する必要があるか（D03 §4 の 9・除外規則）。
+
+    カレンダーの新版を伴う分類と、セッション外データ異常（`OUT_OF_SESSION_DATA`）の分類が
+    1件でもある分類では再実行する。後者はカレンダー変更の有無にかかわらず再実行する
+    （除外後の原系列に対してカレンダー照合・上位足の生成・partition 分けをやり直す）。
+    """
+    return calendar_changed or any(
+        decision.outcome is ClassificationOutcome.OUT_OF_SESSION_DATA for decision in decisions
+    )
+
+
+def out_of_session_exclusions(
+    provisional: PendingSnapshot, decisions: Sequence[ClassificationDecision]
+) -> frozenset[tuple[SeriesId, Interval]]:
+    """確定段階の再実行で原系列から除外する足を決める（D03 §4 の除外規則）。
+
+    除外するのは、**暫定報告**が「休場帯の足」（`UNEXPECTED_BAR`）と報告した原系列の足の
+    うち、セッション外データ異常（`OUT_OF_SESSION_DATA`）の分類に含まれるものだけである。
+
+    - 除外は警告の対象の足に限る（D03 §4）。分類の区間を広く書いても、報告されていない足は
+      除外しない（分類が警告を捏造しない、確定時の検査5）。
+    - 上位足の系列の警告は除外の対象にしない。上位足は除外後の原系列から作り直す。
+    - 再実行の報告にだけ現れる休場帯の足は除外しない。D03 は確定の根拠を暫定報告と最終報告の
+      2つで閉じる（中間の報告は保存しない）が、除外した足の警告は最終報告に現れないので、
+      その足の分類を2つの報告から検証できない。除外せずに確定の検査（`finalize` の手順4）で
+      止める（D03 v1.8 §4 の除外規則、2026-09-24 の人間の決定）。
+
+    返すのは `(系列, 足の区間)` の集合。
+    """
+    source_series = {
+        SeriesId(symbol=source.symbol, timeframe=source.timeframe, basis=source.declared_basis)
+        for source in provisional.manifest.sources
+    }
+    excluding = [
+        decision
+        for decision in decisions
+        if decision.outcome is ClassificationOutcome.OUT_OF_SESSION_DATA
+    ]
+    if not excluding:
+        return frozenset()
+    targets: set[tuple[SeriesId, Interval]] = set()
+    for result in classifiable_warnings((provisional.report,)):
+        if result.kind is not CheckKind.UNEXPECTED_BAR or result.series not in source_series:
+            continue
+        if any(
+            decision.covers(result.kind, result.series, result.interval) for decision in excluding
+        ):
+            targets.add((result.series, result.interval))
+    return frozenset(targets)
 
 
 def build_pending_snapshot(
@@ -717,8 +841,13 @@ def reaccept_with_calendar(
     timeframe_defs: Mapping[str, TimeframeDefinition],
     boundaries: AccessBoundaries,
     aggregation_targets: Sequence[tuple[str, str]],
+    excluded: Collection[tuple[SeriesId, Interval]] = frozenset(),
 ) -> PendingSnapshot:
-    """暫定 snapshot に対して受入れの 5〜7 だけを新しいカレンダーで再実行する（D03 §4 の 9）。
+    """暫定 snapshot に対して受入れの 5〜7 だけを再実行する（D03 §4 の 9）。
+
+    `calendar` は再実行に使うカレンダー（分類で版を上げた新版、またはカレンダーを変えない
+    場合は暫定 snapshot と同じ版）。`excluded` はセッション外データ異常として原系列から除外
+    する足の `(系列, 足の区間)`（`out_of_session_exclusions` が決める、D03 §4 の除外規則）。
 
     分類で「休場だった」と判断してカレンダーへ追加し版を上げたとき、報告と partition を
     作り直す必要がある。そのとき**原ファイルは読み直さない**。読み直すと、人間が分類の
@@ -746,7 +875,8 @@ def reaccept_with_calendar(
     if not isinstance(calendar, TradingCalendar):
         raise MarketDataValueError("reaccept_with_calendar requires a TradingCalendar")
 
-    source_bars = _source_series_bars(pending)
+    excluded_set = frozenset(excluded)
+    source_bars = _source_series_bars(pending, excluded=excluded_set)
     if not source_bars:
         raise MarketDataValueError(
             "the provisional snapshot carries no source-series bars; there is nothing to"
@@ -782,18 +912,40 @@ def reaccept_with_calendar(
     )
 
 
-def _source_series_bars(pending: PendingSnapshot) -> dict[SeriesId, tuple[Bar, ...]]:
+def _source_series_bars(
+    pending: PendingSnapshot,
+    *,
+    excluded: frozenset[tuple[SeriesId, Interval]] = frozenset(),
+) -> dict[SeriesId, tuple[Bar, ...]]:
     """暫定 snapshot の partition から原系列の足を集める（上位足は除く）。
 
     上位足は本基盤が生成したもの（出所が `AGGREGATED`）なので、新しいカレンダーで作り
-    直す。原系列の足だけが「原ファイルから来た事実」であり、これを引き継ぐ。
+    直す。原系列の足だけが「原ファイルから来た事実」であり、これを引き継ぐ。`excluded` に
+    挙げた足（セッション外データ異常、D03 §4 の除外規則）は引き継がない。
+
+    除外で原系列の足が1本も残らない系列があれば失敗する。そのまま進めると、他に原系列が
+    あるかどうかで結果が分かれる（他に無ければ「原系列の足が無い」で失敗し、他にあれば
+    その系列と partition だけが黙って消え、`sources` には原ファイルが残る）。どちらの場合も
+    同じ理由で止める。
     """
     by_series: dict[SeriesId, list[Bar]] = {}
+    source_series: set[SeriesId] = set()
     for partition_id, bars in pending.partition_bars.items():
         for bar in bars:
             if bar.provenance.kind is ProvenanceKind.AGGREGATED:
                 continue
+            source_series.add(partition_id.series)
+            if (bar.series, bar.interval) in excluded:
+                continue
             by_series.setdefault(partition_id.series, []).append(bar)
+    emptied = sorted(str(series) for series in source_series - by_series.keys())
+    if emptied:
+        raise MarketDataValueError(
+            "out-of-session exclusions would remove every bar of source series"
+            f" {', '.join(emptied)}; a snapshot cannot keep a source file without its"
+            " series (D03 §4 exclusion rule). Narrow the OUT_OF_SESSION_DATA"
+            " classification or leave the series out of the data source"
+        )
     return {
         series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
         for series, bars in by_series.items()

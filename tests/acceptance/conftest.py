@@ -183,7 +183,7 @@ def _provisional_id(repo: Path) -> str:
 def _classify(repo: Path, provisional: str) -> str:
     decisions = repo / "decisions.yaml"
     # 欠落を1本も作っていないので、人間の分類は1件も要らない（D03 §4 の 9）。
-    decisions.write_text("schema_version: 1\ndecisions: []\n", encoding="utf-8")
+    decisions.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
     return _call(
         [
             "data",
