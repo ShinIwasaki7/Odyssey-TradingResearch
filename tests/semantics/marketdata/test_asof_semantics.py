@@ -21,6 +21,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.asof import (
     AsOfView,
     BarsWindow,
+    DurationWindow,
     ExecutionSeriesView,
     MissingInput,
 )
@@ -653,3 +654,75 @@ def test_the_schedule_refuses_a_series_it_does_not_describe() -> None:
             partition_bars={HOURLY_PARTITION: bars},
             schedule=SCHEDULES[DAILY],
         )
+
+
+# --- 段階3 の2操作（D03 §6.2 v1.6）------------------------------------------
+
+
+def test_history_ending_at_reads_the_same_window_as_history_did_at_the_base_bar() -> None:
+    """待機から再開したときに、待機に入った時点の窓を読み直せる（D05 §6.8 の手順4）。
+
+    同じ基準の足なら、後の判断時刻で呼んでも `history` が当時返した窓と同じになる。
+    `end_offset_bars` は基準の足に対して `history` と同じように当てる。
+    """
+    view = _view()
+    then = UtcTime.parse("2026-01-14T10:00:00Z")
+    later = UtcTime.parse("2026-01-14T15:00:00Z")
+    base = view.expected_latest_key(HOURLY, then)
+    assert base is not None
+    for offset in (0, 1):
+        expected = view.history(HOURLY, BarsWindow(count=3), then, end_offset_bars=offset)
+        again = view.history_ending_at(
+            HOURLY, BarsWindow(count=3), base.bar_start, later, end_offset_bars=offset
+        )
+        assert again == expected
+        assert again != view.history(HOURLY, BarsWindow(count=3), later, end_offset_bars=offset)
+
+
+def test_history_ending_at_an_invisible_base_bar_is_unavailable() -> None:
+    view = _view()
+    at = UtcTime.parse("2026-01-14T10:00:00Z")
+    base = UtcTime.parse("2026-01-14T09:00:00Z")
+    hidden = _view(hourly_skip=(base,))
+    assert isinstance(view.history_ending_at(HOURLY, BarsWindow(count=2), base, at), tuple)
+    missing = hidden.history_ending_at(HOURLY, BarsWindow(count=2), base, at)
+    assert missing == MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
+
+
+def test_history_ending_at_a_future_base_bar_is_a_structural_error() -> None:
+    view = _view()
+    at = UtcTime.parse("2026-01-14T10:00:00Z")
+    with pytest.raises(MarketDataValueError, match="read the future"):
+        view.history_ending_at(
+            HOURLY, BarsWindow(count=2), UtcTime.parse("2026-01-14T11:00:00Z"), at
+        )
+
+
+def test_previous_available_walks_back_from_the_missing_bar() -> None:
+    """遡り（D05 §6.9）: 欠けた足の1本手前から古い側へたどり、最初の有効な足を返す。"""
+    missing_start = UtcTime.parse("2026-01-14T09:00:00Z")
+    gap = UtcTime.parse("2026-01-14T08:00:00Z")
+    view = _view(hourly_skip=(missing_start, gap))
+    at = UtcTime.parse("2026-01-14T10:00:00Z")
+
+    found = view.previous_available(HOURLY, missing_start, at, max_lookback=BarsWindow(count=2))
+    assert not isinstance(found, MissingInput)
+    assert found.bar_start == UtcTime.parse("2026-01-14T07:00:00Z")
+
+    too_short = view.previous_available(HOURLY, missing_start, at, max_lookback=BarsWindow(count=1))
+    assert too_short == MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+
+    by_time = view.previous_available(
+        HOURLY, missing_start, at, max_lookback=DurationWindow(duration=timedelta(hours=3))
+    )
+    assert not isinstance(by_time, MissingInput)
+    assert by_time.bar_start == UtcTime.parse("2026-01-14T07:00:00Z")
+
+
+def test_previous_available_reports_warmup_before_the_data_start() -> None:
+    view = _view()
+    first = WINDOW.start
+    found = view.previous_available(
+        HOURLY, first, UtcTime.parse("2026-01-13T00:00:00Z"), max_lookback=BarsWindow(count=3)
+    )
+    assert found == MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)

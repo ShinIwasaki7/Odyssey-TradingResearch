@@ -635,10 +635,19 @@ _BORROWED_COLUMNS: Final[Mapping[TraceTable, tuple[str, ...]]] = {
         "outcome_diagnoses",
         "outcome_reason_code",
         "outcome_reason_detail",
+        # 段階3 の2つの結末（待機・追い越し）の項目（D05 §3・§6.8・§6.10）。区分タグ付き
+        # union は全変種のフィールドの和集合を列にする（D06 §9.1 の規則2）。
+        "outcome_deadline_at_kind",
+        "outcome_deadline_at_at",
+        "outcome_deadline_at_series",
+        "outcome_deadline_at_remaining",
+        "outcome_by_request_id",
         "target_interval_start",
         "target_interval_end",
         "opportunity_id",
         "position_id",
+        # 段階3 の遡った入力（D05 §6.9）。表17 に独立させるまでは可変長の入れ子の列。
+        "substitutions",
     ),
     TraceTable.OPPORTUNITY_TRANSITIONS: (
         "opportunity_id",
@@ -772,6 +781,8 @@ _BORROWED_KINDS: Final[Mapping[TraceTable, Mapping[str, str]]] = {
         "trigger_names": "list",
         "outcome_output_ids": "list",
         "outcome_diagnoses": "list",
+        "outcome_deadline_at_remaining": "int",
+        "substitutions": "list",
     },
     TraceTable.OPPORTUNITY_TRANSITIONS: {"at_sequence": "int"},
     TraceTable.RISK_ASSESSMENTS: {

@@ -133,10 +133,19 @@ class ResolvedBarsWindow:
 
 @runtime_checkable
 class MarketDataView(Protocol):
-    """判断時刻までに公開された市場データだけを読むビュー（D03 §6.2 の5操作）。
+    """判断時刻までに公開された市場データだけを読むビュー（D03 §6.2 の7操作）。
 
     すべての操作が判断時刻を必須にし、その時刻より後に利用可能になった足は返さない。
     未来参照は構造的に起こらない。
+
+    段階3 で2操作を足した（D05 §6.1・§6.8・§6.9、D03 §6.2 v1.6）。ランタイムが依存する
+    のはこのポートだけなので、ポートに無い操作は呼べない。
+
+    - `history_ending_at`: 待機から再開した評価が、待機に入ったときに固定した基準の足から
+      同じ履歴窓を読み直す（D05 §6.8 の手順4）。`history` を再開時に呼ぶと、判断時刻から
+      期待される最新足を求め直すので窓が後ろへずれる。
+    - `previous_available`: 過去値へ遡る欠損方針（D05 §6.9）が、欠けた期待足の1本手前から
+      古い側へ有効な足を探す。前の足の開始時刻はカレンダーを持つ市場データ層しか数えられない。
     """
 
     def latest_available(self, series: SeriesId, at: UtcTime) -> Bar | MissingInputView: ...
@@ -151,6 +160,25 @@ class MarketDataView(Protocol):
     ) -> tuple[Bar, ...] | MissingInputView: ...
 
     def bar(self, series: SeriesId, bar_start: UtcTime, at: UtcTime) -> Bar | MissingInputView: ...
+
+    def history_ending_at(
+        self,
+        series: SeriesId,
+        window: HistoryWindowView,
+        base_bar_start: UtcTime,
+        at: UtcTime,
+        *,
+        end_offset_bars: int = 0,
+    ) -> tuple[Bar, ...] | MissingInputView: ...
+
+    def previous_available(
+        self,
+        series: SeriesId,
+        before_bar_start: UtcTime,
+        at: UtcTime,
+        *,
+        max_lookback: HistoryWindowView,
+    ) -> Bar | MissingInputView: ...
 
     def expected_latest_key(self, series: SeriesId, at: UtcTime) -> BarKey | None: ...
 

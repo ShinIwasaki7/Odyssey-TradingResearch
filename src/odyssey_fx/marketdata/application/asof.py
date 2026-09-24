@@ -286,23 +286,118 @@ class AsOfView:
         """
         _require_utc(at, "history")
         _require_window(window)
-        if isinstance(end_offset_bars, bool) or not isinstance(end_offset_bars, int):
-            raise MarketDataValueError(
-                f"history() end_offset_bars must be an int, got {end_offset_bars!r}"
-            )
-        if end_offset_bars < 0:
-            raise MarketDataValueError(
-                f"history() end_offset_bars must be >= 0, got {end_offset_bars}"
-            )
-
-        schedule = self._schedule(series)
+        _require_offset(end_offset_bars, "history")
         expected = self.expected_latest_key(series, at)
         if expected is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        return self._window_from(series, window, expected.bar_start, at, end_offset_bars)
 
+    def history_ending_at(
+        self,
+        series: SeriesId,
+        window: HistoryWindowLike,
+        base_bar_start: UtcTime,
+        at: UtcTime,
+        *,
+        end_offset_bars: int = 0,
+    ) -> tuple[Bar, ...] | MissingInput:
+        """基準の足を指定して読む履歴窓（D03 §6.2 v1.6）。
+
+        `history` との違いは基準の求め方だけである。`history` は「`at` における期待される
+        最新足」を基準にし、本操作は**呼び出し側が渡した足**を基準にする。`end_offset_bars`
+        の適用は `history` とまったく同じで、基準の足から `end_offset_bars` 本手前が窓の
+        末尾になる。待機していた評価が再開したとき、待機に入ったときに固定した足から同じ窓
+        を読み直すための操作である（D05 §6.8 の手順4）。
+
+        - 基準の足が `at` の時点で不可視なら `LATEST_BAR_UNAVAILABLE`。
+        - `at` における期待される最新足より後の足を基準にしたら、未来参照なので構造エラー。
+        """
+        _require_utc(at, "history_ending_at")
+        _require_utc(base_bar_start, "history_ending_at")
+        _require_window(window)
+        _require_offset(end_offset_bars, "history_ending_at")
+        expected = self.expected_latest_key(series, at)
+        if expected is None:
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        if expected.bar_start < base_bar_start:
+            raise MarketDataValueError(
+                f"history_ending_at() was asked for a window based on {base_bar_start}, after"
+                f" the latest bar expected at {at} ({expected.bar_start}); that would read the"
+                " future (D03 §6.2)"
+            )
+        bars_view = self._bars()
+        if bars_view.starts_before_data(series, base_bar_start):
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        bars_view.require_covered(series, base_bar_start)
+        if not any(bar.bar_start == base_bar_start for bar in self._visible_bars(series, at)):
+            return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
+        return self._window_from(series, window, base_bar_start, at, end_offset_bars)
+
+    def previous_available(
+        self,
+        series: SeriesId,
+        before_bar_start: UtcTime,
+        at: UtcTime,
+        *,
+        max_lookback: HistoryWindowLike,
+    ) -> Bar | MissingInput:
+        """指定した足の1本手前から古い側へたどり、最初に見つかった有効な足（D03 §6.2 v1.6）。
+
+        過去値へ遡る欠損方針（`USE_PREVIOUS`、D05 §6.9）のための操作である。戦略側は
+        カレンダーにも時間足定義にも到達できないので、前の足の開始時刻を自分で数えられない。
+
+        - `max_lookback` が本数なら、予定上の足をその本数までたどる。
+        - 経過時間なら、`at` からその時間だけさかのぼった範囲（足の終了時刻が
+          `(at - duration, at]` に入る足。`history` の経過時間窓と同じ数え方）までたどる。
+          **経過時間を本数へ直すのはビューの側**である。
+        - 範囲に有効な足が無ければ `INPUT_MISSING_OR_INVALID`、見つかる前にデータ開始前へ
+          及べば `WARMUP_INSUFFICIENT`。上限に既定値は置かない。
+        """
+        _require_utc(at, "previous_available")
+        _require_utc(before_bar_start, "previous_available")
+        _require_window(max_lookback)
+        schedule = self._schedule(series)
+        definition = schedule.timeframe_def
+        bars_view = self._bars()
+        visible = {bar.bar_start: bar for bar in self._visible_bars(series, at)}
+        remaining: int | None = None
+        lower_bound: UtcTime | None = None
+        if isinstance(max_lookback, BarsWindowLike):
+            remaining = max_lookback.count
+        else:
+            lower_bound = at - max_lookback.duration
+        probe = definition.boundaries(before_bar_start - timedelta(microseconds=1)).start
+        for _ in range(_SCHEDULE_PROBE_LIMIT):
+            interval = definition.expected_interval(schedule.calendar, probe)
+            if interval is not None:
+                if remaining is not None:
+                    if remaining <= 0:
+                        return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+                    remaining -= 1
+                elif lower_bound is not None and interval.end <= lower_bound:
+                    return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+                if bars_view.starts_before_data(series, interval.start):
+                    return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+                bars_view.require_covered(series, interval.start)
+                found = visible.get(interval.start)
+                if found is not None:
+                    return found
+            probe = definition.boundaries(probe - timedelta(microseconds=1)).start
+        return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)  # pragma: no cover
+
+    def _window_from(
+        self,
+        series: SeriesId,
+        window: HistoryWindowLike,
+        base_start: UtcTime,
+        at: UtcTime,
+        end_offset_bars: int,
+    ) -> tuple[Bar, ...] | MissingInput:
+        """基準の足から窓を切る（`history` と `history_ending_at` に共通の手順）。"""
+        schedule = self._schedule(series)
         # 期待される足の開始時刻を新しい順に並べる。欠損を飛ばさず、期待どおりの並びを作る。
         expected_starts = _expected_starts_backwards(
-            schedule, expected.bar_start, _needed_bars(window, end_offset_bars)
+            schedule, base_start, _needed_bars(window, end_offset_bars)
         )
         if expected_starts is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
@@ -340,6 +435,17 @@ class AsOfView:
             collected.append(found)
         collected.reverse()  # 古い順に返す。
         return tuple(collected)
+
+
+def _require_offset(end_offset_bars: int, operation: str) -> None:
+    if isinstance(end_offset_bars, bool) or not isinstance(end_offset_bars, int):
+        raise MarketDataValueError(
+            f"{operation}() end_offset_bars must be an int, got {end_offset_bars!r}"
+        )
+    if end_offset_bars < 0:
+        raise MarketDataValueError(
+            f"{operation}() end_offset_bars must be >= 0, got {end_offset_bars}"
+        )
 
 
 def _require_utc(value: UtcTime, operation: str) -> None:

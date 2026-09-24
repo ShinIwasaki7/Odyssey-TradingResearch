@@ -1897,11 +1897,16 @@ class BacktestEngine:
             is_run_end=True,
         )
         result = self._runtime.step(batch)
-        if result.outputs or result.evaluations or result.proposals or result.management_requests:
+        if result.outputs or result.proposals or result.management_requests:
             raise KernelValueError(
                 "the end-of-run step must not produce new judgements; only the terminal"
-                " transitions of the remaining opportunities belong there (D06 §10.2)"
+                " transitions of the remaining opportunities and the closing of the waiting"
+                " requests belong there (D06 §10.2, D05 §6.1)"
             )
+        # 残っていた待機要求は見送りで決着する（D05 §6.1）。その評価記録を表2 へ渡す
+        # （D06 §4.2 の手順11）。
+        for evaluation in result.evaluations:
+            self._emit(TraceTable.EVALUATIONS, evaluation)
         for transition in result.transitions:
             self._opportunities.add(transition.opportunity_id)
             # 末尾の処理点だけは**エンジンとランタイムが同じフェーズを使う**。ランタイムは

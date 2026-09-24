@@ -8,13 +8,23 @@
 写して持つ。写さないと「同じバッチで同じ Exit を2つの建玉について評価した」場合に、どの
 記録がどの建玉のものか要求の識別子からは復元できない。
 
-段階2の終着は3つだけである（待機と追い越しは段階3）。
+段階2の終着は3つだった。段階3 で2つ足す（D05 §6.4・§6.8・§6.10）。
 
 | 終着 | 記録 |
 |---|---|
 | `Evaluated` | 生成した出力の識別子の列 |
 | `Skipped` | 欠損の診断 |
-| `Failed` | 理由（段階2はデータ誤りのみ） |
+| `Failed` | 理由（データ誤りのみ） |
+| `Waiting` | 入力の到着を待っている（**終着ではなく途中経過**。同じ要求が後で決着する） |
+| `Superseded` | 新しい足の要求に追い越されて閉じた（押しのけた側の要求の識別子） |
+
+待機して決着した要求は、同じ要求識別子で評価記録が2件になる。評価識別子は毎回新しく
+採番するので記録は一意である（D05 §6.8）。
+
+## 遡った入力の記録
+
+過去値へ遡る欠損方針（`USE_PREVIOUS`）で実際に使った観測を、評価記録の
+`substitutions` に1件ずつ残す（D05 §6.9、上位設計書 §4.3.13 が要求する記録）。
 
 ## 解決済み入力
 
@@ -43,6 +53,7 @@ from odyssey_fx.common.ids import (
 )
 from odyssey_fx.common.reason import MissingInputReason, Reason, ReasonCode
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.marketdata.domain.bar import BarKey
 from odyssey_fx.strategy.compiler.compiled import (
     ResolvedContextSource,
     ResolvedMarketSource,
@@ -59,6 +70,12 @@ from odyssey_fx.strategy.declarations.validation import (
 from odyssey_fx.strategy.records.payloads import ManagementAction, OrderIntent, ProtectionLevels
 from odyssey_fx.strategy.records.records import OutputRecord
 from odyssey_fx.strategy.runtime.opportunities import OpportunityTransition
+from odyssey_fx.strategy.runtime.waiting import (
+    WaitDeadline,
+    WaitEvent,
+    WaitUntilBars,
+    WaitUntilTime,
+)
 
 __all__ = [
     "ContextSnapshot",
@@ -75,8 +92,11 @@ __all__ = [
     "ResolvedInputs",
     "RuntimeStepResult",
     "Skipped",
+    "SubstitutedInput",
+    "Superseded",
     "ValueSample",
     "ValueWindow",
+    "Waiting",
 ]
 
 
@@ -102,16 +122,23 @@ class MissingInputDiagnosis:
 
 @dataclass(frozen=True, slots=True)
 class ValueSample:
-    """繰り返し参照する値の1件（D05 §6.3）。
+    """繰り返し参照する値の1件（D05 §6.3・§6.7）。
 
-    `freshness_time` は鮮度の基準時刻で、確定足なら足の終了時刻、出力参照ならその出力を
-    生んだ評価の判断時刻である。鮮度上限の判定はランタイムが行う（D03 §6.2 が委ねた）。
+    `freshness_time` は鮮度の基準時刻で、確定足なら足の終了時刻、出力参照なら上流の
+    `Observation.freshness_time`（その出力が観測した足の終了時刻。段階3、D05 §6.7）である。
+    鮮度上限の判定はランタイムが行う（D03 §6.2 が委ねた）。
+
+    `observation_interval` と `subject` は段階3 で足した（D05 §3 の型表の改訂）。市場データ
+    なら射影元の足の区間と鍵、出力参照なら上流の `Observation` の同名のフィールドである。
+    観測区間の一致（`AlignmentRequirement`）の検査がこれを読む（D05 §6.7）。
     """
 
     payload: object
     source: ResolvedSource
     freshness_time: UtcTime
     source_output_id: OutputId | None = None
+    observation_interval: Interval | None = None
+    subject: BarKey | None = None
     kind: str = "VALUE_SAMPLE"
 
     def __post_init__(self) -> None:
@@ -120,6 +147,12 @@ class ValueSample:
         require_instance(self.freshness_time, UtcTime, "ValueSample.freshness_time")
         if self.source_output_id is not None:
             require_instance(self.source_output_id, OutputId, "ValueSample.source_output_id")
+        if self.observation_interval is not None:
+            require_instance(
+                self.observation_interval, Interval, "ValueSample.observation_interval"
+            )
+        if self.subject is not None:
+            require_instance(self.subject, BarKey, "ValueSample.subject")
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,8 +292,93 @@ class Failed:
             )
 
 
-#: 区分タグ付き union（D05 §6.4）。
-EvaluationOutcome = Evaluated | Skipped | Failed
+@dataclass(frozen=True, slots=True)
+class Waiting:
+    """入力の到着を待っている（D05 §6.8）。**終着ではなく途中経過**である。
+
+    同じ要求が後で `Evaluated` / `Skipped` / `Failed` / `Superseded` のいずれかで決着する。
+    待機に入ったことを1件の評価記録として残すのは、待機中に run が落ちても何を待って
+    いたかが判断履歴に残るようにするためである（D05 §6.8）。
+    """
+
+    diagnoses: tuple[MissingInputDiagnosis, ...]
+    deadline_at: WaitDeadline
+    kind: str = "WAITING"
+
+    def __post_init__(self) -> None:
+        require_kind(self.kind, "WAITING", "Waiting.kind")
+        require_tuple_of(self.diagnoses, MissingInputDiagnosis, "Waiting.diagnoses")
+        if not self.diagnoses:
+            raise KernelValueError(
+                "Waiting.diagnoses must not be empty; an evaluation only waits because"
+                " something is missing (D05 §6.8)"
+            )
+        if not isinstance(self.deadline_at, (WaitUntilTime, WaitUntilBars)):
+            raise KernelValueError(
+                f"Waiting.deadline_at must be a WaitDeadline, got {self.deadline_at!r}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class Superseded:
+    """新しい足の要求に追い越されて閉じた（D05 §6.10）。
+
+    `by_request_id` は押しのけた側、すなわちいちばん新しい足の要求である。判断履歴から
+    「どの足の問いがどの足の問いに置き換わったか」を辿れる（T02 §9）。
+    """
+
+    by_request_id: RequestId
+    kind: str = "SUPERSEDED"
+
+    def __post_init__(self) -> None:
+        require_kind(self.kind, "SUPERSEDED", "Superseded.kind")
+        require_instance(self.by_request_id, RequestId, "Superseded.by_request_id")
+
+
+#: 区分タグ付き union（D05 §6.4。段階3 で `Waiting` と `Superseded` を足した）。
+EvaluationOutcome = Evaluated | Skipped | Failed | Waiting | Superseded
+
+
+@dataclass(frozen=True, slots=True)
+class SubstitutedInput:
+    """過去値へ遡って実際に使った観測1件（D05 §6.9）。
+
+    `source_index` はその入力の接続元の中での位置（0 起点）である。1つの入力名に複数の
+    接続元を書けるため、入力名だけでは一意に読めない（D04 §4.1 の `arity`）。
+    `used_bar_key` と `used_output_id` はどちらか一方だけが値を持つ。段階3 で遡れるのは
+    市場データ参照だけなので（D05 §6.9、コンパイラの検査 c）、実際には足の鍵が入る。
+    """
+
+    input_name: str
+    source_index: int
+    source: ResolvedSource
+    freshness_time: UtcTime
+    reason: MissingInputReason
+    used_bar_key: BarKey | None = None
+    used_output_id: OutputId | None = None
+
+    def __post_init__(self) -> None:
+        require_identifier(self.input_name, "SubstitutedInput.input_name")
+        if isinstance(self.source_index, bool) or not isinstance(self.source_index, int):
+            raise KernelValueError(
+                f"SubstitutedInput.source_index must be an int, got {self.source_index!r}"
+            )
+        if self.source_index < 0:
+            raise KernelValueError(
+                f"SubstitutedInput.source_index must be >= 0, got {self.source_index}"
+            )
+        _require_source(self.source, "SubstitutedInput.source")
+        require_instance(self.freshness_time, UtcTime, "SubstitutedInput.freshness_time")
+        require_instance(self.reason, MissingInputReason, "SubstitutedInput.reason")
+        if self.used_bar_key is not None:
+            require_instance(self.used_bar_key, BarKey, "SubstitutedInput.used_bar_key")
+        if self.used_output_id is not None:
+            require_instance(self.used_output_id, OutputId, "SubstitutedInput.used_output_id")
+        if (self.used_bar_key is None) == (self.used_output_id is None):
+            raise KernelValueError(
+                "SubstitutedInput names exactly one observation it used: a bar or an output"
+                " (D05 §6.9)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +394,7 @@ class EvaluationRecord:
     target_interval: Interval | None = None
     opportunity_id: OpportunityId | None = None
     position_id: PositionId | None = None
+    substitutions: tuple[SubstitutedInput, ...] = ()
 
     def __post_init__(self) -> None:
         require_instance(self.request_id, RequestId, "EvaluationRecord.request_id")
@@ -283,7 +402,7 @@ class EvaluationRecord:
         require_identifier(self.instance_id, "EvaluationRecord.instance_id")
         require_tuple_of(self.trigger_names, str, "EvaluationRecord.trigger_names")
         require_instance(self.decision_time, UtcTime, "EvaluationRecord.decision_time")
-        if not isinstance(self.outcome, (Evaluated, Skipped, Failed)):
+        if not isinstance(self.outcome, (Evaluated, Skipped, Failed, Waiting, Superseded)):
             raise KernelValueError(
                 f"EvaluationRecord.outcome must be an EvaluationOutcome, got {self.outcome!r}"
             )
@@ -293,6 +412,7 @@ class EvaluationRecord:
             require_instance(self.opportunity_id, OpportunityId, "EvaluationRecord.opportunity_id")
         if self.position_id is not None:
             require_instance(self.position_id, PositionId, "EvaluationRecord.position_id")
+        require_tuple_of(self.substitutions, SubstitutedInput, "EvaluationRecord.substitutions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,13 +456,19 @@ class ManagementRequest:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeStepResult:
-    """1回の `step` が返すもの（D05 §6.2 の手順10）。"""
+    """1回の `step` が返すもの（D05 §6.2 の手順10）。
+
+    段階3 で待機の出来事の列（`wait_events`）を足した（D05 §3・§6.8）。エンジンはこれを
+    判断履歴の表16 へ渡す（D06 §4.2・§9.2）。取引機会の有効性の再検査と確認試行の列は、
+    確認経路と一緒に足す。
+    """
 
     outputs: tuple[OutputRecord[object], ...] = ()
     evaluations: tuple[EvaluationRecord, ...] = ()
     proposals: tuple[EntryProposal, ...] = ()
     management_requests: tuple[ManagementRequest, ...] = ()
     transitions: tuple[OpportunityTransition, ...] = ()
+    wait_events: tuple[WaitEvent, ...] = ()
 
     def __post_init__(self) -> None:
         require_tuple_of(self.outputs, OutputRecord, "RuntimeStepResult.outputs")
@@ -352,3 +478,4 @@ class RuntimeStepResult:
             self.management_requests, ManagementRequest, "RuntimeStepResult.management_requests"
         )
         require_tuple_of(self.transitions, OpportunityTransition, "RuntimeStepResult.transitions")
+        require_tuple_of(self.wait_events, WaitEvent, "RuntimeStepResult.wait_events")

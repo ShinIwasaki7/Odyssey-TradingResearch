@@ -49,6 +49,7 @@ from odyssey_fx.strategy.records.payloads import (
     SetTakeProfit,
     TradeDirection,
 )
+from odyssey_fx.strategy.records.records import Observation
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 from odyssey_fx.strategy.runtime.opportunities import OpportunityState
 from odyssey_fx.strategy.runtime.ports import (
@@ -163,12 +164,26 @@ def test_the_levels_match_the_paper_trace() -> None:
 
     result = evaluator.step(_bar_close_batch())
 
-    levels = {
+    # 段階3 のランタイムは繰り返し参照する値を観測（`Observation`）で包む（D05 §6.7、
+    # T02 §14 #17）。水準そのものは包みの中の値で、観測した足は T01 の確定足である。
+    observations = {
         record.producer.instance_id: record.payload
         for record in result.outputs
         if record.producer.output_name == "level"
     }
+    assert all(isinstance(item, Observation) for item in observations.values())
+    levels = {
+        name: item.value for name, item in observations.items() if isinstance(item, Observation)
+    }
     assert levels == {"breakout_level": BREAKOUT_LEVEL, "stop_level": STOP_LEVEL}
+    last_bar = _bars()[-1]
+    for item in observations.values():
+        assert isinstance(item, Observation)
+        assert item.subject == last_bar.key
+        assert item.observation_interval == last_bar.interval
+        # 両水準とも当該足を除く窓（`exclude_latest_bars=1`）なので、窓の末尾は1本前の足で
+        # あり、鮮度はその足の終了時刻＝当該足の開始時刻になる（D05 §6.7 の代表の規則）。
+        assert item.freshness_time == last_bar.bar_start
 
 
 def test_the_opportunity_carries_the_symbol_interval_and_reference_level() -> None:
