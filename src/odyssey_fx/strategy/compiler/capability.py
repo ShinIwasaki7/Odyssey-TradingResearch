@@ -221,7 +221,32 @@ def check_missing_policies(
                         check_id="#10",
                     )
                 )
+    errors += _check_validity_bindings(definition)
     return tuple(errors)
+
+
+def _check_validity_bindings(definition: StrategyDefinition) -> list[CompileError]:
+    """取引機会の有効性の束縛に遡りを書いた宣言を拒否する（D04 §12 #10、D05 §6.9）。
+
+    束縛の読む先は必ず出力参照（`ValidityBinding.source` は `OutputRef`）であり、出力参照は
+    遡る先の履歴を持たない（D04 §12 #10 の「出力参照の遡りは許さない」）。入力の検査だけでは
+    この組合せを見落とし、ランタイムが遡れない宣言がコンパイルを通ってしまう。
+    """
+    errors: list[CompileError] = []
+    for index, binding in enumerate(definition.opportunity_validity.bindings):
+        if isinstance(binding.on_missing, UsePrevious):
+            errors.append(
+                _error(
+                    None,
+                    f"opportunity_validity.bindings[{index}].on_missing",
+                    "going back to a previous value (UsePrevious) may not be declared on a"
+                    f" validity binding: its source {binding.source} is another component's"
+                    " output, which keeps only the latest output, so there is nothing to go"
+                    " back to (D05 §6.9)",
+                    check_id="#10",
+                )
+            )
+    return errors
 
 
 # --- 検査 f（D04 §12 #13）: 出力参照を履歴窓で読む接続 ------------------------

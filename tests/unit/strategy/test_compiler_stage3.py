@@ -749,6 +749,28 @@ def test_going_back_on_an_output_reference_is_rejected() -> None:
     assert _failed(result) == [("#10", CompileRejection.UNSUPPORTED_CONFIGURATION)]
 
 
+def test_going_back_on_a_validity_binding_is_rejected() -> None:
+    """検査 c: 有効性の束縛は出力参照を読むので、遡りは書けない（Codex 3巡目の指摘）。"""
+    definition = _replace(
+        strategy_b(),
+        opportunity_validity=OpportunityValiditySpec(
+            bindings=(
+                ValidityBinding(
+                    source=OutputRef("daily_above_ema", "condition"),
+                    mode=ValidityMode.REQUIRE_UNTIL_ORDER_REQUEST,
+                    on_missing=_GO_BACK,
+                ),
+            )
+        ),
+    )
+
+    result = _compile(definition)
+
+    assert _failed(result) == [("#10", CompileRejection.UNSUPPORTED_CONFIGURATION)]
+    assert isinstance(result, CompileFailed)
+    assert result.errors[0].location.field_path == "opportunity_validity.bindings[0].on_missing"
+
+
 def test_going_back_on_a_history_window_is_rejected() -> None:
     """検査 c: 遡りは固定本数の窓の穴埋めには使えない（D04 §6.3）。"""
     contract = replace(
