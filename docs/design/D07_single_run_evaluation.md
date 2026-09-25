@@ -1,7 +1,7 @@
 # D07: 単一実行の評価境界設計（`odyssey_fx.evaluation`: domain.metrics / domain.status / application.evaluate_run / adapters）
 
 作成日: 2026-09-21
-状態: **v2.0（2026-09-25、段階4 の設計 PR）。承認待ち**。段階2 の範囲（v0.1〜v1.4）は**承認（2026-09-21、PR #17）**済みで、本改訂は原則として変えていない（例外4件は第1.2節と第13節）。
+状態: **v2.0（2026-09-25、段階4 の設計 PR）。承認待ち**。段階2 の範囲（v0.1〜v1.4）は**承認（2026-09-21、PR #17）**済みで、本改訂は原則として変えていない（例外5件は第1.2節と第13節）。
 v2.0（2026-09-25）: 段階4「単一実行評価の整備」の設計を足した。人間の決定6件（2026-09-25。第16.3節）を写し、決定に含まれない設計判断を要決定 Q7〜Q13（第26節）として挙げ、**同日に人間が7件とも決定した**（Q7 だけは推奨ではない値）。あわせて、PR #40 が必須表に残した空欄のうち本書の担当4件（R1-D07-1・2・4・5）を埋めた（第10.1.1節・第9.3節）。中身は、(1) **指標集合 v2**（年率化リターン・年率化シャープレシオ・プロフィットファクター・平均取引損益の4件を十進数のまま足す。第5.5節）、(2) **取引単位の費用**と入場費用を含む取引損益（第7.3節）、(3) 待機をはさんだ評価要求を**要求単位で数える集計**（第6.3節）、(4) 整合検査の結果の**3区分（合格・不合格・読めなかった）**（第10.4節。AGENTS.md の後続対処 R5）、(5) **実験設定の書式 v2**（第18節）、(6) **実験の記録票と結末記録**（第19節）、(7) **研究ポリシー v1**（事前固定の検査と複雑性の上限。第20節）、(8) **別プロセスでの再現**（第21節）、(9) **人間向けレポート**（第22節）、(10) **実データでの実行**（第23節）、(11) **封印期間の許可判定を段階5 へ送った記録**（第24節）。実装は4本の PR に分け、各 PR が実装する設計節を第17.2節に置いた。第1〜16節の番号は変えていない。
 v1.5（2026-09-25、PR #40）: 設計文書の必須表（R1（PR #26 承認）。全体計画書 §8.5）を加えた（第1.2節の末尾に置き場所の一覧、第9.3節に値の伝播表、第10.1.1節に状態×出来事表）。本文の規則は変えていない。表を埋める途中で本文から埋められないマスが5件見つかったので、「要決定」として各表の直後に挙げた（R1-D07-1〜5）。
 v1.4（2026-09-23）: 検証戦略 B の紙上トレース [T02](../traces/T02_paper_trace_strategy_b.md) が、段階3 の判断履歴を本書が読むとどうなるかを確かめた結果を2か所に足した。(1) **段階3 で足される4表（待機の出来事・遡った入力・確認試行・有効性の再検査）を本書は読まない**（第4.2節。読まない表は合計10表になる）。(2) **評価の結果区分の集計は、段階3 では語彙が5語になり（0件の行も出す。出さないと遅延シナリオごとに行の集合が変わる）、その合計が評価要求の数ではなく評価記録の数になる**（第6.1節）。**指標15件の値はどちらでも変わらないが、段階3 の実装で段階2 の run を評価すると集計に0件の行が2行増える**ので、評価側の固定出力（golden）は更新の対象になる。v1.3（2026-09-22、PR #20）: 段階2 の実装（PR #20）が残した**仮置き事項8件に人間の決定が出た**ので本文へ反映した。(1) 建玉を保有していた時間の割合（第5.2節の #9）は**完了取引だけ**を数える。式の本文にあった「未決済建玉は run 末尾までを数える」を削り、同じ節の冒頭の `Σ` の定義（完了した取引についての合計）と検算値 `0.0078125` に揃えた。これで**段階2 の指標15件すべてが T01 の検算値と一致する**。(2) 読む列（第4.2節）に**8列**を足した。処理点を組み立てる7列（表11 の `opened_at_phase` / `opened_at_sequence`、表9 の `processed_at_phase` / `processed_at_sequence`、表3 の `at_time` / `at_phase` / `at_sequence`）と、不利約定幅の符号に要る表7 の `side` である。(3) 評価 manifest の `run_manifest_ref`（第8.3節）は入力とポリシーの群のダイジェスト（`ConfigDigest`）である。(4) 取引機会の終端理由の語彙（第6.1節）は `RUN_END` を含む**8語**であり、語彙に無い鍵も行として残す。(5) 拒否（`REJECTED`）の run でも整合検査を7件実施する（第10.1節。末尾の集計と比べる C5 だけ実施しない）。(6) `EvaluateRun`（第3節）は `Protocol` ではなく具体クラスである。**未確定として残した項目は無い**。v1.1（2026-09-21、PR #17）: 第15節の改訂依頼1〜3 に対する人間の決定（D06 の Q12〜Q14、いずれも選択肢1）が出たため、**同じ PR で D06 を v1.2 に改訂し、本書の未確定箇所をすべて閉じた**。(1) 第4.2節の † を付けていた列名が確定した（平坦化規則の確定による。`decision_kind` は規則どおり `kind` になった）。(2) run 中の含み損益の評価価格が確定し、**最大ドローダウン（含み損益込み、#5・#6）の検算値が求まった**（`1,312 JPY` / `0.001312`）。これにより**段階2の指標15件すべてが紙上トレース [T01](../traces/T01_paper_trace.md) の数値で手で確かめられる**（従来は13件）。検算に必要な `equity` の全値は T01 v1.1（第9.4節）に足した。(3) 約定1件ごとの費用が区分別の金額列として読めるようになった（読むのは本書 v0.2・段階4）。**第15節に未実施の改訂依頼は残っていない**。v1.0（2026-09-21）: 第16節の要決定 Q1〜Q6 を人間がすべて決定し（6件すべてが提示時の推奨案である選択肢1）、本文へ反映した。**未決の項目は残っていない**。決定に伴い、**同じ PR で正本を1件改訂した**: 結果 DTO から資産推移の2項目（`balance_series` / `equity_series`）を落とす改訂（D06 §9.4、v1.1。第15節の改訂依頼4。D06 §9.4 が既に定めた「集計前のレコードは表のパス経由で渡し、結果 DTO の中で集計しない」から一意に導ける補完であり、設計の選択は伴わない）。第15節の改訂依頼1〜3 は設計の選択を含むためこの時点では実施せず、v1.1 で解消した。v0.1（2026-09-21）: 段階2（検証戦略 A の単一 run）の結果を、再現可能に・数値で・swap 未計上と明記して出すために必要な**境界**だけを決める。指標を将来まで書き切ることは目的にしない（全体計画 §6 D-2「D05 と D07 の将来機能をすべて書き切る必要はない」）。ADR-0016 条件2 のうち「D07 の単一実行評価境界」を本書で充足する。第16節に決定の一覧を置く。 v1.2（2026-09-22、PR #19）: 判断履歴の数値の列が人の読める固定小数表記になったことを第4.3節に注記した（D06 §9.1 v1.3）。**読む列の名前と顔ぶれは変わらず**、`Decimal(文字列)` の往復も変わらないため、指標・集計・整合検査はいずれも影響を受けない。
@@ -57,7 +57,7 @@ D04・D05・D06 と同じ方針を引き継ぐ。同じ語彙を2か所に定義
 
 | 列 | 呼び方 | v2.0 での扱い |
 |---|---|---|
-| 3列目 | **段階2 で確定**（v1.0〜v1.4） | 承認済み。**本改訂では原則として変えない**。ここへの指摘は「段階2 の確定への異議」として記録し、本 PR では直さない。**例外は4件**で、いずれも人間の決定、承認済みの根本対処、または要決定に基づく: (a) 完了取引の損益（#2）に入場費用を含める改訂（第7.3節。v1.x が「本書 v0.2 で外す」と予告していた注記 `ENTRY_COST_EXCLUDED` の解除）、(d) 取引の勝敗（第5.2節の #4 と `TradeRecord.outcome`）を入場費用込みの取引損益 `trade_profit` の符号で決める改訂（第7.3節。Q10 決定）、(b) 整合検査の結果を3区分にする改訂（第10.4節。AGENTS.md の後続対処 R5、2026-09-24 の人間の承認）、(c) 封印期間の許可判定（`holdout_gate`）の担当を本書から段階5 の D09 へ移す改訂（第24節。2026-09-25 の人間の決定2）。4件とも第13節に差異として挙げる |
+| 3列目 | **段階2 で確定**（v1.0〜v1.4） | 承認済み。**本改訂では原則として変えない**。ここへの指摘は「段階2 の確定への異議」として記録し、本 PR では直さない。**例外は5件**で、いずれも人間の決定、承認済みの根本対処、または要決定に基づく: (a) 完了取引の損益（#2）に入場費用を含める改訂（第7.3節。v1.x が「本書 v0.2 で外す」と予告していた注記 `ENTRY_COST_EXCLUDED` の解除）、(d) 取引の勝敗（第5.2節の #4 と `TradeRecord.outcome`）を入場費用込みの取引損益 `trade_profit` の符号で決める改訂（第7.3節。Q10 決定）、(b) 整合検査の結果を3区分にする改訂（第10.4節。AGENTS.md の後続対処 R5、2026-09-24 の人間の承認）、(c) 封印期間の許可判定（`holdout_gate`）の担当を本書から段階5 の D09 へ移す改訂（第24節。2026-09-25 の人間の決定2）、(e) 評価の識別子（`RunEvaluationId`）の算出元に、評価が受け取った取引カレンダーの識別と版を足す改訂（第9.2節。Q8 決定でカレンダーが評価の入力になったことの帰結）。5件とも第13節に差異として挙げる |
 | 4列目 | **段階4 で本改訂（v2.0）が決めること** | **レビュー対象範囲**。ここへの指摘を直す |
 | 5列目 | **後続が決めること** | 対象外（担当へ）として記録し、本書では直さない |
 
@@ -158,9 +158,10 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `TradeRecord` | `domain.metrics` | レコード | 段階2 の16フィールド＋`entry_commission` / `entry_slippage_in_price` / `entry_spread_in_price` / `close_commission` / `close_slippage_in_price` / `close_spread_in_price`（いずれも `Money \| None`。`None` はその区分の費用記録が無いこと。D06 §9.2 の表9）＋`trade_profit: Money`。`outcome` は `trade_profit` の符号で決める | §7.3 |
 | `CategoryKind` | `domain.metrics` | enum | 第6.1節の7件＋`EVALUATION_REQUEST_FINAL_OUTCOME`（第6.3節） | §6.3 |
 | `ConsistencyCheckResult` | `domain.status` | レコード | `check: str` / `level: CheckLevel` / `outcome: CheckOutcome` / `table: TraceTable \| None` / `expected: str` / `observed: str`（`passed: bool` を `outcome` に置き換える） | §10.4 |
-| `EvaluationManifest` | `application.manifest` | レコード | 段階2 の項目＋`unreadable_check_count: int`（`outcome` が `UNREADABLE` の検査の件数）。run manifest から写す5項目（`run_manifest_ref` / `run_code_digest` / `run_status` / `run_failure_reason` / `account_currency`）は `None` を許す（run manifest が読めないとき。§10.1.1 の R1-D07-4） | §10.4 |
+| `EvaluationManifest` | `application.manifest` | レコード | 段階2 の項目＋`unreadable_check_count: int`（`outcome` が `UNREADABLE` の検査の件数）＋`calendar_ref`（評価が受け取った取引カレンダーの識別と版 `(id, version)`。D03 §7.4 の値の伝播表の主キーと同じ組。`RunEvaluationId` の算出元。第9.2節）。run manifest から写す5項目（`run_manifest_ref` / `run_code_digest` / `run_status` / `run_failure_reason` / `account_currency`）は `None` を許す（run manifest が読めないとき。§10.1.1 の R1-D07-4） | §10.4 |
 | `ManifestReadFailure` | `application.ports` | レコード | `run_id: RunId` / `detail: str`（読めなかった理由。正規化エンコード文字列） | §10.1.1 |
-| `ResultRepository` | `application.ports` | Protocol | 段階2 の操作のうち `read_manifest(run_id: RunId) -> RunManifest \| ManifestReadFailure` に改める（ファイルが無い・壊れているときに例外にしない） | §10.1.1 |
+| `ResultRepository` | `application.ports` | Protocol | 段階2 の操作のうち `read_manifest(run_id: RunId) -> RunManifest \| ManifestReadFailure` に改める（ファイルが無い・壊れているときに例外にしない）。**`read_result(run_id: RunId) -> BacktestResult \| ResultReadFailure` を足す**（`runs/<run_id>/result.json` を読む。第4.1節の v2.0 段落） | §4.1・§10.1.1・§19.6 |
+| `ResultReadFailure` | `application.ports` | レコード | `run_id: RunId` / `detail: str`（読めなかった理由。正規化エンコード文字列）。`ManifestReadFailure` と同じ形 | §4.1 |
 | `EvaluateRun` | `application.evaluate_run` | 具体クラス | `evaluate(result: BacktestResult, repository: ResultRepository, metric_set_version: int, calendar: TradingCalendar) -> EvaluationReport`（Q8 決定）。カレンダーの渡し方は第4.1節 | §4.1・§5.5 |
 | `CheckOutcome` | `domain.status` | enum | `PASSED` / `FAILED` / `UNREADABLE`。整合検査と研究ポリシーの検査が共有する | §10.4・§20.3 |
 | `ExperimentStatus` | `domain.experiment` | enum | `COMPLETED` / `REJECTED_BY_POLICY` / `FAILED_POST_RUN_CHECK` | §19.4 |
@@ -207,6 +208,11 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 **v2.0（段階4）: 取引カレンダーを4つめの入力に加える**【提案】（Q8 決定）。年率化（#16）と日次の資産系列（#17）は「取引日」で数える必要があり、取引日の区切り（NY 17時、休場日を除く）は取引カレンダー（D03 §3.4）の規則である。**カレンダーは市場データではない**ので、Q1 の決定が退けた「市場データを読み直す経路」（as-of の規則とアクセス分類の許可を評価側にも置くこと）は生じない。評価は `EvaluateRun.evaluate` の引数としてカレンダーを受け取り、**run manifest の `calendar_ref` と一致すること**を致命の整合検査 C10（第10.4節）で確かめる。一致しないカレンダーで数えると、run と評価で別の取引日を使うことになる。
 
 **カレンダーの渡し方**【提案】: run manifest は `calendar_ref`（識別と版）だけを持ち本文を持たないので、評価の呼び出し側がカレンダーを読み込んで渡す。(a) **`evaluate` コマンドに `--calendar <YAML>` を必須の引数として足す**（段階2 の `run` コマンドと同じ渡し方）。(b) `experiment run` / `experiment reproduce` は記録票の `resolved_files` の `calendar` の本文から読み込む（第19.2節）。どちらも C10 で `calendar_ref` との一致を確かめ、違えば評価は `FAILED` になる（黙って別の取引日で数えない）。
+
+**v2.0（段階4）: 保存済みの `BacktestResult` を読む操作を `ResultRepository` に足す**【提案】。入力1 の「`ResultRepository` が読んだ値」を読む操作が、段階2 のポートには無かった（段階2 の実装は `fs_store` の具体クラスにだけ `read_result` を置き、`app` の `evaluate` コマンドがそれを呼んでいる）。段階4 では**アプリケーション層の `RunExperiment` が、既存の run 成果物を再利用するとき（第19.6節の手順2）に保存済みの結果を読む**ので、ポートの操作にする。
+- 操作: `read_result(run_id: RunId) -> BacktestResult | ResultReadFailure`。読む先は **`runs/<run_id>/result.json`**（JSON）で、保存先と形式の正本は D06 §9.1・§9.4（v1.11、R1-D06-3。2026-09-25 の人間の決定）である。本書はファイルの形式を再定義しない。系列の時間足は同じディレクトリの `manifest.json` の定義を使う（同じく D06 §9.1）。
+- **読めないとき（ファイルが無い・壊れている・中身の `run_id` が引数と違う）は例外にせず `ResultReadFailure` を返す**（`read_manifest` の R1-D07-4 と同じ扱い）。ただし `BacktestResult` は評価の入力1 そのものなので、`ManifestReadFailure` と違って**評価を始められない**。呼び出し側の扱いは2つだけである: (a) `evaluate` コマンドは読込の誤りとして終了コード 2 で終わる（評価の成果物は書かない。段階2 の `evaluate` の引数の誤りと同じ）、(b) `RunExperiment` は「既存の成果物を再利用できない」として第19.6節の手順3（拒否。終了コード 5）へ進む。
+- 実装は PR 3（第17.2節）で、段階2 の `fs_store` の `read_result` をこの操作に移す。
 
 ### 4.2 読む表と列【提案】
 
@@ -471,7 +477,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 | 群 | 項目 |
 |---|---|
-| 識別 | `run_evaluation_id`、`run_id`、`run_manifest_ref`、`metric_set_version` |
+| 識別 | `run_evaluation_id`、`run_id`、`run_manifest_ref`、`metric_set_version`、`calendar_ref`（v2.0。第9.2節） |
 | コード | `evaluation_code_digest`（評価を実行したときのコード。第9.2節）、`run_code_digest`（run manifest から写す） |
 | 入力 | `input_tables`（第4.2節の9表）、`account_currency`、`run_status`、`run_failure_reason`（`RunStatus` が `COMPLETED` でないときの理由。D06 §9.3 から写す） |
 | 明記 | `swap_modeled`（必須、第7.2節） |
@@ -499,6 +505,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 - **結果のダイジェストは、台帳 snapshot の格納順を写す**【提案】（v1.3 の注記）。第10.2節の C7 は観測した並びそのものを `observed` に残すのが仕事であり、その行は下の5表の1つ（`CONSISTENCY_CHECKS`）に入る。したがって、内容が同じ判断履歴でも台帳 snapshot の Parquet 格納順が違えば `result_digest` は変わる。これは第9.1節の条件1（**指標・集計・取引・診断**が格納順で変わらないこと）とは別のことであり、矛盾しない。格納順が結果の説明の一部として残ることを意図している。
 - `result_digest` は、5表の全行を第8.1節の整列鍵で並べた列の **D02 §9.3 の正規化エンコードのダイジェスト**とする【提案】。Parquet のファイルそのものはメタデータや圧縮設定でバイト列が変わりうるため、再現性の判定はファイルの一致ではなく `result_digest` の一致で行う。再現性テスト（第11節）は「同じ入力で2回評価して `result_digest` が一致する」ことを確かめる。
 - `RunEvaluationId = digest(run_id, metric_set_version, evaluation_code_digest)` とする【提案】。同じ trace を別の指標集合の版で、あるいは別の評価コードで評価した結果が、別の識別子になる。D02 §7.1 の `EvaluationId`（部品の1回の評価）とは別の型であり、名前を似せない（語彙の二重定義を避ける、第1.1節）。
+- **v2.0（段階4）: `RunEvaluationId = digest(run_id, metric_set_version, evaluation_code_digest, calendar_ref)` に改める**【提案】（第1.2節の例外 (e)。Q8 決定の帰結）。`calendar_ref` は評価が**受け取った**取引カレンダーの識別と版 `(id, version)` である（run manifest の `calendar_ref` ではない）。Q8 決定でカレンダーが評価の入力になり、C10 の合否と #16・#17 の値がカレンダーで変わるので、算出元に入れないと、同じ run を違うカレンダーで評価した2つの結果（一方は C10 不合格で `FAILED`）が同じ識別子・同じ保存先になり、第19.6節の手順2 が `FAILED` の評価を再利用しうる。カレンダーを変えたら版を上げる規則（D03 §3.4、主キーは D03 §7.4 の `(id, version)`）があるので、識別と版で内容を指せる。評価 manifest にも `calendar_ref` を書く（第8.3節）。
 - **評価時のコードのダイジェストを持たせる**【合意済み】（Q5 決定、選択肢1）。D02 §9.4 と同じ算出（パッケージ全体を対象にした `CodeDigest`）を評価時にもう一度行って `evaluation_code_digest` に入れ、run manifest から写した `run_code_digest` と併記する。両者が異なるとき、指標が run を実行したときとは別のコードで作られたことが結果だけから分かる。新しい算出規則を足さずに済む。**不採用**: 持たせない案（選択肢2。評価コードの変更が結果から分からず、`RunEvaluationId` は `digest(run_id, metric_set_version, run_code_digest)` になる）、評価モジュールだけを対象にした別のダイジェストを新たに定義する案（選択肢3。指標の変更だけを狭く検出できる代わりに、ダイジェストの算出規則が1つ増える）。
 
 ### 9.3 値の伝播表（必須表。R1。v1.5）
@@ -512,7 +519,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `run_code_digest`（`CodeDigest`） | 実行時に計算（D02 §9.4、D06 §9.3） | `RunManifest` から写す | 評価 manifest（第8.3節・第9.2節） | 同上 |
 | `evaluation_code_digest`（`CodeDigest`） | 評価時に D02 §9.4 と同じ算出で計算し、`EvaluateRun` の構築時に渡す（第3節・第9.2節） | `EvaluateRun` → `EvaluationManifest` | 評価 manifest。`RunEvaluationId` の入力（第9.2節） | 同上 |
 | `metric_set_version`（`int`） | 呼び出し側が `evaluate` の引数で渡す（第3節） | `EvaluateRun.evaluate` → `EvaluationManifest` | 評価 manifest。`RunEvaluationId` の入力 | 同上 |
-| `run_evaluation_id`（`RunEvaluationId`） | `EvaluateRun` が `digest(run_id, metric_set_version, evaluation_code_digest)` で計算（第9.2節） | `EvaluationManifest.run_evaluation_id` → `ResultRepository.write_evaluation` | 評価 manifest と保存先のディレクトリ名（第8.2節） | 保存先 `runs/<run_id>/eval/<run_evaluation_id>/` そのもの |
+| `run_evaluation_id`（`RunEvaluationId`） | `EvaluateRun` が `digest(run_id, metric_set_version, evaluation_code_digest)` で計算（第9.2節）。v2.0 では算出元に受け取ったカレンダーの `calendar_ref` を足す（第9.2節） | `EvaluationManifest.run_evaluation_id` → `ResultRepository.write_evaluation` | 評価 manifest と保存先のディレクトリ名（第8.2節） | 保存先 `runs/<run_id>/eval/<run_evaluation_id>/` そのもの |
 | `run_status`・`run_failure_reason` | 実行（D06 §9.3） | `BacktestResult.status` が状態 `REJECTED` を決め（第10.1節）、値は `RunManifest` から写す（第8.3節） | 評価 manifest | 評価 manifest は保存先1か所に1件 |
 | 口座通貨（`CurrencyCode`） | 実行設定の口座（`RunManifest.account.currency`、D06 §9.3） | 致命検査 C8 の期待値（第10.2節）。評価 manifest へ写す | 評価 manifest の `account_currency` | 同上 |
 | `swap_modeled`（`bool`） | 実行（`BacktestResult.swap_modeled`、D06 §9.4） | そのまま写す（第7.2節） | 評価 manifest（必須項目。第8.3節） | 同上 |
@@ -657,7 +664,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 
 4. **研究ポリシーに複雑性の上限を置く**（v2.0、人間の決定5）。上位設計書 §6 と全体計画 §5.5.1 は「初期には数値制限を増やさない」「初期に上限は設けない（計測方法を定義する）」としているが、人間は計測だけでなく上限による検査を選んだ（第20節）。上位文書の「共通の研究ポリシーを1種類だけ運用する」「将来複数へ拡張できる参照構造」は守る。上位文書の文言の改訂は、上位文書の次の改訂へ渡す（第25節）。
 5. **封印期間の許可判定（`holdout_gate`）を本書ではなく D09 に置く**（v2.0、人間の決定2）。ADR-0014 の「影響」と D03 §3.8・§6.1 は gate の実装を D07 としていた。決定の内容（fail-closed の手順・直列化）は変えず、担当と時期だけを段階5 へ移した（第24節）。
-6. **段階2 で確定した4点を段階4 で改めた**（第1.2節の例外）。(a) #2 に入場費用を含め、注記 `ENTRY_COST_EXCLUDED` を外した（第7.3節。上の差異2 はこれで解消し、#1 と #2 の差は未決済建玉の入場費用だけになる）、(b) 整合検査の結果を3区分にし C9〜C12 を足した（第10.4節）、(c) 上の5、(d) 勝敗の基準を `realized` から `trade_profit` へ改めた（第5.2節の #4・第7.3節。Q10 決定）。
+6. **段階2 で確定した5点を段階4 で改めた**（第1.2節の例外）。(a) #2 に入場費用を含め、注記 `ENTRY_COST_EXCLUDED` を外した（第7.3節。上の差異2 はこれで解消し、#1 と #2 の差は未決済建玉の入場費用だけになる）、(b) 整合検査の結果を3区分にし C9〜C12 を足した（第10.4節）、(c) 上の5、(d) 勝敗の基準を `realized` から `trade_profit` へ改めた（第5.2節の #4・第7.3節。Q10 決定）、(e) `RunEvaluationId` の算出元に取引カレンダーの識別と版（`calendar_ref`）を足した（第9.2節。Q8 決定の帰結）。
 
 上記以外に、上位設計書・全体計画書・ADR・D01〜D06・T01 と食い違う提案はない。
 
@@ -764,9 +771,9 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | PR | 作るもの | 実装する設計節 | 主なテスト | 依存 |
 |---|---|---|---|---|
 | 0（本 PR） | D07 v2.0、D08 v1.9、全体計画・D03・D04・ADR-0014 の追随 | 全体 | なし（文書のみ） | ― |
-| 1 評価の中身 | 追加指標4件、取引単位の費用と入場費用込みの取引損益、要求単位の集計、整合検査の3区分、指標集合 v2、取引カレンダーの入力、評価の golden の更新 | 第3節の v2.0 行、第4.2節、第5.5節、第6.3節、第7.3節、第10.4節 | 単体（各式・値なしの分岐・演算の順序）、プロパティ（行順で結果不変）、golden（期待値の更新は独立コミット。D08 §10.3） | 0 |
+| 1 評価の中身 | 追加指標4件、取引単位の費用と入場費用込みの取引損益、要求単位の集計、整合検査の3区分、指標集合 v2、取引カレンダーの入力（評価の識別子の算出元に含める）、評価の golden の更新 | 第3節の v2.0 行、第4.2節、第5.5節、第6.3節、第7.3節、第9.2節の v2.0 項目、第10.4節 | 単体（各式・値なしの分岐・演算の順序）、プロパティ（行順で結果不変）、golden（期待値の更新は独立コミット。D08 §10.3） | 0 |
 | 2 実験設定の書式 v2 | `app.config` の書式 v2（遅延シナリオ・入場方針・有効性束縛・仮説・研究ポリシー参照）、v1 の読込の維持、合成での遅延シナリオの結線、`run` コマンドが v2 を受けること | 第18節 | 単体（未宣言キー・型不一致・`search_plan` の拒否）、統合（**検証戦略 B を `run` コマンド経由で通し**、段階3 のエンジン直呼びの判断履歴と `run_id` 列以外が一致すること） | 0 |
-| 3 記録票・研究ポリシー・再現 | `evaluation.domain.experiment` / `research_policy`、`application.run_experiment`、`ExperimentStore` の実装、`experiment run` / `experiment reproduce` コマンド | 第19節・第20節・第21節 | 単体（ポリシーの各検査・上限の境界）、意味論（記録票が run より前に保存される・同じ版で中身が違えば拒否）、統合（別プロセスでの再現一致） | 1・2 |
+| 3 記録票・研究ポリシー・再現 | `evaluation.domain.experiment` / `research_policy`、`application.run_experiment`、`ExperimentStore` の実装、`ResultRepository.read_result`（段階2 の `fs_store` の具体クラスから移す）、`experiment run` / `experiment reproduce` コマンド | 第4.1節の `read_result` の段落・第19節・第20節・第21節 | 単体（ポリシーの各検査・上限の境界）、意味論（記録票が run より前に保存される・同じ版で中身が違えば拒否）、統合（別プロセスでの再現一致） | 1・2 |
 | 4 レポート・実データ・段階4 受入 | `adapters.report`、実データ用マーカー、段階4 の受入テスト、実データ実行の記録文書 | 第22節・第23節 | 受入（`tests/acceptance/test_stage4_completion.py`）、実データ（マーカー付き、CI 外） | 3、snapshot 承認 PR |
 
 - **PR 1 の merge 時に、AGENTS.md の「Missing data, failures and overwrites」節の但し書き**（値の解釈失敗の扱いは D07 の改訂が導入されるまで規則の対象にしない）**を外す**。本 PR では外さない（設計が承認されても実装が無いうちは、規則の対象が存在しないため）。
@@ -956,14 +963,14 @@ split: NONE
 | 状態 ＼ 出来事 | 設定の読込に失敗 | 事前検査が全件合格 | 事前検査に合格でないもの（`FAILED` または `UNREADABLE`）あり | 記録票の保存が成功（新規または同一） | 記録票が同じ版で内容違い | run が終わった（状態は問わない） | 評価が終わった | 事後検査が全件合格 | 事後検査に合格でないもの（`FAILED` または `UNREADABLE`）あり | 例外・中断 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **読込前** | 終了（記録なし。`ConfigError` を表示） | 到達しない（検査は読込の後） | 到達しない（同左） | 到達しない（同左） | 到達しない（同左） | 到達しない（run は保存の後） | 到達しない | 到達しない | 到達しない | 終了（記録なし） |
-| **検査済み**（記録票を組み立てた） | 到達しない（読込は済んだ） | → 保存へ | → 保存へ（不合格も記録票に残す） | 到達しない（保存の前） | 到達しない（同左） | 到達しない | 到達しない | 到達しない | 到達しない | 終了（記録なし） |
+| **検査済み**（記録票を組み立てた） | 到達しない（読込は済んだ） | → 既存の run 成果物を確かめる（第19.6節の手順1〜3。読むだけで何も書かない）。**再利用できない衝突なら、記録票も結末記録も書かずに拒否して終了**（`RUN_ARTIFACT_CONFLICT`、終了コード 5。版のディレクトリは変わらない）。そうでなければ保存へ | → 保存へ（不合格も記録票に残す） | 到達しない（保存の前） | 到達しない（同左） | 到達しない | 到達しない | 到達しない | 到達しない | 終了（記録なし） |
 | **保存を試みる** | 到達しない | 到達しない | 到達しない | 事前検査が合格なら **記録済み**へ。不合格なら結末記録 `REJECTED_BY_POLICY` を書いて**終端** | 結末記録を書かず**拒否して終了**（検査 P3 `PREREGISTRATION_UNCHANGED` の不合格として表示する。既存の記録票は変えない） | 到達しない | 到達しない | 到達しない | 到達しない | 終了（記録票が書けたかは保存の原子性による。第19.3節の書き込みは一時ファイル＋改名で原子的に行う） |
 | **記録済み** | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | → **実行済み**（`run_id` を保持。既存の run 成果物を再利用した場合も同じ。第19.6節） | 到達しない（評価は run の後） | 到達しない | 到達しない | **記録票だけが残る**（結末記録なし）。第22節のレポートは「結末記録が無い＝途中で止まった」と表示する |
 | **実行済み** | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない（run は1回） | → **評価済み**。run が正常完走していなければ評価は `REJECTED`（第10.1節）のまま進む | 到達しない | 到達しない | 同上（記録票だけが残る。run の成果物は `runs/<run_id>/` に残る） |
 | **評価済み** | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 結末記録 `COMPLETED` を書いて**終端** | 結末記録 `FAILED_POST_RUN_CHECK` を書いて**終端** | 同上 |
 
 - **「全件合格」とは、全件の `outcome` が `PASSED` であること**である。`UNREADABLE`（計測や照合ができなかった）は合格として扱わず、`FAILED` と同じ列（合格でないものあり）へ進む（第20.3節）。
-- 既存の run 成果物と `run_id` が衝突したときの扱いは第19.6節に置く。衝突して再利用できない場合は「例外・中断」の列ではなく、run の前に拒否して終了する（結末記録は書かない。終了コード 5。第21.3節）。
+- 既存の run 成果物と `run_id` が衝突したときの扱いは第19.6節に置く。**確かめるのは記録票を保存する前**（上表の「検査済み」行）で、衝突して再利用できない場合は「例外・中断」の列ではなく、**何も書かずに**拒否して終了する（終了コード 5。第21.3節）。保存の前に確かめるので、旧い結末記録とレポートの退避（第19.3節）も起きず、同じ版の前回の結果はそのまま残る。拒否が「結末記録が無い＝途中で止まった」（第22.1節）と取り違えられることは無い。
 - `ExperimentStatus` の終端は3値: `COMPLETED`（事前・事後の検査が合格し、run と評価が行われた。**run や評価そのものの失敗は、それぞれの状態（`RunStatus` / `EvaluationStatus`）が表す**）、`REJECTED_BY_POLICY`（事前検査で不合格。run しない）、`FAILED_POST_RUN_CHECK`（事後検査で不合格。成果物は残すが、第22節のレポートは「採用不可」と先頭に出す）。
 - 「記録票の保存が内容違いで拒否された」ことは結末記録に残せない（書く先が、書き換えを拒否した当の版のディレクトリになるため）。**コマンドの終了コードと表示で示す**（第21.3節の終了コード表）。この場合は `version` を上げて新しい版として実行する。
 
@@ -986,10 +993,10 @@ split: NONE
 
 同じ実験の同じ版を同じコードで再実行すると、`run_id` は同じ値になる（ADR-0006）。`runs/<run_id>/` は既に存在し、決定論的 ID の決定記録（ADR-0006）の「既定は失敗、置換は明示の指示と旧 manifest の保存を要する」に当たる。`experiment run` は次のとおり扱う。
 
-1. **run の前に、`runs/<expected_run_id>/` があるかを見る**。無ければ run する。
-2. **あり、その run manifest の `run_id` と `ConfigDigest` がこの実行の期待値と一致すれば、run し直さず既存の成果物を再利用する**。`run_id` は入力・コード・lock・環境から決まる内容の識別子であり、一致する成果物は同じ入力から決定論的に作られた成果物だからである（D06 §4.4 の再実行一致）。結末記録に `run_reused: true` を書く。評価も同じで、`runs/<run_id>/eval/<run_evaluation_id>/` があり評価 manifest の `run_evaluation_id` と `result_digest` の算出元が一致すれば再利用する。
-3. **あり、run manifest が読めない・一致しない場合は、run せず拒否して終了する**（終了コード 5。成果物は変えない）。置き換えたいときは既存の `run --replace`（ADR-0006 の明示の置換。旧 manifest を残す）を人間が使う。**`experiment run` には置換の指示を持たせない**。事前固定の記録を持つ実験の経路で、既存の成果物を黙って置き換える余地を作らないためである。
-4. `BacktestRunner.run` は置換の指示を受け取らない（常に「存在すれば失敗」で書く）。再利用の判断は `RunExperiment` が run の前に `ResultRepository.read_manifest` で行う。
+1. **事前検査が全件合格したら、記録票を保存する前に、`runs/<expected_run_id>/` があるかを見る**（第19.4節の「検査済み」行）。無ければ保存へ進み、run する。
+2. **あり、その run manifest の `run_id` と `ConfigDigest` がこの実行の期待値と一致すれば、run し直さず既存の成果物を再利用する**。`run_id` は入力・コード・lock・環境から決まる内容の識別子であり、一致する成果物は同じ入力から決定論的に作られた成果物だからである（D06 §4.4 の再実行一致）。結末記録に `run_reused: true` を書く。再利用する run の結果は `ResultRepository.read_result`（第4.1節）で読み、読めなければ再利用できないとして手順3 へ進む。評価も同じで、`runs/<run_id>/eval/<run_evaluation_id>/` があり評価 manifest の `run_evaluation_id` と `result_digest` の算出元が一致すれば再利用する（`run_evaluation_id` は受け取ったカレンダーを含む。第9.2節）。
+3. **あり、run manifest か結果が読めない・一致しない場合は、記録票を保存せず、run せず拒否して終了する**（終了コード 5。成果物も版のディレクトリも変えない）。置き換えたいときは既存の `run --replace`（ADR-0006 の明示の置換。旧 manifest を残す）を人間が使う。**`experiment run` には置換の指示を持たせない**。事前固定の記録を持つ実験の経路で、既存の成果物を黙って置き換える余地を作らないためである。
+4. `BacktestRunner.run` は置換の指示を受け取らない（常に「存在すれば失敗」で書く）。再利用の判断は `RunExperiment` が記録票の保存の前に `ResultRepository.read_manifest` と `read_result` で行う。
 
 **不採用**: 再実行のたびに `--replace` 相当で置き換える案（同じ内容なら置き換える意味が無く、内容が違えば旧い成果物を失う）、再実行を常に失敗させる案（第19.3節が正当とした「同じ版をもう一度実行する」経路が使えない）。
 
@@ -1065,9 +1072,9 @@ complexity_limits:
 
 1. 記録票と結末記録を読み、`experiment_id` を再計算して記録票と結末記録の両方の値と一致することを確かめる（記録票の改変と、別の版の結末記録との取り違えを検出する）。結末記録が無い、または `run_id` を持たない（run が行われていない）なら、再現する結果が無いので `MANIFEST_TAMPERED` ではなく**引数の誤り**として終了する。
 2. 現在の環境の `code_digest` / `lock_digest` / `env_digest` を計算し、**結末記録**と比べる。**1つでも違えば run せず、`ENVIRONMENT_MISMATCH` として終了する**（Q12 決定。違う環境での結果は同じ `run_id` になりえず、判定の対象外である）。
-3. `resolved_files` の本文を、ファイルシステムへ書き戻さずに `app.config` の読込へ文字列として渡し、`RunConfig` を組み立てる。組み立てた `ConfigDigest` が記録票の `expected_config_digest` と、`RunId` が結末記録の `run_id` と一致することを確かめる。
+3. `resolved_files` の本文を、ファイルシステムへ書き戻さずに `app.config` の読込へ文字列として渡し、`RunConfig` を組み立てる。組み立てた `ConfigDigest` が記録票の `expected_config_digest` と、`RunId` が結末記録の `run_id` と一致することを確かめる。**どちらかが一致しなければ run せず、判定 `RUN_ID_MISMATCH`**（`observed_run_id` は組み立てた `RunId`、`observed_result_digest` は `None`）**として `--out` の下の `reproduction.json` に書き、終了コード 6 で終わる**【提案】。記録票と結末記録は手順1 で改変が無いと確かめ、環境は手順2 で同じと確かめてあるので、ここでの不一致は「記録票の入力からは結末記録の run に届かない」ことを意味する。典型は検査 P4 が不合格だった実験（`FAILED_POST_RUN_CHECK`。記録票の保存から run までの間に入力が変わった。第20.3節）で、その run は記録票からは再現できないのが正しい判定である。
 4. `--out` の下で run と評価を行う（元の `runs/` を上書きしない。**`--out` が元の成果物と同じ基点なら拒否する**）。
-5. `run_id` と `result_digest` を記録と比べ、判定を `--out` の下の `reproduction.json` に書く。判定は `REPRODUCED` / `RUN_ID_MISMATCH` / `RESULT_MISMATCH` / `ENVIRONMENT_MISMATCH` / `MANIFEST_TAMPERED` の5値。
+5. `run_id` と `result_digest` を記録と比べ、判定を `--out` の下の `reproduction.json` に書く（手順2 の `ENVIRONMENT_MISMATCH` と手順3 の `RUN_ID_MISMATCH` も同じファイルに書く）。判定は `REPRODUCED` / `RUN_ID_MISMATCH` / `RESULT_MISMATCH` / `ENVIRONMENT_MISMATCH` / `MANIFEST_TAMPERED` の5値。
 
 ### 21.3 コマンドと終了コード【提案】
 
