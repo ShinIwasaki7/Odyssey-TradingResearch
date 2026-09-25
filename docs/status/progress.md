@@ -1,10 +1,10 @@
 # 進捗（正本）
-更新: 2026-09-25T01:51:17Z / 更新者: 司令塔（段階4 D07 の決定 6 件を受領、設計 PR を開始）
+更新: 2026-09-25T01:56:30Z / 更新者: 司令塔（PR #39 の merge 可否を質問、snapshot 実体を main 作業ツリーへ退避）
 
 ## 現在地
 - 段階: 段階3 完了。段階4: 分類の第 1 弾 merge 済み（snapshot 承認 PR を Opus が作業中）。D07 の実装は案A（設計 1 本＋実装 4 本）で承認され、設計 PR（D07 v2.0）を Opus が起草中。R1 文書 PR も Opus が作業中
 - 直前に終わったこと: PR #38（文書整合 3 件: AGENTS.md 1 行、D05 v2.8、D06 v1.9）を squash merge
-- いま止まっている理由: 止まっていない（Opus 3 名: snapshot 承認 PR、R1 文書 PR、D07 v2.0 設計 PR）
+- いま止まっている理由: 人間待ち（PR #39 snapshot 承認の merge 可否）。R1・D07 v2.0 は Opus が作業中
 
 ## 人間待ち（回答が来るまで進めない項目）
 - なし（PR #26 の要決定 Q1〜Q5 は解消。AGENTS.md は PR #29 で main に導入済み）
@@ -12,10 +12,10 @@
 ## 進行中（最大2行）
 - AGENTS.md 後続対処 R1「設計文書テンプレートに必須表 3 つ（境界表・状態×出来事表・値の伝播表）」: 文書のみ。Opus、ブランチ docs/r1-required-tables、Codex ループ自走
 - 段階4 D07 v2.0 設計 PR（案A の PR 0）: 人間の決定 6 件（案A／封印期間は段階5 へ／追加指標は少数・Decimal／設定書式 v2 と記録票／研究ポリシーは事前固定＋複雑性の上限を検査／実データは戦略 A・USDJPY・2016〜2023 で 1 本）を反映。R5 を取り込む。Opus、ブランチ docs/d07-v2-stage4、Codex ループ自走
-- snapshot 承認: a498b8cf を odyssey-fx data approve --by ShinIwasaki7 で承認し PR にする。Opus、ブランチ data/approve-snapshot-a498b8cf
+- snapshot 承認: PR #39（manifest.json に approval と declaration_record の 9 行。承認者 ShinIwasaki7。承認後に run の関門で読めることを確認: 研究履歴 40 区分・足 2,632,693 本。Codex 1 巡指摘なし）。merge 可否を質問中。**snapshot の実体（git 管理外、46MB・120 ファイル）を一時 worktree から main 作業ツリー data/snapshots/a498b8cf…/ へ退避済み**。承認コマンドに --out data/snapshots が必須だが D03 §10 の表に無い（文書の追随を要する。後続の文書 PR へ）
 
 ## 未回答の質問
-- なし
+- 2026-09-25 PR #39（snapshot a498b8cf の承認）の merge 可否
 
 ## 段階4 D07 の PR 分割（2026-09-25 承認、案A。設計 1 本の merge 後に実装 4 本を上から順に）
 0. 設計: D07 v2.0（＋D08・全体計画の追随、R5 の取り込み）
