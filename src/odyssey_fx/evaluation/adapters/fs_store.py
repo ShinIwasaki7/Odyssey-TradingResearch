@@ -197,11 +197,20 @@ def _keep_replaced_manifest(directory: Path, previous: Path) -> Path:
     消された）ときだけである。**そのときは上書きせずに失敗する**（存在すれば失敗）。
     作成と存在の確認は1つの操作（排他的な作成）で行う。
     """
-    kept = [
-        path
+    kept = sorted(
+        path.name
         for path in directory.iterdir()
         if (match := _REPLACED_MANIFEST.fullmatch(path.name)) and match.group(1) is not None
-    ]
+    )
+    expected = sorted(replaced_manifest_name(number) for number in range(1, len(kept) + 1))
+    if kept != expected:
+        # 欠番・重複表記（`0001` など）のある並びに次の世代を足すと、壊れた履歴のまま
+        # 置換が成功する。**何も作らず何も消さずに**止める。
+        raise ArtifactAlreadyExists(
+            f"{directory} keeps replaced manifests {kept}, which do not run from 001 without"
+            " gaps; nothing was replaced. Restore that order before replacing again"
+            " (D06 §9.3, R4)"
+        )
     target = directory / replaced_manifest_name(len(kept) + 1)
     content = previous.read_text(encoding="utf-8")
     try:

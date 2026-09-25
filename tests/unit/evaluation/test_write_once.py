@@ -163,24 +163,64 @@ def test_each_replacement_keeps_its_own_generation_of_the_manifest(tmp_path: Pat
     assert (first["marker"], second["marker"]) == ("first", "second")
 
 
-def test_an_existing_generation_file_is_never_overwritten(tmp_path: Path) -> None:
-    """次の世代の名前が既にあれば、何も消さず何も上書きせずに失敗する（R4）。
-
-    世代は 001 から欠番なく並ぶので、次の名前が既にあるのは並びが崩れたとき（ここでは
-    001 が無いまま 002 がある）だけである。
-    """
-    run_id = "d" * 64
-    directory = run_directory(tmp_path, run_id)
+def _run_with_kept(root: Path, run_id: str, kept: tuple[str, ...]) -> Path:
+    """旧成果物と、置換で残した世代ファイルを置いた run のディレクトリ。"""
+    directory = run_directory(root, run_id)
     directory.mkdir(parents=True)
     (directory / "manifest.json").write_text("{}", encoding="utf-8")
     (directory / "FILLS.parquet").write_bytes(b"old")
-    (directory / "manifest.replaced.002.json").write_text("kept", encoding="utf-8")
-    # 残っている世代は1つなので、次は 002。それが既にある。
+    for name in kept:
+        (directory / name).write_text(name, encoding="utf-8")
+    return directory
+
+
+@pytest.mark.parametrize(
+    "kept",
+    [
+        ("manifest.replaced.002.json",),
+        ("manifest.replaced.001.json", "manifest.replaced.004.json"),
+        ("manifest.replaced.0001.json",),
+    ],
+)
+def test_a_broken_generation_order_is_refused_before_anything_changes(
+    tmp_path: Path, kept: tuple[str, ...]
+) -> None:
+    """残った世代が 001 から欠番なく並んでいなければ、何も作らず何も消さずに失敗する。
+
+    欠番のある並びに次の世代を足すと、壊れた履歴のまま置換が成功してしまう（D06 §9.3）。
+    """
+    directory = _run_with_kept(tmp_path, "d" * 64, kept)
     before = _snapshot(directory)
 
-    with pytest.raises(ArtifactAlreadyExists, match="never overwritten"):
-        reserve_run_directory(tmp_path, run_id, replace=True)
+    with pytest.raises(ArtifactAlreadyExists, match="without gaps"):
+        reserve_run_directory(tmp_path, "d" * 64, replace=True)
     assert _snapshot(directory) == before
+
+
+def test_an_existing_generation_file_is_never_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """次の世代の名前が確かめた後に作られていても、上書きせず何も消さずに失敗する（R4）。
+
+    並びの確認と作成の間に別の置換が同じ世代を残した場合を、作成の直前にファイルを
+    置いて再現する。作成は排他的なので、既存の世代ファイルは上書きされない。
+    """
+    directory = _run_with_kept(tmp_path, "f" * 64, ("manifest.replaced.001.json",))
+    target = directory / "manifest.replaced.002.json"
+    original_open = Path.open
+
+    def racing_open(self: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
+        if self == target and "x" in mode:
+            target.write_text("written by another replacement", encoding="utf-8")
+        return original_open(self, mode, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(Path, "open", racing_open)
+    with pytest.raises(ArtifactAlreadyExists, match="never overwritten"):
+        reserve_run_directory(tmp_path, "f" * 64, replace=True)
+    monkeypatch.undo()
+    assert target.read_text(encoding="utf-8") == "written by another replacement"
+    assert (directory / "FILLS.parquet").read_bytes() == b"old"
+    assert (directory / "manifest.json").is_file()
 
 
 def test_a_legacy_replaced_manifest_is_kept(tmp_path: Path) -> None:
