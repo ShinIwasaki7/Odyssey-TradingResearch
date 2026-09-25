@@ -355,6 +355,8 @@ _NULLABLE: Final[frozenset[tuple[TraceTable, str]]] = frozenset(
 _PAIRED_COLUMNS: Final[dict[TraceTable, tuple[tuple[str, str], ...]]] = {
     TraceTable.FILLS: tuple((amount, currency) for _, amount, currency in _FILL_COST_COLUMNS),
     TraceTable.ORDERS: (("terms_reference_quote_price", "terms_reference_quote_observed_at"),),
+    # 確定損益は `Money` の2列（金額と通貨）。決済前の建玉ではどちらも空になる。
+    TraceTable.POSITIONS: (("realized_amount", "realized_currency"),),
 }
 
 #: 連番 ID の列と、その型（D02 §7.1、D06 §9.2）。
@@ -1319,8 +1321,25 @@ def _check_all_values_readable(context: _Context) -> ConsistencyCheckResult:
     """C9: 読む列のすべての値が解釈できる（D07 §10.4）。
 
     観測値は読めない値の件数と、整列鍵の順で最初の1件（`表.列[主キー] = 元の文字列`）。
+
+    読めない値が1つでも見つかれば不合格とする。見つからなくても、表または必須列が無い表が
+    あれば、その表の値を確かめられていないので合格にせず `UNREADABLE` として残す
+    （C9 は読む9表のすべての列を読む検査である。D07 §10.4）。
     """
     found = context.unreadable
+    if not found:
+        missing = tuple(
+            f"{table.value}: table or required columns missing"
+            for table in INPUT_TABLES
+            if not context.reads[table].usable
+        )
+        if missing:
+            return _result_of(
+                CHECK_ALL_VALUES_READABLE,
+                outcome=CheckOutcome.UNREADABLE,
+                expected=canonical_text(()),
+                observed=canonical_text(missing),
+            )
     observed: dict[str, object] = {"count": len(found)}
     if found:
         observed["first"] = found[0].describe()

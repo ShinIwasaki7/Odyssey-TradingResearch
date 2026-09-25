@@ -557,6 +557,9 @@ def test_a_missing_table_is_a_fatal_check_not_an_exception() -> None:
     outcomes = _outcomes(report)
     assert outcomes[CHECK_TRADE_COUNT_MATCHES] is CheckOutcome.UNREADABLE
     assert outcomes[CHECK_OPPORTUNITY_COUNT_MATCHES] is CheckOutcome.PASSED
+    # C9 は9表すべての値を読む検査なので、表が無ければ合格にせず読めなかったとする。
+    assert outcomes[CHECK_ALL_VALUES_READABLE] is CheckOutcome.UNREADABLE
+    assert "POSITIONS" in _check(report, CHECK_ALL_VALUES_READABLE).observed
     assert "POSITIONS" in _check(report, CHECK_TRADE_COUNT_MATCHES).observed
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
     assert report.manifest.unreadable_check_count == sum(
@@ -708,7 +711,9 @@ def test_an_incomplete_closed_position_is_reported_not_silently_dropped() -> Non
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
     tables[TraceTable.POSITIONS] = [
-        {**tables[TraceTable.POSITIONS][0], "realized_amount": None},
+        # 金額と通貨の両方が空なら読める値（決済前と同じ形）であり、決済済みなのに確定損益が
+        # 無いという食い違いは C3・C4 が見る。
+        {**tables[TraceTable.POSITIONS][0], "realized_amount": None, "realized_currency": None},
         tables[TraceTable.POSITIONS][1],
     ]
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
@@ -834,6 +839,25 @@ def test_a_cost_amount_without_its_currency_is_unreadable() -> None:
     assert "FILLS.cost_commission_currency" in _check(report, CHECK_ALL_VALUES_READABLE).observed
     # 通貨の列を読む C8 は実施できない。
     assert _check(report, CHECK_SINGLE_ACCOUNT_CURRENCY).outcome is CheckOutcome.UNREADABLE
+
+
+def test_a_realized_amount_without_its_currency_is_unreadable() -> None:
+    """確定損益の金額と通貨も2列で1つ（D07 §10.4）。
+
+    通貨だけが空の決済済み建玉を通すと、通貨の検査（C8）は空を数えず、取引の組み立てで
+    例外になって検査の表が残らない。読めない値として C9 で止める。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.POSITIONS] = [
+        {**tables[TraceTable.POSITIONS][0], "realized_currency": None},
+        *tables[TraceTable.POSITIONS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.trades == ()
+    assert _failed(report) == {CHECK_ALL_VALUES_READABLE}
+    assert "POSITIONS.realized_currency" in _check(report, CHECK_ALL_VALUES_READABLE).observed
 
 
 def test_a_foreign_cost_currency_is_fatal() -> None:

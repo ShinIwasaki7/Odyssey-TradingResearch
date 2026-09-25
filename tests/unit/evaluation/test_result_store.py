@@ -315,3 +315,35 @@ def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, obje
 
     assert not evaluations.exists(), "古い評価の成果物が残っている"
     assert (run_directory(root, result.run_id) / "manifest.replaced.json").is_file()
+
+
+def test_a_saved_run_with_a_broken_manifest_is_evaluated_and_explained(
+    saved_run: tuple[Path, object],
+) -> None:
+    """保存済みの run の評価でも、読めない run manifest は C11 として成果物に残る（R1-D07-4）。
+
+    結果 DTO の読み戻しが manifest から使うのは時間足定義の版参照だけ（D06 §9.1）なので、
+    それ以外が壊れた manifest（ここでは設定とその指紋の食い違い）でも評価まで届き、
+    検査の表と評価 manifest が保存される。manifest が無い・JSON として読めないときは結果
+    DTO そのものが読めず、評価を始めない（D07 §4.1 の `read_result` の段落）。
+    """
+    from odyssey_fx.app.composition import evaluate_saved_run
+
+    root, output = saved_run
+    run_id = output.manifest.run_id  # type: ignore[attr-defined]
+    path = run_directory(root, run_id) / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["config"] = payload["config"].replace("2026-01-06T12:00:00Z", "2026-01-06T13:00:00Z")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    outcome = evaluate_saved_run(run_id=run_id, artifacts_root=root, calendar=CALENDAR)
+
+    report = outcome.report
+    assert report.status is EvaluationStatus.FAILED
+    readable = [check for check in report.checks if check.check == "run_manifest_readable"]
+    assert readable[0].passed is False
+    assert "fingerprint disagree" in readable[0].observed
+    saved = json.loads((outcome.directory / "evaluation.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "FAILED"
+    assert saved["run_status"] is None
+    assert (outcome.directory / "CONSISTENCY_CHECKS.parquet").is_file()
