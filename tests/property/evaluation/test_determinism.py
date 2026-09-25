@@ -39,7 +39,7 @@ def _evaluate(tables: dict[TraceTable, list[traces.Row]]) -> object:
     repository = traces.repository_for(tables, manifest=manifest)
     result = traces.result_for(manifest)
     return EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
     )
 
 

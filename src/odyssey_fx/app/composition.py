@@ -735,17 +735,22 @@ def evaluate_saved_run(
     *,
     run_id: RunId,
     artifacts_root: Path,
+    calendar: TradingCalendar,
     metric_set_version: int = METRIC_SET_VERSION,
 ) -> EvaluationOutcome:
     """保存済みの run を評価し、5表と評価 manifest を保存する（D07 §4・§8）。
 
     評価時のコードのダイジェストは**この層が算出して渡す**（D07 §9.2、Q5 決定）。
     パッケージのソース内容を読むのは入出力であり、`application` は入出力を持たない。
+
+    取引カレンダーは呼び出し側が読み込んで渡す（D07 §4.1 v2.0 のカレンダーの渡し方 (a)）。
+    run manifest は `calendar_ref`（識別と版）だけを持ち本文を持たないためである。一致しない
+    カレンダーは整合検査 C10 で不合格になり、評価は `FAILED` になる。
     """
     repository = FileSystemResultRepository(root=artifacts_root)
     result = repository.read_result(run_id)
     use_case = EvaluateRun(evaluation_code_digest=code_digest())
-    report = use_case.evaluate(result, repository, metric_set_version)
+    report = use_case.evaluate(result, repository, metric_set_version, calendar)
     repository.write_evaluation(report, report.rows)
     return EvaluationOutcome(
         report=report,

@@ -270,8 +270,19 @@ def _run_id_of(artifacts_root: Path) -> str:
     return directories[0]
 
 
-def _evaluate(artifacts_root: Path, run_id: str) -> str:
-    return _call(["evaluate", "--run", run_id, "--out", str(artifacts_root)])
+def _evaluate(repo: Path, artifacts_root: Path, run_id: str) -> str:
+    # 評価は run が使ったのと同じカレンダーを受け取る（D07 §4.1 v2.0、C10 で照合）。
+    return _call(
+        [
+            "evaluate",
+            "--run",
+            run_id,
+            "--calendar",
+            str(repo / "configs/calendars/fx_ny17_v1.yaml"),
+            "--out",
+            str(artifacts_root),
+        ]
+    )
 
 
 def build(root: Path) -> Artifacts:
@@ -285,7 +296,7 @@ def build(root: Path) -> Artifacts:
     artifacts_root = root / "artifacts"
     run_output = _run(repo, artifacts_root, snapshot_id)
     run_id = _run_id_of(artifacts_root)
-    evaluate_output = _evaluate(artifacts_root, run_id)
+    evaluate_output = _evaluate(repo, artifacts_root, run_id)
     return Artifacts(
         repo=repo,
         artifacts_root=artifacts_root,

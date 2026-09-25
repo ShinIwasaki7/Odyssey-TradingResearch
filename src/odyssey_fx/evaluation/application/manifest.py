@@ -26,15 +26,21 @@ from odyssey_fx.evaluation.domain.status import EvaluationStatus
 
 __all__ = [
     "METRIC_SET_VERSION",
+    "CalendarRef",
     "EvaluationManifest",
     "EvaluationTable",
     "RunEvaluationId",
     "run_evaluation_id",
 ]
 
-#: 段階2の指標集合の版（D07 §5.2 の15件）。指標を足す・式を変えるときに上げる。
+#: 指標集合の版（D07 §5.5）。段階4 で **2** に上げた（19件、#2 の定義を §7.3 で改めた）。
 #: `RunEvaluationId` の材料なので、上げれば同じ run の評価結果が別の場所へ書かれる。
-METRIC_SET_VERSION: Final = 1
+#: **実装が持つ指標集合は最新の1版だけ**である（D07 §5.5。v1 の式を並べて残さない）。
+METRIC_SET_VERSION: Final = 2
+
+#: 評価が受け取った取引カレンダーの識別と版 `(id, version)`（D07 §8.3・§9.2、D03 §7.4 の
+#: 値の伝播表の主キーと同じ組）。
+CalendarRef = tuple[str, int]
 
 
 class EvaluationTable(Enum):
@@ -55,8 +61,11 @@ class EvaluationTable(Enum):
 class RunEvaluationId:
     """1回の評価の識別子（D07 §9.2）。
 
-    `digest(run_id, metric_set_version, evaluation_code_digest)`。同じ判断履歴を別の指標
-    集合の版で、あるいは別の評価コードで評価した結果が、別の識別子になる。
+    `digest(run_id, metric_set_version, evaluation_code_digest, calendar_ref)`（v2.0）。
+    同じ判断履歴を別の指標集合の版で、別の評価コードで、あるいは別の取引カレンダーで評価した
+    結果が、別の識別子になる。カレンダーを入れないと、同じ run を違うカレンダーで評価した
+    2つの結果（一方は C10 不合格で `FAILED`）が同じ識別子・同じ保存先になる（D07 §9.2、
+    第1.2節の例外 (e)）。
 
     D02 §7.1 の `EvaluationId`（部品の1回の評価）とは**別の型**であり、名前も混同しない。
     """
@@ -71,10 +80,30 @@ class RunEvaluationId:
         return self.digest.hex
 
 
+def _require_calendar_ref(calendar_ref: object, label: str) -> CalendarRef:
+    if (
+        not isinstance(calendar_ref, tuple)
+        or len(calendar_ref) != 2
+        or not isinstance(calendar_ref[0], str)
+        or not calendar_ref[0]
+        or isinstance(calendar_ref[1], bool)
+        or not isinstance(calendar_ref[1], int)
+        or calendar_ref[1] < 1
+    ):
+        raise KernelValueError(
+            f"{label} must be the calendar's (id, version) with a non-empty id and a version"
+            f" >= 1, got {calendar_ref!r} (D07 §9.2)"
+        )
+    return (calendar_ref[0], calendar_ref[1])
+
+
 def run_evaluation_id(
-    run_id: RunId, metric_set_version: int, evaluation_code_digest: CodeDigest
+    run_id: RunId,
+    metric_set_version: int,
+    evaluation_code_digest: CodeDigest,
+    calendar_ref: CalendarRef,
 ) -> RunEvaluationId:
-    """`RunEvaluationId` を作る（D07 §9.2）。"""
+    """`RunEvaluationId` を作る（D07 §9.2 の v2.0 の式）。"""
     if not isinstance(run_id, RunId):
         raise KernelValueError("run_evaluation_id requires a RunId")
     if isinstance(metric_set_version, bool) or not isinstance(metric_set_version, int):
@@ -85,12 +114,14 @@ def run_evaluation_id(
         )
     if not isinstance(evaluation_code_digest, CodeDigest):
         raise KernelValueError("run_evaluation_id requires a CodeDigest")
+    calendar_id, calendar_version = _require_calendar_ref(calendar_ref, "calendar_ref")
     return RunEvaluationId(
         digest=digest(
             {
                 "run_id": run_id.hex,
                 "metric_set_version": metric_set_version,
                 "evaluation_code_digest": evaluation_code_digest.digest.hex,
+                "calendar_ref": {"id": calendar_id, "version": calendar_version},
             }
         )
     )
@@ -103,6 +134,11 @@ class EvaluationManifest:
     **`swap_modeled` は必須項目**である（D07 §7.2）。省略も `None` も許さない。指標を
     抜き出して比較した時点で注記が消えないよう、manifest と指標の両方に置く。
 
+    **run manifest から写す5項目**（`run_manifest_ref` / `run_code_digest` / `run_status` /
+    `run_failure_reason` / `account_currency`）は、**run manifest が読めないとき `None`** に
+    なる（D07 v2.0 §3、§10.1.1 の R1-D07-4）。読めなかったことは整合検査 C11 の不合格として
+    `CONSISTENCY_CHECKS` 表に残る。
+
     **実行の能力検査（`DataCapabilityReport`）を写さない**（D07 §8.1）。正本は run manifest
     と結果 DTO であり、評価 manifest は `run_manifest_ref` と `run_status` /
     `run_failure_reason` でそこへ辿れる形だけを持つ。
@@ -110,36 +146,46 @@ class EvaluationManifest:
 
     run_evaluation_id: RunEvaluationId
     run_id: RunId
-    run_manifest_ref: ContentDigest
+    run_manifest_ref: ContentDigest | None
     metric_set_version: int
+    calendar_ref: CalendarRef
     evaluation_code_digest: CodeDigest
-    run_code_digest: CodeDigest
-    run_status: RunStatus
+    run_code_digest: CodeDigest | None
+    run_status: RunStatus | None
     run_failure_reason: Reason | None
-    account_currency: CurrencyCode
+    account_currency: CurrencyCode | None
     swap_modeled: bool
     status: EvaluationStatus
     result_digest: ContentDigest
     input_tables: tuple[TraceTable, ...]
     fatal_failure_count: int
     warning_failure_count: int
+    unreadable_check_count: int
 
     def __post_init__(self) -> None:
         for name, expected in (
             ("run_evaluation_id", RunEvaluationId),
             ("run_id", RunId),
-            ("run_manifest_ref", ContentDigest),
             ("evaluation_code_digest", CodeDigest),
-            ("run_code_digest", CodeDigest),
-            ("run_status", RunStatus),
-            ("account_currency", CurrencyCode),
             ("status", EvaluationStatus),
             ("result_digest", ContentDigest),
         ):
             if not isinstance(getattr(self, name), expected):
                 raise KernelValueError(f"EvaluationManifest.{name} must be a {expected.__name__}")
-        if self.run_failure_reason is not None and not isinstance(self.run_failure_reason, Reason):
-            raise KernelValueError("EvaluationManifest.run_failure_reason must be a Reason or None")
+        optional: tuple[tuple[str, type], ...] = (
+            ("run_manifest_ref", ContentDigest),
+            ("run_code_digest", CodeDigest),
+            ("run_status", RunStatus),
+            ("run_failure_reason", Reason),
+            ("account_currency", CurrencyCode),
+        )
+        for name, optional_type in optional:
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, optional_type):
+                raise KernelValueError(
+                    f"EvaluationManifest.{name} must be a {optional_type.__name__} or None"
+                )
+        _require_calendar_ref(self.calendar_ref, "EvaluationManifest.calendar_ref")
         if (self.run_status is RunStatus.COMPLETED) and self.run_failure_reason is not None:
             raise KernelValueError(
                 "a completed run carries no failure reason (D06 §9.3); a manifest that records"
@@ -161,7 +207,7 @@ class EvaluationManifest:
             isinstance(table, TraceTable) for table in self.input_tables
         ):
             raise KernelValueError("EvaluationManifest.input_tables must be a tuple of TraceTable")
-        for name in ("fatal_failure_count", "warning_failure_count"):
+        for name in ("fatal_failure_count", "warning_failure_count", "unreadable_check_count"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise KernelValueError(f"EvaluationManifest.{name} must be an int")
@@ -169,10 +215,10 @@ class EvaluationManifest:
                 raise KernelValueError(f"EvaluationManifest.{name} must be >= 0")
         if self.status is EvaluationStatus.FAILED and self.fatal_failure_count == 0:
             raise KernelValueError(
-                "an evaluation that FAILED must name at least one failing fatal check"
+                "an evaluation that FAILED must name at least one fatal check that did not pass"
                 " (D07 §10.1); otherwise the artifact cannot explain the failure"
             )
         if self.status is EvaluationStatus.COMPLETED and self.fatal_failure_count > 0:
             raise KernelValueError(
-                "an evaluation with a failing fatal check cannot be COMPLETED (D07 §10.1)"
+                "an evaluation with a fatal check that did not pass cannot be COMPLETED (D07 §10.1)"
             )

@@ -12,6 +12,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from odyssey_fx.backtest.trace.manifest import RunManifest
 from odyssey_fx.backtest.trace.recorder import TraceTable, column_names
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.errors import KernelValueError
@@ -25,7 +26,11 @@ from odyssey_fx.evaluation.adapters.fs_store import (
 )
 from odyssey_fx.evaluation.application.evaluate_run import COLUMN_SPECS, EvaluateRun
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION, EvaluationTable
-from odyssey_fx.evaluation.application.ports import ColumnValueKind, TraceColumnSpec
+from odyssey_fx.evaluation.application.ports import (
+    ColumnValueKind,
+    ManifestReadFailure,
+    TraceColumnSpec,
+)
 from odyssey_fx.evaluation.domain.metrics import (
     CategoryCount,
     FillDiagnostic,
@@ -33,7 +38,7 @@ from odyssey_fx.evaluation.domain.metrics import (
     TradeRecord,
 )
 from odyssey_fx.evaluation.domain.status import ConsistencyCheckResult, EvaluationStatus
-from tests.fixtures.backtest.harness import run_backtest
+from tests.fixtures.backtest.harness import CALENDAR, run_backtest
 from tests.fixtures.backtest.paths import RUN_INTERVAL, execution_bars, signal_bars
 from tests.fixtures.evaluation import traces
 
@@ -57,6 +62,7 @@ def test_the_run_manifest_round_trips(saved_run: tuple[Path, object]) -> None:
     original = output.manifest  # type: ignore[attr-defined]
     restored = FileSystemResultRepository(root=root).read_manifest(original.run_id)
 
+    assert isinstance(restored, RunManifest), restored
     assert restored.run_id == original.run_id
     assert restored.config_digest == original.config_digest
     assert restored.code_digest == original.code_digest
@@ -135,9 +141,35 @@ def test_reading_an_absent_table_says_so_instead_of_failing(tmp_path: Path) -> N
 
 
 def test_reading_a_run_without_a_manifest_says_which_file_is_missing(tmp_path: Path) -> None:
+    """読めない run manifest は例外にせず、読めなかったことを返す（D07 §10.1.1 の R1-D07-4）。"""
     manifest = traces.manifest_for()
-    with pytest.raises(KernelValueError, match="manifest.json"):
-        FileSystemResultRepository(root=tmp_path).read_manifest(manifest.run_id)
+    read = FileSystemResultRepository(root=tmp_path).read_manifest(manifest.run_id)
+    assert isinstance(read, ManifestReadFailure)
+    assert read.run_id == manifest.run_id
+    assert "manifest.json" in read.detail
+
+
+def test_a_manifest_that_is_not_json_is_a_read_failure(saved_run: tuple[Path, object]) -> None:
+    """壊れた run manifest も例外にしない（評価は C11 の不合格として残す）。"""
+    root, output = saved_run
+    run_id = output.manifest.run_id  # type: ignore[attr-defined]
+    (run_directory(root, run_id) / "manifest.json").write_text("{not json", encoding="utf-8")
+    read = FileSystemResultRepository(root=root).read_manifest(run_id)
+    assert isinstance(read, ManifestReadFailure)
+    assert "JSONDecodeError" in read.detail
+
+
+def test_a_manifest_missing_an_item_is_a_read_failure(saved_run: tuple[Path, object]) -> None:
+    """項目の欠けた run manifest も例外にしない（`KeyError` を読めなかったことに寄せる）。"""
+    root, output = saved_run
+    run_id = output.manifest.run_id  # type: ignore[attr-defined]
+    path = run_directory(root, run_id) / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["phases"]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    read = FileSystemResultRepository(root=root).read_manifest(run_id)
+    assert isinstance(read, ManifestReadFailure)
+    assert "phases" in read.detail
 
 
 def test_the_list_column_comes_back_as_one_string(saved_run: tuple[Path, object]) -> None:
@@ -165,7 +197,7 @@ def test_the_evaluation_is_saved_under_the_run_and_its_identifier(
     result = repository.read_result(output.result.run_id)  # type: ignore[attr-defined]
     report = EvaluateRun(
         evaluation_code_digest=output.manifest.code_digest  # type: ignore[attr-defined]
-    ).evaluate(result, repository, METRIC_SET_VERSION)
+    ).evaluate(result, repository, METRIC_SET_VERSION, CALENDAR)
     repository.write_evaluation(report, report.rows)
 
     directory = evaluation_directory(root, result.run_id, report.manifest.run_evaluation_id)
@@ -184,7 +216,7 @@ def test_every_evaluation_table_keeps_its_columns_when_empty(tmp_path: Path) -> 
     repository = traces.repository_for(manifest=manifest)
     result = traces.result_for(manifest, status=RunStatus.FAILED_DATA_ERROR, with_summaries=False)
     report = EvaluateRun(evaluation_code_digest=manifest.code_digest).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
     )
     assert report.status is EvaluationStatus.REJECTED
 
@@ -215,7 +247,7 @@ def test_writing_rows_that_differ_from_the_report_is_refused(tmp_path: Path) -> 
     repository = traces.repository_for(manifest=manifest)
     result = traces.result_for(manifest)
     report = EvaluateRun(evaluation_code_digest=manifest.code_digest).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
     )
     tampered = dict(report.rows)
     tampered[EvaluationTable.METRICS] = ()
@@ -246,7 +278,7 @@ def test_a_manifest_whose_config_was_edited_is_refused(saved_run: tuple[Path, ob
 
     `RunManifest` は実行の識別子が4つのダイジェストから来ていることを確かめるが、設定の
     中身がそのダイジェストと合っているかは見ない。中身だけを書き換えた manifest を通すと、
-    run 区間を変えるだけで指標が変わるのに、整合検査8件はすべて合格し、実行と評価の
+    run 区間を変えるだけで指標が変わるのに、整合検査はすべて合格し、実行と評価の
     識別子も同じままになる。
     """
     root, output = saved_run
@@ -256,8 +288,10 @@ def test_a_manifest_whose_config_was_edited_is_refused(saved_run: tuple[Path, ob
     payload["config"] = payload["config"].replace("2026-01-06T12:00:00Z", "2026-01-06T13:00:00Z")
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(KernelValueError, match="fingerprint disagree"):
-        FileSystemResultRepository(root=root).read_manifest(run_id)
+    read = FileSystemResultRepository(root=root).read_manifest(run_id)
+    # 例外にせず読めなかったことを返し、評価は C11 の不合格として残す（R1-D07-4）。
+    assert isinstance(read, ManifestReadFailure)
+    assert "fingerprint disagree" in read.detail
 
 
 def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, object]) -> None:
@@ -272,7 +306,7 @@ def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, obje
     result = repository.read_result(output.result.run_id)  # type: ignore[attr-defined]
     report = EvaluateRun(
         evaluation_code_digest=output.manifest.code_digest  # type: ignore[attr-defined]
-    ).evaluate(result, repository, METRIC_SET_VERSION)
+    ).evaluate(result, repository, METRIC_SET_VERSION, CALENDAR)
     repository.write_evaluation(report, report.rows)
     evaluations = run_directory(root, result.run_id) / "eval"
     assert list(evaluations.iterdir()), "評価の成果物が保存されていない"
