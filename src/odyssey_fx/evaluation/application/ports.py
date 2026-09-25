@@ -170,5 +170,8 @@ class ResultRepository(Protocol):
     def write_evaluation(
         self, report: EvaluationReport, rows: Mapping[EvaluationTable, tuple[object, ...]]
     ) -> None:
-        """評価結果の5表と評価 manifest を書く（D07 §8.2）。"""
+        """評価結果の5表と評価 manifest を書く（D07 §8.2）。
+
+        保存先が既にあれば、何も書かずに `ArtifactAlreadyExists` で失敗する（R4）。
+        """
         ...

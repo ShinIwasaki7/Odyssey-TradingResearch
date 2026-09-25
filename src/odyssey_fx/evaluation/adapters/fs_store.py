@@ -74,6 +74,7 @@ from odyssey_fx.evaluation.application.ports import (
     TableReadResult,
     TraceColumnSpec,
 )
+from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.metrics import (
     CategoryCount,
     FillDiagnostic,
@@ -94,8 +95,11 @@ __all__ = [
     "FileSystemResultRepository",
     "FileSystemResultWriter",
     "FileSystemTraceSink",
+    "create_artifact_directory",
     "evaluation_directory",
     "manifest_from_payload",
+    "require_absent",
+    "require_run_directory_absent",
     "reserve_run_directory",
     "result_from_payload",
     "run_directory",
@@ -124,23 +128,84 @@ def _columns(
     return {name: [row.get(name) for row in rows] for name in names}
 
 
+def _already_exists(directory: Path, remedy: str) -> ArtifactAlreadyExists:
+    """書き出し先が既にあることの例外（R4）。文言は検査の場所によらず1つにする。"""
+    return ArtifactAlreadyExists(
+        f"{directory} already exists; artifacts are never overwritten, and nothing was"
+        f" written. {remedy} (R4)"
+    )
+
+
+def require_absent(directory: Path, *, remedy: str) -> None:
+    """書き出し先がまだ無いことを確かめる（R4。作らない）。
+
+    書き出しより前に、無駄な計算を始める前に止めたいときに使う。作ること自体で確かめる
+    `create_artifact_directory` の代わりにはならない（確かめた後に別の実行が作る隙間が
+    残る）ので、書き出しの直前には必ずそちらを通す。壊れたシンボリックリンクも「ある」と
+    数える。
+    """
+    if directory.exists() or directory.is_symlink():
+        raise _already_exists(directory, remedy)
+
+
+def create_artifact_directory(directory: Path, *, remedy: str) -> Path:
+    """成果物の書き出し先を新しく作る（R4。D06 §9.1、D07 §8.2）。
+
+    成果物の書き込みは「**存在すれば、何も書かずに失敗する**」。空のディレクトリでも、
+    前の実行が途中で落ちて残した書きかけのディレクトリでも同じに扱う。中身を見て
+    「書きかけなら続きを書く」とすると、新旧の成果物が混ざる。
+
+    確かめてから作ると、確かめた後に別の実行が同じディレクトリを作る隙間が残るので、
+    **作ること自体で確かめる**（既にあれば作成が失敗する）。親は無ければ作る。
+    `remedy` は利用者が取れる手当て（置換の指示、または人間による移動・削除）の説明。
+    """
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir()
+    except FileExistsError:
+        raise _already_exists(directory, remedy) from None
+    return directory
+
+
+#: run の成果物が既にあるときの手当て（ADR-0006。置換の指示を持つのは run だけ）。
+_RUN_REMEDY = (
+    "It already holds artifacts for this run (re-running the same complete input produces"
+    " the same RunId), or was left by an earlier attempt that stopped halfway."
+    " Pass replace=True (`odyssey-fx run --replace`) to replace it; the previous manifest"
+    " is kept as manifest.replaced.json (ADR-0006)"
+)
+
+#: 評価の成果物が既にあるときの手当て（評価は置換の指示を持たない。D07 §8.2）。
+_EVALUATION_REMEDY = (
+    "Evaluations are never replaced; move or delete that directory first if this"
+    " evaluation should be written again (D07 §8.2)"
+)
+
+
+def require_run_directory_absent(root: Path, run_id: object) -> None:
+    """run を始める前に、`runs/<run_id>/` がまだ無いことを確かめる（D06 §10.6、R4）。
+
+    run の識別子は実行前に決まるので、実行してから書き出しで失敗するより先に止める。
+    置換を指示した run では呼ばない。書き出しの直前の確保（`reserve_run_directory`）は
+    これとは別にもう一度行う。
+    """
+    require_absent(run_directory(root, run_id), remedy=_RUN_REMEDY)
+
+
 def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) -> Path:
-    """成果物の置き場所を確保する（ADR-0006）。
+    """成果物の置き場所を確保する（ADR-0006、D06 §9.1、R4）。
 
     同じ完全入力の再実行は同じ `RunId` になるので、`runs/<run_id>/` が既にあることは
-    ふつうに起こる。**既存の成果物を無条件に上書きしない**（既定は失敗）。置換は明示的な
-    指示があるときだけ行い、置換したときも**旧 manifest を記録に残す**。
+    ふつうに起こる。**既定は「存在すれば、何も書かずに失敗する」**（R4。空のディレクトリ
+    でも失敗する）。置換は明示的な指示があるときだけ行い、置換したときも**旧 manifest を
+    記録に残す**（ADR-0006）。
 
     途中まで書いたところで失敗すると新旧の表が混ざるので、書き始める前にここで判断する。
     """
     directory = run_directory(root, run_id)
+    if not replace:
+        return create_artifact_directory(directory, remedy=_RUN_REMEDY)
     existing = sorted(directory.glob("*")) if directory.exists() else []
-    if existing and not replace:
-        raise KernelValueError(
-            f"{directory} already holds artifacts for this run; re-running the same complete"
-            " input produces the same RunId, and overwriting would destroy the earlier"
-            " reproducibility artifact. Pass replace=True to replace it (ADR-0006)"
-        )
     if existing:
         previous = directory / "manifest.json"
         if previous.exists():
@@ -165,7 +230,8 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
 class FileSystemTraceSink:
     """19表を `runs/<run_id>/<TABLE>.parquet` へ書く（D06 §9.1・§9.2）。
 
-    最初の書き出しの前に置き場所を確保し、既存の成果物があれば失敗する（ADR-0006）。
+    最初の書き出しの前に置き場所を確保し、書き出し先が既にあれば何も書かずに失敗する
+    （ADR-0006、R4）。
     """
 
     root: Path
@@ -764,6 +830,7 @@ class FileSystemResultRepository:
 
         保存先は `runs/<run_id>/eval/<run_evaluation_id>/`（Q4 決定）。**どの状態でも5表
         すべてを書く**。表の有無で状態を表すと、書き出しが途中で落ちた成果物と区別できない。
+        保存先が既にあれば、何も書かずに `ArtifactAlreadyExists` で失敗する（R4）。
         """
         manifest = report.manifest
         if dict(rows) != report.rows:
@@ -774,7 +841,9 @@ class FileSystemResultRepository:
                 " (D07 §9.2); the report and the rows given disagree"
             )
         directory = evaluation_directory(self.root, manifest.run_id, manifest.run_evaluation_id)
-        directory.mkdir(parents=True, exist_ok=True)
+        # 書き出し先は新しく作る。既にあれば何も書かずに失敗する（D07 §8.2、R4）。評価は
+        # 置換の指示を持たない（置換を許すのは run の成果物だけ。ADR-0006）。
+        create_artifact_directory(directory, remedy=_EVALUATION_REMEDY)
         for table in EvaluationTable:
             row_type = _EVALUATION_ROW_TYPES[table]
             declared = column_names(row_type)

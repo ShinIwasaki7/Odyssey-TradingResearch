@@ -51,7 +51,11 @@ from odyssey_fx.marketdata.domain.classification import (
     ClassificationOutcome,
     ResolvedClassification,
 )
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
+from odyssey_fx.marketdata.domain.errors import (
+    MarketDataValueError,
+    SnapshotAlreadyExists,
+    SnapshotNotApproved,
+)
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
     CheckResult,
@@ -395,6 +399,35 @@ class ParquetSnapshotStore:
         if root != candidate and root not in candidate.parents:
             raise ValueError(f"{snapshot_dir!r} resolves outside the snapshot root {root}")
         return candidate
+
+    # --- 書き出し先の確保（R4）----------------------------------------------
+
+    def create_directory(self, snapshot_dir: str, snapshot_id: str) -> None:
+        """snapshot の書き出し先を新しく作る（D03 §3.7.2・§10、R4）。
+
+        成果物の書き込みは「存在すれば、何も書かずに失敗する」。確かめてから作ると、
+        確かめた後に別の実行が同じディレクトリを作る隙間が残るので、**作ること自体で
+        確かめる**（既にあれば作成が失敗する）。親（`_pending/` など）は無ければ作る。
+
+        書き出し先の名前は書く snapshot の識別子と一致しなければならない。食い違うと、
+        読み取りの関門（`open_readable` の3者の一致）を通らない成果物ができる。
+        """
+        name = PurePosixPath(snapshot_dir).name
+        if name != snapshot_id:
+            raise MarketDataValueError(
+                f"{snapshot_dir!r} does not name the snapshot {snapshot_id!r} it would hold;"
+                " a snapshot directory is named after its identifier (D03 §3.7.1)"
+            )
+        target = self._snapshot_path(snapshot_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.mkdir()
+        except FileExistsError:
+            raise SnapshotAlreadyExists(
+                f"{target} already exists; snapshot artifacts are never overwritten, and"
+                " nothing was written. Move or delete that directory first if it should be"
+                " written again (D03 §3.7.2, R4)"
+            ) from None
 
     # --- partition ----------------------------------------------------------
 

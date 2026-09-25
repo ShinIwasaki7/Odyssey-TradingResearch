@@ -397,6 +397,51 @@ def test_running_again_into_the_same_place_refuses_to_overwrite(
     assert (root / "runs" / artifacts.run_id / "manifest.replaced.json").is_file()
 
 
+def test_a_leftover_run_directory_stops_the_run_before_it_starts(
+    artifacts: Artifacts, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """保存先が既にあれば、空でも run を始めずに、何も書かずに失敗する（D06 §10.6、R4）。
+
+    前の実行が途中で落ちて残したディレクトリも同じに扱う。中身を見て続きを書くと、
+    新旧の成果物が混ざる。
+    """
+    root = tmp_path / "artifacts"
+    directory = root / "runs" / artifacts.run_id
+    directory.mkdir(parents=True)
+
+    assert main(run_argv(artifacts.repo, root)) == 1
+    message = capsys.readouterr().err
+    assert "already exists" in message
+    assert "--replace" in message
+    assert list(directory.iterdir()) == []
+
+
+def test_evaluating_the_same_run_again_refuses_to_overwrite(
+    artifacts: Artifacts, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """同じ評価の成果物は上書きしない。評価は置換の指示を持たない（D07 §8.2、R4）。"""
+    root = tmp_path / "artifacts"
+    assert main(run_argv(artifacts.repo, root)) == 0
+    argv = [
+        "evaluate",
+        "--run",
+        artifacts.run_id,
+        "--calendar",
+        str(artifacts.repo / "configs/calendars/fx_ny17_v1.yaml"),
+        "--out",
+        str(root),
+    ]
+    assert main(argv) == 0
+    evaluations = root / "runs" / artifacts.run_id / "eval"
+    (saved,) = list(evaluations.iterdir())
+    before = {path.name: path.read_bytes() for path in saved.iterdir()}
+    capsys.readouterr()
+
+    assert main(argv) == 1
+    assert "never replaced" in capsys.readouterr().err
+    assert {path.name: path.read_bytes() for path in saved.iterdir()} == before
+
+
 def test_a_calendar_that_the_snapshot_did_not_use_is_refused(
     artifacts: Artifacts, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
