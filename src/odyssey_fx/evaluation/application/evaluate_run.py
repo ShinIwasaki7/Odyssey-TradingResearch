@@ -120,6 +120,7 @@ from odyssey_fx.evaluation.domain.status import (
     CHECK_REQUIRED_COLUMNS_PRESENT,
     CHECK_RUN_ID_CONSISTENT,
     CHECK_RUN_MANIFEST_READABLE,
+    CHECK_RUN_STATUS_CONSISTENT,
     CHECK_SINGLE_ACCOUNT_CURRENCY,
     CHECK_SNAPSHOT_ORDER_MONOTONIC,
     CHECK_TRADE_COUNT_MATCHES,
@@ -897,6 +898,7 @@ class EvaluateRun:
             _check_calendar(context, calendar),
             _check_manifest_readable(result, manifest_failure),
             _check_input_keys_unique(context),
+            _check_run_status(context),
         ]
         if result.status is RunStatus.COMPLETED:
             # 末尾の集計は正常完走した run だけが持つ（D06 §9.4）。存在しない値との比較を
@@ -955,7 +957,14 @@ class EvaluateRun:
             evaluation_code_digest=self._code_digest,
             run_code_digest=None if manifest is None else manifest.code_digest,
             run_status=None if manifest is None else result.status,
-            run_failure_reason=None if manifest is None else manifest.reason,
+            # 失敗理由は run の状態の一致（C13）が合格したときだけ写す。食い違う2つの成果物の
+            # 片方ずつを組み合わせると「完走したのに失敗理由を持つ」記録になるため、食い違いは
+            # C13 の不合格（期待値・観測値）として残し、ここには書かない（D07 v2.2 §10.4）。
+            run_failure_reason=(
+                manifest.reason
+                if manifest is not None and _run_statuses_agree(result, manifest)
+                else None
+            ),
             account_currency=None if manifest is None else manifest.config.account.currency,
             swap_modeled=result.swap_modeled,
             status=status,
@@ -1441,6 +1450,41 @@ def _check_manifest_readable(
     if failure is None:
         return _judged(CHECK_RUN_MANIFEST_READABLE, True, expected=expected, observed=expected)
     return _judged(CHECK_RUN_MANIFEST_READABLE, False, expected=expected, observed=failure.detail)
+
+
+def _run_statuses_agree(result: BacktestResult, manifest: RunManifest) -> bool:
+    """結果 DTO と run manifest の run の状態と失敗理由の有無が一致するか（C13）。"""
+    completed = result.status is RunStatus.COMPLETED
+    return manifest.status == result.status.value and (manifest.reason is None) == completed
+
+
+def _check_run_status(context: _Context) -> ConsistencyCheckResult:
+    """C13: 結果 DTO と run manifest の run の状態が一致する（D07 v2.2 §10.4）。
+
+    2つは同じ run の成果物なので、状態は同じでなければならず、正常完走なら失敗理由を持たず、
+    そうでなければ持つ（D06 §9.3・§9.4）。食い違いは保存済み成果物の欠陥であり、例外にせず
+    不合格として残す（人間の決定、2026-09-25）。
+    """
+
+    def run() -> ConsistencyCheckResult:
+        result = context.result
+        manifest = context.run_manifest
+        expected = {
+            "status": result.status.value,
+            "failure_reason": result.status is not RunStatus.COMPLETED,
+        }
+        observed = {
+            "status": manifest.status,
+            "failure_reason": manifest.reason is not None,
+        }
+        return _judged(
+            CHECK_RUN_STATUS_CONSISTENT,
+            _run_statuses_agree(result, manifest),
+            expected=canonical_text(expected),
+            observed=canonical_text(observed),
+        )
+
+    return _guarded(CHECK_RUN_STATUS_CONSISTENT, context, (), run, needs_manifest=True)
 
 
 def _normalized_key(column: str, value: str | None, kind: ColumnValueKind) -> str:

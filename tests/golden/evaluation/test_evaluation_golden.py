@@ -110,5 +110,5 @@ def test_the_golden_output_is_the_paper_trace_scenario() -> None:
     assert len(report.metrics) == 19
     assert len(report.trades) == 1
     assert len(report.fill_diagnostics) == 3
-    assert len(report.checks) == 12
+    assert len(report.checks) == 13
     assert all(check.passed for check in report.checks)

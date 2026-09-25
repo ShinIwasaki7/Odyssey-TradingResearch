@@ -1,8 +1,8 @@
 """評価の状態と整合検査（D07 §10）。
 
 全体計画 §5.5.1 が求める「完了 / 失敗 / 拒否 / 中断」を `EvaluationStatus` の4値とし、
-判断履歴が自分と食い違っていないことを確かめる検査12件（致命10・警告2）を宣言する。
-段階2 の8件（C1〜C8）に、段階4（D07 v2.0 §10.4）で C9〜C12 を足した。
+判断履歴が自分と食い違っていないことを確かめる検査13件（致命11・警告2）を宣言する。
+段階2 の8件（C1〜C8）に、段階4（D07 v2.0 §10.4）で C9〜C12、v2.2 で C13 を足した。
 
 **検査の結果は3区分である**（D07 §10.4、根本対処 R5）。合格（`PASSED`）・不合格
 （`FAILED`）に加えて、**検査に要る値が読めず、検査を実施できなかった**ことを
@@ -40,6 +40,7 @@ __all__ = [
     "CHECK_REQUIRED_COLUMNS_PRESENT",
     "CHECK_RUN_ID_CONSISTENT",
     "CHECK_RUN_MANIFEST_READABLE",
+    "CHECK_RUN_STATUS_CONSISTENT",
     "CHECK_SINGLE_ACCOUNT_CURRENCY",
     "CHECK_SNAPSHOT_ORDER_MONOTONIC",
     "CHECK_TRADE_COUNT_MATCHES",
@@ -109,8 +110,10 @@ CHECK_CALENDAR_MATCHES_RUN: Final = "calendar_matches_run"
 CHECK_RUN_MANIFEST_READABLE: Final = "run_manifest_readable"
 #: C12: 入力の表の主キーに重複が無い（v2.0。D07 §9.3 の R1-D07-5）。
 CHECK_INPUT_KEYS_UNIQUE: Final = "input_keys_unique"
+#: C13: 結果 DTO と run manifest の run の状態（と失敗理由の有無）が一致する（D07 v2.2 §10.4）。
+CHECK_RUN_STATUS_CONSISTENT: Final = "run_status_consistent"
 
-#: 検査の宣言順（D07 §10.4 の C1〜C12）。`CONSISTENCY_CHECKS` 表の整列鍵である。
+#: 検査の宣言順（D07 §10.4 の C1〜C13）。`CONSISTENCY_CHECKS` 表の整列鍵である。
 CHECK_ORDER: Final[tuple[str, ...]] = (
     CHECK_REQUIRED_COLUMNS_PRESENT,
     CHECK_RUN_ID_CONSISTENT,
@@ -124,9 +127,10 @@ CHECK_ORDER: Final[tuple[str, ...]] = (
     CHECK_CALENDAR_MATCHES_RUN,
     CHECK_RUN_MANIFEST_READABLE,
     CHECK_INPUT_KEYS_UNIQUE,
+    CHECK_RUN_STATUS_CONSISTENT,
 )
 
-#: 検査ごとの水準（D07 §10.4 の「水準」欄）。致命10件・警告2件。
+#: 検査ごとの水準（D07 §10.4 の「水準」欄）。致命11件・警告2件。
 CHECK_LEVELS: Final[dict[str, CheckLevel]] = {
     CHECK_REQUIRED_COLUMNS_PRESENT: CheckLevel.FATAL,
     CHECK_RUN_ID_CONSISTENT: CheckLevel.FATAL,
@@ -140,6 +144,7 @@ CHECK_LEVELS: Final[dict[str, CheckLevel]] = {
     CHECK_CALENDAR_MATCHES_RUN: CheckLevel.FATAL,
     CHECK_RUN_MANIFEST_READABLE: CheckLevel.FATAL,
     CHECK_INPUT_KEYS_UNIQUE: CheckLevel.FATAL,
+    CHECK_RUN_STATUS_CONSISTENT: CheckLevel.FATAL,
 }
 
 
@@ -164,7 +169,7 @@ class ConsistencyCheckResult:
     def __post_init__(self) -> None:
         if self.check not in CHECK_LEVELS:
             raise KernelValueError(
-                f"{self.check!r} is not one of the twelve consistency checks of D07 §10.4:"
+                f"{self.check!r} is not one of the thirteen consistency checks of D07 §10.4:"
                 f" {list(CHECK_ORDER)}"
             )
         if not isinstance(self.level, CheckLevel):

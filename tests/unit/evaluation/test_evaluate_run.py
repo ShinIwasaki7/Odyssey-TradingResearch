@@ -474,10 +474,10 @@ def test_the_rejection_categories_split_entry_from_close() -> None:
 
 
 def test_a_healthy_evaluation_completes_with_all_checks_run(report: EvaluationReport) -> None:
-    """検査12件が宣言順に全件残り、状態は完了になる（D07 §10.1・§10.4）。"""
+    """検査13件が宣言順に全件残り、状態は完了になる（D07 §10.1・§10.4）。"""
     assert report.status is EvaluationStatus.COMPLETED
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
-    assert len(report.checks) == 12
+    assert len(report.checks) == 13
     assert all(check.outcome is CheckOutcome.PASSED for check in report.checks)
     assert report.manifest.fatal_failure_count == 0
     assert report.manifest.warning_failure_count == 0
@@ -548,7 +548,7 @@ def test_a_missing_table_is_a_fatal_check_not_an_exception() -> None:
     """表が無いことは致命検査の不合格として残す（D07 §4.3・§10.2 の C1）。
 
     その表を読む検査は実施できないので `UNREADABLE` として残し、表を読まない検査は実施する
-    （D07 §10.4）。12件すべての結果が残る。
+    （D07 §10.4）。13件すべての結果が残る。
     """
     repository = traces.repository_for(absent=frozenset({TraceTable.POSITIONS}))
     report = _evaluate(repository)
@@ -762,7 +762,7 @@ def test_a_foreign_ledger_currency_is_reported_not_raised() -> None:
     failing = {check.check for check in report.checks if not check.passed}
     assert CHECK_REALIZED_MATCHES_BALANCE in failing
     assert CHECK_SINGLE_ACCOUNT_CURRENCY in failing
-    # 12件すべての検査結果が残り、どの検査が落ちたかを成果物だけで説明できる。
+    # 13件すべての検査結果が残り、どの検査が落ちたかを成果物だけで説明できる。
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
 
 
@@ -1343,6 +1343,37 @@ def test_an_unreadable_manifest_of_a_failed_run_is_still_rejected() -> None:
     report = _evaluate(repository, status=RunStatus.FAILED_DATA_ERROR, with_summaries=False)
     assert report.status is EvaluationStatus.REJECTED
     assert report.manifest.fatal_failure_count >= 1
+
+
+def test_a_result_and_manifest_that_disagree_on_the_run_status_fail_not_raise() -> None:
+    """結果 DTO は完走、run manifest は失敗と記録していても例外にしない（D07 v2.2 の C13）。
+
+    2つの保存済み成果物の食い違いは入力の欠陥なので、不合格として残す（2026-09-25 の人間の
+    決定）。評価 manifest には食い違う片方の失敗理由を写さない（完走と失敗理由の組は作らない）。
+    """
+    manifest = traces.manifest_for(status="FAILED_DATA_ERROR")
+    report = _evaluate(traces.repository_for(manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    check = _check(report, "run_status_consistent")
+    assert check.outcome is CheckOutcome.FAILED
+    assert check.expected == '{"failure_reason":false,"status":"COMPLETED"}'
+    assert check.observed == '{"failure_reason":true,"status":"FAILED_DATA_ERROR"}'
+    assert report.manifest.run_status is RunStatus.COMPLETED
+    assert report.manifest.run_failure_reason is None
+
+
+def test_a_rejected_run_whose_manifest_agrees_passes_the_status_check() -> None:
+    """正常完走していない run でも、2つの成果物が一致していれば C13 は合格する。"""
+    manifest = traces.manifest_for(status="FAILED_DATA_ERROR")
+    report = _evaluate(
+        traces.repository_for(manifest=manifest),
+        status=RunStatus.FAILED_DATA_ERROR,
+        with_summaries=False,
+    )
+    assert report.status is EvaluationStatus.REJECTED
+    assert _check(report, "run_status_consistent").outcome is CheckOutcome.PASSED
+    assert report.manifest.run_failure_reason is not None
 
 
 def test_a_calendar_that_the_run_did_not_use_fails_the_evaluation() -> None:

@@ -244,7 +244,7 @@ def test_the_trade_record_matches_the_paper_trace(artifacts: Artifacts) -> None:
 
 
 def test_the_consistency_checks_all_pass(artifacts: Artifacts) -> None:
-    """整合検査12件が全件実施され、すべて合格する（D07 §10.2・§10.4）。"""
+    """整合検査13件が全件実施され、すべて合格する（D07 §10.2・§10.4）。"""
     checks = artifacts.evaluation("CONSISTENCY_CHECKS")
     assert [row["check"] for row in checks] == [
         "required_columns_present",
@@ -259,6 +259,7 @@ def test_the_consistency_checks_all_pass(artifacts: Artifacts) -> None:
         "calendar_matches_run",
         "run_manifest_readable",
         "input_keys_unique",
+        "run_status_consistent",
     ]
     assert all(row["outcome"] == "PASSED" for row in checks), checks
 

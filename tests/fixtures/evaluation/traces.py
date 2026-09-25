@@ -21,6 +21,7 @@ from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, Run
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.ids import AccountId, RunId, SnapshotId
 from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
+from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import (
     CodeDigest,
     CompiledStrategyRef,
@@ -143,6 +144,8 @@ def manifest_for(
         status=status,
         symbol_spec_ref=SymbolSpecRef(symbol=USDJPY, version=1, digest=_digest("spec")),
         calendar_ref="fx_ny17@v1",
+        # 正常完走していない run は失敗理由を持つ（D06 §9.3。C13 が結果 DTO と照合する）。
+        reason=None if status == "COMPLETED" else Reason(ReasonCode.DATA_ERROR),
         timeframe_def_refs=(TimeframeRef("15m", 1), TimeframeRef("1h", 1)),
     )
 
