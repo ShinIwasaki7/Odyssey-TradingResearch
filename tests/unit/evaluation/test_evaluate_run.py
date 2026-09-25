@@ -1,7 +1,8 @@
 """判断履歴から指標・集計・診断・状態を作る（D07 §4〜§10）。
 
-**指標15件すべてを紙上トレース T01 の検算値と突き合わせる**（D07 §11、§5.2 の「T01 検算」
-の列）。判断履歴は `tests/fixtures/evaluation/traces.py` が T01 の数値から手で組み立てる。
+**指標集合 v2 の19件を紙上トレース T01 の検算値と突き合わせる**（D07 §11、§5.2・§5.5 の
+「T01 検算」の列。#17 は T01 では検算できないので、日次の資産を与えた例で別に確かめる）。
+判断履歴は `tests/fixtures/evaluation/traces.py` が T01 の数値から手で組み立てる。
 """
 
 from __future__ import annotations
@@ -32,7 +33,9 @@ from odyssey_fx.evaluation.domain.metrics import (
     Unavailable,
 )
 from odyssey_fx.evaluation.domain.status import (
+    CHECK_ALL_VALUES_READABLE,
     CHECK_ID_CHAIN_COMPLETE,
+    CHECK_INPUT_KEYS_UNIQUE,
     CHECK_OPPORTUNITY_COUNT_MATCHES,
     CHECK_ORDER,
     CHECK_REALIZED_MATCHES_BALANCE,
@@ -41,6 +44,8 @@ from odyssey_fx.evaluation.domain.status import (
     CHECK_SINGLE_ACCOUNT_CURRENCY,
     CHECK_TRADE_COUNT_MATCHES,
     CheckLevel,
+    CheckOutcome,
+    ConsistencyCheckResult,
     EvaluationStatus,
 )
 from tests.fixtures.evaluation import traces
@@ -51,7 +56,7 @@ _CODE_DIGEST = CodeDigest(digest=ContentDigest.sha256("b" * 64))
 def _evaluate(repository: traces.FakeRepository, **result_options: object) -> EvaluationReport:
     result = traces.result_for(repository.manifest, **result_options)  # type: ignore[arg-type]
     use_case = EvaluateRun(evaluation_code_digest=_CODE_DIGEST)
-    return use_case.evaluate(result, repository, METRIC_SET_VERSION)
+    return use_case.evaluate(result, repository, METRIC_SET_VERSION, traces.CALENDAR)
 
 
 def _value(report: EvaluationReport, metric_id: MetricId) -> object:
@@ -72,18 +77,34 @@ def _ratio(report: EvaluationReport, metric_id: MetricId) -> Decimal:
     return value.ratio
 
 
+def _outcomes(report: EvaluationReport) -> dict[str, CheckOutcome]:
+    return {check.check: check.outcome for check in report.checks}
+
+
+def _failed(report: EvaluationReport) -> set[str]:
+    """不合格（検査を実施して食い違いを見つけた）検査の名前。読めなかった検査は含めない。"""
+    return {check.check for check in report.checks if check.outcome is CheckOutcome.FAILED}
+
+
+def _check(report: EvaluationReport, name: str) -> ConsistencyCheckResult:
+    found = [check for check in report.checks if check.check == name]
+    assert len(found) == 1, found
+    return found[0]
+
+
 @pytest.fixture
 def report() -> EvaluationReport:
     """T01 第9節の判断履歴を評価した結果。"""
     return _evaluate(traces.repository_for())
 
 
-# --- 指標15件の検算（D07 §5.2 の「T01 検算」）--------------------------------
+# --- 指標19件の検算（D07 §5.2・§5.5 の「T01 検算」）-------------------------
 
 
-def test_the_metrics_are_the_fifteen_in_declaration_order(report: EvaluationReport) -> None:
-    """15件すべてが1行ずつ、宣言順に並ぶ（D07 §8.1）。"""
+def test_the_metrics_are_the_nineteen_in_declaration_order(report: EvaluationReport) -> None:
+    """指標集合 v2 の19件すべてが1行ずつ、宣言順に並ぶ（D07 §5.5・§8.1）。"""
     assert [record.metric_id for record in report.metrics] == list(MetricId)
+    assert len(report.metrics) == 19
 
 
 def test_net_profit_matches_the_paper_trace(report: EvaluationReport) -> None:
@@ -91,9 +112,18 @@ def test_net_profit_matches_the_paper_trace(report: EvaluationReport) -> None:
     assert _amount(report, MetricId.NET_PROFIT) == decimal_from_str("36706")
 
 
-def test_closed_trade_profit_matches_the_paper_trace(report: EvaluationReport) -> None:
-    """#2: 完了取引の確定損益は `36,768 JPY`（残存建玉は数えない、T01 §2.6）。"""
-    assert _amount(report, MetricId.CLOSED_TRADE_PROFIT) == decimal_from_str("36768")
+def test_closed_trade_profit_includes_the_entry_commission(report: EvaluationReport) -> None:
+    """#2: 入場費用込みの取引損益の合計 `36,768 − 32 = 36,736 JPY`（D07 §7.3）。
+
+    指標集合 v1 の `36,768`（決済側の手数料だけを含む確定損益）から、P1 の入場手数料
+    32 円を引いた値になる。残存建玉 P2 は数えない。
+    """
+    assert _amount(report, MetricId.CLOSED_TRADE_PROFIT) == decimal_from_str("36736")
+    # #1 純損益との差 −30 JPY は、未決済の建玉 P2 の入場手数料である（D07 §7.3）。
+    difference = _amount(report, MetricId.NET_PROFIT) - _amount(
+        report, MetricId.CLOSED_TRADE_PROFIT
+    )
+    assert difference == decimal_from_str("-30")
 
 
 def test_trade_count_matches_the_paper_trace(report: EvaluationReport) -> None:
@@ -165,6 +195,112 @@ def test_the_net_return_rate_matches_the_paper_trace(report: EvaluationReport) -
     assert _ratio(report, MetricId.NET_RETURN_RATE) == decimal_from_str("0.036706")
 
 
+def test_the_annualized_return_matches_the_paper_trace(report: EvaluationReport) -> None:
+    """#16: `N = 10`（2015-01-05〜09・12〜16）で `0.036706 × 260 ÷ 10 = 0.954356`（D07 §5.5）。"""
+    assert _ratio(report, MetricId.ANNUALIZED_RETURN) == decimal_from_str("0.954356")
+    counts = {record.metric_id: record.observation_count for record in report.metrics}
+    assert counts[MetricId.ANNUALIZED_RETURN] == 10
+
+
+def test_the_sharpe_ratio_uses_the_daily_equity_of_the_trading_days(
+    report: EvaluationReport,
+) -> None:
+    """#17: 取引日の終わり以前で最後の `equity` の日次系列から作る（D07 §5.5）。
+
+    T01 の `equity` は取引日の終わりには次の値になる（無い日は前日を持ち越す）。
+    1/5 は snapshot が無いので初期残高、1/6 は 11:15Z の決済後、1/8 は P2 入場後、
+    1/16 は run 末尾の `RUN_END`（取引日の終わりちょうど。「以前」に含む）。
+    """
+    from odyssey_fx.evaluation.domain.metrics import annualized_sharpe_ratio
+
+    daily = [
+        "1000000",  # E_0 初期残高
+        "1000000",  # 1/5
+        "1036736",  # 1/6
+        "1036736",  # 1/7
+        "1036706",  # 1/8
+        "1036706",  # 1/9
+        "1036706",  # 1/12
+        "1036706",  # 1/13
+        "1036706",  # 1/14
+        "1036706",  # 1/15
+        "1051706",  # 1/16
+    ]
+    expected = annualized_sharpe_ratio([decimal_from_str(value) for value in daily])
+    assert isinstance(expected, Decimal)
+    assert _ratio(report, MetricId.ANNUALIZED_SHARPE_RATIO) == expected
+
+
+def test_the_profit_factor_is_undefined_without_a_losing_trade(report: EvaluationReport) -> None:
+    """#18: 負け取引が無いので値なし（無限大を値にしない。D07 §5.5）。"""
+    value = _value(report, MetricId.PROFIT_FACTOR)
+    assert isinstance(value, Unavailable)
+    assert value.reason is MetricUnavailableReason.UNDEFINED_DENOMINATOR
+
+
+def test_the_average_trade_profit_matches_the_paper_trace(report: EvaluationReport) -> None:
+    """#19: `36,736 ÷ 1 = 36,736 JPY`（D07 §5.5）。"""
+    assert _amount(report, MetricId.AVERAGE_TRADE_PROFIT) == decimal_from_str("36736")
+
+
+def test_the_new_metrics_carry_the_caveats_of_the_design(report: EvaluationReport) -> None:
+    """#16〜#19 の注記（D07 §5.5・§7.2）。`ENTRY_COST_EXCLUDED` はどの指標にも付かない。"""
+    from odyssey_fx.evaluation.domain.metrics import MetricCaveat
+
+    caveats = {record.metric_id: record.caveats for record in report.metrics}
+    assert caveats[MetricId.ANNUALIZED_RETURN] == (MetricCaveat.SWAP_NOT_MODELED,)
+    assert caveats[MetricId.ANNUALIZED_SHARPE_RATIO] == (MetricCaveat.SWAP_NOT_MODELED,)
+    for metric_id in (MetricId.PROFIT_FACTOR, MetricId.AVERAGE_TRADE_PROFIT):
+        assert caveats[metric_id] == (
+            MetricCaveat.SWAP_NOT_MODELED,
+            MetricCaveat.OPEN_POSITION_EXCLUDED,
+        )
+    assert "ENTRY_COST_EXCLUDED" not in {item.value for item in MetricCaveat}
+
+
+def test_a_losing_trade_after_the_entry_commission_is_a_loss() -> None:
+    """勝敗は入場費用込みの取引損益の符号で決める（D07 §7.3、Q10 決定）。
+
+    決済側だけ見ると 10 円の勝ちでも、入場の手数料 32 円を含めると負けになる。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.POSITIONS] = [
+        {**tables[TraceTable.POSITIONS][0], "realized_amount": "10"},
+        tables[TraceTable.POSITIONS][1],
+    ]
+    # 末尾の確定損益と台帳が合うように、最後の残高を 10 − 32 − 30 だけ動かした値にする。
+    ledger = tables[TraceTable.LEDGER_SNAPSHOTS]
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        *ledger[:-1],
+        {**ledger[-1], "balance_amount": "999948"},
+    ]
+    repository = traces.repository_for(tables, manifest=manifest)
+    result = traces.result_for(manifest)
+    from dataclasses import replace
+
+    from odyssey_fx.common.money import Money
+
+    assert result.summaries is not None
+    result = replace(
+        result,
+        summaries=replace(
+            result.summaries, realized=Money(decimal_from_str("-52"), CurrencyCode("JPY"))
+        ),
+    )
+    report = EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
+    )
+    assert report.status is EvaluationStatus.COMPLETED, report.checks
+    trade = report.trades[0]
+    assert trade.realized.amount == decimal_from_str("10")
+    assert trade.trade_profit.amount == decimal_from_str("-22")
+    assert trade.outcome is TradeOutcome.LOSS
+    assert _ratio(report, MetricId.WIN_RATE) == decimal_from_str("0")
+    # 勝ち取引が無く負けが1件なので、プロフィットファクターは 0 ÷ 22 = 0。
+    assert _ratio(report, MetricId.PROFIT_FACTOR) == decimal_from_str("0")
+
+
 def test_every_metric_records_how_many_observations_it_used(report: EvaluationReport) -> None:
     """観測件数を持つ（D07 §5.1）。1取引から出た比率と多数から出た比率を区別するため。"""
     counts = {record.metric_id: record.observation_count for record in report.metrics}
@@ -187,6 +323,29 @@ def test_the_trade_record_matches_the_paper_trace(report: EvaluationReport) -> N
     assert trade.outcome is TradeOutcome.WIN
     assert trade.holding == timedelta(hours=2, minutes=15)
     assert str(trade.opportunity_id) == "OPP:00000001"
+
+
+def test_the_trade_record_carries_the_costs_of_both_fills(report: EvaluationReport) -> None:
+    """取引単位の費用6列と取引損益（D07 §7.3 の T01 の表）。
+
+    決済約定は売りで bid 基準なので提示価格の幅の記録が無く、**0 円ではなく `None`** の
+    まま残す（「費用が0円だった」と「費用記録が無い」を区別する。D06 §9.2）。
+    """
+    trade = report.trades[0]
+
+    def amount(value: object) -> Decimal:
+        from odyssey_fx.common.money import Money
+
+        assert isinstance(value, Money), value
+        return value.amount
+
+    assert amount(trade.entry_commission) == decimal_from_str("32")
+    assert amount(trade.entry_slippage_in_price) == decimal_from_str("320")
+    assert amount(trade.entry_spread_in_price) == decimal_from_str("640")
+    assert amount(trade.close_commission) == decimal_from_str("32")
+    assert amount(trade.close_slippage_in_price) == decimal_from_str("320")
+    assert trade.close_spread_in_price is None
+    assert amount(trade.trade_profit) == decimal_from_str("36736")
 
 
 def test_the_fill_diagnostics_cover_every_fill(report: EvaluationReport) -> None:
@@ -231,6 +390,59 @@ def test_the_categories_count_the_paper_trace_events(report: EvaluationReport) -
     assert counts[(CategoryKind.INTRABAR_METHOD, "SINGLE_HIT")] == 1
     # 受付前拒否は1件も無い（T01 第9節の run はすべて受け付けられる）。
     assert counts[(CategoryKind.ENTRY_REJECTION_REASON, "RISK")] == 0
+    # 待機が無いので、要求単位の集計は記録単位と同じ（D07 §6.3）。
+    assert counts[(CategoryKind.EVALUATION_REQUEST_FINAL_OUTCOME, "EVALUATED")] == 1
+    assert counts[(CategoryKind.EVALUATION_REQUEST_FINAL_OUTCOME, "SKIPPED")] == 1
+
+
+def test_a_waiting_request_counts_once_by_its_final_record() -> None:
+    """待機をはさんだ要求は、要求単位の集計では最後の記録で1件と数える（D07 §6.3、Q13）。
+
+    記録単位の集計（`EVALUATION_OUTCOME`）は2件のまま変えない。最後の記録は
+    `decision_time` の昇順、同じ時刻なら `evaluation_id` の昇順で最後のもの。行の並びを
+    入れ替えても結果は同じである。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    evaluated, skipped = tables[TraceTable.EVALUATIONS]
+    waiting = {
+        **evaluated,
+        # 待機の記録は診断を必ず持つ（D05 §6.8）。
+        "outcome_diagnoses": skipped["outcome_diagnoses"],
+        "evaluation_id": "EVAL:00000003",
+        "request_id": "REQ:00000001",
+        "decision_time": "2015-01-06T08:30:00Z",
+        "outcome_kind": "WAITING",
+    }
+    tie_first = {
+        **skipped,
+        "evaluation_id": "EVAL:00000004",
+        "request_id": "REQ:00000003",
+        "decision_time": "2015-01-07T10:00:00Z",
+        "outcome_kind": "WAITING",
+    }
+    tie_last = {
+        **evaluated,
+        "evaluation_id": "EVAL:00000005",
+        "request_id": "REQ:00000003",
+        "decision_time": "2015-01-07T10:00:00Z",
+        "outcome_kind": "SUPERSEDED",
+    }
+    rows = [evaluated, skipped, waiting, tie_first, tie_last]
+    reports = []
+    for ordering in (rows, list(reversed(rows))):
+        tables[TraceTable.EVALUATIONS] = ordering
+        reports.append(_evaluate(traces.repository_for(tables, manifest=manifest)))
+    first, second = reports
+    assert first.categories == second.categories
+    counts = {(row.category, row.key): row.count for row in first.categories}
+    request = CategoryKind.EVALUATION_REQUEST_FINAL_OUTCOME
+    assert counts[(CategoryKind.EVALUATION_OUTCOME, "WAITING")] == 2
+    assert counts[(request, "EVALUATED")] == 1
+    assert counts[(request, "SKIPPED")] == 1
+    assert counts[(request, "SUPERSEDED")] == 1
+    assert counts[(request, "WAITING")] == 0
+    assert sum(row.count for row in first.categories if row.category is request) == 3
 
 
 def test_the_rejection_categories_split_entry_from_close() -> None:
@@ -262,12 +474,14 @@ def test_the_rejection_categories_split_entry_from_close() -> None:
 
 
 def test_a_healthy_evaluation_completes_with_all_checks_run(report: EvaluationReport) -> None:
-    """検査8件が宣言順に全件残り、状態は完了になる（D07 §10.1・§10.2）。"""
+    """検査13件が宣言順に全件残り、状態は完了になる（D07 §10.1・§10.4）。"""
     assert report.status is EvaluationStatus.COMPLETED
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
-    assert all(check.passed for check in report.checks)
+    assert len(report.checks) == 13
+    assert all(check.outcome is CheckOutcome.PASSED for check in report.checks)
     assert report.manifest.fatal_failure_count == 0
     assert report.manifest.warning_failure_count == 0
+    assert report.manifest.unreadable_check_count == 0
 
 
 def test_zero_trades_is_not_a_failure() -> None:
@@ -282,7 +496,12 @@ def test_zero_trades_is_not_a_failure() -> None:
     )
     assert report.status is EvaluationStatus.COMPLETED
     assert _value(report, MetricId.TRADE_COUNT) == CountValue(0)
-    for metric_id in (MetricId.CLOSED_TRADE_PROFIT, MetricId.WIN_RATE):
+    for metric_id in (
+        MetricId.CLOSED_TRADE_PROFIT,
+        MetricId.WIN_RATE,
+        MetricId.PROFIT_FACTOR,
+        MetricId.AVERAGE_TRADE_PROFIT,
+    ):
         value = _value(report, metric_id)
         assert isinstance(value, Unavailable)
         assert value.reason is MetricUnavailableReason.NO_TRADES
@@ -326,14 +545,28 @@ def test_a_run_that_did_not_complete_is_rejected_without_metrics() -> None:
 
 
 def test_a_missing_table_is_a_fatal_check_not_an_exception() -> None:
-    """表が無いことは致命検査の不合格として残す（D07 §4.3・§10.2 の C1）。"""
+    """表が無いことは致命検査の不合格として残す（D07 §4.3・§10.2 の C1）。
+
+    その表を読む検査は実施できないので `UNREADABLE` として残し、表を読まない検査は実施する
+    （D07 §10.4）。13件すべての結果が残る。
+    """
     repository = traces.repository_for(absent=frozenset({TraceTable.POSITIONS}))
     report = _evaluate(repository)
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
-    failing = {check.check for check in report.checks if not check.passed}
-    assert failing == {CHECK_REQUIRED_COLUMNS_PRESENT}
+    assert _failed(report) == {CHECK_REQUIRED_COLUMNS_PRESENT}
     assert "POSITIONS" in report.checks[0].observed
+    outcomes = _outcomes(report)
+    assert outcomes[CHECK_TRADE_COUNT_MATCHES] is CheckOutcome.UNREADABLE
+    assert outcomes[CHECK_OPPORTUNITY_COUNT_MATCHES] is CheckOutcome.PASSED
+    # C9 は9表すべての値を読む検査なので、表が無ければ合格にせず読めなかったとする。
+    assert outcomes[CHECK_ALL_VALUES_READABLE] is CheckOutcome.UNREADABLE
+    assert "POSITIONS" in _check(report, CHECK_ALL_VALUES_READABLE).observed
+    assert "POSITIONS" in _check(report, CHECK_TRADE_COUNT_MATCHES).observed
+    assert [check.check for check in report.checks] == list(CHECK_ORDER)
+    assert report.manifest.unreadable_check_count == sum(
+        1 for outcome in outcomes.values() if outcome is CheckOutcome.UNREADABLE
+    )
 
 
 def test_a_missing_column_is_distinguished_from_an_empty_table() -> None:
@@ -352,6 +585,7 @@ def test_a_trade_count_mismatch_is_fatal() -> None:
     assert report.status is EvaluationStatus.FAILED
     failing = {check.check for check in report.checks if not check.passed}
     assert failing == {CHECK_TRADE_COUNT_MATCHES}
+    assert _check(report, CHECK_TRADE_COUNT_MATCHES).outcome is CheckOutcome.FAILED
 
 
 def test_a_broken_id_chain_is_fatal() -> None:
@@ -424,8 +658,8 @@ def test_the_evaluation_identifier_changes_with_the_metric_set_version() -> None
     repository = traces.repository_for()
     result = traces.result_for(repository.manifest)
     use_case = EvaluateRun(evaluation_code_digest=_CODE_DIGEST)
-    first = use_case.evaluate(result, repository, 1)
-    second = use_case.evaluate(result, repository, 2)
+    first = use_case.evaluate(result, repository, 1, traces.CALENDAR)
+    second = use_case.evaluate(result, repository, 2, traces.CALENDAR)
     assert first.manifest.run_evaluation_id != second.manifest.run_evaluation_id
 
 
@@ -434,11 +668,11 @@ def test_the_evaluation_identifier_changes_with_the_evaluating_code() -> None:
     repository = traces.repository_for()
     result = traces.result_for(repository.manifest)
     first = EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
     )
     other = CodeDigest(digest=ContentDigest.sha256("c" * 64))
     second = EvaluateRun(evaluation_code_digest=other).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
     )
     assert first.manifest.run_evaluation_id != second.manifest.run_evaluation_id
     assert first.manifest.result_digest == second.manifest.result_digest
@@ -479,7 +713,9 @@ def test_an_incomplete_closed_position_is_reported_not_silently_dropped() -> Non
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
     tables[TraceTable.POSITIONS] = [
-        {**tables[TraceTable.POSITIONS][0], "realized_amount": None},
+        # 金額と通貨の両方が空なら読める値（決済前と同じ形）であり、決済済みなのに確定損益が
+        # 無いという食い違いは C3・C4 が見る。
+        {**tables[TraceTable.POSITIONS][0], "realized_amount": None, "realized_currency": None},
         tables[TraceTable.POSITIONS][1],
     ]
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
@@ -526,15 +762,16 @@ def test_a_foreign_ledger_currency_is_reported_not_raised() -> None:
     failing = {check.check for check in report.checks if not check.passed}
     assert CHECK_REALIZED_MATCHES_BALANCE in failing
     assert CHECK_SINGLE_ACCOUNT_CURRENCY in failing
-    # 8件すべての検査結果が残り、どの検査が落ちたかを成果物だけで説明できる。
+    # 13件すべての検査結果が残り、どの検査が落ちたかを成果物だけで説明できる。
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
 
 
 def test_a_row_without_a_run_identifier_is_fatal() -> None:
-    """`run_id` が空の行は致命の不合格になる（D07 §10.2 の C2）。
+    """`run_id` が空の行は読めない値として致命の不合格になる（D07 §10.4 の C9）。
 
+    全行が `run_id` を持つことは D06 §9.1 が確定しているので、空は読めない値である。
     読み飛ばすと、実行に紐付いていない行が観測値から消えて検査が通り、その行が集計と
-    指標へそのまま入る。全行が `run_id` を持つことは D06 §9.1 が確定している。
+    指標へそのまま入る。`run_id` を読む C2 は実施できないので `UNREADABLE` になる。
     """
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
@@ -545,15 +782,31 @@ def test_a_row_without_a_run_identifier_is_fatal() -> None:
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
-    consistency = [check for check in report.checks if check.check == CHECK_RUN_ID_CONSISTENT]
-    assert consistency[0].passed is False
-    assert "missing run_id" in consistency[0].observed
+    assert _failed(report) == {CHECK_ALL_VALUES_READABLE}
+    assert "LEDGER_SNAPSHOTS.run_id" in _check(report, CHECK_ALL_VALUES_READABLE).observed
+    consistency = _check(report, CHECK_RUN_ID_CONSISTENT)
+    assert consistency.outcome is CheckOutcome.UNREADABLE
+    assert "LEDGER_SNAPSHOTS.run_id" in consistency.observed
+
+
+def test_a_foreign_run_identifier_is_a_mismatch_not_unreadable() -> None:
+    """別の実行の識別子を持つ行は読める値であり、C2 の不合格になる（D07 §10.2）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        {**tables[TraceTable.LEDGER_SNAPSHOTS][0], "run_id": "f" * 64},
+        *tables[TraceTable.LEDGER_SNAPSHOTS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert _failed(report) == {CHECK_RUN_ID_CONSISTENT}
 
 
 def test_a_fill_without_an_order_identifier_is_reported_not_raised() -> None:
-    """注文の識別子が空の約定も検査の不合格として残す（D07 §4.3・§10.2 の C4）。
+    """注文の識別子が空の約定は読めない値として残す（D07 §10.4 の C9）。
 
-    例外にすると評価が中断し、失敗を説明する検査の表そのものが残らない。
+    例外にすると評価が中断し、失敗を説明する検査の表そのものが残らない。約定の注文を
+    辿る C4 は実施できないので `UNREADABLE` になる。
     """
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
@@ -563,10 +816,172 @@ def test_a_fill_without_an_order_identifier_is_reported_not_raised() -> None:
     ]
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED
-    chain = [check for check in report.checks if check.check == CHECK_ID_CHAIN_COMPLETE]
-    assert chain[0].passed is False
-    assert "FIL:00000001" in chain[0].observed
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert readable.outcome is CheckOutcome.FAILED
+    assert "FILLS.order_id[FIL:00000001] = <empty>" in readable.observed
+    assert _check(report, CHECK_ID_CHAIN_COMPLETE).outcome is CheckOutcome.UNREADABLE
     assert [check.check for check in report.checks] == list(CHECK_ORDER)
+
+
+def test_a_cost_amount_without_its_currency_is_unreadable() -> None:
+    """費用の金額と通貨は2列で1つ。片方だけ空なら読めない値である（D07 §4.2・§10.4）。
+
+    どちらも空なのは「その区分の費用記録が無い」ことで、読めない値ではない（決済約定の
+    提示価格の幅がその例）。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.FILLS] = [
+        {**tables[TraceTable.FILLS][0], "cost_commission_currency": None},
+        *tables[TraceTable.FILLS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert _failed(report) == {CHECK_ALL_VALUES_READABLE}
+    assert "FILLS.cost_commission_currency" in _check(report, CHECK_ALL_VALUES_READABLE).observed
+    # 通貨の列を読む C8 は実施できない。
+    assert _check(report, CHECK_SINGLE_ACCOUNT_CURRENCY).outcome is CheckOutcome.UNREADABLE
+
+
+@pytest.mark.parametrize(
+    ("table", "index", "column"),
+    [
+        (TraceTable.OPPORTUNITY_TRANSITIONS, 0, "reason_code"),
+        (TraceTable.ORDERS, 1, "terms_cause"),
+        (TraceTable.ORDERS, 1, "terms_position_id"),
+        (TraceTable.ORDERS, 0, "terms_reference_quote_price"),
+        (TraceTable.ATTEMPT_DECISIONS, 0, "order_id"),
+        (TraceTable.ORDER_REQUESTS, 0, "payload_opportunity_id"),
+        (TraceTable.ORDER_REQUESTS, 1, "payload_position_id"),
+        (TraceTable.EVALUATIONS, 1, "outcome_diagnoses"),
+    ],
+)
+def test_a_column_required_by_the_row_kind_is_unreadable_when_empty(
+    table: TraceTable, index: int, column: str
+) -> None:
+    """行の区分で必ず埋まる列が空なら読めない値にする（D07 §10.4）。
+
+    見逃すと、終端理由・決済契機などの集計の鍵が黙って捨てられ、入場約定が不利約定幅の
+    対象から外れたまま評価が完了する（第4巡の代替レビューの指摘）。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    rows = list(tables[table])
+    changed = {**rows[index], column: None}
+    if column == "terms_reference_quote_price":
+        # 時刻の列と対なので、2列とも空にしても区分の規則で読めない値になることを確かめる。
+        changed["terms_reference_quote_observed_at"] = None
+    rows[index] = changed
+    tables[table] = rows
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert readable.outcome is CheckOutcome.FAILED
+    assert f"{table.value}.{column}" in readable.observed
+
+
+def test_one_unreadable_cell_is_counted_once() -> None:
+    """同じセルを2つの規則（2列で1つ・区分で必ず埋まる）が見つけても1件と数える（C9）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.ORDERS] = [
+        {**tables[TraceTable.ORDERS][0], "terms_reference_quote_price": None},
+        *tables[TraceTable.ORDERS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert '"count":1' in _check(report, CHECK_ALL_VALUES_READABLE).observed
+
+
+def test_a_skipped_evaluation_with_an_empty_diagnosis_list_is_unreadable() -> None:
+    """見送りの行の診断が `[]`（要素0件）でも読めない値にする（第5巡の代替レビューの指摘）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.EVALUATIONS] = [
+        tables[TraceTable.EVALUATIONS][0],
+        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": "[]"},
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert "EVALUATIONS.outcome_diagnoses" in readable.observed
+
+
+def test_a_rejected_attempt_without_a_reason_is_unreadable() -> None:
+    """拒否した試行は拒否理由を必ず持つ（空なら拒否の集計から黙って消える）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.ATTEMPT_DECISIONS] = [
+        {
+            **tables[TraceTable.ATTEMPT_DECISIONS][0],
+            "kind": "REJECTED",
+            "order_id": None,
+            "reason_code": None,
+        },
+        *tables[TraceTable.ATTEMPT_DECISIONS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert readable.outcome is CheckOutcome.FAILED
+    assert "ATTEMPT_DECISIONS.reason_code" in readable.observed
+
+
+def test_a_realized_amount_without_its_currency_is_unreadable() -> None:
+    """確定損益の金額と通貨も2列で1つ（D07 §10.4）。
+
+    通貨だけが空の決済済み建玉を通すと、通貨の検査（C8）は空を数えず、取引の組み立てで
+    例外になって検査の表が残らない。読めない値として C9 で止める。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.POSITIONS] = [
+        {**tables[TraceTable.POSITIONS][0], "realized_currency": None},
+        *tables[TraceTable.POSITIONS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.trades == ()
+    assert _failed(report) == {CHECK_ALL_VALUES_READABLE}
+    assert "POSITIONS.realized_currency" in _check(report, CHECK_ALL_VALUES_READABLE).observed
+
+
+def test_a_foreign_cost_currency_is_fatal() -> None:
+    """v2.0 で足した費用の列の通貨も口座通貨と比べる（D07 §7.3 の C8）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.FILLS] = [
+        {**tables[TraceTable.FILLS][0], "cost_commission_currency": "USD"},
+        *tables[TraceTable.FILLS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert _failed(report) == {CHECK_SINGLE_ACCOUNT_CURRENCY}
+
+
+def test_an_unreadable_value_is_counted_in_the_manifest() -> None:
+    """読めなかった検査の件数を評価 manifest に残す（D07 §10.4 の `unreadable_check_count`）。
+
+    水準ごとの件数は `PASSED` でない検査（不合格と読めなかったの両方）を数える。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.LEDGER_SNAPSHOTS] = [
+        {**tables[TraceTable.LEDGER_SNAPSHOTS][0], "at_time": "yesterday"},
+        *tables[TraceTable.LEDGER_SNAPSHOTS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    outcomes = _outcomes(report)
+    unreadable = {name for name, outcome in outcomes.items() if outcome is CheckOutcome.UNREADABLE}
+    # 台帳の処理点を読む C5・C7 と、主キーを読む C12 が実施できない。
+    assert unreadable == {
+        CHECK_REALIZED_MATCHES_BALANCE,
+        "snapshot_order_monotonic",
+        CHECK_INPUT_KEYS_UNIQUE,
+    }
+    assert report.manifest.unreadable_check_count == 3
+    # 致命: C9（不合格）＋ C5・C12（読めなかった）。警告: C7（読めなかった）。
+    assert report.manifest.fatal_failure_count == 3
+    assert report.manifest.warning_failure_count == 1
 
 
 def test_keys_outside_the_vocabulary_are_emitted_in_a_fixed_order() -> None:
@@ -650,6 +1065,10 @@ def test_an_empty_table_with_all_its_columns_is_accepted() -> None:
         (TraceTable.LEDGER_SNAPSHOTS, "at_time", None),
         (TraceTable.LEDGER_SNAPSHOTS, "at_phase", "NOT_A_PHASE"),
         (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "not-a-number"),
+        # 指数表記・カーネル精度を超える桁は、計算で桁あふれや黙った丸めになる（D06 §9.1）。
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "1E+9999999"),
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "1e3"),
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "1" * 29),
         (TraceTable.POSITIONS, "side", "SIDEWAYS"),
         (TraceTable.POSITIONS, "position_id", None),
         (TraceTable.FILLS, "processed_at_sequence", None),
@@ -658,11 +1077,12 @@ def test_an_empty_table_with_all_its_columns_is_accepted() -> None:
 def test_a_value_that_cannot_be_read_is_reported_not_raised(
     table: TraceTable, column: str, value: str | None
 ) -> None:
-    """読めない値で評価を中断しない（D07 §4.3 の趣旨）。
+    """読めない値で評価を中断しない（D07 §10.4 の C9、根本対処 R5）。
 
     列は揃っていても、常に埋まるはずの値が空・語彙に無い列挙・十進数として読めない
     文字列は起こりうる。例外のまま外へ出すと、失敗を説明する検査の表も評価 manifest も
-    残らず、「なぜ評価できなかったか」が成果物から消える。
+    残らず、「なぜ評価できなかったか」が成果物から消える。段階2 の仮置き（C1 へ寄せる）は
+    C9 と `UNREADABLE` に置き換わり、C1 は表と列の有無だけを見る。
     """
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
@@ -674,31 +1094,39 @@ def test_a_value_that_cannot_be_read_is_reported_not_raised(
     assert report.metrics == ()
     assert report.trades == ()
     assert report.fill_diagnostics == ()
-    # 失敗の理由が成果物だけで説明できる（検査の表に1件だけ不合格が残る）。
-    failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
-    assert failing[0].observed, "読めなかった理由が観測値に残らないと説明できない"
+    # 失敗の理由が成果物だけで説明できる（不合格は C9 の1件、残りは合格か読めなかった）。
+    assert _failed(report) == {CHECK_ALL_VALUES_READABLE}
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert f"{table.value}.{column}" in readable.observed
+    assert '"count":1' in readable.observed
+    assert _check(report, CHECK_REQUIRED_COLUMNS_PRESENT).passed
     assert report.manifest.fatal_failure_count >= 1
 
 
-def test_a_malformed_diagnosis_column_is_reported_not_raised() -> None:
-    """評価見送りの診断が読めなくても、失敗として完了する（D07 §4.3 の趣旨）。
+@pytest.mark.parametrize(
+    "encoded",
+    ["[not json", '["{}"]', '["123"]', "{}", '["{\\"reason\\":\\"\\"}"]'],
+)
+def test_a_malformed_diagnosis_column_is_reported_not_raised(encoded: str) -> None:
+    """評価見送りの診断が読めなくても、失敗として完了する（D07 §10.4 の C9）。
 
-    集計だけが読む列であり、検査8件はどれも触らない。組み立てを検査と同じ範囲の外に
-    置くと、検査がすべて合格したあとで例外になり、失敗を説明する成果物が残らない。
+    集計だけが読む列であり、C9 以外の検査はどれも触らない。読めない値を検査の段階で
+    見つけないと、検査がすべて合格したあとで集計が例外になり、失敗を説明する成果物が
+    残らない。JSON としては読めても診断の形（`reason` を持つ辞書の列）でなければ読めない
+    値とする。読み飛ばすと見送りの理由が0件として集計される。
     """
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
     tables[TraceTable.EVALUATIONS] = [
         tables[TraceTable.EVALUATIONS][0],
-        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": "[not json"},
+        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": encoded},
     ]
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
     assert report.categories == ()
     failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
+    assert [check.check for check in failing] == [CHECK_ALL_VALUES_READABLE]
 
 
 @pytest.mark.parametrize(
@@ -726,9 +1154,11 @@ def test_a_duplicate_primary_key_is_reported_not_silently_resolved(
 
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
-    failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
-    assert "must be unique" in failing[0].observed
+    # 主キーの重複は C12 の不合格として残す（D07 §10.4、R1-D07-5）。表と列は揃っている。
+    assert CHECK_INPUT_KEYS_UNIQUE in _failed(report)
+    assert '"first":' in _check(report, CHECK_INPUT_KEYS_UNIQUE).observed
+    assert _check(report, CHECK_REQUIRED_COLUMNS_PRESENT).passed
+    assert _check(report, CHECK_ALL_VALUES_READABLE).passed
 
 
 @pytest.mark.parametrize(
@@ -761,9 +1191,11 @@ def test_every_table_rejects_a_duplicated_primary_key(table: TraceTable) -> None
 
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
-    failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
-    assert "must be unique" in failing[0].observed
+    # 主キーの重複は C12 の不合格として残す（D07 §10.4、R1-D07-5）。表と列は揃っている。
+    assert CHECK_INPUT_KEYS_UNIQUE in _failed(report)
+    assert '"first":' in _check(report, CHECK_INPUT_KEYS_UNIQUE).observed
+    assert _check(report, CHECK_REQUIRED_COLUMNS_PRESENT).passed
+    assert _check(report, CHECK_ALL_VALUES_READABLE).passed
 
 
 def test_two_ledger_snapshots_at_the_same_point_are_refused() -> None:
@@ -807,9 +1239,11 @@ def test_the_same_moment_written_two_ways_counts_as_one_key() -> None:
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
-    failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
-    assert "must be unique" in failing[0].observed
+    # 主キーの重複は C12 の不合格として残す（D07 §10.4、R1-D07-5）。表と列は揃っている。
+    assert CHECK_INPUT_KEYS_UNIQUE in _failed(report)
+    assert '"first":' in _check(report, CHECK_INPUT_KEYS_UNIQUE).observed
+    assert _check(report, CHECK_REQUIRED_COLUMNS_PRESENT).passed
+    assert _check(report, CHECK_ALL_VALUES_READABLE).passed
 
 
 def test_the_same_identifier_written_two_ways_counts_as_one_key() -> None:
@@ -829,16 +1263,18 @@ def test_the_same_identifier_written_two_ways_counts_as_one_key() -> None:
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
-    failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
-    assert "must be unique" in failing[0].observed
+    # 主キーの重複は C12 の不合格として残す（D07 §10.4、R1-D07-5）。表と列は揃っている。
+    assert CHECK_INPUT_KEYS_UNIQUE in _failed(report)
+    assert '"first":' in _check(report, CHECK_INPUT_KEYS_UNIQUE).observed
+    assert _check(report, CHECK_REQUIRED_COLUMNS_PRESENT).passed
+    assert _check(report, CHECK_ALL_VALUES_READABLE).passed
 
 
 def test_a_row_without_a_primary_key_is_refused() -> None:
-    """主キーの構成要素が空の行は鍵として認めない（D06 §9.2）。
+    """主キーの構成要素が空の行は読めない値として止める（D06 §9.2、D07 §10.4）。
 
     欠けたまま数えると、主キーを持たない行が集計と指標へ入る。必須列の検査は列の有無しか
-    見ないので、ここで止めないと評価が完了してしまう。
+    見ないので、ここで止めないと評価が完了してしまう。主キーを読む C12 は実施できない。
     """
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
@@ -850,6 +1286,128 @@ def test_a_row_without_a_primary_key_is_refused() -> None:
     assert report.status is EvaluationStatus.FAILED
     assert report.metrics == ()
     assert report.categories == ()
-    failing = [check for check in report.checks if not check.passed]
-    assert [check.check for check in failing] == [CHECK_REQUIRED_COLUMNS_PRESENT]
-    assert "must not be empty" in failing[0].observed
+    assert _failed(report) == {CHECK_ALL_VALUES_READABLE}
+    assert "EVALUATIONS.evaluation_id" in _check(report, CHECK_ALL_VALUES_READABLE).observed
+    assert _check(report, CHECK_INPUT_KEYS_UNIQUE).outcome is CheckOutcome.UNREADABLE
+
+
+# --- 段階4 の入力: run manifest の読み取りと取引カレンダー（D07 §4.1・§10.4）--
+
+
+def test_an_unreadable_run_manifest_is_a_fatal_check_not_an_exception() -> None:
+    """run manifest が読めなくても例外にせず、C11 の不合格として残す（R1-D07-4）。
+
+    manifest の値を使う検査（C2・C5・C8・C10。処理点の順位を使う C7 も）は
+    `UNREADABLE`、manifest を使わない検査は実施する。評価 manifest の run 由来の5項目は
+    `None` になる。
+    """
+    repository = traces.repository_for(manifest_failure='"manifest.json is not JSON"')
+    report = _evaluate(repository)
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    outcomes = _outcomes(report)
+    assert outcomes["run_manifest_readable"] is CheckOutcome.FAILED
+    assert _check(report, "run_manifest_readable").observed == '"manifest.json is not JSON"'
+    for name in (
+        CHECK_RUN_ID_CONSISTENT,
+        CHECK_REALIZED_MATCHES_BALANCE,
+        "snapshot_order_monotonic",
+        CHECK_SINGLE_ACCOUNT_CURRENCY,
+        "calendar_matches_run",
+        "run_status_consistent",
+    ):
+        assert outcomes[name] is CheckOutcome.UNREADABLE, name
+        assert "run manifest" in _check(report, name).observed
+    for name in (
+        CHECK_REQUIRED_COLUMNS_PRESENT,
+        CHECK_TRADE_COUNT_MATCHES,
+        CHECK_ID_CHAIN_COMPLETE,
+        CHECK_OPPORTUNITY_COUNT_MATCHES,
+        CHECK_ALL_VALUES_READABLE,
+        CHECK_INPUT_KEYS_UNIQUE,
+    ):
+        assert outcomes[name] is CheckOutcome.PASSED, name
+    manifest = report.manifest
+    assert manifest.run_manifest_ref is None
+    assert manifest.run_code_digest is None
+    assert manifest.run_status is None
+    assert manifest.run_failure_reason is None
+    assert manifest.account_currency is None
+
+
+def test_an_unreadable_manifest_of_a_failed_run_is_still_rejected() -> None:
+    """run が正常完走していなければ、致命の不合格があっても `REJECTED` を優先する（R1-D07-1）。"""
+    repository = traces.repository_for(
+        manifest=traces.manifest_for(status="FAILED_DATA_ERROR"),
+        manifest_failure='"broken"',
+    )
+    report = _evaluate(repository, status=RunStatus.FAILED_DATA_ERROR, with_summaries=False)
+    assert report.status is EvaluationStatus.REJECTED
+    assert report.manifest.fatal_failure_count >= 1
+
+
+def test_a_result_and_manifest_that_disagree_on_the_run_status_fail_not_raise() -> None:
+    """結果 DTO は完走、run manifest は失敗と記録していても例外にしない（D07 v2.2 の C13）。
+
+    2つの保存済み成果物の食い違いは入力の欠陥なので、不合格として残す（2026-09-25 の人間の
+    決定）。評価 manifest には食い違う片方の失敗理由を写さない（完走と失敗理由の組は作らない）。
+    """
+    manifest = traces.manifest_for(status="FAILED_DATA_ERROR")
+    report = _evaluate(traces.repository_for(manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    check = _check(report, "run_status_consistent")
+    assert check.outcome is CheckOutcome.FAILED
+    assert check.expected == '{"failure_reason":false,"status":"COMPLETED"}'
+    assert check.observed == '{"failure_reason":true,"status":"FAILED_DATA_ERROR"}'
+    assert report.manifest.run_status is RunStatus.COMPLETED
+    assert report.manifest.run_failure_reason is None
+
+
+def test_a_rejected_run_whose_manifest_agrees_passes_the_status_check() -> None:
+    """正常完走していない run でも、2つの成果物が一致していれば C13 は合格する。"""
+    manifest = traces.manifest_for(status="FAILED_DATA_ERROR")
+    report = _evaluate(
+        traces.repository_for(manifest=manifest),
+        status=RunStatus.FAILED_DATA_ERROR,
+        with_summaries=False,
+    )
+    assert report.status is EvaluationStatus.REJECTED
+    assert _check(report, "run_status_consistent").outcome is CheckOutcome.PASSED
+    assert report.manifest.run_failure_reason is not None
+
+
+def test_a_calendar_that_the_run_did_not_use_fails_the_evaluation() -> None:
+    """run manifest の `calendar_ref` と違うカレンダーでは数えない（D07 §10.4 の C10、Q8）。"""
+    from tests.fixtures.synthetic import market
+
+    repository = traces.repository_for()
+    result = traces.result_for(repository.manifest)
+    other = market.calendar(version=2)
+    report = EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
+        result, repository, METRIC_SET_VERSION, other
+    )
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    assert _failed(report) == {"calendar_matches_run"}
+    check = _check(report, "calendar_matches_run")
+    assert check.expected == '"fx_ny17@v1"'
+    assert check.observed == '"fx_ny17@v2"'
+    assert report.manifest.calendar_ref == ("fx_ny17", 2)
+
+
+def test_the_evaluation_identifier_changes_with_the_calendar() -> None:
+    """受け取ったカレンダーの識別と版は評価の識別子の算出元に入る（D07 §9.2 の v2.0）。
+
+    入れないと、同じ run を違うカレンダーで評価した2つの結果（一方は C10 不合格で
+    `FAILED`）が同じ識別子・同じ保存先になる。
+    """
+    from tests.fixtures.synthetic import market
+
+    repository = traces.repository_for()
+    result = traces.result_for(repository.manifest)
+    use_case = EvaluateRun(evaluation_code_digest=_CODE_DIGEST)
+    first = use_case.evaluate(result, repository, METRIC_SET_VERSION, traces.CALENDAR)
+    second = use_case.evaluate(result, repository, METRIC_SET_VERSION, market.calendar(version=2))
+    assert first.manifest.run_evaluation_id != second.manifest.run_evaluation_id
+    assert first.manifest.calendar_ref == ("fx_ny17", 1)

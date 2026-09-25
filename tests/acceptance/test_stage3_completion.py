@@ -220,8 +220,10 @@ def test_the_final_balance_and_metrics_match_the_check_values(
     assert _decimal(net["value_amount_amount"]) == decimal_from_str("-10332")
     assert _metric(report, MetricId.TRADE_COUNT)["value_count"] == 1
     assert _decimal(_metric(report, MetricId.WIN_RATE)["value_ratio"]) == decimal_from_str("0")
+    # 指標集合 v2 では完了取引の損益に入場手数料 41 円を含める（D07 §7.3）。建玉は決済済みの
+    # 1件だけなので、`−10,291 − 41 = −10,332` となり純損益と一致する。
     closed = _metric(report, MetricId.CLOSED_TRADE_PROFIT)
-    assert _decimal(closed["value_amount_amount"]) == decimal_from_str("-10291")
+    assert _decimal(closed["value_amount_amount"]) == decimal_from_str("-10332")
 
 
 # --- 完了条件2: 時刻境界と取消理由を trace できる -------------------------------------

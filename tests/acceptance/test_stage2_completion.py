@@ -17,6 +17,7 @@ swap / rollover を計上していないことが成果物だけから読める�
 
 from __future__ import annotations
 
+import shlex
 from decimal import Decimal
 from pathlib import Path
 
@@ -171,14 +172,17 @@ def test_the_final_summaries_match_the_paper_trace(artifacts: Artifacts) -> None
 
 
 def test_the_metrics_match_the_paper_trace_check_values(artifacts: Artifacts) -> None:
-    """D07 §5.2 の「T01 検算」の値と一致する（15件すべて）。
+    """D07 §5.2 の「T01 検算」の値と一致する（段階2 の15件すべて）。
 
     建玉を保有していた時間の割合（`EXPOSURE_RATE`）は、2026-09-22 の人間の決定により
     **完了取引だけ**を数える（D07 §5.2 v1.3）。値そのものの検算は
     `test_the_exposure_rate_counts_only_the_closed_trade` で行う。
+
+    完了取引の損益（#2）は指標集合 v2 で入場費用込みの取引損益の合計になる（D07 §7.3。
+    §1.2 の例外 (a)）。T01 の値は `36,768 − 32 = 36,736 JPY`（P1 の入場手数料 32 円）。
     """
     assert _amount(artifacts, "NET_PROFIT") == EXPECTED.realized
-    assert _amount(artifacts, "CLOSED_TRADE_PROFIT") == EXPECTED.trade1_realized
+    assert _amount(artifacts, "CLOSED_TRADE_PROFIT") == EXPECTED.trade1_realized - Decimal(32)
 
     trade_count = _metric(artifacts, "TRADE_COUNT")
     assert trade_count["value_kind"] == "COUNT"
@@ -240,7 +244,7 @@ def test_the_trade_record_matches_the_paper_trace(artifacts: Artifacts) -> None:
 
 
 def test_the_consistency_checks_all_pass(artifacts: Artifacts) -> None:
-    """整合検査8件が全件実施され、すべて合格する（D07 §10.2）。"""
+    """整合検査13件が全件実施され、すべて合格する（D07 §10.2・§10.4）。"""
     checks = artifacts.evaluation("CONSISTENCY_CHECKS")
     assert [row["check"] for row in checks] == [
         "required_columns_present",
@@ -251,8 +255,13 @@ def test_the_consistency_checks_all_pass(artifacts: Artifacts) -> None:
         "opportunity_count_matches",
         "snapshot_order_monotonic",
         "single_account_currency",
+        "all_values_readable",
+        "calendar_matches_run",
+        "run_manifest_readable",
+        "input_keys_unique",
+        "run_status_consistent",
     ]
-    assert all(row["passed"] for row in checks), checks
+    assert all(row["outcome"] == "PASSED" for row in checks), checks
 
 
 # --- 完了条件2: 同一入力の再実行で trace が一致する --------------------------
@@ -432,3 +441,15 @@ def test_a_timeframe_definition_the_snapshot_did_not_use_is_refused(
     argv[argv.index("--timeframes") + 1] = str(other)
     assert main(argv) == 1
     assert "timeframe definition" in capsys.readouterr().err
+
+
+def test_the_run_output_shows_an_evaluate_command_that_works(artifacts: Artifacts) -> None:
+    """run の出力が案内する評価コマンドは、必須のカレンダーを含む（D07 §4.1 v2.0）。"""
+    hint = [line for line in artifacts.run_output.splitlines() if "odyssey-fx evaluate" in line]
+    assert len(hint) == 1, artifacts.run_output
+    # 案内はシェル向けに引用して組み立ててあるので、そのまま引数の列に戻せる。
+    argv = shlex.split(hint[0].split("`")[1])
+    assert argv[:2] == ["odyssey-fx", "evaluate"]
+    assert argv[argv.index("--run") + 1] == artifacts.run_id
+    assert argv[argv.index("--calendar") + 1].endswith("fx_ny17_v1.yaml")
+    assert argv[argv.index("--out") + 1] == str(artifacts.artifacts_root)

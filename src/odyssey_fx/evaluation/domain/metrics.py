@@ -1,8 +1,11 @@
-"""単一実行の指標・取引の記録・集計の語彙（D07 §5・§6・§7.2・§8.1）。
+"""単一実行の指標・取引の記録・集計の語彙（D07 §5・§6・§7・§8.1）。
 
-段階2の最小集合は**指標15件・集計7種・約定診断3項目**である（D07 §11）。本モジュールは
-それらの型と、値そのものを作る純粋な計算（走査・比率・勝敗）だけを持つ。判断履歴の表を
-読む順序・整合検査・状態の決定は `evaluation.application.evaluate_run` が行う。
+段階2の最小集合は**指標15件・集計7種・約定診断3項目**だった（D07 §11）。段階4 の
+**指標集合 v2**（D07 v2.0 §5.5）で指標を19件、集計を8種（要求単位の集計、§6.3）にし、
+取引の記録に取引単位の費用と入場費用を含む取引損益を足した（§7.3）。本モジュールは
+それらの型と、値そのものを作る純粋な計算（走査・比率・勝敗・年率化・取引日の数え方）
+だけを持つ。判断履歴の表を読む順序・整合検査・状態の決定は
+`evaluation.application.evaluate_run` が行う。
 
 **「値なし」を 0 や成功値へ置換しない**（D07 §5.1）。値が無い指標は `Unavailable` として
 型で表し、行は必ず残す。行ごと落とすと「計算できなかった」と「集計し忘れ」を区別できない。
@@ -10,13 +13,18 @@
 **丸めは行わない**（D07 §5.1、Q2 決定）。金額と価格差は `Decimal` の加減算だけで厳密に
 求まり、比率は除算を1回だけカーネル精度（D02 §4.1）で行ってそのまま保存する。表示用の
 桁は報告の関心であり、保存値に桁を決め打つと、同じ判断履歴から出した値が桁の変更で変わる。
+
+**指標集合 v2 の4件（#16〜#19）は演算が複数回になる**ので、「除算を1回だけ」の代わりに
+**演算の順序を式で固定し**、各演算をカーネル精度（28桁・`ROUND_HALF_EVEN`）で行って最終値を
+丸めない（D07 §5.5、人間の決定3）。平方根は同じコンテキストの `Decimal.sqrt()` を使い、
+`float` と非整数の指数のべき乗は使わない。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from enum import Enum
 from typing import Final
@@ -35,12 +43,14 @@ from odyssey_fx.common.money import (
 )
 from odyssey_fx.common.reason import MissingInputReason, ReasonCode
 from odyssey_fx.common.symbol import Symbol
-from odyssey_fx.common.time import ProcessingPoint, UtcTime
+from odyssey_fx.common.time import Interval, ProcessingPoint, UtcTime
+from odyssey_fx.marketdata.domain.calendar import ClosureRule, TradingCalendar
 
 __all__ = [
     "ADMISSION_REJECTION_KEYS",
     "CATEGORY_KEYS",
     "CLOSE_CAUSE_KEYS",
+    "TRADING_DAYS_PER_YEAR",
     "EVALUATION_OUTCOME_KEYS",
     "INTRABAR_METHOD_KEYS",
     "METRIC_INPUTS",
@@ -65,23 +75,29 @@ __all__ = [
     "TradeOutcome",
     "TradeRecord",
     "Unavailable",
+    "annualized_return",
+    "annualized_sharpe_ratio",
+    "average_trade_profit",
     "max_drawdown",
     "metric_caveats",
+    "profit_factor",
     "ratio_of",
     "trade_outcome",
+    "trade_profit",
+    "trading_day_ends",
 ]
 
 
 class MetricId(Enum):
-    """段階2の指標15件（D07 §5.2）。
+    """指標集合 v2 の19件（D07 §5.2 の15件＋§5.5 の4件）。
 
-    **宣言順が `METRICS` 表の整列鍵である**（D07 §8.1）。番号は D07 §5.2 の #1〜#15 に
-    そのまま対応するので、並べ替えない。
+    **宣言順が `METRICS` 表の整列鍵である**（D07 §8.1）。番号は D07 §5.2・§5.5 の
+    #1〜#19 にそのまま対応するので、並べ替えない。
     """
 
     #: #1 最後の台帳 snapshot の balance − 初期残高。
     NET_PROFIT = "NET_PROFIT"
-    #: #2 完了取引の確定損益の合計。
+    #: #2 完了取引の取引損益（入場費用込み、`trade_profit`）の合計（D07 §7.3）。
     CLOSED_TRADE_PROFIT = "CLOSED_TRADE_PROFIT"
     #: #3 完了取引の件数。
     TRADE_COUNT = "TRADE_COUNT"
@@ -109,6 +125,14 @@ class MetricId(Enum):
     HYPOTHETICAL_CLOSED_PROFIT = "HYPOTHETICAL_CLOSED_PROFIT"
     #: #15 純損益 ÷ 初期残高（期間で割らない単純収益率）。
     NET_RETURN_RATE = "NET_RETURN_RATE"
+    #: #16 単純年率化リターン `(#15 × 260) ÷ N`（D07 §5.5）。
+    ANNUALIZED_RETURN = "ANNUALIZED_RETURN"
+    #: #17 年率化シャープレシオ（日次・無リスク金利 0、D07 §5.5）。
+    ANNUALIZED_SHARPE_RATIO = "ANNUALIZED_SHARPE_RATIO"
+    #: #18 プロフィットファクター（D07 §5.5）。
+    PROFIT_FACTOR = "PROFIT_FACTOR"
+    #: #19 平均取引損益 `Σ trade_profit ÷ 完了取引数`（D07 §5.5）。
+    AVERAGE_TRADE_PROFIT = "AVERAGE_TRADE_PROFIT"
 
 
 class MetricKind(Enum):
@@ -135,7 +159,10 @@ class MetricUnavailableReason(Enum):
 
 
 class MetricCaveat(Enum):
-    """指標1件だけを見た人にも伝える必要のある注記5件（D07 §7.2）。
+    """指標1件だけを見た人にも伝える必要のある注記4件（D07 §7.2・§7.3）。
+
+    段階2 の `ENTRY_COST_EXCLUDED`（入場側の費用を含まない）は、指標集合 v2 で取引損益に
+    入場費用を含めたので**列挙から外した**（D07 v2.0 §7.3）。
 
     **宣言順が `MetricRecord.caveats` の並びである**。同じ指標から常に同じ並びが出ないと
     結果のダイジェストが揺れる（D07 §9.1 の条件4）。
@@ -147,8 +174,6 @@ class MetricCaveat(Enum):
     PRICE_EMBEDDED_COST = "PRICE_EMBEDDED_COST"
     #: 未決済建玉の評価に依存する、または未決済建玉を含まない。
     OPEN_POSITION_EXCLUDED = "OPEN_POSITION_EXCLUDED"
-    #: 入場側の費用を含まない（段階2 は取引単位の費用を読まない）。
-    ENTRY_COST_EXCLUDED = "ENTRY_COST_EXCLUDED"
     #: 解決できなかった足内競合の約定を含む（ADR-0030）。
     UNRESOLVED_INTRABAR_PRESENT = "UNRESOLVED_INTRABAR_PRESENT"
 
@@ -303,10 +328,15 @@ class TradeOutcome(Enum):
 
 @dataclass(frozen=True, slots=True)
 class TradeRecord:
-    """完了取引1件（D07 §5.2・§8.1）。`TRADES` 表の行。
+    """完了取引1件（D07 §5.2・§7.3・§8.1）。`TRADES` 表の行。
 
     `trade_seq` は整列鍵 `(entry_at, position_id)` で並べたあとの 1 起点の通し番号である。
     保存された表だけを見て順序を復元できるようにするために持つ。
+
+    **v2.0 で足した7項目**（D07 §7.3）: 入場約定と決済約定の区分別の費用6つ（表9 の
+    区分別の列をそのまま写す。`None` はその区分の**費用記録が無い**ことで、0 円に置き換え
+    ない）と、入場費用を含む取引損益 `trade_profit = realized − entry_commission`。
+    勝敗（`outcome`）は `trade_profit` の符号で決める（Q10 決定）。
     """
 
     trade_seq: int
@@ -325,6 +355,13 @@ class TradeRecord:
     realized: Money
     holding: timedelta
     outcome: TradeOutcome
+    entry_commission: Money | None
+    entry_slippage_in_price: Money | None
+    entry_spread_in_price: Money | None
+    close_commission: Money | None
+    close_slippage_in_price: Money | None
+    close_spread_in_price: Money | None
+    trade_profit: Money
 
     def __post_init__(self) -> None:
         if isinstance(self.trade_seq, bool) or not isinstance(self.trade_seq, int):
@@ -345,11 +382,36 @@ class TradeRecord:
             ("realized", Money),
             ("holding", timedelta),
             ("outcome", TradeOutcome),
+            ("trade_profit", Money),
         ):
             if not isinstance(getattr(self, name), expected):
                 raise KernelValueError(f"TradeRecord.{name} must be a {expected.__name__}")
+        for name in _TRADE_COST_FIELDS:
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, Money):
+                raise KernelValueError(f"TradeRecord.{name} must be a Money or None")
         if self.holding < timedelta(0):
             raise KernelValueError(f"TradeRecord.holding must be >= 0, got {self.holding}")
+        if self.trade_profit != trade_profit(self.realized, self.entry_commission):
+            raise KernelValueError(
+                "TradeRecord.trade_profit must be realized − entry_commission (D07 §7.3);"
+                f" got {self.trade_profit}"
+            )
+        if self.outcome is not trade_outcome(self.trade_profit):
+            raise KernelValueError(
+                "TradeRecord.outcome is decided by the sign of trade_profit (D07 §7.3, Q10)"
+            )
+
+
+#: 取引の記録が持つ区分別の費用6項目（D07 §7.3）。並びは入場3つ・決済3つ。
+_TRADE_COST_FIELDS: Final[tuple[str, ...]] = (
+    "entry_commission",
+    "entry_slippage_in_price",
+    "entry_spread_in_price",
+    "close_commission",
+    "close_slippage_in_price",
+    "close_spread_in_price",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,7 +451,13 @@ class FillDiagnostic:
 
 
 class CategoryKind(Enum):
-    """集計7種（D07 §6.1）。**宣言順が `CATEGORY_COUNTS` 表の第1整列鍵である**。"""
+    """集計8種（D07 §6.1 の7種＋§6.3 の1種）。**宣言順が `CATEGORY_COUNTS` 表の第1整列鍵**。
+
+    8種目の `EVALUATION_REQUEST_FINAL_OUTCOME` は、評価要求ごとに**最後の記録**の結果区分を
+    1件と数える（要求単位。D07 §6.3、Q13 決定）。既存の `EVALUATION_OUTCOME` は記録単位の
+    まま変えない。2つを並べると「待機に入った記録が何件あり、その要求が最終的にどう決着
+    したか」が読める。
+    """
 
     OPPORTUNITY_TERMINAL_REASON = "OPPORTUNITY_TERMINAL_REASON"
     ENTRY_REJECTION_REASON = "ENTRY_REJECTION_REASON"
@@ -398,6 +466,7 @@ class CategoryKind(Enum):
     MISSING_INPUT_REASON = "MISSING_INPUT_REASON"
     CLOSE_CAUSE = "CLOSE_CAUSE"
     INTRABAR_METHOD = "INTRABAR_METHOD"
+    EVALUATION_REQUEST_FINAL_OUTCOME = "EVALUATION_REQUEST_FINAL_OUTCOME"
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +567,8 @@ CATEGORY_KEYS: Final[dict[CategoryKind, tuple[str, ...]]] = {
     CategoryKind.MISSING_INPUT_REASON: MISSING_INPUT_KEYS,
     CategoryKind.CLOSE_CAUSE: CLOSE_CAUSE_KEYS,
     CategoryKind.INTRABAR_METHOD: INTRABAR_METHOD_KEYS,
+    # 語彙は記録単位の集計と同じ5語（D05 §6.4。D07 §6.3）。
+    CategoryKind.EVALUATION_REQUEST_FINAL_OUTCOME: EVALUATION_OUTCOME_KEYS,
 }
 
 #: 指標ごとの値の種別（D07 §5.2 の「種別」欄）。
@@ -517,14 +588,21 @@ METRIC_KINDS: Final[dict[MetricId, MetricKind]] = {
     MetricId.END_EQUITY_MTM: MetricKind.AMOUNT,
     MetricId.HYPOTHETICAL_CLOSED_PROFIT: MetricKind.AMOUNT,
     MetricId.NET_RETURN_RATE: MetricKind.RATIO,
+    MetricId.ANNUALIZED_RETURN: MetricKind.RATIO,
+    MetricId.ANNUALIZED_SHARPE_RATIO: MetricKind.RATIO,
+    MetricId.PROFIT_FACTOR: MetricKind.RATIO,
+    MetricId.AVERAGE_TRADE_PROFIT: MetricKind.AMOUNT,
 }
 
-#: 指標ごとに読む判断履歴の表（D07 §5.2 の「入力」欄）。末尾の集計から取る指標は空。
+#: 指標ごとに読む判断履歴の表（D07 §5.2・§5.5 の「入力」欄）。末尾の集計から取る指標は空。
+#: run manifest と取引カレンダーは判断履歴の表ではないので載せない。
 METRIC_INPUTS: Final[dict[MetricId, tuple[TraceTable, ...]]] = {
     MetricId.NET_PROFIT: (TraceTable.LEDGER_SNAPSHOTS,),
-    MetricId.CLOSED_TRADE_PROFIT: (TraceTable.POSITIONS,),
+    # v2.0 で入場約定の手数料（表9）を引くので、表9 も入力になる（D07 §7.3）。
+    MetricId.CLOSED_TRADE_PROFIT: (TraceTable.FILLS, TraceTable.POSITIONS),
     MetricId.TRADE_COUNT: (TraceTable.POSITIONS,),
-    MetricId.WIN_RATE: (TraceTable.POSITIONS,),
+    # 勝敗を入場費用込みの取引損益で決めるので、表9 も入力になる（D07 §7.3、Q10 決定）。
+    MetricId.WIN_RATE: (TraceTable.FILLS, TraceTable.POSITIONS),
     MetricId.MAX_DRAWDOWN_MTM: (TraceTable.LEDGER_SNAPSHOTS,),
     MetricId.MAX_DRAWDOWN_MTM_RATE: (TraceTable.LEDGER_SNAPSHOTS,),
     MetricId.MAX_DRAWDOWN_BALANCE: (TraceTable.LEDGER_SNAPSHOTS,),
@@ -536,15 +614,19 @@ METRIC_INPUTS: Final[dict[MetricId, tuple[TraceTable, ...]]] = {
     MetricId.END_EQUITY_MTM: (),
     MetricId.HYPOTHETICAL_CLOSED_PROFIT: (),
     MetricId.NET_RETURN_RATE: (TraceTable.LEDGER_SNAPSHOTS,),
+    MetricId.ANNUALIZED_RETURN: (TraceTable.LEDGER_SNAPSHOTS,),
+    MetricId.ANNUALIZED_SHARPE_RATIO: (TraceTable.LEDGER_SNAPSHOTS,),
+    MetricId.PROFIT_FACTOR: (TraceTable.FILLS, TraceTable.POSITIONS),
+    MetricId.AVERAGE_TRADE_PROFIT: (TraceTable.FILLS, TraceTable.POSITIONS),
 }
 
-#: 未解決の足内競合が**無くても**付く注記（D07 §7.2 の表）。
+#: 未解決の足内競合が**無くても**付く注記（D07 §7.2 の表、v2.0 の §5.5・§7.3）。
 _BASE_CAVEATS: Final[dict[MetricId, tuple[MetricCaveat, ...]]] = {
     MetricId.NET_PROFIT: (MetricCaveat.SWAP_NOT_MODELED,),
+    # 指標集合 v2 では入場費用を含めるので `ENTRY_COST_EXCLUDED` を付けない（D07 §7.3）。
     MetricId.CLOSED_TRADE_PROFIT: (
         MetricCaveat.SWAP_NOT_MODELED,
         MetricCaveat.OPEN_POSITION_EXCLUDED,
-        MetricCaveat.ENTRY_COST_EXCLUDED,
     ),
     MetricId.TRADE_COUNT: (),
     MetricId.WIN_RATE: (),
@@ -568,15 +650,28 @@ _BASE_CAVEATS: Final[dict[MetricId, tuple[MetricCaveat, ...]]] = {
         MetricCaveat.OPEN_POSITION_EXCLUDED,
     ),
     MetricId.NET_RETURN_RATE: (MetricCaveat.SWAP_NOT_MODELED,),
+    MetricId.ANNUALIZED_RETURN: (MetricCaveat.SWAP_NOT_MODELED,),
+    MetricId.ANNUALIZED_SHARPE_RATIO: (MetricCaveat.SWAP_NOT_MODELED,),
+    MetricId.PROFIT_FACTOR: (
+        MetricCaveat.SWAP_NOT_MODELED,
+        MetricCaveat.OPEN_POSITION_EXCLUDED,
+    ),
+    MetricId.AVERAGE_TRADE_PROFIT: (
+        MetricCaveat.SWAP_NOT_MODELED,
+        MetricCaveat.OPEN_POSITION_EXCLUDED,
+    ),
 }
 
-#: 未解決の足内競合が1件でもあるときだけ足す注記（D07 §7.2）。
+#: 未解決の足内競合が1件でもあるときだけ足す注記（D07 §7.2、v2.0 の §5.5）。
 _UNRESOLVED_INTRABAR_METRICS: Final[frozenset[MetricId]] = frozenset(
     {
         MetricId.NET_PROFIT,
         MetricId.CLOSED_TRADE_PROFIT,
         MetricId.WIN_RATE,
         MetricId.NET_RETURN_RATE,
+        MetricId.ANNUALIZED_RETURN,
+        MetricId.PROFIT_FACTOR,
+        MetricId.AVERAGE_TRADE_PROFIT,
     }
 )
 
@@ -639,16 +734,173 @@ def ratio_of(numerator: Decimal, denominator: Decimal) -> Decimal:
         return numerator / denominator
 
 
-def trade_outcome(realized: Money) -> TradeOutcome:
+def trade_outcome(profit: Money) -> TradeOutcome:
     """完了取引の勝敗（D07 §5.2 の #4）。
 
+    指標集合 v2 では**入場費用込みの取引損益（`trade_profit`）**を渡す（D07 §7.3、Q10 決定）。
     `= 0` は `BREAK_EVEN` とし、勝ちに数えず分母には数える。勝ちへ丸めると、費用でちょうど
     相殺された取引が勝率を押し上げる。
     """
-    if not isinstance(realized, Money):
+    if not isinstance(profit, Money):
         raise KernelValueError("trade_outcome requires a Money")
-    if realized.amount > 0:
+    if profit.amount > 0:
         return TradeOutcome.WIN
-    if realized.amount < 0:
+    if profit.amount < 0:
         return TradeOutcome.LOSS
     return TradeOutcome.BREAK_EVEN
+
+
+def trade_profit(realized: Money, entry_commission: Money | None) -> Money:
+    """入場費用を含む取引損益 `realized − entry_commission`（D07 §7.3）。
+
+    建玉の確定損益（`realized`）は決済側の手数料だけを含み、入場の手数料は約定時に残高へ
+    計上されている（上位 §4.7.15 C）。入場の手数料を引けば、取引1件の損益が balance の動きと
+    一致する。**価格に反映済みの費用（滑り・提示価格の幅）は引かない**（二重計上になる。
+    D07 §7.2）。入場の手数料の記録が無い（`None`）ときは 0 として引く。
+    """
+    if not isinstance(realized, Money):
+        raise KernelValueError("trade_profit requires the realized profit as a Money")
+    if entry_commission is None:
+        return realized
+    if not isinstance(entry_commission, Money):
+        raise KernelValueError("trade_profit requires the entry commission as a Money or None")
+    return realized - entry_commission
+
+
+#: 年率化の係数（年 260 取引日 = 週5日 × 52週）。**指標集合 v2 の定義の一部**であり、設定で
+#: 変えない（変えると同じ run の年率化の値が設定で変わる。D07 §5.5）。
+TRADING_DAYS_PER_YEAR: Final = 260
+
+
+def trading_day_ends(calendar: TradingCalendar, interval: Interval) -> tuple[UtcTime, ...] | None:
+    """run 区間に終わりが入る取引日の、終わりの時刻の列（D07 §5.5 の `N`、Q8 決定）。
+
+    取引日の区間は、取引カレンダーが取引日単位の休場に使う区間（D03 §3.4.1: 現地日付
+    `d` の前日の取引日の境界〜`d` の取引日の境界。初版カレンダーでは NY 17:00〜17:00）を
+    そのまま使う。取引日の境界と夏時間の解決を評価側で決め直さないためである。
+
+    **数える取引日**は、終わりが `(interval.start, interval.end]` にあり、かつ**その区間に
+    開場時間が少しでもある**もの（`calendar.sessions` が空でない）である。週末（金曜 17:00〜
+    日曜 17:00）と取引日単位の休場は開場時間が無いので数えない。
+
+    取引日の境界が1つに決まらないカレンダー（週の開閉の時刻が違う）では `None` を返す
+    （D03 §3.4.1 の `trading_day_boundary`）。
+    """
+    if not isinstance(calendar, TradingCalendar):
+        raise KernelValueError("trading_day_ends requires a TradingCalendar")
+    if not isinstance(interval, Interval):
+        raise KernelValueError("trading_day_ends requires an Interval")
+    boundary = calendar.trading_day_boundary
+    if boundary is None:
+        return None
+    first: date = interval.start.value.astimezone(calendar.tz).date()
+    last: date = interval.end.value.astimezone(calendar.tz).date() + timedelta(days=1)
+    ends: list[UtcTime] = []
+    day = first
+    while day <= last:
+        span = ClosureRule(local_date=day, covers_trading_day=True).utc_interval(
+            calendar.tz, trading_day_boundary=boundary
+        )
+        if interval.start < span.end <= interval.end and calendar.sessions(span):
+            ends.append(span.end)
+        day = day + timedelta(days=1)
+    return tuple(ends)
+
+
+def annualized_return(net_return: Decimal, trading_days: int) -> Decimal | None:
+    """#16 単純年率化リターン `(#15 × 260) ÷ N`（D07 §5.5）。**この順に計算する**。
+
+    `N = 0` なら `None`（呼び出し側が `UNDEFINED_DENOMINATOR` にする）。
+    """
+    if not isinstance(net_return, Decimal) or not net_return.is_finite():
+        raise KernelValueError("annualized_return requires a finite Decimal")
+    if isinstance(trading_days, bool) or not isinstance(trading_days, int) or trading_days < 0:
+        raise KernelValueError("annualized_return requires a non-negative int of trading days")
+    if trading_days == 0:
+        return None
+    with localcontext(kernel_context()):
+        scaled = net_return * decimal_from_int(TRADING_DAYS_PER_YEAR)
+        return scaled / decimal_from_int(trading_days)
+
+
+def annualized_sharpe_ratio(equities: Sequence[Decimal]) -> Decimal | MetricUnavailableReason:
+    """#17 年率化シャープレシオ（日次・無リスク金利 0、D07 §5.5）。
+
+    `equities` は `E_0, E_1, …, E_N`（`E_0` は初期残高、`E_k` は k 番目の取引日の終わりの
+    資産）。式は D07 §5.5 のとおり**この順に**計算し、各演算をカーネル精度で行う。
+
+    1. `r_k = E_k ÷ E_{k−1} − 1`（k = 1〜N）
+    2. `m = (Σ r_k) ÷ N`
+    3. `v = (Σ (r_k − m)²) ÷ (N − 1)`
+    4. `s = v.sqrt()`
+    5. `(m ÷ s) × 260.sqrt()`
+
+    値が定まらないときは理由を返す: `N < 2` なら `NO_OBSERVATIONS`、`E_{k−1} = 0` または
+    `s = 0` なら `UNDEFINED_DENOMINATOR`（無限大を値にしない）。
+    """
+    values = tuple(equities)
+    for value in values:
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise KernelValueError("annualized_sharpe_ratio requires finite Decimals")
+    days = len(values) - 1
+    if days < 2:
+        return MetricUnavailableReason.NO_OBSERVATIONS
+    with localcontext(kernel_context()):
+        returns: list[Decimal] = []
+        for previous, current in zip(values, values[1:], strict=False):
+            if previous == 0:
+                return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+            returns.append(current / previous - decimal_from_int(1))
+        total = decimal_from_int(0)
+        for value in returns:
+            total = total + value
+        mean = total / decimal_from_int(days)
+        squares = decimal_from_int(0)
+        for value in returns:
+            deviation = value - mean
+            squares = squares + deviation * deviation
+        variance = squares / decimal_from_int(days - 1)
+        spread = variance.sqrt()
+        if spread == 0:
+            return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+        return (mean / spread) * decimal_from_int(TRADING_DAYS_PER_YEAR).sqrt()
+
+
+def profit_factor(profits: Sequence[Money]) -> Decimal | MetricUnavailableReason:
+    """#18 プロフィットファクター（D07 §5.5）。
+
+    `(勝ち取引の trade_profit の合計) ÷ (負け取引の trade_profit の合計の絶対値)`。勝敗は
+    `trade_outcome` と同じ符号の規則で決める。0取引なら `NO_TRADES`、負け取引が無ければ
+    `UNDEFINED_DENOMINATOR`（無限大を値にしない）。
+    """
+    if not profits:
+        return MetricUnavailableReason.NO_TRADES
+    wins = decimal_from_int(0)
+    losses = decimal_from_int(0)
+    has_loss = False
+    with localcontext(kernel_context()):
+        for profit in profits:
+            outcome = trade_outcome(profit)
+            if outcome is TradeOutcome.WIN:
+                wins = wins + profit.amount
+            elif outcome is TradeOutcome.LOSS:
+                losses = losses + profit.amount
+                has_loss = True
+        if not has_loss:
+            return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+        return wins / abs(losses)
+
+
+def average_trade_profit(profits: Sequence[Money]) -> Money | None:
+    """#19 平均取引損益 `(Σ trade_profit) ÷ 完了取引数`（D07 §5.5）。
+
+    金額だが除算を含むので、カーネル精度で1回割って丸めない。0取引なら `None`（呼び出し側が
+    `NO_TRADES` にする）。
+    """
+    if not profits:
+        return None
+    total = profits[0]
+    for profit in profits[1:]:
+        total = total + profit
+    with localcontext(kernel_context()):
+        return Money(total.amount / decimal_from_int(len(profits)), total.currency)

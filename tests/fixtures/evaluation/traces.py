@@ -19,8 +19,9 @@ from odyssey_fx.backtest.trace.manifest import DataCapabilityReport, RunManifest
 from odyssey_fx.backtest.trace.recorder import TraceTable
 from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, RunStatus
 from odyssey_fx.common.canonical import digest
-from odyssey_fx.common.ids import AccountId, SnapshotId
+from odyssey_fx.common.ids import AccountId, RunId, SnapshotId
 from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
+from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import (
     CodeDigest,
     CompiledStrategyRef,
@@ -37,11 +38,17 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.application.evaluate_run import COLUMN_SPECS, INPUT_TABLES
 from odyssey_fx.evaluation.application.manifest import EvaluationTable
-from odyssey_fx.evaluation.application.ports import TableReadResult, TraceColumnSpec
+from odyssey_fx.evaluation.application.ports import (
+    ManifestReadFailure,
+    TableReadResult,
+    TraceColumnSpec,
+)
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
+from tests.fixtures.synthetic import market
 
 __all__ = [
+    "CALENDAR",
     "JPY",
     "RUN_INTERVAL",
     "FakeRepository",
@@ -62,6 +69,10 @@ RUN_INTERVAL = Interval(
     start=UtcTime.parse("2015-01-04T22:00:00Z"),
     end=UtcTime.parse("2015-01-16T22:00:00Z"),
 )
+
+#: T01 の run が使った取引カレンダー（NY 17:00 の週の開閉、休場なし。D03 §3.4 の初版と同じ）。
+#: run manifest の `calendar_ref`（`fx_ny17@v1`）と一致する（D07 §10.4 の C10）。
+CALENDAR = market.calendar()
 
 #: 1行を列の辞書で表す。
 Row = dict[str, str | None]
@@ -133,6 +144,8 @@ def manifest_for(
         status=status,
         symbol_spec_ref=SymbolSpecRef(symbol=USDJPY, version=1, digest=_digest("spec")),
         calendar_ref="fx_ny17@v1",
+        # 正常完走していない run は失敗理由を持つ（D06 §9.3。C13 が結果 DTO と照合する）。
+        reason=None if status == "COMPLETED" else Reason(ReasonCode.DATA_ERROR),
         timeframe_def_refs=(TimeframeRef("15m", 1), TimeframeRef("1h", 1)),
     )
 
@@ -186,6 +199,19 @@ def _row(table: TraceTable, run_id: str, **values: str | None) -> Row:
     return row
 
 
+def _costs(*, commission: str | None, slippage: str | None, spread: str | None) -> Row:
+    """約定1件の区分別の費用の列（D06 §9.2 の表9。記録が無い区分は金額・通貨とも空）。"""
+    columns: Row = {}
+    for prefix, amount in (
+        ("cost_commission", commission),
+        ("cost_slippage_in_price", slippage),
+        ("cost_spread_in_price", spread),
+    ):
+        columns[f"{prefix}_amount"] = amount
+        columns[f"{prefix}_currency"] = None if amount is None else "JPY"
+    return columns
+
+
 def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
     """T01 第9節の run が9表へ残す行（数値は T01 §2・§9・§9.4）。"""
     ledger = [
@@ -201,6 +227,8 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 TraceTable.EVALUATIONS,
                 run_id,
                 evaluation_id="EVAL:00000001",
+                request_id="REQ:00000001",
+                decision_time="2015-01-06T08:45:00Z",
                 outcome_kind="EVALUATED",
                 outcome_diagnoses="[]",
             ),
@@ -208,6 +236,8 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 TraceTable.EVALUATIONS,
                 run_id,
                 evaluation_id="EVAL:00000002",
+                request_id="REQ:00000002",
+                decision_time="2015-01-06T09:00:00Z",
                 outcome_kind="SKIPPED",
                 outcome_diagnoses=(
                     '["{\\"input_name\\":\\"prices\\",\\"reason\\":\\"WARMUP_INSUFFICIENT\\"}"]'
@@ -317,6 +347,8 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 processed_at_sequence="0",
                 price="150.08",
                 quantity="32000",
+                # T01 §2.6 / D07 §7.3: 入場約定の費用（0.001・0.010・0.020 × 32000）。
+                **_costs(commission="32", slippage="320", spread="640"),
             ),
             _row(
                 TraceTable.FILLS,
@@ -329,6 +361,8 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 processed_at_sequence="0",
                 price="151.23",
                 quantity="32000",
+                # 売りの決済は bid 基準なので提示価格の幅の記録が無い（T01 §2.6）。
+                **_costs(commission="32", slippage="320", spread=None),
             ),
             _row(
                 TraceTable.FILLS,
@@ -341,6 +375,8 @@ def t01_tables(run_id: str) -> dict[TraceTable, list[Row]]:
                 processed_at_sequence="0",
                 price="151",
                 quantity="30000",
+                # 末尾集計の区分別合計（94・940・1,240）と合う P2 の入場費用。
+                **_costs(commission="30", slippage="300", spread="600"),
             ),
         ],
         TraceTable.POSITIONS: [
@@ -433,9 +469,13 @@ class FakeRepository:
     written: list[tuple[object, Mapping[EvaluationTable, tuple[object, ...]]]] = field(
         default_factory=list
     )
+    #: 空でなければ、run manifest を読めなかったことを返す（D07 §10.1.1 の R1-D07-4）。
+    manifest_failure: str | None = None
 
-    def read_manifest(self, run_id: object) -> RunManifest:
+    def read_manifest(self, run_id: RunId) -> RunManifest | ManifestReadFailure:
         assert str(run_id) == str(self.manifest.run_id)
+        if self.manifest_failure is not None:
+            return ManifestReadFailure(run_id=run_id, detail=self.manifest_failure)
         return self.manifest
 
     def read_table(
@@ -464,6 +504,7 @@ def repository_for(
     manifest: RunManifest | None = None,
     absent: frozenset[TraceTable] = frozenset(),
     dropped_columns: Mapping[TraceTable, frozenset[str]] | None = None,
+    manifest_failure: str | None = None,
 ) -> FakeRepository:
     """T01 の履歴を持つ読み書き口を1つ作る。"""
     run_manifest = manifest_for() if manifest is None else manifest
@@ -472,6 +513,7 @@ def repository_for(
         tables=t01_tables(str(run_manifest.run_id)) if tables is None else tables,
         absent=absent,
         dropped_columns={} if dropped_columns is None else dropped_columns,
+        manifest_failure=manifest_failure,
     )
 
 

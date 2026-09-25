@@ -23,7 +23,7 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     TradeRecord,
 )
-from odyssey_fx.evaluation.domain.status import ConsistencyCheckResult
+from odyssey_fx.evaluation.domain.status import CheckOutcome, ConsistencyCheckResult
 from odyssey_fx.marketdata.domain.classification import CLASSIFIABLE_KINDS
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
@@ -238,13 +238,19 @@ def _metric_text(value: MetricValue) -> str:
 
 
 def consistency_lines(checks: Sequence[ConsistencyCheckResult]) -> list[str]:
-    """整合検査の結果（D07 §10.2）。合格・不合格のどちらも全件出す。
+    """整合検査の結果（D07 §10.2・§10.4）。3区分のどれでも全件出す。
 
-    不合格だけを出すと、検査が実施されたのかどうかが画面から分からない。
+    不合格だけを出すと、検査が実施されたのかどうかが画面から分からない。読めなかった検査
+    （`UNREADABLE`）は不合格と分けて出す（検査して食い違いを見つけたのではない）。
     """
     lines = ["整合検査:"]
     for check in checks:
-        mark = "合格" if check.passed else f"不合格（{check.level.value}）"
+        if check.outcome is CheckOutcome.PASSED:
+            mark = "合格"
+        elif check.outcome is CheckOutcome.UNREADABLE:
+            mark = f"読めなかった（{check.level.value}）"
+        else:
+            mark = f"不合格（{check.level.value}）"
         lines.append(f"  {check.check}: {mark}")
         if not check.passed:
             lines.append(f"    期待: {check.expected}")
@@ -260,13 +266,14 @@ def trade_lines(trades: Sequence[TradeRecord]) -> list[str]:
         lines.append(
             f"  #{trade.trade_seq} {trade.symbol} {trade.side.value} {trade.quantity}"
             f"  {trade.entry_price} → {trade.exit_price}"
-            f"  {trade.realized}  {trade.outcome.value}  {cause}  保有 {trade.holding}"
+            f"  {trade.realized}  取引損益 {trade.trade_profit}  {trade.outcome.value}"
+            f"  {cause}  保有 {trade.holding}"
         )
     return lines
 
 
 def category_lines(categories: Sequence[CategoryCount]) -> list[str]:
-    """集計7種（D07 §6.1）。**0件の鍵も出す**。
+    """集計8種（D07 §6.1・§6.3）。**0件の鍵も出す**。
 
     出さないと「一度も起きなかった」と「集計していない」を画面から区別できない。
     """

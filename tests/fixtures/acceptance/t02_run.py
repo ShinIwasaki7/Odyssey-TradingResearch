@@ -299,5 +299,5 @@ def evaluate_case(case: T02Case, root: Path) -> EvaluationReport:
     repository = FileSystemResultRepository(root=root)
     result = repository.read_result(output.result.run_id)
     return EvaluateRun(evaluation_code_digest=CODE_DIGEST).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, market.calendar()
     )

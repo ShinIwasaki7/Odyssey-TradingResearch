@@ -24,6 +24,7 @@ from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.trace.manifest import config_digest_of
 from odyssey_fx.common.refs import ConfigDigest
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
+from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
@@ -44,7 +45,7 @@ B_STRATEGY = CONFIGS / "strategies/strategy_b_v1.yaml"
 
 #: この試験が「この実装が持つ」とみなす指標集合の版（呼び出し側が渡す値。CLI は評価の実装
 #: から渡す）。同梱の設定が書く版と揃える。
-_METRIC_SET_VERSIONS = frozenset({1})
+_METRIC_SET_VERSIONS = frozenset({METRIC_SET_VERSION})
 
 
 def _load(path: Path, repo_root: Path = REPO_ROOT) -> ExperimentV2:
@@ -272,7 +273,7 @@ _REFUSALS: list[tuple[str, str, str, str | None, str]] = [
         None,
         "外を指している",
     ),
-    ("metric set version", "metric_set_version: 1", "metric_set_version: 99", None, "99"),
+    ("metric set version", "metric_set_version: 2", "metric_set_version: 99", None, "99"),
     ("schema version", "schema_version: 2", "schema_version: 3", None, "schema_version"),
     (
         "v1 entry policy string",

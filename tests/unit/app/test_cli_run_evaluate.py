@@ -9,6 +9,9 @@ import pytest
 from odyssey_fx.app.cli.main import build_parser, main
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 
+#: 評価が受け取る取引カレンダー（D07 §4.1 v2.0 の `--calendar`）。
+CALENDAR = str(Path(__file__).resolve().parents[3] / "configs/calendars/fx_ny17_v1.yaml")
+
 
 def test_the_top_level_commands_are_the_five_of_the_design() -> None:
     """市場データの3コマンドに実行と評価の2コマンドを足した5コマンド。"""
@@ -48,26 +51,39 @@ def test_the_run_command_takes_the_configuration_and_the_roots() -> None:
     assert args.replace is False
 
 
-def test_the_evaluate_command_takes_the_run_identifier() -> None:
-    """評価は実行の識別子だけを受け、市場データの設定を要らない（D07 §4.1）。"""
-    args = build_parser().parse_args(["evaluate", "--run", "a" * 64])
+def test_the_evaluate_command_takes_the_run_identifier_and_the_calendar() -> None:
+    """評価は実行の識別子と取引カレンダーを受け、市場データの設定を要らない（D07 §4.1）。
+
+    カレンダーは v2.0 で必須の引数になった（Q8 決定。年率化と日次の資産系列を取引日で
+    数えるため）。run manifest は識別と版しか持たないので、本文を呼び出し側が渡す。
+    """
+    args = build_parser().parse_args(["evaluate", "--run", "a" * 64, "--calendar", CALENDAR])
     assert args.command == "evaluate"
     assert args.run == "a" * 64
+    assert args.calendar == Path(CALENDAR)
     assert args.out == Path(".")
     assert args.metric_set_version == METRIC_SET_VERSION
 
 
 def test_the_evaluate_command_accepts_another_metric_set_version() -> None:
     """指標集合の版を変えて評価し直せる（D07 §9.2）。"""
-    args = build_parser().parse_args(["evaluate", "--run", "a" * 64, "--metric-set-version", "2"])
-    assert args.metric_set_version == 2
+    args = build_parser().parse_args(
+        ["evaluate", "--run", "a" * 64, "--calendar", CALENDAR, "--metric-set-version", "1"]
+    )
+    assert args.metric_set_version == 1
+
+
+def test_the_evaluate_command_requires_the_calendar() -> None:
+    """カレンダーを渡さない評価は argparse が止める（D07 §4.1 v2.0 の渡し方 (a)）。"""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["evaluate", "--run", "a" * 64])
 
 
 def test_an_identifier_that_is_not_a_digest_fails_with_exit_code_one(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """実行の識別子が16進64文字でなければ、行き先の分かる1行で終える（D03 §10）。"""
-    assert main(["evaluate", "--run", "not-a-digest"]) == 1
+    assert main(["evaluate", "--run", "not-a-digest", "--calendar", CALENDAR]) == 1
     assert "16進64文字" in capsys.readouterr().err
 
 
@@ -75,7 +91,8 @@ def test_evaluating_a_run_that_was_never_saved_fails_with_exit_code_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """保存されていない run の評価は失敗として終える（想定していない失敗にしない）。"""
-    assert main(["evaluate", "--run", "a" * 64, "--out", str(tmp_path)]) == 1
+    argv = ["evaluate", "--run", "a" * 64, "--calendar", CALENDAR, "--out", str(tmp_path)]
+    assert main(argv) == 1
     assert "result.json" in capsys.readouterr().err
 
 
@@ -105,16 +122,18 @@ def test_running_with_a_missing_experiment_file_fails_with_exit_code_one(
 def test_an_unimplemented_metric_set_version_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """式のある版だけを受ける（D07 §5.2・§9.2）。
+    """式のある版だけを受ける（D07 §5.5・§9.2）。
 
-    版の番号だけを変えても評価は段階2 の式で走るので、通してしまうと「別の指標集合で
-    作った」と名乗る成果物ができる。
+    版の番号だけを変えても評価は現在の版の式で走るので、通してしまうと「別の指標集合で
+    作った」と名乗る成果物ができる。実装が持つ指標集合は最新の1版だけである。
     """
     code = main(
         [
             "evaluate",
             "--run",
             "a" * 64,
+            "--calendar",
+            CALENDAR,
             "--out",
             str(tmp_path),
             "--metric-set-version",
@@ -122,7 +141,7 @@ def test_an_unimplemented_metric_set_version_is_refused(
         ]
     )
     assert code == 1
-    assert "式はまだ無い" in capsys.readouterr().err
+    assert "式は無い" in capsys.readouterr().err
 
 
 # --- 書式 v2（D07 §18.2・§18.5）---------------------------------------------

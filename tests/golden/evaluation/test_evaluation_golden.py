@@ -52,7 +52,7 @@ def _report() -> tuple[EvaluationReport, str]:
     repository = traces.repository_for(manifest=manifest)
     result = traces.result_for(manifest)
     report = EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
-        result, repository, METRIC_SET_VERSION
+        result, repository, METRIC_SET_VERSION, traces.CALENDAR
     )
     return report, str(manifest.run_id)
 
@@ -107,8 +107,8 @@ def test_the_five_evaluation_tables_match_the_golden_output() -> None:
 def test_the_golden_output_is_the_paper_trace_scenario() -> None:
     """固定出力が意図どおりの入力から出ていること（T01 第9節の run であること）。"""
     report, _ = _report()
-    assert len(report.metrics) == 15
+    assert len(report.metrics) == 19
     assert len(report.trades) == 1
     assert len(report.fill_diagnostics) == 3
-    assert len(report.checks) == 8
+    assert len(report.checks) == 13
     assert all(check.passed for check in report.checks)

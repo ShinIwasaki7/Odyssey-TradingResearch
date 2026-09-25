@@ -26,6 +26,7 @@ test_delay_scenarios.py`）が確かめている。待機期限を超える遅�
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import polars as pl
@@ -38,7 +39,7 @@ from odyssey_fx.evaluation.adapters.fs_store import FileSystemTraceSink, run_dir
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from tests.fixtures.acceptance.t02_run import build_case
-from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
+from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace, call
 from tests.fixtures.backtest.harness import RunOutput
 
 #: 統合テストで通すケース（上の docstring）。
@@ -100,3 +101,21 @@ def test_the_run_command_reproduces_the_engine_trace(
     # 比較が空の表どうしで成り立っただけにならないよう、検証戦略 B の記録が出ていることも見る。
     assert command[TraceTable.EVALUATIONS.value]
     assert command[TraceTable.WAIT_EVENTS.value] or case == "none"
+
+
+def test_the_evaluate_command_shown_after_a_v2_run_works(
+    workspace: T02Workspace, tmp_path: Path
+) -> None:
+    """書式 v2 の run が案内する評価コマンドは、実験設定の環境のカレンダーを指し、そのまま通る。
+
+    書式 v2 は `--calendar` を引数で受けないので、案内のカレンダーは `environment.calendar`
+    から取る（D07 §4.1 v2.0 の渡し方 (a)、§18.2）。run と同じカレンダーなので C10 も合格する。
+    """
+    artifacts = tmp_path / "artifacts"
+    output = call(workspace.run_argv("d1_2s", artifacts))
+    hint = [line for line in output.splitlines() if "odyssey-fx evaluate" in line]
+    assert len(hint) == 1, output
+    argv = shlex.split(hint[0].split("`")[1])
+    assert argv[argv.index("--calendar") + 1].endswith("fx_ny17_v1.yaml")
+    evaluated = call(argv[1:])
+    assert "評価の状態: COMPLETED" in evaluated

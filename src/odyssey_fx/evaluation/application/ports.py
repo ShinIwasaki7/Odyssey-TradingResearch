@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover - 型検査のためだけの参照
 
 __all__ = [
     "ColumnValueKind",
+    "ManifestReadFailure",
     "ResultRepository",
     "TableReadResult",
     "TraceColumnSpec",
@@ -124,6 +125,25 @@ class TableReadResult:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ManifestReadFailure:
+    """run manifest を読めなかったこと（D07 v2.0 §3、§10.1.1 の R1-D07-4）。
+
+    `detail` は読めなかった理由（D02 §9.3 の正規化エンコード文字列）。評価はこれを整合検査
+    C11 `run_manifest_readable` の観測値として残す。構造エラーとして例外にすると、評価の
+    成果物が何も残らず、run のディレクトリが壊れていることを結果から説明できない。
+    """
+
+    run_id: RunId
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, RunId):
+            raise KernelValueError("ManifestReadFailure.run_id must be a RunId")
+        if not isinstance(self.detail, str) or not self.detail:
+            raise KernelValueError("ManifestReadFailure.detail must be a non-empty str")
+
+
 @runtime_checkable
 class ResultRepository(Protocol):
     """run の成果物の読み書き（D01 §4、D07 §4.3・§8.2）。
@@ -132,8 +152,13 @@ class ResultRepository(Protocol):
     （D01 §2.2 規則7）。
     """
 
-    def read_manifest(self, run_id: RunId) -> RunManifest:
-        """run manifest を読む（D06 §9.3）。"""
+    def read_manifest(self, run_id: RunId) -> RunManifest | ManifestReadFailure:
+        """run manifest を読む（D06 §9.3）。
+
+        **読めないとき（ファイルが無い・壊れている）は例外にせず `ManifestReadFailure` を
+        返す**（D07 v2.0 §3、§10.1.1 の R1-D07-4）。評価はそれを整合検査 C11 の不合格として
+        残し、manifest を使わない検査は実施する。
+        """
         ...
 
     def read_table(

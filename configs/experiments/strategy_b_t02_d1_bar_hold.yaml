@@ -84,7 +84,7 @@ delay_scenario:
       bar_start: "2015-01-06T22:00:00Z"
       delay: "25h"
 
-evaluation: {metric_set_version: 1}
+evaluation: {metric_set_version: 2}
 
 search_plan: "NONE"
 split: "NONE"

@@ -70,6 +70,7 @@ from odyssey_fx.evaluation.application.manifest import (
 )
 from odyssey_fx.evaluation.application.ports import (
     ColumnValueKind,
+    ManifestReadFailure,
     TableReadResult,
     TraceColumnSpec,
 )
@@ -662,12 +663,39 @@ class FileSystemResultRepository:
 
     root: Path
 
-    def read_manifest(self, run_id: RunId) -> RunManifest:
-        """`runs/<run_id>/manifest.json` を読む（D06 §9.3）。"""
+    def read_manifest(self, run_id: RunId) -> RunManifest | ManifestReadFailure:
+        """`runs/<run_id>/manifest.json` を読む（D06 §9.3）。
+
+        **読めないとき（ファイルが無い・JSON として壊れている・項目が欠けている・設定と
+        その指紋が食い違う）は例外にせず `ManifestReadFailure` を返す**（D07 v2.0 §3、
+        §10.1.1 の R1-D07-4）。評価はそれを整合検査 C11 の不合格として残す。
+        """
         path = run_directory(self.root, run_id) / "manifest.json"
         if not path.is_file():
-            raise KernelValueError(f"{path} does not exist; this run has no manifest to evaluate")
-        return manifest_from_payload(json.loads(path.read_text(encoding="utf-8")))
+            return ManifestReadFailure(
+                run_id=run_id,
+                detail=canonical_text(f"{path.name} does not exist; this run has no manifest"),
+            )
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                raise KernelValueError("the run manifest must be a JSON object")
+            return manifest_from_payload(payload)
+        except OSError as exc:
+            # **絶対パスを観測値に入れない**（D07 §9.1 の条件4）。`OSError` の文字列表現は
+            # パスを含むので、理由の文言だけを残す。入れると同じ run の成果物を別の場所に
+            # 置いただけで結果のダイジェストが変わる。
+            return ManifestReadFailure(
+                run_id=run_id,
+                detail=canonical_text(f"{type(exc).__name__}: {exc.strerror} ({path.name})"),
+            )
+        except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            # `KernelValueError` と JSON の読み取りの失敗は `ValueError` の派生。項目の欠落は
+            # `KeyError`、形の違う値は `TypeError` / `AttributeError`、桁あふれ（JSON の
+            # `1e999` を整数にするなど）は `ArithmeticError` として来る。
+            return ManifestReadFailure(
+                run_id=run_id, detail=canonical_text(f"{type(exc).__name__}: {exc}")
+            )
 
     def read_result(self, run_id: RunId) -> BacktestResult:
         """`runs/<run_id>/result.json` を読む（D06 §9.4）。"""
@@ -779,22 +807,33 @@ def _evaluation_payload(manifest: EvaluationManifest) -> dict[str, Any]:
     """評価 manifest の6群を JSON へ落とす（D07 §8.3）。
 
     **実行時刻を入れない**。壁時計の時刻を入れると同じ判断履歴から同じ成果物が出なくなる。
+    run manifest から写す5項目は、run manifest が読めなかったとき `null` になる
+    （D07 §10.1.1 の R1-D07-4）。
     """
     reason = manifest.run_failure_reason
+    calendar_id, calendar_version = manifest.calendar_ref
     return {
         "run_evaluation_id": str(manifest.run_evaluation_id),
         "run_id": str(manifest.run_id),
-        "run_manifest_ref": manifest.run_manifest_ref.hex,
+        "run_manifest_ref": None
+        if manifest.run_manifest_ref is None
+        else manifest.run_manifest_ref.hex,
         "metric_set_version": manifest.metric_set_version,
+        "calendar_ref": {"id": calendar_id, "version": calendar_version},
         "evaluation_code_digest": manifest.evaluation_code_digest.digest.hex,
-        "run_code_digest": manifest.run_code_digest.digest.hex,
+        "run_code_digest": None
+        if manifest.run_code_digest is None
+        else manifest.run_code_digest.digest.hex,
         "input_tables": [table.value for table in manifest.input_tables],
-        "account_currency": str(manifest.account_currency),
-        "run_status": manifest.run_status.value,
+        "account_currency": None
+        if manifest.account_currency is None
+        else str(manifest.account_currency),
+        "run_status": None if manifest.run_status is None else manifest.run_status.value,
         "run_failure_reason": None if reason is None else reason.code.value,
         "swap_modeled": manifest.swap_modeled,
         "status": manifest.status.value,
         "fatal_failure_count": manifest.fatal_failure_count,
         "warning_failure_count": manifest.warning_failure_count,
+        "unreadable_check_count": manifest.unreadable_check_count,
         "result_digest": manifest.result_digest.hex,
     }

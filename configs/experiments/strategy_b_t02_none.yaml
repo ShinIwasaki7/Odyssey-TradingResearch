@@ -75,7 +75,7 @@ conversion_policy:
   pivot_currency: "USD"
   max_observation_skew: "PT15M"
 
-evaluation: {metric_set_version: 1}
+evaluation: {metric_set_version: 2}
 
 search_plan: "NONE"
 split: "NONE"

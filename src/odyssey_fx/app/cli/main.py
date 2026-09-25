@@ -29,6 +29,7 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 from __future__ import annotations
 
 import argparse
+import shlex
 import shutil
 import sys
 from collections.abc import Callable, Sequence
@@ -210,6 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate_command.set_defaults(command="evaluate")
     evaluate_command.add_argument("--run", required=True, help="実行の識別子（run_id、16進64文字）")
+    evaluate_command.add_argument(
+        "--calendar",
+        type=Path,
+        required=True,
+        help="取引カレンダー（YAML）。run が使ったカレンダーと同じ識別と版であること（D07 §4.1）",
+    )
     evaluate_command.add_argument(
         "--out",
         type=Path,
@@ -661,7 +668,23 @@ def _run_run(args: argparse.Namespace, out: _Writer) -> int:
             "この run は正常完走していない。評価は指標を算出せず、状態と診断だけを出す（D07 §10.1）"
         )
     out.line("")
-    out.line(f"評価するには `odyssey-fx evaluate --run {outcome.run_id}` を実行すること")
+    # 評価は run と同じカレンダーを受け取る（D07 §4.1 v2.0。違えば C10 で不合格）。
+    # パスに空白などがあってもそのまま貼り付けて動くよう、シェル向けに引用して組み立てる。
+    # 書式 v2 はカレンダーを実験設定の `environment` で指すので、そのパスを案内する。
+    calendar_path = args.calendar if v2 is None else v2.environment.calendar_path
+    command = shlex.join(
+        [
+            "odyssey-fx",
+            "evaluate",
+            "--run",
+            str(outcome.run_id),
+            "--calendar",
+            str(calendar_path),
+            "--out",
+            str(args.out),
+        ]
+    )
+    out.line(f"評価するには `{command}` を実行すること")
     return _EXIT_OK
 
 
@@ -678,16 +701,18 @@ def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
         ) from exc
 
     if args.metric_set_version != METRIC_SET_VERSION:
-        # **式のある版だけを受ける**。版の番号だけを変えても評価は段階2 の式で走るので、
+        # **式のある版だけを受ける**。版の番号だけを変えても評価は現在の版の式で走るので、
         # 「別の指標集合で作った」と名乗る成果物ができてしまう（D07 §9.2 は版を評価の
-        # 識別子の材料にしている）。版ごとの式を足すのは段階4 以降である。
+        # 識別子の材料にしている）。実装が持つ指標集合は最新の1版だけである（D07 §5.5）。
         raise ConfigError(
-            f"指標集合の版 {args.metric_set_version} の式はまだ無い。"
-            f" この実装が持つのは版 {METRIC_SET_VERSION} だけである（D07 §5.2）"
+            f"指標集合の版 {args.metric_set_version} の式は無い。"
+            f" この実装が持つのは版 {METRIC_SET_VERSION} だけである（D07 §5.5）"
         )
+    calendar = load_calendar(args.calendar)
     outcome = composition.evaluate_saved_run(
         run_id=run_id,
         artifacts_root=args.out,
+        calendar=calendar,
         metric_set_version=args.metric_set_version,
     )
     report = outcome.report
@@ -696,14 +721,25 @@ def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
     out.line(f"評価の識別子（run_evaluation_id）: {manifest.run_evaluation_id}")
     out.line(f"出力先: {outcome.directory}")
     out.line(f"評価の状態: {report.status.value}")
-    out.line(f"run の結末: {manifest.run_status.value}")
+    out.line(
+        "run の結末: "
+        + (
+            "（run manifest を読めない）"
+            if manifest.run_status is None
+            else manifest.run_status.value
+        )
+    )
     out.line(f"指標集合の版: {manifest.metric_set_version}")
+    out.line(f"取引カレンダー: {manifest.calendar_ref[0]} 版 {manifest.calendar_ref[1]}")
     out.line(f"結果のダイジェスト（result_digest）: {manifest.result_digest.hex}")
     out.line(
         "swap / rollover の計上: "
         f"{'あり' if manifest.swap_modeled else 'なし'}（ADR-0029。manifest の必須項目）"
     )
-    if manifest.evaluation_code_digest != manifest.run_code_digest:
+    if (
+        manifest.run_code_digest is not None
+        and manifest.evaluation_code_digest != manifest.run_code_digest
+    ):
         out.line("")
         out.line(
             "注意: 評価したコードと run を実行したコードが違う"
