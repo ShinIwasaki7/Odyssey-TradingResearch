@@ -145,6 +145,14 @@ def ensure_checkout_matches(head: str, cwd: Path) -> None:
             f"working directory is at {local}, but PR head is {head}; "
             "check out the PR head before running the Claude review"
         )
+    # コミットが同じでも、未コミットの変更や追跡外のファイルがあれば
+    # reviewer は head と違う中身を読む。
+    dirty = run_command(["git", "status", "--porcelain"], cwd).strip()
+    if dirty:
+        raise ReviewError(
+            "working directory has uncommitted or untracked changes; the Claude review must read "
+            f"exactly the PR head {head}:\n{dirty[:1000]}"
+        )
 
 
 def fetch_diff(base: str, head: str, cwd: Path) -> str:
@@ -446,7 +454,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the adversarial Claude review for one round when Codex is rate-limited.",
     )
     parser.add_argument("--pr", type=int, required=True, help="pull request number")
-    parser.add_argument("--round", type=int, required=True, help="review round number n")
+    parser.add_argument(
+        "--round",
+        type=int,
+        required=True,
+        help="number of this round (rounds counted so far + 1; policy section 4.4)",
+    )
     parser.add_argument(
         "--base-dir",
         type=Path,

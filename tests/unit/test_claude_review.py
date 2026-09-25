@@ -60,6 +60,7 @@ def _install_fake_commands(
     claude_stdout: str = "",
     local_head: str = HEAD,
     claude_error: BaseException | None = None,
+    status: str = "",
 ) -> list[list[str]]:
     calls: list[list[str]] = []
 
@@ -76,6 +77,8 @@ def _install_fake_commands(
             return json.dumps({"body": PR_BODY, "headRefOid": HEAD, "baseRefName": "main"})
         if args[:2] == ["git", "rev-parse"]:
             return local_head + "\n"
+        if args[:2] == ["git", "status"]:
+            return status
         if args[:2] == ["git", "fetch"]:
             return ""
         if args[:2] == ["git", "diff"]:
@@ -277,6 +280,18 @@ def test_main_head_mismatch_exits_one(
     exit_code = cr.main(["--pr", "9", "--round", "1", "--base-dir", str(tmp_path)])
     assert exit_code == cr.EXIT_FAILURE
     assert json.loads(capsys.readouterr().out)["status"] == "error"
+
+
+def test_main_dirty_worktree_exits_one_without_claude(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """コミットが head と同じでも、未コミットの変更があれば reviewer を起動しない。"""
+    calls = _install_fake_commands(monkeypatch, status=" M tools/ops/claude_review.py\n")
+
+    exit_code = cr.main(["--pr", "9", "--round", "1", "--base-dir", str(tmp_path)])
+    assert exit_code == cr.EXIT_FAILURE
+    assert "uncommitted" in json.loads(capsys.readouterr().out)["error"]
+    assert not any(call[0] == "claude" for call in calls)
 
 
 def test_main_claude_failure_exits_one(
