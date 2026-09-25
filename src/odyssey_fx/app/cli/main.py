@@ -9,7 +9,8 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
   `data/snapshots/<最終 ID>/` へ確定する。
 - `odyssey-fx data approve`: 確定済み snapshot に承認と価格基準の宣言記録を記入する。
 - `odyssey-fx run`: 実験設定から1回の run を実行し、`runs/<run_id>/` に判断履歴19表・
-  run manifest・結果を書く。
+  run manifest・結果を書く。実験設定は書式 v1 と v2 の両方を受け、`schema_version` で
+  分岐する（D07 §18.5、Q12 決定）。
 - `odyssey-fx evaluate`: 保存済みの run を評価し、`runs/<run_id>/eval/<評価 ID>/` に
   指標・集計・取引・診断・整合検査の5表と評価 manifest を書く。
 
@@ -47,6 +48,11 @@ from odyssey_fx.app.config import (
     load_timeframes,
 )
 from odyssey_fx.app.config.experiment import ExperimentConfig, load_experiment
+from odyssey_fx.app.config.experiment_v2 import (
+    ExperimentV2,
+    experiment_schema_version,
+    load_experiment_v2,
+)
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
@@ -154,11 +160,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="実験設定から1回の run を実行する（D06 §4.2）",
     )
     run_command.set_defaults(command="run")
-    run_command.add_argument("--experiment", type=Path, required=True, help="実験設定（YAML）")
-    run_command.add_argument("--calendar", type=Path, required=True, help="取引カレンダー（YAML）")
-    run_command.add_argument("--timeframes", type=Path, required=True, help="時間足定義（YAML）")
     run_command.add_argument(
-        "--symbols", type=Path, required=True, help="銘柄仕様のディレクトリ（configs/symbols/）"
+        "--experiment", type=Path, required=True, help="実験設定（YAML。書式 v1・v2）"
+    )
+    run_command.add_argument(
+        "--calendar",
+        type=Path,
+        default=None,
+        help="取引カレンダー（YAML）。書式 v1 だけで使う（v2 は実験設定の environment で指す）",
+    )
+    run_command.add_argument(
+        "--timeframes",
+        type=Path,
+        default=None,
+        help="時間足定義（YAML）。書式 v1 だけで使う（v2 は実験設定の environment で指す）",
+    )
+    run_command.add_argument(
+        "--symbols",
+        type=Path,
+        default=None,
+        help="銘柄仕様のディレクトリ（configs/symbols/）。書式 v1 だけで使う",
     )
     run_command.add_argument(
         "--snapshots", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
@@ -173,7 +194,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root",
         type=Path,
         default=Path("."),
-        help="`uv.lock` と作業ツリーの状態を読むリポジトリの位置（既定は現在のディレクトリ）",
+        help=(
+            "`uv.lock` と作業ツリーの状態を読むリポジトリの位置。書式 v2 の実験設定のパスも"
+            "ここを基点に解決する（既定は現在のディレクトリ）"
+        ),
     )
     run_command.add_argument(
         "--replace",
@@ -534,6 +558,14 @@ def _with_declaration_record(
 # --- run -------------------------------------------------------------------
 
 
+#: 書式 v1 だけが引数で受ける環境の3つ（v2 は実験設定の `environment` で指す。D07 §18.2）。
+_ENVIRONMENT_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("calendar", "--calendar"),
+    ("timeframes", "--timeframes"),
+    ("symbols", "--symbols"),
+)
+
+
 def _load_run_configs(
     args: argparse.Namespace,
 ) -> tuple[
@@ -541,27 +573,68 @@ def _load_run_configs(
     dict[str, TimeframeDefinition],
     dict[Symbol, SymbolSpec],
     ExperimentConfig,
+    ExperimentV2 | None,
 ]:
-    """run と評価に共通の設定を読む（D01 §10.1）。
+    """run に要る設定を読む（D01 §10.1、D07 §18.5）。
+
+    実験設定の `schema_version` で分岐する。書式 v1 は取引カレンダー・時間足定義・銘柄仕様を
+    コマンドの引数で受け、書式 v2 は実験設定の `environment` から読む（D07 §18.2）。**v2 に
+    引数も与えた場合は拒否する**。同じものを2か所で指せると、どちらが使われたかが実験設定
+    だけからは読めなくなる。
 
     時間足定義を先に読むのは、系列の文字列（`USDJPY/1h/bid`）が時間足の版を持たず、版を
     定義の読込結果から解決するためである（D03 §3.1）。
     """
+    given = [option for name, option in _ENVIRONMENT_OPTIONS if getattr(args, name) is not None]
+    if experiment_schema_version(args.experiment) == 2:
+        if given:
+            raise ConfigError(
+                f"書式 v2 の実験設定では {', '.join(given)} を渡さない。取引カレンダー・時間足"
+                "定義・銘柄仕様は実験設定の `environment` で指す（D07 §18.2）"
+            )
+        loaded = load_experiment_v2(
+            args.experiment,
+            repo_root=args.repo_root,
+            registry=INITIAL_CATALOG,
+            metric_set_versions=frozenset({METRIC_SET_VERSION}),
+        )
+        environment = loaded.environment
+        return (
+            environment.calendar,
+            dict(environment.timeframe_defs),
+            dict(environment.symbol_specs),
+            loaded.experiment,
+            loaded,
+        )
+    missing = [option for name, option in _ENVIRONMENT_OPTIONS if getattr(args, name) is None]
+    if missing:
+        raise ConfigError(
+            f"書式 v1 の実験設定には {', '.join(missing)} が要る（取引カレンダー・時間足定義・"
+            "銘柄仕様を引数で渡す）"
+        )
     calendar = load_calendar(args.calendar)
     timeframe_defs = dict(load_timeframes(args.timeframes))
     symbol_specs = dict(load_symbol_specs(args.symbols))
     experiment = load_experiment(args.experiment, timeframe_defs, INITIAL_CATALOG)
-    return calendar, timeframe_defs, symbol_specs, experiment
+    return calendar, timeframe_defs, symbol_specs, experiment, None
 
 
 def _run_run(args: argparse.Namespace, out: _Writer) -> int:
     """実験設定から1回の run を実行する（D06 §4.2、§10 の `run`）。"""
-    calendar, timeframe_defs, symbol_specs, experiment = _load_run_configs(args)
+    calendar, timeframe_defs, symbol_specs, experiment, v2 = _load_run_configs(args)
 
     out.line(f"実験: {experiment.experiment_id} v{experiment.version}")
+    if v2 is not None:
+        out.line(f"仮説: {v2.hypothesis}")
     out.line(f"snapshot: {experiment.snapshot_ref.snapshot_id}")
     out.line(f"run 区間: {experiment.run_interval}")
     out.line(f"執行系列: {experiment.execution_series}")
+    scenario = experiment.delay_scenario
+    out.line(
+        "遅延シナリオ: なし"
+        if scenario is None
+        else f"遅延シナリオ: {scenario.id} v{scenario.version}（規則 {len(scenario.rules)} 件）"
+    )
 
     outcome = composition.execute_run(
         experiment=experiment,
@@ -597,6 +670,8 @@ def _run_run(args: argparse.Namespace, out: _Writer) -> int:
     out.line("")
     # 評価は run と同じカレンダーを受け取る（D07 §4.1 v2.0。違えば C10 で不合格）。
     # パスに空白などがあってもそのまま貼り付けて動くよう、シェル向けに引用して組み立てる。
+    # 書式 v2 はカレンダーを実験設定の `environment` で指すので、そのパスを案内する。
+    calendar_path = args.calendar if v2 is None else v2.environment.calendar_path
     command = shlex.join(
         [
             "odyssey-fx",
@@ -604,7 +679,7 @@ def _run_run(args: argparse.Namespace, out: _Writer) -> int:
             "--run",
             str(outcome.run_id),
             "--calendar",
-            str(args.calendar),
+            str(calendar_path),
             "--out",
             str(args.out),
         ]

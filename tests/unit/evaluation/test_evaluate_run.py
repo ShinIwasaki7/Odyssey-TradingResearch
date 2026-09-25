@@ -1314,6 +1314,7 @@ def test_an_unreadable_run_manifest_is_a_fatal_check_not_an_exception() -> None:
         "snapshot_order_monotonic",
         CHECK_SINGLE_ACCOUNT_CURRENCY,
         "calendar_matches_run",
+        "run_status_consistent",
     ):
         assert outcomes[name] is CheckOutcome.UNREADABLE, name
         assert "run manifest" in _check(report, name).observed

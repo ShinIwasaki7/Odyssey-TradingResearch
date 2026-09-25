@@ -401,6 +401,12 @@ def build_feed(
     )
 
     events: list[PublicationEvent] = []
+    # 実現した公開時刻の索引（足ごとに記録の列を先頭から探さない）。
+    recorded_at = (
+        {}
+        if publication_log is None
+        else {record.bar_key: record.available_at for record in publication_log.records}
+    )
 
     # 予定境界は公開予定から導く（データ到着と独立、D03 §7.1）。ただし出すのは**許可
     # partition を持つ系列**に限る。実行区間に足の終了時刻が入るものを拾うため、区間の
@@ -434,7 +440,7 @@ def build_feed(
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
         is_execution = series in execution_series
         for bar in readable.bars_or_empty(series):
-            recorded = None if publication_log is None else publication_log.available_at(bar.key)
+            recorded = recorded_at.get(bar.key)
             available = recorded if recorded is not None else schedule.scheduled_at(bar.bar_end)
 
             if is_execution and _within_run(run_interval, bar.bar_end):

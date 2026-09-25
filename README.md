@@ -38,12 +38,17 @@ uv run odyssey-fx data classify --pending <暫定 ID> \
 # 3. 承認を記入する。承認するまで読み取り対象にならない（D03 §3.7.1）
 uv run odyssey-fx data approve --snapshot <最終 ID> --by <名前> --out data/snapshots
 
-# 4. 実験設定から1回の run を実行する（D06 §4.2）。判断履歴15表と manifest を
+# 4. 実験設定から1回の run を実行する（D06 §4.2）。判断履歴と manifest を
 #    runs/<run_id>/ へ書く。実験設定の `snapshot` は 3 で承認した識別子に書き換える
+#    書式 v1（段階2）は取引カレンダー・時間足定義・銘柄仕様を引数で渡す
 uv run odyssey-fx run --experiment configs/experiments/strategy_a_t01.yaml \
     --calendar configs/calendars/fx_ny17_v1.yaml \
     --timeframes configs/calendars/timeframes_v1.yaml \
     --symbols configs/symbols --snapshots data/snapshots
+#    書式 v2（D07 §18）は実験設定の `environment` がそれらを指し、戦略は
+#    configs/strategies/ の戦略ファイルを指す。遅延シナリオも実験設定に書ける
+uv run odyssey-fx run --experiment configs/experiments/strategy_b_t02_d1_2s.yaml \
+    --snapshots data/snapshots
 
 # 5. 保存済みの run を評価する（D07 §4・§8）。指標・集計・取引・診断・整合検査の5表と
 #    評価 manifest を runs/<run_id>/eval/<評価 ID>/ へ書く

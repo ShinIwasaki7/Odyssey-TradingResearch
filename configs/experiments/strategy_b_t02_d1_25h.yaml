@@ -1,0 +1,87 @@
+# 検証戦略 B の単一実行の実験設定・遅延シナリオ3「待機期限を超える遅延」（書式 v2。D07 §18）
+#
+# 紙上トレース T02 §1.4 のケース3（経路6）。日足の公開を系列全体で25時間遅らせる。
+# 日足1本ぶんの待機期限に先に達し、待機した評価は見送りで決着する（D05 §9.3 の3）。
+#
+# 戦略の本文は `configs/strategies/strategy_b_v1.yaml` にあり、4ケースで共有する（Q11 決定）。
+# 4ケースの違いは `id` と `hypothesis` と `delay_scenario` だけである。
+#
+# **`snapshot` は使う環境ごとに書き換える**（書式 v1 の `strategy_a_t01.yaml` と同じ扱い）。
+# 承認済み snapshot の識別子（16進64文字）であり、既定値は「まだ指していない」ことが分かる
+# ようにゼロを並べてある（そのままでは読み取りの関門が拒否する。D03 §3.7.1）。値は T02 の
+# 人工データ（2015年1月）で手計算と一致することを確かめるためのものである。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。取引カレンダーは T02 の人工データと
+# 同じ週の開閉だけの版（`fx_ny17` v1）を指す。snapshot を受け入れたときと同じ版でなければ
+# run は実行前に止まる（D03 §3.7）。
+#
+# **数値は文字列で書く**（ADR-0012）。ポリシーの期間は v1 と同じ ISO 8601（`PT20M`）、戦略と
+# 遅延シナリオの期間は `<整数><単位>`（`25h`）で書く（D07 §18.2）。
+
+schema_version: 2
+
+id: strategy_b_t02_d1_25h
+version: 1
+
+hypothesis: "日足の上昇相場で1時間足の高値更新を15分足で確認して買う戦略は、日足の公開が25時間遅れると、日足の連鎖の待機が期限に達して見送りで決着し、T02 の経路6 どおりにその時点の取引機会を作らない"
+
+research_policy: {id: "research_policy", version: 1}
+
+strategy: "configs/strategies/strategy_b_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v1.yaml"
+  symbols: "configs/symbols"
+
+snapshot: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# 12 日間（T02 §1.1。T01 と同じ区間）。
+run_interval:
+  start: "2015-01-04T22:00:00Z"
+  end: "2015-01-16T22:00:00Z"
+
+execution_series: "USDJPY/15m/bid"
+
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+delay_scenario:
+  id: "d1_25h"
+  version: 1
+  rules:
+    - {kind: "FIXED_SERIES_DELAY", series: "USDJPY/1d_ny17/bid", delay: "25h"}
+
+evaluation: {metric_set_version: 2}
+
+search_plan: "NONE"
+split: "NONE"

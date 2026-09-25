@@ -1,0 +1,106 @@
+# 検証戦略 A の戦略宣言（D04 §3・§13.1、D05 §9、D07 §18.4）
+#
+# 1時間足の終値が直近20本の確定高値を上抜けたら、後続確認なしの成行で入り、直近20本の
+# 確定安値を初期の損切りに置き、約定後に固定リスクリワード比の利確を置く（上位設計書 §7.1）。
+#
+# 本文は書式 v1 の実験設定 `configs/experiments/strategy_a_t01.yaml` の `strategy:` 節と
+# **同じ宣言**である（書式 v1 の略記をそのまま引き継ぐ。D07 §18.4）。書式 v2 の実験設定
+# （`configs/experiments/strategy_a_t01_v2.yaml`）からパスで指す。
+#
+# `schema_version` は戦略宣言の保存形式の版（D04 §3。段階3 でも 1）であり、実験設定の版
+# （2）とは別の版である。
+#
+# 区分タグ付き union は `kind:` で書く（D01 §8）。`entry_policy` と `opportunity_validity` は
+# 省略できない（束縛の無い戦略も `bindings: []` と書く。D04 §10.2）。
+
+schema_version: 1
+
+strategy_id: "strategy_a"
+version: 1
+
+entry_policy: {kind: "IMMEDIATE"}
+
+opportunity_validity:
+  bindings: []
+
+components:
+  - instance_id: "breakout_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:USDJPY/1h/bid:HIGH"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MAX"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:USDJPY/1h/bid:LOW"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MIN"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 1
+    inputs:
+      price:
+        - "market:USDJPY/1h/bid:CLOSE"
+      level:
+        - "output:breakout_level.level"
+    parameters:
+      direction: {type: "STR", value: "LONG"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 1
+    inputs:
+      opportunity:
+        - "output:entry_trigger.opportunity"
+    triggers:
+      - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 1
+    inputs:
+      opportunity:
+        - "output:entry_trigger.opportunity"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+  - instance_id: "take_profit"
+    component: "fixed_rr_take_profit"
+    component_version: 1
+    inputs:
+      position:
+        - "runtime:POSITION"
+    parameters:
+      reward_risk: {type: "FLOAT", value: 2.0}
+    triggers:
+      - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+
+# どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。
+roles:
+  trigger: "entry_trigger.opportunity"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "take_profit.action"
+
+# 取引機会を同時にいくつ保持するか（ADR-0032）。
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
