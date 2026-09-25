@@ -369,3 +369,31 @@ def test_omitting_the_delay_scenario_gives_the_v1_no_delay_reference(tmp_path: P
     experiment = _load(path, root).experiment
     assert experiment.delay_scenario is None
     assert experiment.policy_ref("delay") == NO_DELAY_REF
+
+
+_ONE_RULE = '    - {kind: "FIXED_SERIES_DELAY", series: "USDJPY/1d_ny17/bid", delay: "2s"}\n'
+_TWO_RULES = _ONE_RULE + (
+    '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1h/bid",'
+    ' bar_start: "2015-01-07T08:00:00Z", delay: "60m"}\n'
+)
+_TWO_RULES_REORDERED = (
+    '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1h/bid",'
+    ' bar_start: "2015-01-07T08:00:00+00:00", delay: "1h"}\n'
+) + _ONE_RULE
+
+
+def test_the_delay_reference_ignores_the_order_and_spelling_of_the_rules(tmp_path: Path) -> None:
+    """規則の並べ替えと同じ意味の書き換えでは版参照が変わらない（D07 §18.3・§18.5）。"""
+    first = _variant(tmp_path / "a", _ONE_RULE, _TWO_RULES)
+    second = _variant(tmp_path / "b", _ONE_RULE, _TWO_RULES_REORDERED)
+    ref_first = _load(first, tmp_path / "a").experiment.policy_ref("delay")
+    ref_second = _load(second, tmp_path / "b").experiment.policy_ref("delay")
+    assert ref_first == ref_second
+    single = _load(B_EXPERIMENTS["d1_2s"]).experiment.policy_ref("delay")
+    assert ref_first != single
+
+
+def test_a_duplicated_delay_rule_is_refused(tmp_path: Path) -> None:
+    """同じ規則を2度書いた設定は拒否する。"""
+    path = _variant(tmp_path, _ONE_RULE, _ONE_RULE + _ONE_RULE)
+    assert "2度" in _refused(path, tmp_path)

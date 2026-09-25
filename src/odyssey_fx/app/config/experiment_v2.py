@@ -53,13 +53,15 @@ from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.schedule import (
+    DelayRule,
     DelayScenario,
     FixedSeriesDelay,
     InjectedBarDelay,
+    SeededRandomDelay,
 )
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.registry import ComponentRegistry
-from odyssey_fx.strategy.declarations.duration import parse_duration
+from odyssey_fx.strategy.declarations.duration import format_duration, parse_duration
 
 __all__ = [
     "SEARCH_PLAN_NONE",
@@ -314,10 +316,42 @@ def _delay_scenario_of(
                 )
         except (KernelValueError, ConfigError) as exc:
             raise ConfigError(f"{path}: {label} を読めない: {exc}") from exc
+    normalized = [repr(_rule_declaration(rule)) for rule in rules]
+    if len(set(normalized)) != len(normalized):
+        raise ConfigError(f"{path}: `delay_scenario.rules` に同じ規則が2度書かれている")
     try:
         return DelayScenario(id=model.id, version=model.version, rules=tuple(rules))
     except KernelValueError as exc:
         raise ConfigError(f"{path}: 遅延シナリオを読めない: {exc}") from exc
+
+
+def _rule_declaration(rule: DelayRule) -> dict[str, str]:
+    """遅延規則1件の正規形（書き方の揺れを除いた宣言）。"""
+    if isinstance(rule, SeededRandomDelay):  # pragma: no cover - 読込が拒否済み
+        raise ConfigError("確率的遅延は初版では受け付けない（D03 §3.6）")
+    declaration = {
+        "kind": (
+            "FIXED_SERIES_DELAY" if isinstance(rule, FixedSeriesDelay) else "INJECTED_BAR_DELAY"
+        ),
+        "series": str(rule.series),
+        "delay": format_duration(rule.delay),
+    }
+    if isinstance(rule, InjectedBarDelay):
+        declaration["bar_start"] = str(rule.bar_start)
+    return declaration
+
+
+def _delay_declaration(scenario: DelayScenario) -> dict[str, object]:
+    """遅延シナリオの版参照の材料（D07 §18.3）。
+
+    規則の並びは意味を持たない（同じ足に複数の規則が当たれば最大の遅延を採る。D03 §3.6）
+    ので、**正規形の文字列順に整列**して入れる。書いた順を入れると、同じ実行条件が並べ替え
+    だけで別の `ConfigDigest` と `run_id` になる（D07 §18.5）。期間は `format_duration` の
+    正規形（`120s` と `2m` は同じ）、時刻は UTC の正規形にする。規則の重複は
+    `_delay_scenario_of` が拒否している。
+    """
+    rules = sorted((_rule_declaration(rule) for rule in scenario.rules), key=repr)
+    return {"id": scenario.id, "version": scenario.version, "rules": rules}
 
 
 def load_experiment_v2(
@@ -371,8 +405,8 @@ def load_experiment_v2(
             path,
         )
         # 遅延シナリオの版参照は宣言の内容（id / version / 各規則）のダイジェストから作る。
-        # ポリシーの版参照と同じ作り方である（D07 §18.3）。
-        delay_ref = policy_ref_of("delay", payload["delay_scenario"])
+        # ポリシーの版参照と同じ作り方である（D07 §18.3）。規則は正規化してから入れる。
+        delay_ref = policy_ref_of("delay", _delay_declaration(delay_scenario))
 
     experiment = resolve_run_body(
         model,
