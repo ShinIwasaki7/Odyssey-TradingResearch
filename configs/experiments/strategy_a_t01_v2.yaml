@@ -1,0 +1,81 @@
+# 検証戦略 A の単一実行の実験設定（書式 v2。D07 §18）
+#
+# 書式 v1 の `configs/experiments/strategy_a_t01.yaml` と**同じ実行条件**を書式 v2 で書いたもの
+# である。v1 の設定は段階2 の受入テストの入力なので書き換えない（D07 §18.5、Q12 決定）。
+# 同じ実行条件なので、解決済みの実行条件（`RunConfig`）と `ConfigDigest` は v1 と一致する
+# （同節。単体テストが固定する）。
+#
+# v1 との違いは次のとおり（D07 §18.2）。いずれも `ConfigDigest` に入らない。
+#
+# - 仮説（`hypothesis`）・研究ポリシーの版参照（`research_policy`）・指標集合の版
+#   （`evaluation`）・探索計画と分割（`NONE`）を書く。
+# - 戦略の本文は別ファイル（`configs/strategies/strategy_a_v1.yaml`）に置き、パスで指す。
+# - 取引カレンダー・時間足定義・銘柄仕様をコマンドの引数ではなく `environment` で指す。
+#
+# 遅延シナリオは書かない（遅延なし。D07 §18.3）。
+#
+# **`snapshot` は使う環境ごとに書き換える**（v1 と同じ扱い。既定値のゼロは読み取りの関門が
+# 拒否する。D03 §3.7.1）。**パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。
+# **数値は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: strategy_a_t01
+version: 1
+
+hypothesis: "1時間足の終値が直近20本の高値を上抜けたときに成行で買い、直近20本の安値を損切り、リスクの2倍を利確に置く戦略は、T01 の経路どおりに注文・数量・損益・資産を記録する"
+
+research_policy: {id: "research_policy", version: 1}
+
+strategy: "configs/strategies/strategy_a_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v1.yaml"
+  symbols: "configs/symbols"
+
+snapshot: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# 12 日間（日曜 17:00 NY から金曜 17:00 NY）。T01 §1.1 の区間を研究履歴の年へずらしたもの。
+run_interval:
+  start: "2015-01-04T22:00:00Z"
+  end: "2015-01-16T22:00:00Z"
+
+execution_series: "USDJPY/15m/bid"
+
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+evaluation: {metric_set_version: 1}
+
+search_plan: "NONE"
+split: "NONE"

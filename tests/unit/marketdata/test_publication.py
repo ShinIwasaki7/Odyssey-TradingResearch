@@ -308,6 +308,47 @@ def test_the_execution_open_fires_at_the_bar_start() -> None:
         assert event.at == event.bar_key.bar_start
 
 
+def test_a_delay_on_the_execution_series_moves_only_its_publications() -> None:
+    """執行系列に遅延を当てても、執行のイベントの時刻は変わらない（D07 §18.3）。
+
+    遅延は戦略向けの公開時刻だけを動かす。執行用データの可用性と戦略向けの公開遅延は
+    別のものであり（上位設計書 §4.7.12、D06 §6.4）、足の始値・足の完了は通常の時刻に出る。
+    """
+    bars = {FIFTEEN: _bars(FIFTEEN, market.TF_15M)}
+    manifest, allowed, partition_bars = _context(bars)
+    scenario = DelayScenario(
+        id="m15_delay",
+        version=1,
+        rules=(FixedSeriesDelay(series=FIFTEEN, delay=timedelta(seconds=2)),),
+    )
+    log = build_publication_log(manifest, allowed, partition_bars, SCHEDULES, scenario)
+    plain = build_feed(
+        manifest, allowed, partition_bars, SCHEDULES, WINDOW, execution_series=frozenset({FIFTEEN})
+    )
+    delayed = build_feed(
+        manifest,
+        allowed,
+        partition_bars,
+        SCHEDULES,
+        WINDOW,
+        execution_series=frozenset({FIFTEEN}),
+        publication_log=log,
+    )
+
+    def times(feed: PublicationFeed, kind: PublicationKind) -> list[tuple[str, UtcTime]]:
+        return [(str(event.bar_key.bar_start), event.at) for event in feed.of_kind(kind)]
+
+    for kind in (PublicationKind.EXECUTION_OPEN, PublicationKind.EXECUTION_BAR_COMPLETE):
+        assert times(delayed, kind) == times(plain, kind)
+        assert times(plain, kind)
+    plain_publications = dict(times(plain, PublicationKind.PUBLICATION))
+    delayed_publications = dict(times(delayed, PublicationKind.PUBLICATION))
+    shared = sorted(set(plain_publications) & set(delayed_publications))
+    assert shared
+    for key in shared:
+        assert delayed_publications[key] == plain_publications[key] + timedelta(seconds=2)
+
+
 # --- 実現した公開記録（D03 §3.6）-------------------------------------------
 
 

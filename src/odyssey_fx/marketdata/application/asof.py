@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
@@ -142,6 +142,9 @@ class AsOfView:
     schedules: Mapping[SeriesId, SeriesSchedule]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
     publication_log: PublicationLog = PublicationLog()
+    _recorded_at: Mapping[BarKey, UtcTime] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.publication_log, PublicationLog):
@@ -161,6 +164,16 @@ class AsOfView:
         # 防げばよい。
         object.__setattr__(self, "partition_bars", frozen)
         object.__setattr__(self, "schedules", MappingProxyType(dict(self.schedules)))
+        # 実現した公開時刻を足の自然キーで引く索引を1度だけ作る。判断時点ごとに窓の足すべての
+        # 公開時刻を引くので、記録の列を先頭から探すと run 全体で足の本数の2乗に比例する
+        # 時間がかかる。索引は `publication_log` から決まる派生値で、比較の対象にしない。
+        object.__setattr__(
+            self,
+            "_recorded_at",
+            MappingProxyType(
+                {record.bar_key: record.available_at for record in self.publication_log.records}
+            ),
+        )
 
     @property
     def manifest(self) -> SnapshotManifest:
@@ -198,7 +211,7 @@ class AsOfView:
         設定の誤りなので構造エラーで拒否する。
         """
         scheduled = self._schedule(bar.series).scheduled_at(bar.bar_end)
-        recorded = self.publication_log.available_at(bar.key)
+        recorded = self._recorded_at.get(bar.key)
         if recorded is None:
             return max(bar.available_at, scheduled, key=lambda value: value.value)
         if recorded < scheduled:

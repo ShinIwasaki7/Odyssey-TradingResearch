@@ -62,7 +62,7 @@ from odyssey_fx.marketdata.application.acceptance import (
 from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSION, aggregate
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
-from odyssey_fx.marketdata.application.publication import build_feed
+from odyssey_fx.marketdata.application.publication import build_feed, build_publication_log
 from odyssey_fx.marketdata.application.snapshot_access import PartitionedBars, ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import (
     INITIAL_ACCESS_BOUNDARIES,
@@ -73,6 +73,7 @@ from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckResult
+from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
@@ -569,6 +570,24 @@ def compile_experiment_strategy(
     return outcome.compiled
 
 
+def _publication_log(inputs: SnapshotInputs, experiment: ExperimentConfig) -> PublicationLog:
+    """遅延シナリオを当てた実現公開時刻の記録（D07 §18.3、D03 §3.6）。
+
+    遅延の計算そのものは市場データの規則（`build_publication_log` と `DelayScenario`）が持ち、
+    ここは「実験設定の遅延シナリオをどの足に当てるか」を結線するだけである。当てる足は
+    as-of ビュー・公開フィードと同じ、許可された partition の足である。
+    """
+    if experiment.delay_scenario is None:
+        return PublicationLog()
+    return build_publication_log(
+        inputs.snapshot,
+        inputs.allowed_partitions,
+        inputs.partition_bars,
+        inputs.schedules,
+        experiment.delay_scenario,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
     """1回の run の成果（CLI が表示に使う）。"""
@@ -618,6 +637,11 @@ def execute_run(
             " (D03 §6.3)"
         )
 
+    # 遅延シナリオを市場データへ当てる（D07 §18.3、D03 §3.6）。公開フィードと as-of ビューへ
+    # 渡す前に、実現した公開時刻（`available_at`）を計算しておく。遅延なし（書式 v1、または
+    # 書式 v2 で `delay_scenario` を書かない形）では記録を作らず、通常の公開予定を使う。
+    publication_log = _publication_log(inputs, experiment)
+
     # 戦略ランタイムへは as-of ビューをそのまま渡す（D05 §6.3 v1.4、D03 §6.2 v1.5）。
     # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
     market_data = AsOfView(
@@ -625,6 +649,7 @@ def execute_run(
         allowed_partitions=inputs.allowed_partitions,
         schedules=inputs.schedules,
         partition_bars=inputs.partition_bars,
+        publication_log=publication_log,
     )
     execution_view = ExecutionSeriesView(
         snapshot=inputs.snapshot,
@@ -640,6 +665,7 @@ def execute_run(
         inputs.schedules,
         experiment.run_interval,
         execution_series=frozenset({experiment.execution_series}),
+        publication_log=publication_log,
     )
     levels = experiment.execution_policy.resolution_hierarchy.levels
     intrabar = (

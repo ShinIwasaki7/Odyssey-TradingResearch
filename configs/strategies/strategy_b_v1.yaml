@@ -1,0 +1,190 @@
+# 検証戦略 B の戦略宣言（D05 §9.2、紙上トレース T02 §1.3、D07 §18.4）
+#
+# 日足の終値が日足 EMA を上回るときだけ買いを許し、1時間足の終値が利用可能な日足高値を
+# 上抜けたら取引機会を作り、15分足の終値が15分足 EMA を上回るのを最大4本待って確認し、成行で
+# 入る。初期の損切りは直近20本の1時間足安値、保有中は1時間足ごとに安値へ追従させる。
+#
+# 遅延シナリオ4ケース（D05 §9.3）の実験設定 `configs/experiments/strategy_b_t02_*.yaml` が
+# このファイルを共有する（D07 §18.4、Q11 決定）。
+#
+# 日足は1時間足から集約する `1d_ny17`（T02 §16）。日足から市場状態を作る3段と
+# `entry_trigger` は、日足を1本ぶん待てる契約の版（v2）を使う（D05 §9.2）。
+#
+# `entry_order` の `opportunity` 入力は D05 §9.2 の表に書かれていないが、
+# `market_order_intent` v2 の契約が必須入力として持つ（同節の本文）。
+#
+# `schema_version` は戦略宣言の保存形式の版（D04 §3。段階3 でも 1）。
+
+schema_version: 1
+
+strategy_id: "strategy_b"
+version: 1
+
+# 15分足4本（1時間）まで確認を待ち、成立しなければ取引機会を期限切れで終える（D05 §9.2）。
+entry_policy:
+  kind: "AWAIT_CONFIRMATION"
+  deadline: {kind: "BARS", bars: 4}
+  on_deadline: "EXPIRE"
+
+# 発注要求を作る直前まで、日足の終値が日足 EMA を上回っていることを再検査する（D05 §9.2）。
+opportunity_validity:
+  bindings:
+    - source: "daily_above_ema.condition"
+      mode: "REQUIRE_UNTIL_ORDER_REQUEST"
+      on_missing: {kind: "SKIP_EVALUATION"}
+
+components:
+  - instance_id: "daily_ema"
+    component: "ema"
+    component_version: 2
+    inputs:
+      prices:
+        - "market:USDJPY/1d_ny17/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 20}
+      window_bars: {type: "INT", value: 60}
+    triggers:
+      - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+
+  - instance_id: "daily_above_ema"
+    component: "price_compare"
+    component_version: 2
+    inputs:
+      left:
+        - "market:USDJPY/1d_ny17/bid:CLOSE"
+      right:
+        - "output:daily_ema.value"
+    parameters:
+      operator: {type: "STR", value: "GT"}
+    triggers:
+      - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+
+  - instance_id: "no_short"
+    component: "constant_condition"
+    component_version: 1
+    parameters:
+      value: {type: "BOOL", value: false}
+    triggers:
+      - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+
+  - instance_id: "market_state"
+    component: "permission_from_condition"
+    component_version: 2
+    inputs:
+      long_allowed:
+        - "output:daily_above_ema.condition"
+      short_allowed:
+        - "output:no_short.condition"
+    triggers:
+      - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 2
+    inputs:
+      price:
+        - "market:USDJPY/1h/bid:CLOSE"
+      level:
+        - "market:USDJPY/1d_ny17/bid:HIGH"
+    parameters:
+      direction: {type: "STR", value: "LONG"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+  - instance_id: "m15_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:USDJPY/15m/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 20}
+      window_bars: {type: "INT", value: 60}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "USDJPY/15m/bid"}
+
+  - instance_id: "m15_above_ema"
+    component: "price_compare"
+    component_version: 1
+    inputs:
+      left:
+        - "market:USDJPY/15m/bid:CLOSE"
+      right:
+        - "output:m15_ema.value"
+    parameters:
+      operator: {type: "STR", value: "GT"}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "USDJPY/15m/bid"}
+
+  - instance_id: "entry_filter"
+    component: "condition_filter"
+    component_version: 1
+    inputs:
+      condition:
+        - "output:m15_above_ema.condition"
+      opportunity:
+        - "runtime:OPPORTUNITY"
+    parameters:
+      include_start_bar: {type: "BOOL", value: true}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "USDJPY/15m/bid"}
+
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 2
+    inputs:
+      confirmation:
+        - "output:entry_filter.confirmation"
+      opportunity:
+        - "runtime:OPPORTUNITY"
+    triggers:
+      - {name: "conf", when: "input_event", input_name: "confirmation"}
+
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 2
+    inputs:
+      confirmation:
+        - "output:entry_filter.confirmation"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "conf", when: "input_event", input_name: "confirmation"}
+
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:USDJPY/1h/bid:LOW"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MIN"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+  - instance_id: "trailing"
+    component: "trailing_stop"
+    component_version: 1
+    inputs:
+      position:
+        - "runtime:POSITION"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+
+# どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。
+roles:
+  market_state: "market_state.permission"
+  trigger: "entry_trigger.opportunity"
+  execution_filter: "entry_filter.confirmation"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "trailing.action"
+
+# 取引機会を同時にいくつ保持するか（ADR-0032）。
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
