@@ -888,14 +888,17 @@ split: NONE
 
 ### 19.5 値の伝播表【提案】
 
-| 値 | 生成元 | 記録先 | 主キー・一意性 |
-|---|---|---|---|
-| `experiment_id` / `experiment_version` | 実験設定（人間） | 記録票、保存先のディレクトリ名、結末記録（記録票を経由） | `(experiment_id, experiment_version)` ごとに記録票は1つ（第19.3節） |
-| `experiment_manifest_id` | `evaluation.domain.experiment`（記録票の識別に入る項目のダイジェスト） | 記録票、結末記録 | 同じ内容なら同じ値 |
-| `expected_run_id` | 合成（run の前に `RunConfig` と環境のダイジェストから計算） | 記録票 | ADR-0006 |
-| `run_id` | バックテスト（`BacktestRunner` の戻り値） | 結末記録、`runs/<run_id>/` | ADR-0006。事後検査 P4 で `expected_run_id` と照合 |
-| `run_evaluation_id` / `result_digest` | 評価（第8.3節・第9.2節） | 結末記録、評価 manifest | 第9.2節 |
-| `research_policy_ref` | 研究ポリシーファイル（第20.2節） | 記録票 | `(id, version)` ごとに内容は1つ（違えば読込で拒否。第20.2節） |
+全体計画書の必須表（R1）の形（値・生成元・渡り方・記録先・主キー）に合わせる。
+
+| 値 | 生成元 | 渡り方 | 記録先 | 主キー・一意性 |
+|---|---|---|---|---|
+| `experiment_id` / `experiment_version` | 実験設定（人間） | `app.config` → `ExperimentManifest` | 記録票、保存先のディレクトリ名 `runs/experiments/<id>/v<version>/`、結末記録（記録票の識別子を経由） | `(experiment_id, experiment_version)` ごとに記録票は1つ（第19.3節） |
+| `experiment_manifest_id` | `evaluation.domain.experiment`（記録票の識別に入る項目のダイジェスト。第19.2節） | `ExperimentManifest` → `ExperimentOutcome` | 記録票、結末記録、再現の報告（第21.2節） | 同じ内容なら同じ値 |
+| `expected_config_digest` / `expected_run_id` | 合成（run の前に `RunConfig` と環境のダイジェストから計算。D06 §9.3、ADR-0006） | `PreparedExperiment.manifest` | 記録票 | ADR-0006 |
+| `run_id` | バックテスト（`BacktestRunner.run` の戻り値の `BacktestResult`） | `RunExperiment` → `ExperimentOutcome` | 結末記録、`runs/<run_id>/` | ADR-0006。事後検査 P4 で `expected_run_id` と照合 |
+| `run_evaluation_id` / `result_digest` | 評価（第8.3節・第9.2節） | `EvaluateRun` → `ExperimentOutcome` | 結末記録、評価 manifest | 第9.2節 |
+| `research_policy_ref` | 研究ポリシーファイル（第20.2節） | `app.config` → `ExperimentManifest` | 記録票 | `(id, version, digest)` の組で記録する。同じ `(id, version)` で内容が違うファイルを使った実験どうしは、記録票の `digest` で後から見分けられる（第20.2節） |
+| 検査結果（`PolicyCheckResult`） | `evaluation.domain.research_policy`（第20.3節） | 事前・保存時は `ExperimentManifest`、事後は `ExperimentOutcome` | 記録票の `pre_run_checks`、結末記録の `post_run_checks` | 検査名（`PolicyCheck`）ごとに1件 |
 
 ## 20. 研究ポリシー v1【提案】＋【合意済み】（2026-09-25 の人間の決定5）
 
@@ -919,7 +922,7 @@ complexity_limits:
 ```
 
 - **検査の規則そのものはコードに置き、ファイルは上限の値だけを持つ**。規則をファイルで書ける形にすると、検査の意味が設定で変わり、「共通1種類」の意味が崩れる。規則を変えるときは `ResearchPolicy` の版をコードとファイルの両方で上げる。
-- 版参照 `research_policy_ref = (id, version, digest)`。`digest` は解決済みの内容のダイジェストである。**同じ `(id, version)` で内容が違うファイルを読んだら拒否する**仕組みは、記録票の検査 P3 が担う（記録票に `digest` が入るため、上限だけを書き換えた再実行は同じ版の内容違いになる）。
+- 版参照 `research_policy_ref = (id, version, digest)`。`digest` は解決済みの内容のダイジェストである。**同じ実験の同じ版を、上限だけ書き換えたポリシーで再実行すること**は、記録票に `digest` が入るため検査 P3 が拒否する。**別の実験どうしで同じ `(id, version)` の中身が違うこと**は段階4 では拒否しない（ポリシーの版の登録簿を持たないため）が、記録票の `digest` で後から見分けられる。版を上げずに中身を変えることは運用で禁じ、登録簿による強制が要るかは段階5（D09）で探索が始まる前に判断する。
 
 ### 20.3 検査の一覧【提案】
 
