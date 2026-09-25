@@ -179,7 +179,9 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `BacktestRunner` | `application.ports` | Protocol | `run(config: RunConfig, compiled: CompiledStrategy) -> BacktestResult`。D01 §4 が確定済み（実装は `app` が `backtest.application.run_backtest` を適合させる） | §19.4 |
 | `SnapshotCatalog` | `application.ports` | Protocol | `access_classes(snapshot: SnapshotRef, partitions: frozenset[PartitionId]) -> Mapping[PartitionId, AccessClass]`。D01 §4 が確定済み | §20.3 の P2 |
 | `PreparedExperiment` | `application.run_experiment` | レコード | 合成が組み立てた1回分の入力: `manifest: ExperimentManifest` / `run_config: RunConfig` / `compiled: CompiledStrategy` / `calendar: TradingCalendar` | §19.4 |
-| `RunExperiment` | `application.run_experiment` | 具体クラス | `execute(prepared: PreparedExperiment) -> ExperimentOutcome \| ManifestSaveResult`（`CONFLICT` のときだけ後者を返す。第19.4節） | §19.4 |
+| `RunExperiment` | `application.run_experiment` | 具体クラス | `execute(prepared: PreparedExperiment) -> ExperimentOutcome \| ExperimentRefusal`。結末記録を書かずに拒否する2つの経路（記録票の内容違い、既存の run 成果物と衝突して再利用できない）で後者を返す（第19.4節・第19.6節） | §19.4 |
+| `RefusalKind` | `application.run_experiment` | enum | `MANIFEST_CONFLICT`（記録票が同じ版で内容違い。検査 P3 の不合格）/ `RUN_ARTIFACT_CONFLICT`（`runs/<expected_run_id>/` があり再利用できない。第19.6節） | §19.4・§19.6 |
+| `ExperimentRefusal` | `application.run_experiment` | レコード | `kind: RefusalKind` / `experiment_manifest_id: ContentDigest` / `detail: str`。コマンドはこれを終了コード 5 に写す（第21.3節） | §19.4・§21.3 |
 | `ReproductionVerdict` | `application.run_experiment` | enum | `REPRODUCED` / `RUN_ID_MISMATCH` / `RESULT_MISMATCH` / `ENVIRONMENT_MISMATCH` / `MANIFEST_TAMPERED` | §21.2 |
 | `ReproductionReport` | `application.run_experiment` | レコード | `experiment_manifest_id` / `verdict: ReproductionVerdict` / `expected_run_id`（結末記録の `run_id`） / `observed_run_id: RunId \| None` / `expected_result_digest` / `observed_result_digest: ContentDigest \| None` | §21.2 |
 
@@ -904,7 +906,7 @@ split: NONE
 
 | 群 | 項目 | 内容 |
 |---|---|---|
-| 識別 | `experiment_manifest_id` | 下の「識別に入る」項目の正規化エンコードのダイジェスト（D02 §9.3） |
+| 識別 | `experiment_manifest_id` | 下の「識別の入力」の段落が列挙する値の正規化エンコードのダイジェスト（D02 §9.3） |
 | | `experiment_id` / `experiment_version` / `schema_version` | 実験設定の `id` / `version` と書式の版（2） |
 | 事前固定 | `hypothesis` | 実験設定の本文そのまま |
 | | `research_policy_ref` | `{id, version, digest}`。`digest` は研究ポリシーファイルの解決済み内容のダイジェスト |
@@ -916,12 +918,17 @@ split: NONE
 | データ | `snapshot_id` | 承認済み snapshot |
 | | `allowed_partitions` | 合成が as-of ビューへ渡す許可 partition の一覧と、それぞれのアクセス分類（`SnapshotCatalog` から取る。D01 §4） |
 | 複雑性 | `complexity` | 計測値4件（第20.4節。計測できなかった値は `None` のまま残し、0 で埋めない）と、研究ポリシーの上限4件 |
-| 事前検査 | `pre_run_checks` | 研究ポリシーの事前検査の全件（合格・不合格とも。第20.3節） |
+| 事前検査 | `pre_run_checks` | 研究ポリシーの**事前の段階（`PRE_RUN`）の検査** P1・P2・P6 の全件（合格・不合格とも。第20.3節）。保存時の検査 P3 はここに入れない（記録票の識別子と比べる検査なので、識別子の入力に入れると循環する。P3 の結果は結末記録に書く。第19.3節） |
 | 環境 | `code_digest` / `lock_digest` / `env_digest` | run manifest と同じ算出（D02 §9.4、D06 §9.3） |
 | | `git_commit` / `git_dirty` | 記録だけ。識別に入れない（ADR-0006 と同じ扱い） |
 
-- **ファイルのパスは識別に入れない**（第18.2節の「同じ内容を別の場所に置いても同じ実験である」）。`resolved_files` は本文をそのまま保存するが、`experiment_manifest_id` を計算するときは、実験設定の本文を読み込んだ値のうちパスを持つキー（`strategy`・`environment` の3つ）を、**指す先のファイルの SHA-256 に置き換えた形**で正規化エンコードする（D02 §9.3）。`resolved_files` の各要素も、識別には `role` と `sha256` だけを入れ、本文そのものは入れない（本文は `sha256` で決まる）。したがって、戦略ファイルを中身そのままで別の場所へ移し、実験設定のパスだけを書き換えても、識別子は変わらず検査 P3 は合格する。
-- **識別に入る**のは、事前固定・解決済みの設定・データ・複雑性・事前検査の群と `experiment_id` / `experiment_version` / `schema_version` である。**環境の群は入れない**。環境の群を入れると、コードを1行直しただけで同じ実験の同じ版が「別の内容」になり、検査 P3 が事前固定の違反と誤判定する。コードが違う実行の区別は `run_id`（コードのダイジェストを含む）が担う。**同じ理由で、予測した `RunId` も記録票に入れない**（`RunId` はコード・lock・環境のダイジェストから決まる。ADR-0006）。予測した `RunId` と実行時の環境のダイジェストは、**実行ごとに結末記録へ書く**（第19.3節）。記録票の環境の群は、その版を**最初に保存したとき**の環境の記録である。
+- **識別の入力**（`experiment_manifest_id` を計算する値。この一覧に無いものは入れない）:
+  1. `experiment_id` / `experiment_version` / `schema_version`
+  2. **実験設定の値からパスを持つキーを除いたもの**: 実験設定の YAML を読み込んだ値（文字列・整数・入れ子の mapping と列。解決前の宣言の形）から、`strategy` と `environment`（`calendar` / `timeframes` / `symbols`）の**キーごと取り除いた** mapping。実験設定ファイルの本文やその SHA-256 は**入れない**（本文にはパスの文字列が書かれているため）
+  3. **参照先のファイルの内容**: `resolved_files` のうち役割が `strategy` / `research_policy` / `calendar` / `timeframes` / `symbol:<銘柄>` の要素の `(role, sha256)` の組を、役割名の文字列の昇順に並べた列。**銘柄仕様は `symbols` ディレクトリ全体ではなく、実行と換算に使う銘柄のファイルだけ**である（ディレクトリのハッシュは定義しない）。役割 `experiment` の要素は入れない（2 が代わる）
+  4. 事前固定の群（`hypothesis` / `research_policy_ref` / `metric_set_version` / `search_plan` / `split`）、`strategy_ref` / `compiled_ref` / `expected_config_digest`、データの群（`snapshot_id` / `allowed_partitions`）、複雑性の群、`pre_run_checks`（P1・P2・P6 だけ）
+- **パスは識別に入らない**（第18.2節の「同じ内容を別の場所に置いても同じ実験である」）。戦略ファイルを中身そのままで別の場所へ移し、実験設定のパスだけを書き換えて同じ版を再実行しても、2 と 3 は変わらないので識別子は変わらず、検査 P3 は合格する。関係の無い銘柄のファイルを `symbols` ディレクトリに足しても、3 に入らないので識別子は変わらない。
+- **環境の群は識別に入れない**。環境の群を入れると、コードを1行直しただけで同じ実験の同じ版が「別の内容」になり、検査 P3 が事前固定の違反と誤判定する。コードが違う実行の区別は `run_id`（コードのダイジェストを含む）が担う。**同じ理由で、予測した `RunId` も記録票に入れない**（`RunId` はコード・lock・環境のダイジェストから決まる。ADR-0006）。予測した `RunId` と実行時の環境のダイジェストは、**実行ごとに結末記録へ書く**（第19.3節）。記録票の環境の群は、その版を**最初に保存したとき**の環境の記録である。
 - **本文を保存する**のは、人間の決定4（記録票は解決済み内容を保存したもの）の直接の実施であり、別プロセスでの再現（第21節）が**設定を記録票だけから組み立てられる**ための条件である（比べる相手の結果は結末記録にある）。パスとダイジェストだけでは、ファイルを消したり書き換えたりした後に再現できない。銘柄仕様を**実行と換算に使う銘柄のもの**に限るのは、関係の無いファイルの変更で記録票の識別子が変わらないようにするためである。
 - **実行時刻を入れない**。第8.3節の評価 manifest と同じ理由である。
 
@@ -935,7 +942,7 @@ split: NONE
 | `code_digest` / `lock_digest` / `env_digest` / `git_commit` / `git_dirty` | **この実行**の環境（記録票の環境の群と同じ算出）。別プロセスでの再現はこの値と比べる（第21.2節） |
 | `run_id` / `run_status` / `run_reused` | run が行われた（または既存の成果物を再利用した。第19.6節）場合だけ。行われなければ `None` |
 | `run_evaluation_id` / `evaluation_status` / `result_digest` | 評価が行われた場合だけ |
-| `post_run_checks` | 研究ポリシーの事後検査の全件（第20.3節） |
+| `outcome_checks` | 研究ポリシーの**保存時の検査 P3 と事後の検査 P4・P5** の全件（第20.3節）。事前検査で止まった場合は P3 だけ（P4・P5 は run が無いので実施しない） |
 | `failed_checks` | `status` が `COMPLETED` でないときに、合格でなかった研究ポリシーの検査（`tuple[PolicyCheck, ...]`。第20.3節の宣言順）。`COMPLETED` なら空。**D02 §8.1 の理由型（`Reason`）は使わない**。理由コードは状態遷移の理由の語彙であり（D02 §8.1、上位 §4.7.14）、研究ポリシーの検査名はその語彙に無いので、検査名そのものを型で持つ |
 
 - **記録票の書き込み**: 保存先に記録票が無ければ書く。**あり、内容のダイジェストが同じなら何もしない**（同じ実験の同じ版をもう一度実行するのは正当である）。**あり、ダイジェストが違えば書かずに拒否する**（検査 P3 の不合格。既存の記録票は上書きしない。ADR-0006 の「既定は失敗」）。
@@ -973,7 +980,7 @@ split: NONE
 | `run_id` | バックテスト（`BacktestRunner.run` の戻り値の `BacktestResult`） | `RunExperiment` → `ExperimentOutcome` | 結末記録、`runs/<run_id>/` | ADR-0006。事後検査 P4 で結末記録の `expected_run_id` と照合 |
 | `run_evaluation_id` / `result_digest` | 評価（第8.3節・第9.2節） | `EvaluateRun` → `ExperimentOutcome` | 結末記録、評価 manifest | 第9.2節 |
 | `research_policy_ref` | 研究ポリシーファイル（第20.2節） | `app.config` → `ExperimentManifest` | 記録票 | `(id, version, digest)` の組で記録する。同じ `(id, version)` で内容が違うファイルを使った実験どうしは、記録票の `digest` で後から見分けられる（第20.2節） |
-| 検査結果（`PolicyCheckResult`） | `evaluation.domain.research_policy`（第20.3節） | 事前・保存時は `ExperimentManifest`、事後は `ExperimentOutcome` | 記録票の `pre_run_checks`、結末記録の `post_run_checks` | 検査名（`PolicyCheck`）ごとに1件 |
+| 検査結果（`PolicyCheckResult`） | `evaluation.domain.research_policy`（第20.3節） | 事前（P1・P2・P6）は `ExperimentManifest`、保存時（P3）と事後（P4・P5）は `ExperimentOutcome` | 記録票の `pre_run_checks`、結末記録の `outcome_checks` | 検査名（`PolicyCheck`）ごとに1件 |
 
 ### 19.6 同じ実験の再実行と、既存の run 成果物との衝突【提案】
 
