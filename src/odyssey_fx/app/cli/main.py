@@ -28,6 +28,7 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 from __future__ import annotations
 
 import argparse
+import shlex
 import shutil
 import sys
 from collections.abc import Callable, Sequence
@@ -595,10 +596,20 @@ def _run_run(args: argparse.Namespace, out: _Writer) -> int:
         )
     out.line("")
     # 評価は run と同じカレンダーを受け取る（D07 §4.1 v2.0。違えば C10 で不合格）。
-    out.line(
-        "評価するには `odyssey-fx evaluate --run "
-        f"{outcome.run_id} --calendar {args.calendar} --out {args.out}` を実行すること"
+    # パスに空白などがあってもそのまま貼り付けて動くよう、シェル向けに引用して組み立てる。
+    command = shlex.join(
+        [
+            "odyssey-fx",
+            "evaluate",
+            "--run",
+            str(outcome.run_id),
+            "--calendar",
+            str(args.calendar),
+            "--out",
+            str(args.out),
+        ]
     )
+    out.line(f"評価するには `{command}` を実行すること")
     return _EXIT_OK
 
 

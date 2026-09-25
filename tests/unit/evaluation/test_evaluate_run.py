@@ -1014,18 +1014,23 @@ def test_a_value_that_cannot_be_read_is_reported_not_raised(
     assert report.manifest.fatal_failure_count >= 1
 
 
-def test_a_malformed_diagnosis_column_is_reported_not_raised() -> None:
+@pytest.mark.parametrize(
+    "encoded",
+    ["[not json", '["{}"]', '["123"]', "{}", '["{\\"reason\\":\\"\\"}"]'],
+)
+def test_a_malformed_diagnosis_column_is_reported_not_raised(encoded: str) -> None:
     """評価見送りの診断が読めなくても、失敗として完了する（D07 §10.4 の C9）。
 
     集計だけが読む列であり、C9 以外の検査はどれも触らない。読めない値を検査の段階で
     見つけないと、検査がすべて合格したあとで集計が例外になり、失敗を説明する成果物が
-    残らない。
+    残らない。JSON としては読めても診断の形（`reason` を持つ辞書の列）でなければ読めない
+    値とする。読み飛ばすと見送りの理由が0件として集計される。
     """
     manifest = traces.manifest_for()
     tables = traces.t01_tables(str(manifest.run_id))
     tables[TraceTable.EVALUATIONS] = [
         tables[TraceTable.EVALUATIONS][0],
-        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": "[not json"},
+        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": encoded},
     ]
     report = _evaluate(traces.repository_for(tables, manifest=manifest))
     assert report.status is EvaluationStatus.FAILED

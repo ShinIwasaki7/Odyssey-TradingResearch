@@ -17,6 +17,7 @@ swap / rollover を計上していないことが成果物だけから読める�
 
 from __future__ import annotations
 
+import shlex
 from decimal import Decimal
 from pathlib import Path
 
@@ -445,6 +446,9 @@ def test_the_run_output_shows_an_evaluate_command_that_works(artifacts: Artifact
     """run の出力が案内する評価コマンドは、必須のカレンダーを含む（D07 §4.1 v2.0）。"""
     hint = [line for line in artifacts.run_output.splitlines() if "odyssey-fx evaluate" in line]
     assert len(hint) == 1, artifacts.run_output
-    assert f"--run {artifacts.run_id}" in hint[0]
-    assert "--calendar" in hint[0]
-    assert "fx_ny17_v1.yaml" in hint[0]
+    # 案内はシェル向けに引用して組み立ててあるので、そのまま引数の列に戻せる。
+    argv = shlex.split(hint[0].split("`")[1])
+    assert argv[:2] == ["odyssey-fx", "evaluate"]
+    assert argv[argv.index("--run") + 1] == artifacts.run_id
+    assert argv[argv.index("--calendar") + 1].endswith("fx_ny17_v1.yaml")
+    assert argv[argv.index("--out") + 1] == str(artifacts.artifacts_root)

@@ -1708,17 +1708,26 @@ def _missing_input_reasons(encoded: str | None) -> tuple[str, ...]:
 
     `outcome_diagnoses` は D02 §9.3 の正規化エンコード文字列の列である（D06 §9.1）。
     正規化エンコードは JSON 互換のテキストなので、`reason` の項目をそのまま読める。
-    読めない文字列は `ValueError`（`json.JSONDecodeError`）を送出し、C9 の読めない値になる。
+
+    **形まで確かめる**: 列の値は診断（D05 §6.3 の `MissingInputDiagnosis`）の列でなければ
+    ならず、各要素は空でない文字列の `reason` を持つ辞書である。JSON として読めない文字列も、
+    診断の形でない要素（`{}` や数値）も `ValueError` を送出し、C9 の読めない値になる
+    （D07 §10.4）。黙って読み飛ばすと、見送りの理由が0件として集計される。
     """
     if encoded is None:
         return ()
-    items = json.loads(encoded) if encoded.startswith("[") else [encoded]
+    items = json.loads(encoded)
+    if not isinstance(items, list):
+        raise KernelValueError("outcome_diagnoses must be a list of diagnoses")
     reasons: list[str] = []
     for item in items:
         payload = json.loads(item) if isinstance(item, str) else item
         reason = payload.get("reason") if isinstance(payload, dict) else None
-        if isinstance(reason, str):
-            reasons.append(reason)
+        if not isinstance(reason, str) or not reason:
+            raise KernelValueError(
+                f"each diagnosis must carry a non-empty reason (D05 §6.3), got {item!r}"
+            )
+        reasons.append(reason)
     return tuple(reasons)
 
 
