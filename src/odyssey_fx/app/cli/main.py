@@ -594,7 +594,11 @@ def _run_run(args: argparse.Namespace, out: _Writer) -> int:
             "この run は正常完走していない。評価は指標を算出せず、状態と診断だけを出す（D07 §10.1）"
         )
     out.line("")
-    out.line(f"評価するには `odyssey-fx evaluate --run {outcome.run_id}` を実行すること")
+    # 評価は run と同じカレンダーを受け取る（D07 §4.1 v2.0。違えば C10 で不合格）。
+    out.line(
+        "評価するには `odyssey-fx evaluate --run "
+        f"{outcome.run_id} --calendar {args.calendar} --out {args.out}` を実行すること"
+    )
     return _EXIT_OK
 
 

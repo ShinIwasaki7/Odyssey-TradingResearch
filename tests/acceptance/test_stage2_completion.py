@@ -439,3 +439,12 @@ def test_a_timeframe_definition_the_snapshot_did_not_use_is_refused(
     argv[argv.index("--timeframes") + 1] = str(other)
     assert main(argv) == 1
     assert "timeframe definition" in capsys.readouterr().err
+
+
+def test_the_run_output_shows_an_evaluate_command_that_works(artifacts: Artifacts) -> None:
+    """run の出力が案内する評価コマンドは、必須のカレンダーを含む（D07 §4.1 v2.0）。"""
+    hint = [line for line in artifacts.run_output.splitlines() if "odyssey-fx evaluate" in line]
+    assert len(hint) == 1, artifacts.run_output
+    assert f"--run {artifacts.run_id}" in hint[0]
+    assert "--calendar" in hint[0]
+    assert "fx_ny17_v1.yaml" in hint[0]
