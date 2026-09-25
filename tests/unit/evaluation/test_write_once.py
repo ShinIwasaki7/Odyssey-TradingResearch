@@ -20,6 +20,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemTraceSink,
     create_artifact_directory,
     evaluation_directory,
+    replaced_manifest_name,
     require_absent,
     require_run_directory_absent,
     reserve_run_directory,
@@ -138,6 +139,65 @@ def test_the_trace_sink_writes_nothing_into_an_existing_run_directory(tmp_path: 
     with pytest.raises(ArtifactAlreadyExists):
         sink.write(TraceTable.FILLS, output.rows(TraceTable.FILLS))
     assert list(directory.iterdir()) == []
+
+
+def _replace_with_manifest(root: Path, run_id: str, marker: str) -> Path:
+    """`manifest.json` を置いた run を置換する（旧 manifest の中身に目印を入れる）。"""
+    directory = run_directory(root, run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "manifest.json").write_text(json.dumps({"marker": marker}), encoding="utf-8")
+    return reserve_run_directory(root, run_id, replace=True)
+
+
+def test_each_replacement_keeps_its_own_generation_of_the_manifest(tmp_path: Path) -> None:
+    """置換を重ねても旧 manifest は世代ごとに残り、前の世代は上書きされない（D06 §9.3）。"""
+    run_id = "c" * 64
+    _replace_with_manifest(tmp_path, run_id, "first")
+    directory = _replace_with_manifest(tmp_path, run_id, "second")
+
+    assert replaced_manifest_name(1) == "manifest.replaced.001.json"
+    kept = sorted(path.name for path in directory.glob("manifest.replaced.*"))
+    assert kept == ["manifest.replaced.001.json", "manifest.replaced.002.json"]
+    first = json.loads((directory / "manifest.replaced.001.json").read_text(encoding="utf-8"))
+    second = json.loads((directory / "manifest.replaced.002.json").read_text(encoding="utf-8"))
+    assert (first["marker"], second["marker"]) == ("first", "second")
+
+
+def test_an_existing_generation_file_is_never_overwritten(tmp_path: Path) -> None:
+    """次の世代の名前が既にあれば、何も消さず何も上書きせずに失敗する（R4）。
+
+    世代は 001 から欠番なく並ぶので、次の名前が既にあるのは並びが崩れたとき（ここでは
+    001 が無いまま 002 がある）だけである。
+    """
+    run_id = "d" * 64
+    directory = run_directory(tmp_path, run_id)
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_text("{}", encoding="utf-8")
+    (directory / "FILLS.parquet").write_bytes(b"old")
+    (directory / "manifest.replaced.002.json").write_text("kept", encoding="utf-8")
+    # 残っている世代は1つなので、次は 002。それが既にある。
+    before = _snapshot(directory)
+
+    with pytest.raises(ArtifactAlreadyExists, match="never overwritten"):
+        reserve_run_directory(tmp_path, run_id, replace=True)
+    assert _snapshot(directory) == before
+
+
+def test_a_legacy_replaced_manifest_is_kept(tmp_path: Path) -> None:
+    """番号の無い旧形式の `manifest.replaced.json` も消さずに残す。"""
+    run_id = "e" * 64
+    directory = run_directory(tmp_path, run_id)
+    directory.mkdir(parents=True)
+    (directory / "manifest.replaced.json").write_text("legacy", encoding="utf-8")
+    _replace_with_manifest(tmp_path, run_id, "first")
+    assert (directory / "manifest.replaced.json").read_text(encoding="utf-8") == "legacy"
+    assert (directory / "manifest.replaced.001.json").is_file()
+
+
+def test_a_generation_number_below_one_is_refused() -> None:
+    """世代番号は 1 から始まる。"""
+    with pytest.raises(KernelValueError):
+        replaced_manifest_name(0)
 
 
 # --- 評価の成果物（`runs/<run_id>/eval/<run_evaluation_id>/`）--------------

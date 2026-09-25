@@ -15,6 +15,7 @@ DataFrame はこのモジュールの外へ出さない（D01 §2.2 規則1）�
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -98,6 +99,7 @@ __all__ = [
     "create_artifact_directory",
     "evaluation_directory",
     "manifest_from_payload",
+    "replaced_manifest_name",
     "require_absent",
     "require_run_directory_absent",
     "reserve_run_directory",
@@ -172,8 +174,48 @@ _RUN_REMEDY = (
     "It already holds artifacts for this run (re-running the same complete input produces"
     " the same RunId), or was left by an earlier attempt that stopped halfway."
     " Pass replace=True (`odyssey-fx run --replace`) to replace it; the previous manifest"
-    " is kept as manifest.replaced.json (ADR-0006)"
+    " is kept as manifest.replaced.<NNN>.json, one file per replacement (ADR-0006)"
 )
+
+#: 置換で残した旧 manifest の名前（世代番号は 001 から欠番なく増える。D06 §9.3）。
+#: 番号の無い `manifest.replaced.json` は v1.12 より前の置換が残したもので、消さずに残す。
+_REPLACED_MANIFEST = re.compile(r"manifest\.replaced(?:\.(\d{3,}))?\.json")
+
+
+def replaced_manifest_name(generation: int) -> str:
+    """置換の第 `generation` 世代で残す旧 manifest の名前（D06 §9.3）。"""
+    if generation < 1:
+        raise KernelValueError(f"replacement generations start at 1, got {generation}")
+    return f"manifest.replaced.{generation:03d}.json"
+
+
+def _keep_replaced_manifest(directory: Path, previous: Path) -> Path:
+    """旧 manifest を次の世代の名前で残す（ADR-0006、D06 §9.3、R4）。
+
+    次の世代は「既に残っている世代の数 + 1」である。世代は 001 から欠番なく並ぶので、
+    その名前のファイルが既にあるのは、世代の並びが崩れている（人の手で置かれた・
+    消された）ときだけである。**そのときは上書きせずに失敗する**（存在すれば失敗）。
+    作成と存在の確認は1つの操作（排他的な作成）で行う。
+    """
+    kept = [
+        path
+        for path in directory.iterdir()
+        if (match := _REPLACED_MANIFEST.fullmatch(path.name)) and match.group(1) is not None
+    ]
+    target = directory / replaced_manifest_name(len(kept) + 1)
+    content = previous.read_text(encoding="utf-8")
+    try:
+        with target.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+    except FileExistsError:
+        raise ArtifactAlreadyExists(
+            f"{target} already exists; the manifests kept by earlier replacements are never"
+            " overwritten, and nothing was replaced. The kept generations are expected to run"
+            " from 001 without gaps; restore that order before replacing again"
+            " (D06 §9.3, R4)"
+        ) from None
+    return target
+
 
 #: 評価の成果物が既にあるときの手当て（評価は置換の指示を持たない。D07 §8.2）。
 _EVALUATION_REMEDY = (
@@ -209,12 +251,12 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
     if existing:
         previous = directory / "manifest.json"
         if previous.exists():
-            # 置換しても旧成果物の manifest は記録に残す（ADR-0006）。
-            (directory / "manifest.replaced.json").write_text(
-                previous.read_text(encoding="utf-8"), encoding="utf-8"
-            )
+            # 置換しても旧成果物の manifest は記録に残す（ADR-0006）。**世代ごとに別名で
+            # 残し、既存の世代は上書きしない**（D06 §9.3、R4）。消す前に残すので、残せな
+            # ければ何も消さずに失敗する。
+            _keep_replaced_manifest(directory, previous)
         for path in existing:
-            if path.is_file() and path.name != "manifest.replaced.json":
+            if path.is_file() and not _REPLACED_MANIFEST.fullmatch(path.name):
                 path.unlink()
             elif path.is_dir() and path.name == _EVALUATION_DIRECTORY:
                 # **評価の成果物も一緒に畳む**。判断履歴だけを書き直すと、同じ実行の

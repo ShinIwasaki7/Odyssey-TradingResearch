@@ -394,7 +394,7 @@ def test_running_again_into_the_same_place_refuses_to_overwrite(
 
     # 置換を明示すれば書き直せる。旧 manifest は記録に残る（ADR-0006）。
     assert main(run_argv(artifacts.repo, root, replace=True)) == 0
-    assert (root / "runs" / artifacts.run_id / "manifest.replaced.json").is_file()
+    assert (root / "runs" / artifacts.run_id / "manifest.replaced.001.json").is_file()
 
 
 def test_a_leftover_run_directory_stops_the_run_before_it_starts(
