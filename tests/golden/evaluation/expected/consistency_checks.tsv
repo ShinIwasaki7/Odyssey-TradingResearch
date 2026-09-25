@@ -11,3 +11,4 @@ all_values_readable	FATAL	PASSED		{"count":0}	{"count":0}
 calendar_matches_run	FATAL	PASSED		"fx_ny17@v1"	"fx_ny17@v1"
 run_manifest_readable	FATAL	PASSED		"runs/<run_id>/manifest.json"	"runs/<run_id>/manifest.json"
 input_keys_unique	FATAL	PASSED		{"count":0}	{"count":0}
+run_status_consistent	FATAL	PASSED		{"failure_reason":false,"status":"COMPLETED"}	{"failure_reason":false,"status":"COMPLETED"}
