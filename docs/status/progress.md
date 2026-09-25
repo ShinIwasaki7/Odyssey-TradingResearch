@@ -1,10 +1,10 @@
 # 進捗（正本）
-更新: 2026-09-25T01:56:30Z / 更新者: 司令塔（PR #39 の merge 可否を質問、snapshot 実体を main 作業ツリーへ退避）
+更新: 2026-09-25T02:22:00Z / 更新者: 司令塔（PR #39 merge）
 
 ## 現在地
-- 段階: 段階3 完了。段階4: 分類の第 1 弾 merge 済み（snapshot 承認 PR を Opus が作業中）。D07 の実装は案A（設計 1 本＋実装 4 本）で承認され、設計 PR（D07 v2.0）を Opus が起草中。R1 文書 PR も Opus が作業中
-- 直前に終わったこと: PR #38（文書整合 3 件: AGENTS.md 1 行、D05 v2.8、D06 v1.9）を squash merge
-- いま止まっている理由: 人間待ち（PR #39 snapshot 承認の merge 可否）。R1・D07 v2.0 は Opus が作業中
+- 段階: 段階3 完了。段階4: 分類の第 1 弾と snapshot a498b8cf の承認が merge 済み（実データが研究に使える状態）。D07 v2.0 設計 PR と R1 文書 PR を Opus が作業中
+- 直前に終わったこと: PR #39（snapshot a498b8cf の承認記録。承認者 ShinIwasaki7）を squash merge。snapshot の実体は main 作業ツリー data/snapshots/ に退避済み
+- いま止まっている理由: 止まっていない（Opus 2 名: R1 文書 PR、D07 v2.0 設計 PR）
 
 ## 人間待ち（回答が来るまで進めない項目）
 - なし（PR #26 の要決定 Q1〜Q5 は解消。AGENTS.md は PR #29 で main に導入済み）
@@ -12,10 +12,9 @@
 ## 進行中（最大2行）
 - AGENTS.md 後続対処 R1「設計文書テンプレートに必須表 3 つ（境界表・状態×出来事表・値の伝播表）」: 文書のみ。Opus、ブランチ docs/r1-required-tables、Codex ループ自走
 - 段階4 D07 v2.0 設計 PR（案A の PR 0）: 人間の決定 6 件（案A／封印期間は段階5 へ／追加指標は少数・Decimal／設定書式 v2 と記録票／研究ポリシーは事前固定＋複雑性の上限を検査／実データは戦略 A・USDJPY・2016〜2023 で 1 本）を反映。R5 を取り込む。Opus、ブランチ docs/d07-v2-stage4、Codex ループ自走
-- snapshot 承認: PR #39（manifest.json に approval と declaration_record の 9 行。承認者 ShinIwasaki7。承認後に run の関門で読めることを確認: 研究履歴 40 区分・足 2,632,693 本。Codex 1 巡指摘なし）。merge 可否を質問中。**snapshot の実体（git 管理外、46MB・120 ファイル）を一時 worktree から main 作業ツリー data/snapshots/a498b8cf…/ へ退避済み**。承認コマンドに --out data/snapshots が必須だが D03 §10 の表に無い（文書の追随を要する。後続の文書 PR へ）
 
 ## 未回答の質問
-- 2026-09-25 PR #39（snapshot a498b8cf の承認）の merge 可否
+- なし
 
 ## 段階4 D07 の PR 分割（2026-09-25 承認、案A。設計 1 本の merge 後に実装 4 本を上から順に）
 0. 設計: D07 v2.0（＋D08・全体計画の追随、R5 の取り込み）
@@ -25,13 +24,14 @@
 4. レポート・実データ実行（戦略 A・USDJPY・2016〜2023 で 1 本）・段階4 受入テスト
 
 ## 次に着手する作業（上から順）
-1. snapshot 承認 PR・R1 PR・D07 v2.0 設計 PR の報告を受けて merge 可否を質問（設計 PR は要決定の一覧を添える）
+1. R1 PR・D07 v2.0 設計 PR の報告を受けて merge 可否を質問（設計 PR は要決定の一覧を添える）
 2. 設計 PR の merge 後: 実装 PR 1〜4 を上から順に（R4 は PR 3 の前）
-3. AGENTS.md 後続対処 R4 → R5（D07 側は設計 PR に取り込み）→ R2
+3. 文書の追随（次の文書 PR に含める）: D03 §10 の承認コマンドに --out data/snapshots が必須である旨
+4. AGENTS.md 後続対処 R4 → R2
 
 ## 完了（新しい順・5件まで。それ以前は git log と PR 一覧が正本）
+- 2026-09-25 PR #39 snapshot a498b8cf の承認 merge（研究履歴 40 区分・足 2,632,693 本が run から読める）
 - 2026-09-25 PR #38 文書整合 3 件 merge（AGENTS.md、D05 v2.8、D06 v1.9）
 - 2026-09-25 PR #37 段階4 分類の第 1 弾 merge（23,985 → 未分類 0。カレンダー fx_ny17 v2、確定 snapshot a498b8cf）
 - 2026-09-25 PR #36 段階3 完了の文書 PR merge（仮置き 8 件の確定、全体計画 §8.2 完了日）
 - 2026-09-25 PR #35 段階3 PR 5/5「エンジン＋受入」merge。**段階3 実装 完了**（T02 検算値全項目一致、遅延 4 ケース）
-- 2026-09-25 PR #34 取引日単位の休場 merge（D03 v1.9 §3.4.1、D08 v1.5。段階4 分類の前提）
