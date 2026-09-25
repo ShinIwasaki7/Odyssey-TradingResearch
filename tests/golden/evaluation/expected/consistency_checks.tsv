@@ -1,9 +1,13 @@
-check	level	passed	table	expected	observed
-required_columns_present	FATAL	True		["EVALUATIONS","OPPORTUNITY_TRANSITIONS","ORDER_REQUESTS","ATTEMPT_DECISIONS","ORDERS","FILLS","POSITIONS","INTRABAR_RESOLUTIONS","LEDGER_SNAPSHOTS"]	[]
-run_id_consistent	FATAL	True		"<run_id>"	["<run_id>"]
-trade_count_matches	FATAL	True	POSITIONS	1	1
-id_chain_complete	FATAL	True	POSITIONS	[]	[]
-realized_matches_balance	FATAL	True	LEDGER_SNAPSHOTS	{"amount":"36706e0","currency":"JPY"}	{"amount":"36706e0","currency":"JPY"}
-opportunity_count_matches	WARNING	True	OPPORTUNITY_TRANSITIONS	2	2
-snapshot_order_monotonic	WARNING	True	LEDGER_SNAPSHOTS	["2015-01-06T09:00:00Z/LEDGER_UPDATE#0","2015-01-06T09:00:00Z/EXECUTION_OPEN#1","2015-01-06T11:15:00Z/LEDGER_UPDATE#0","2015-01-08T10:00:00Z/EXECUTION_OPEN#1","2015-01-16T22:00:00Z/RUN_END#0"]	["2015-01-06T09:00:00Z/LEDGER_UPDATE#0","2015-01-06T09:00:00Z/EXECUTION_OPEN#1","2015-01-06T11:15:00Z/LEDGER_UPDATE#0","2015-01-08T10:00:00Z/EXECUTION_OPEN#1","2015-01-16T22:00:00Z/RUN_END#0"]
-single_account_currency	FATAL	True		"JPY"	["JPY"]
+check	level	outcome	table	expected	observed
+required_columns_present	FATAL	PASSED		["EVALUATIONS","OPPORTUNITY_TRANSITIONS","ORDER_REQUESTS","ATTEMPT_DECISIONS","ORDERS","FILLS","POSITIONS","INTRABAR_RESOLUTIONS","LEDGER_SNAPSHOTS"]	[]
+run_id_consistent	FATAL	PASSED		"<run_id>"	["<run_id>"]
+trade_count_matches	FATAL	PASSED	POSITIONS	1	1
+id_chain_complete	FATAL	PASSED	POSITIONS	[]	[]
+realized_matches_balance	FATAL	PASSED	LEDGER_SNAPSHOTS	{"amount":"36706e0","currency":"JPY"}	{"amount":"36706e0","currency":"JPY"}
+opportunity_count_matches	WARNING	PASSED	OPPORTUNITY_TRANSITIONS	2	2
+snapshot_order_monotonic	WARNING	PASSED	LEDGER_SNAPSHOTS	["2015-01-06T09:00:00Z/LEDGER_UPDATE#0","2015-01-06T09:00:00Z/EXECUTION_OPEN#1","2015-01-06T11:15:00Z/LEDGER_UPDATE#0","2015-01-08T10:00:00Z/EXECUTION_OPEN#1","2015-01-16T22:00:00Z/RUN_END#0"]	["2015-01-06T09:00:00Z/LEDGER_UPDATE#0","2015-01-06T09:00:00Z/EXECUTION_OPEN#1","2015-01-06T11:15:00Z/LEDGER_UPDATE#0","2015-01-08T10:00:00Z/EXECUTION_OPEN#1","2015-01-16T22:00:00Z/RUN_END#0"]
+single_account_currency	FATAL	PASSED		"JPY"	["JPY"]
+all_values_readable	FATAL	PASSED		{"count":0}	{"count":0}
+calendar_matches_run	FATAL	PASSED		"fx_ny17@v1"	"fx_ny17@v1"
+run_manifest_readable	FATAL	PASSED		"runs/<run_id>/manifest.json"	"runs/<run_id>/manifest.json"
+input_keys_unique	FATAL	PASSED		{"count":0}	{"count":0}
