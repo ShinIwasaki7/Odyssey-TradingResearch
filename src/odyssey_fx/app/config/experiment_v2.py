@@ -275,12 +275,18 @@ def _reject_unwritable_delay(payload: Mapping[str, Any], path: Path) -> None:
 def _delay_scenario_of(
     model: _DelayScenarioModel,
     timeframe_defs: Mapping[str, TimeframeDefinition],
+    execution_series: Collection[str],
     path: Path,
 ) -> DelayScenario:
     """遅延シナリオを型へ構築する（D03 §3.6、D07 §18.3）。
 
     遅延の期間は D04 §13.1 の `<正の整数><単位>` で書く（D07 §18.2）。この書き方は負の値も
     0 も書けないので、負の遅延は読込の時点で拒否される。規則の型も非負を構築時に検査する。
+
+    **執行系列と解像度階層の系列（`execution_series`）への遅延は拒否する**（仮置き）。遅延は
+    公開フィードと as-of ビューの公開時刻だけを動かし、約定判定（足の始値・足の完了・下位足）は
+    通常の足の終了時刻で進む。執行用データが遅れたときの約定の意味論は設計に無いので、
+    未定義のまま run させず、読込の時点で止める。
     """
     if not model.rules:
         raise ConfigError(
@@ -292,6 +298,11 @@ def _delay_scenario_of(
         label = f"delay_scenario.rules[{index}]"
         try:
             series = parse_series(rule.series, timeframe_defs)
+            if rule.series in execution_series:
+                raise ConfigError(
+                    f"執行系列・解像度階層の系列 {rule.series!r} には遅延を当てられない。"
+                    " 執行用データが遅れたときの約定の意味論は設計に無い"
+                )
             delay = parse_duration(rule.delay)
             if isinstance(rule, _FixedSeriesDelayModel):
                 rules.append(FixedSeriesDelay(series=series, delay=delay))
@@ -353,7 +364,12 @@ def load_experiment_v2(
         delay_scenario = None
         delay_ref = NO_DELAY_REF
     else:
-        delay_scenario = _delay_scenario_of(model.delay_scenario, environment.timeframe_defs, path)
+        delay_scenario = _delay_scenario_of(
+            model.delay_scenario,
+            environment.timeframe_defs,
+            frozenset({model.execution_series, *model.resolution_hierarchy}),
+            path,
+        )
         # 遅延シナリオの版参照は宣言の内容（id / version / 各規則）のダイジェストから作る。
         # ポリシーの版参照と同じ作り方である（D07 §18.3）。
         delay_ref = policy_ref_of("delay", payload["delay_scenario"])

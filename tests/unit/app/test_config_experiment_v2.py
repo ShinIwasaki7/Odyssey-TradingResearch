@@ -242,6 +242,13 @@ _REFUSALS: list[tuple[str, str, str, str | None, str]] = [
         None,
         "SEEDED_RANDOM_DELAY",
     ),
+    (
+        "delay on the execution series",
+        'series: "USDJPY/1d_ny17/bid", delay: "2s"}',
+        'series: "USDJPY/15m/bid", delay: "2s"}',
+        None,
+        "執行系列",
+    ),
     ("negative delay", 'delay: "2s"', 'delay: "-2s"', None, "rules[0]"),
     ("iso delay", 'delay: "2s"', 'delay: "PT2S"', None, "rules[0]"),
     (
