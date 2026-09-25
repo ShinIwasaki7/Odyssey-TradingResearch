@@ -242,13 +242,6 @@ _REFUSALS: list[tuple[str, str, str, str | None, str]] = [
         None,
         "SEEDED_RANDOM_DELAY",
     ),
-    (
-        "delay on the execution series",
-        'series: "USDJPY/1d_ny17/bid", delay: "2s"}',
-        'series: "USDJPY/15m/bid", delay: "2s"}',
-        None,
-        "執行系列",
-    ),
     ("negative delay", 'delay: "2s"', 'delay: "-2s"', None, "rules[0]"),
     ("iso delay", 'delay: "2s"', 'delay: "PT2S"', None, "rules[0]"),
     (
@@ -397,3 +390,23 @@ def test_a_duplicated_delay_rule_is_refused(tmp_path: Path) -> None:
     """同じ規則を2度書いた設定は拒否する。"""
     path = _variant(tmp_path, _ONE_RULE, _ONE_RULE + _ONE_RULE)
     assert "2度" in _refused(path, tmp_path)
+
+
+def test_a_delay_on_the_execution_series_is_accepted(tmp_path: Path) -> None:
+    """執行系列への遅延も書ける（D07 §18.3。約定の時刻は変わらず、公開時刻だけが動く）。"""
+    path = _variant(
+        tmp_path,
+        'series: "USDJPY/1d_ny17/bid", delay: "2s"}',
+        'series: "USDJPY/15m/bid", delay: "2s"}',
+    )
+    scenario = _load(path, tmp_path).experiment.delay_scenario
+    assert scenario is not None
+    assert str(scenario.rules[0].series) == "USDJPY/15m/bid"
+
+
+def test_the_delay_reference_names_the_scenario() -> None:
+    """遅延シナリオの版参照はシナリオの id と版をそのまま載せる（D07 §18.3）。"""
+    ref = _load(B_EXPERIMENTS["d1_bar_hold"]).experiment.policy_ref("delay")
+    assert ref.policy_kind == "delay"
+    assert ref.policy_id == "d1_bar_hold"
+    assert ref.version == 1

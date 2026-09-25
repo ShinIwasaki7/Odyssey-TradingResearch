@@ -10,10 +10,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import timedelta
-from types import MappingProxyType
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.bar import BarKey
@@ -65,17 +63,9 @@ class PublicationLog:
 
     構築時に足の自然キーで整列し、重複を拒否する。記録順（シミュレーションの処理順）が
     保存内容に影響しないようにするため。
-
-    足の自然キーから公開時刻を引く索引（`_by_key`）を構築時に1度だけ作る。as-of ビューは
-    判断時点ごとに窓の足すべての公開時刻を引くので、記録を先頭から探すと run 全体で
-    足の本数の2乗に比例する時間がかかる（遅延シナリオを当てた run で顕在化した）。索引は
-    `records` から決まる派生値であり、比較・表示・ハッシュの対象にしない。
     """
 
     records: tuple[PublicationRecord, ...] = ()
-    _by_key: Mapping[BarKey, UtcTime] = field(
-        init=False, repr=False, compare=False, default_factory=dict
-    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.records, tuple):
@@ -93,12 +83,10 @@ class PublicationLog:
         normalized = tuple(sorted(self.records, key=lambda record: record.sort_key()))
         if normalized != self.records:
             object.__setattr__(self, "records", normalized)
-        object.__setattr__(
-            self,
-            "_by_key",
-            MappingProxyType({record.bar_key: record.available_at for record in self.records}),
-        )
 
     def available_at(self, bar_key: BarKey) -> UtcTime | None:
         """その足の実際の公開時刻（記録がなければ `None`）。"""
-        return self._by_key.get(bar_key)
+        for record in self.records:
+            if record.bar_key == bar_key:
+                return record.available_at
+        return None

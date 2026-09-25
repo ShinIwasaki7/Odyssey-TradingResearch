@@ -40,7 +40,6 @@ from odyssey_fx.app.config.experiment import (
     NO_DELAY_REF,
     ExperimentConfig,
     RunBodyModel,
-    policy_ref_of,
     resolve_run_body,
 )
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
@@ -48,7 +47,9 @@ from odyssey_fx.app.config.models import StrictModel, require_schema_version, va
 from odyssey_fx.app.config.strategy_file import load_strategy_file
 from odyssey_fx.app.config.strategy_parts import parse_series
 from odyssey_fx.app.config.symbols import load_symbol_specs
+from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.refs import PolicyRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
@@ -277,7 +278,6 @@ def _reject_unwritable_delay(payload: Mapping[str, Any], path: Path) -> None:
 def _delay_scenario_of(
     model: _DelayScenarioModel,
     timeframe_defs: Mapping[str, TimeframeDefinition],
-    execution_series: Collection[str],
     path: Path,
 ) -> DelayScenario:
     """遅延シナリオを型へ構築する（D03 §3.6、D07 §18.3）。
@@ -285,10 +285,9 @@ def _delay_scenario_of(
     遅延の期間は D04 §13.1 の `<正の整数><単位>` で書く（D07 §18.2）。この書き方は負の値も
     0 も書けないので、負の遅延は読込の時点で拒否される。規則の型も非負を構築時に検査する。
 
-    **執行系列と解像度階層の系列（`execution_series`）への遅延は拒否する**（仮置き）。遅延は
-    公開フィードと as-of ビューの公開時刻だけを動かし、約定判定（足の始値・足の完了・下位足）は
-    通常の足の終了時刻で進む。執行用データが遅れたときの約定の意味論は設計に無いので、
-    未定義のまま run させず、読込の時点で止める。
+    遅延は戦略向けの公開時刻だけを動かす。執行系列に当てても約定の時刻は変わらない（D07
+    §18.3、上位設計書 §4.7.12、D06 §6.4）。執行用データの可用性と戦略向けの公開遅延は別の
+    ものなので、執行系列への遅延も受け付ける。
     """
     if not model.rules:
         raise ConfigError(
@@ -300,11 +299,6 @@ def _delay_scenario_of(
         label = f"delay_scenario.rules[{index}]"
         try:
             series = parse_series(rule.series, timeframe_defs)
-            if rule.series in execution_series:
-                raise ConfigError(
-                    f"執行系列・解像度階層の系列 {rule.series!r} には遅延を当てられない。"
-                    " 執行用データが遅れたときの約定の意味論は設計に無い"
-                )
             delay = parse_duration(rule.delay)
             if isinstance(rule, _FixedSeriesDelayModel):
                 rules.append(FixedSeriesDelay(series=series, delay=delay))
@@ -341,8 +335,8 @@ def _rule_declaration(rule: DelayRule) -> dict[str, str]:
     return declaration
 
 
-def _delay_declaration(scenario: DelayScenario) -> dict[str, object]:
-    """遅延シナリオの版参照の材料（D07 §18.3）。
+def _delay_rules_declaration(scenario: DelayScenario) -> list[dict[str, str]]:
+    """遅延シナリオの版参照のダイジェストの材料（D07 §18.3）。
 
     規則の並びは意味を持たない（同じ足に複数の規則が当たれば最大の遅延を採る。D03 §3.6）
     ので、**正規形の文字列順に整列**して入れる。書いた順を入れると、同じ実行条件が並べ替え
@@ -350,8 +344,27 @@ def _delay_declaration(scenario: DelayScenario) -> dict[str, object]:
     正規形（`120s` と `2m` は同じ）、時刻は UTC の正規形にする。規則の重複は
     `_delay_scenario_of` が拒否している。
     """
-    rules = sorted((_rule_declaration(rule) for rule in scenario.rules), key=repr)
-    return {"id": scenario.id, "version": scenario.version, "rules": rules}
+    return sorted((_rule_declaration(rule) for rule in scenario.rules), key=repr)
+
+
+def _delay_ref_of(scenario: DelayScenario, path: Path) -> PolicyRef:
+    """遅延シナリオの版参照（D07 §18.3）。
+
+    **シナリオの id と版をそのまま載せ、ダイジェストは規則の正規形から作る**（戦略の参照
+    `StrategyRef` と同じ作り方）。manifest の参照からどのシナリオかが読める。遅延なしの
+    参照（`NO_DELAY_REF`）は書式 v1 と同じ値のまま変えない（D07 §18.5）。
+    """
+    try:
+        return PolicyRef(
+            policy_kind="delay",
+            policy_id=scenario.id,
+            version=scenario.version,
+            digest=digest(_delay_rules_declaration(scenario)),
+        )
+    except KernelValueError as exc:
+        raise ConfigError(
+            f"{path}: 遅延シナリオの id と版は識別子として書くこと（小文字・数字・下線）: {exc}"
+        ) from exc
 
 
 def load_experiment_v2(
@@ -401,12 +414,9 @@ def load_experiment_v2(
         delay_scenario = _delay_scenario_of(
             model.delay_scenario,
             environment.timeframe_defs,
-            frozenset({model.execution_series, *model.resolution_hierarchy}),
             path,
         )
-        # 遅延シナリオの版参照は宣言の内容（id / version / 各規則）のダイジェストから作る。
-        # ポリシーの版参照と同じ作り方である（D07 §18.3）。規則は正規化してから入れる。
-        delay_ref = policy_ref_of("delay", _delay_declaration(delay_scenario))
+        delay_ref = _delay_ref_of(delay_scenario, path)
 
     experiment = resolve_run_body(
         model,
