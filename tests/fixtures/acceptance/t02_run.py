@@ -6,10 +6,12 @@ T02 再現生成器（`t02_market`）の足に遅延シナリオ（D03 §3.6）�
 （D03 §6.2）に依存するため、単純な偽のビューでは再現できない。
 
 **コマンド経由ではなく、エンジンの利用口（`RunBacktest`）を直接呼ぶ**。段階2 の受入れテストは
-設定ファイル → 受入れ → 承認 → run → 評価をコマンドで通したが、実験設定の書式（`app.config`）は
-まだ検証戦略 B の宣言（後続確認・待機・追従する損切り）も遅延シナリオも書けない。設定の書式を
-広げるのは段階3 の完了条件（全体計画 §8.2）の外であり、本組み立ては T02 §17 の「受入れテストが
-本書の検算値（第16節）を再現したとき」だけを担う。
+設定ファイル → 受入れ → 承認 → run → 評価をコマンドで通したが、段階3 の時点の実験設定の書式
+（書式 v1）は検証戦略 B の宣言（後続確認・待機・追従する損切り）も遅延シナリオも書けなかった。
+設定の書式を広げるのは段階3 の完了条件（全体計画 §8.2）の外であり、本組み立ては T02 §17 の
+「受入れテストが本書の検算値（第16節）を再現したとき」だけを担う。書式 v2（D07 §18）で書けるように
+なった後も段階3 の受入テストは変えない（D08 §2.3 の2）。コマンド経由の run が本組み立てと同じ
+判断履歴になることは `tests/integration/app/test_run_v2_strategy_b.py` が確かめる。
 
 4つの遅延シナリオ（T02 §1.4）は**同じ素の足**に当てる（D08 §9.6 の方針2）。素の足は1度だけ
 作り、シナリオごとに `available_at` だけを動かす。
@@ -171,25 +173,47 @@ def _compiled() -> CompiledStrategy:
     return outcome.compiled
 
 
-def build_case(case: T02Case) -> RunOutput:
+def build_case(
+    case: T02Case,
+    *,
+    snapshot_ref: SnapshotRef | None = None,
+    policy_refs: Mapping[str, PolicyRef] | None = None,
+) -> RunOutput:
     """そのケースで検証戦略 B の run を1回通す（呼ぶたびに新しく走らせる）。
 
     run の識別子は完全入力（遅延シナリオの参照を含む）から作る（ADR-0006）。4ケースは
     遅延シナリオの参照だけが違うので、識別子も違う。
+
+    `snapshot_ref` と `policy_refs`（種別 `risk` / `execution` / `cost` / `conversion` /
+    `delay` → 版参照）は、判断履歴に載る識別（根拠記録のポリシー参照など）を別の経路の run と
+    揃えるときだけ渡す。書式 v2 の実験設定から `run` コマンドで通した run と判断履歴を
+    突き合わせる統合テスト（D07 §17.2 の実装 PR 2）が使う。省略時は固定の値である。
     """
     bars = delayed_bars(case)
     compiled = _compiled()
     calendar = market.calendar()
+    refs = {
+        "risk": _policy_ref("risk", "r"),
+        "execution": _policy_ref("execution", "e"),
+        "cost": _policy_ref("cost", "c"),
+        "conversion": _policy_ref("conversion", "v"),
+        "delay": _policy_ref("delay", case),
+        **(policy_refs or {}),
+    }
     config = RunConfig(
         run_interval=RUN_INTERVAL,
-        snapshot_ref=SnapshotRef(snapshot_id=SnapshotId(_digest("t02"))),
+        snapshot_ref=(
+            SnapshotRef(snapshot_id=SnapshotId(_digest("t02")))
+            if snapshot_ref is None
+            else snapshot_ref
+        ),
         compiled_ref=compiled.compiled_ref,
         account=ACCOUNT,
-        risk_policy_ref=_policy_ref("risk", "r"),
-        execution_policy_ref=_policy_ref("execution", "e"),
-        cost_model_ref=_policy_ref("cost", "c"),
-        conversion_policy_ref=_policy_ref("conversion", "v"),
-        delay_scenario_ref=_policy_ref("delay", case),
+        risk_policy_ref=refs["risk"],
+        execution_policy_ref=refs["execution"],
+        cost_model_ref=refs["cost"],
+        conversion_policy_ref=refs["conversion"],
+        delay_scenario_ref=refs["delay"],
         execution_series=EXECUTION_SERIES,
     )
     calendar_ref = calendar_ref_of(calendar)

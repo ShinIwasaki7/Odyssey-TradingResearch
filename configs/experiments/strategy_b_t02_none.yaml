@@ -1,0 +1,81 @@
+# 検証戦略 B の単一実行の実験設定・遅延シナリオ1「遅延なし」（書式 v2。D07 §18）
+#
+# 紙上トレース T02 §1.4 のケース1（経路1〜4・8・9）。**遅延なしは `delay_scenario` を書かない
+# 形だけで表す**（D07 §18.3。`rules: []` や null は拒否される）。遅延なしの版参照は書式 v1 と
+# 同じ値になる。
+#
+# 戦略の本文は `configs/strategies/strategy_b_v1.yaml` にあり、4ケースで共有する（Q11 決定）。
+# 4ケースの違いは `id` と `hypothesis` と `delay_scenario` だけである。
+#
+# **`snapshot` は使う環境ごとに書き換える**（書式 v1 の `strategy_a_t01.yaml` と同じ扱い）。
+# 承認済み snapshot の識別子（16進64文字）であり、既定値は「まだ指していない」ことが分かる
+# ようにゼロを並べてある（そのままでは読み取りの関門が拒否する。D03 §3.7.1）。値は T02 の
+# 人工データ（2015年1月）で手計算と一致することを確かめるためのものである。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。取引カレンダーは T02 の人工データと
+# 同じ週の開閉だけの版（`fx_ny17` v1）を指す。snapshot を受け入れたときと同じ版でなければ
+# run は実行前に止まる（D03 §3.7）。
+#
+# **数値は文字列で書く**（ADR-0012）。ポリシーの期間は v1 と同じ ISO 8601（`PT20M`）で書く。
+
+schema_version: 2
+
+id: strategy_b_t02_none
+version: 1
+
+hypothesis: "日足の上昇相場で1時間足の高値更新を15分足で確認して買う戦略は、遅延が無ければ T02 の経路1 どおりに確認のあとで約定し、1時間足ごとに損切りを安値へ追従させる"
+
+research_policy: {id: "research_policy", version: 1}
+
+strategy: "configs/strategies/strategy_b_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v1.yaml"
+  symbols: "configs/symbols"
+
+snapshot: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# 12 日間（T02 §1.1。T01 と同じ区間）。
+run_interval:
+  start: "2015-01-04T22:00:00Z"
+  end: "2015-01-16T22:00:00Z"
+
+execution_series: "USDJPY/15m/bid"
+
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+evaluation: {metric_set_version: 1}
+
+search_plan: "NONE"
+split: "NONE"

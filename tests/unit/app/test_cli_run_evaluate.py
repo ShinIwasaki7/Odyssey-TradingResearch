@@ -123,3 +123,75 @@ def test_an_unimplemented_metric_set_version_is_refused(
     )
     assert code == 1
     assert "式はまだ無い" in capsys.readouterr().err
+
+
+# --- 書式 v2（D07 §18.2・§18.5）---------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_the_run_command_takes_a_v2_experiment_without_the_environment_options() -> None:
+    """書式 v2 は環境の3つを実験設定の `environment` で指すので、引数では要らない。"""
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--experiment",
+            "configs/experiments/strategy_b_t02_d1_2s.yaml",
+            "--snapshots",
+            "data/snapshots",
+        ]
+    )
+    assert args.calendar is None
+    assert args.timeframes is None
+    assert args.symbols is None
+
+
+def test_a_v2_experiment_with_the_environment_options_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """書式 v2 に環境の引数も渡すと、同じものを2か所で指すことになるので拒否する。"""
+    code = main(
+        [
+            "run",
+            "--experiment",
+            str(_REPO_ROOT / "configs/experiments/strategy_b_t02_d1_2s.yaml"),
+            "--calendar",
+            str(_REPO_ROOT / "configs/calendars/fx_ny17_v1.yaml"),
+            "--snapshots",
+            str(tmp_path),
+            "--repo-root",
+            str(_REPO_ROOT),
+        ]
+    )
+    assert code == 1
+    assert "--calendar" in capsys.readouterr().err
+
+
+def test_a_v1_experiment_without_the_environment_options_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """書式 v1 は環境の3つを引数で受ける（v1 の読込は変えない。D07 §18.5）。"""
+    code = main(
+        [
+            "run",
+            "--experiment",
+            str(_REPO_ROOT / "configs/experiments/strategy_a_t01.yaml"),
+            "--snapshots",
+            str(tmp_path),
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "--calendar" in err
+    assert "--symbols" in err
+
+
+def test_an_unknown_experiment_schema_version_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`schema_version` が 1・2 以外の実験設定は拒否する（D07 §18.6 の1）。"""
+    path = tmp_path / "experiment.yaml"
+    path.write_text("schema_version: 3\nid: x\n", encoding="utf-8")
+    code = main(["run", "--experiment", str(path), "--snapshots", str(tmp_path)])
+    assert code == 1
+    assert "schema_version" in capsys.readouterr().err
