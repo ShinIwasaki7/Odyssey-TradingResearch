@@ -841,6 +841,63 @@ def test_a_cost_amount_without_its_currency_is_unreadable() -> None:
     assert _check(report, CHECK_SINGLE_ACCOUNT_CURRENCY).outcome is CheckOutcome.UNREADABLE
 
 
+@pytest.mark.parametrize(
+    ("table", "index", "column"),
+    [
+        (TraceTable.OPPORTUNITY_TRANSITIONS, 0, "reason_code"),
+        (TraceTable.ORDERS, 1, "terms_cause"),
+        (TraceTable.ORDERS, 1, "terms_position_id"),
+        (TraceTable.ORDERS, 0, "terms_reference_quote_price"),
+        (TraceTable.ATTEMPT_DECISIONS, 0, "order_id"),
+        (TraceTable.ORDER_REQUESTS, 0, "payload_opportunity_id"),
+        (TraceTable.ORDER_REQUESTS, 1, "payload_position_id"),
+        (TraceTable.EVALUATIONS, 1, "outcome_diagnoses"),
+    ],
+)
+def test_a_column_required_by_the_row_kind_is_unreadable_when_empty(
+    table: TraceTable, index: int, column: str
+) -> None:
+    """行の区分で必ず埋まる列が空なら読めない値にする（D07 §10.4）。
+
+    見逃すと、終端理由・決済契機などの集計の鍵が黙って捨てられ、入場約定が不利約定幅の
+    対象から外れたまま評価が完了する（第4巡の代替レビューの指摘）。
+    """
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    rows = list(tables[table])
+    changed = {**rows[index], column: None}
+    if column == "terms_reference_quote_price":
+        # 時刻の列と対なので、2列とも空にしても区分の規則で読めない値になることを確かめる。
+        changed["terms_reference_quote_observed_at"] = None
+    rows[index] = changed
+    tables[table] = rows
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    assert report.metrics == ()
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert readable.outcome is CheckOutcome.FAILED
+    assert f"{table.value}.{column}" in readable.observed
+
+
+def test_a_rejected_attempt_without_a_reason_is_unreadable() -> None:
+    """拒否した試行は拒否理由を必ず持つ（空なら拒否の集計から黙って消える）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.ATTEMPT_DECISIONS] = [
+        {
+            **tables[TraceTable.ATTEMPT_DECISIONS][0],
+            "kind": "REJECTED",
+            "order_id": None,
+            "reason_code": None,
+        },
+        *tables[TraceTable.ATTEMPT_DECISIONS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert readable.outcome is CheckOutcome.FAILED
+    assert "ATTEMPT_DECISIONS.reason_code" in readable.observed
+
+
 def test_a_realized_amount_without_its_currency_is_unreadable() -> None:
     """確定損益の金額と通貨も2列で1つ（D07 §10.4）。
 

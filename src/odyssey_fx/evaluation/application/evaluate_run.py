@@ -322,8 +322,8 @@ def calendar_ref_text(calendar: TradingCalendar) -> str:
 # --- 列ごとの読み取りの規則（D07 §10.4）----------------------------------------
 
 #: 空（`None`）を許す列。**ここに無い列は設計上いつも埋まっている**（D07 §10.4）。条件付きで
-#: 埋まる列（決済済みの建玉だけが持つ `close_fill_id` など）は空を許し、条件の食い違いは
-#: 件数と外部キーの検査（C3・C4）が見る。
+#: 埋まる列はここで空を許し、その区分の行で空なら `_REQUIRED_WHEN` が読めない値にする
+#: （決済済みの建玉の `close_fill_id` と確定損益だけは件数と外部キーの検査 C3・C4 が見る）。
 _NULLABLE: Final[frozenset[tuple[TraceTable, str]]] = frozenset(
     {
         (TraceTable.EVALUATIONS, "outcome_diagnoses"),
@@ -357,6 +357,37 @@ _PAIRED_COLUMNS: Final[dict[TraceTable, tuple[tuple[str, str], ...]]] = {
     TraceTable.ORDERS: (("terms_reference_quote_price", "terms_reference_quote_observed_at"),),
     # 確定損益は `Money` の2列（金額と通貨）。決済前の建玉ではどちらも空になる。
     TraceTable.POSITIONS: (("realized_amount", "realized_currency"),),
+}
+
+#: 行の区分によって**必ず埋まる**列（`(列, 区分の列, 区分の値)`）。`_NULLABLE` の列は全行では
+#: 空を許すが、その区分の行で空なら読めない値である（D07 §10.4 の「設計上いつも埋まって
+#: いるはずの列が空」）。見逃すと、集計の鍵が黙って捨てられ（終端理由・拒否理由・決済契機）、
+#: 入場約定が不利約定幅の対象から黙って外れたまま評価が完了する。
+#: 決済済みの建玉の決済約定と確定損益は、件数と外部キーの検査（C3・C4）が見る。
+_REQUIRED_WHEN: Final[dict[TraceTable, tuple[tuple[str, str, frozenset[str]], ...]]] = {
+    TraceTable.EVALUATIONS: (
+        # 見送りと待機は診断を必ず添える（D05 §6.4・§6.8）。
+        ("outcome_diagnoses", "outcome_kind", frozenset({_SKIPPED, "WAITING"})),
+    ),
+    TraceTable.OPPORTUNITY_TRANSITIONS: (
+        # 終端への遷移は必ず終端理由を持つ（D05 §7.2）。
+        ("reason_code", "to_state", frozenset({_TERMINATED})),
+    ),
+    TraceTable.ORDER_REQUESTS: (
+        ("payload_opportunity_id", "payload_kind", frozenset({_ENTRY_REQUEST})),
+        ("payload_position_id", "payload_kind", frozenset({_CLOSE_REQUEST})),
+    ),
+    TraceTable.ATTEMPT_DECISIONS: (
+        ("order_id", "kind", frozenset({_ACCEPTED})),
+        ("reason_code", "kind", frozenset({_REJECTED})),
+    ),
+    TraceTable.ORDERS: (
+        ("terms_cause", "terms_kind", frozenset({_CLOSE_TERMS})),
+        ("terms_position_id", "terms_kind", frozenset({_CLOSE_TERMS})),
+        # 入場注文は受付時の参照価格を固定する（D06 §3 の `AcceptedEntryTerms`）。時刻の列は
+        # `_PAIRED_COLUMNS` で価格と対にしてある。
+        ("terms_reference_quote_price", "terms_kind", frozenset({_ENTRY_TERMS})),
+    ),
 }
 
 #: 連番 ID の列と、その型（D02 §7.1、D06 §9.2）。
@@ -971,6 +1002,9 @@ def _scan_unreadable(
                 if (row.get(first) is None) != (row.get(second) is None):
                     missing = first if row.get(first) is None else second
                     found.append(_Unreadable(table=table, column=missing, key=key, raw=None))
+            for column, condition, values in _REQUIRED_WHEN.get(table, ()):
+                if row.get(condition) in values and row.get(column) is None:
+                    found.append(_Unreadable(table=table, column=column, key=key, raw=None))
     return tuple(sorted(found, key=lambda item: item.sort_key))
 
 
