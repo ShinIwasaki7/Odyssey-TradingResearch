@@ -610,3 +610,15 @@ def test_the_already_exists_error_is_a_marketdata_error() -> None:
     """失敗は型で見分けられ、CLI の既存の捕捉（`KernelValueError`）にも掛かる。"""
     assert issubclass(SnapshotAlreadyExists, MarketDataError)
     assert issubclass(SnapshotAlreadyExists, KernelValueError)
+
+
+def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
+    """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "a" * 64
+    (tmp_path / "_pending").mkdir()
+    link = tmp_path / "_pending" / identifier
+    link.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(SnapshotAlreadyExists):
+        store.create_directory(f"_pending/{identifier}", identifier)
+    assert not (tmp_path / "elsewhere").exists()

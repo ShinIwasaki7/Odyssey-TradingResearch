@@ -418,7 +418,11 @@ class ParquetSnapshotStore:
                 f"{snapshot_dir!r} does not name the snapshot {snapshot_id!r} it would hold;"
                 " a snapshot directory is named after its identifier (D03 §3.7.1)"
             )
-        target = self._snapshot_path(snapshot_dir)
+        # 根の外を指さないことは解決後のパスで確かめる。作るのは**解決前の**パスである。
+        # 解決後のパスを作ると、書き出し先に置かれたリンク（先が無いものを含む）を辿って
+        # リンク先に作れてしまい、「既にある」書き出し先が失敗しない。
+        self._snapshot_path(snapshot_dir)
+        target = Path(self.root) / snapshot_dir
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             target.mkdir()
