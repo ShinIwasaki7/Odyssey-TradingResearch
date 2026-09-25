@@ -1,4 +1,9 @@
 {
+  "approval": {
+    "approved_at": "2026-09-25T01:45:06.010484Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": "段階4 分類の第 1 弾（PR #37）。人間の決定 2026-09-25 により司令塔が承認"
+  },
   "basis_declaration": {
     "value": "bid",
     "verified": false
@@ -16295,6 +16300,10 @@
     "time_convention": "explicit_offset_utc"
   },
   "created_at": "2026-09-24T15:43:06.494359Z",
+  "declaration_record": {
+    "declared_at": "2026-09-25T01:45:06.010484Z",
+    "declared_by": "ShinIwasaki7"
+  },
   "integrity_report_ref": {
     "algorithm": "sha256",
     "hex": "2eaedf090417fd13137aca5d063f1936ed503704003cec478a6ae8c061bd438b"
