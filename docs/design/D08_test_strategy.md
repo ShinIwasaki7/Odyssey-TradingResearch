@@ -130,7 +130,7 @@ D04〜D07 と同じ方針を引き継ぐ。同じ語彙を2か所に定義しな
 | 完了条件 | テストが確かめること |
 |---|---|
 | 設定と入力の特定 | 結末記録から記録票・`run_id`・評価の識別子へ辿れ、記録票の `resolved_files` の本文から同じ `ConfigDigest` が再計算できる |
-| 別プロセスでの再現 | `experiment reproduce` の判定が `REPRODUCED`（`run_id` と `result_digest` が一致） |
+| 別プロセスでの再現 | `experiment reproduce` の判定が `REPRODUCED`（`run_id` と `result_digest` が結末記録と一致） |
 | 失敗の説明 | (a) 研究ポリシーの違反（複雑性の上限を1つ超える設定）で run せず、結末記録とレポートに検査名と観測値が出る、(b) run の失敗（`FAILED_CAPABILITY` など）で評価が `REJECTED` になり、レポートの先頭に理由が出る |
 | 0取引の説明 | 取引が0件の run で評価が `COMPLETED`、取引に依存する指標が `NO_TRADES` の値なしになり、レポートが「取引が0件」と書く |
 

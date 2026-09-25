@@ -170,7 +170,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `PreparedExperiment` | `application.run_experiment` | レコード | 合成が組み立てた1回分の入力: `manifest: ExperimentManifest` / `run_config: RunConfig` / `compiled: CompiledStrategy` / `calendar: TradingCalendar` | §19.4 |
 | `RunExperiment` | `application.run_experiment` | 具体クラス | `execute(prepared: PreparedExperiment) -> ExperimentOutcome \| ManifestSaveResult`（`CONFLICT` のときだけ後者を返す。第19.4節） | §19.4 |
 | `ReproductionVerdict` | `application.run_experiment` | enum | `REPRODUCED` / `RUN_ID_MISMATCH` / `RESULT_MISMATCH` / `ENVIRONMENT_MISMATCH` / `MANIFEST_TAMPERED` | §21.2 |
-| `ReproductionReport` | `application.run_experiment` | レコード | `experiment_manifest_id` / `verdict: ReproductionVerdict` / `expected_run_id` / `observed_run_id: RunId \| None` / `expected_result_digest` / `observed_result_digest: ContentDigest \| None` | §21.2 |
+| `ReproductionReport` | `application.run_experiment` | レコード | `experiment_manifest_id` / `verdict: ReproductionVerdict` / `expected_run_id`（結末記録の `run_id`） / `observed_run_id: RunId \| None` / `expected_result_digest` / `observed_result_digest: ContentDigest \| None` | §21.2 |
 
 `TradingCalendar` / `AccessClass` / `PartitionId` は D03、`RunConfig` は D06 §3（`backtest.domain`）、`CompiledStrategy` は D05 §5.3（`strategy.compiler`）が正本である。評価がこれらを参照できることは D01 §3.2 の許可表（契約 F4・F7・F8）のとおりで、依存規則は変えない。**`RunExperiment` を段階4 で作る**（第2節の表で段階5 としていた置き場所を前倒しする）。段階4 は探索計画が `NONE` の単一実行だけを扱い、段階5 で D09 が探索計画と分割を足す。
 
@@ -669,7 +669,7 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | 完了条件・作るもの | 満たす節 | 示すテスト（D08 v1.8 §2.3） |
 |---|---|---|
 | 結果から設定と入力を特定できる | 第19節（記録票が解決済みの設定の本文とダイジェストを持つ） | 受入 |
-| 別プロセスで再現可能 | 第21節（記録票だけを入力にした再現コマンドと判定） | 受入（`subprocess` で別プロセスを起こす） |
+| 別プロセスで再現可能 | 第21節（記録票と結末記録だけを入力にした再現コマンドと判定） | 受入（`subprocess` で別プロセスを起こす） |
 | 失敗 / 0取引も説明できる | 第10節（評価の状態と値なしの理由）、第10.4節（読めなかった検査）、第20節（ポリシーで止めた理由）、第22節（レポートの先頭に出す） | 受入（失敗・0取引・ポリシー違反の3経路） |
 | 研究ポリシー検査 | 第20節 | 単体（各検査の合否）＋受入（違反で run しないこと） |
 | 指標定義の確定・診断 | 第5.5節・第6.3節・第7.3節 | 単体・golden（指標集合 v2 の固定出力） |
@@ -843,7 +843,7 @@ split: NONE
 | | `search_plan` / `split` | 段階4 は `NONE` |
 | 解決済みの設定 | `resolved_files` | 実験設定・戦略ファイル・研究ポリシー・取引カレンダー・時間足定義・銘柄仕様の**本文（UTF-8 文字列）とその SHA-256**。役割名（`experiment` / `strategy` / `research_policy` / `calendar` / `timeframes` / `symbol:<銘柄>`）で引く。銘柄仕様は**実行する銘柄と、換算の経路に現れる銘柄**のものだけを入れる |
 | | `strategy_ref` / `compiled_ref` | 戦略定義の内容ハッシュとコンパイル結果のハッシュ（D04 §13.2、D05 §5.5） |
-| | `expected_config_digest` / `expected_run_id` | run の前に合成が計算した `ConfigDigest` と `RunId`（D06 §9.3、ADR-0006）。事後検査 P4 が実際の run と照合する |
+| | `expected_config_digest` | run の前に合成が計算した `ConfigDigest`（D06 §9.3）。事後検査 P4 が実際の run と照合する。**`RunId` は記録票に入れない**（下の段落） |
 | データ | `snapshot_id` | 承認済み snapshot |
 | | `allowed_partitions` | 合成が as-of ビューへ渡す許可 partition の一覧と、それぞれのアクセス分類（`SnapshotCatalog` から取る。D01 §4） |
 | 複雑性 | `complexity` | 計測値4件（第20.4節）と、研究ポリシーの上限4件 |
@@ -851,8 +851,8 @@ split: NONE
 | 環境 | `code_digest` / `lock_digest` / `env_digest` | run manifest と同じ算出（D02 §9.4、D06 §9.3） |
 | | `git_commit` / `git_dirty` | 記録だけ。識別に入れない（ADR-0006 と同じ扱い） |
 
-- **識別に入る**のは、事前固定・解決済みの設定・データ・複雑性・事前検査の群と `experiment_id` / `experiment_version` / `schema_version` である。**環境の群は入れない**。環境の群を入れると、コードを1行直しただけで同じ実験の同じ版が「別の内容」になり、検査 P3 が事前固定の違反と誤判定する。コードが違う実行の区別は `run_id`（コードのダイジェストを含む）が担う。
-- **本文を保存する**のは、人間の決定4（記録票は解決済み内容を保存したもの）の直接の実施であり、別プロセスでの再現（第21節）が**記録票だけを入力にできる**ための条件である。パスとダイジェストだけでは、ファイルを消したり書き換えたりした後に再現できない。銘柄仕様を**実行と換算に使う銘柄のもの**に限るのは、関係の無いファイルの変更で記録票の識別子が変わらないようにするためである。
+- **識別に入る**のは、事前固定・解決済みの設定・データ・複雑性・事前検査の群と `experiment_id` / `experiment_version` / `schema_version` である。**環境の群は入れない**。環境の群を入れると、コードを1行直しただけで同じ実験の同じ版が「別の内容」になり、検査 P3 が事前固定の違反と誤判定する。コードが違う実行の区別は `run_id`（コードのダイジェストを含む）が担う。**同じ理由で、予測した `RunId` も記録票に入れない**（`RunId` はコード・lock・環境のダイジェストから決まる。ADR-0006）。予測した `RunId` と実行時の環境のダイジェストは、**実行ごとに結末記録へ書く**（第19.3節）。記録票の環境の群は、その版を**最初に保存したとき**の環境の記録である。
+- **本文を保存する**のは、人間の決定4（記録票は解決済み内容を保存したもの）の直接の実施であり、別プロセスでの再現（第21節）が**設定を記録票だけから組み立てられる**ための条件である（比べる相手の結果は結末記録にある）。パスとダイジェストだけでは、ファイルを消したり書き換えたりした後に再現できない。銘柄仕様を**実行と換算に使う銘柄のもの**に限るのは、関係の無いファイルの変更で記録票の識別子が変わらないようにするためである。
 - **実行時刻を入れない**。第8.3節の評価 manifest と同じ理由である。
 
 ### 19.3 結末記録の項目と書き込み規則【提案】
@@ -861,13 +861,15 @@ split: NONE
 |---|---|
 | `experiment_manifest_id` | 対応する記録票 |
 | `status` | `ExperimentStatus`（第19.4節の終端3値） |
+| `expected_run_id` | この実行の前に合成が計算した `RunId`（`expected_config_digest` とこの実行の環境のダイジェストから。ADR-0006）。事前検査で止まった場合も書く |
+| `code_digest` / `lock_digest` / `env_digest` / `git_commit` / `git_dirty` | **この実行**の環境（記録票の環境の群と同じ算出）。別プロセスでの再現はこの値と比べる（第21.2節） |
 | `run_id` / `run_status` | run が行われた場合だけ。行われなければ `None` |
 | `run_evaluation_id` / `evaluation_status` / `result_digest` | 評価が行われた場合だけ |
 | `post_run_checks` | 研究ポリシーの事後検査の全件（第20.3節） |
 | `reason` | `status` が `COMPLETED` でないときの理由（`Reason`。D02 §8.1 の型。語は第20.3節の検査名） |
 
 - **記録票の書き込み**: 保存先に記録票が無ければ書く。**あり、内容のダイジェストが同じなら何もしない**（同じ実験の同じ版をもう一度実行するのは正当である）。**あり、ダイジェストが違えば書かずに拒否する**（検査 P3 の不合格。既存の記録票は上書きしない。ADR-0006 の「既定は失敗」）。
-- **結末記録の書き込み**: 同じ版の結末記録が既にあれば、内容が同じなら何もせず、違えば**旧い結末記録を `experiment_outcome.<n>.json`（n は 1 からの連番）へ退避してから**書く。記録票と違い結末記録は再実行で変わりうる（例: 1回目は snapshot が未承認で `REJECTED_BY_POLICY` ではなく run の失敗になった）ため、置き換えは許すが旧い記録は消さない（ADR-0006 の run 成果物の置換と同じ考え方）。
+- **結末記録の書き込み**: 同じ版の結末記録が既にあれば、内容が同じなら何もせず、違えば**旧い結末記録を `experiment_outcome.<n>.json`（n は 1 からの連番）へ退避してから**書く。記録票と違い結末記録は再実行で変わりうる（例: コードを直して同じ実験の同じ版を再実行すると、記録票は同じままで `run_id` と結果が変わる）ため、置き換えは許すが旧い記録は消さない（ADR-0006 の run 成果物の置換と同じ考え方）。
 - 両ファイルとも JSON（ADR-0027）。書き出しは `ExperimentStore` ポート（D01 §4）経由で、実装は `evaluation.adapters.fs_store` が持つ。
 
 ### 19.4 1つの実験の進み方（状態×出来事表）【提案】
@@ -894,8 +896,9 @@ split: NONE
 |---|---|---|---|---|
 | `experiment_id` / `experiment_version` | 実験設定（人間） | `app.config` → `ExperimentManifest` | 記録票、保存先のディレクトリ名 `runs/experiments/<id>/v<version>/`、結末記録（記録票の識別子を経由） | `(experiment_id, experiment_version)` ごとに記録票は1つ（第19.3節） |
 | `experiment_manifest_id` | `evaluation.domain.experiment`（記録票の識別に入る項目のダイジェスト。第19.2節） | `ExperimentManifest` → `ExperimentOutcome` | 記録票、結末記録、再現の報告（第21.2節） | 同じ内容なら同じ値 |
-| `expected_config_digest` / `expected_run_id` | 合成（run の前に `RunConfig` と環境のダイジェストから計算。D06 §9.3、ADR-0006） | `PreparedExperiment.manifest` | 記録票 | ADR-0006 |
-| `run_id` | バックテスト（`BacktestRunner.run` の戻り値の `BacktestResult`） | `RunExperiment` → `ExperimentOutcome` | 結末記録、`runs/<run_id>/` | ADR-0006。事後検査 P4 で `expected_run_id` と照合 |
+| `expected_config_digest` | 合成（run の前に `RunConfig` から計算。D06 §9.3） | `PreparedExperiment.manifest` | 記録票（識別に入る） | 同じ解決済みの設定なら同じ値 |
+| `expected_run_id` | 合成（`expected_config_digest` とこの実行の環境のダイジェストから計算。ADR-0006） | `PreparedExperiment` → `ExperimentOutcome` | 結末記録（記録票には入れない。第19.2節） | 実行ごとに1つ |
+| `run_id` | バックテスト（`BacktestRunner.run` の戻り値の `BacktestResult`） | `RunExperiment` → `ExperimentOutcome` | 結末記録、`runs/<run_id>/` | ADR-0006。事後検査 P4 で結末記録の `expected_run_id` と照合 |
 | `run_evaluation_id` / `result_digest` | 評価（第8.3節・第9.2節） | `EvaluateRun` → `ExperimentOutcome` | 結末記録、評価 manifest | 第9.2節 |
 | `research_policy_ref` | 研究ポリシーファイル（第20.2節） | `app.config` → `ExperimentManifest` | 記録票 | `(id, version, digest)` の組で記録する。同じ `(id, version)` で内容が違うファイルを使った実験どうしは、記録票の `digest` で後から見分けられる（第20.2節） |
 | 検査結果（`PolicyCheckResult`） | `evaluation.domain.research_policy`（第20.3節） | 事前・保存時は `ExperimentManifest`、事後は `ExperimentOutcome` | 記録票の `pre_run_checks`、結末記録の `post_run_checks` | 検査名（`PolicyCheck`）ごとに1件 |
@@ -931,7 +934,7 @@ complexity_limits:
 | P1 | `hypothesis_present` | 事前 | 仮説が空でない（書式でも拒否するが、記録票の検査として残す） | run しない |
 | P2 | `research_history_only` | 事前 | `allowed_partitions` のアクセス分類がすべて `RESEARCH_HISTORY`（D03 §3.8） | run しない |
 | P3 | `preregistration_unchanged` | 保存時 | 同じ `(experiment_id, experiment_version)` の記録票が無いか、あっても同じ `experiment_manifest_id` | 記録票を書かず拒否（第19.4節） |
-| P4 | `run_matches_preregistration` | 事後 | 実際の `run_id` と run manifest の `ConfigDigest` が記録票の `expected_run_id` / `expected_config_digest` と一致 | `FAILED_POST_RUN_CHECK` |
+| P4 | `run_matches_preregistration` | 事後 | run manifest の `ConfigDigest` が記録票の `expected_config_digest` と一致し、実際の `run_id` がこの実行の `expected_run_id`（結末記録）と一致 | `FAILED_POST_RUN_CHECK` |
 | P5 | `evaluation_rule_matches` | 事後 | 評価 manifest の `metric_set_version` が記録票と一致 | `FAILED_POST_RUN_CHECK` |
 | P6 | `complexity_within_limits` | 事前 | 第20.4節の計測値4件がすべて上限以下 | run しない |
 
@@ -958,19 +961,19 @@ complexity_limits:
 
 ### 21.1 何をもって「再現した」とするか【提案】
 
-**同じ実行環境（コード・依存 lock・環境のダイジェストがすべて同じ）で、記録票だけを入力に別プロセスで run と評価をやり直し、`run_id` と `result_digest` が記録と一致すること**を「再現した」とする。
+**同じ実行環境（コード・依存 lock・環境のダイジェストがすべて同じ）で、記録票と結末記録だけを入力に別プロセスで run と評価をやり直し、`run_id` と `result_digest` が結末記録と一致すること**を「再現した」とする。比べる相手は記録票ではなく結末記録である。記録票は実行の結果を持たず（第19.1節）、結果と実行時の環境は実行ごとに結末記録に書かれるためである。
 
 - `run_id` の一致は、実行条件（`ConfigDigest`）とコード・lock・環境が同じであることを意味する（ADR-0006）。
 - `result_digest` の一致は、評価5表の全行が同じであることを意味する（第9.2節）。判断履歴19表そのものの一致は、段階2・3 の受入テストが同一プロセスでの再実行として確かめており（D08 §11）、別プロセスの再現では評価の結果までを比べる。
-- **別プロセス**とは、再現コマンドを新しい OS のプロセスとして起こし、そのプロセスが受け取るのは**記録票のパスと snapshot の基点と出力の基点だけ**であることをいう。元のプロセスのメモリ上の状態や、元の実験設定ファイル・戦略ファイルを読まない。
+- **別プロセス**とは、再現コマンドを新しい OS のプロセスとして起こし、そのプロセスが受け取るのは**実験の版のディレクトリ（記録票と結末記録がある場所）と snapshot の基点と出力の基点だけ**であることをいう。元のプロセスのメモリ上の状態や、元の実験設定ファイル・戦略ファイルを読まない。
 
 ### 21.2 再現の手順【提案】
 
-`odyssey-fx experiment reproduce --manifest <記録票のパス> --snapshots <基点> --out <別の出力の基点>` は次の順に行う。
+`odyssey-fx experiment reproduce --experiment-dir <runs/experiments/<id>/v<版>> --snapshots <基点> --out <別の出力の基点>` は次の順に行う。
 
-1. 記録票を読み、`experiment_manifest_id` を再計算して一致を確かめる（記録票そのものの改変を検出する）。
-2. 現在の環境の `code_digest` / `lock_digest` / `env_digest` を計算し、記録票と比べる。**1つでも違えば run せず、`ENVIRONMENT_MISMATCH` として終了する**（要決定 Q12 の推奨。違う環境での結果は同じ `run_id` になりえず、判定の対象外である）。
-3. `resolved_files` の本文を、ファイルシステムへ書き戻さずに `app.config` の読込へ文字列として渡し、`RunConfig` を組み立てる。組み立てた `ConfigDigest` と `RunId` が記録票の期待値と一致することを確かめる。
+1. 記録票と結末記録を読み、`experiment_manifest_id` を再計算して記録票と結末記録の両方の値と一致することを確かめる（記録票の改変と、別の版の結末記録との取り違えを検出する）。結末記録が無い、または `run_id` を持たない（run が行われていない）なら、再現する結果が無いので `MANIFEST_TAMPERED` ではなく**引数の誤り**として終了する。
+2. 現在の環境の `code_digest` / `lock_digest` / `env_digest` を計算し、**結末記録**と比べる。**1つでも違えば run せず、`ENVIRONMENT_MISMATCH` として終了する**（要決定 Q12 の推奨。違う環境での結果は同じ `run_id` になりえず、判定の対象外である）。
+3. `resolved_files` の本文を、ファイルシステムへ書き戻さずに `app.config` の読込へ文字列として渡し、`RunConfig` を組み立てる。組み立てた `ConfigDigest` が記録票の `expected_config_digest` と、`RunId` が結末記録の `run_id` と一致することを確かめる。
 4. `--out` の下で run と評価を行う（元の `runs/` を上書きしない。**`--out` が元の成果物と同じ基点なら拒否する**）。
 5. `run_id` と `result_digest` を記録と比べ、判定を `--out` の下の `reproduction.json` に書く。判定は `REPRODUCED` / `RUN_ID_MISMATCH` / `RESULT_MISMATCH` / `ENVIRONMENT_MISMATCH` / `MANIFEST_TAMPERED` の5値。
 
@@ -981,7 +984,7 @@ complexity_limits:
 | コマンド | 入力 | 終了コード |
 |---|---|---|
 | `odyssey-fx experiment run --experiment <v2 の YAML> --snapshots <基点> --out <基点>` | 実験設定 v2 | 0 = `COMPLETED`（run や評価そのものが失敗でも、実験としては最後まで進んだ）、3 = `REJECTED_BY_POLICY`、4 = `FAILED_POST_RUN_CHECK`、5 = 記録票の内容違いで拒否、2 = 設定の誤り（`ConfigError`） |
-| `odyssey-fx experiment reproduce --manifest <記録票> --snapshots <基点> --out <別の基点>` | 記録票 | 0 = `REPRODUCED`、6 = それ以外の判定（判定は `reproduction.json` と表示に出す）、2 = 引数・読込の誤り |
+| `odyssey-fx experiment reproduce --experiment-dir <実験の版のディレクトリ> --snapshots <基点> --out <別の基点>` | 記録票と結末記録 | 0 = `REPRODUCED`、6 = それ以外の判定（判定は `reproduction.json` と表示に出す）、2 = 引数・読込の誤り |
 
 - run や評価の失敗を終了コード 0 にするのは、それらが「失敗を説明する成果物が揃った」状態であり、コマンドの失敗ではないためである（段階2 の `evaluate` コマンドが `FAILED` の評価でも成果物を書いて終わるのと同じ考え方）。状態は結末記録とレポートに出る。
 
