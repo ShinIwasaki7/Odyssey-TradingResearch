@@ -150,14 +150,14 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 | `CategoryKind` | `domain.metrics` | enum | 第6.1節の7件＋`EVALUATION_REQUEST_FINAL_OUTCOME`（第6.3節） | §6.3 |
 | `ConsistencyCheckResult` | `domain.status` | レコード | `check: str` / `level: CheckLevel` / `outcome: CheckOutcome` / `table: TraceTable \| None` / `expected: str` / `observed: str`（`passed: bool` を `outcome` に置き換える） | §10.4 |
 | `EvaluationManifest` | `application.manifest` | レコード | 段階2 の項目＋`unreadable_check_count: int`（`outcome` が `UNREADABLE` の検査の件数） | §10.4 |
-| `EvaluateRun` | `application.evaluate_run` | 具体クラス | `evaluate(result: BacktestResult, repository: ResultRepository, metric_set_version: int, calendar: TradingCalendar) -> EvaluationReport`（要決定 Q8 が選択肢1 のとき。選択肢2・3 なら `calendar` を足さない） | §4.1・§5.5 |
+| `EvaluateRun` | `application.evaluate_run` | 具体クラス | `evaluate(result: BacktestResult, repository: ResultRepository, metric_set_version: int, calendar: TradingCalendar) -> EvaluationReport`（要決定 Q8 が選択肢1 のとき。選択肢2・3 なら `calendar` を足さない）。カレンダーの渡し方は第4.1節 | §4.1・§5.5 |
 | `CheckOutcome` | `domain.status` | enum | `PASSED` / `FAILED` / `UNREADABLE`。整合検査と研究ポリシーの検査が共有する | §10.4・§20.3 |
 | `ExperimentStatus` | `domain.experiment` | enum | `COMPLETED` / `REJECTED_BY_POLICY` / `FAILED_POST_RUN_CHECK` | §19.4 |
 | `ResolvedFile` | `domain.experiment` | レコード | `role: str` / `text: str` / `sha256: str` | §19.2 |
 | `ExperimentManifest` | `domain.experiment` | レコード | 第19.2節の表の項目すべて（`experiment_manifest_id: ContentDigest` を含む） | §19.2 |
 | `ExperimentOutcome` | `domain.experiment` | レコード | 第19.3節の表の項目すべて | §19.3 |
 | `ComplexityLimits` | `domain.research_policy` | レコード | `component_kinds: int` / `instances: int` / `parameters: int` / `decision_outputs: int`（いずれも正の整数） | §20.2 |
-| `ComplexityMeasures` | `domain.research_policy` | レコード | 同じ4フィールド（0 以上の整数） | §20.4 |
+| `ComplexityMeasures` | `domain.research_policy` | レコード | 同じ4フィールド（それぞれ `int \| None`。0 以上の整数、または**計測できなかったことを表す `None`**。`None` の計測値があれば検査 P6 は `UNREADABLE`） | §20.4 |
 | `InstanceProfile` | `domain.research_policy` | レコード | `instance_id: str` / `component_id: str` / `parameter_count: int` / `output_data_types: tuple[str, ...]` | §20.4 |
 | `ResearchPolicy` | `domain.research_policy` | レコード | `policy_id: str` / `version: int` / `digest: ContentDigest` / `limits: ComplexityLimits` | §20.2 |
 | `PolicyCheck` | `domain.research_policy` | enum | `HYPOTHESIS_PRESENT` / `RESEARCH_HISTORY_ONLY` / `PREREGISTRATION_UNCHANGED` / `RUN_MATCHES_PREREGISTRATION` / `EVALUATION_RULE_MATCHES` / `COMPLEXITY_WITHIN_LIMITS`（第20.3節の P1〜P6 の順） | §20.3 |
@@ -192,6 +192,8 @@ D01 §7.2 の一覧のうち、段階2で作るものと後続で作るものを
 - 入力の1と2の整合（`BacktestResult.run_id` と `RunManifest.run_id` が一致すること）は第10.2節の致命検査 C2 で確かめる。
 
 **v2.0（段階4）: 取引カレンダーを4つめの入力に加える**【提案】（要決定 Q8 の推奨）。年率化（#16）と日次の資産系列（#17）は「取引日」で数える必要があり、取引日の区切り（NY 17時、休場日を除く）は取引カレンダー（D03 §3.4）の規則である。**カレンダーは市場データではない**ので、Q1 の決定が退けた「市場データを読み直す経路」（as-of の規則とアクセス分類の許可を評価側にも置くこと）は生じない。評価は `EvaluateRun.evaluate` の引数としてカレンダーを受け取り、**run manifest の `calendar_ref` と一致すること**を致命の整合検査 C10（第10.4節）で確かめる。一致しないカレンダーで数えると、run と評価で別の取引日を使うことになる。
+
+**カレンダーの渡し方**【提案】: run manifest は `calendar_ref`（識別と版）だけを持ち本文を持たないので、評価の呼び出し側がカレンダーを読み込んで渡す。(a) **`evaluate` コマンドに `--calendar <YAML>` を必須の引数として足す**（段階2 の `run` コマンドと同じ渡し方）。(b) `experiment run` / `experiment reproduce` は記録票の `resolved_files` の `calendar` の本文から読み込む（第19.2節）。どちらも C10 で `calendar_ref` との一致を確かめ、違えば評価は `FAILED` になる（黙って別の取引日で数えない）。
 
 ### 4.2 読む表と列【提案】
 
@@ -846,7 +848,7 @@ split: NONE
 | | `expected_config_digest` | run の前に合成が計算した `ConfigDigest`（D06 §9.3）。事後検査 P4 が実際の run と照合する。**`RunId` は記録票に入れない**（下の段落） |
 | データ | `snapshot_id` | 承認済み snapshot |
 | | `allowed_partitions` | 合成が as-of ビューへ渡す許可 partition の一覧と、それぞれのアクセス分類（`SnapshotCatalog` から取る。D01 §4） |
-| 複雑性 | `complexity` | 計測値4件（第20.4節）と、研究ポリシーの上限4件 |
+| 複雑性 | `complexity` | 計測値4件（第20.4節。計測できなかった値は `None` のまま残し、0 で埋めない）と、研究ポリシーの上限4件 |
 | 事前検査 | `pre_run_checks` | 研究ポリシーの事前検査の全件（合格・不合格とも。第20.3節） |
 | 環境 | `code_digest` / `lock_digest` / `env_digest` | run manifest と同じ算出（D02 §9.4、D06 §9.3） |
 | | `git_commit` / `git_dirty` | 記録だけ。識別に入れない（ADR-0006 と同じ扱い） |
@@ -866,7 +868,7 @@ split: NONE
 | `run_id` / `run_status` / `run_reused` | run が行われた（または既存の成果物を再利用した。第19.6節）場合だけ。行われなければ `None` |
 | `run_evaluation_id` / `evaluation_status` / `result_digest` | 評価が行われた場合だけ |
 | `post_run_checks` | 研究ポリシーの事後検査の全件（第20.3節） |
-| `reason` | `status` が `COMPLETED` でないときの理由（`Reason`。D02 §8.1 の型。語は第20.3節の検査名） |
+| `failed_checks` | `status` が `COMPLETED` でないときに、合格でなかった研究ポリシーの検査（`tuple[PolicyCheck, ...]`。第20.3節の宣言順）。`COMPLETED` なら空。**D02 §8.1 の理由型（`Reason`）は使わない**。理由コードは状態遷移の理由の語彙であり（D02 §8.1、上位 §4.7.14）、研究ポリシーの検査名はその語彙に無いので、検査名そのものを型で持つ |
 
 - **記録票の書き込み**: 保存先に記録票が無ければ書く。**あり、内容のダイジェストが同じなら何もしない**（同じ実験の同じ版をもう一度実行するのは正当である）。**あり、ダイジェストが違えば書かずに拒否する**（検査 P3 の不合格。既存の記録票は上書きしない。ADR-0006 の「既定は失敗」）。
 - **結末記録の書き込み**: 同じ版の結末記録が既にあれば、内容が同じなら何もせず、違えば**旧い結末記録を `experiment_outcome.<n>.json`（n は 1 からの連番）へ退避してから**書く。記録票と違い結末記録は再実行で変わりうる（例: コードを直して同じ実験の同じ版を再実行すると、記録票は同じままで `run_id` と結果が変わる）ため、置き換えは許すが旧い記録は消さない（ADR-0006 の run 成果物の置換と同じ考え方）。
@@ -880,7 +882,7 @@ split: NONE
 |---|---|---|---|---|---|---|---|---|---|---|
 | **読込前** | 終了（記録なし。`ConfigError` を表示） | 到達しない（検査は読込の後） | 到達しない（同左） | 到達しない（同左） | 到達しない（同左） | 到達しない（run は保存の後） | 到達しない | 到達しない | 到達しない | 終了（記録なし） |
 | **検査済み**（記録票を組み立てた） | 到達しない（読込は済んだ） | → 保存へ | → 保存へ（不合格も記録票に残す） | 到達しない（保存の前） | 到達しない（同左） | 到達しない | 到達しない | 到達しない | 到達しない | 終了（記録なし） |
-| **保存を試みる** | 到達しない | 到達しない | 到達しない | 事前検査が合格なら **記録済み**へ。不合格なら結末記録 `REJECTED_BY_POLICY` を書いて**終端** | 結末記録を書かず**拒否して終了**（理由 `PREREGISTRATION_CHANGED`。既存の記録票は変えない） | 到達しない | 到達しない | 到達しない | 到達しない | 終了（記録票が書けたかは保存の原子性による。第19.3節の書き込みは一時ファイル＋改名で原子的に行う） |
+| **保存を試みる** | 到達しない | 到達しない | 到達しない | 事前検査が合格なら **記録済み**へ。不合格なら結末記録 `REJECTED_BY_POLICY` を書いて**終端** | 結末記録を書かず**拒否して終了**（検査 P3 `PREREGISTRATION_UNCHANGED` の不合格として表示する。既存の記録票は変えない） | 到達しない | 到達しない | 到達しない | 到達しない | 終了（記録票が書けたかは保存の原子性による。第19.3節の書き込みは一時ファイル＋改名で原子的に行う） |
 | **記録済み** | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | → **実行済み**（`run_id` を保持。既存の run 成果物を再利用した場合も同じ。第19.6節） | 到達しない（評価は run の後） | 到達しない | 到達しない | **記録票だけが残る**（結末記録なし）。第22節のレポートは「結末記録が無い＝途中で止まった」と表示する |
 | **実行済み** | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない（run は1回） | → **評価済み**。run が正常完走していなければ評価は `REJECTED`（第10.1節）のまま進む | 到達しない | 到達しない | 同上（記録票だけが残る。run の成果物は `runs/<run_id>/` に残る） |
 | **評価済み** | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 結末記録 `COMPLETED` を書いて**終端** | 結末記録 `FAILED_POST_RUN_CHECK` を書いて**終端** | 同上 |
@@ -951,6 +953,7 @@ complexity_limits:
 | P5 | `evaluation_rule_matches` | 事後 | 評価 manifest の `metric_set_version` が記録票と一致 | `FAILED_POST_RUN_CHECK` |
 | P6 | `complexity_within_limits` | 事前 | 第20.4節の計測値4件がすべて上限以下 | run しない |
 
+- **計測できなかった複雑性**は、`ComplexityMeasures` の該当項目を `None` とし、P6 を `UNREADABLE`、`observed` に計測できなかった項目と原因（例: 部品の登録に出力のデータ型が無い）を書く。記録票は `None` のまま保存する（第19.4節の「保存を試みる」行。0 で埋めると上限の内側に見えてしまう）。
 - **合格は `PASSED` だけ**である。`FAILED` と `UNREADABLE` はどちらも「合格でない」とし、上表の「不合格のとき」の扱いに従う（第19.4節の状態表の列）。
 - **検査結果は合格・不合格とも全件を残す**（第10.2節の整合検査と同じ扱い）。型は `PolicyCheckResult(check, stage, outcome, expected, observed)` で、`outcome` は第10.4節の `CheckOutcome`（合格・不合格・読めなかった）を使う。**計測できなかった複雑性は「読めなかった」とし、合格として扱わない**。
 - P2 は封印期間を読む経路が段階4 に無いことの**二重の保証**である（合成は研究履歴しか許可集合に入れない。D03 §3.8 v1.5）。合成の規則が将来変わっても、研究ポリシーが記録票の段階で止める。
@@ -993,7 +996,7 @@ complexity_limits:
 
 ### 21.3 コマンドと終了コード【提案】
 
-段階4 で足すコマンドは `experiment` の下の2つである（ADR-0028 の argparse のまま）。既存の5コマンド（`data accept` / `classify` / `approve`、`run`、`evaluate`）は変えない。
+段階4 で足すコマンドは `experiment` の下の2つである（ADR-0028 の argparse のまま）。既存の5コマンドのうち `data accept` / `classify` / `approve` は変えない。**`run` は書式 v2 も受け（第18.5節）、`evaluate` は `--calendar` を必須の引数として足す**（第4.1節。要決定 Q8 が選択肢1 のとき）。
 
 | コマンド | 入力 | 終了コード |
 |---|---|---|
