@@ -978,6 +978,21 @@ def _result_digest(rows: Mapping[EvaluationTable, tuple[object, ...]]) -> Conten
 # --- 読めない値の走査（D07 §10.4 の C9）----------------------------------------
 
 
+def _is_empty(value: str | None) -> bool:
+    """空の値か。可変長の列（正規化エンコードの列）では要素0件の `[]` も空と読む。
+
+    見送り・待機は診断を1件以上持つ（D05 §6.4 の `Skipped` は空の診断を拒む）ので、`[]` を
+    値ありとして通すと、見送りの理由が集計から黙って消える。
+    """
+    if value is None:
+        return True
+    try:
+        decoded: object = json.loads(value)
+    except ValueError:
+        return False
+    return decoded == []
+
+
 def _scan_unreadable(
     reads: Mapping[TraceTable, _Rows], phases: Mapping[str, PhaseRank] | None
 ) -> tuple[_Unreadable, ...]:
@@ -1003,8 +1018,9 @@ def _scan_unreadable(
                     missing = first if row.get(first) is None else second
                     found.append(_Unreadable(table=table, column=missing, key=key, raw=None))
             for column, condition, values in _REQUIRED_WHEN.get(table, ()):
-                if row.get(condition) in values and row.get(column) is None:
-                    found.append(_Unreadable(table=table, column=column, key=key, raw=None))
+                value = row.get(column)
+                if row.get(condition) in values and _is_empty(value):
+                    found.append(_Unreadable(table=table, column=column, key=key, raw=value))
     return tuple(sorted(found, key=lambda item: item.sort_key))
 
 

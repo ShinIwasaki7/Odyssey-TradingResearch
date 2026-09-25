@@ -407,6 +407,8 @@ def test_a_waiting_request_counts_once_by_its_final_record() -> None:
     evaluated, skipped = tables[TraceTable.EVALUATIONS]
     waiting = {
         **evaluated,
+        # 待機の記録は診断を必ず持つ（D05 §6.8）。
+        "outcome_diagnoses": skipped["outcome_diagnoses"],
         "evaluation_id": "EVAL:00000003",
         "request_id": "REQ:00000001",
         "decision_time": "2015-01-06T08:30:00Z",
@@ -877,6 +879,20 @@ def test_a_column_required_by_the_row_kind_is_unreadable_when_empty(
     readable = _check(report, CHECK_ALL_VALUES_READABLE)
     assert readable.outcome is CheckOutcome.FAILED
     assert f"{table.value}.{column}" in readable.observed
+
+
+def test_a_skipped_evaluation_with_an_empty_diagnosis_list_is_unreadable() -> None:
+    """見送りの行の診断が `[]`（要素0件）でも読めない値にする（第5巡の代替レビューの指摘）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.EVALUATIONS] = [
+        tables[TraceTable.EVALUATIONS][0],
+        {**tables[TraceTable.EVALUATIONS][1], "outcome_diagnoses": "[]"},
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert report.status is EvaluationStatus.FAILED
+    readable = _check(report, CHECK_ALL_VALUES_READABLE)
+    assert "EVALUATIONS.outcome_diagnoses" in readable.observed
 
 
 def test_a_rejected_attempt_without_a_reason_is_unreadable() -> None:
