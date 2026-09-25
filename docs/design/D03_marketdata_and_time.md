@@ -407,6 +407,8 @@ run 区間内の全系列について、`available_at` 順に次を生成する�
 | 公開時刻 `available_at` | 公開予定と遅延シナリオの適用（第3.5節・第3.6節）。上位足は構成足の最大値（第5.1節） | `Bar.available_at`、`Publication` イベント（第7.1節） | 実現した列を `PublicationLog` として run に保存する（第3.6節）。**保存先の表・ファイルと列は要決定（R1-D03-3）** | `BarKey`（1本の足に1つ） |
 | 検査報告のダイジェスト `integrity_report_ref` / `provisional_report_ref` | 確定段階（第3.7節・第4節「再実行の入力」） | 読み取り関門が2つの報告を検証する（第4節） | `manifest.json` の2項目。報告の実体は `integrity_report.json` / `integrity_report_provisional.json`（同じディレクトリ、git 管理。第3.7節） | snapshot ごとに1組（`snapshot_id`） |
 | 警告ごとの分類 `resolved_classifications` | 確定段階で分類宣言を警告1件ごとに解決（第3.7節・第4節） | `SnapshotId` の計算対象（第3.7.1節） | `manifest.json` の `resolved_classifications` | 分類した警告（`(kind, series_id, 警告区間)`）。警告1件にちょうど1件の分類が対応する（第4節の確定時の検査1・2）。保存の整列鍵は `(kind, series_id 文字列, interval.start, outcome)`（第3.7.1節） |
+| 遅延シナリオの識別と版 `DelayScenario(id, version)` | 実験設定（第3.6節。部品パラメータではない） | 公開フィードの `available_at` の計算（第3.6節・第7.1節） | run manifest の `delay_scenario_ref`（D06 §9.3） | 1 run に1件（D06 §9.3） |
+| カレンダーと時間足定義の識別と版（`TradingCalendar.id`・`version`、`TimeframeRef`） | 設定ファイル（第9節）。分類でカレンダーを変えたら版を上げる（第3.4節・第4節 9） | 受入れの `conversion`（第3.7節）、as-of ビュー・執行系列ビュー・公開予定（第3.5節・第6節） | snapshot の manifest の `conversion`（カレンダー版を含み `SnapshotId` の対象。第3.7.1節）。run 側は run manifest の `calendar_ref`・`timeframe_def_refs`（D06 §9.3） | `(id, version)` |
 | 消費記録（`access_log.jsonl` の1行） | `holdout_gate` の消費手順（D07。ADR-0014） | `HoldoutState` の導出（第3.8節） | `data/snapshots/<snapshot_id>/access_log.jsonl`（追記専用、git 管理） | ADR-0014 が「追記専用」とだけ定め、行の鍵は gate の実装（D07・段階4）とともに決める |
 
 - **R1-D03-3**: 実現した公開時刻の列（`PublicationLog`）を「run に保存する」（第3.6節、上位設計書 §4.3.13）とあるが、判断履歴の表（D06 §9.2）にも run manifest（D06 §9.3）にも保存先が書かれていない。遅延シナリオの参照（D06 §9.3 の `delay_scenario_ref`）から再計算できるなら保存しない、という判断も含めて決める必要がある。
