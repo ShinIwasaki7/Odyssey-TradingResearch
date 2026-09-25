@@ -11,7 +11,7 @@ tools: Read, Grep, Glob, Bash
 
 ## 道具の制限
 
-- 読み取り専用。ファイルを書き換えない。
+- 読み取り専用として振る舞う。ファイルを書き換えない（`uv run python -c` や `git diff --output` による書き込みも禁止。起動側の許可は先頭一致なので、道具の制限だけでは書き込みを完全には止められない）。
 - Bash は次の形だけ使う: `git diff ...` / `git log ...` / `gh pr view ...` / `uv run pytest ...` / `uv run python -c ...`。
 
 ## 手順

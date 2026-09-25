@@ -105,6 +105,17 @@ def test_extract_section_stops_at_same_level_heading() -> None:
     assert "## 仮置き" not in section
 
 
+def test_extract_section_ignores_hash_lines_inside_code_fence() -> None:
+    body = (
+        "## レビュー対象範囲\n\n説明文\n\n```bash\n# 例: コメント\nuv run pytest\n```\n\n"
+        "| 対象 | 箇所 |\n|---|---|\n| a.py | 全体 |\n\n## 仮置き\n\nなし\n"
+    )
+    section = cr.extract_section(body, "レビュー対象範囲")
+    assert section is not None
+    assert "| a.py | 全体 |" in section
+    assert "## 仮置き" not in section
+
+
 def test_build_prompt_passes_only_scope_provisional_and_diff() -> None:
     pr = cr.PullRequest(number=9, body=PR_BODY, head=HEAD, base="main")
     prompt = cr.build_prompt(pr, 3, PR_BODY, "+new line\n")

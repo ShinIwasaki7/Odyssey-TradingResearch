@@ -8,8 +8,9 @@
 3. PR 本文から「レビュー対象範囲」と「仮置き」の節だけを抜き出してプロンプトを組み立てる
    （作者の説明文や作業セッションの会話は渡さない）。
 4. ``claude -p --agent adversarial-reviewer`` を別プロセスで起動する。権限の確認で止まらないよう
-   ``--permission-mode dontAsk`` とし、``--allowedTools`` で読み取り専用の道具に絞る。
-5. 結果の JSON を解析し、``[claude-review 第n巡] head <sha>`` の見出しで PR にコメントする。
+   ``--permission-mode dontAsk`` とし、``--allowedTools`` で読み取り系の道具に絞る
+   （限界は ALLOWED_TOOLS の注記）。
+5. 結果の JSON を解析し、``[claude-review 第<巡番号>巡] head <sha>`` の見出しで PR にコメントする。
 
 出力（stdout, JSON）は codex_review_poll.py と同じ形（``items`` の各要素が
 ``channel`` / ``author`` / ``created_at`` / ``url`` / ``body`` / ``priority`` を持つ）。
@@ -41,6 +42,9 @@ AVAILABLE_TOOLS = "Read,Grep,Glob,Bash,Agent"
 
 #: 確認なしで許可する道具。Bash は読み取り・限定テストの形だけ。
 #: ``--permission-mode dontAsk`` と組み合わせ、ここに無い呼び出しは確認を出さずに拒否させる。
+#: 限界: Bash の許可は先頭一致なので、``uv run python -c`` の任意コードや
+#: ``git diff --output=<file>`` による書き込みまでは止められない（完全な読み取り専用ではない）。
+#: 書き換えないことはエージェント定義で指示する。
 ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
     "Grep",
@@ -152,18 +156,29 @@ def extract_section(body: str, keyword: str) -> str | None:
     """見出しに ``keyword`` を含む Markdown 節を、次の同格以上の見出しの手前まで返す。
 
     該当する節が複数あればすべてを連結する。無ければ None。
+    コードフェンス（```）の内側の ``#`` 行は見出しとみなさない。
     """
     lines = body.splitlines()
+    headings: list[tuple[int, str] | None] = []
+    in_fence = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            headings.append(None)
+            continue
+        match = None if in_fence else HEADING_PATTERN.match(line)
+        headings.append((len(match.group(1)), match.group(2)) if match else None)
+
     sections: list[str] = []
     index = 0
     while index < len(lines):
-        match = HEADING_PATTERN.match(lines[index])
-        if match and keyword in match.group(2):
-            level = len(match.group(1))
+        heading = headings[index]
+        if heading is not None and keyword in heading[1]:
+            level = heading[0]
             end = index + 1
             while end < len(lines):
-                other = HEADING_PATTERN.match(lines[end])
-                if other and len(other.group(1)) <= level:
+                other = headings[end]
+                if other is not None and other[0] <= level:
                     break
                 end += 1
             sections.append("\n".join(lines[index:end]).strip())

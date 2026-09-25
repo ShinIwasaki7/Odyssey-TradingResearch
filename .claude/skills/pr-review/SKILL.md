@@ -42,7 +42,7 @@ Codex 応答の取得は [tools/ops/codex_review_poll.py](../../../tools/ops/cod
    設計を曲げないこと、終了条件（対象内 P0=0 かつ P1=0）、0件の判定が指すのは head であること。
    → 方針文書 §4.1・§4.2・§4.3
 8. **安全弁と利用上限**。6巡で収束しなければ止めて「要決定」として報告する（merge は問わない）。
-   利用上限の応答が返ったら `uv run python tools/ops/claude_review.py --pr <PR#> --round <n>` で
+   利用上限の応答が返ったら `uv run python tools/ops/claude_review.py --pr <PR#> --round <巡番号>` で
    Claude 敵対レビューに切り替え、その結果を手順6以降に流す。→ 方針文書 §4.4・§4.6・§7
 9. **設計適合レビュー**を別レーンとして行う。Codex が clean でも省略しない。→ 方針文書 §5
 10. **仮置きを閉じる**。merge 前に人間が1件ずつ決め、決定は設計文書の改訂として同じ PR に含める。
