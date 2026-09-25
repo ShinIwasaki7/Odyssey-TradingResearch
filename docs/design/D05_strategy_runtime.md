@@ -1526,7 +1526,7 @@ Trigger の出力が出た評価では、必ず次の順で処理する。
 | 待機記録の固定した足 `pinned_bars` と待機期限 `deadline_at` | ランタイムが待機に入る評価で決める（第6.8節） | `WaitingRequest` に保持し、再開の読み直しと追い越し・期限の判定に使う | 要決定（R1-D05-6）。待機の出来事（表16）は `request_id` / `kind` / `at` / `reason` / `arrived` だけを持つ | 要決定（R1-D05-6） |
 | 遡りで読んだ観測 `SubstitutedInput` | ランタイムが遡った入力ごとに作る（第6.9節） | `EvaluationRecord.substitutions` | 表17 | 表17 `(evaluation_id, input_name, source_index)` |
 | 戦略とコンパイル結果の参照 `strategy_ref: StrategyRef` / `compiled_ref: CompiledStrategyRef` | コンパイラがハッシュ計算で作る（第5.5節、対象は D04 §13.2） | `CompiledStrategy` に載り、エンジンの実行設定 `RunConfig.compiled_ref` と照合される（D06 §10.5 の1） | run manifest の入力（D06 §9.3） | run manifest は run に1件（`run_id`） |
-| 公開バッチの識別子 `batch_id: EventId` | エンジンが作る（D06 §4.3） | `PublicationBatch.batch_id` → `RuntimeState.last_batch_id`（二重適用の検査。第6.1節） | 記録しない（本書の記録型に項目が無い。判断履歴の保存形式は D06 の担当。第1.2節 行8） | — |
+| 公開バッチの識別子 `batch_id: EventId` | エンジンが作る（D06 §4.3） | `PublicationBatch.batch_id` → `RuntimeState.last_batch_id`（二重適用の検査。第6.1節） | 本書の記録型には項目が無い。判断履歴の保存形式は D06 の担当（第1.2節 行8）で、D06 側の記録先は要決定（D06 の R1-D06-1） | — |
 
 **要決定のマス**（本文から埋められなかったもの）。
 
