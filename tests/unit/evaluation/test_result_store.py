@@ -347,3 +347,33 @@ def test_a_saved_run_with_a_broken_manifest_is_evaluated_and_explained(
     assert saved["status"] == "FAILED"
     assert saved["run_status"] is None
     assert (outcome.directory / "CONSISTENCY_CHECKS.parquet").is_file()
+
+
+def test_a_manifest_with_an_overflowing_number_is_a_read_failure(
+    saved_run: tuple[Path, object],
+) -> None:
+    """桁あふれする数値（JSON の `1e999`）も例外にせず読めなかったことを返す（R1-D07-4）。"""
+    root, output = saved_run
+    run_id = output.manifest.run_id  # type: ignore[attr-defined]
+    path = run_directory(root, run_id) / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    config = json.loads(payload["config"])
+    config["seed"] = "__SEED__"
+    payload["config"] = json.dumps(config).replace('"__SEED__"', "1e999")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    read = FileSystemResultRepository(root=root).read_manifest(run_id)
+    assert isinstance(read, ManifestReadFailure)
+
+
+def test_an_unreadable_manifest_detail_carries_no_absolute_path(
+    saved_run: tuple[Path, object],
+) -> None:
+    """読めなかった理由に絶対パスを入れない（D07 §9.1 の条件4。結果のダイジェストに入るため）。"""
+    root, output = saved_run
+    run_id = output.manifest.run_id  # type: ignore[attr-defined]
+    path = run_directory(root, run_id) / "manifest.json"
+    path.unlink()
+    path.mkdir()  # ファイルの代わりにディレクトリがある（読むと OSError になる）
+    read = FileSystemResultRepository(root=root).read_manifest(run_id)
+    assert isinstance(read, ManifestReadFailure)
+    assert str(root) not in read.detail

@@ -881,6 +881,18 @@ def test_a_column_required_by_the_row_kind_is_unreadable_when_empty(
     assert f"{table.value}.{column}" in readable.observed
 
 
+def test_one_unreadable_cell_is_counted_once() -> None:
+    """同じセルを2つの規則（2列で1つ・区分で必ず埋まる）が見つけても1件と数える（C9）。"""
+    manifest = traces.manifest_for()
+    tables = traces.t01_tables(str(manifest.run_id))
+    tables[TraceTable.ORDERS] = [
+        {**tables[TraceTable.ORDERS][0], "terms_reference_quote_price": None},
+        *tables[TraceTable.ORDERS][1:],
+    ]
+    report = _evaluate(traces.repository_for(tables, manifest=manifest))
+    assert '"count":1' in _check(report, CHECK_ALL_VALUES_READABLE).observed
+
+
 def test_a_skipped_evaluation_with_an_empty_diagnosis_list_is_unreadable() -> None:
     """見送りの行の診断が `[]`（要素0件）でも読めない値にする（第5巡の代替レビューの指摘）。"""
     manifest = traces.manifest_for()
@@ -1053,6 +1065,10 @@ def test_an_empty_table_with_all_its_columns_is_accepted() -> None:
         (TraceTable.LEDGER_SNAPSHOTS, "at_time", None),
         (TraceTable.LEDGER_SNAPSHOTS, "at_phase", "NOT_A_PHASE"),
         (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "not-a-number"),
+        # 指数表記・カーネル精度を超える桁は、計算で桁あふれや黙った丸めになる（D06 §9.1）。
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "1E+9999999"),
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "1e3"),
+        (TraceTable.LEDGER_SNAPSHOTS, "balance_amount", "1" * 29),
         (TraceTable.POSITIONS, "side", "SIDEWAYS"),
         (TraceTable.POSITIONS, "position_id", None),
         (TraceTable.FILLS, "processed_at_sequence", None),

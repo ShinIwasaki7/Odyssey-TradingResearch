@@ -681,9 +681,18 @@ class FileSystemResultRepository:
             if not isinstance(payload, Mapping):
                 raise KernelValueError("the run manifest must be a JSON object")
             return manifest_from_payload(payload)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        except OSError as exc:
+            # **絶対パスを観測値に入れない**（D07 §9.1 の条件4）。`OSError` の文字列表現は
+            # パスを含むので、理由の文言だけを残す。入れると同じ run の成果物を別の場所に
+            # 置いただけで結果のダイジェストが変わる。
+            return ManifestReadFailure(
+                run_id=run_id,
+                detail=canonical_text(f"{type(exc).__name__}: {exc.strerror} ({path.name})"),
+            )
+        except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
             # `KernelValueError` と JSON の読み取りの失敗は `ValueError` の派生。項目の欠落は
-            # `KeyError`、形の違う値は `TypeError` / `AttributeError` として来る。
+            # `KeyError`、形の違う値は `TypeError` / `AttributeError`、桁あふれ（JSON の
+            # `1e999` を整数にするなど）は `ArithmeticError` として来る。
             return ManifestReadFailure(
                 run_id=run_id, detail=canonical_text(f"{type(exc).__name__}: {exc}")
             )

@@ -61,6 +61,7 @@ from odyssey_fx.common.money import (
     Quantity,
     decimal_from_int,
     decimal_from_str,
+    kernel_context,
 )
 from odyssey_fx.common.refs import CodeDigest, ContentDigest
 from odyssey_fx.common.symbol import Symbol
@@ -430,6 +431,10 @@ _POSITIVE_DECIMAL_TYPES: Final[dict[str, Callable[[Decimal], object]]] = {
 }
 
 
+#: カーネル精度の桁数（D02 §4.1。`kernel_context().prec`）。
+_KERNEL_DIGITS: Final = kernel_context().prec
+
+
 def _parse_sequence(text: str) -> int:
     value = int(text)
     if value < 0:
@@ -489,6 +494,13 @@ def _parse_cell(
         _parse_sequence(raw)
     elif kind is ColumnValueKind.DECIMAL:
         value = decimal_from_str(raw)
+        # 判断履歴の数値の列は人が読める固定小数の十進文字列である（D06 §9.1 v1.3）。指数
+        # 表記や、カーネル精度（28桁、D02 §4.1）を超える桁数の値は、そのまま計算に使うと
+        # 桁あふれ（`decimal.Overflow`）や黙った丸めになるので、読めない値とする。
+        if "e" in raw.lower() or len(value.as_tuple().digits) > _KERNEL_DIGITS:
+            raise KernelValueError(
+                f"{raw!r} is not a fixed-point decimal within the kernel precision (D06 §9.1)"
+            )
         positive = _POSITIVE_DECIMAL_TYPES.get(column)
         if positive is not None:
             positive(value)
@@ -1021,7 +1033,8 @@ def _scan_unreadable(
                 value = row.get(column)
                 if row.get(condition) in values and _is_empty(value):
                     found.append(_Unreadable(table=table, column=column, key=key, raw=value))
-    return tuple(sorted(found, key=lambda item: item.sort_key))
+    # 同じセルを複数の規則（2列で1つの値、区分で必ず埋まる列）が見つけても1件と数える。
+    return tuple(sorted(set(found), key=lambda item: item.sort_key))
 
 
 # --- 整合検査（D07 §10.2・§10.4）-----------------------------------------------
