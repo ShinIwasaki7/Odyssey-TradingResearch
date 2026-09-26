@@ -47,6 +47,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultWriter,
     FileSystemTraceSink,
     evaluation_directory,
+    require_run_directory_absent,
     run_directory,
 )
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
@@ -702,6 +703,10 @@ def execute_run(
     lock = lock_digest(repo_root)
     environment = env_digest()
     identifier = run_id_of(config_digest, code, lock, environment)
+    if not replace:
+        # 保存先が既にあれば、run を始める前に何も書かずに失敗する（D06 §10.6、R4）。
+        # 書き出しの直前にもう一度、作ること自体で確かめる（`reserve_run_directory`）。
+        require_run_directory_absent(artifacts_root, identifier)
     allocator = IdAllocator(identifier)
 
     output_sink = TraceOutputSink()

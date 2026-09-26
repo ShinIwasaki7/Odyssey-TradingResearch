@@ -51,7 +51,11 @@ from odyssey_fx.marketdata.domain.classification import (
     ClassificationOutcome,
     ResolvedClassification,
 )
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
+from odyssey_fx.marketdata.domain.errors import (
+    MarketDataValueError,
+    SnapshotAlreadyExists,
+    SnapshotNotApproved,
+)
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
     CheckResult,
@@ -395,6 +399,60 @@ class ParquetSnapshotStore:
         if root != candidate and root not in candidate.parents:
             raise ValueError(f"{snapshot_dir!r} resolves outside the snapshot root {root}")
         return candidate
+
+    # --- 書き出し先の確保（R4）----------------------------------------------
+
+    def create_directory(self, snapshot_dir: str, snapshot_id: str) -> None:
+        """snapshot の書き出し先を新しく作る（D03 §3.7.2・§10、R4）。
+
+        成果物の書き込みは「存在すれば、何も書かずに失敗する」。確かめてから作ると、
+        確かめた後に別の実行が同じディレクトリを作る隙間が残るので、**作ること自体で
+        確かめる**（既にあれば作成が失敗する）。親（`_pending/` など）は無ければ作る。
+
+        書き出し先の名前は書く snapshot の識別子と一致しなければならない。食い違うと、
+        読み取りの関門（`open_readable` の3者の一致）を通らない成果物ができる。
+        """
+        name = PurePosixPath(snapshot_dir).name
+        if name != snapshot_id:
+            raise MarketDataValueError(
+                f"{snapshot_dir!r} does not name the snapshot {snapshot_id!r} it would hold;"
+                " a snapshot directory is named after its identifier (D03 §3.7.1)"
+            )
+        # 作るのは**解決前の**パスである。解決後のパスを作ると、書き出し先に置かれた
+        # リンク（先が無いものを含む）を辿ってリンク先に作れてしまう。**リンクを解決する前に**
+        # 書き出し先そのものの有無を見るので、循環するリンクも解決の失敗ではなく
+        # 「既にある」として型付きで止まる。根の外を指さないことはその後で確かめる。
+        target = Path(self.root) / snapshot_dir
+        if target.is_symlink() or target.exists():
+            raise self._already_exists(target)
+        self._snapshot_path(snapshot_dir)
+        # 根から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
+        # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
+        root = Path(self.root)
+        root.mkdir(parents=True, exist_ok=True)
+        current = root
+        for part in PurePosixPath(snapshot_dir).parts[:-1]:
+            current = current / part
+            if current.is_symlink() or (current.exists() and not current.is_dir()):
+                raise SnapshotAlreadyExists(
+                    f"{current} is a symbolic link or not a directory; snapshots are never"
+                    " written through links, and nothing was written. Replace it with a"
+                    " plain directory first (D03 §3.7.2, R4)"
+                )
+            current.mkdir(exist_ok=True)
+        try:
+            target.mkdir()
+        except FileExistsError:
+            raise self._already_exists(target) from None
+
+    @staticmethod
+    def _already_exists(target: Path) -> SnapshotAlreadyExists:
+        """書き出し先が既にあることの例外（R4）。"""
+        return SnapshotAlreadyExists(
+            f"{target} already exists; snapshot artifacts are never overwritten, and"
+            " nothing was written. Move or delete that directory first if it should be"
+            " written again (D03 §3.7.2, R4)"
+        )
 
     # --- partition ----------------------------------------------------------
 

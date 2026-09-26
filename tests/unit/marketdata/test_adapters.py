@@ -19,6 +19,7 @@ from unittest import mock
 
 import pytest
 
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
@@ -39,7 +40,12 @@ from odyssey_fx.marketdata.domain.classification import (
     ClassificationOutcome,
     ResolvedClassification,
 )
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
+from odyssey_fx.marketdata.domain.errors import (
+    MarketDataError,
+    MarketDataValueError,
+    SnapshotAlreadyExists,
+    SnapshotNotApproved,
+)
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 from tests.fixtures.synthetic import market, snapshots
@@ -553,3 +559,88 @@ def test_open_readable_refuses_an_altered_provisional_report(tmp_path: Path) -> 
 
     with pytest.raises(MarketDataValueError, match="provisional report has been altered"):
         store.open_readable(directory)
+
+
+# --- 書き出し先の確保（R4。D03 §3.7.2・§10）---------------------------------
+
+
+def test_the_snapshot_directory_is_created_with_its_parents(tmp_path: Path) -> None:
+    """暫定ディレクトリは `_pending/` ごと作る。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "c" * 64
+    store.create_directory(f"_pending/{identifier}", identifier)
+    assert (tmp_path / "_pending" / identifier).is_dir()
+
+
+@pytest.mark.parametrize("prefix", ["_pending/", ""])
+def test_an_existing_snapshot_directory_is_refused_and_left_as_it_is(
+    tmp_path: Path, prefix: str
+) -> None:
+    """暫定も確定も、既にあれば何も書かずに失敗する（R1-D03-1、確定済み snapshot の保護）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "d" * 64
+    target = tmp_path / f"{prefix}{identifier}"
+    target.mkdir(parents=True)
+    (target / "manifest.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SnapshotAlreadyExists, match="nothing was written"):
+        store.create_directory(f"{prefix}{identifier}", identifier)
+    assert [path.name for path in target.iterdir()] == ["manifest.json"]
+    assert (target / "manifest.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_an_empty_snapshot_directory_is_also_refused(tmp_path: Path) -> None:
+    """空でも「ある」と数える（書きかけの取り残しと区別しない）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "e" * 64
+    (tmp_path / identifier).mkdir()
+    with pytest.raises(SnapshotAlreadyExists):
+        store.create_directory(identifier, identifier)
+
+
+def test_a_directory_that_does_not_name_the_snapshot_is_refused(tmp_path: Path) -> None:
+    """書き出し先の名前は識別子と一致しなければならない（読み取りの関門の3者の一致）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    with pytest.raises(MarketDataValueError, match="does not name the snapshot"):
+        store.create_directory("wrong-directory", "f" * 64)
+    assert not (tmp_path / "wrong-directory").exists()
+
+
+def test_the_already_exists_error_is_a_marketdata_error() -> None:
+    """失敗は型で見分けられ、CLI の既存の捕捉（`KernelValueError`）にも掛かる。"""
+    assert issubclass(SnapshotAlreadyExists, MarketDataError)
+    assert issubclass(SnapshotAlreadyExists, KernelValueError)
+
+
+def test_a_looping_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
+    """自分を指す循環リンクも、解決に失敗する前に「ある」として型付きで止まる（R4）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "b" * 64
+    link = tmp_path / identifier
+    link.symlink_to(link)
+    with pytest.raises(SnapshotAlreadyExists):
+        store.create_directory(identifier, identifier)
+
+
+def test_a_snapshot_is_not_written_through_a_linked_pending_directory(tmp_path: Path) -> None:
+    """`_pending` がリンクなら、リンク先に何も作らずに失敗する（R4）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "_pending").symlink_to(elsewhere)
+    identifier = "9" * 64
+    with pytest.raises(SnapshotAlreadyExists, match="symbolic link"):
+        store.create_directory(f"_pending/{identifier}", identifier)
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
+    """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "a" * 64
+    (tmp_path / "_pending").mkdir()
+    link = tmp_path / "_pending" / identifier
+    link.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(SnapshotAlreadyExists):
+        store.create_directory(f"_pending/{identifier}", identifier)
+    assert not (tmp_path / "elsewhere").exists()

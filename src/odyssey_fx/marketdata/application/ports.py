@@ -55,6 +55,14 @@ class RawBarSource(Protocol):
 class SnapshotStore(Protocol):
     """snapshot の保存・読込ポート（D01 §4、D03 §8）。"""
 
+    def create_directory(self, snapshot_dir: str, snapshot_id: str) -> None:
+        """snapshot を書き始める前に、書き出し先のディレクトリを新しく作る（D03 §3.7.2、R4）。
+
+        ディレクトリが既にあれば、**何も書かずに** `SnapshotAlreadyExists` で失敗する。
+        ディレクトリ名が `snapshot_id` と一致しなければ `MarketDataValueError` で失敗する。
+        """
+        ...
+
     def write_partition(
         self, snapshot_dir: str, partition_id: PartitionId, bars: Iterable[Bar]
     ) -> str:

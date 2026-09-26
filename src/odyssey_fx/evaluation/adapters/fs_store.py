@@ -15,6 +15,7 @@ DataFrame はこのモジュールの外へ出さない（D01 §2.2 規則1）�
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -74,6 +75,7 @@ from odyssey_fx.evaluation.application.ports import (
     TableReadResult,
     TraceColumnSpec,
 )
+from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.metrics import (
     CategoryCount,
     FillDiagnostic,
@@ -94,8 +96,12 @@ __all__ = [
     "FileSystemResultRepository",
     "FileSystemResultWriter",
     "FileSystemTraceSink",
+    "create_artifact_directory",
     "evaluation_directory",
     "manifest_from_payload",
+    "replaced_manifest_name",
+    "require_absent",
+    "require_run_directory_absent",
     "reserve_run_directory",
     "result_from_payload",
     "run_directory",
@@ -124,32 +130,233 @@ def _columns(
     return {name: [row.get(name) for row in rows] for name in names}
 
 
+def _already_exists(directory: Path, remedy: str) -> ArtifactAlreadyExists:
+    """書き出し先が既にあることの例外（R4）。文言は検査の場所によらず1つにする。"""
+    return ArtifactAlreadyExists(
+        f"{directory} already exists; artifacts are never overwritten, and nothing was"
+        f" written. {remedy} (R4)"
+    )
+
+
+def require_absent(directory: Path, *, remedy: str) -> None:
+    """書き出し先がまだ無いことを確かめる（R4。作らない）。
+
+    書き出しより前に、無駄な計算を始める前に止めたいときに使う。作ること自体で確かめる
+    `create_artifact_directory` の代わりにはならない（確かめた後に別の実行が作る隙間が
+    残る）ので、書き出しの直前には必ずそちらを通す。壊れたシンボリックリンクも「ある」と
+    数える。
+    """
+    if directory.exists() or directory.is_symlink():
+        raise _already_exists(directory, remedy)
+
+
+def _make_plain_parents(base: Path, directory: Path, error: ArtifactAlreadyExists) -> None:
+    """`base` から `directory` の親までの要素を、リンクでない実ディレクトリとして用意する。
+
+    `base`（成果物の根。利用者が指す場所）そのものは検査しない。その下の要素
+    （`<run_id>`・`eval` など）がリンクや別の種類なら、リンク先や根の外に成果物が
+    書かれるので、何も作らずに `error` で失敗する。無い要素は作る。
+    """
+    relative = directory.relative_to(base)
+    current = base
+    for part in relative.parts[:-1]:
+        current = current / part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            raise error
+    current = base
+    for part in relative.parts[:-1]:
+        current = current / part
+        current.mkdir(exist_ok=True)
+
+
+def create_artifact_directory(directory: Path, *, base: Path, remedy: str) -> Path:
+    """成果物の書き出し先を新しく作る（R4。D06 §9.1、D07 §8.2）。
+
+    成果物の書き込みは「**存在すれば、何も書かずに失敗する**」。空のディレクトリでも、
+    前の実行が途中で落ちて残した書きかけのディレクトリでも同じに扱う。中身を見て
+    「書きかけなら続きを書く」とすると、新旧の成果物が混ざる。
+
+    確かめてから作ると、確かめた後に別の実行が同じディレクトリを作る隙間が残るので、
+    **作ること自体で確かめる**（既にあれば作成が失敗する）。
+    `base` から `directory` の親までの要素は、リンクでない実ディレクトリでなければ
+    ならない（無ければ作る）。`base` そのものは利用者が指す場所なので検査しない。
+    `remedy` は利用者が取れる手当て（置換の指示、または人間による移動・削除）の説明。
+    """
+    base.mkdir(parents=True, exist_ok=True)
+    _make_plain_parents(
+        base,
+        directory,
+        ArtifactAlreadyExists(
+            f"a directory between {base} and {directory} is a symbolic link or not a"
+            " directory; artifacts are never written through links, and nothing was written."
+            " Replace it with a plain directory first (R4)"
+        ),
+    )
+    try:
+        directory.mkdir()
+    except FileExistsError:
+        raise _already_exists(directory, remedy) from None
+    return directory
+
+
+#: run の成果物が既にあるときの手当て（ADR-0006。置換の指示を持つのは run だけ）。
+_RUN_REMEDY = (
+    "It already holds artifacts for this run (re-running the same complete input produces"
+    " the same RunId), or was left by an earlier attempt that stopped halfway."
+    " Pass replace=True (`odyssey-fx run --replace`) to replace it; the previous manifest"
+    " is kept as manifest.replaced.<NNN>.json, one file per replacement (ADR-0006)"
+)
+
+#: 置換で残した旧 manifest の名前（世代番号は 001 から欠番なく増える。D06 §9.3）。
+#: 番号の無い `manifest.replaced.json` は v1.12 より前の置換が残したもので、消さずに残す。
+_REPLACED_MANIFEST = re.compile(r"manifest\.replaced(?:\.(\d{3,}))?\.json")
+
+#: 世代の候補として数える名前の接頭辞と、世代に数えない旧形式の名前。
+_REPLACED_PREFIX = "manifest.replaced"
+_LEGACY_REPLACED_MANIFEST = "manifest.replaced.json"
+
+
+def replaced_manifest_name(generation: int) -> str:
+    """置換の第 `generation` 世代で残す旧 manifest の名前（D06 §9.3）。"""
+    if generation < 1:
+        raise KernelValueError(f"replacement generations start at 1, got {generation}")
+    return f"manifest.replaced.{generation:03d}.json"
+
+
+def _kept_generations(directory: Path) -> int:
+    """置換で残した旧 manifest の世代が 001 から欠番なく並ぶことを確かめ、その数を返す。
+
+    **置換の手順の先頭で、現在の manifest の有無に依らず必ず1回行う**（D06 §9.3）。
+    manifest の無い書きかけの run でも、欠番のある並びの上に置換を重ねない。
+
+    `manifest.replaced` で始まる名前は、正しい世代名でなくても（`01`・`abc` など）すべて
+    世代の候補として数える。正規の名前だけを数えると、表記の崩れた旧 manifest が並びの
+    検査をすり抜けて、そのあと消されてしまう。番号の無い旧形式 `manifest.replaced.json`
+    だけは世代に数えず、消さずに残す。
+    """
+    kept = sorted(
+        path.name
+        for path in directory.iterdir()
+        if path.name.startswith(_REPLACED_PREFIX) and path.name != _LEGACY_REPLACED_MANIFEST
+    )
+    expected = sorted(replaced_manifest_name(number) for number in range(1, len(kept) + 1))
+    if kept != expected:
+        # 欠番・重複表記（`0001` など）のある並びに次の世代を足すと、壊れた履歴のまま
+        # 置換が成功する。**何も作らず何も消さずに**止める。
+        raise ArtifactAlreadyExists(
+            f"{directory} keeps replaced manifests {kept}, which do not run from 001 without"
+            " gaps; nothing was replaced. Restore that order before replacing again"
+            " (D06 §9.3, R4)"
+        )
+    return len(kept)
+
+
+def _require_plain_entries(directory: Path) -> None:
+    """置換が読む・残す・畳む項目が、リンクでない本物であることを確かめる（D06 §9.3）。
+
+    置換の手順の先頭で、何かを作る・消す前に1回行う。対象は、旧 manifest
+    （`manifest.json`）と残した世代（`manifest.replaced.<NNN>.json` の候補）が
+    **リンクでない通常のファイル**であること、評価の成果物（`eval`）が**リンクでない
+    ディレクトリ**であることである。リンクや別の種類のものを受け入れると、実体の無い
+    世代を残したり、リンク先の変更で履歴が変わったり、リンク先を畳んだりする。
+    """
+    for path in sorted(directory.iterdir()):
+        name = path.name
+        if name == "manifest.json" or (
+            name.startswith(_REPLACED_PREFIX) and name != _LEGACY_REPLACED_MANIFEST
+        ):
+            plain = not path.is_symlink() and path.is_file()
+            kind = "a regular file"
+        elif name == _EVALUATION_DIRECTORY:
+            plain = not path.is_symlink() and path.is_dir()
+            kind = "a directory"
+        else:
+            continue
+        if not plain:
+            raise ArtifactAlreadyExists(
+                f"{path} must be {kind} that is not a symbolic link; nothing was replaced."
+                " Move or delete it first (D06 §9.3, R4)"
+            )
+
+
+def _keep_replaced_manifest(directory: Path, previous: Path, generation: int) -> Path:
+    """旧 manifest を第 `generation` 世代の名前で残す（ADR-0006、D06 §9.3、R4）。
+
+    世代の並びは `_kept_generations` が先に確かめている。その名前のファイルが既にあるのは、
+    確かめた後に別の置換が作ったときだけで（同じ run の同時置換は設計の対象外）、
+    **そのときも上書きせずに失敗する**。作成と存在の確認は排他的な作成1回で行う。
+    """
+    target = directory / replaced_manifest_name(generation)
+    content = previous.read_text(encoding="utf-8")
+    try:
+        with target.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+    except FileExistsError:
+        raise ArtifactAlreadyExists(
+            f"{target} already exists; the manifests kept by earlier replacements are never"
+            " overwritten, and nothing was replaced. The kept generations are expected to run"
+            " from 001 without gaps; restore that order before replacing again"
+            " (D06 §9.3, R4)"
+        ) from None
+    return target
+
+
+#: 評価の成果物が既にあるときの手当て（評価は置換の指示を持たない。D07 §8.2）。
+_EVALUATION_REMEDY = (
+    "Evaluations are never replaced; move or delete that directory first if this"
+    " evaluation should be written again (D07 §8.2)"
+)
+
+
+def require_run_directory_absent(root: Path, run_id: object) -> None:
+    """run を始める前に、`runs/<run_id>/` がまだ無いことを確かめる（D06 §10.6、R4）。
+
+    run の識別子は実行前に決まるので、実行してから書き出しで失敗するより先に止める。
+    置換を指示した run では呼ばない。書き出しの直前の確保（`reserve_run_directory`）は
+    これとは別にもう一度行う。
+    """
+    require_absent(run_directory(root, run_id), remedy=_RUN_REMEDY)
+
+
 def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) -> Path:
-    """成果物の置き場所を確保する（ADR-0006）。
+    """成果物の置き場所を確保する（ADR-0006、D06 §9.1、R4）。
 
     同じ完全入力の再実行は同じ `RunId` になるので、`runs/<run_id>/` が既にあることは
-    ふつうに起こる。**既存の成果物を無条件に上書きしない**（既定は失敗）。置換は明示的な
-    指示があるときだけ行い、置換したときも**旧 manifest を記録に残す**。
+    ふつうに起こる。**既定は「存在すれば、何も書かずに失敗する」**（R4。空のディレクトリ
+    でも失敗する）。置換は明示的な指示があるときだけ行い、置換したときも**旧 manifest を
+    記録に残す**（ADR-0006）。
 
     途中まで書いたところで失敗すると新旧の表が混ざるので、書き始める前にここで判断する。
     """
     directory = run_directory(root, run_id)
-    existing = sorted(directory.glob("*")) if directory.exists() else []
-    if existing and not replace:
-        raise KernelValueError(
-            f"{directory} already holds artifacts for this run; re-running the same complete"
-            " input produces the same RunId, and overwriting would destroy the earlier"
-            " reproducibility artifact. Pass replace=True to replace it (ADR-0006)"
+    if not replace:
+        return create_artifact_directory(directory, base=Path(root) / "runs", remedy=_RUN_REMEDY)
+    if directory.is_symlink():
+        # 置換はリンクを辿らない。辿ると、リンク先（別の run や根の外）を消してしまう。
+        raise ArtifactAlreadyExists(
+            f"{directory} is a symbolic link; a replacement never follows links, and nothing"
+            " was replaced. Remove the link first (D06 §9.3, R4)"
         )
+    if directory.exists() and not directory.is_dir():
+        # ディレクトリでないもの（ファイルなど）は置換の対象にしない。
+        raise ArtifactAlreadyExists(
+            f"{directory} exists but is not a directory; nothing was replaced. Move or delete"
+            " it first (D06 §9.3, R4)"
+        )
+    existing = sorted(directory.glob("*")) if directory.exists() else []
     if existing:
+        # 何かを作る・消す前に、残した世代の並びを1回だけ確かめる（現在の manifest の
+        # 有無に依らない。D06 §9.3）。
+        _require_plain_entries(directory)
+        generations = _kept_generations(directory)
         previous = directory / "manifest.json"
         if previous.exists():
-            # 置換しても旧成果物の manifest は記録に残す（ADR-0006）。
-            (directory / "manifest.replaced.json").write_text(
-                previous.read_text(encoding="utf-8"), encoding="utf-8"
-            )
+            # 置換しても旧成果物の manifest は記録に残す（ADR-0006）。**世代ごとに別名で
+            # 残し、既存の世代は上書きしない**（D06 §9.3、R4）。消す前に残すので、残せな
+            # ければ何も消さずに失敗する。
+            _keep_replaced_manifest(directory, previous, generations + 1)
         for path in existing:
-            if path.is_file() and path.name != "manifest.replaced.json":
+            if path.is_file() and not _REPLACED_MANIFEST.fullmatch(path.name):
                 path.unlink()
             elif path.is_dir() and path.name == _EVALUATION_DIRECTORY:
                 # **評価の成果物も一緒に畳む**。判断履歴だけを書き直すと、同じ実行の
@@ -165,7 +372,8 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
 class FileSystemTraceSink:
     """19表を `runs/<run_id>/<TABLE>.parquet` へ書く（D06 §9.1・§9.2）。
 
-    最初の書き出しの前に置き場所を確保し、既存の成果物があれば失敗する（ADR-0006）。
+    最初の書き出しの前に置き場所を確保し、書き出し先が既にあれば何も書かずに失敗する
+    （ADR-0006、R4）。
     """
 
     root: Path
@@ -764,6 +972,7 @@ class FileSystemResultRepository:
 
         保存先は `runs/<run_id>/eval/<run_evaluation_id>/`（Q4 決定）。**どの状態でも5表
         すべてを書く**。表の有無で状態を表すと、書き出しが途中で落ちた成果物と区別できない。
+        保存先が既にあれば、何も書かずに `ArtifactAlreadyExists` で失敗する（R4）。
         """
         manifest = report.manifest
         if dict(rows) != report.rows:
@@ -774,7 +983,11 @@ class FileSystemResultRepository:
                 " (D07 §9.2); the report and the rows given disagree"
             )
         directory = evaluation_directory(self.root, manifest.run_id, manifest.run_evaluation_id)
-        directory.mkdir(parents=True, exist_ok=True)
+        # 書き出し先は新しく作る。既にあれば何も書かずに失敗する（D07 §8.2、R4）。評価は
+        # 置換の指示を持たない（置換を許すのは run の成果物だけ。ADR-0006）。
+        create_artifact_directory(
+            directory, base=Path(self.root) / "runs", remedy=_EVALUATION_REMEDY
+        )
         for table in EvaluationTable:
             row_type = _EVALUATION_ROW_TYPES[table]
             declared = column_names(row_type)

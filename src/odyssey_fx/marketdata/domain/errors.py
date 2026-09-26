@@ -11,6 +11,8 @@
 - `SnapshotNotApproved`: 承認前・暫定の snapshot を読もうとした（D03 §3.7.1 の3）。
 - `IntegrityCheckFailed`: 完全性検査に重大な違反があり受入れを中止した（D03 §4 の 4）。
 - `UnsupportedCapability`: 初版が受け付けない能力の要求（D03 §3.6 の `SeededRandomDelay`）。
+- `SnapshotAlreadyExists`: 書き出し先の snapshot ディレクトリが既にある（D03 §3.7.2・§10。
+  成果物の書き込みを「存在すれば失敗」に統一する規則 R4）。
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ __all__ = [
     "MarketDataError",
     "MarketDataValueError",
     "PartitionContentMismatch",
+    "SnapshotAlreadyExists",
     "SnapshotNotApproved",
     "UnsupportedCapability",
 ]
@@ -71,3 +74,12 @@ class PartitionContentMismatch(MarketDataValueError):
 
 class UnsupportedCapability(MarketDataError):
     """初版が対応しない能力の要求（D03 §3.6）。"""
+
+
+class SnapshotAlreadyExists(MarketDataError):
+    """書き出し先の snapshot ディレクトリが既にある（D03 §3.7.2・§10、R4）。
+
+    成果物の書き込みは「存在すれば、何も書かずに失敗する」。暫定ディレクトリ
+    （`_pending/<provisional_id>/`）も確定ディレクトリ（`<snapshot_id>/`）も同じ規則で、
+    置換の指示は持たない。作り直すときは人間が先にそのディレクトリを移動または削除する。
+    """
