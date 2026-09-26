@@ -181,6 +181,10 @@ _RUN_REMEDY = (
 #: 番号の無い `manifest.replaced.json` は v1.12 より前の置換が残したもので、消さずに残す。
 _REPLACED_MANIFEST = re.compile(r"manifest\.replaced(?:\.(\d{3,}))?\.json")
 
+#: 世代の候補として数える名前の接頭辞と、世代に数えない旧形式の名前。
+_REPLACED_PREFIX = "manifest.replaced"
+_LEGACY_REPLACED_MANIFEST = "manifest.replaced.json"
+
 
 def replaced_manifest_name(generation: int) -> str:
     """置換の第 `generation` 世代で残す旧 manifest の名前（D06 §9.3）。"""
@@ -194,11 +198,16 @@ def _kept_generations(directory: Path) -> int:
 
     **置換の手順の先頭で、現在の manifest の有無に依らず必ず1回行う**（D06 §9.3）。
     manifest の無い書きかけの run でも、欠番のある並びの上に置換を重ねない。
+
+    `manifest.replaced` で始まる名前は、正しい世代名でなくても（`01`・`abc` など）すべて
+    世代の候補として数える。正規の名前だけを数えると、表記の崩れた旧 manifest が並びの
+    検査をすり抜けて、そのあと消されてしまう。番号の無い旧形式 `manifest.replaced.json`
+    だけは世代に数えず、消さずに残す。
     """
     kept = sorted(
         path.name
         for path in directory.iterdir()
-        if (match := _REPLACED_MANIFEST.fullmatch(path.name)) and match.group(1) is not None
+        if path.name.startswith(_REPLACED_PREFIX) and path.name != _LEGACY_REPLACED_MANIFEST
     )
     expected = sorted(replaced_manifest_name(number) for number in range(1, len(kept) + 1))
     if kept != expected:
@@ -264,6 +273,12 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
     directory = run_directory(root, run_id)
     if not replace:
         return create_artifact_directory(directory, remedy=_RUN_REMEDY)
+    if directory.is_symlink():
+        # 置換はリンクを辿らない。辿ると、リンク先（別の run や根の外）を消してしまう。
+        raise ArtifactAlreadyExists(
+            f"{directory} is a symbolic link; a replacement never follows links, and nothing"
+            " was replaced. Remove the link first (D06 §9.3, R4)"
+        )
     existing = sorted(directory.glob("*")) if directory.exists() else []
     if existing:
         # 何かを作る・消す前に、残した世代の並びを1回だけ確かめる（現在の manifest の

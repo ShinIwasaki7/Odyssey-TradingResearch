@@ -180,6 +180,9 @@ def _run_with_kept(root: Path, run_id: str, kept: tuple[str, ...]) -> Path:
         ("manifest.replaced.002.json",),
         ("manifest.replaced.001.json", "manifest.replaced.004.json"),
         ("manifest.replaced.0001.json",),
+        ("manifest.replaced.01.json",),
+        ("manifest.replaced.abc.json",),
+        ("manifest.replaced.001.json", "manifest.replaced.json.bak"),
     ],
 )
 def test_a_broken_generation_order_is_refused_before_anything_changes(
@@ -227,6 +230,22 @@ def test_a_half_written_run_without_a_manifest_is_replaced_keeping_its_generatio
 
     reserve_run_directory(tmp_path, "8" * 64, replace=True)
     assert _snapshot(directory) == {"manifest.replaced.001.json": b"first"}
+
+
+def test_a_linked_run_directory_is_never_replaced(tmp_path: Path) -> None:
+    """`runs/<run_id>` がリンクなら、置換はリンク先に触れずに失敗する（D06 §9.3）。"""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "manifest.json").write_text("{}", encoding="utf-8")
+    (elsewhere / "FILLS.parquet").write_bytes(b"other")
+    before = _snapshot(elsewhere)
+    directory = run_directory(tmp_path, "7" * 64)
+    directory.parent.mkdir(parents=True)
+    directory.symlink_to(elsewhere)
+
+    with pytest.raises(ArtifactAlreadyExists, match="symbolic link"):
+        reserve_run_directory(tmp_path, "7" * 64, replace=True)
+    assert _snapshot(elsewhere) == before
 
 
 def test_an_existing_generation_file_is_never_overwritten(
