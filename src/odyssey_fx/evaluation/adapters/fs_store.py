@@ -150,7 +150,26 @@ def require_absent(directory: Path, *, remedy: str) -> None:
         raise _already_exists(directory, remedy)
 
 
-def create_artifact_directory(directory: Path, *, remedy: str) -> Path:
+def _make_plain_parents(base: Path, directory: Path, error: ArtifactAlreadyExists) -> None:
+    """`base` から `directory` の親までの要素を、リンクでない実ディレクトリとして用意する。
+
+    `base`（成果物の根。利用者が指す場所）そのものは検査しない。その下の要素
+    （`<run_id>`・`eval` など）がリンクや別の種類なら、リンク先や根の外に成果物が
+    書かれるので、何も作らずに `error` で失敗する。無い要素は作る。
+    """
+    relative = directory.relative_to(base)
+    current = base
+    for part in relative.parts[:-1]:
+        current = current / part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            raise error
+    current = base
+    for part in relative.parts[:-1]:
+        current = current / part
+        current.mkdir(exist_ok=True)
+
+
+def create_artifact_directory(directory: Path, *, base: Path, remedy: str) -> Path:
     """成果物の書き出し先を新しく作る（R4。D06 §9.1、D07 §8.2）。
 
     成果物の書き込みは「**存在すれば、何も書かずに失敗する**」。空のディレクトリでも、
@@ -158,10 +177,21 @@ def create_artifact_directory(directory: Path, *, remedy: str) -> Path:
     「書きかけなら続きを書く」とすると、新旧の成果物が混ざる。
 
     確かめてから作ると、確かめた後に別の実行が同じディレクトリを作る隙間が残るので、
-    **作ること自体で確かめる**（既にあれば作成が失敗する）。親は無ければ作る。
+    **作ること自体で確かめる**（既にあれば作成が失敗する）。
+    `base` から `directory` の親までの要素は、リンクでない実ディレクトリでなければ
+    ならない（無ければ作る）。`base` そのものは利用者が指す場所なので検査しない。
     `remedy` は利用者が取れる手当て（置換の指示、または人間による移動・削除）の説明。
     """
-    directory.parent.mkdir(parents=True, exist_ok=True)
+    base.mkdir(parents=True, exist_ok=True)
+    _make_plain_parents(
+        base,
+        directory,
+        ArtifactAlreadyExists(
+            f"a directory between {base} and {directory} is a symbolic link or not a"
+            " directory; artifacts are never written through links, and nothing was written."
+            " Replace it with a plain directory first (R4)"
+        ),
+    )
     try:
         directory.mkdir()
     except FileExistsError:
@@ -300,7 +330,7 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
     """
     directory = run_directory(root, run_id)
     if not replace:
-        return create_artifact_directory(directory, remedy=_RUN_REMEDY)
+        return create_artifact_directory(directory, base=Path(root) / "runs", remedy=_RUN_REMEDY)
     if directory.is_symlink():
         # 置換はリンクを辿らない。辿ると、リンク先（別の run や根の外）を消してしまう。
         raise ArtifactAlreadyExists(
@@ -955,7 +985,9 @@ class FileSystemResultRepository:
         directory = evaluation_directory(self.root, manifest.run_id, manifest.run_evaluation_id)
         # 書き出し先は新しく作る。既にあれば何も書かずに失敗する（D07 §8.2、R4）。評価は
         # 置換の指示を持たない（置換を許すのは run の成果物だけ。ADR-0006）。
-        create_artifact_directory(directory, remedy=_EVALUATION_REMEDY)
+        create_artifact_directory(
+            directory, base=Path(self.root) / "runs", remedy=_EVALUATION_REMEDY
+        )
         for table in EvaluationTable:
             row_type = _EVALUATION_ROW_TYPES[table]
             declared = column_names(row_type)

@@ -426,7 +426,20 @@ class ParquetSnapshotStore:
         if target.is_symlink() or target.exists():
             raise self._already_exists(target)
         self._snapshot_path(snapshot_dir)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # 根から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
+        # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
+        root = Path(self.root)
+        root.mkdir(parents=True, exist_ok=True)
+        current = root
+        for part in PurePosixPath(snapshot_dir).parts[:-1]:
+            current = current / part
+            if current.is_symlink() or (current.exists() and not current.is_dir()):
+                raise SnapshotAlreadyExists(
+                    f"{current} is a symbolic link or not a directory; snapshots are never"
+                    " written through links, and nothing was written. Replace it with a"
+                    " plain directory first (D03 §3.7.2, R4)"
+                )
+            current.mkdir(exist_ok=True)
         try:
             target.mkdir()
         except FileExistsError:

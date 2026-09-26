@@ -65,7 +65,7 @@ def test_the_error_is_a_typed_structural_error() -> None:
 def test_a_new_directory_is_created_with_its_parents(tmp_path: Path) -> None:
     """無ければ、親も含めて作る。"""
     target = tmp_path / "runs" / "abc" / "eval" / "def"
-    assert create_artifact_directory(target, remedy="-") == target
+    assert create_artifact_directory(target, base=tmp_path, remedy="-") == target
     assert target.is_dir()
 
 
@@ -74,7 +74,7 @@ def test_an_existing_empty_directory_is_refused(tmp_path: Path) -> None:
     target = tmp_path / "artifact"
     target.mkdir()
     with pytest.raises(ArtifactAlreadyExists, match="nothing was written"):
-        create_artifact_directory(target, remedy="move it away")
+        create_artifact_directory(target, base=tmp_path, remedy="move it away")
     assert list(target.iterdir()) == []
 
 
@@ -84,7 +84,7 @@ def test_a_half_written_directory_is_refused_and_left_as_it_is(tmp_path: Path) -
     target.mkdir()
     (target / "FILLS.parquet").write_bytes(b"half")
     with pytest.raises(ArtifactAlreadyExists):
-        create_artifact_directory(target, remedy="-")
+        create_artifact_directory(target, base=tmp_path, remedy="-")
     assert _snapshot(target) == {"FILLS.parquet": b"half"}
 
 
@@ -103,7 +103,7 @@ def test_the_advance_check_counts_files_and_dangling_links(tmp_path: Path) -> No
     with pytest.raises(ArtifactAlreadyExists):
         require_absent(link, remedy="-")
     with pytest.raises(ArtifactAlreadyExists):
-        create_artifact_directory(link, remedy="-")
+        create_artifact_directory(link, base=tmp_path, remedy="-")
 
 
 # --- run の成果物（`runs/<run_id>/`）---------------------------------------
@@ -266,6 +266,21 @@ def test_entries_the_replacement_keeps_or_clears_must_be_plain(
         reserve_run_directory(tmp_path, "5" * 64, replace=True)
     assert _snapshot(directory) == before
     assert (elsewhere / "kept.txt").read_text(encoding="utf-8") == "outside"
+
+
+def test_an_evaluation_is_not_written_through_a_linked_eval_directory(tmp_path: Path) -> None:
+    """`runs/<run_id>/eval` がリンクなら、リンク先に何も書かずに失敗する（D07 §8.2）。"""
+    report = _report()
+    manifest = report.manifest
+    directory = evaluation_directory(tmp_path, manifest.run_id, manifest.run_evaluation_id)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    directory.parent.parent.mkdir(parents=True)
+    directory.parent.symlink_to(elsewhere)
+
+    with pytest.raises(ArtifactAlreadyExists, match="symbolic link"):
+        FileSystemResultRepository(root=tmp_path).write_evaluation(report, report.rows)
+    assert list(elsewhere.iterdir()) == []
 
 
 def test_a_file_at_the_run_directory_is_refused_on_replacement(tmp_path: Path) -> None:

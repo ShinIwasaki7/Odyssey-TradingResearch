@@ -622,6 +622,18 @@ def test_a_looping_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> 
         store.create_directory(identifier, identifier)
 
 
+def test_a_snapshot_is_not_written_through_a_linked_pending_directory(tmp_path: Path) -> None:
+    """`_pending` がリンクなら、リンク先に何も作らずに失敗する（R4）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "_pending").symlink_to(elsewhere)
+    identifier = "9" * 64
+    with pytest.raises(SnapshotAlreadyExists, match="symbolic link"):
+        store.create_directory(f"_pending/{identifier}", identifier)
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
     """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
     store = ParquetSnapshotStore(root=tmp_path)
