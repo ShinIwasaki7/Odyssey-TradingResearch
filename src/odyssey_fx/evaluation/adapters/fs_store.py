@@ -189,13 +189,11 @@ def replaced_manifest_name(generation: int) -> str:
     return f"manifest.replaced.{generation:03d}.json"
 
 
-def _keep_replaced_manifest(directory: Path, previous: Path) -> Path:
-    """旧 manifest を次の世代の名前で残す（ADR-0006、D06 §9.3、R4）。
+def _kept_generations(directory: Path) -> int:
+    """置換で残した旧 manifest の世代が 001 から欠番なく並ぶことを確かめ、その数を返す。
 
-    次の世代は「既に残っている世代の数 + 1」である。世代は 001 から欠番なく並ぶので、
-    その名前のファイルが既にあるのは、世代の並びが崩れている（人の手で置かれた・
-    消された）ときだけである。**そのときは上書きせずに失敗する**（存在すれば失敗）。
-    作成と存在の確認は1つの操作（排他的な作成）で行う。
+    **置換の手順の先頭で、現在の manifest の有無に依らず必ず1回行う**（D06 §9.3）。
+    manifest の無い書きかけの run でも、欠番のある並びの上に置換を重ねない。
     """
     kept = sorted(
         path.name
@@ -211,7 +209,17 @@ def _keep_replaced_manifest(directory: Path, previous: Path) -> Path:
             " gaps; nothing was replaced. Restore that order before replacing again"
             " (D06 §9.3, R4)"
         )
-    target = directory / replaced_manifest_name(len(kept) + 1)
+    return len(kept)
+
+
+def _keep_replaced_manifest(directory: Path, previous: Path, generation: int) -> Path:
+    """旧 manifest を第 `generation` 世代の名前で残す（ADR-0006、D06 §9.3、R4）。
+
+    世代の並びは `_kept_generations` が先に確かめている。その名前のファイルが既にあるのは、
+    確かめた後に別の置換が作ったときだけで（同じ run の同時置換は設計の対象外）、
+    **そのときも上書きせずに失敗する**。作成と存在の確認は排他的な作成1回で行う。
+    """
+    target = directory / replaced_manifest_name(generation)
     content = previous.read_text(encoding="utf-8")
     try:
         with target.open("x", encoding="utf-8") as handle:
@@ -258,12 +266,15 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
         return create_artifact_directory(directory, remedy=_RUN_REMEDY)
     existing = sorted(directory.glob("*")) if directory.exists() else []
     if existing:
+        # 何かを作る・消す前に、残した世代の並びを1回だけ確かめる（現在の manifest の
+        # 有無に依らない。D06 §9.3）。
+        generations = _kept_generations(directory)
         previous = directory / "manifest.json"
         if previous.exists():
             # 置換しても旧成果物の manifest は記録に残す（ADR-0006）。**世代ごとに別名で
             # 残し、既存の世代は上書きしない**（D06 §9.3、R4）。消す前に残すので、残せな
             # ければ何も消さずに失敗する。
-            _keep_replaced_manifest(directory, previous)
+            _keep_replaced_manifest(directory, previous, generations + 1)
         for path in existing:
             if path.is_file() and not _REPLACED_MANIFEST.fullmatch(path.name):
                 path.unlink()

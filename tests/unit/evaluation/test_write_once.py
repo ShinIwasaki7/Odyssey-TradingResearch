@@ -197,6 +197,38 @@ def test_a_broken_generation_order_is_refused_before_anything_changes(
     assert _snapshot(directory) == before
 
 
+def test_a_broken_generation_order_is_refused_without_a_current_manifest(
+    tmp_path: Path,
+) -> None:
+    """現在の manifest が無い書きかけの run でも、欠番のある世代の並びなら置換しない。
+
+    世代の並びの検査は置換の手順の先頭で、manifest の有無に依らず必ず行う（D06 §9.3）。
+    """
+    directory = run_directory(tmp_path, "9" * 64)
+    directory.mkdir(parents=True)
+    (directory / "FILLS.parquet").write_bytes(b"half")
+    for name in ("manifest.replaced.001.json", "manifest.replaced.004.json"):
+        (directory / name).write_text(name, encoding="utf-8")
+    before = _snapshot(directory)
+
+    with pytest.raises(ArtifactAlreadyExists, match="without gaps"):
+        reserve_run_directory(tmp_path, "9" * 64, replace=True)
+    assert _snapshot(directory) == before
+
+
+def test_a_half_written_run_without_a_manifest_is_replaced_keeping_its_generations(
+    tmp_path: Path,
+) -> None:
+    """並びが正しければ、manifest の無い書きかけの run も置換でき、残した世代は消えない。"""
+    directory = run_directory(tmp_path, "8" * 64)
+    directory.mkdir(parents=True)
+    (directory / "FILLS.parquet").write_bytes(b"half")
+    (directory / "manifest.replaced.001.json").write_text("first", encoding="utf-8")
+
+    reserve_run_directory(tmp_path, "8" * 64, replace=True)
+    assert _snapshot(directory) == {"manifest.replaced.001.json": b"first"}
+
+
 def test_an_existing_generation_file_is_never_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
