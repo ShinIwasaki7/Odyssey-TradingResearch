@@ -221,6 +221,34 @@ def _kept_generations(directory: Path) -> int:
     return len(kept)
 
 
+def _require_plain_entries(directory: Path) -> None:
+    """置換が読む・残す・畳む項目が、リンクでない本物であることを確かめる（D06 §9.3）。
+
+    置換の手順の先頭で、何かを作る・消す前に1回行う。対象は、旧 manifest
+    （`manifest.json`）と残した世代（`manifest.replaced.<NNN>.json` の候補）が
+    **リンクでない通常のファイル**であること、評価の成果物（`eval`）が**リンクでない
+    ディレクトリ**であることである。リンクや別の種類のものを受け入れると、実体の無い
+    世代を残したり、リンク先の変更で履歴が変わったり、リンク先を畳んだりする。
+    """
+    for path in sorted(directory.iterdir()):
+        name = path.name
+        if name == "manifest.json" or (
+            name.startswith(_REPLACED_PREFIX) and name != _LEGACY_REPLACED_MANIFEST
+        ):
+            plain = not path.is_symlink() and path.is_file()
+            kind = "a regular file"
+        elif name == _EVALUATION_DIRECTORY:
+            plain = not path.is_symlink() and path.is_dir()
+            kind = "a directory"
+        else:
+            continue
+        if not plain:
+            raise ArtifactAlreadyExists(
+                f"{path} must be {kind} that is not a symbolic link; nothing was replaced."
+                " Move or delete it first (D06 §9.3, R4)"
+            )
+
+
 def _keep_replaced_manifest(directory: Path, previous: Path, generation: int) -> Path:
     """旧 manifest を第 `generation` 世代の名前で残す（ADR-0006、D06 §9.3、R4）。
 
@@ -289,6 +317,7 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
     if existing:
         # 何かを作る・消す前に、残した世代の並びを1回だけ確かめる（現在の manifest の
         # 有無に依らない。D06 §9.3）。
+        _require_plain_entries(directory)
         generations = _kept_generations(directory)
         previous = directory / "manifest.json"
         if previous.exists():

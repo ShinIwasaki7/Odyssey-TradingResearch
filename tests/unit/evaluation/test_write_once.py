@@ -232,6 +232,42 @@ def test_a_half_written_run_without_a_manifest_is_replaced_keeping_its_generatio
     assert _snapshot(directory) == {"manifest.replaced.001.json": b"first"}
 
 
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [
+        ("manifest.replaced.001.json", "dir"),
+        ("manifest.replaced.001.json", "link"),
+        ("manifest.json", "link"),
+        ("manifest.json", "dir"),
+        ("eval", "link"),
+        ("eval", "file"),
+    ],
+)
+def test_entries_the_replacement_keeps_or_clears_must_be_plain(
+    tmp_path: Path, name: str, kind: str
+) -> None:
+    """旧 manifest・残した世代・評価の成果物がリンクや別の種類なら、何も変えずに失敗する。"""
+    directory = run_directory(tmp_path, "5" * 64)
+    directory.mkdir(parents=True)
+    (directory / "FILLS.parquet").write_bytes(b"old")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "kept.txt").write_text("outside", encoding="utf-8")
+    target = directory / name
+    if kind == "dir":
+        target.mkdir()
+    elif kind == "file":
+        target.write_text("x", encoding="utf-8")
+    else:
+        target.symlink_to(elsewhere if name == "eval" else elsewhere / "kept.txt")
+    before = _snapshot(directory)
+
+    with pytest.raises(ArtifactAlreadyExists, match="not a symbolic link"):
+        reserve_run_directory(tmp_path, "5" * 64, replace=True)
+    assert _snapshot(directory) == before
+    assert (elsewhere / "kept.txt").read_text(encoding="utf-8") == "outside"
+
+
 def test_a_file_at_the_run_directory_is_refused_on_replacement(tmp_path: Path) -> None:
     """`runs/<run_id>` がディレクトリでなければ、置換でも型付きで失敗し、触れない。"""
     path = run_directory(tmp_path, "6" * 64)
