@@ -232,6 +232,16 @@ def test_a_half_written_run_without_a_manifest_is_replaced_keeping_its_generatio
     assert _snapshot(directory) == {"manifest.replaced.001.json": b"first"}
 
 
+def test_a_file_at_the_run_directory_is_refused_on_replacement(tmp_path: Path) -> None:
+    """`runs/<run_id>` がディレクトリでなければ、置換でも型付きで失敗し、触れない。"""
+    path = run_directory(tmp_path, "6" * 64)
+    path.parent.mkdir(parents=True)
+    path.write_text("not a run", encoding="utf-8")
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        reserve_run_directory(tmp_path, "6" * 64, replace=True)
+    assert path.read_text(encoding="utf-8") == "not a run"
+
+
 def test_a_linked_run_directory_is_never_replaced(tmp_path: Path) -> None:
     """`runs/<run_id>` がリンクなら、置換はリンク先に触れずに失敗する（D06 §9.3）。"""
     elsewhere = tmp_path / "elsewhere"

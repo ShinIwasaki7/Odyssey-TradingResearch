@@ -612,6 +612,16 @@ def test_the_already_exists_error_is_a_marketdata_error() -> None:
     assert issubclass(SnapshotAlreadyExists, KernelValueError)
 
 
+def test_a_looping_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
+    """自分を指す循環リンクも、解決に失敗する前に「ある」として型付きで止まる（R4）。"""
+    store = ParquetSnapshotStore(root=tmp_path)
+    identifier = "b" * 64
+    link = tmp_path / identifier
+    link.symlink_to(link)
+    with pytest.raises(SnapshotAlreadyExists):
+        store.create_directory(identifier, identifier)
+
+
 def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
     """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
     store = ParquetSnapshotStore(root=tmp_path)

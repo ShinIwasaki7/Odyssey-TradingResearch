@@ -418,20 +418,28 @@ class ParquetSnapshotStore:
                 f"{snapshot_dir!r} does not name the snapshot {snapshot_id!r} it would hold;"
                 " a snapshot directory is named after its identifier (D03 §3.7.1)"
             )
-        # 根の外を指さないことは解決後のパスで確かめる。作るのは**解決前の**パスである。
-        # 解決後のパスを作ると、書き出し先に置かれたリンク（先が無いものを含む）を辿って
-        # リンク先に作れてしまい、「既にある」書き出し先が失敗しない。
-        self._snapshot_path(snapshot_dir)
+        # 作るのは**解決前の**パスである。解決後のパスを作ると、書き出し先に置かれた
+        # リンク（先が無いものを含む）を辿ってリンク先に作れてしまう。**リンクを解決する前に**
+        # 書き出し先そのものの有無を見るので、循環するリンクも解決の失敗ではなく
+        # 「既にある」として型付きで止まる。根の外を指さないことはその後で確かめる。
         target = Path(self.root) / snapshot_dir
+        if target.is_symlink() or target.exists():
+            raise self._already_exists(target)
+        self._snapshot_path(snapshot_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             target.mkdir()
         except FileExistsError:
-            raise SnapshotAlreadyExists(
-                f"{target} already exists; snapshot artifacts are never overwritten, and"
-                " nothing was written. Move or delete that directory first if it should be"
-                " written again (D03 §3.7.2, R4)"
-            ) from None
+            raise self._already_exists(target) from None
+
+    @staticmethod
+    def _already_exists(target: Path) -> SnapshotAlreadyExists:
+        """書き出し先が既にあることの例外（R4）。"""
+        return SnapshotAlreadyExists(
+            f"{target} already exists; snapshot artifacts are never overwritten, and"
+            " nothing was written. Move or delete that directory first if it should be"
+            " written again (D03 §3.7.2, R4)"
+        )
 
     # --- partition ----------------------------------------------------------
 

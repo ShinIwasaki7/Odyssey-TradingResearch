@@ -279,6 +279,12 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
             f"{directory} is a symbolic link; a replacement never follows links, and nothing"
             " was replaced. Remove the link first (D06 §9.3, R4)"
         )
+    if directory.exists() and not directory.is_dir():
+        # ディレクトリでないもの（ファイルなど）は置換の対象にしない。
+        raise ArtifactAlreadyExists(
+            f"{directory} exists but is not a directory; nothing was replaced. Move or delete"
+            " it first (D06 §9.3, R4)"
+        )
     existing = sorted(directory.glob("*")) if directory.exists() else []
     if existing:
         # 何かを作る・消す前に、残した世代の並びを1回だけ確かめる（現在の manifest の
