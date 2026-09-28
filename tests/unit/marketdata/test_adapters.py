@@ -656,6 +656,25 @@ def test_a_linked_snapshot_root_is_written_through(tmp_path: Path) -> None:
     assert (disk / "_pending" / identifier).is_dir()
 
 
+def test_a_looping_link_at_the_snapshot_root_is_refused(tmp_path: Path) -> None:
+    """根そのものが循環リンクでも、解決の失敗ではなく型付きで止まる（R4）。"""
+    root = tmp_path / "snapshots"
+    root.symlink_to(root)
+    identifier = "e" * 64
+    with pytest.raises(SnapshotAlreadyExists, match="not a directory"):
+        ParquetSnapshotStore(root=root).create_directory(f"_pending/{identifier}", identifier)
+
+
+def test_a_looping_link_at_the_pending_directory_is_refused(tmp_path: Path) -> None:
+    """`_pending` が循環リンクで末端がまだ無くても、解決の失敗ではなく型付きで止まる（R4）。"""
+    pending = tmp_path / "_pending"
+    pending.symlink_to(pending)
+    identifier = "f" * 64
+    with pytest.raises(SnapshotAlreadyExists, match="symbolic link"):
+        ParquetSnapshotStore(root=tmp_path).create_directory(f"_pending/{identifier}", identifier)
+    assert pending.is_symlink()
+
+
 def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
     """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
     store = ParquetSnapshotStore(root=tmp_path)

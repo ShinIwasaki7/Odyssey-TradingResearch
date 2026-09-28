@@ -392,6 +392,46 @@ def test_a_legacy_replaced_manifest_must_be_a_plain_file(tmp_path: Path, kind: s
     assert not (directory / "manifest.replaced.001.json").exists()
 
 
+def test_a_file_at_the_runs_root_is_refused_on_replacement_too(tmp_path: Path) -> None:
+    """根 `runs` が通常ファイルなら、置換の経路でも型付きで失敗し、触れない（D06 §9.1）。"""
+    (tmp_path / "runs").write_text("not a root", encoding="utf-8")
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        reserve_run_directory(tmp_path, "9" * 64, replace=True)
+    assert (tmp_path / "runs").read_text(encoding="utf-8") == "not a root"
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [("FILLS.parquet", "directory"), ("FILLS.parquet", "symlink"), ("scratch", "directory")],
+)
+def test_a_wrong_kind_of_entry_in_the_run_directory_is_refused(
+    tmp_path: Path, name: str, kind: str
+) -> None:
+    """run ディレクトリ直下に、通常ファイルと `eval` ディレクトリ以外があれば置換は何もしない。
+
+    知っている名前だけを見ると穴が残るので、直下のすべての項目の種類を見る（D06 §9.3）。
+    表の名前のディレクトリを受け入れると、旧 manifest と他の表を片付けた後で同名の
+    Parquet の書き込みが失敗し、新旧の混ざった run が残る。
+    """
+    run_id = "b" * 64
+    directory = run_directory(tmp_path, run_id)
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_text("{}", encoding="utf-8")
+    (directory / "ATTEMPT_DECISIONS.parquet").write_bytes(b"old")
+    entry = directory / name
+    if kind == "directory":
+        entry.mkdir()
+    else:
+        entry.symlink_to(tmp_path / "elsewhere.parquet")
+    before = _snapshot(directory)
+
+    with pytest.raises(ArtifactAlreadyExists, match="nothing was replaced"):
+        reserve_run_directory(tmp_path, run_id, replace=True)
+    assert _snapshot(directory) == before
+    assert entry.is_symlink() if kind == "symlink" else entry.is_dir()
+    assert not (directory / "manifest.replaced.001.json").exists()
+
+
 def test_an_existing_generation_file_is_never_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

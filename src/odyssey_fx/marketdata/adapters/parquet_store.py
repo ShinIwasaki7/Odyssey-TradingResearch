@@ -418,27 +418,23 @@ class ParquetSnapshotStore:
                 f"{snapshot_dir!r} does not name the snapshot {snapshot_id!r} it would hold;"
                 " a snapshot directory is named after its identifier (D03 §3.7.1)"
             )
-        # 作るのは**解決前の**パスである。解決後のパスを作ると、書き出し先に置かれた
-        # リンク（先が無いものを含む）を辿ってリンク先に作れてしまう。**リンクを解決する前に**
-        # 書き出し先そのものの有無を見るので、循環するリンクも解決の失敗ではなく
-        # 「既にある」として型付きで止まる。根の外を指さないことはその後で確かめる。
-        target = Path(self.root) / snapshot_dir
-        if target.is_symlink() or target.exists():
-            raise self._already_exists(target)
-        self._snapshot_path(snapshot_dir)
-        # 根から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
-        # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
+        # **リンクを解決する前に**、書き出し先そのものと、根から書き出し先の親までの要素の
+        # 種類を見る。解決後のパスを作ると、置かれたリンク（先が無いものを含む）を辿って
+        # リンク先に作れてしまい、循環するリンクは解決の失敗（未捕捉の例外）になる。
+        # 解決前に見れば、どれも「既にある／種類が違う」として型付きで止まる。
         root = Path(self.root)
         # 根そのものは利用者が指す置き場なのでリンクでもよいが、既にあるなら（リンクの
-        # 先が）ディレクトリでなければならない。通常ファイルや先の無いリンクなら、その下に
-        # snapshot は書けないので型付きで止める（未捕捉の例外にしない）。
+        # 先が）ディレクトリでなければならない。通常ファイル・先の無いリンク・循環する
+        # リンクなら、その下に snapshot は書けない。
         if (root.is_symlink() or root.exists()) and not root.is_dir():
             raise SnapshotAlreadyExists(
                 f"{root} exists but is not a directory (or links to none); snapshots are"
                 " written only under a directory, and nothing was written. Move or delete"
                 " it first (D03 §3.7.2, R4)"
             )
-        root.mkdir(parents=True, exist_ok=True)
+        # 根の下から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
+        # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
+        parents: list[Path] = []
         current = root
         for part in PurePosixPath(snapshot_dir).parts[:-1]:
             current = current / part
@@ -448,7 +444,15 @@ class ParquetSnapshotStore:
                     " written through links, and nothing was written. Replace it with a"
                     " plain directory first (D03 §3.7.2, R4)"
                 )
-            current.mkdir(exist_ok=True)
+            parents.append(current)
+        target = root / snapshot_dir
+        if target.is_symlink() or target.exists():
+            raise self._already_exists(target)
+        # ここまでで根の下にリンクは無いので、解決は失敗しない。根の外を指さないことを確かめる。
+        self._snapshot_path(snapshot_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        for parent in parents:
+            parent.mkdir(exist_ok=True)
         try:
             target.mkdir()
         except FileExistsError:

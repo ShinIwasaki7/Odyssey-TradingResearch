@@ -270,26 +270,24 @@ def _kept_generations(directory: Path) -> int:
 
 
 def _require_plain_entries(directory: Path) -> None:
-    """置換が読む・残す・畳む項目が、リンクでない本物であることを確かめる（D06 §9.3）。
+    """置換が読む・残す・消す・畳む項目が、想定した種類の本物であることを確かめる（D06 §9.3）。
 
-    置換の手順の先頭で、何かを作る・消す前に1回行う。対象は、旧 manifest
-    （`manifest.json`）と残した世代（`manifest.replaced.<NNN>.json` の候補と、番号の無い
-    旧形式 `manifest.replaced.json`）が
-    **リンクでない通常のファイル**であること、評価の成果物（`eval`）が**リンクでない
-    ディレクトリ**であることである。リンクや別の種類のものを受け入れると、実体の無い
-    世代を残したり、リンク先の変更で履歴が変わったり、リンク先を畳んだりする。
+    置換の手順の先頭で、何かを作る・消す前に1回行う。**run ディレクトリ直下のすべての項目**
+    を見る（名前を知っている項目だけを見ると、知らない名前の穴が毎回1つずつ残る）。
+    許すのは、リンクでない通常のファイル（旧 manifest・残した世代・番号の無い旧形式
+    `manifest.replaced.json`・19表の Parquet・`result.json` など、置換が残すか消すもの）と、
+    リンクでないディレクトリの評価の成果物（`eval`。置換が畳むもの）だけである。
+    それ以外（リンク、`eval` 以外のディレクトリ、その他の種類）が1つでもあれば、何も作らず
+    何も消さずに失敗する。受け入れると、実体の無い世代を残したり、リンク先を消したり畳んだり、
+    途中で書き込みが失敗して新旧の成果物が混ざった run が残る。
     """
     for path in sorted(directory.iterdir()):
-        name = path.name
-        if name == "manifest.json" or name.startswith(_REPLACED_PREFIX):
-            # 番号の無い旧形式（`manifest.replaced.json`）も残す対象なので、同じく検査する。
-            plain = not path.is_symlink() and path.is_file()
-            kind = "a regular file"
-        elif name == _EVALUATION_DIRECTORY:
-            plain = not path.is_symlink() and path.is_dir()
-            kind = "a directory"
+        if path.is_symlink():
+            plain, kind = False, "a regular file or the eval directory"
+        elif path.name == _EVALUATION_DIRECTORY:
+            plain, kind = path.is_dir(), "a directory"
         else:
-            continue
+            plain, kind = path.is_file(), "a regular file"
         if not plain:
             raise ArtifactAlreadyExists(
                 f"{path} must be {kind} that is not a symbolic link; nothing was replaced."
@@ -348,6 +346,8 @@ def reserve_run_directory(root: Path, run_id: object, *, replace: bool = False) 
     途中まで書いたところで失敗すると新旧の表が混ざるので、書き始める前にここで判断する。
     """
     directory = run_directory(root, run_id)
+    # 根の種類は置換の有無に依らず先に見る（置換経路で未捕捉の例外にしない）。
+    _require_root_is_directory(Path(root) / "runs")
     if not replace:
         return create_artifact_directory(directory, base=Path(root) / "runs", remedy=_RUN_REMEDY)
     if directory.is_symlink():
