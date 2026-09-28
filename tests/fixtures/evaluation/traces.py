@@ -37,9 +37,12 @@ from odyssey_fx.common.symbol import Symbol, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.application.evaluate_run import COLUMN_SPECS, INPUT_TABLES
-from odyssey_fx.evaluation.application.manifest import EvaluationTable
+from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
 from odyssey_fx.evaluation.application.ports import (
+    EvaluationReadFailure,
     ManifestReadFailure,
+    ResultReadFailure,
+    StoredEvaluation,
     TableReadResult,
     TraceColumnSpec,
 )
@@ -496,6 +499,18 @@ class FakeRepository:
         self, report: object, rows: Mapping[EvaluationTable, tuple[object, ...]]
     ) -> None:
         self.written.append((report, rows))
+
+    def read_result(self, run_id: RunId) -> BacktestResult | ResultReadFailure:
+        # 評価の単体テストは結果 DTO を引数で渡すので、ここを通らない（D07 §4.1）。
+        return ResultReadFailure(run_id=run_id, detail="the fake repository keeps no result")
+
+    def run_exists(self, run_id: RunId) -> bool:
+        return str(run_id) == str(self.manifest.run_id)
+
+    def read_evaluation(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> StoredEvaluation | EvaluationReadFailure | None:
+        return None
 
 
 def repository_for(

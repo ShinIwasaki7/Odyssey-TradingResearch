@@ -22,36 +22,82 @@ import platform
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
 import odyssey_fx
-from odyssey_fx.app.config import DataSourceConfig
+from odyssey_fx.app.config import ConfigError, DataSourceConfig
 from odyssey_fx.app.config.experiment import ExperimentConfig
+from odyssey_fx.app.config.experiment_v2 import (
+    TEXT_ROLES,
+    ExperimentV2,
+    experiment_v2_from_texts,
+)
+from odyssey_fx.app.config.loader import load_yaml_mapping
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
 from odyssey_fx.backtest.trace.manifest import config_digest_of
 from odyssey_fx.backtest.trace.result import BacktestResult
 from odyssey_fx.common.canonical import digest
-from odyssey_fx.common.ids import IdAllocator, RunId
-from odyssey_fx.common.refs import CodeDigest, EnvDigest, LockDigest
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.ids import ExperimentId, IdAllocator, RunId
+from odyssey_fx.common.refs import (
+    CodeDigest,
+    ConfigDigest,
+    ContentDigest,
+    EnvDigest,
+    LockDigest,
+    PolicyRef,
+    SnapshotRef,
+)
 from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.adapters.fs_store import (
+    FileSystemExperimentStore,
     FileSystemResultRepository,
     FileSystemResultWriter,
     FileSystemTraceSink,
     evaluation_directory,
+    read_experiment_manifest,
+    read_experiment_outcome,
+    reproduction_path,
+    reproduction_payload,
+    require_absent,
     require_run_directory_absent,
     run_directory,
+    write_reproduction,
 )
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
+from odyssey_fx.evaluation.application.ports import ResultReadFailure
+from odyssey_fx.evaluation.application.run_experiment import (
+    ExperimentRefusal,
+    PreparedExperiment,
+    ReproductionReport,
+    ReproductionVerdict,
+    RunExperiment,
+    judge_reproduction,
+)
+from odyssey_fx.evaluation.domain.experiment import (
+    EXPERIMENT_SCHEMA_VERSION,
+    ExperimentManifest,
+    ExperimentOutcome,
+    ResolvedFile,
+    experiment_id_of,
+    require_experiment_name,
+)
+from odyssey_fx.evaluation.domain.research_policy import (
+    InstanceProfile,
+    check_complexity,
+    check_hypothesis,
+    check_research_history_only,
+    measure_complexity,
+)
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.acceptance import (
@@ -84,6 +130,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
 )
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+from odyssey_fx.strategy.catalog.registry import ComponentRegistry, ContractKey
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, CompileSucceeded
 from odyssey_fx.strategy.compiler.validate import compile_strategy
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
@@ -91,14 +138,18 @@ from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 __all__ = [
     "AcceptanceService",
     "EvaluationOutcome",
+    "ExperimentRunOutcome",
+    "ReproductionOutcome",
     "RunOutcome",
     "SnapshotInputs",
     "acceptance_service",
     "build_conversion_record",
+    "build_experiment_manifest",
     "calendar_ref_of",
     "code_digest",
     "code_version",
     "compile_experiment_strategy",
+    "complexity_profiles",
     "env_digest",
     "evaluate_saved_run",
     "execute_run",
@@ -107,6 +158,8 @@ __all__ = [
     "now_utc",
     "open_snapshot_inputs",
     "raw_bar_source",
+    "reproduce_experiment",
+    "run_experiment",
     "snapshot_store",
     "symbol_spec_ref_of",
 ]
@@ -598,25 +651,44 @@ class RunOutcome:
     directory: Path
 
 
-def execute_run(
+@dataclass(frozen=True, slots=True)
+class _RunPlan:
+    """run を始める前に決まるもの一式（実行条件・識別子・結線済みの市場データ）。
+
+    `execute_run`（`run` コマンド）と実験の経路（`experiment run` / `experiment reproduce`）が
+    同じ組み立てを使う。`RunId` は run の前に決まる（ADR-0006）ので、実験の経路はここで予測
+    した識別子で既存の成果物を確かめ、記録票に `ConfigDigest` を固定する（D07 §19.2・§19.6）。
+    """
+
+    experiment: ExperimentConfig
+    calendar: TradingCalendar
+    inputs: SnapshotInputs
+    spec: SymbolSpec
+    compiled: CompiledStrategy
+    config: RunConfig
+    config_digest: ConfigDigest
+    symbol_spec_ref: SymbolSpecRef
+    calendar_ref: str
+    timeframe_refs: tuple[TimeframeRef, ...]
+    code: CodeDigest
+    lock: LockDigest
+    environment: EnvDigest
+    run_id: RunId
+    git_commit: str
+    git_dirty: bool
+    publication_log: PublicationLog
+
+
+def _plan_run(
     *,
     experiment: ExperimentConfig,
     calendar: TradingCalendar,
     timeframe_defs: Mapping[str, TimeframeDefinition],
     symbol_specs: Mapping[Symbol, SymbolSpec],
     snapshots_root: Path,
-    artifacts_root: Path,
     repo_root: Path,
-    replace: bool = False,
-) -> RunOutcome:
-    """実験設定から1回の run を実行し、判断履歴・manifest・結果を保存する（D06 §4.2）。
-
-    **業務ロジックは持たない**（D01 §7）。ここにあるのは「どの実装をどの設定で結線するか」
-    だけで、実行の意味論は `backtest.application.run_backtest` が決める。
-
-    識別の4群（コード・依存 lock・環境のダイジェストと git の状態）は**この層が計算する**
-    （D06 §9.3）。実行環境の事実であって設定ではないためである。
-    """
+) -> _RunPlan:
+    """snapshot を開き、戦略をコンパイルし、実行条件と識別子を計算する（run はまだ始めない）。"""
     inputs = open_snapshot_inputs(
         snapshots_root=snapshots_root,
         snapshot_id=str(experiment.snapshot_ref.snapshot_id),
@@ -631,8 +703,7 @@ def execute_run(
         )
 
     compiled = compile_experiment_strategy(experiment, timeframe_defs)
-    execution_schedule = inputs.schedules.get(experiment.execution_series)
-    if execution_schedule is None:
+    if inputs.schedules.get(experiment.execution_series) is None:
         raise MarketDataValueError(
             f"the snapshot does not carry the execution series {experiment.execution_series}"
             " (D03 §6.3)"
@@ -642,38 +713,6 @@ def execute_run(
     # 渡す前に、実現した公開時刻（`available_at`）を計算しておく。遅延なし（書式 v1、または
     # 書式 v2 で `delay_scenario` を書かない形）では記録を作らず、通常の公開予定を使う。
     publication_log = _publication_log(inputs, experiment)
-
-    # 戦略ランタイムへは as-of ビューをそのまま渡す（D05 §6.3 v1.4、D03 §6.2 v1.5）。
-    # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
-    market_data = AsOfView(
-        snapshot=inputs.snapshot,
-        allowed_partitions=inputs.allowed_partitions,
-        schedules=inputs.schedules,
-        partition_bars=inputs.partition_bars,
-        publication_log=publication_log,
-    )
-    execution_view = ExecutionSeriesView(
-        snapshot=inputs.snapshot,
-        series=experiment.execution_series,
-        allowed_partitions=inputs.allowed_partitions,
-        partition_bars=inputs.partition_bars,
-        schedule=execution_schedule,
-    )
-    feed = build_feed(
-        inputs.snapshot,
-        inputs.allowed_partitions,
-        inputs.partition_bars,
-        inputs.schedules,
-        experiment.run_interval,
-        execution_series=frozenset({experiment.execution_series}),
-        publication_log=publication_log,
-    )
-    levels = experiment.execution_policy.resolution_hierarchy.levels
-    intrabar = (
-        None
-        if len(levels) < 2
-        else _IntrabarBars(bars={level: inputs.bars_of(level) for level in levels})
-    )
 
     symbol_spec_ref = symbol_spec_ref_of(spec)
     calendar_ref = calendar_ref_of(calendar)
@@ -702,55 +741,138 @@ def execute_run(
     code = code_digest()
     lock = lock_digest(repo_root)
     environment = env_digest()
-    identifier = run_id_of(config_digest, code, lock, environment)
-    if not replace:
-        # 保存先が既にあれば、run を始める前に何も書かずに失敗する（D06 §10.6、R4）。
-        # 書き出しの直前にもう一度、作ること自体で確かめる（`reserve_run_directory`）。
-        require_run_directory_absent(artifacts_root, identifier)
-    allocator = IdAllocator(identifier)
+    commit, dirty = git_state(repo_root)
+    return _RunPlan(
+        experiment=experiment,
+        calendar=calendar,
+        inputs=inputs,
+        spec=spec,
+        compiled=compiled,
+        config=config,
+        config_digest=config_digest,
+        symbol_spec_ref=symbol_spec_ref,
+        calendar_ref=calendar_ref,
+        timeframe_refs=timeframe_refs,
+        code=code,
+        lock=lock,
+        environment=environment,
+        run_id=run_id_of(config_digest, code, lock, environment),
+        git_commit=commit,
+        git_dirty=dirty,
+        publication_log=publication_log,
+    )
 
+
+def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> RunBacktest:
+    """計画から実行ユースケースを結線する（1回の run ごとに作り直す。状態を持つため）。"""
+    experiment = plan.experiment
+    inputs = plan.inputs
+    # 戦略ランタイムへは as-of ビューをそのまま渡す（D05 §6.3 v1.4、D03 §6.2 v1.5）。
+    # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
+    market_data = AsOfView(
+        snapshot=inputs.snapshot,
+        allowed_partitions=inputs.allowed_partitions,
+        schedules=inputs.schedules,
+        partition_bars=inputs.partition_bars,
+        publication_log=plan.publication_log,
+    )
+    execution_view = ExecutionSeriesView(
+        snapshot=inputs.snapshot,
+        series=experiment.execution_series,
+        allowed_partitions=inputs.allowed_partitions,
+        partition_bars=inputs.partition_bars,
+        schedule=inputs.schedules[experiment.execution_series],
+    )
+    feed = build_feed(
+        inputs.snapshot,
+        inputs.allowed_partitions,
+        inputs.partition_bars,
+        inputs.schedules,
+        experiment.run_interval,
+        execution_series=frozenset({experiment.execution_series}),
+        publication_log=plan.publication_log,
+    )
+    levels = experiment.execution_policy.resolution_hierarchy.levels
+    intrabar = (
+        None
+        if len(levels) < 2
+        else _IntrabarBars(bars={level: inputs.bars_of(level) for level in levels})
+    )
+    allocator = IdAllocator(plan.run_id)
     output_sink = TraceOutputSink()
     context = EngineContext(experiment.account)
     runtime = StrategyEvaluator(
-        compiled=compiled,
+        compiled=plan.compiled,
         registry=INITIAL_CATALOG,
         market_data=market_data,
         context=context,
         sink=output_sink,
         allocator=allocator,
     )
-    commit, dirty = git_state(repo_root)
-    use_case = RunBacktest(
+    return RunBacktest(
         runtime=runtime,
         context=context,
         output_sink=output_sink,
         allocator=allocator,
         feed=feed,
         execution_series=execution_view,
-        calendar=calendar,
+        calendar=plan.calendar,
         risk_policy=experiment.risk_policy,
         execution_policy=experiment.execution_policy,
         cost_model=experiment.cost_model,
         conversion_policy=experiment.conversion_policy,
-        symbol_spec=spec,
-        symbol_spec_ref=symbol_spec_ref,
-        calendar_ref=calendar_ref,
+        symbol_spec=plan.spec,
+        symbol_spec_ref=plan.symbol_spec_ref,
+        calendar_ref=plan.calendar_ref,
         integrity=inputs.snapshot.report,
-        trace_sink=FileSystemTraceSink(root=artifacts_root, run_id=identifier, replace=replace),
+        trace_sink=FileSystemTraceSink(root=artifacts_root, run_id=plan.run_id, replace=replace),
         result_writer=FileSystemResultWriter(root=artifacts_root),
-        code_digest=code,
-        lock_digest=lock,
-        env_digest=environment,
-        git_commit=commit,
-        git_dirty=dirty,
+        code_digest=plan.code,
+        lock_digest=plan.lock,
+        env_digest=plan.environment,
+        git_commit=plan.git_commit,
+        git_dirty=plan.git_dirty,
         intrabar_series=intrabar,
-        timeframe_refs=timeframe_refs,
+        timeframe_refs=plan.timeframe_refs,
     )
-    result = use_case.run(config, compiled)
+
+
+def execute_run(
+    *,
+    experiment: ExperimentConfig,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    symbol_specs: Mapping[Symbol, SymbolSpec],
+    snapshots_root: Path,
+    artifacts_root: Path,
+    repo_root: Path,
+    replace: bool = False,
+) -> RunOutcome:
+    """実験設定から1回の run を実行し、判断履歴・manifest・結果を保存する（D06 §4.2）。
+
+    **業務ロジックは持たない**（D01 §7）。ここにあるのは「どの実装をどの設定で結線するか」
+    だけで、実行の意味論は `backtest.application.run_backtest` が決める。
+
+    識別の4群（コード・依存 lock・環境のダイジェストと git の状態）は**この層が計算する**
+    （D06 §9.3）。実行環境の事実であって設定ではないためである。
+    """
+    plan = _plan_run(
+        experiment=experiment,
+        calendar=calendar,
+        timeframe_defs=timeframe_defs,
+        symbol_specs=symbol_specs,
+        snapshots_root=snapshots_root,
+        repo_root=repo_root,
+    )
+    if not replace:
+        # 保存先が既にあれば、run を始める前に何も書かずに失敗する（D06 §10.6、R4）。
+        # 書き出しの直前にもう一度、作ること自体で確かめる（`reserve_run_directory`）。
+        require_run_directory_absent(artifacts_root, plan.run_id)
+    result = _run_use_case(plan, artifacts_root, replace=replace).run(plan.config, plan.compiled)
     return RunOutcome(
         result=result,
-        run_id=identifier,
-        directory=run_directory(artifacts_root, identifier),
+        run_id=plan.run_id,
+        directory=run_directory(artifacts_root, plan.run_id),
     )
 
 
@@ -768,11 +890,14 @@ def evaluate_saved_run(
     artifacts_root: Path,
     calendar: TradingCalendar,
     metric_set_version: int = METRIC_SET_VERSION,
-) -> EvaluationOutcome:
+) -> EvaluationOutcome | ResultReadFailure:
     """保存済みの run を評価し、5表と評価 manifest を保存する（D07 §4・§8）。
 
     評価時のコードのダイジェストは**この層が算出して渡す**（D07 §9.2、Q5 決定）。
     パッケージのソース内容を読むのは入出力であり、`application` は入出力を持たない。
+
+    保存済みの結果 DTO が読めなければ評価を始めず、`ResultReadFailure` を返す（D07 §4.1 の
+    `read_result` の段落 (a)。コマンドは読込の誤りとして終了コード 2 で終わる）。
 
     取引カレンダーは呼び出し側が読み込んで渡す（D07 §4.1 v2.0 のカレンダーの渡し方 (a)）。
     run manifest は `calendar_ref`（識別と版）だけを持ち本文を持たないためである。一致しない
@@ -780,6 +905,9 @@ def evaluate_saved_run(
     """
     repository = FileSystemResultRepository(root=artifacts_root)
     result = repository.read_result(run_id)
+    if isinstance(result, ResultReadFailure):
+        # 結果 DTO は評価の入力1そのものなので、読めなければ評価を始めない（D07 §4.1 (a)）。
+        return result
     use_case = EvaluateRun(evaluation_code_digest=code_digest())
     report = use_case.evaluate(result, repository, metric_set_version, calendar)
     repository.write_evaluation(report, report.rows)
@@ -787,3 +915,409 @@ def evaluate_saved_run(
         report=report,
         directory=evaluation_directory(artifacts_root, run_id, report.manifest.run_evaluation_id),
     )
+
+
+# --- 実験の経路（D07 §19〜§21）-------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotManifestCatalog:
+    """`SnapshotCatalog`（`evaluation.application.ports`）を snapshot の manifest で満たす。
+
+    アクセス分類は snapshot の manifest が partition ごとに記録している（D03 §3.8）。記録に
+    無い partition は許可集合に入りえないので、構造エラーにする。
+    """
+
+    manifest: SnapshotManifest
+
+    def access_classes(
+        self, snapshot: SnapshotRef, partitions: frozenset[PartitionId]
+    ) -> Mapping[PartitionId, AccessClass]:
+        recorded = {record.partition_id for record in self.manifest.partitions}
+        missing = sorted(str(partition) for partition in partitions if partition not in recorded)
+        if missing:
+            raise MarketDataValueError(
+                f"the snapshot {snapshot.snapshot_id} does not record the partitions {missing}"
+                " (D03 §3.8)"
+            )
+        return {partition: partition.access_class for partition in partitions}
+
+
+@dataclass(slots=True)
+class _PlannedRunner:
+    """`BacktestRunner`（`evaluation.application.ports`）を満たす。
+
+    置換の指示を持たない（常に「存在すれば失敗」で書く。D07 §19.6 の手順4）。実行条件は
+    計画と同じものでなければならない（記録票に固定した `ConfigDigest` の run だけを行う）。
+    """
+
+    plan: _RunPlan
+    artifacts_root: Path
+
+    def run(self, config: RunConfig, compiled: CompiledStrategy) -> BacktestResult:
+        if config != self.plan.config or compiled.compiled_ref != self.plan.compiled.compiled_ref:
+            raise KernelValueError(
+                "the runner only runs the configuration it was planned for (D07 §19.4)"
+            )
+        return _run_use_case(self.plan, self.artifacts_root, replace=False).run(config, compiled)
+
+
+def complexity_profiles(
+    compiled: CompiledStrategy, registry: ComponentRegistry
+) -> tuple[tuple[InstanceProfile, ...], tuple[str, ...], tuple[str, ...]]:
+    """複雑性の計測の材料（使用箇所ごとの `InstanceProfile`）を作る（D07 §20.4）。
+
+    評価は部品カタログを参照できない（D01 §3.2 の契約 F8）ので、合成が組み立てて渡す。
+    部品の登録が見つからない使用箇所は出力のデータ型を知り得ないので、計測できなかった
+    使用箇所と原因として返す（判断を出す使用箇所の数を 0 で埋めない。D07 §20.3）。
+    """
+    profiles: list[InstanceProfile] = []
+    unmeasured: list[str] = []
+    causes: list[str] = []
+    for component in compiled.components:
+        contract = component.contract_ref
+        registration = registry.get(ContractKey(contract.component_id, contract.version))
+        if registration is None:
+            unmeasured.append(component.instance_id)
+            causes.append(
+                f"{component.instance_id}: the registry has no {contract.component_id}"
+                f"@v{contract.version}, so its output data types are unknown"
+            )
+            output_types: tuple[str, ...] = ()
+        else:
+            output_types = tuple(
+                sorted({spec.data_type.type_id for spec in registration.contract.outputs.values()})
+            )
+        profiles.append(
+            InstanceProfile(
+                instance_id=component.instance_id,
+                component_id=contract.component_id,
+                parameter_count=len(component.parameters),
+                output_data_types=output_types,
+            )
+        )
+    return tuple(profiles), tuple(unmeasured), tuple(causes)
+
+
+def _resolved_files(loaded: ExperimentV2, symbols: Sequence[Symbol]) -> tuple[ResolvedFile, ...]:
+    """記録票の `resolved_files`（D07 §19.2）。
+
+    銘柄仕様は**実行する銘柄と、換算の経路に現れる銘柄**のものだけを入れる。換算は段階2 から
+    恒等換算だけを通す（D06 §8.5.1。口座通貨と決済通貨が違う run は換算不能で止まる）ので、
+    換算の経路に現れる銘柄は無く、入るのは実行する銘柄だけである。
+    """
+    files = [ResolvedFile.of(role, loaded.texts[role]) for role in TEXT_ROLES]
+    for symbol in symbols:
+        text = loaded.symbol_texts.get(symbol)
+        if text is None:
+            raise ConfigError(f"銘柄 {symbol} の仕様の本文が読まれていない（D07 §19.2）")
+        files.append(ResolvedFile.of(f"symbol:{symbol}", text))
+    return tuple(files)
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentRunOutcome:
+    """`experiment run` の成果（CLI が表示と終了コードに使う）。"""
+
+    manifest: ExperimentManifest
+    result: ExperimentOutcome | ExperimentRefusal
+    directory: Path
+    expected_run_id: RunId
+
+
+def build_experiment_manifest(
+    loaded: ExperimentV2,
+    plan: _RunPlan,
+    registry: ComponentRegistry,
+) -> ExperimentManifest:
+    """記録票を組み立てる（D07 §19.2）。事前検査 P1・P2・P6 はここで行って記録票に入れる。"""
+    experiment = loaded.experiment
+    try:
+        require_experiment_name(experiment.experiment_id)
+    except KernelValueError as exc:
+        raise ConfigError(f"実験設定の `id` を保存先の名前に使えない: {exc}") from exc
+    catalog = _SnapshotManifestCatalog(plan.inputs.snapshot.manifest)
+    access = catalog.access_classes(experiment.snapshot_ref, plan.inputs.allowed_partitions)
+    allowed = {str(partition): access_class for partition, access_class in access.items()}
+    profiles, unmeasured, causes = complexity_profiles(plan.compiled, registry)
+    measures = measure_complexity(profiles, unmeasured_outputs=unmeasured)
+    limits = loaded.policy.limits
+    pre_run_checks = (
+        check_hypothesis(loaded.hypothesis),
+        check_research_history_only(allowed),
+        check_complexity(measures, limits, unmeasured_causes=causes),
+    )
+    policy = loaded.policy
+    draft = ExperimentManifest(
+        experiment_id=ExperimentId(digest("draft")),
+        experiment_name=experiment.experiment_id,
+        experiment_version=experiment.version,
+        schema_version=EXPERIMENT_SCHEMA_VERSION,
+        hypothesis=loaded.hypothesis,
+        research_policy_ref=PolicyRef(
+            policy_kind="research",
+            policy_id=policy.policy_id,
+            version=policy.version,
+            digest=policy.digest,
+        ),
+        metric_set_version=loaded.metric_set_version,
+        search_plan=loaded.search_plan,
+        split=loaded.split,
+        resolved_files=_resolved_files(loaded, (experiment.execution_series.symbol,)),
+        strategy_ref=plan.compiled.strategy_ref,
+        compiled_ref=plan.compiled.compiled_ref,
+        expected_config_digest=plan.config_digest,
+        snapshot_id=experiment.snapshot_ref.snapshot_id,
+        allowed_partitions=allowed,
+        complexity=measures,
+        complexity_limits=limits,
+        pre_run_checks=pre_run_checks,
+        code_digest=plan.code,
+        lock_digest=plan.lock,
+        env_digest=plan.environment,
+        git_commit=plan.git_commit,
+        git_dirty=plan.git_dirty,
+    )
+    return replace(draft, experiment_id=experiment_id_of(draft, loaded.values))
+
+
+def run_experiment(
+    *,
+    loaded: ExperimentV2,
+    snapshots_root: Path,
+    artifacts_root: Path,
+    repo_root: Path,
+) -> ExperimentRunOutcome:
+    """書式 v2 の実験設定から1つの実験を進める（D07 §19.4、`experiment run`）。
+
+    記録票を組み立て（事前検査を含む）、`RunExperiment` に渡す。記録票の保存・run・評価・
+    事後検査の順序と拒否の判断は `RunExperiment` が持つ（ここは結線だけ）。
+    """
+    environment = loaded.environment
+    plan = _plan_run(
+        experiment=loaded.experiment,
+        calendar=environment.calendar,
+        timeframe_defs=environment.timeframe_defs,
+        symbol_specs=environment.symbol_specs,
+        snapshots_root=snapshots_root,
+        repo_root=repo_root,
+    )
+    manifest = build_experiment_manifest(loaded, plan, INITIAL_CATALOG)
+    store = FileSystemExperimentStore(
+        root=artifacts_root,
+        experiment_name=manifest.experiment_name,
+        experiment_version=manifest.experiment_version,
+    )
+    use_case = RunExperiment(
+        store=store,
+        runner=_PlannedRunner(plan=plan, artifacts_root=artifacts_root),
+        repository=FileSystemResultRepository(root=artifacts_root),
+        evaluator=EvaluateRun(evaluation_code_digest=plan.code),
+    )
+    prepared = PreparedExperiment(
+        manifest=manifest,
+        run_config=plan.config,
+        compiled=plan.compiled,
+        calendar=plan.calendar,
+        expected_run_id=plan.run_id,
+        code_digest=plan.code,
+        lock_digest=plan.lock,
+        env_digest=plan.environment,
+        git_commit=plan.git_commit,
+        git_dirty=plan.git_dirty,
+    )
+    return ExperimentRunOutcome(
+        manifest=manifest,
+        result=use_case.execute(prepared),
+        directory=store.directory,
+        expected_run_id=plan.run_id,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ReproductionOutcome:
+    """`experiment reproduce` の成果（CLI が表示と終了コードに使う）。"""
+
+    report: ReproductionReport
+    path: Path
+    detail: str
+
+
+def _original_root(experiment_dir: Path) -> Path | None:
+    """実験の版のディレクトリ `<根>/runs/experiments/<名前>/v<版>` から元の成果物の根を引く。"""
+    resolved = experiment_dir.resolve()
+    if len(resolved.parents) < 4:
+        return None
+    if resolved.parents[1].name != "experiments" or resolved.parents[2].name != "runs":
+        return None
+    return resolved.parents[3]
+
+
+def _same_place(left: Path, right: Path) -> bool:
+    return left.resolve() == right.resolve()
+
+
+def reproduce_experiment(
+    *,
+    experiment_dir: Path,
+    snapshots_root: Path,
+    out_root: Path,
+    repo_root: Path,
+) -> ReproductionOutcome:
+    """記録票と結末記録だけから run と評価をやり直し、判定を書く（D07 §21.2）。
+
+    受け取るのは実験の版のディレクトリ・snapshot の基点・出力の基点（と、現在の環境の lock を
+    読むリポジトリの位置）だけで、元の実験設定ファイル・戦略ファイルは読まない（D07 §21.1）。
+    引数・読込の誤り（結末記録が無い、run が行われていない、記録票・結末記録が読めない、
+    `--out` が元の成果物と同じ基点）は `ConfigError` で止め、`reproduction.json` を書かない。
+    """
+    if not experiment_dir.is_dir():
+        raise ConfigError(f"`--experiment-dir` が実験の版のディレクトリではない: {experiment_dir}")
+    original = _original_root(experiment_dir)
+    if original is not None and (
+        _same_place(out_root, original) or _same_place(out_root / "runs", original / "runs")
+    ):
+        raise ConfigError(
+            f"`--out` が元の成果物と同じ基点 {original} を指している。再現は元の `runs/` を"
+            " 上書きしないよう、別の基点に書く（D07 §21.2 の手順4）"
+        )
+    require_absent(
+        reproduction_path(out_root),
+        remedy="Choose another --out, or move the earlier reproduction away",
+    )
+
+    # 手順1: 記録票と結末記録を読み、改変と取り違えを確かめる。
+    try:
+        manifest = read_experiment_manifest(experiment_dir)
+        outcome = read_experiment_outcome(experiment_dir)
+    except KernelValueError as exc:
+        raise ConfigError(f"記録票か結末記録を読めない: {exc}") from exc
+    if outcome is None:
+        raise ConfigError(
+            f"{experiment_dir} に結末記録が無い。途中で止まった実験には再現する結果が無い"
+            "（D07 §21.2 の手順1）"
+        )
+    if outcome.run_id is None or outcome.result_digest is None:
+        raise ConfigError(
+            f"{experiment_dir} の結末記録は run と評価を持たない（{outcome.status.value}）。"
+            "再現する結果が無い（D07 §21.2 の手順1）"
+        )
+    expected_run_id = outcome.run_id
+    expected_digest = outcome.result_digest
+
+    def report(
+        verdict: ReproductionVerdict,
+        detail: str,
+        observed_run_id: RunId | None = None,
+        observed_digest: ContentDigest | None = None,
+    ) -> ReproductionOutcome:
+        result = ReproductionReport(
+            experiment_id=manifest.experiment_id,
+            verdict=verdict,
+            expected_run_id=expected_run_id,
+            observed_run_id=observed_run_id,
+            expected_result_digest=expected_digest,
+            observed_result_digest=observed_digest,
+        )
+        path = write_reproduction(
+            out_root,
+            reproduction_payload(
+                result.experiment_id,
+                result.verdict.value,
+                result.expected_run_id,
+                result.observed_run_id,
+                result.expected_result_digest,
+                result.observed_result_digest,
+            ),
+        )
+        return ReproductionOutcome(report=result, path=path, detail=detail)
+
+    tampered = _tampering(manifest, outcome)
+    if tampered is not None:
+        return report(ReproductionVerdict.MANIFEST_TAMPERED, tampered)
+
+    # 手順2: 現在の環境を結末記録と比べる（違えば run しない。Q12 決定）。
+    current = (code_digest(), lock_digest(repo_root), env_digest())
+    recorded = (outcome.code_digest, outcome.lock_digest, outcome.env_digest)
+    if current != recorded:
+        names = [
+            name
+            for name, now, then in zip(("code", "lock", "env"), current, recorded, strict=True)
+            if now != then
+        ]
+        return report(
+            ReproductionVerdict.ENVIRONMENT_MISMATCH,
+            f"the current {', '.join(names)} digest differs from the outcome; not run",
+        )
+
+    # 手順3: 記録票の本文から設定を組み立て、ConfigDigest と RunId を確かめる。
+    loaded = experiment_v2_from_texts(
+        {role: manifest.file(role).text for role in TEXT_ROLES},
+        {item.role.removeprefix("symbol:"): item.text for item in manifest.symbol_files()},
+        registry=INITIAL_CATALOG,
+        metric_set_versions=frozenset({METRIC_SET_VERSION}),
+    )
+    environment = loaded.environment
+    plan = _plan_run(
+        experiment=loaded.experiment,
+        calendar=environment.calendar,
+        timeframe_defs=environment.timeframe_defs,
+        symbol_specs=environment.symbol_specs,
+        snapshots_root=snapshots_root,
+        repo_root=repo_root,
+    )
+    if plan.config_digest != manifest.expected_config_digest or plan.run_id != expected_run_id:
+        return report(
+            ReproductionVerdict.RUN_ID_MISMATCH,
+            "the configuration rebuilt from the manifest does not reach the recorded run; not run",
+            observed_run_id=plan.run_id,
+        )
+
+    # 手順4: 別の基点で run と評価を行う。
+    require_run_directory_absent(out_root, plan.run_id)
+    result = _run_use_case(plan, out_root, replace=False).run(plan.config, plan.compiled)
+    repository = FileSystemResultRepository(root=out_root)
+    evaluation = EvaluateRun(evaluation_code_digest=plan.code).evaluate(
+        result, repository, manifest.metric_set_version, plan.calendar
+    )
+    repository.write_evaluation(evaluation, evaluation.rows)
+
+    # 手順5: 記録と比べる。
+    observed_digest = evaluation.manifest.result_digest
+    verdict = judge_reproduction(
+        expected_run_id=expected_run_id,
+        observed_run_id=result.run_id,
+        expected_result_digest=expected_digest,
+        observed_result_digest=observed_digest,
+    )
+    return report(
+        verdict,
+        "re-ran in a separate artifacts root and compared run_id and result_digest",
+        observed_run_id=result.run_id,
+        observed_digest=observed_digest,
+    )
+
+
+def _tampering(manifest: ExperimentManifest, outcome: ExperimentOutcome) -> str | None:
+    """手順1 の改変・取り違えの検出（D07 §21.2）。見つからなければ `None`。
+
+    - 結末記録が別の記録票のもの（識別子が違う）。
+    - 記録票の本文の改変（本文の SHA-256 が記録された値と違う）。識別子の入力には本文では
+      なく SHA-256 が入る（D07 §19.2 の入力 3）ので、本文だけの改変は識別子の再計算では
+      見つからない。
+    - 記録票の項目の改変（識別子を再計算すると記録された値と違う）。
+    """
+    if outcome.experiment_id != manifest.experiment_id:
+        return (
+            f"the outcome belongs to the experiment {outcome.experiment_id}, not to the manifest"
+            f" {manifest.experiment_id}"
+        )
+    altered = sorted(item.role for item in manifest.resolved_files if not item.intact)
+    if altered:
+        return f"the text of {altered} does not match its recorded SHA-256"
+    values = load_yaml_mapping(
+        Path("resolved_files[experiment]"), text=manifest.file("experiment").text
+    )
+    if experiment_id_of(manifest, values) != manifest.experiment_id:
+        return "the experiment id recomputed from the manifest does not match the recorded one"
+    return None

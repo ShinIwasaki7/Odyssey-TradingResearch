@@ -844,6 +844,11 @@ class EvaluateRun:
             raise KernelValueError("EvaluateRun requires a CodeDigest for the evaluating code")
         self._code_digest = evaluation_code_digest
 
+    @property
+    def code_digest(self) -> CodeDigest:
+        """評価時のコードのダイジェスト（評価の識別子の算出元。D07 §9.2）。"""
+        return self._code_digest
+
     def evaluate(
         self,
         result: BacktestResult,

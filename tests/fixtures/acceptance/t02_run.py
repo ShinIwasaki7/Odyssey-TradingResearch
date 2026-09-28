@@ -31,6 +31,7 @@ from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
 from odyssey_fx.backtest.trace.manifest import config_digest_of
 from odyssey_fx.backtest.trace.recorder import TraceTable
+from odyssey_fx.backtest.trace.result import BacktestResult
 from odyssey_fx.common.ids import IdAllocator, SnapshotId
 from odyssey_fx.common.refs import ContentDigest, PolicyRef, SnapshotRef, run_id
 from odyssey_fx.common.time import Interval, UtcTime
@@ -298,6 +299,7 @@ def evaluate_case(case: T02Case, root: Path) -> EvaluationReport:
     FileSystemResultWriter(root=root).write(output.result, output.manifest)
     repository = FileSystemResultRepository(root=root)
     result = repository.read_result(output.result.run_id)
+    assert isinstance(result, BacktestResult), result
     return EvaluateRun(evaluation_code_digest=CODE_DIGEST).evaluate(
         result, repository, METRIC_SET_VERSION, market.calendar()
     )

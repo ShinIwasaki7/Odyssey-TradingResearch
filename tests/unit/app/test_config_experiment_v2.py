@@ -192,6 +192,7 @@ def _workspace(tmp_path: Path) -> Path:
         "configs/calendars/timeframes_v1.yaml",
         "configs/symbols/USDJPY.yaml",
         "configs/strategies/strategy_b_v1.yaml",
+        "configs/policies/research/research_policy_v1.yaml",
         "configs/experiments/strategy_b_t02_d1_2s.yaml",
     ):
         target = tmp_path / relative

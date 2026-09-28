@@ -87,13 +87,17 @@ def test_an_identifier_that_is_not_a_digest_fails_with_exit_code_one(
     assert "16進64文字" in capsys.readouterr().err
 
 
-def test_evaluating_a_run_that_was_never_saved_fails_with_exit_code_one(
+def test_evaluating_a_run_that_was_never_saved_fails_with_exit_code_two(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """保存されていない run の評価は失敗として終える（想定していない失敗にしない）。"""
+    """保存済みの結果が読めない評価は、読込の誤りとして終了コード 2 で終える（D07 §4.1 の (a)）。
+
+    想定していない失敗（traceback）にせず、評価の成果物も書かない。
+    """
     argv = ["evaluate", "--run", "a" * 64, "--calendar", CALENDAR, "--out", str(tmp_path)]
-    assert main(argv) == 1
+    assert main(argv) == 2
     assert "result.json" in capsys.readouterr().err
+    assert not (tmp_path / "runs" / ("a" * 64) / "eval").exists()
 
 
 def test_running_with_a_missing_experiment_file_fails_with_exit_code_one(

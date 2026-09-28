@@ -1,0 +1,17 @@
+# 研究ポリシー v1（D07 §20.2、2026-09-25 の人間の決定5）
+#
+# 検査の規則はコードに置き（`odyssey_fx.evaluation.domain.research_policy`）、このファイルは
+# 複雑性の上限の値だけを持つ。上限は Q7 決定（検証戦略 B の約3倍）の値である。
+#
+# 実験設定の書式 v2 は `research_policy: {id: research_policy, version: 1}` でこのファイルを
+# 指す（置き場は `configs/policies/research/<id>_v<version>.yaml`）。**版を上げずに中身を
+# 変えない**（D07 §20.2。変えるときは版を上げて別のファイルにする）。
+
+schema_version: 1
+id: research_policy
+version: 1
+complexity_limits:
+  component_kinds: 30
+  instances: 36
+  parameters: 33
+  decision_outputs: 18

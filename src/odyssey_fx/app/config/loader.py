@@ -118,8 +118,12 @@ class _StrictSafeLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-def load_yaml_mapping(path: Path) -> dict[str, Any]:
+def load_yaml_mapping(path: Path, *, text: str | None = None) -> dict[str, Any]:
     """設定ファイルを読み、最上位の mapping を返す（D01 §10.1）。
+
+    `text` を渡すと、ファイルを読まずにその本文を読む（`path` は誤りの説明に使う名前だけに
+    なる）。実験の記録票が保存した本文から設定を組み立て直す別プロセスでの再現（D07 §21.2 の
+    手順3）が、本文をファイルシステムへ書き戻さずに同じ読込条件を通すための入口である。
 
     `schema_version` の存在だけをここで確かめる。中身の検証（未宣言キー・型不一致）は
     Pydantic モデルが行う（`extra="forbid"` と型注釈）。
@@ -129,10 +133,10 @@ def load_yaml_mapping(path: Path) -> dict[str, Any]:
     """
     if not isinstance(path, Path):  # pragma: no cover - 呼び出し側が Path を渡す
         raise ConfigError(f"load_yaml_mapping には Path を渡すこと（{type(path).__name__}）")
-    if not path.is_file():
-        raise ConfigError(f"設定ファイルが見つからない: {path}")
-
-    text = path.read_text(encoding="utf-8")
+    if text is None:
+        if not path.is_file():
+            raise ConfigError(f"設定ファイルが見つからない: {path}")
+        text = path.read_text(encoding="utf-8")
     try:
         loaded = yaml.load(text, Loader=_StrictSafeLoader)  # noqa: S506 - 安全な読込（上記）
     except ConfigError as exc:
