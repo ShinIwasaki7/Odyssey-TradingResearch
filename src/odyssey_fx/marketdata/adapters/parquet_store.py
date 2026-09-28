@@ -429,6 +429,15 @@ class ParquetSnapshotStore:
         # 根から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
         # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
         root = Path(self.root)
+        # 根そのものは利用者が指す置き場なのでリンクでもよいが、既にあるなら（リンクの
+        # 先が）ディレクトリでなければならない。通常ファイルや先の無いリンクなら、その下に
+        # snapshot は書けないので型付きで止める（未捕捉の例外にしない）。
+        if (root.is_symlink() or root.exists()) and not root.is_dir():
+            raise SnapshotAlreadyExists(
+                f"{root} exists but is not a directory (or links to none); snapshots are"
+                " written only under a directory, and nothing was written. Move or delete"
+                " it first (D03 §3.7.2, R4)"
+            )
         root.mkdir(parents=True, exist_ok=True)
         current = root
         for part in PurePosixPath(snapshot_dir).parts[:-1]:

@@ -150,6 +150,22 @@ def require_absent(directory: Path, *, remedy: str) -> None:
         raise _already_exists(directory, remedy)
 
 
+def _require_root_is_directory(base: Path) -> None:
+    """成果物の根（`runs/`）が既にあるなら、（リンクの先が）ディレクトリでなければならない。
+
+    根は利用者が指す置き場の一部なので、別ディスクへのリンクでもよい（D06 §9.1、
+    2026-09-28 の人間の決定）。ただし通常ファイルや先の無いリンクなら、その下に成果物は
+    書けない。ここで型付きに止めないと、実行前の検査は子の保存先を「無い」と判定して
+    run を最後まで走らせ、書き出しで未捕捉の例外になる（D06 §10.6）。
+    """
+    if (base.is_symlink() or base.exists()) and not base.is_dir():
+        raise ArtifactAlreadyExists(
+            f"{base} exists but is not a directory (or links to none); artifacts are written"
+            " only under a directory, and nothing was written. Move or delete it first"
+            " (D06 §9.1, R4)"
+        )
+
+
 def _make_plain_parents(base: Path, directory: Path, error: ArtifactAlreadyExists) -> None:
     """`base` から `directory` の親までの要素を、リンクでない実ディレクトリとして用意する。
 
@@ -183,6 +199,7 @@ def create_artifact_directory(directory: Path, *, base: Path, remedy: str) -> Pa
     ならない（無ければ作る）。`base` そのものは利用者が指す場所なので検査しない。
     `remedy` は利用者が取れる手当て（置換の指示、または人間による移動・削除）の説明。
     """
+    _require_root_is_directory(base)
     base.mkdir(parents=True, exist_ok=True)
     _make_plain_parents(
         base,
@@ -256,16 +273,16 @@ def _require_plain_entries(directory: Path) -> None:
     """置換が読む・残す・畳む項目が、リンクでない本物であることを確かめる（D06 §9.3）。
 
     置換の手順の先頭で、何かを作る・消す前に1回行う。対象は、旧 manifest
-    （`manifest.json`）と残した世代（`manifest.replaced.<NNN>.json` の候補）が
+    （`manifest.json`）と残した世代（`manifest.replaced.<NNN>.json` の候補と、番号の無い
+    旧形式 `manifest.replaced.json`）が
     **リンクでない通常のファイル**であること、評価の成果物（`eval`）が**リンクでない
     ディレクトリ**であることである。リンクや別の種類のものを受け入れると、実体の無い
     世代を残したり、リンク先の変更で履歴が変わったり、リンク先を畳んだりする。
     """
     for path in sorted(directory.iterdir()):
         name = path.name
-        if name == "manifest.json" or (
-            name.startswith(_REPLACED_PREFIX) and name != _LEGACY_REPLACED_MANIFEST
-        ):
+        if name == "manifest.json" or name.startswith(_REPLACED_PREFIX):
+            # 番号の無い旧形式（`manifest.replaced.json`）も残す対象なので、同じく検査する。
             plain = not path.is_symlink() and path.is_file()
             kind = "a regular file"
         elif name == _EVALUATION_DIRECTORY:
@@ -316,6 +333,7 @@ def require_run_directory_absent(root: Path, run_id: object) -> None:
     置換を指示した run では呼ばない。書き出しの直前の確保（`reserve_run_directory`）は
     これとは別にもう一度行う。
     """
+    _require_root_is_directory(Path(root) / "runs")
     require_absent(run_directory(root, run_id), remedy=_RUN_REMEDY)
 
 

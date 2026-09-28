@@ -634,6 +634,28 @@ def test_a_snapshot_is_not_written_through_a_linked_pending_directory(tmp_path: 
     assert list(elsewhere.iterdir()) == []
 
 
+def test_a_file_at_the_snapshot_root_is_refused(tmp_path: Path) -> None:
+    """snapshot の根が通常ファイルなら、型付きで失敗し、触れない（R4）。根はリンクでもよい。"""
+    root = tmp_path / "snapshots"
+    root.write_text("not a root", encoding="utf-8")
+    store = ParquetSnapshotStore(root=root)
+    identifier = "c" * 64
+    with pytest.raises(SnapshotAlreadyExists, match="not a directory"):
+        store.create_directory(f"_pending/{identifier}", identifier)
+    assert root.read_text(encoding="utf-8") == "not a root"
+
+
+def test_a_linked_snapshot_root_is_written_through(tmp_path: Path) -> None:
+    """snapshot の根そのものは利用者が指す置き場なので、別ディスクへのリンクでもよい（R4）。"""
+    disk = tmp_path / "disk"
+    disk.mkdir()
+    root = tmp_path / "snapshots"
+    root.symlink_to(disk)
+    identifier = "d" * 64
+    ParquetSnapshotStore(root=root).create_directory(f"_pending/{identifier}", identifier)
+    assert (disk / "_pending" / identifier).is_dir()
+
+
 def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
     """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
     store = ParquetSnapshotStore(root=tmp_path)

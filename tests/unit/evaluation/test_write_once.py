@@ -335,6 +335,63 @@ def test_a_linked_runs_root_is_the_users_place_and_is_written_through(tmp_path: 
     assert (written / "evaluation.json").is_file()
 
 
+def test_a_file_at_the_runs_root_is_refused_before_the_run(tmp_path: Path) -> None:
+    """根 `runs` が通常ファイルなら、実行前検査も書き出し前検査も型付きで失敗し、触れない。
+
+    根はリンクでもよいが（D06 §9.1）、ディレクトリでないものの下には成果物を書けない。
+    実行前検査が「子の保存先は無い」と読んで run を走らせ、書き出しで未捕捉の例外になる
+    経路を塞ぐ（D06 §10.6）。
+    """
+    (tmp_path / "runs").write_text("not a root", encoding="utf-8")
+    run_id = "9" * 64
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        require_run_directory_absent(tmp_path, run_id)
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        reserve_run_directory(tmp_path, run_id)
+    report = _report()
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        FileSystemResultRepository(root=tmp_path).write_evaluation(report, report.rows)
+    assert (tmp_path / "runs").read_text(encoding="utf-8") == "not a root"
+
+
+def test_a_dangling_link_at_the_runs_root_is_refused(tmp_path: Path) -> None:
+    """根 `runs` が先の無いリンクなら、リンクは許す規則の下でも型付きで失敗する。"""
+    (tmp_path / "runs").symlink_to(tmp_path / "nowhere")
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        require_run_directory_absent(tmp_path, "9" * 64)
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        reserve_run_directory(tmp_path, "9" * 64)
+    assert not (tmp_path / "nowhere").exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_a_legacy_replaced_manifest_must_be_a_plain_file(tmp_path: Path, kind: str) -> None:
+    """番号の無い旧形式 `manifest.replaced.json` も、リンクやディレクトリなら置換前に拒否する。
+
+    残す対象はすべて種類を検査する（D06 §9.3）。除外すると、実体の無い履歴を残したまま
+    置換が成功する。
+    """
+    run_id = "d" * 64
+    directory = run_directory(tmp_path, run_id)
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_text("{}", encoding="utf-8")
+    (directory / "FILLS.parquet").write_bytes(b"old")
+    legacy = directory / "manifest.replaced.json"
+    if kind == "symlink":
+        elsewhere = tmp_path / "elsewhere.json"
+        elsewhere.write_text("legacy", encoding="utf-8")
+        legacy.symlink_to(elsewhere)
+    else:
+        legacy.mkdir()
+    before = _snapshot(directory)
+
+    with pytest.raises(ArtifactAlreadyExists, match="regular file"):
+        reserve_run_directory(tmp_path, run_id, replace=True)
+    assert _snapshot(directory) == before
+    assert legacy.is_symlink() if kind == "symlink" else legacy.is_dir()
+    assert not (directory / "manifest.replaced.001.json").exists()
+
+
 def test_an_existing_generation_file_is_never_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
