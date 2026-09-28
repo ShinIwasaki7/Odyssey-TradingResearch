@@ -60,6 +60,9 @@ class _StubStore:
     知らないうちに入出力へ踏み込んでいれば、その場で分かる。
     """
 
+    def create_directory(self, snapshot_dir: str, snapshot_id: str) -> None:
+        raise NotImplementedError("構成の試験では書き出し先を作らない")
+
     def write_partition(
         self, snapshot_dir: str, partition_id: PartitionId, bars: Iterable[Bar]
     ) -> str:

@@ -314,7 +314,7 @@ def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, obje
     reserve_run_directory(root, result.run_id, replace=True)
 
     assert not evaluations.exists(), "古い評価の成果物が残っている"
-    assert (run_directory(root, result.run_id) / "manifest.replaced.json").is_file()
+    assert (run_directory(root, result.run_id) / "manifest.replaced.001.json").is_file()
 
 
 def test_a_saved_run_with_a_broken_manifest_is_evaluated_and_explained(

@@ -51,7 +51,11 @@ from odyssey_fx.marketdata.domain.classification import (
     ClassificationOutcome,
     ResolvedClassification,
 )
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError, SnapshotNotApproved
+from odyssey_fx.marketdata.domain.errors import (
+    MarketDataValueError,
+    SnapshotAlreadyExists,
+    SnapshotNotApproved,
+)
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
     CheckResult,
@@ -395,6 +399,85 @@ class ParquetSnapshotStore:
         if root != candidate and root not in candidate.parents:
             raise ValueError(f"{snapshot_dir!r} resolves outside the snapshot root {root}")
         return candidate
+
+    # --- 書き出し先の確保（R4）----------------------------------------------
+
+    def create_directory(self, snapshot_dir: str, snapshot_id: str) -> None:
+        """snapshot の書き出し先を新しく作る（D03 §3.7.2・§10、R4）。
+
+        成果物の書き込みは「存在すれば、何も書かずに失敗する」。確かめてから作ると、
+        確かめた後に別の実行が同じディレクトリを作る隙間が残るので、**作ること自体で
+        確かめる**（既にあれば作成が失敗する）。親（`_pending/` など）は無ければ作る。
+
+        書き出し先の名前は書く snapshot の識別子と一致しなければならない。食い違うと、
+        読み取りの関門（`open_readable` の3者の一致）を通らない成果物ができる。
+        """
+        name = PurePosixPath(snapshot_dir).name
+        if name != snapshot_id:
+            raise MarketDataValueError(
+                f"{snapshot_dir!r} does not name the snapshot {snapshot_id!r} it would hold;"
+                " a snapshot directory is named after its identifier (D03 §3.7.1)"
+            )
+        # **リンクを解決する前に**、書き出し先そのものと、根から書き出し先の親までの要素の
+        # 種類を見る。解決後のパスを作ると、置かれたリンク（先が無いものを含む）を辿って
+        # リンク先に作れてしまい、循環するリンクは解決の失敗（未捕捉の例外）になる。
+        # 解決前に見れば、どれも「既にある／種類が違う」として型付きで止まる。
+        root = Path(self.root)
+        # 根そのものは利用者が指す置き場なのでリンクでもよいが、既にあるなら（リンクの
+        # 先が）ディレクトリでなければならない。通常ファイル・先の無いリンク・循環する
+        # リンクなら、その下に snapshot は書けない。
+        # 根がまだ無いときは、根を作るときに通る最初の既存の祖先（`--out` そのもの
+        # など）を同じ条件で見る。
+        existing = next((p for p in (root, *root.parents) if p.is_symlink() or p.exists()), None)
+        if existing is not None and not existing.is_dir():
+            raise self._root_not_a_directory(existing)
+        # 根の下から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
+        # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
+        parents: list[Path] = []
+        current = root
+        for part in PurePosixPath(snapshot_dir).parts[:-1]:
+            current = current / part
+            if current.is_symlink() or (current.exists() and not current.is_dir()):
+                raise SnapshotAlreadyExists(
+                    f"{current} is a symbolic link or not a directory; snapshots are never"
+                    " written through links, and nothing was written. Replace it with a"
+                    " plain directory first (D03 §3.7.2, R4)"
+                )
+            parents.append(current)
+        target = root / snapshot_dir
+        if target.is_symlink() or target.exists():
+            raise self._already_exists(target)
+        # ここまでで根の下にリンクは無いので、解決は失敗しない。根の外を指さないことを確かめる。
+        self._snapshot_path(snapshot_dir)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError) as error:
+            # 確かめた後に別のプロセスが祖先へファイルを置いた場合も型付きで止める。
+            raise self._root_not_a_directory(root) from error
+        for parent in parents:
+            parent.mkdir(exist_ok=True)
+        try:
+            target.mkdir()
+        except FileExistsError:
+            raise self._already_exists(target) from None
+
+    @staticmethod
+    def _root_not_a_directory(path: Path) -> SnapshotAlreadyExists:
+        """snapshot の根（またはその最も近い既存の祖先）がディレクトリでないことの例外（R4）。"""
+        return SnapshotAlreadyExists(
+            f"{path} exists but is not a directory (or links to none); snapshots are"
+            " written only under a directory, and nothing was written. Move or delete"
+            " it first (D03 §3.7.2, R4)"
+        )
+
+    @staticmethod
+    def _already_exists(target: Path) -> SnapshotAlreadyExists:
+        """書き出し先が既にあることの例外（R4）。"""
+        return SnapshotAlreadyExists(
+            f"{target} already exists; snapshot artifacts are never overwritten, and"
+            " nothing was written. Move or delete that directory first if it should be"
+            " written again (D03 §3.7.2, R4)"
+        )
 
     # --- partition ----------------------------------------------------------
 

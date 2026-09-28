@@ -252,7 +252,12 @@ def _write_snapshot(
     `provisional_report` は確定段階で 5〜7 を再実行した場合の暫定報告（人間が分類の根拠に
     した報告）。最終報告と異なるときだけ `integrity_report_provisional.json` として残す
     （D03 §3.7 v1.7。同じなら manifest の2つのダイジェストが一致し、ファイルは要らない）。
+
+    **最初に書き出し先を新しく作る**（D03 §3.7.2、R4）。既にあれば、何も書かずに
+    `SnapshotAlreadyExists` で失敗する。暫定ディレクトリも確定ディレクトリも同じ規則で、
+    確定済み snapshot の承認と価格基準の宣言記録を黙って失わせない。
     """
+    store.create_directory(directory, str(manifest.snapshot_id()))
     store.write_integrity_report(directory, pending.report)
     if provisional_report is not None and manifest.provisional_report_ref != (
         manifest.integrity_report_ref
@@ -419,13 +424,8 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
     # 識別子になるので、確定をもう一度走らせると同じディレクトリを指す。そこには既に
     # 承認（`approval`）と価格基準の宣言記録（`declaration_record`）が入っているかもしれず、
     # 書き直すとそれらが消える。承認は人間の確認の記録なので、黙って失わせない。
-    if (args.out / final_id / "manifest.json").is_file():
-        raise ConfigError(
-            f"{args.out / final_id} は既に確定済みである。承認と価格基準の宣言記録を"
-            " 保持するため上書きしない。確定し直す場合は、先に確定済みの snapshot を"
-            f" 移動または削除すること（暫定 snapshot は {pending_directory} に残している）"
-        )
-
+    # 検査は書き出しの最初に書き出し先を新しく作ることで行う（`_write_snapshot`、R4）。
+    # 失敗しても暫定ディレクトリは畳まないので、分類をやり直せる。
     _write_snapshot(
         store,
         final_id,

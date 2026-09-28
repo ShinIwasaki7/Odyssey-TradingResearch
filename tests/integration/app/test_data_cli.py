@@ -238,6 +238,34 @@ def test_accept_writes_the_provisional_snapshot(
     assert pending in capsys.readouterr().out
 
 
+def test_accepting_the_same_files_again_writes_nothing(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """同じ暫定 snapshot を受け入れ直すと、何も書かずに失敗する（D03 §3.7.2 の R1-D03-1、R4）。
+
+    暫定の識別子は内容から決まるので同じディレクトリを指す。黙って書き直すと、人間の
+    分類作業の途中で暫定 snapshot が書き換わる（変わるのは作成時刻だけでも）。
+    """
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    directory = workspace / "data/snapshots/_pending" / pending
+    before = {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+    capsys.readouterr()
+
+    assert _accept(workspace) == 1
+    assert "already exists" in capsys.readouterr().err
+    after = {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before
+
+
 def test_accept_reports_the_findings_per_series(
     workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

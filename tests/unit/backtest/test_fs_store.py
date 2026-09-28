@@ -358,8 +358,8 @@ def test_replacing_a_run_keeps_the_previous_manifest(tmp_path: Path) -> None:
     for table in TraceTable:
         sink.write(table, _rows(output, table))
 
-    assert (directory / "manifest.replaced.json").exists()
-    assert json.loads((directory / "manifest.replaced.json").read_text(encoding="utf-8"))[
+    assert (directory / "manifest.replaced.001.json").exists()
+    assert json.loads((directory / "manifest.replaced.001.json").read_text(encoding="utf-8"))[
         "run_id"
     ] == str(output.result.run_id)
 
