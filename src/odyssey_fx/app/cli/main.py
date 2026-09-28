@@ -18,6 +18,8 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
   結果とともに結末記録を書く（D07 §19・§20）。
 - `odyssey-fx experiment reproduce`（段階4）: 記録票と結末記録だけから別の基点で run と評価を
   やり直し、判定を `reproduction.json` に書く（D07 §21）。
+- `odyssey-fx experiment report`（段階4）: 保存済みの成果物だけから実験の人間向けレポート
+  `report.md` を作り直す（D07 §22）。`experiment run` も最後に同じレポートを書く。
 
 **実行と評価を別のコマンドに分ける**（D07 §4.1）。評価は run を実行し直さず、保存された
 判断履歴と manifest だけを読む。同じ run を別の指標集合の版で評価し直しても、`runs/` の
@@ -63,6 +65,7 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
+from odyssey_fx.evaluation.adapters.report import ReportWrite
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.evaluation.application.ports import ResultReadFailure
 from odyssey_fx.evaluation.application.run_experiment import (
@@ -278,6 +281,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("."),
         help="実験設定のパスを解決し、`uv.lock` と作業ツリーの状態を読むリポジトリの位置",
+    )
+    report_command = experiment.add_parser(
+        "report",
+        help="保存済みの成果物だけから実験のレポート（report.md）を作り直す（D07 §22）",
+    )
+    report_command.set_defaults(command="experiment_report")
+    report_command.add_argument(
+        "--experiment-dir",
+        type=Path,
+        required=True,
+        help="実験の版のディレクトリ（runs/experiments/<名前>/v<版>/）",
     )
     reproduce = experiment.add_parser(
         "reproduce",
@@ -927,7 +941,25 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
         out.line(f"別プロセスで再現するには `{command}` を実行すること")
     if result.status is ExperimentStatus.REJECTED_BY_POLICY:
         out.line("研究ポリシーの事前検査に合格しなかったので run していない（D07 §20.3）")
+    if outcome.report is not None:
+        out.line(f"レポート: {outcome.report}")
     return _EXPERIMENT_EXIT[result.status]
+
+
+#: `experiment report` の書き込みの結果の表示（D07 §22.1）。
+_REPORT_WRITE_TEXT: dict[ReportWrite, str] = {
+    ReportWrite.CREATED: "レポートを書いた",
+    ReportWrite.UNCHANGED: "既存のレポートと内容が同じなので何もしていない",
+    ReportWrite.REPLACED: "既存のレポートと内容が違うので、退避（report.<n>.md）してから書いた",
+}
+
+
+def _run_experiment_report(args: argparse.Namespace, out: _Writer) -> int:
+    """保存済みの成果物だけからレポートを作り直す（D07 §22.1、§21.3 の `experiment report`）。"""
+    outcome = composition.report_experiment(experiment_dir=args.experiment_dir)
+    out.line(_REPORT_WRITE_TEXT[outcome.written])
+    out.line(f"レポート: {outcome.path}")
+    return _EXIT_OK
 
 
 def _run_experiment_reproduce(args: argparse.Namespace, out: _Writer) -> int:
@@ -994,6 +1026,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "evaluate": _run_evaluate,
         "experiment_run": _run_experiment_run,
         "experiment_reproduce": _run_experiment_reproduce,
+        "experiment_report": _run_experiment_report,
     }
     try:
         return handlers[args.command](args, out)

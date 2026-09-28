@@ -406,6 +406,45 @@ def test_a_delay_on_the_execution_series_is_accepted(tmp_path: Path) -> None:
     assert str(scenario.rules[0].series) == "USDJPY/15m/bid"
 
 
+def test_a_delay_on_a_series_the_run_does_not_read_is_refused(tmp_path: Path) -> None:
+    """戦略も執行も読まない系列への遅延は、何も変えないので読込時に拒否する（PR 4 の仮置き）。
+
+    PR #45 のレビューで PR 4 へ送られた指摘: 当たらない規則は run を遅延なしと同じに動かす
+    のに、遅延シナリオの版参照が遅延ありとして manifest と `run_id` に入る。
+    """
+    path = _variant(
+        tmp_path,
+        'series: "USDJPY/1d_ny17/bid", delay: "2s"}',
+        'series: "USDJPY/4h_ny17/bid", delay: "2s"}',
+    )
+    assert "この run が読まない" in _refused(path, tmp_path)
+
+
+def test_an_injected_delay_off_a_bar_start_is_refused(tmp_path: Path) -> None:
+    """足の開始でない時刻への特定の足の遅延はどの足にも当たらないので拒否する（PR 4 の仮置き）。
+
+    日足 NY17 の足は 22:00Z（冬時間）に始まる。21:00Z はどの足の開始とも一致しない。
+    """
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        ' bar_start: "2015-01-06T21:00:00Z", delay: "25h"}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    assert "足の開始ではない" in _refused(path, tmp_path)
+
+
+def test_an_injected_delay_on_a_bar_start_is_accepted(tmp_path: Path) -> None:
+    """足の開始ちょうどの特定の足の遅延は受け付ける（上の拒否が境界を取り違えていないこと）。"""
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        ' bar_start: "2015-01-06T22:00:00Z", delay: "25h"}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    scenario = _load(path, tmp_path).experiment.delay_scenario
+    assert scenario is not None
+    assert len(scenario.rules) == 1
+
+
 def test_the_delay_reference_names_the_scenario() -> None:
     """遅延シナリオの版参照はシナリオの id と版をそのまま載せる（D07 §18.3）。"""
     ref = _load(B_EXPERIMENTS["d1_bar_hold"]).experiment.policy_ref("delay")

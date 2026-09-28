@@ -1111,6 +1111,58 @@ def test_a_missing_expected_bar_on_an_executed_series_is_not_runnable() -> None:
     assert any("missing expected bars" in line for line in report.diagnostics)
 
 
+def test_a_missing_expected_bar_outside_the_run_interval_does_not_block_the_run() -> None:
+    """D06 §10.5 の手順2: 照合するのは**要求した期間**（run 区間）と重なる欠落だけである。
+
+    完全性検査の報告は snapshot 全体（封印期間・隔離期間を含む）のものなので、区間を限らない
+    と、run 区間の外の欠落で、欠落の無い区間の run まで止まる。実データでは執行系列の欠落が
+    研究履歴の 2018 年に1件も無いのに、他の年の欠落で 2018 年の run が止まっていた（D07 §23.2
+    の Q9 決定の前提。段階4 実装 PR 4 の仮置き）。区間の境界にちょうど接するだけの欠落も
+    重ならないので止めない。
+    """
+    from odyssey_fx.backtest.application.run_backtest import capability_report
+    from odyssey_fx.marketdata.domain.integrity import (
+        CheckKind,
+        CheckResult,
+        IntegrityReport,
+        Severity,
+    )
+    from tests.fixtures.backtest.harness import EXECUTION_SERIES, SYMBOL_SPEC
+
+    compiled = compiled_strategy()
+    config = _config(compiled)
+    before = CheckResult(
+        kind=CheckKind.MISSING_EXPECTED_BAR,
+        severity=Severity.WARN,
+        series=EXECUTION_SERIES,
+        interval=Interval(
+            start=config.run_interval.start - timedelta(minutes=15),
+            end=config.run_interval.start,
+        ),
+    )
+    after = CheckResult(
+        kind=CheckKind.MISSING_EXPECTED_BAR,
+        severity=Severity.WARN,
+        series=EXECUTION_SERIES,
+        interval=Interval(
+            start=config.run_interval.end,
+            end=config.run_interval.end + timedelta(minutes=15),
+        ),
+    )
+    report = capability_report(
+        config,
+        compiled,
+        integrity=IntegrityReport(results=(before, after)),
+        execution_policy=EXECUTION_POLICY,
+        cost_model=COST_MODEL,
+        symbol_spec=SYMBOL_SPEC,
+    )
+
+    assert report.runnable is True, report.diagnostics
+    # 区間の外の欠落も報告からは落とさない（D06 §10.5 の手順6「全体のまま保存する」）。
+    assert report.integrity.results == (before, after)
+
+
 def test_the_runtime_transitions_get_their_own_processing_points() -> None:
     """D02 §3.3: ランタイムが返す処理点を、エンジンの時計で番号を振り直す。
 

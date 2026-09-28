@@ -66,6 +66,13 @@ files = ["src/odyssey_fx", "tests", "tools"]
 testpaths = ["tests"]
 # tools/ の運用スクリプトを `tools.ops.<module>` として import するため。
 pythonpath = ["."]
+# 実データ（承認済み snapshot の実体。git 管理外）を使うテストはマーカー `realdata` で分け、
+# 既定では実行しない（D08 §12、D07 §23.3）。CI でも実行しない。実行するときは
+# `uv run pytest -m realdata` と明示する（`-m` を渡すと下の既定の除外は上書きされる）。
+markers = [
+    "realdata: 承認済み snapshot の実体（実データ）を使うテスト。既定で除外し CI でも実行しない",
+]
+addopts = "-m 'not realdata'"
 
 # --- import-linter ----------------------------------------------------------
 # D01 v2 §6 の契約をそのまま採用する（ADR-0004）。契約名は CI 出力で参照するため変更しない。

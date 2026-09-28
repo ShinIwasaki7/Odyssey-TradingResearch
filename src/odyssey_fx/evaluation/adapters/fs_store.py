@@ -121,19 +121,24 @@ from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 __all__ = [
     "EXPERIMENT_MANIFEST_FILE",
     "EXPERIMENT_OUTCOME_FILE",
+    "REPORT_FILE",
     "REPRODUCTION_FILE",
     "FileSystemExperimentStore",
     "FileSystemResultRepository",
     "FileSystemResultWriter",
     "FileSystemTraceSink",
     "create_artifact_directory",
+    "ensure_experiment_directory",
     "evaluation_directory",
     "experiment_directory",
     "experiment_manifest_from_payload",
     "experiment_manifest_payload",
     "experiment_outcome_from_payload",
     "experiment_outcome_payload",
+    "keep_previous_records",
+    "keep_previous_report",
     "manifest_from_payload",
+    "next_kept_number",
     "read_experiment_manifest",
     "read_experiment_outcome",
     "replaced_manifest_name",
@@ -144,6 +149,7 @@ __all__ = [
     "reserve_run_directory",
     "result_from_payload",
     "run_directory",
+    "write_new_file",
     "write_reproduction",
 ]
 
@@ -1228,8 +1234,87 @@ def _evaluation_payload(manifest: EvaluationManifest) -> dict[str, Any]:
 EXPERIMENT_MANIFEST_FILE = "experiment_manifest.json"
 EXPERIMENT_OUTCOME_FILE = "experiment_outcome.json"
 
-#: 退避した旧い結末記録（`experiment_outcome.<n>.json`。n は 1 から。D07 §19.3）。
+#: レポートのファイル名（D07 §22.1。本文は `evaluation.adapters.report` が作る）。
+REPORT_FILE = "report.md"
+
+#: 退避した旧い結末記録（`experiment_outcome.<n>.json`）と旧いレポート（`report.<n>.md`）。
+#: n は 1 からの連番で、**2つで1つの連番を共有する**（D07 §19.3・§22.1）。
 _KEPT_OUTCOME = re.compile(r"experiment_outcome\.([1-9][0-9]*)\.json")
+_KEPT_REPORT = re.compile(r"report\.([1-9][0-9]*)\.md")
+
+
+def next_kept_number(directory: Path) -> int:
+    """次に退避する記録の連番（退避済みの結末記録とレポートの番号の最大 + 1）。
+
+    結末記録とレポートは同じ実行のものを同じ番号で退避する（D07 §22.1「結末記録と同じ連番」）。
+    片方だけを退避するとき（`experiment report` がレポートだけを書き直すとき）も同じ連番から
+    取り、番号が2つの系列で食い違わないようにする。
+    """
+    kept = [
+        int(match.group(1))
+        for entry in Path(directory).iterdir()
+        if (match := _KEPT_OUTCOME.fullmatch(entry.name) or _KEPT_REPORT.fullmatch(entry.name))
+    ]
+    return max(kept, default=0) + 1
+
+
+def _present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _keep_file(current: Path, target: Path) -> None:
+    """`current` を `target` へ退避する。退避先は上書きしない（排他的な作成。R4）。"""
+    if current.is_symlink() or not current.is_file():
+        raise ArtifactAlreadyExists(
+            f"{current} is not a plain file; it was left as is and nothing was written"
+            " (D07 §19.3・§22.1)"
+        )
+    try:
+        os.link(current, target)
+    except FileExistsError:
+        raise ArtifactAlreadyExists(
+            f"{target} already exists; kept records are never overwritten, and nothing was"
+            " written (D07 §19.3・§22.1, R4)"
+        ) from None
+    current.unlink()
+
+
+def keep_previous_records(directory: Path) -> None:
+    """同じ版にある結末記録とレポートを同じ連番で退避する（D07 §19.3・§22.1）。
+
+    記録票の保存が成功した直後、run を始める前に呼ぶ。こうしておくと、今回の実行が途中で
+    止まったときに「結末記録もレポートも無い＝途中で止まった」がそのまま成り立つ。
+    """
+    directory = Path(directory)
+    outcome = directory / EXPERIMENT_OUTCOME_FILE
+    report = directory / REPORT_FILE
+    present = [path for path in (outcome, report) if _present(path)]
+    if not present:
+        return
+    for path in present:
+        if path.is_symlink() or not path.is_file():
+            raise ArtifactAlreadyExists(
+                f"{path} is not a plain file; it was left as is and nothing ran (D07 §19.3)"
+            )
+    number = next_kept_number(directory)
+    if _present(outcome):
+        _keep_file(outcome, directory / f"experiment_outcome.{number}.json")
+    if _present(report):
+        _keep_file(report, directory / f"report.{number}.md")
+
+
+def keep_previous_report(directory: Path) -> None:
+    """`report.md` だけを次の連番の `report.<n>.md` へ退避する（D07 §22.1）。
+
+    `experiment report` が内容の違うレポートを書き直すときに使う。
+    """
+    directory = Path(directory)
+    _keep_file(directory / REPORT_FILE, directory / f"report.{next_kept_number(directory)}.md")
+
+
+def ensure_experiment_directory(artifacts_root: Path, directory: Path) -> Path:
+    """実験の版のディレクトリがリンクを経由しない実ディレクトリであることを確かめる（R4）。"""
+    return _ensure_plain_directory(Path(artifacts_root) / "runs", Path(directory))
 
 
 def experiment_directory(root: Path, experiment_name: str, experiment_version: int) -> Path:
@@ -1260,7 +1345,7 @@ def _ensure_plain_directory(base: Path, directory: Path) -> Path:
     return directory
 
 
-def _write_new_file(path: Path, text: str) -> None:
+def write_new_file(path: Path, text: str) -> None:
     """ファイルを**新しく**、原子的に書く（一時ファイル＋改名。D07 §19.4 の「保存を試みる」行）。
 
     既にあれば何も書かずに `FileExistsError`。途中で落ちても書きかけのファイルが本来の名前で
@@ -1552,7 +1637,7 @@ class FileSystemExperimentStore:
         result = self._compare_existing(path, manifest)
         if result is None:
             try:
-                _write_new_file(path, _json_text(experiment_manifest_payload(manifest)))
+                write_new_file(path, _json_text(experiment_manifest_payload(manifest)))
                 result = ManifestSaveResult.CREATED
             except FileExistsError:
                 # 確かめた後に別の実行が書いた。書いたものと比べ直す。
@@ -1591,32 +1676,12 @@ class FileSystemExperimentStore:
 
     @staticmethod
     def _keep_previous_outcome(directory: Path) -> None:
-        """同じ版に既にある結末記録を `experiment_outcome.<n>.json` へ退避する（D07 §19.3）。
+        """同じ版に既にある結末記録とレポートを退避する（D07 §19.3・§22.1）。
 
-        n は 1 からの連番（既に退避した件数 + 1）。旧い記録は消さず、既存の退避先は上書き
-        しない（作成と存在の確認を排他的な作成で1つの操作にする。R4）。
+        結末記録は `experiment_outcome.<n>.json`、レポートは `report.<n>.md` へ、**同じ n**
+        で退避する（n は `next_kept_number`）。旧い記録は消さず、既存の退避先は上書きしない。
         """
-        current = directory / EXPERIMENT_OUTCOME_FILE
-        if not (current.exists() or current.is_symlink()):
-            return
-        if current.is_symlink() or not current.is_file():
-            raise ArtifactAlreadyExists(
-                f"{current} is not a plain file; it was left as is and nothing ran (D07 §19.3)"
-            )
-        kept = [
-            int(match.group(1))
-            for entry in directory.iterdir()
-            if (match := _KEPT_OUTCOME.fullmatch(entry.name))
-        ]
-        target = directory / f"experiment_outcome.{max(kept, default=0) + 1}.json"
-        try:
-            os.link(current, target)
-        except FileExistsError:
-            raise ArtifactAlreadyExists(
-                f"{target} already exists; kept outcomes are never overwritten, and nothing ran"
-                " (D07 §19.3, R4)"
-            ) from None
-        current.unlink()
+        keep_previous_records(directory)
 
     def read_manifest(self, path: str) -> ExperimentManifest:
         """実験の版のディレクトリ `path` の記録票を読む（読めなければ `KernelValueError`）。"""
@@ -1632,7 +1697,7 @@ class FileSystemExperimentStore:
                 f" {directory} records {manifest.experiment_id} (D07 §19.3)"
             )
         try:
-            _write_new_file(
+            write_new_file(
                 directory / EXPERIMENT_OUTCOME_FILE,
                 _json_text(experiment_outcome_payload(outcome)),
             )
@@ -1679,7 +1744,7 @@ def write_reproduction(out_root: Path, payload: Mapping[str, Any]) -> Path:
     _require_root_is_directory(Path(out_root))
     Path(out_root).mkdir(parents=True, exist_ok=True)
     try:
-        _write_new_file(path, _json_text(payload))
+        write_new_file(path, _json_text(payload))
     except FileExistsError:
         raise _already_exists(
             path, "Choose another --out, or move the earlier reproduction away"

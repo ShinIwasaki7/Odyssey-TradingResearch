@@ -1,0 +1,81 @@
+# 検証戦略 A の実データでの実験設定・研究履歴の全期間（書式 v2。D07 §18・§23）
+#
+# 実データでの実行（D07 §23、2026-09-25 の人間の決定6）の1本目。検証戦略 A・USDJPY・研究履歴
+# （2016〜2023）を1本の run にする。**実行前のデータ能力検査で止まる（`FAILED_CAPABILITY`）ことを
+# 記録するための設定である**（Q9 決定）。執行系列 USDJPY 15分足には、データ欠損と分類した
+# 「存在すべき足の欠落」が研究履歴の中に 376 区間あり、執行に使う系列の欠落は重大度が警告でも
+# 実行不可である（D06 §10.5 の手順2）。欠落の無い 2018 年で完走する2本目は
+# `strategy_a_usdjpy_2018.yaml`。実行の記録は `docs/runs/stage4_realdata_run.md`。
+#
+# 戦略・ポリシー・費用・口座は人工データの設定 `strategy_a_t01_v2.yaml` と同じ値で、違いは
+# `id`・`hypothesis`・取引カレンダー・`snapshot`・`run_interval` だけである。
+#
+# - **取引カレンダーは `fx_ny17` v2**。snapshot を受け入れたときと同じ版でなければ run は実行前に
+#   止まる（D03 §3.7）。承認済み snapshot `a498b8cf…` は v2 で受け入れている。
+# - **`snapshot` は承認済み snapshot の識別子**（2026-09-25 承認。PR #39）。実体は git 管理外の
+#   `data/snapshots/` にあり、`--snapshots` で基点を渡す。
+# - **run 区間は研究履歴の USDJPY 15分足の partition の区間そのまま**（manifest の記録:
+#   2016-01-03T22:00Z〜2023-12-29T22:00Z）。研究履歴の境界（2024-01-01T00:00Z）の内側にある。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**数値は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: strategy_a_usdjpy_research_history
+version: 1
+
+hypothesis: "検証戦略 A の規則が研究履歴で、費用込みでどの程度の損益になるかを記録する（採否の判断はしない）"
+
+research_policy: {id: "research_policy", version: 1}
+
+strategy: "configs/strategies/strategy_a_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_v2.yaml"
+  timeframes: "configs/calendars/timeframes_v1.yaml"
+  symbols: "configs/symbols"
+
+snapshot: "a498b8cf4f90aeca1fa8af7a1e59112db197413eaa8c0a0d318eb2368a770cb3"
+
+run_interval:
+  start: "2016-01-03T22:00:00Z"
+  end: "2023-12-29T22:00:00Z"
+
+execution_series: "USDJPY/15m/bid"
+
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+evaluation: {metric_set_version: 2}
+
+search_plan: "NONE"
+split: "NONE"

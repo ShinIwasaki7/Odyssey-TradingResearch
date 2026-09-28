@@ -62,9 +62,12 @@ from odyssey_fx.marketdata.domain.schedule import (
     InjectedBarDelay,
     SeededRandomDelay,
 )
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.registry import ComponentRegistry
 from odyssey_fx.strategy.declarations.duration import format_duration, parse_duration
+from odyssey_fx.strategy.declarations.evaluation import OnBarClose
+from odyssey_fx.strategy.declarations.refs import MarketDataRef
 
 __all__ = [
     "SEARCH_PLAN_NONE",
@@ -325,6 +328,68 @@ def _delay_scenario_of(
         raise ConfigError(f"{path}: 遅延シナリオを読めない: {exc}") from exc
 
 
+def _series_the_run_reads(experiment: ExperimentConfig) -> frozenset[SeriesId]:
+    """run が読む系列: 戦略が入力・起動条件で読む系列、執行系列、解像度階層の各段。"""
+    found: set[SeriesId] = {
+        experiment.execution_series,
+        *experiment.execution_policy.resolution_hierarchy.levels,
+    }
+    for instance in experiment.strategy.components:
+        for binding in instance.inputs.values():
+            found.update(
+                source.series for source in binding.sources if isinstance(source, MarketDataRef)
+            )
+        found.update(
+            trigger.series
+            for trigger in instance.evaluation.triggers
+            if isinstance(trigger, OnBarClose)
+        )
+    return frozenset(found)
+
+
+def _reject_rules_hitting_nothing(
+    scenario: DelayScenario,
+    experiment: ExperimentConfig,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    path: Path,
+) -> None:
+    """どの足にも当たらない遅延規則を読込時に拒否する（段階4 実装 PR 4 の仮置き）。
+
+    当たらない規則は run を遅延なしと同じに動かすのに、遅延シナリオの版参照は遅延ありとして
+    manifest と `run_id` に記録される（PR #45 のレビューで PR 4 へ送られた指摘）。読込の時点で
+    設定ファイルだけから分かる2つを拒否する。
+
+    - **run が読まない系列への規則**。遅延は戦略向けの公開時刻だけを動かすので、戦略が読まず、
+      執行系列でも解像度階層の段でもない系列に当てても、何も変わらない。
+    - **足の開始でない時刻への特定の足の遅延**（`INJECTED_BAR_DELAY`）。足の鍵は開始時刻との
+      完全一致で引く（D03 §3.6）ので、時間足の整列とカレンダーで決まる足の開始でない時刻
+      （例: 日足 NY17 の 21:00Z）はどの足にも当たらない。
+
+    snapshot に足が実在するかは読込では分からない（snapshot を開かない）。
+    """
+    read = _series_the_run_reads(experiment)
+    for index, rule in enumerate(scenario.rules):
+        label = f"delay_scenario.rules[{index}]"
+        if not isinstance(rule, (FixedSeriesDelay, InjectedBarDelay)):  # pragma: no cover
+            continue
+        if rule.series not in read:
+            raise ConfigError(
+                f"{path}: {label} の系列 {rule.series} はこの run が読まない（戦略の入力・"
+                "起動条件・執行系列・解像度階層のどれでもない）。当てても何も変わらないのに、"
+                "遅延ありの run として記録される"
+            )
+        if isinstance(rule, InjectedBarDelay):
+            definition = timeframe_defs[rule.series.timeframe.id]
+            interval = definition.expected_interval(calendar, rule.bar_start)
+            if interval is None or interval.start != rule.bar_start:
+                raise ConfigError(
+                    f"{path}: {label} の bar_start {rule.bar_start} は {rule.series} の足の開始"
+                    "ではない（時間足の整列とカレンダーで決まる足の開始と一致しない、または休場）。"
+                    "足は開始時刻との完全一致で引くので、この規則はどの足にも当たらない（D03 §3.6）"
+                )
+
+
 def _rule_declaration(rule: DelayRule) -> dict[str, str]:
     """遅延規則1件の正規形（書き方の揺れを除いた宣言）。"""
     if isinstance(rule, SeededRandomDelay):  # pragma: no cover - 読込が拒否済み
@@ -495,6 +560,10 @@ def _assemble(
         delay_scenario=delay_scenario,
         delay_ref=delay_ref,
     )
+    if delay_scenario is not None:
+        _reject_rules_hitting_nothing(
+            delay_scenario, experiment, environment.calendar, timeframe_defs, path
+        )
     return ExperimentV2(
         experiment=experiment,
         hypothesis=model.hypothesis,
