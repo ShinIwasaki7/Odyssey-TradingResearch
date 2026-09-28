@@ -17,6 +17,9 @@ data/snapshots/*/*
 !data/snapshots/*/integrity_report_provisional.json
 !data/snapshots/*/access_log.jsonl
 runs/
+# 実行記録の文書（D07 §23.3 の `docs/runs/stage4_realdata_run.md`）は追跡する。上の `runs/` は
+# どの階層の `runs/` にも当たるので、文書の置き場だけを戻す。
+!docs/runs/
 
 # --- Python -----------------------------------------------------------------
 __pycache__/
