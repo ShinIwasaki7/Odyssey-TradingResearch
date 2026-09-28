@@ -309,6 +309,32 @@ def test_a_linked_run_directory_is_never_replaced(tmp_path: Path) -> None:
     assert _snapshot(elsewhere) == before
 
 
+def test_a_linked_runs_root_is_the_users_place_and_is_written_through(tmp_path: Path) -> None:
+    """成果物の根 `runs/` 自体はリンクでもよい（2026-09-28 の人間の決定。D06 §9.1、D07 §8.2）。
+
+    検査はリンクを辿らないが、それは根の下（`<run_id>` 以降）だけである。根が別ディスク
+    へのリンクなら、run の確保も置換も評価の書き出しもリンク先で行う。
+    """
+    disk = tmp_path / "disk"
+    disk.mkdir()
+    (tmp_path / "runs").symlink_to(disk)
+    run_id = "8" * 64
+
+    reserved = reserve_run_directory(tmp_path, run_id)
+    assert reserved == run_directory(tmp_path, run_id)
+    assert (disk / run_id).is_dir()
+
+    (reserved / "manifest.json").write_text("{}", encoding="utf-8")
+    reserve_run_directory(tmp_path, run_id, replace=True)
+    assert (disk / run_id / replaced_manifest_name(1)).is_file()
+
+    report = _report()
+    manifest = report.manifest
+    FileSystemResultRepository(root=tmp_path).write_evaluation(report, report.rows)
+    written = disk / str(manifest.run_id) / "eval" / str(manifest.run_evaluation_id)
+    assert (written / "evaluation.json").is_file()
+
+
 def test_an_existing_generation_file_is_never_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

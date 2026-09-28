@@ -153,7 +153,8 @@ def require_absent(directory: Path, *, remedy: str) -> None:
 def _make_plain_parents(base: Path, directory: Path, error: ArtifactAlreadyExists) -> None:
     """`base` から `directory` の親までの要素を、リンクでない実ディレクトリとして用意する。
 
-    `base`（成果物の根。利用者が指す場所）そのものは検査しない。その下の要素
+    `base`（成果物の根 `runs/`。利用者が指す置き場の一部で、別ディスクへのリンクでもよい。
+    D06 §9.1、2026-09-28 の人間の決定）そのものは検査しない。その下の要素
     （`<run_id>`・`eval` など）がリンクや別の種類なら、リンク先や根の外に成果物が
     書かれるので、何も作らずに `error` で失敗する。無い要素は作る。
     """
