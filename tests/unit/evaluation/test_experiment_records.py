@@ -32,7 +32,13 @@ from odyssey_fx.evaluation.domain.experiment import (
     experiment_id_of,
     require_experiment_name,
 )
-from odyssey_fx.evaluation.domain.research_policy import PolicyCheck, check_preregistration
+from odyssey_fx.evaluation.domain.research_policy import (
+    PolicyCheck,
+    check_evaluation_rule,
+    check_hypothesis,
+    check_preregistration,
+    check_run_matches,
+)
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from tests.fixtures.evaluation.experiments import EXPERIMENT_VALUES, make_manifest
 
@@ -126,7 +132,16 @@ def _outcome(**overrides: object) -> ExperimentOutcome:
         "run_evaluation_id": digest("evaluation"),
         "evaluation_status": EvaluationStatus.COMPLETED,
         "result_digest": digest("result"),
-        "outcome_checks": (check_preregistration("a" * 64, None),),
+        "outcome_checks": (
+            check_preregistration("a" * 64, None),
+            check_run_matches(
+                expected_config_digest_hex="c" * 64,
+                expected_run_id_hex="d" * 64,
+                observed_config_digest_hex="c" * 64,
+                observed_run_id_hex="d" * 64,
+            ),
+            check_evaluation_rule(2, 2),
+        ),
         "failed_checks": (),
     }
     values.update(overrides)
@@ -140,6 +155,21 @@ def test_failed_checks_are_empty_exactly_when_completed() -> None:
         _outcome(failed_checks=(PolicyCheck.EVALUATION_RULE_MATCHES,))
     with pytest.raises(KernelValueError):
         _outcome(status=ExperimentStatus.FAILED_POST_RUN_CHECK)
+
+
+def test_a_manifest_without_every_pre_run_check_is_refused() -> None:
+    """記録票は事前検査 P1・P2・P6 を全件持つ。欠けを「全件合格」と読ませない（D07 §19.2）。"""
+    manifest = make_manifest()
+    with pytest.raises(KernelValueError, match="exactly one result"):
+        replace(manifest, pre_run_checks=())
+    with pytest.raises(KernelValueError, match="exactly one result"):
+        replace(manifest, pre_run_checks=(check_hypothesis("仮説"),))
+
+
+def test_an_outcome_without_every_post_run_check_is_refused() -> None:
+    """run した結末記録は P3・P4・P5 を全件持つ（D07 §19.3）。"""
+    with pytest.raises(KernelValueError, match="exactly one result"):
+        _outcome(outcome_checks=(check_preregistration("a" * 64, None),))
 
 
 def test_an_experiment_rejected_by_the_policy_has_no_run() -> None:

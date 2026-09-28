@@ -43,7 +43,6 @@ from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityMeasures,
     PolicyCheck,
     PolicyCheckResult,
-    PolicyCheckStage,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.domain.access import AccessClass
@@ -157,22 +156,45 @@ def identity_roles(files: Sequence[ResolvedFile]) -> tuple[tuple[str, str], ...]
     return tuple(sorted((item.role, item.sha256) for item in files if item.role != ROLE_EXPERIMENT))
 
 
+#: 記録票が持つ事前検査（D07 §19.2 の `pre_run_checks`。P1・P2・P6 の全件）。
+PRE_RUN_CHECKS: Final = frozenset(
+    {
+        PolicyCheck.HYPOTHESIS_PRESENT,
+        PolicyCheck.RESEARCH_HISTORY_ONLY,
+        PolicyCheck.COMPLEXITY_WITHIN_LIMITS,
+    }
+)
+#: 結末記録が持つ検査（D07 §19.3 の `outcome_checks`）。事前検査で止まった場合は P3 だけ、
+#: それ以外は P3・P4・P5 の全件。
+_REJECTED_OUTCOME_CHECKS: Final = frozenset({PolicyCheck.PREREGISTRATION_UNCHANGED})
+_RUN_OUTCOME_CHECKS: Final = frozenset(
+    {
+        PolicyCheck.PREREGISTRATION_UNCHANGED,
+        PolicyCheck.RUN_MATCHES_PREREGISTRATION,
+        PolicyCheck.EVALUATION_RULE_MATCHES,
+    }
+)
+
+
 def _require_checks(
-    checks: object, stage: frozenset[PolicyCheckStage], label: str
+    checks: object, required: frozenset[PolicyCheck], label: str
 ) -> tuple[PolicyCheckResult, ...]:
+    """検査結果が、決められた検査を**ちょうど1件ずつ、全件**持つことを確かめる。
+
+    欠けを許すと、空の事前検査が「全件合格」と読まれて run が始まる（D07 §19.2・§20.3）。
+    検査ごとの時点は `PolicyCheckResult` が構築時に固定している。
+    """
     if not isinstance(checks, tuple) or not all(
         isinstance(item, PolicyCheckResult) for item in checks
     ):
         raise KernelValueError(f"{label} must be a tuple of PolicyCheckResult")
     names = [item.check for item in checks]
-    if len(set(names)) != len(names):
-        raise KernelValueError(f"{label} holds one result per check (D07 §19.5)")
-    for item in checks:
-        if item.stage not in stage:
-            raise KernelValueError(
-                f"{label} holds {sorted(s.value for s in stage)} checks only, got"
-                f" {item.check.value} at {item.stage.value} (D07 §19.2・§19.3)"
-            )
+    if len(set(names)) != len(names) or set(names) != required:
+        raise KernelValueError(
+            f"{label} must hold exactly one result for each of"
+            f" {sorted(check.value for check in required)}, got"
+            f" {[check.value for check in names]} (D07 §19.2・§19.3・§20.3)"
+        )
     return checks
 
 
@@ -267,11 +289,7 @@ class ExperimentManifest:
             "allowed_partitions",
             MappingProxyType(dict(sorted(self.allowed_partitions.items()))),
         )
-        _require_checks(
-            self.pre_run_checks,
-            frozenset({PolicyCheckStage.PRE_RUN}),
-            "ExperimentManifest.pre_run_checks",
-        )
+        _require_checks(self.pre_run_checks, PRE_RUN_CHECKS, "ExperimentManifest.pre_run_checks")
 
     def file(self, role: str) -> ResolvedFile:
         """役割名で解決済みのファイルを引く。"""
@@ -388,9 +406,13 @@ class ExperimentOutcome:
             )
         if self.run_evaluation_id is not None and self.run_id is None:
             raise KernelValueError("an evaluation needs a run (D07 §19.4)")
+        if not isinstance(self.status, ExperimentStatus):  # pragma: no cover - 上で検査済み
+            raise KernelValueError("ExperimentOutcome.status must be an ExperimentStatus")
         _require_checks(
             self.outcome_checks,
-            frozenset({PolicyCheckStage.ON_SAVE, PolicyCheckStage.POST_RUN}),
+            _REJECTED_OUTCOME_CHECKS
+            if self.status is ExperimentStatus.REJECTED_BY_POLICY
+            else _RUN_OUTCOME_CHECKS,
             "ExperimentOutcome.outcome_checks",
         )
         if not isinstance(self.failed_checks, tuple) or not all(
