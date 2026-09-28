@@ -426,12 +426,11 @@ class ParquetSnapshotStore:
         # 根そのものは利用者が指す置き場なのでリンクでもよいが、既にあるなら（リンクの
         # 先が）ディレクトリでなければならない。通常ファイル・先の無いリンク・循環する
         # リンクなら、その下に snapshot は書けない。
-        if (root.is_symlink() or root.exists()) and not root.is_dir():
-            raise SnapshotAlreadyExists(
-                f"{root} exists but is not a directory (or links to none); snapshots are"
-                " written only under a directory, and nothing was written. Move or delete"
-                " it first (D03 §3.7.2, R4)"
-            )
+        # 根がまだ無いときは、根を作るときに通る最初の既存の祖先（`--out` そのもの
+        # など）を同じ条件で見る。
+        existing = next((p for p in (root, *root.parents) if p.is_symlink() or p.exists()), None)
+        if existing is not None and not existing.is_dir():
+            raise self._root_not_a_directory(existing)
         # 根の下から書き出し先の親まで（`_pending` など）は、リンクでない実ディレクトリに限る。
         # リンクを受け入れると、根の中の別の場所へ snapshot を書いてしまう。
         parents: list[Path] = []
@@ -450,13 +449,26 @@ class ParquetSnapshotStore:
             raise self._already_exists(target)
         # ここまでで根の下にリンクは無いので、解決は失敗しない。根の外を指さないことを確かめる。
         self._snapshot_path(snapshot_dir)
-        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError) as error:
+            # 確かめた後に別のプロセスが祖先へファイルを置いた場合も型付きで止める。
+            raise self._root_not_a_directory(root) from error
         for parent in parents:
             parent.mkdir(exist_ok=True)
         try:
             target.mkdir()
         except FileExistsError:
             raise self._already_exists(target) from None
+
+    @staticmethod
+    def _root_not_a_directory(path: Path) -> SnapshotAlreadyExists:
+        """snapshot の根（またはその最も近い既存の祖先）がディレクトリでないことの例外（R4）。"""
+        return SnapshotAlreadyExists(
+            f"{path} exists but is not a directory (or links to none); snapshots are"
+            " written only under a directory, and nothing was written. Move or delete"
+            " it first (D03 §3.7.2, R4)"
+        )
 
     @staticmethod
     def _already_exists(target: Path) -> SnapshotAlreadyExists:

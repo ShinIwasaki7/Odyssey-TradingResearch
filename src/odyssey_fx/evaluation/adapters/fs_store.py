@@ -150,20 +150,49 @@ def require_absent(directory: Path, *, remedy: str) -> None:
         raise _already_exists(directory, remedy)
 
 
+def _nearest_existing(path: Path) -> Path | None:
+    """`path` とその祖先のうち、最初に「ある」もの（リンクは辿らずに判定）。無ければ None。"""
+    for candidate in (path, *path.parents):
+        if candidate.is_symlink() or candidate.exists():
+            return candidate
+    return None
+
+
 def _require_root_is_directory(base: Path) -> None:
-    """成果物の根（`runs/`）が既にあるなら、（リンクの先が）ディレクトリでなければならない。
+    """成果物の根（`runs/`）と、それが無いときはその最も近い既存の祖先（`--out` など）が、
+    （リンクの先が）ディレクトリでなければならない。
 
     根は利用者が指す置き場の一部なので、別ディスクへのリンクでもよい（D06 §9.1、
     2026-09-28 の人間の決定）。ただし通常ファイルや先の無いリンクなら、その下に成果物は
-    書けない。ここで型付きに止めないと、実行前の検査は子の保存先を「無い」と判定して
-    run を最後まで走らせ、書き出しで未捕捉の例外になる（D06 §10.6）。
+    書けない。根がまだ無いときは、根を作るときに通る最初の既存の祖先を同じ条件で見る
+    （`--out` そのものが通常ファイルなら、根の作成が失敗する）。ここで型付きに止めないと、
+    実行前の検査は子の保存先を「無い」と判定して run を最後まで走らせ、書き出しで
+    未捕捉の例外になる（D06 §10.6）。
     """
-    if (base.is_symlink() or base.exists()) and not base.is_dir():
-        raise ArtifactAlreadyExists(
-            f"{base} exists but is not a directory (or links to none); artifacts are written"
-            " only under a directory, and nothing was written. Move or delete it first"
-            " (D06 §9.1, R4)"
-        )
+    existing = _nearest_existing(base)
+    if existing is not None and not existing.is_dir():
+        raise _root_not_a_directory(existing)
+
+
+def _root_not_a_directory(path: Path) -> ArtifactAlreadyExists:
+    return ArtifactAlreadyExists(
+        f"{path} exists but is not a directory (or links to none); artifacts are written"
+        " only under a directory, and nothing was written. Move or delete it first"
+        " (D06 §9.1, R4)"
+    )
+
+
+def _make_root(base: Path) -> None:
+    """成果物の根を（無ければ祖先ごと）作る。作れなければ型付きで失敗する。
+
+    種類は `_require_root_is_directory` で先に見ているが、確かめた後に別のプロセスが
+    祖先へファイルを置いた場合も未捕捉の例外にはしない。
+    """
+    _require_root_is_directory(base)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError) as error:
+        raise _root_not_a_directory(_nearest_existing(base) or base) from error
 
 
 def _make_plain_parents(base: Path, directory: Path, error: ArtifactAlreadyExists) -> None:
@@ -199,8 +228,7 @@ def create_artifact_directory(directory: Path, *, base: Path, remedy: str) -> Pa
     ならない（無ければ作る）。`base` そのものは利用者が指す場所なので検査しない。
     `remedy` は利用者が取れる手当て（置換の指示、または人間による移動・削除）の説明。
     """
-    _require_root_is_directory(base)
-    base.mkdir(parents=True, exist_ok=True)
+    _make_root(base)
     _make_plain_parents(
         base,
         directory,

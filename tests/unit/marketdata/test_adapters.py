@@ -675,6 +675,18 @@ def test_a_looping_link_at_the_pending_directory_is_refused(tmp_path: Path) -> N
     assert pending.is_symlink()
 
 
+def test_a_file_above_the_snapshot_root_is_refused(tmp_path: Path) -> None:
+    """`--out` そのものが通常ファイルで根がまだ無くても、型付きで失敗し、触れない（R4）。"""
+    out = tmp_path / "out"
+    out.write_text("not a directory", encoding="utf-8")
+    identifier = "1" * 64
+    with pytest.raises(SnapshotAlreadyExists, match="not a directory"):
+        ParquetSnapshotStore(root=out / "snapshots").create_directory(
+            f"_pending/{identifier}", identifier
+        )
+    assert out.read_text(encoding="utf-8") == "not a directory"
+
+
 def test_a_link_at_the_snapshot_directory_is_refused(tmp_path: Path) -> None:
     """書き出し先に置かれたリンクは、先が無くても「ある」と数え、辿って作らない（R4）。"""
     store = ParquetSnapshotStore(root=tmp_path)

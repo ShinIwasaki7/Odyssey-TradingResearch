@@ -432,6 +432,33 @@ def test_a_wrong_kind_of_entry_in_the_run_directory_is_refused(
     assert not (directory / "manifest.replaced.001.json").exists()
 
 
+def test_a_file_at_the_out_directory_is_refused_before_the_run(tmp_path: Path) -> None:
+    """`--out` そのものが通常ファイルで根 `runs` がまだ無くても、実行前検査で型付きに失敗する。
+
+    根の最も近い既存の祖先を見る（D06 §9.1）。見ないと、根の作成で未捕捉の例外になる。
+    """
+    out = tmp_path / "out"
+    out.write_text("not a directory", encoding="utf-8")
+    run_id = "9" * 64
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        require_run_directory_absent(out, run_id)
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        reserve_run_directory(out, run_id)
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        reserve_run_directory(out, run_id, replace=True)
+    report = _report()
+    with pytest.raises(ArtifactAlreadyExists, match="not a directory"):
+        FileSystemResultRepository(root=out).write_evaluation(report, report.rows)
+    assert out.read_text(encoding="utf-8") == "not a directory"
+
+
+def test_a_missing_out_directory_is_created_with_the_root(tmp_path: Path) -> None:
+    """`--out` も根もまだ無ければ、祖先ごと作って書ける（既存の祖先はディレクトリ）。"""
+    out = tmp_path / "new" / "out"
+    reserved = reserve_run_directory(out, "9" * 64)
+    assert reserved.is_dir()
+
+
 def test_an_existing_generation_file_is_never_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
