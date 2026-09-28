@@ -156,7 +156,10 @@ def test_an_experiment_rejected_by_the_policy_has_no_run() -> None:
 
 def _store(root: Path) -> FileSystemExperimentStore:
     return FileSystemExperimentStore(
-        root=root, experiment_name="strategy_a_t01", experiment_version=1
+        root=root,
+        experiment_name="strategy_a_t01",
+        experiment_version=1,
+        identity_of=lambda manifest: experiment_id_of(manifest, EXPERIMENT_VALUES),
     )
 
 
@@ -207,6 +210,37 @@ def test_an_unreadable_existing_manifest_is_a_conflict_and_is_kept(tmp_path: Pat
 
     assert store.save_manifest(make_manifest()) is ManifestSaveResult.CONFLICT
     assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+@pytest.mark.parametrize(
+    ("key", "edit"),
+    [
+        ("hypothesis", lambda payload: payload.update(hypothesis="結果を見てから書き直した仮説")),
+        (
+            "resolved_files",
+            lambda payload: payload["resolved_files"][0].update(text="# edited\n"),
+        ),
+    ],
+)
+def test_an_existing_manifest_edited_under_its_recorded_id_is_a_conflict(
+    tmp_path: Path, key: str, edit: object
+) -> None:
+    """記録された識別子を残したまま中身だけ書き換えた記録票は、同じ内容と読まない（検査 P3）。
+
+    識別子は中身から再計算し、本文は SHA-256 と照合して比べる（D07 §19.3 の「内容の
+    ダイジェストが同じ」）。PR #47 第1巡の指摘。
+    """
+    manifest = make_manifest()
+    store = _store(tmp_path)
+    store.save_manifest(manifest)
+    path = store.directory / EXPERIMENT_MANIFEST_FILE
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    edit(payload)  # type: ignore[operator]
+    assert payload["experiment_id"] == manifest.experiment_id.hex, key
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert store.save_manifest(manifest) is ManifestSaveResult.CONFLICT
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
 
 
 def test_the_previous_outcome_is_kept_under_the_next_number(tmp_path: Path) -> None:

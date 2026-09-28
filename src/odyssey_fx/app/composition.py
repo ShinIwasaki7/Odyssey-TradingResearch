@@ -158,6 +158,7 @@ __all__ = [
     "now_utc",
     "open_snapshot_inputs",
     "raw_bar_source",
+    "recompute_experiment_id",
     "reproduce_experiment",
     "run_experiment",
     "snapshot_store",
@@ -1107,6 +1108,7 @@ def run_experiment(
         root=artifacts_root,
         experiment_name=manifest.experiment_name,
         experiment_version=manifest.experiment_version,
+        identity_of=recompute_experiment_id,
     )
     use_case = RunExperiment(
         store=store,
@@ -1315,9 +1317,19 @@ def _tampering(manifest: ExperimentManifest, outcome: ExperimentOutcome) -> str 
     altered = sorted(item.role for item in manifest.resolved_files if not item.intact)
     if altered:
         return f"the text of {altered} does not match its recorded SHA-256"
+    if recompute_experiment_id(manifest) != manifest.experiment_id:
+        return "the experiment id recomputed from the manifest does not match the recorded one"
+    return None
+
+
+def recompute_experiment_id(manifest: ExperimentManifest) -> ExperimentId:
+    """保存済みの記録票の中身から識別子を再計算する（D07 §19.2 の「識別の入力」）。
+
+    入力 2（実験設定の値）は記録票の `experiment` の本文を読み込んで作る。読めなければ
+    `ConfigError`（`ValueError` 系）を送出する。記録票の保存時の比較（検査 P3）と再現の手順1 が
+    使う（記録された識別子をそのまま信じない）。
+    """
     values = load_yaml_mapping(
         Path("resolved_files[experiment]"), text=manifest.file("experiment").text
     )
-    if experiment_id_of(manifest, values) != manifest.experiment_id:
-        return "the experiment id recomputed from the manifest does not match the recorded one"
-    return None
+    return experiment_id_of(manifest, values)

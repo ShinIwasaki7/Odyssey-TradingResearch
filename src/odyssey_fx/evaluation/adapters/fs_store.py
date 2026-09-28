@@ -19,7 +19,7 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1491,6 +1491,9 @@ class FileSystemExperimentStore:
     root: Path
     experiment_name: str
     experiment_version: int
+    #: 記録票の中身から識別子を再計算する関数（D07 §19.2 の「識別の入力」。合成が渡す）。
+    #: 計算できなければ `ValueError` 系を送出する（その記録票は読めないものと同じに扱う）。
+    identity_of: Callable[[ExperimentManifest], ExperimentId]
 
     @property
     def directory(self) -> Path:
@@ -1533,13 +1536,29 @@ class FileSystemExperimentStore:
             self._keep_previous_outcome(directory)
         return result
 
-    @staticmethod
-    def _compare_existing(path: Path, manifest: ExperimentManifest) -> ManifestSaveResult | None:
+    def _compare_existing(
+        self, path: Path, manifest: ExperimentManifest
+    ) -> ManifestSaveResult | None:
+        """既存の記録票と比べる。**記録された識別子を信じず、中身から再計算して比べる**。
+
+        記録票の項目（仮説など）だけを書き換えて識別子を残した記録票を「同じ内容」と読むと、
+        事前固定の検査 P3 が改変を見逃す（D07 §19.3 の「内容のダイジェストが同じ」）。本文の
+        SHA-256 も照合する（識別子には本文ではなく SHA-256 が入るため）。識別子の再計算には
+        実験設定の値（YAML の読込）が要るので、計算は合成が `identity_of` として渡す。
+        """
         if not (path.exists() or path.is_symlink()):
             return None
         try:
             existing = read_experiment_manifest(path.parent)
         except KernelValueError:
+            return ManifestSaveResult.CONFLICT
+        if not all(item.intact for item in existing.resolved_files):
+            return ManifestSaveResult.CONFLICT
+        try:
+            recomputed = self.identity_of(existing)
+        except ValueError:
+            return ManifestSaveResult.CONFLICT
+        if recomputed != existing.experiment_id:
             return ManifestSaveResult.CONFLICT
         if existing.experiment_id == manifest.experiment_id:
             return ManifestSaveResult.ALREADY_IDENTICAL
