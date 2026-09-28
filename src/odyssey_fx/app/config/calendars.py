@@ -176,7 +176,7 @@ def _opening_rule(model: _OpeningModel, path: Path, index: int) -> OpeningRule:
         raise ConfigError(f"{path}: {label} は営業例外の宣言として成立しない: {exc}") from exc
 
 
-def load_calendar(path: Path) -> TradingCalendar:
+def load_calendar(path: Path, *, text: str | None = None) -> TradingCalendar:
     """取引カレンダーを読む（D03 §3.4・§9）。
 
     週の開閉と宣言した休場・営業例外（`openings`、v1.7）を持つ `TradingCalendar` を返す。
@@ -185,7 +185,7 @@ def load_calendar(path: Path) -> TradingCalendar:
     `openings` は省略できる（既存のカレンダーファイルはそのまま読める）。離れた営業例外と
     休場に重なる営業例外は domain の構築時検証が拒否し、ここで設定の誤りとして報告する。
     """
-    payload = load_yaml_mapping(path)
+    payload = load_yaml_mapping(path, text=text)
     model = validate(_CalendarModel, payload, path)
     require_schema_version(model.schema_version, CALENDAR_SCHEMA_VERSION, path)
 
@@ -245,13 +245,13 @@ def _timeframe_definition(model: _TimeframeModel, path: Path) -> TimeframeDefini
         raise ConfigError(f"{path}: {label} は時間足定義として成立しない: {exc}") from exc
 
 
-def load_timeframes(path: Path) -> dict[str, TimeframeDefinition]:
+def load_timeframes(path: Path, *, text: str | None = None) -> dict[str, TimeframeDefinition]:
     """時間足定義をすべて読み、`id` から定義への対応を返す（D03 §3.2・§9）。
 
     受入れ（`build_pending_snapshot`）は `id` から定義を引くので、その形で返す。同じ `id`
     が2度現れる設定は拒否する（どちらを採るかが宣言から読み取れないため）。
     """
-    payload = load_yaml_mapping(path)
+    payload = load_yaml_mapping(path, text=text)
     model = validate(_TimeframesModel, payload, path)
     require_schema_version(model.schema_version, TIMEFRAMES_SCHEMA_VERSION, path)
 

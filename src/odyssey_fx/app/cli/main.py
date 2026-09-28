@@ -13,6 +13,11 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
   分岐する（D07 §18.5、Q12 決定）。
 - `odyssey-fx evaluate`: 保存済みの run を評価し、`runs/<run_id>/eval/<評価 ID>/` に
   指標・集計・取引・診断・整合検査の5表と評価 manifest を書く。
+- `odyssey-fx experiment run`（段階4）: 書式 v2 の実験設定から、実験の記録票を
+  `runs/experiments/<名前>/v<版>/` に保存してから run と評価を行い、研究ポリシーの事後検査の
+  結果とともに結末記録を書く（D07 §19・§20）。
+- `odyssey-fx experiment reproduce`（段階4）: 記録票と結末記録だけから別の基点で run と評価を
+  やり直し、判定を `reproduction.json` に書く（D07 §21）。
 
 **実行と評価を別のコマンドに分ける**（D07 §4.1）。評価は run を実行し直さず、保存された
 判断履歴と manifest だけを読む。同じ run を別の指標集合の版で評価し直しても、`runs/` の
@@ -59,6 +64,13 @@ from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
+from odyssey_fx.evaluation.application.ports import ResultReadFailure
+from odyssey_fx.evaluation.application.run_experiment import (
+    ExperimentRefusal,
+    ReproductionVerdict,
+)
+from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.application.acceptance import (
     FinalizedSnapshot,
@@ -94,6 +106,14 @@ __all__ = ["build_parser", "main"]
 #: 終了コード。0 は成功、1 は設定・データの誤り（人間が直すもの）。
 _EXIT_OK = 0
 _EXIT_FAILED = 1
+#: 段階4 で足した終了コード（D07 §21.3 の表・§4.1）。2 は `experiment` の設定・引数・読込の
+#: 誤りと、`evaluate` で保存済みの結果が読めないこと。3〜5 は `experiment run` の結末、6 は
+#: `experiment reproduce` の `REPRODUCED` 以外の判定。
+_EXIT_READ_ERROR = 2
+_EXIT_REJECTED_BY_POLICY = 3
+_EXIT_FAILED_POST_RUN_CHECK = 4
+_EXIT_REFUSED = 5
+_EXIT_NOT_REPRODUCED = 6
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -228,6 +248,62 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=METRIC_SET_VERSION,
         help=f"指標集合の版（既定は {METRIC_SET_VERSION}）",
+    )
+
+    experiment = top.add_parser(
+        "experiment", help="実験の記録票を残して run・評価し、別プロセスで再現する（D07 §19〜§21）"
+    ).add_subparsers(dest="experiment_command", required=True)
+    experiment_run = experiment.add_parser(
+        "run",
+        help="書式 v2 の実験設定から、記録票を保存してから run と評価を行う（D07 §19.4）",
+    )
+    experiment_run.set_defaults(command="experiment_run")
+    experiment_run.add_argument(
+        "--experiment", type=Path, required=True, help="実験設定（YAML。書式 v2 だけ）"
+    )
+    experiment_run.add_argument(
+        "--snapshots", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
+    )
+    experiment_run.add_argument(
+        "--out",
+        type=Path,
+        default=Path("."),
+        help=(
+            "成果物の基点（この下に runs/experiments/<名前>/v<版>/ と runs/<run_id>/ を作る。"
+            "既定は現在のディレクトリ）"
+        ),
+    )
+    experiment_run.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="実験設定のパスを解決し、`uv.lock` と作業ツリーの状態を読むリポジトリの位置",
+    )
+    reproduce = experiment.add_parser(
+        "reproduce",
+        help="記録票と結末記録だけから run と評価をやり直し、結果が一致するかを判定する（D07 §21）",
+    )
+    reproduce.set_defaults(command="experiment_reproduce")
+    reproduce.add_argument(
+        "--experiment-dir",
+        type=Path,
+        required=True,
+        help="実験の版のディレクトリ（runs/experiments/<名前>/v<版>/）",
+    )
+    reproduce.add_argument(
+        "--snapshots", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
+    )
+    reproduce.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="再現の成果物の基点（元の成果物とは別の場所。直下に reproduction.json を書く）",
+    )
+    reproduce.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="現在の環境の `uv.lock` を読むリポジトリの位置（設定ファイルは読まない）",
     )
     return parser
 
@@ -715,6 +791,11 @@ def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
         calendar=calendar,
         metric_set_version=args.metric_set_version,
     )
+    if isinstance(outcome, ResultReadFailure):
+        # 結果 DTO は評価の入力1そのものなので、読めなければ評価を始めず、評価の成果物も
+        # 書かない。読込の誤りとして終了コード 2 で終える（D07 §4.1 の `read_result` の (a)）。
+        sys.stderr.write(f"失敗: 保存済みの結果を読めない: {outcome.detail}\n")
+        return _EXIT_READ_ERROR
     report = outcome.report
     manifest = report.manifest
 
@@ -763,6 +844,113 @@ def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
     return _EXIT_OK
 
 
+# --- experiment -------------------------------------------------------------
+
+#: `experiment run` の結末から終了コードへ（D07 §21.3 の表）。
+_EXPERIMENT_EXIT: dict[ExperimentStatus, int] = {
+    ExperimentStatus.COMPLETED: _EXIT_OK,
+    ExperimentStatus.REJECTED_BY_POLICY: _EXIT_REJECTED_BY_POLICY,
+    ExperimentStatus.FAILED_POST_RUN_CHECK: _EXIT_FAILED_POST_RUN_CHECK,
+}
+
+
+def _check_lines(checks: Sequence[PolicyCheckResult]) -> list[str]:
+    """研究ポリシーの検査の表示（合格でないものは期待値と観測値も出す）。"""
+    lines: list[str] = []
+    for item in checks:
+        lines.append(f"  {item.check.value}（{item.stage.value}）: {item.outcome.value}")
+        if not item.passed:
+            lines.append(f"    期待値: {item.expected}")
+            lines.append(f"    観測値: {item.observed}")
+    return lines
+
+
+def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
+    """書式 v2 の実験設定から1つの実験を進める（D07 §19.4、§21.3 の `experiment run`）。"""
+    if experiment_schema_version(args.experiment) != 2:
+        raise ConfigError(
+            f"{args.experiment}: `experiment run` は書式 v2 の実験設定だけを受ける。書式 v1 には"
+            " 仮説と研究ポリシーの参照が無い（D07 §18.5）"
+        )
+    loaded = load_experiment_v2(
+        args.experiment,
+        repo_root=args.repo_root,
+        registry=INITIAL_CATALOG,
+        metric_set_versions=frozenset({METRIC_SET_VERSION}),
+    )
+    outcome = composition.run_experiment(
+        loaded=loaded,
+        snapshots_root=args.snapshots,
+        artifacts_root=args.out,
+        repo_root=args.repo_root,
+    )
+    manifest = outcome.manifest
+    out.line(f"実験: {manifest.experiment_name} v{manifest.experiment_version}")
+    out.line(f"仮説: {manifest.hypothesis}")
+    out.line(f"記録票の識別子（experiment_id）: {manifest.experiment_id}")
+    out.line(f"実験の版のディレクトリ: {outcome.directory}")
+    out.line(f"予測した実行の識別子（run_id）: {outcome.expected_run_id}")
+    out.line("事前検査:")
+    out.lines(_check_lines(manifest.pre_run_checks))
+    result = outcome.result
+    if isinstance(result, ExperimentRefusal):
+        out.line("")
+        out.line(f"拒否: {result.kind.value}")
+        out.line(result.detail)
+        return _EXIT_REFUSED
+    out.line("")
+    out.line(f"実験の結末: {result.status.value}")
+    out.line("保存時・事後の検査:")
+    out.lines(_check_lines(result.outcome_checks))
+    if result.run_id is not None:
+        out.line(f"実行の識別子（run_id）: {result.run_id}")
+        out.line(f"run の結末: {None if result.run_status is None else result.run_status.value}")
+        out.line(f"既存の run 成果物を再利用: {'はい' if result.run_reused else 'いいえ'}")
+    if result.result_digest is not None and result.evaluation_status is not None:
+        out.line(f"評価の状態: {result.evaluation_status.value}")
+        out.line(f"結果のダイジェスト（result_digest）: {result.result_digest.hex}")
+        command = shlex.join(
+            [
+                "odyssey-fx",
+                "experiment",
+                "reproduce",
+                "--experiment-dir",
+                str(outcome.directory),
+                "--snapshots",
+                str(args.snapshots),
+                "--out",
+                "<別の出力の基点>",
+                "--repo-root",
+                str(args.repo_root),
+            ]
+        )
+        out.line(f"別プロセスで再現するには `{command}` を実行すること")
+    if result.status is ExperimentStatus.REJECTED_BY_POLICY:
+        out.line("研究ポリシーの事前検査に合格しなかったので run していない（D07 §20.3）")
+    return _EXPERIMENT_EXIT[result.status]
+
+
+def _run_experiment_reproduce(args: argparse.Namespace, out: _Writer) -> int:
+    """記録票と結末記録だけから別プロセスで run と評価をやり直す（D07 §21.2・§21.3）。"""
+    outcome = composition.reproduce_experiment(
+        experiment_dir=args.experiment_dir,
+        snapshots_root=args.snapshots,
+        out_root=args.out,
+        repo_root=args.repo_root,
+    )
+    report = outcome.report
+    out.line(f"記録票の識別子（experiment_id）: {report.experiment_id}")
+    out.line(f"判定: {report.verdict.value}")
+    out.line(f"理由: {outcome.detail}")
+    out.line(f"記録の run_id: {report.expected_run_id}")
+    out.line(f"再現の run_id: {report.observed_run_id}")
+    out.line(f"記録の result_digest: {report.expected_result_digest.hex}")
+    observed = report.observed_result_digest
+    out.line(f"再現の result_digest: {None if observed is None else observed.hex}")
+    out.line(f"報告: {outcome.path}")
+    return _EXIT_OK if report.verdict is ReproductionVerdict.REPRODUCED else _EXIT_NOT_REPRODUCED
+
+
 # --- 入口 -------------------------------------------------------------------
 
 
@@ -792,7 +980,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     設定・データの誤り（設定の読込・検証の失敗、市場データの構造エラー、共通カーネルの
     値エラー、ファイルの不在）は行き先の分かる1行として表示し、終了コード 1 で終える。
-    想定していない失敗はそのまま送出し、traceback を残す。
+    ただし `experiment` の2コマンドでは、設定・引数・読込の誤り（`ConfigError`）を終了
+    コード 2 で終える（D07 §21.3 の表）。想定していない失敗はそのまま送出し、traceback を
+    残す。
     """
     args = build_parser().parse_args(argv)
     out = _Writer(sys.stdout)
@@ -802,11 +992,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "approve": _run_approve,
         "run": _run_run,
         "evaluate": _run_evaluate,
+        "experiment_run": _run_experiment_run,
+        "experiment_reproduce": _run_experiment_reproduce,
     }
     try:
         return handlers[args.command](args, out)
     except (ConfigError, KernelValueError, FileNotFoundError, ValueError) as exc:
         sys.stderr.write(f"失敗: {exc}\n")
+        if isinstance(exc, ConfigError) and args.group == "experiment":
+            return _EXIT_READ_ERROR
         return _EXIT_FAILED
 
 

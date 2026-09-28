@@ -15,9 +15,11 @@ DataFrame はこのモジュールの外へ出さない（D01 §2.2 規則1）�
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
-from collections.abc import Mapping, Sequence
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,7 +49,7 @@ from odyssey_fx.backtest.trace.recorder import (
 )
 from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, RunStatus
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import AccountId, RunId, SnapshotId
+from odyssey_fx.common.ids import AccountId, ExperimentId, RunId, SnapshotId
 from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
 from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import (
@@ -59,6 +61,7 @@ from odyssey_fx.common.refs import (
     LockDigest,
     PolicyRef,
     SnapshotRef,
+    StrategyRef,
 )
 from odyssey_fx.common.symbol import Symbol, SymbolSpecRef
 from odyssey_fx.common.time import Interval, PhaseRank, PhaseSet, UtcTime
@@ -71,18 +74,41 @@ from odyssey_fx.evaluation.application.manifest import (
 )
 from odyssey_fx.evaluation.application.ports import (
     ColumnValueKind,
+    EvaluationReadFailure,
     ManifestReadFailure,
+    ManifestSaveResult,
+    ResultReadFailure,
+    StoredEvaluation,
     TableReadResult,
     TraceColumnSpec,
 )
 from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
+from odyssey_fx.evaluation.domain.experiment import (
+    ExperimentManifest,
+    ExperimentOutcome,
+    ExperimentStatus,
+    ResolvedFile,
+    require_experiment_name,
+)
 from odyssey_fx.evaluation.domain.metrics import (
     CategoryCount,
     FillDiagnostic,
     MetricRecord,
     TradeRecord,
 )
-from odyssey_fx.evaluation.domain.status import ConsistencyCheckResult
+from odyssey_fx.evaluation.domain.research_policy import (
+    ComplexityLimits,
+    ComplexityMeasures,
+    PolicyCheck,
+    PolicyCheckResult,
+    PolicyCheckStage,
+)
+from odyssey_fx.evaluation.domain.status import (
+    CheckOutcome,
+    ConsistencyCheckResult,
+    EvaluationStatus,
+)
+from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import BarKey
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
@@ -93,18 +119,32 @@ from odyssey_fx.marketdata.domain.integrity import (
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 
 __all__ = [
+    "EXPERIMENT_MANIFEST_FILE",
+    "EXPERIMENT_OUTCOME_FILE",
+    "REPRODUCTION_FILE",
+    "FileSystemExperimentStore",
     "FileSystemResultRepository",
     "FileSystemResultWriter",
     "FileSystemTraceSink",
     "create_artifact_directory",
     "evaluation_directory",
+    "experiment_directory",
+    "experiment_manifest_from_payload",
+    "experiment_manifest_payload",
+    "experiment_outcome_from_payload",
+    "experiment_outcome_payload",
     "manifest_from_payload",
+    "read_experiment_manifest",
+    "read_experiment_outcome",
     "replaced_manifest_name",
+    "reproduction_path",
+    "reproduction_payload",
     "require_absent",
     "require_run_directory_absent",
     "reserve_run_directory",
     "result_from_payload",
     "run_directory",
+    "write_reproduction",
 ]
 
 
@@ -903,6 +943,19 @@ def _list_column(value: object) -> str | None:
     )
 
 
+def _linked_run_path(directory: Path) -> Path | None:
+    """run のディレクトリ（と、あればその `eval`）のうち、リンクまたはディレクトリでないもの。
+
+    成果物の根 `runs/` の下はリンクを辿らない（R4。D06 §9.1）。評価の書き込み
+    （`create_artifact_directory`）は `<run_id>` と `eval` がリンクなら失敗するので、読む側も
+    同じ境界で「読めない」とする。
+    """
+    for candidate in (directory, directory / _EVALUATION_DIRECTORY):
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_dir()):
+            return candidate
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class FileSystemResultRepository:
     """run の成果物の読み書き（D01 §4、D07 §4.3・§8.2）。
@@ -911,9 +964,8 @@ class FileSystemResultRepository:
     このモジュールだけで、`domain` と `application` には表形式ライブラリを入れない
     （D01 §5・ADR-0025）。
 
-    `read_result` は `ResultRepository` の操作ではない。D07 §4.1 は結果 DTO を
-    **引数**として受け取ると定めており、評価を別のコマンドとして起動する `app` が
-    保存済みの結果を読むための入り口である。ポートを広げないため、具体クラスにだけ置く。
+    `read_result` は D07 v2.0 §4.1 でポートの操作になった（段階4 の `RunExperiment` が既存の
+    run 成果物を再利用するときに読むため。実装 PR 3）。
     """
 
     root: Path
@@ -952,33 +1004,104 @@ class FileSystemResultRepository:
                 run_id=run_id, detail=canonical_text(f"{type(exc).__name__}: {exc}")
             )
 
-    def read_result(self, run_id: RunId) -> BacktestResult:
-        """`runs/<run_id>/result.json` を読む（D06 §9.4）。"""
+    def read_result(self, run_id: RunId) -> BacktestResult | ResultReadFailure:
+        """`runs/<run_id>/result.json` を読む（D06 §9.4、D07 v2.0 §4.1）。
+
+        **読めないとき（ファイルが無い・壊れている・中身の `run_id` が引数と違う）は例外に
+        せず `ResultReadFailure` を返す**（D07 v2.0 §3・§4.1。`read_manifest` と同じ扱い）。
+        """
         directory = run_directory(self.root, run_id)
         result_path = directory / "result.json"
         manifest_path = directory / "manifest.json"
-        if not result_path.is_file():
-            raise KernelValueError(f"{result_path} does not exist; this run has no result to read")
-        if not manifest_path.is_file():
-            raise KernelValueError(
-                f"{manifest_path} does not exist; the timeframe definitions recorded there are"
-                " needed to read the series of the result (D03 §3.1)"
+        linked = _linked_run_path(directory)
+        if linked is not None:
+            # リンク越しの run は「読めない」とする。読めても、その run の評価は書き込みの
+            # 検査（R4。根の下のリンクを辿らない）で必ず止まるので、再利用や評価の対象に
+            # 選んでから失敗させない（D07 §19.6 の手順1〜3・5。PR #47 第2巡）。
+            return ResultReadFailure(
+                run_id=run_id,
+                detail=(
+                    f"{linked} is a symbolic link or not a directory; run artifacts are never"
+                    " read or written through links (D06 §9.1, R4)"
+                ),
             )
-        timeframes = _timeframes_of(json.loads(manifest_path.read_text(encoding="utf-8")))
-        result = result_from_payload(
-            json.loads(result_path.read_text(encoding="utf-8")), timeframes
-        )
+        if not result_path.is_file():
+            return ResultReadFailure(
+                run_id=run_id,
+                detail=f"{result_path} does not exist; this run has no result to read",
+            )
+        if not manifest_path.is_file():
+            return ResultReadFailure(
+                run_id=run_id,
+                detail=(
+                    f"{manifest_path} does not exist; the timeframe definitions recorded there"
+                    " are needed to read the series of the result (D03 §3.1)"
+                ),
+            )
+        try:
+            timeframes = _timeframes_of(json.loads(manifest_path.read_text(encoding="utf-8")))
+            result = result_from_payload(
+                json.loads(result_path.read_text(encoding="utf-8")), timeframes
+            )
+        except OSError as exc:
+            return ResultReadFailure(
+                run_id=run_id, detail=f"{type(exc).__name__}: {exc.strerror} ({result_path})"
+            )
+        except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            return ResultReadFailure(
+                run_id=run_id, detail=f"{result_path}: {type(exc).__name__}: {exc}"
+            )
         if result.run_id != run_id:
             # **読んだ場所と中身の実行の識別子が食い違ったまま進めない**。評価はこのあと
             # 結果 DTO の識別子で manifest と判断履歴を引くので、食い違ったまま通すと、
             # 利用者が指した run とは**別の run** の指標を、しかも別の場所へ書いてしまう。
             # 整合検査 C2 はその別の run の中では辻褄が合うので気付けない。
-            raise KernelValueError(
-                f"{result_path} holds the result of run {result.run_id} but it was read as"
-                f" {run_id}; evaluating it would produce metrics for a different run"
-                " (D07 §4.1・§10.2 の C2)"
+            return ResultReadFailure(
+                run_id=run_id,
+                detail=(
+                    f"{result_path} holds the result of run {result.run_id} but it was read as"
+                    f" {run_id}; evaluating it would produce metrics for a different run"
+                    " (D07 §4.1・§10.2 の C2)"
+                ),
             )
         return result
+
+    def run_exists(self, run_id: RunId) -> bool:
+        """`runs/<run_id>/` があるか（D07 §19.6 の手順1。空・書きかけ・リンクも「ある」）。"""
+        directory = run_directory(self.root, run_id)
+        return directory.exists() or directory.is_symlink()
+
+    def read_evaluation(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> StoredEvaluation | EvaluationReadFailure | None:
+        """評価 manifest を読む（D07 §19.6 の手順2・5）。保存先が無ければ `None`。"""
+        directory = evaluation_directory(self.root, run_id, run_evaluation_id)
+        if not (directory.exists() or directory.is_symlink()):
+            return None
+        path = directory / "evaluation.json"
+        try:
+            if directory.is_symlink() or not directory.is_dir():
+                raise KernelValueError("the evaluation directory is not a plain directory")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                raise KernelValueError("the evaluation manifest must be a JSON object")
+            return StoredEvaluation(
+                run_id=RunId(_digest_of(payload["run_id"], "run_id")),
+                run_evaluation_id=RunEvaluationId(
+                    _digest_of(payload["run_evaluation_id"], "run_evaluation_id")
+                ),
+                metric_set_version=payload["metric_set_version"],
+                status=EvaluationStatus(payload["status"]),
+                result_digest=_digest_of(payload["result_digest"], "result_digest"),
+            )
+        except OSError as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{type(exc).__name__}: {exc.strerror} ({path})"
+            )
+        except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
+            )
 
     def read_table(
         self, run_id: RunId, table: TraceTable, columns: tuple[TraceColumnSpec, ...]
@@ -1097,3 +1220,468 @@ def _evaluation_payload(manifest: EvaluationManifest) -> dict[str, Any]:
         "unreadable_check_count": manifest.unreadable_check_count,
         "result_digest": manifest.result_digest.hex,
     }
+
+
+# --- 実験の記録票と結末記録（D07 §19.1・§19.3）-----------------------------------
+
+#: 記録票・結末記録のファイル名（D07 §19.1）。
+EXPERIMENT_MANIFEST_FILE = "experiment_manifest.json"
+EXPERIMENT_OUTCOME_FILE = "experiment_outcome.json"
+
+#: 退避した旧い結末記録（`experiment_outcome.<n>.json`。n は 1 から。D07 §19.3）。
+_KEPT_OUTCOME = re.compile(r"experiment_outcome\.([1-9][0-9]*)\.json")
+
+
+def experiment_directory(root: Path, experiment_name: str, experiment_version: int) -> Path:
+    """`runs/experiments/<experiment_name>/v<experiment_version>/`（D07 §19.1、D01 §10.3）。"""
+    require_experiment_name(experiment_name)
+    return Path(root) / "runs" / "experiments" / experiment_name / f"v{experiment_version}"
+
+
+def _ensure_plain_directory(base: Path, directory: Path) -> Path:
+    """`base`（成果物の根 `runs/`）の下に、リンクでない実ディレクトリを（無ければ）作る。
+
+    記録票の置き場は同じ版の再実行で使い回す（D07 §19.3）ので、`create_artifact_directory`
+    と違って**あっても失敗しない**。ただし根の下の要素（`experiments`・名前・版）がリンクや
+    別の種類なら、リンク先に書かずに `ArtifactAlreadyExists` で失敗する（R4 と同じ境界。
+    根そのものはリンクでもよい。D06 §9.1）。
+    """
+    _make_root(base)
+    current = base
+    for part in directory.relative_to(base).parts:
+        current = current / part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            raise ArtifactAlreadyExists(
+                f"{current} is a symbolic link or not a directory; experiment records are never"
+                " written through links, and nothing was written. Replace it with a plain"
+                " directory first (D07 §19.3, R4)"
+            )
+        current.mkdir(exist_ok=True)
+    return directory
+
+
+def _write_new_file(path: Path, text: str) -> None:
+    """ファイルを**新しく**、原子的に書く（一時ファイル＋改名。D07 §19.4 の「保存を試みる」行）。
+
+    既にあれば何も書かずに `FileExistsError`。途中で落ちても書きかけのファイルが本来の名前で
+    残らない。改名には既存を上書きしない `os.link` を使う（`os.replace` は上書きする）。
+    """
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _json_text(payload: Mapping[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
+
+
+def _policy_check_payload(item: PolicyCheckResult) -> dict[str, str]:
+    return {
+        "check": item.check.value,
+        "stage": item.stage.value,
+        "outcome": item.outcome.value,
+        "expected": item.expected,
+        "observed": item.observed,
+    }
+
+
+def _policy_check_of(payload: Mapping[str, Any]) -> PolicyCheckResult:
+    return PolicyCheckResult(
+        check=PolicyCheck(payload["check"]),
+        stage=PolicyCheckStage(payload["stage"]),
+        outcome=CheckOutcome(payload["outcome"]),
+        expected=payload["expected"],
+        observed=payload["observed"],
+    )
+
+
+_MEASURES = ("component_kinds", "instances", "parameters", "decision_outputs")
+
+
+def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
+    """記録票を JSON へ落とす（D07 §19.2 の表の項目すべて。ADR-0027）。
+
+    **実行時刻を入れない**（D07 §19.2）。本文（`resolved_files` の `text`）はそのまま入れる。
+    """
+    policy = manifest.research_policy_ref
+    strategy = manifest.strategy_ref
+    return {
+        "schema_version": manifest.schema_version,
+        "experiment_id": manifest.experiment_id.hex,
+        "experiment_name": manifest.experiment_name,
+        "experiment_version": manifest.experiment_version,
+        "hypothesis": manifest.hypothesis,
+        "research_policy_ref": {
+            "id": policy.policy_id,
+            "version": policy.version,
+            "digest": policy.digest.hex,
+        },
+        "metric_set_version": manifest.metric_set_version,
+        "search_plan": manifest.search_plan,
+        "split": manifest.split,
+        "resolved_files": [
+            {"role": item.role, "sha256": item.sha256, "text": item.text}
+            for item in sorted(manifest.resolved_files, key=lambda item: item.role)
+        ],
+        "strategy_ref": {
+            "id": strategy.strategy_id,
+            "version": strategy.version,
+            "digest": strategy.digest.hex,
+        },
+        "compiled_ref": manifest.compiled_ref.digest.hex,
+        "expected_config_digest": manifest.expected_config_digest.digest.hex,
+        "snapshot_id": manifest.snapshot_id.hex,
+        "allowed_partitions": [
+            {"partition": partition, "access_class": access.value}
+            for partition, access in manifest.allowed_partitions.items()
+        ],
+        "complexity": {name: getattr(manifest.complexity, name) for name in _MEASURES},
+        "complexity_limits": {
+            name: getattr(manifest.complexity_limits, name) for name in _MEASURES
+        },
+        "pre_run_checks": [_policy_check_payload(item) for item in manifest.pre_run_checks],
+        "code_digest": manifest.code_digest.digest.hex,
+        "lock_digest": manifest.lock_digest.digest.hex,
+        "env_digest": manifest.env_digest.digest.hex,
+        "git_commit": manifest.git_commit,
+        "git_dirty": manifest.git_dirty,
+    }
+
+
+def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentManifest:
+    """保存した記録票を読み戻す。項目の欠け・型の違いは例外（`KeyError` など）になる。"""
+    policy = payload["research_policy_ref"]
+    strategy = payload["strategy_ref"]
+    return ExperimentManifest(
+        experiment_id=ExperimentId(_digest_of(payload["experiment_id"], "experiment_id")),
+        experiment_name=payload["experiment_name"],
+        experiment_version=payload["experiment_version"],
+        schema_version=payload["schema_version"],
+        hypothesis=payload["hypothesis"],
+        research_policy_ref=PolicyRef(
+            policy_kind="research",
+            policy_id=policy["id"],
+            version=policy["version"],
+            digest=_digest_of(policy["digest"], "research_policy_ref.digest"),
+        ),
+        metric_set_version=payload["metric_set_version"],
+        search_plan=payload["search_plan"],
+        split=payload["split"],
+        resolved_files=tuple(
+            ResolvedFile(role=item["role"], text=item["text"], sha256=item["sha256"])
+            for item in payload["resolved_files"]
+        ),
+        strategy_ref=StrategyRef(
+            strategy_id=strategy["id"],
+            version=strategy["version"],
+            digest=_digest_of(strategy["digest"], "strategy_ref.digest"),
+        ),
+        compiled_ref=CompiledStrategyRef(_digest_of(payload["compiled_ref"], "compiled_ref")),
+        expected_config_digest=ConfigDigest(
+            _digest_of(payload["expected_config_digest"], "expected_config_digest")
+        ),
+        snapshot_id=SnapshotId(_digest_of(payload["snapshot_id"], "snapshot_id")),
+        allowed_partitions={
+            item["partition"]: AccessClass(item["access_class"])
+            for item in payload["allowed_partitions"]
+        },
+        complexity=ComplexityMeasures(**{name: payload["complexity"][name] for name in _MEASURES}),
+        complexity_limits=ComplexityLimits(
+            **{name: payload["complexity_limits"][name] for name in _MEASURES}
+        ),
+        pre_run_checks=tuple(_policy_check_of(item) for item in payload["pre_run_checks"]),
+        code_digest=CodeDigest(_digest_of(payload["code_digest"], "code_digest")),
+        lock_digest=LockDigest(_digest_of(payload["lock_digest"], "lock_digest")),
+        env_digest=EnvDigest(_digest_of(payload["env_digest"], "env_digest")),
+        git_commit=payload["git_commit"],
+        git_dirty=payload["git_dirty"],
+    )
+
+
+def _optional_hex(value: ContentDigest | None) -> str | None:
+    return None if value is None else value.hex
+
+
+def experiment_outcome_payload(outcome: ExperimentOutcome) -> dict[str, Any]:
+    """結末記録を JSON へ落とす（D07 §19.3 の表の項目すべて）。"""
+    return {
+        "experiment_id": outcome.experiment_id.hex,
+        "status": outcome.status.value,
+        "expected_run_id": outcome.expected_run_id.hex,
+        "code_digest": outcome.code_digest.digest.hex,
+        "lock_digest": outcome.lock_digest.digest.hex,
+        "env_digest": outcome.env_digest.digest.hex,
+        "git_commit": outcome.git_commit,
+        "git_dirty": outcome.git_dirty,
+        "run_id": None if outcome.run_id is None else outcome.run_id.hex,
+        "run_status": None if outcome.run_status is None else outcome.run_status.value,
+        "run_reused": outcome.run_reused,
+        "run_evaluation_id": _optional_hex(outcome.run_evaluation_id),
+        "evaluation_status": None
+        if outcome.evaluation_status is None
+        else outcome.evaluation_status.value,
+        "result_digest": _optional_hex(outcome.result_digest),
+        "outcome_checks": [_policy_check_payload(item) for item in outcome.outcome_checks],
+        "failed_checks": [check.value for check in outcome.failed_checks],
+    }
+
+
+def _optional_digest(value: object, label: str) -> ContentDigest | None:
+    return None if value is None else _digest_of(value, label)
+
+
+def experiment_outcome_from_payload(payload: Mapping[str, Any]) -> ExperimentOutcome:
+    """保存した結末記録を読み戻す。"""
+    run_id = _optional_digest(payload["run_id"], "run_id")
+    run_status = payload["run_status"]
+    evaluation_status = payload["evaluation_status"]
+    return ExperimentOutcome(
+        experiment_id=ExperimentId(_digest_of(payload["experiment_id"], "experiment_id")),
+        status=ExperimentStatus(payload["status"]),
+        expected_run_id=RunId(_digest_of(payload["expected_run_id"], "expected_run_id")),
+        code_digest=CodeDigest(_digest_of(payload["code_digest"], "code_digest")),
+        lock_digest=LockDigest(_digest_of(payload["lock_digest"], "lock_digest")),
+        env_digest=EnvDigest(_digest_of(payload["env_digest"], "env_digest")),
+        git_commit=payload["git_commit"],
+        git_dirty=payload["git_dirty"],
+        run_id=None if run_id is None else RunId(run_id),
+        run_status=None if run_status is None else RunStatus(run_status),
+        run_reused=payload["run_reused"],
+        run_evaluation_id=_optional_digest(payload["run_evaluation_id"], "run_evaluation_id"),
+        evaluation_status=None
+        if evaluation_status is None
+        else EvaluationStatus(evaluation_status),
+        result_digest=_optional_digest(payload["result_digest"], "result_digest"),
+        outcome_checks=tuple(_policy_check_of(item) for item in payload["outcome_checks"]),
+        failed_checks=tuple(PolicyCheck(name) for name in payload["failed_checks"]),
+    )
+
+
+#: 記録票・結末記録を読めなかったときの例外（形の違い・項目の欠け・JSON の壊れ）。
+_READ_ERRORS = (ValueError, KeyError, TypeError, AttributeError, ArithmeticError)
+
+
+def _read_json_object(path: Path, label: str) -> Mapping[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise KernelValueError(f"{path} is not a readable {label} file")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise KernelValueError(f"{path} cannot be read as JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise KernelValueError(f"{path} must hold a JSON object")
+    return payload
+
+
+def read_experiment_manifest(directory: Path) -> ExperimentManifest:
+    """実験の版のディレクトリの記録票を読む。無い・読めなければ `KernelValueError`。"""
+    path = Path(directory) / EXPERIMENT_MANIFEST_FILE
+    payload = _read_json_object(path, "experiment manifest")
+    try:
+        return experiment_manifest_from_payload(payload)
+    except _READ_ERRORS as exc:
+        raise KernelValueError(
+            f"{path} is not a valid experiment manifest: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def read_experiment_outcome(directory: Path) -> ExperimentOutcome | None:
+    """実験の版のディレクトリの結末記録を読む。無ければ `None`、読めなければ `KernelValueError`。"""
+    path = Path(directory) / EXPERIMENT_OUTCOME_FILE
+    if not (path.exists() or path.is_symlink()):
+        return None
+    payload = _read_json_object(path, "experiment outcome")
+    try:
+        return experiment_outcome_from_payload(payload)
+    except _READ_ERRORS as exc:
+        raise KernelValueError(
+            f"{path} is not a valid experiment outcome: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class FileSystemExperimentStore:
+    """1つの実験の版の記録票と結末記録の保存（D01 §4、D07 §19.3）。
+
+    `ExperimentStore`（`evaluation.application.ports`）を構造的に満たす。置き場は
+    `runs/experiments/<experiment_name>/v<experiment_version>/`（D07 §19.1）。
+    """
+
+    root: Path
+    experiment_name: str
+    experiment_version: int
+    #: 記録票の中身から識別子を再計算する関数（D07 §19.2 の「識別の入力」。合成が渡す）。
+    #: 計算できなければ `ValueError` 系を送出する（その記録票は読めないものと同じに扱う）。
+    identity_of: Callable[[ExperimentManifest], ExperimentId]
+
+    @property
+    def directory(self) -> Path:
+        """この実験の版のディレクトリ。"""
+        return experiment_directory(self.root, self.experiment_name, self.experiment_version)
+
+    def _require_own(self, manifest: ExperimentManifest) -> None:
+        if (manifest.experiment_name, manifest.experiment_version) != (
+            self.experiment_name,
+            self.experiment_version,
+        ):
+            raise KernelValueError(
+                f"this store keeps {self.experiment_name} v{self.experiment_version}, not"
+                f" {manifest.experiment_name} v{manifest.experiment_version}"
+            )
+
+    def save_manifest(self, manifest: ExperimentManifest) -> ManifestSaveResult:
+        """記録票を保存する（D07 §19.3）。
+
+        - 無ければ書く（一時ファイル＋改名）→ `CREATED`。
+        - あり、識別子が同じなら何もしない → `ALREADY_IDENTICAL`（同じ版の再実行は正当）。
+        - あり、識別子が違う、**または読めない**なら書かない → `CONFLICT`（検査 P3 の不合格。
+          既存の記録票は上書きしない。読めない記録票を上書きすると、事前固定の証拠を消して
+          しまう）。
+
+        保存が成功したら、run を始める前に、同じ版に既にある結末記録を退避する（同節）。
+        """
+        self._require_own(manifest)
+        directory = _ensure_plain_directory(Path(self.root) / "runs", self.directory)
+        path = directory / EXPERIMENT_MANIFEST_FILE
+        result = self._compare_existing(path, manifest)
+        if result is None:
+            try:
+                _write_new_file(path, _json_text(experiment_manifest_payload(manifest)))
+                result = ManifestSaveResult.CREATED
+            except FileExistsError:
+                # 確かめた後に別の実行が書いた。書いたものと比べ直す。
+                result = self._compare_existing(path, manifest) or ManifestSaveResult.CONFLICT
+        if result is not ManifestSaveResult.CONFLICT:
+            self._keep_previous_outcome(directory)
+        return result
+
+    def _compare_existing(
+        self, path: Path, manifest: ExperimentManifest
+    ) -> ManifestSaveResult | None:
+        """既存の記録票と比べる。**記録された識別子を信じず、中身から再計算して比べる**。
+
+        記録票の項目（仮説など）だけを書き換えて識別子を残した記録票を「同じ内容」と読むと、
+        事前固定の検査 P3 が改変を見逃す（D07 §19.3 の「内容のダイジェストが同じ」）。本文の
+        SHA-256 も照合する（識別子には本文ではなく SHA-256 が入るため）。識別子の再計算には
+        実験設定の値（YAML の読込）が要るので、計算は合成が `identity_of` として渡す。
+        """
+        if not (path.exists() or path.is_symlink()):
+            return None
+        try:
+            existing = read_experiment_manifest(path.parent)
+        except KernelValueError:
+            return ManifestSaveResult.CONFLICT
+        if not all(item.intact for item in existing.resolved_files):
+            return ManifestSaveResult.CONFLICT
+        try:
+            recomputed = self.identity_of(existing)
+        except ValueError:
+            return ManifestSaveResult.CONFLICT
+        if recomputed != existing.experiment_id:
+            return ManifestSaveResult.CONFLICT
+        if existing.experiment_id == manifest.experiment_id:
+            return ManifestSaveResult.ALREADY_IDENTICAL
+        return ManifestSaveResult.CONFLICT
+
+    @staticmethod
+    def _keep_previous_outcome(directory: Path) -> None:
+        """同じ版に既にある結末記録を `experiment_outcome.<n>.json` へ退避する（D07 §19.3）。
+
+        n は 1 からの連番（既に退避した件数 + 1）。旧い記録は消さず、既存の退避先は上書き
+        しない（作成と存在の確認を排他的な作成で1つの操作にする。R4）。
+        """
+        current = directory / EXPERIMENT_OUTCOME_FILE
+        if not (current.exists() or current.is_symlink()):
+            return
+        if current.is_symlink() or not current.is_file():
+            raise ArtifactAlreadyExists(
+                f"{current} is not a plain file; it was left as is and nothing ran (D07 §19.3)"
+            )
+        kept = [
+            int(match.group(1))
+            for entry in directory.iterdir()
+            if (match := _KEPT_OUTCOME.fullmatch(entry.name))
+        ]
+        target = directory / f"experiment_outcome.{max(kept, default=0) + 1}.json"
+        try:
+            os.link(current, target)
+        except FileExistsError:
+            raise ArtifactAlreadyExists(
+                f"{target} already exists; kept outcomes are never overwritten, and nothing ran"
+                " (D07 §19.3, R4)"
+            ) from None
+        current.unlink()
+
+    def read_manifest(self, path: str) -> ExperimentManifest:
+        """実験の版のディレクトリ `path` の記録票を読む（読めなければ `KernelValueError`）。"""
+        return read_experiment_manifest(Path(path))
+
+    def write_outcome(self, outcome: ExperimentOutcome) -> None:
+        """結末記録を書く（D07 §19.3）。前の結末記録は保存時に退避済みである。"""
+        directory = self.directory
+        manifest = read_experiment_manifest(directory)
+        if manifest.experiment_id != outcome.experiment_id:
+            raise KernelValueError(
+                f"the outcome belongs to the experiment {outcome.experiment_id}, but"
+                f" {directory} records {manifest.experiment_id} (D07 §19.3)"
+            )
+        try:
+            _write_new_file(
+                directory / EXPERIMENT_OUTCOME_FILE,
+                _json_text(experiment_outcome_payload(outcome)),
+            )
+        except FileExistsError:
+            raise ArtifactAlreadyExists(
+                f"{directory / EXPERIMENT_OUTCOME_FILE} already exists; outcomes are never"
+                " overwritten (D07 §19.3, R4)"
+            ) from None
+
+
+# --- 別プロセスでの再現の報告（D07 §21.2）------------------------------------------
+
+#: 再現の報告のファイル名（`--out` の直下。D07 §21.2 の手順5）。
+REPRODUCTION_FILE = "reproduction.json"
+
+
+def reproduction_payload(
+    experiment_id: ExperimentId,
+    verdict: str,
+    expected_run_id: RunId,
+    observed_run_id: RunId | None,
+    expected_result_digest: ContentDigest,
+    observed_result_digest: ContentDigest | None,
+) -> dict[str, Any]:
+    """再現の報告（`ReproductionReport`）の JSON。"""
+    return {
+        "experiment_id": experiment_id.hex,
+        "verdict": verdict,
+        "expected_run_id": expected_run_id.hex,
+        "observed_run_id": None if observed_run_id is None else observed_run_id.hex,
+        "expected_result_digest": expected_result_digest.hex,
+        "observed_result_digest": _optional_hex(observed_result_digest),
+    }
+
+
+def reproduction_path(out_root: Path) -> Path:
+    """再現の報告の置き場（`--out` の直下）。"""
+    return Path(out_root) / REPRODUCTION_FILE
+
+
+def write_reproduction(out_root: Path, payload: Mapping[str, Any]) -> Path:
+    """再現の報告を新しく書く。既にあれば何も書かずに `ArtifactAlreadyExists`（R4）。"""
+    path = reproduction_path(out_root)
+    _require_root_is_directory(Path(out_root))
+    Path(out_root).mkdir(parents=True, exist_ok=True)
+    try:
+        _write_new_file(path, _json_text(payload))
+    except FileExistsError:
+        raise _already_exists(
+            path, "Choose another --out, or move the earlier reproduction away"
+        ) from None
+    return path

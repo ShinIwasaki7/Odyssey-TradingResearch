@@ -15,11 +15,19 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.trace.manifest import RunManifest
 from odyssey_fx.backtest.trace.recorder import TraceTable
+from odyssey_fx.backtest.trace.result import BacktestResult
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
-from odyssey_fx.evaluation.application.manifest import EvaluationTable
+from odyssey_fx.common.refs import ContentDigest, SnapshotRef
+from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
+from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
+from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 
 if TYPE_CHECKING:  # pragma: no cover - 型検査のためだけの参照
     # `evaluate_run` は実行時に本モジュールを import する。書き出し口の引数の型を
@@ -27,9 +35,16 @@ if TYPE_CHECKING:  # pragma: no cover - 型検査のためだけの参照
     from odyssey_fx.evaluation.application.evaluate_run import EvaluationReport
 
 __all__ = [
+    "BacktestRunner",
     "ColumnValueKind",
+    "EvaluationReadFailure",
+    "ExperimentStore",
     "ManifestReadFailure",
+    "ManifestSaveResult",
+    "ResultReadFailure",
     "ResultRepository",
+    "SnapshotCatalog",
+    "StoredEvaluation",
     "TableReadResult",
     "TraceColumnSpec",
 ]
@@ -144,6 +159,64 @@ class ManifestReadFailure:
             raise KernelValueError("ManifestReadFailure.detail must be a non-empty str")
 
 
+@dataclass(frozen=True, slots=True)
+class ResultReadFailure:
+    """保存済みの結果 DTO（`runs/<run_id>/result.json`）を読めなかったこと（D07 v2.0 §3・§4.1）。
+
+    `ManifestReadFailure` と同じ形。結果 DTO は評価の入力1そのものなので、これを受け取った
+    呼び出し側は評価を始めない（`evaluate` コマンドは終了コード 2、`RunExperiment` は既存の
+    成果物を再利用できないとして拒否。D07 §4.1）。
+    """
+
+    run_id: RunId
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, RunId):
+            raise KernelValueError("ResultReadFailure.run_id must be a RunId")
+        if not isinstance(self.detail, str) or not self.detail:
+            raise KernelValueError("ResultReadFailure.detail must be a non-empty str")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredEvaluation:
+    """保存済みの評価 manifest から読んだ、再利用の判断に要る値（D07 §19.6 の手順2）。"""
+
+    run_id: RunId
+    run_evaluation_id: RunEvaluationId
+    metric_set_version: int
+    status: EvaluationStatus
+    result_digest: ContentDigest
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, RunId):
+            raise KernelValueError("StoredEvaluation.run_id must be a RunId")
+        if not isinstance(self.run_evaluation_id, RunEvaluationId):
+            raise KernelValueError("StoredEvaluation.run_evaluation_id must be a RunEvaluationId")
+        if isinstance(self.metric_set_version, bool) or not isinstance(
+            self.metric_set_version, int
+        ):
+            raise KernelValueError("StoredEvaluation.metric_set_version must be an int")
+        if not isinstance(self.status, EvaluationStatus):
+            raise KernelValueError("StoredEvaluation.status must be an EvaluationStatus")
+        if not isinstance(self.result_digest, ContentDigest):
+            raise KernelValueError("StoredEvaluation.result_digest must be a ContentDigest")
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationReadFailure:
+    """評価の保存先はあるが、評価 manifest を読めなかったこと（D07 §19.6 の手順5）。"""
+
+    run_id: RunId
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, RunId):
+            raise KernelValueError("EvaluationReadFailure.run_id must be a RunId")
+        if not isinstance(self.detail, str) or not self.detail:
+            raise KernelValueError("EvaluationReadFailure.detail must be a non-empty str")
+
+
 @runtime_checkable
 class ResultRepository(Protocol):
     """run の成果物の読み書き（D01 §4、D07 §4.3・§8.2）。
@@ -174,4 +247,93 @@ class ResultRepository(Protocol):
 
         保存先が既にあれば、何も書かずに `ArtifactAlreadyExists` で失敗する（R4）。
         """
+        ...
+
+    def read_result(self, run_id: RunId) -> BacktestResult | ResultReadFailure:
+        """`runs/<run_id>/result.json` を読む（D07 v2.0 §4.1。形式の正本は D06 §9.1・§9.4）。
+
+        **読めないとき（ファイルが無い・壊れている・中身の `run_id` が引数と違う）は例外に
+        せず `ResultReadFailure` を返す**。
+        """
+        ...
+
+    def run_exists(self, run_id: RunId) -> bool:
+        """`runs/<run_id>/` が既にあるか（D07 §19.6 の手順1。空・書きかけ・リンクも「ある」）。
+
+        run manifest が読めないことと、保存先が無いことを区別するための操作である。区別しない
+        と、壊れた既存の成果物を「無い」と読んで記録票を保存した後に、run の書き込みが
+        `ArtifactAlreadyExists` で落ちる（D07 §19.6 の手順5 は書き込みの失敗を既存の成果物の
+        検出に使わないと定める）。
+        """
+        ...
+
+    def read_evaluation(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> StoredEvaluation | EvaluationReadFailure | None:
+        """評価 manifest を読む（D07 §19.6 の手順2・5）。
+
+        読む先は `runs/<run_id>/eval/<run_evaluation_id>/evaluation.json`。
+
+        保存先が無ければ `None`、あるが読めなければ `EvaluationReadFailure`。
+        """
+        ...
+
+
+class ManifestSaveResult(Enum):
+    """記録票の保存の結果（D07 §19.3）。"""
+
+    #: 保存先に記録票が無かったので書いた。
+    CREATED = "CREATED"
+    #: 同じ識別子の記録票が既にあったので何もしなかった（同じ版の再実行は正当）。
+    ALREADY_IDENTICAL = "ALREADY_IDENTICAL"
+    #: 識別子の違う記録票（または読めない記録票）が既にあったので書かずに拒否した。
+    CONFLICT = "CONFLICT"
+
+
+@runtime_checkable
+class ExperimentStore(Protocol):
+    """実験の記録票と結末記録の保存（D01 §4、D07 §19.3）。実装は `evaluation.adapters.fs_store`。
+
+    1つの実装は1つの実験の版のディレクトリ（`runs/experiments/<name>/v<version>/`）を扱う。
+    """
+
+    def save_manifest(self, manifest: ExperimentManifest) -> ManifestSaveResult:
+        """記録票を保存する（D07 §19.3 の記録票の書き込み）。
+
+        無ければ書く（一時ファイル＋改名で原子的に）。あり、識別子が同じなら何もしない。
+        あり、識別子が違う（または読めない）なら書かずに `CONFLICT`。保存が成功した
+        （`CREATED` か `ALREADY_IDENTICAL`）ときは、run を始める前に、同じ版に既にある結末
+        記録を `experiment_outcome.<n>.json` へ退避する（同節の結末記録の書き込み）。
+        """
+        ...
+
+    def read_manifest(self, path: str) -> ExperimentManifest:
+        """実験の版のディレクトリ `path` の記録票を読む。読めなければ構造エラー。"""
+        ...
+
+    def write_outcome(self, outcome: ExperimentOutcome) -> None:
+        """結末記録 `experiment_outcome.json` を書く（D07 §19.3）。"""
+        ...
+
+
+@runtime_checkable
+class BacktestRunner(Protocol):
+    """単一 run の実行（D01 §4、D07 §19.4）。実装は `app` が `RunBacktest` を適合させる。
+
+    置換の指示を受け取らない（常に「存在すれば失敗」で書く。D07 §19.6 の手順4）。
+    """
+
+    def run(self, config: RunConfig, compiled: CompiledStrategy) -> BacktestResult:
+        """run を1回行い、判断履歴・run manifest・結果を保存して結果を返す。"""
+        ...
+
+
+@runtime_checkable
+class SnapshotCatalog(Protocol):
+    """記録票に固定する許可 partition のアクセス分類の取得（D01 §4、D07 §20.3 の P2）。"""
+
+    def access_classes(
+        self, snapshot: SnapshotRef, partitions: frozenset[PartitionId]
+    ) -> Mapping[PartitionId, AccessClass]:
+        """snapshot の manifest が記録する、各 partition のアクセス分類。"""
         ...

@@ -7,6 +7,7 @@ run manifest と結果 DTO を**読み戻せる**ことを確かめる。評価�
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import polars as pl
@@ -14,7 +15,7 @@ import pytest
 
 from odyssey_fx.backtest.trace.manifest import RunManifest
 from odyssey_fx.backtest.trace.recorder import TraceTable, column_names
-from odyssey_fx.backtest.trace.result import RunStatus
+from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultRepository,
@@ -29,6 +30,7 @@ from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION, Evalu
 from odyssey_fx.evaluation.application.ports import (
     ColumnValueKind,
     ManifestReadFailure,
+    ResultReadFailure,
     TraceColumnSpec,
 )
 from odyssey_fx.evaluation.domain.metrics import (
@@ -83,6 +85,7 @@ def test_the_result_round_trips(saved_run: tuple[Path, object]) -> None:
     root, output = saved_run
     original = output.result  # type: ignore[attr-defined]
     restored = FileSystemResultRepository(root=root).read_result(original.run_id)
+    assert isinstance(restored, BacktestResult), restored
 
     assert restored.run_id == original.run_id
     assert restored.status is original.status
@@ -195,6 +198,7 @@ def test_the_evaluation_is_saved_under_the_run_and_its_identifier(
     root, output = saved_run
     repository = FileSystemResultRepository(root=root)
     result = repository.read_result(output.result.run_id)  # type: ignore[attr-defined]
+    assert isinstance(result, BacktestResult), result
     report = EvaluateRun(
         evaluation_code_digest=output.manifest.code_digest  # type: ignore[attr-defined]
     ).evaluate(result, repository, METRIC_SET_VERSION, CALENDAR)
@@ -269,8 +273,10 @@ def test_a_result_that_names_another_run_is_refused(saved_run: tuple[Path, objec
     payload["run_id"] = "b" * 64
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(KernelValueError, match="different run"):
-        FileSystemResultRepository(root=root).read_result(run_id)
+    read = FileSystemResultRepository(root=root).read_result(run_id)
+    # 例外にせず読めなかったことを返す（D07 v2.0 §4.1。`read_manifest` と同じ扱い）。
+    assert isinstance(read, ResultReadFailure)
+    assert "different run" in read.detail
 
 
 def test_a_manifest_whose_config_was_edited_is_refused(saved_run: tuple[Path, object]) -> None:
@@ -304,6 +310,7 @@ def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, obje
     root, output = saved_run
     repository = FileSystemResultRepository(root=root)
     result = repository.read_result(output.result.run_id)  # type: ignore[attr-defined]
+    assert isinstance(result, BacktestResult), result
     report = EvaluateRun(
         evaluation_code_digest=output.manifest.code_digest  # type: ignore[attr-defined]
     ).evaluate(result, repository, METRIC_SET_VERSION, CALENDAR)
@@ -337,6 +344,7 @@ def test_a_saved_run_with_a_broken_manifest_is_evaluated_and_explained(
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     outcome = evaluate_saved_run(run_id=run_id, artifacts_root=root, calendar=CALENDAR)
+    assert not isinstance(outcome, ResultReadFailure), outcome
 
     report = outcome.report
     assert report.status is EvaluationStatus.FAILED
@@ -377,3 +385,30 @@ def test_an_unreadable_manifest_detail_carries_no_absolute_path(
     read = FileSystemResultRepository(root=root).read_manifest(run_id)
     assert isinstance(read, ManifestReadFailure)
     assert str(root) not in read.detail
+
+
+@pytest.mark.parametrize("linked", ["run", "eval"])
+def test_a_run_reached_through_a_link_is_not_read(
+    saved_run: tuple[Path, object], tmp_path: Path, linked: str
+) -> None:
+    """根の下の run（または `eval`）がリンクなら、結果を「読めない」と返す（R4、D07 §19.6）。
+
+    その run の評価の書き込みはリンクの検査で必ず止まるので、読めたことにして再利用の対象に
+    選ぶと、記録票を保存した後に失敗する（PR #47 第2巡）。
+    """
+    root, output = saved_run
+    run_id = output.result.run_id  # type: ignore[attr-defined]
+    directory = run_directory(root, run_id)
+    if linked == "run":
+        moved = tmp_path / "moved-run"
+        directory.rename(moved)
+        os.symlink(moved, directory)
+    else:
+        target = tmp_path / "moved-eval"
+        target.mkdir()
+        os.symlink(target, directory / "eval")
+
+    read = FileSystemResultRepository(root=root).read_result(run_id)
+
+    assert isinstance(read, ResultReadFailure)
+    assert "symbolic link" in read.detail

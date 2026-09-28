@@ -58,6 +58,7 @@ _COPIED: Final = (
     "configs/datasources/legacy_merged_csv_v1.yaml",
     "configs/symbols/USDJPY.yaml",
     "configs/strategies/strategy_b_v1.yaml",
+    "configs/policies/research/research_policy_v1.yaml",
     *CASE_EXPERIMENTS.values(),
 )
 

@@ -50,9 +50,9 @@ class _SymbolSpecModel(StrictModel):
     lot_size: str | None = None
 
 
-def load_symbol_spec(path: Path) -> SymbolSpec:
-    """銘柄仕様を1件読む（D02 §5.2、D03 §9）。"""
-    payload = load_yaml_mapping(path)
+def load_symbol_spec(path: Path, *, text: str | None = None) -> SymbolSpec:
+    """銘柄仕様を1件読む（D02 §5.2、D03 §9）。`text` は `load_yaml_mapping` と同じ。"""
+    payload = load_yaml_mapping(path, text=text)
     model = validate(_SymbolSpecModel, payload, path)
     require_schema_version(model.schema_version, SYMBOL_SCHEMA_VERSION, path)
 
@@ -85,6 +85,11 @@ def load_symbol_spec(path: Path) -> SymbolSpec:
         raise ConfigError(f"{path}: 銘柄仕様として成立しない: {exc}") from exc
 
 
+def symbol_spec_files(directory: Path) -> list[Path]:
+    """ディレクトリ配下の銘柄仕様のファイル（ファイル名の昇順）。"""
+    return sorted(directory.glob(f"*{_SYMBOL_FILE_SUFFIX}"))
+
+
 def load_symbol_specs(directory: Path) -> dict[Symbol, SymbolSpec]:
     """ディレクトリ配下の銘柄仕様をすべて読む（D03 §9・§10 の `--symbols`）。
 
@@ -94,7 +99,7 @@ def load_symbol_specs(directory: Path) -> dict[Symbol, SymbolSpec]:
     if not directory.is_dir():
         raise ConfigError(f"銘柄仕様のディレクトリが見つからない: {directory}")
     specs: dict[Symbol, SymbolSpec] = {}
-    for path in sorted(directory.glob(f"*{_SYMBOL_FILE_SUFFIX}")):
+    for path in symbol_spec_files(directory):
         spec = load_symbol_spec(path)
         if spec.symbol in specs:  # pragma: no cover - ファイル名と銘柄の一致を強制済み
             raise ConfigError(f"{directory}: 銘柄 {spec.symbol} の仕様が2度現れる")

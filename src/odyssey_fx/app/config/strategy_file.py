@@ -257,13 +257,15 @@ def load_strategy_file(
     path: Path,
     registry: ComponentRegistry,
     timeframe_defs: Mapping[str, TimeframeDefinition],
+    *,
+    text: str | None = None,
 ) -> StrategyDefinition:
     """戦略ファイルを読み、戦略宣言（`StrategyDefinition`）へ変換する（D04 §13.1、D07 §18.4）。
 
     `timeframe_defs` は系列の時間足の版を解決するために、`registry` は部品 ID と版から契約
     参照を引くために要る（書式 v1 の `strategy:` 節と同じ）。
     """
-    payload = load_yaml_mapping(path)
+    payload = load_yaml_mapping(path, text=text)
     model = validate(_StrategyFileModel, payload, path)
     require_schema_version(model.schema_version, SCHEMA_VERSION, path)
     roles = model.roles

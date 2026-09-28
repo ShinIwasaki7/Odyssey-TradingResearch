@@ -44,14 +44,16 @@ from odyssey_fx.app.config.experiment import (
 )
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.app.config.models import StrictModel, require_schema_version, validate
+from odyssey_fx.app.config.research_policy import load_research_policy, research_policy_path
 from odyssey_fx.app.config.strategy_file import load_strategy_file
 from odyssey_fx.app.config.strategy_parts import parse_series
-from odyssey_fx.app.config.symbols import load_symbol_specs
+from odyssey_fx.app.config.symbols import load_symbol_spec, symbol_spec_files
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.refs import PolicyRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import UtcTime
+from odyssey_fx.evaluation.domain.research_policy import ResearchPolicy
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.schedule import (
     DelayRule,
@@ -68,10 +70,12 @@ __all__ = [
     "SEARCH_PLAN_NONE",
     "SPLIT_NONE",
     "SUPPORTED_SCHEMA_VERSIONS",
+    "TEXT_ROLES",
     "ExperimentEnvironment",
     "ExperimentV2",
     "ResearchPolicyRef",
     "experiment_schema_version",
+    "experiment_v2_from_texts",
     "load_experiment_v2",
 ]
 
@@ -163,15 +167,16 @@ class ExperimentEnvironment:
     """`environment` の3つのパスから読んだもの（D07 §18.2）。
 
     パスそのものは識別に使わない（同じ内容を別の場所に置いても同じ実験である。D07 §18.2）。
-    パスは人が辿るための記録として持つ。
+    パスは人が辿るための記録として持つ。記録票の本文から組み立て直したとき（D07 §21.2 の
+    手順3）はパスが無いので `None` である。
     """
 
     calendar: TradingCalendar
     timeframe_defs: Mapping[str, TimeframeDefinition]
     symbol_specs: Mapping[Symbol, SymbolSpec]
-    calendar_path: Path
-    timeframes_path: Path
-    symbols_path: Path
+    calendar_path: Path | None
+    timeframes_path: Path | None
+    symbols_path: Path | None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timeframe_defs", MappingProxyType(dict(self.timeframe_defs)))
@@ -184,16 +189,31 @@ class ExperimentV2:
 
     `experiment` は書式 v1 と同じ解決済みの値（`ConfigDigest` の材料）であり、残りの項目は
     `ConfigDigest` に入らない（D07 §18.2）。
+
+    実験の記録票（D07 §19.2）の材料も持つ。`policy` は読んだ研究ポリシー、`values` は実験
+    設定の YAML を読み込んだ値（記録票の識別の入力 2 の元）、`texts` は役割名
+    （`experiment` / `strategy` / `research_policy` / `calendar` / `timeframes`）から本文への
+    対応、`symbol_texts` は読んだ銘柄仕様の本文である（記録票に入れるのは実行と換算に使う
+    銘柄のものだけで、その選択は合成が行う）。
     """
 
     experiment: ExperimentConfig
     hypothesis: str
     research_policy: ResearchPolicyRef
-    strategy_path: Path
+    strategy_path: Path | None
     environment: ExperimentEnvironment
     metric_set_version: int
     search_plan: str
     split: str
+    policy: ResearchPolicy
+    values: Mapping[str, Any]
+    texts: Mapping[str, str]
+    symbol_texts: Mapping[Symbol, str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen(self.values))
+        object.__setattr__(self, "texts", MappingProxyType(dict(self.texts)))
+        object.__setattr__(self, "symbol_texts", MappingProxyType(dict(self.symbol_texts)))
 
 
 # --- 読込 -------------------------------------------------------------------
@@ -232,20 +252,6 @@ def _resolve_path(repo_root: Path, text: str, label: str, path: Path) -> Path:
     if not resolved.exists():
         raise ConfigError(f"{path}: `{label}` が指す {resolved} が無い")
     return resolved
-
-
-def _environment_of(model: _EnvironmentModel, repo_root: Path, path: Path) -> ExperimentEnvironment:
-    calendar_path = _resolve_path(repo_root, model.calendar, "environment.calendar", path)
-    timeframes_path = _resolve_path(repo_root, model.timeframes, "environment.timeframes", path)
-    symbols_path = _resolve_path(repo_root, model.symbols, "environment.symbols", path)
-    return ExperimentEnvironment(
-        calendar=load_calendar(calendar_path),
-        timeframe_defs=load_timeframes(timeframes_path),
-        symbol_specs=load_symbol_specs(symbols_path),
-        calendar_path=calendar_path,
-        timeframes_path=timeframes_path,
-        symbols_path=symbols_path,
-    )
 
 
 def _reject_unwritable_delay(payload: Mapping[str, Any], path: Path) -> None:
@@ -367,20 +373,43 @@ def _delay_ref_of(scenario: DelayScenario, path: Path) -> PolicyRef:
         ) from exc
 
 
-def load_experiment_v2(
-    path: Path,
-    *,
-    repo_root: Path,
-    registry: ComponentRegistry,
-    metric_set_versions: Collection[int],
-) -> ExperimentV2:
-    """書式 v2 の実験設定を読む（D07 §18）。
+#: 記録票の `resolved_files` の役割名（D07 §19.2）。
+ROLE_EXPERIMENT: Final = "experiment"
+ROLE_STRATEGY: Final = "strategy"
+ROLE_RESEARCH_POLICY: Final = "research_policy"
+ROLE_CALENDAR: Final = "calendar"
+ROLE_TIMEFRAMES: Final = "timeframes"
 
-    `repo_root` はパス（戦略ファイル・環境の3つ）を解決する基点。`metric_set_versions` は
-    この実装が式を持つ指標集合の版で、評価の実装から呼び出し側が渡す（`app.config` が評価の
-    版を決め打ちしないため）。
-    """
-    payload: dict[str, Any] = load_yaml_mapping(path)
+#: 本文から組み立て直すときに揃っていなければならない役割（銘柄仕様は別に渡す）。
+TEXT_ROLES: Final = (
+    ROLE_EXPERIMENT,
+    ROLE_STRATEGY,
+    ROLE_RESEARCH_POLICY,
+    ROLE_CALENDAR,
+    ROLE_TIMEFRAMES,
+)
+
+
+def _frozen(value: Any) -> Any:
+    """YAML から読んだ値を、書き換えられない形（mapping の読み取り専用の写しと tuple）にする。"""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _frozen(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen(item) for item in value)
+    return value
+
+
+def _read_text(path: Path, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"`{label}` が指す {path} を読めない: {exc}") from exc
+
+
+def _validated(
+    payload: dict[str, Any], path: Path, metric_set_versions: Collection[int]
+) -> _ExperimentV2Model:
+    """書式 v2 の形と、読込時に拒否する値（D07 §18.6）を確かめる。"""
     _reject_unwritable_delay(payload, path)
     model = validate(_ExperimentV2Model, payload, path)
     require_schema_version(model.schema_version, _SCHEMA_VERSION, path)
@@ -402,27 +431,64 @@ def load_experiment_v2(
             f"{path}: 指標集合の版 {metric_set_version} の式はこの実装に無い。"
             f" この実装が持つのは {sorted(metric_set_versions)} である（D07 §18.6）"
         )
+    return model
 
-    environment = _environment_of(model.environment, repo_root, path)
-    strategy_path = _resolve_path(repo_root, model.strategy, "strategy", path)
-    strategy = load_strategy_file(strategy_path, registry, environment.timeframe_defs)
+
+def _assemble(
+    *,
+    path: Path,
+    payload: dict[str, Any],
+    model: _ExperimentV2Model,
+    texts: Mapping[str, str],
+    labels: Mapping[str, Path],
+    symbol_texts: Mapping[str, tuple[Path, str]],
+    paths: tuple[Path | None, Path | None, Path | None, Path | None],
+    registry: ComponentRegistry,
+) -> ExperimentV2:
+    """読んだ本文から書式 v2 の読込結果を組み立てる。
+
+    ファイルから読むときも、記録票の本文から読むときも同じ関数を通す。
+    """
+    calendar_path, timeframes_path, symbols_path, strategy_path = paths
+    timeframe_defs = load_timeframes(labels[ROLE_TIMEFRAMES], text=texts[ROLE_TIMEFRAMES])
+    specs: dict[Symbol, SymbolSpec] = {}
+    for label, text in symbol_texts.values():
+        spec = load_symbol_spec(label, text=text)
+        if spec.symbol in specs:  # pragma: no cover - ファイル名と銘柄の一致を強制済み
+            raise ConfigError(f"{label}: 銘柄 {spec.symbol} の仕様が2度現れる")
+        specs[spec.symbol] = spec
+    if not specs:
+        raise ConfigError(f"{path}: 銘柄仕様（`*.yaml`）が1件も無い（D03 §9）")
+    environment = ExperimentEnvironment(
+        calendar=load_calendar(labels[ROLE_CALENDAR], text=texts[ROLE_CALENDAR]),
+        timeframe_defs=timeframe_defs,
+        symbol_specs=specs,
+        calendar_path=calendar_path,
+        timeframes_path=timeframes_path,
+        symbols_path=symbols_path,
+    )
+    strategy = load_strategy_file(
+        labels[ROLE_STRATEGY], registry, timeframe_defs, text=texts[ROLE_STRATEGY]
+    )
+    policy = load_research_policy(
+        labels[ROLE_RESEARCH_POLICY],
+        policy_id=model.research_policy.id,
+        version=model.research_policy.version,
+        text=texts[ROLE_RESEARCH_POLICY],
+    )
 
     if model.delay_scenario is None:
         delay_scenario = None
         delay_ref = NO_DELAY_REF
     else:
-        delay_scenario = _delay_scenario_of(
-            model.delay_scenario,
-            environment.timeframe_defs,
-            path,
-        )
+        delay_scenario = _delay_scenario_of(model.delay_scenario, timeframe_defs, path)
         delay_ref = _delay_ref_of(delay_scenario, path)
 
     experiment = resolve_run_body(
         model,
         payload,
         path,
-        environment.timeframe_defs,
+        timeframe_defs,
         experiment_id=model.id,
         version=model.version,
         strategy=strategy,
@@ -437,7 +503,114 @@ def load_experiment_v2(
         ),
         strategy_path=strategy_path,
         environment=environment,
-        metric_set_version=metric_set_version,
+        metric_set_version=model.evaluation.metric_set_version,
         search_plan=model.search_plan,
         split=model.split,
+        policy=policy,
+        values=payload,
+        texts=texts,
+        # ファイル名（拡張子を除く）と銘柄の一致は `load_symbol_spec` が強制している。
+        symbol_texts={symbol: symbol_texts[str(symbol)][1] for symbol in specs},
+    )
+
+
+def load_experiment_v2(
+    path: Path,
+    *,
+    repo_root: Path,
+    registry: ComponentRegistry,
+    metric_set_versions: Collection[int],
+) -> ExperimentV2:
+    """書式 v2 の実験設定を読む（D07 §18）。
+
+    `repo_root` はパス（戦略ファイル・環境の3つ・研究ポリシーファイル）を解決する基点。
+    `metric_set_versions` はこの実装が式を持つ指標集合の版で、評価の実装から呼び出し側が渡す
+    （`app.config` が評価の版を決め打ちしないため）。
+
+    研究ポリシーは版参照 `{id, version}` から `configs/policies/research/<id>_v<version>.yaml`
+    を読む（D07 §20.2）。
+    """
+    if not path.is_file():
+        raise ConfigError(f"設定ファイルが見つからない: {path}")
+    experiment_text = _read_text(path, "--experiment")
+    payload: dict[str, Any] = load_yaml_mapping(path, text=experiment_text)
+    model = _validated(payload, path, metric_set_versions)
+
+    calendar_path = _resolve_path(
+        repo_root, model.environment.calendar, "environment.calendar", path
+    )
+    timeframes_path = _resolve_path(
+        repo_root, model.environment.timeframes, "environment.timeframes", path
+    )
+    symbols_path = _resolve_path(repo_root, model.environment.symbols, "environment.symbols", path)
+    strategy_path = _resolve_path(repo_root, model.strategy, "strategy", path)
+    policy_path = research_policy_path(
+        repo_root.resolve(), model.research_policy.id, model.research_policy.version
+    )
+    if not policy_path.is_file():
+        raise ConfigError(
+            f"{path}: 研究ポリシー {model.research_policy.id} v{model.research_policy.version}"
+            f" のファイル {policy_path} が無い（D07 §20.2）"
+        )
+    if not symbols_path.is_dir():
+        raise ConfigError(f"銘柄仕様のディレクトリが見つからない: {symbols_path}")
+
+    labels = {
+        ROLE_EXPERIMENT: path,
+        ROLE_STRATEGY: strategy_path,
+        ROLE_RESEARCH_POLICY: policy_path,
+        ROLE_CALENDAR: calendar_path,
+        ROLE_TIMEFRAMES: timeframes_path,
+    }
+    texts = {ROLE_EXPERIMENT: experiment_text}
+    for role in TEXT_ROLES[1:]:
+        texts[role] = _read_text(labels[role], role)
+    symbol_texts = {
+        file.stem: (file, _read_text(file, "environment.symbols"))
+        for file in symbol_spec_files(symbols_path)
+    }
+    return _assemble(
+        path=path,
+        payload=payload,
+        model=model,
+        texts=texts,
+        labels=labels,
+        symbol_texts=symbol_texts,
+        paths=(calendar_path, timeframes_path, symbols_path, strategy_path),
+        registry=registry,
+    )
+
+
+def experiment_v2_from_texts(
+    texts: Mapping[str, str],
+    symbol_texts: Mapping[str, str],
+    *,
+    registry: ComponentRegistry,
+    metric_set_versions: Collection[int],
+) -> ExperimentV2:
+    """記録票が保存した本文から書式 v2 の読込結果を組み立てる（D07 §21.2 の手順3）。
+
+    本文を**ファイルシステムへ書き戻さずに**、ファイルから読むときと同じ読込条件と検証を通す。
+    `texts` は役割名から本文への対応（`TEXT_ROLES` がすべて要る）、`symbol_texts` は銘柄名から
+    銘柄仕様の本文への対応。実験設定の本文にあるパス（`strategy` と `environment`）は使わない
+    （パスは識別に入らない。D07 §19.2）。
+    """
+    missing = [role for role in TEXT_ROLES if role not in texts]
+    if missing:
+        raise ConfigError(f"記録票の本文に役割 {missing} が無い（D07 §19.2）")
+    labels = {role: Path(f"resolved_files[{role}]") for role in TEXT_ROLES}
+    path = labels[ROLE_EXPERIMENT]
+    payload: dict[str, Any] = load_yaml_mapping(path, text=texts[ROLE_EXPERIMENT])
+    model = _validated(payload, path, metric_set_versions)
+    return _assemble(
+        path=path,
+        payload=payload,
+        model=model,
+        texts=texts,
+        labels=labels,
+        symbol_texts={
+            name: (Path(f"{name}.yaml"), text) for name, text in sorted(symbol_texts.items())
+        },
+        paths=(None, None, None, None),
+        registry=registry,
     )
