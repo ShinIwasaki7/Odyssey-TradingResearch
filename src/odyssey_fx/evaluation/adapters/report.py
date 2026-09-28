@@ -331,12 +331,26 @@ def _capability_lines(run_manifest: RunManifest) -> list[str]:
         + ("" if reason is None else f"（理由 {_code(reason)}）"),
         f"- 戦略のコンパイル結果との一致: {'一致' if report.compiled_match else '不一致'}",
     ]
+    # 検査報告は snapshot 全体（全銘柄・全期間）のものなので、表には**この run に関わる記録**
+    # （run 区間と重なり、執行する銘柄の系列のもの）だけを出し、全体の件数は1行で添える。
+    run_interval = run_manifest.config.run_interval
+    symbol = run_manifest.config.execution_series.symbol
+    results = report.integrity.results
+    relevant = [
+        result
+        for result in results
+        if result.series.symbol == symbol and result.interval.overlaps(run_interval)
+    ]
     counts = Counter(
-        (result.kind.value, result.severity.value, str(result.series))
-        for result in report.integrity.results
+        (result.kind.value, result.severity.value, str(result.series)) for result in relevant
+    )
+    lines.append(
+        f"- 完全性検査の記録: snapshot 全体で {len(results)} 件（全銘柄・全期間。run manifest に"
+        f"全体のまま残っている）。うち run 区間（{run_interval.start}〜{run_interval.end}）と"
+        f"重なる {symbol} の系列の記録は {len(relevant)} 件"
+        + ("（種別・重大度・系列ごとの件数は下表）:" if counts else "")
     )
     if counts:
-        lines.append("- 完全性検査の記録（種別・重大度・系列ごとの件数）:")
         lines.append("")
         lines.extend(
             _table(
@@ -347,8 +361,7 @@ def _capability_lines(run_manifest: RunManifest) -> list[str]:
                 ],
             )
         )
-    else:
-        lines.append("- 完全性検査の記録: なし")
+        lines.append("")
     failed_levels = [check for check in report.hierarchy_checks if not check.passed]
     if failed_levels:
         lines.append(f"- 下位足の階層の検査で合格でないもの: {len(failed_levels)} 件")
