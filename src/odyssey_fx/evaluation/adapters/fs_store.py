@@ -943,6 +943,19 @@ def _list_column(value: object) -> str | None:
     )
 
 
+def _linked_run_path(directory: Path) -> Path | None:
+    """run のディレクトリ（と、あればその `eval`）のうち、リンクまたはディレクトリでないもの。
+
+    成果物の根 `runs/` の下はリンクを辿らない（R4。D06 §9.1）。評価の書き込み
+    （`create_artifact_directory`）は `<run_id>` と `eval` がリンクなら失敗するので、読む側も
+    同じ境界で「読めない」とする。
+    """
+    for candidate in (directory, directory / _EVALUATION_DIRECTORY):
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_dir()):
+            return candidate
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class FileSystemResultRepository:
     """run の成果物の読み書き（D01 §4、D07 §4.3・§8.2）。
@@ -1000,6 +1013,18 @@ class FileSystemResultRepository:
         directory = run_directory(self.root, run_id)
         result_path = directory / "result.json"
         manifest_path = directory / "manifest.json"
+        linked = _linked_run_path(directory)
+        if linked is not None:
+            # リンク越しの run は「読めない」とする。読めても、その run の評価は書き込みの
+            # 検査（R4。根の下のリンクを辿らない）で必ず止まるので、再利用や評価の対象に
+            # 選んでから失敗させない（D07 §19.6 の手順1〜3・5。PR #47 第2巡）。
+            return ResultReadFailure(
+                run_id=run_id,
+                detail=(
+                    f"{linked} is a symbolic link or not a directory; run artifacts are never"
+                    " read or written through links (D06 §9.1, R4)"
+                ),
+            )
         if not result_path.is_file():
             return ResultReadFailure(
                 run_id=run_id,

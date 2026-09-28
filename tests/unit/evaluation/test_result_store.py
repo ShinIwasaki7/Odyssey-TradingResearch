@@ -7,6 +7,7 @@ run manifest と結果 DTO を**読み戻せる**ことを確かめる。評価�
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import polars as pl
@@ -384,3 +385,30 @@ def test_an_unreadable_manifest_detail_carries_no_absolute_path(
     read = FileSystemResultRepository(root=root).read_manifest(run_id)
     assert isinstance(read, ManifestReadFailure)
     assert str(root) not in read.detail
+
+
+@pytest.mark.parametrize("linked", ["run", "eval"])
+def test_a_run_reached_through_a_link_is_not_read(
+    saved_run: tuple[Path, object], tmp_path: Path, linked: str
+) -> None:
+    """根の下の run（または `eval`）がリンクなら、結果を「読めない」と返す（R4、D07 §19.6）。
+
+    その run の評価の書き込みはリンクの検査で必ず止まるので、読めたことにして再利用の対象に
+    選ぶと、記録票を保存した後に失敗する（PR #47 第2巡）。
+    """
+    root, output = saved_run
+    run_id = output.result.run_id  # type: ignore[attr-defined]
+    directory = run_directory(root, run_id)
+    if linked == "run":
+        moved = tmp_path / "moved-run"
+        directory.rename(moved)
+        os.symlink(moved, directory)
+    else:
+        target = tmp_path / "moved-eval"
+        target.mkdir()
+        os.symlink(target, directory / "eval")
+
+    read = FileSystemResultRepository(root=root).read_result(run_id)
+
+    assert isinstance(read, ResultReadFailure)
+    assert "symbolic link" in read.detail
