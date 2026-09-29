@@ -301,6 +301,23 @@ def test_a_broken_link_is_refused_as_a_link_not_as_a_missing_directory(tmp_path:
     assert not (tmp_path / "nowhere").exists()
 
 
+def test_an_outcome_of_another_experiment_is_an_argument_error(
+    completed: Path, tmp_path: Path
+) -> None:
+    """記録票と識別子の違う結末記録は読込の誤り（終了コード 2）。レポートを書き換えない。"""
+    directory = _copy(completed, tmp_path)
+    outcome = json.loads((directory / EXPERIMENT_OUTCOME_FILE).read_text(encoding="utf-8"))
+    outcome["experiment_id"] = "f" * 64
+    (directory / EXPERIMENT_OUTCOME_FILE).write_text(json.dumps(outcome), encoding="utf-8")
+    before = (directory / REPORT_FILE).read_bytes()
+
+    code, _, error = _report(directory)
+
+    assert code == 2
+    assert "一致しない" in error
+    assert (directory / REPORT_FILE).read_bytes() == before
+
+
 def test_an_unreadable_manifest_is_an_argument_error(completed: Path, tmp_path: Path) -> None:
     """記録票が読めなければ終了コード 2（何の実験のレポートかを決められない）。"""
     directory = _copy(completed, tmp_path)

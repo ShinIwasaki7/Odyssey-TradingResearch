@@ -1189,9 +1189,15 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
         raise ConfigError(f"`--experiment-dir` が実験の版のディレクトリではない: {experiment_dir}")
     try:
         manifest = read_experiment_manifest(directory)
-        read_experiment_outcome(directory)
+        outcome = read_experiment_outcome(directory)
     except KernelValueError as exc:
         raise ConfigError(f"記録票か結末記録を読めない: {exc}") from exc
+    if outcome is not None and outcome.experiment_id != manifest.experiment_id:
+        # 別の実験の結末記録を混ぜたレポートは作らない。読込の誤り（終了コード 2。D07 §22.2）。
+        raise ConfigError(
+            f"{experiment_dir} の結末記録は実験 {outcome.experiment_id} のもので、記録票の"
+            f" {manifest.experiment_id} と一致しない"
+        )
     if (directory.parent.name, directory.name) != (
         manifest.experiment_name,
         f"v{manifest.experiment_version}",
