@@ -22,7 +22,7 @@ import platform
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
@@ -113,7 +113,11 @@ from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSI
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
 from odyssey_fx.marketdata.application.publication import build_feed, build_publication_log
-from odyssey_fx.marketdata.application.snapshot_access import PartitionedBars, ReadableSnapshot
+from odyssey_fx.marketdata.application.snapshot_access import (
+    PartitionedBars,
+    ReadableSnapshot,
+    VerifiedPartitionBars,
+)
 from odyssey_fx.marketdata.domain.access import (
     INITIAL_ACCESS_BOUNDARIES,
     AccessBoundaries,
@@ -517,10 +521,36 @@ class SnapshotInputs:
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, tuple[Bar, ...]]
     schedules: Mapping[SeriesId, SeriesSchedule]
+    _verified: VerifiedPartitionBars | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def bars_of(self, series: SeriesId) -> tuple[Bar, ...]:
         """許可された partition にあるその系列の足（無ければ空）。"""
         return PartitionedBars(self.partition_bars, self.allowed_partitions).bars_or_empty(series)
+
+    def verified_bars(self, label: str) -> VerifiedPartitionBars:
+        """読み取りの関門を通した足の写し（D03 §3.7.1・§6.1）。
+
+        **最初に使う読み取り経路で1度だけ**照合する。
+
+        as-of ビュー・執行系列ビュー・公開フィード（遅延シナリオがあれば公開記録も）は同じ
+        snapshot・許可集合・足を受け取り、以前はそれぞれが同じ内容照合を行っていた。照合は
+        最初にこれを呼んだ経路（従来と同じく、遅延シナリオがあれば公開記録の組み立て、
+        なければ as-of ビューの構築）で行い、以後の経路は結果を共有する。照合の失敗は
+        従来と同じ時点・同じ型と文言で起きる。失敗した照合は覚えないので、次に呼べば同じ
+        失敗になる。`label` は照合を行う経路の名前（型の検査の失敗の文言に載る）。
+        """
+        cached = self._verified
+        # 覚えた写しは、この入力一式の snapshot・許可集合で関門を通ったものに限って使う。
+        # そうでなければ（外から差し替えられたものを含む）照合し直す。
+        if cached is not None and cached.verified_for(self.snapshot, self.allowed_partitions):
+            return cached
+        verified = VerifiedPartitionBars(
+            self.snapshot, self.allowed_partitions, self.partition_bars, label=label
+        )
+        object.__setattr__(self, "_verified", verified)
+        return verified
 
 
 def _require_matching_calendar(
@@ -640,7 +670,7 @@ def _publication_log(inputs: SnapshotInputs, experiment: ExperimentConfig) -> Pu
     return build_publication_log(
         inputs.snapshot,
         inputs.allowed_partitions,
-        inputs.partition_bars,
+        inputs.verified_bars("build_publication_log"),
         inputs.schedules,
         experiment.delay_scenario,
     )
@@ -773,24 +803,27 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
     inputs = plan.inputs
     # 戦略ランタイムへは as-of ビューをそのまま渡す（D05 §6.3 v1.4、D03 §6.2 v1.5）。
     # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
+    # 読み取りの関門の内容照合は run の中で1度だけ行い、3つの読み取り経路で共有する
+    # （`SnapshotInputs.verified_bars`）。照合の条件と失敗の型・文言は変わらない。
+    verified = inputs.verified_bars("AsOfView")
     market_data = AsOfView(
         snapshot=inputs.snapshot,
         allowed_partitions=inputs.allowed_partitions,
         schedules=inputs.schedules,
-        partition_bars=inputs.partition_bars,
+        partition_bars=verified,
         publication_log=plan.publication_log,
     )
     execution_view = ExecutionSeriesView(
         snapshot=inputs.snapshot,
         series=experiment.execution_series,
         allowed_partitions=inputs.allowed_partitions,
-        partition_bars=inputs.partition_bars,
+        partition_bars=verified,
         schedule=inputs.schedules[experiment.execution_series],
     )
     feed = build_feed(
         inputs.snapshot,
         inputs.allowed_partitions,
-        inputs.partition_bars,
+        verified,
         inputs.schedules,
         experiment.run_interval,
         execution_series=frozenset({experiment.execution_series}),

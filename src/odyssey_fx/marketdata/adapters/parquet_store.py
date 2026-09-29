@@ -513,25 +513,60 @@ class ParquetSnapshotStore:
             raise FileNotFoundError(f"partition file not found: {path}")
         frame = pl.read_parquet(path)
         series = partition_id.series
+        # 同じ文字列から作る値は、partition の中で1度だけ解釈して使い回す。足の終了時刻は
+        # 次の足の開始時刻と、公開時刻は足の終了時刻と同じ文字列であることが多く、価格・
+        # 出来高・出所も繰り返し現れる。どれも不変の値なので、同じ文字列から作り直したものと
+        # 区別できない。解釈と足の構築時の検査（D03 §3.3）は従来どおり行い、最初に失敗する
+        # 行・列も変わらない（失敗した解釈は覚えないため）。
+        times: dict[str, UtcTime] = {}
+        prices: dict[str, Price] = {}
+        volumes: dict[str, Decimal] = {}
+        provenances: dict[tuple[str, str], Provenance] = {}
+
+        def utc(text: str) -> UtcTime:
+            value = times.get(text)
+            if value is None:
+                value = times[text] = UtcTime.parse(text)
+            return value
+
+        def price(text: str) -> Price:
+            value = prices.get(text)
+            if value is None:
+                value = prices[text] = Price(decimal_from_str(text))
+            return value
+
+        def volume_of(text: str) -> Decimal:
+            value = volumes.get(text)
+            if value is None:
+                value = volumes[text] = decimal_from_str(text)
+            return value
+
+        def provenance(kind: str, ref: str) -> Provenance:
+            value = provenances.get((kind, ref))
+            if value is None:
+                value = provenances[(kind, ref)] = Provenance(
+                    kind=ProvenanceKind(kind), source_ref=ref
+                )
+            return value
+
         bars: list[Bar] = []
         for record in frame.iter_rows(named=True):
-            volume: Decimal = decimal_from_str(str(record["volume"]))
+            volume = volume_of(str(record["volume"]))
             bars.append(
                 Bar(
                     series=series,
                     interval=Interval(
-                        start=UtcTime.parse(str(record["bar_start"])),
-                        end=UtcTime.parse(str(record["bar_end"])),
+                        start=utc(str(record["bar_start"])),
+                        end=utc(str(record["bar_end"])),
                     ),
-                    open=Price(decimal_from_str(str(record["open"]))),
-                    high=Price(decimal_from_str(str(record["high"]))),
-                    low=Price(decimal_from_str(str(record["low"]))),
-                    close=Price(decimal_from_str(str(record["close"]))),
+                    open=price(str(record["open"])),
+                    high=price(str(record["high"])),
+                    low=price(str(record["low"])),
+                    close=price(str(record["close"])),
                     volume=volume,
-                    available_at=UtcTime.parse(str(record["available_at"])),
-                    provenance=Provenance(
-                        kind=ProvenanceKind(str(record["provenance_kind"])),
-                        source_ref=str(record["provenance_ref"]),
+                    available_at=utc(str(record["available_at"])),
+                    provenance=provenance(
+                        str(record["provenance_kind"]), str(record["provenance_ref"])
                     ),
                 )
             )

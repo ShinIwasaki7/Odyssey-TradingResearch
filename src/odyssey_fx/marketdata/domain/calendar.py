@@ -272,6 +272,22 @@ def _opening_interval(tz_key: str, rule: OpeningRule) -> Interval:
     return rule.utc_interval(ZoneInfo(tz_key))
 
 
+@lru_cache(maxsize=_SESSION_CACHE_SIZE)
+def _closure_interval_of(
+    tz: ZoneInfo, rule: ClosureRule, trading_day_boundary: time | None
+) -> Interval:
+    """休場1件の UTC 区間（純粋関数なので覚えておける）。
+
+    `sessions()` は公開フィードの予定境界（D03 §7.1）と受入れで足1本ごとに呼ばれ、そのたびに
+    全休場を UTC へ変換すると重い（2018 年の実データ run の開始時に約 180 秒）。
+    `_weekly_session` / `_opening_interval` と同じく、覚え書きはカレンダーの外に置く（不変の
+    値型の正規形を問い合わせの有無で変えないため）。鍵にはカレンダーが持つ `tz` そのものと
+    取引日の境界を入れるので、計算は `ClosureRule.utc_interval` を直接呼ぶのと同じである。
+    失敗（取引日の境界が無い取引日単位の休場）は覚えずに毎回同じ例外を送出する。
+    """
+    return rule.utc_interval(tz, trading_day_boundary=trading_day_boundary)
+
+
 def _touches(first: Interval, second: Interval) -> bool:
     """2つの半開区間が重なるか、端で接するか（あいだに隙間が無いか）。"""
     return first.start <= second.end and second.start <= first.end
@@ -357,7 +373,7 @@ class TradingCalendar:
 
     def _closure_interval(self, closure: ClosureRule) -> Interval:
         """休場1件の UTC 区間（取引日単位の休場には取引日の境界を渡す）。"""
-        return closure.utc_interval(self.tz, trading_day_boundary=self.trading_day_boundary)
+        return _closure_interval_of(self.tz, closure, self.trading_day_boundary)
 
     def _validate_trading_day_closures(self) -> None:
         """取引日単位の休場を検証する（D03 §3.4.1 の構築時の検証 1・2）。
