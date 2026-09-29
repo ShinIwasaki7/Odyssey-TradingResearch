@@ -23,6 +23,7 @@ from odyssey_fx.marketdata.application.publication import build_feed, build_publ
 from odyssey_fx.marketdata.application.snapshot_access import (
     ReadableSnapshot,
     VerifiedPartitionBars,
+    readable_surface,
 )
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
@@ -240,4 +241,40 @@ def test_the_shared_bars_cannot_be_changed_after_the_gate() -> None:
     assert shared[HOURLY_PARTITION] == _bars()[HOURLY_PARTITION]
     assert not hasattr(shared, "__setitem__")
     with pytest.raises(AttributeError):
-        shared.extra = 1  # type: ignore[attr-defined]
+        shared.extra = 1
+
+
+@pytest.mark.parametrize("name", ["_snapshot", "_allowed", "_bars", "_readable"])
+def test_the_verified_pairing_cannot_be_rebound(name: str) -> None:
+    """照合を通った組（snapshot・許可集合・足）は付け替えも削除もできない（D03 §6.1）。
+
+    snapshot A で照合した写しの snapshot を B へ付け替えられると、B の照合を素通りする。
+    """
+    snapshot = snapshots.readable_for(_bars())
+    shared = VerifiedPartitionBars(snapshot, ALLOWED, _bars(), label="AsOfView")
+    other = snapshots.readable_for(_tampered())
+    with pytest.raises(AttributeError):
+        setattr(shared, name, other)
+    with pytest.raises(AttributeError):
+        delattr(shared, name)
+    assert shared.verified_for(snapshot, ALLOWED)
+    assert not shared.verified_for(other, ALLOWED)
+
+
+def test_the_shared_read_surface_cannot_be_changed() -> None:
+    """共有する読み取り面も、付け替え・中身の差し替えができない（D03 §6.1）。"""
+    snapshot = snapshots.readable_for(_bars())
+    shared = VerifiedPartitionBars(snapshot, ALLOWED, _bars(), label="AsOfView")
+    surface = readable_surface(shared, ALLOWED)
+    assert readable_surface(shared, ALLOWED) is surface
+    with pytest.raises(AttributeError):
+        surface._by_series = {}
+    with pytest.raises(TypeError):
+        surface._by_series[HOURLY] = ()  # type: ignore[index]
+    assert surface.require_series(HOURLY) == _bars()[HOURLY_PARTITION]
+
+
+def test_the_verified_copy_cannot_be_subclassed() -> None:
+    """派生型で照合済みの判定を差し替える経路を塞ぐ（D03 §3.7.1）。"""
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+        type("Forged", (VerifiedPartitionBars,), {"verified_for": lambda *_: True})

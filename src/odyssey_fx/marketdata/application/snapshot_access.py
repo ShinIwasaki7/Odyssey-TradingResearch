@@ -22,7 +22,7 @@ as-of ビュー（D03 §6）と公開フィード（D03 §7）は、どちらも
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from pathlib import PurePosixPath
 from types import MappingProxyType
 
@@ -434,6 +434,11 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
 
     __slots__ = ("_allowed", "_bars", "_readable", "_snapshot")
 
+    _allowed: frozenset[PartitionId]
+    _bars: Mapping[PartitionId, tuple[Bar, ...]]
+    _readable: PartitionedBars | None
+    _snapshot: ReadableSnapshot
+
     def __init__(
         self,
         snapshot: ReadableSnapshot,
@@ -442,12 +447,30 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
         *,
         label: str,
     ) -> None:
-        self._bars = require_readable_snapshot(
+        bars = require_readable_snapshot(
             snapshot, allowed_partitions, label=label, partition_bars=partition_bars
         )
-        self._snapshot = snapshot
-        self._allowed = allowed_partitions
-        self._readable: PartitionedBars | None = None
+        # 照合を通った組（snapshot・許可集合・足）は後から付け替えられない（下の
+        # `__setattr__`）。付け替えられると、snapshot A で照合した足を snapshot B の照合済み
+        # として通せてしまう（D03 §6.1 の構築時の固定）。
+        object.__setattr__(self, "_bars", bars)
+        object.__setattr__(self, "_snapshot", snapshot)
+        object.__setattr__(self, "_allowed", allowed_partitions)
+        object.__setattr__(self, "_readable", None)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise FrozenInstanceError(
+            f"VerifiedPartitionBars is immutable; cannot assign {name!r} (D03 §6.1)"
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise FrozenInstanceError(
+            f"VerifiedPartitionBars is immutable; cannot delete {name!r} (D03 §6.1)"
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        # 派生型で `verified_for` を差し替えると、照合を素通りする写しを作れてしまう。
+        raise TypeError("VerifiedPartitionBars cannot be subclassed (D03 §3.7.1)")
 
     def verified_for(
         self, snapshot: ReadableSnapshot, allowed_partitions: frozenset[PartitionId]
@@ -462,9 +485,12 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
         """
         if self._allowed != allowed_partitions:
             return None
-        if self._readable is None:
-            self._readable = PartitionedBars(self._bars, self._allowed)
-        return self._readable
+        readable: PartitionedBars | None = self._readable
+        if readable is None:
+            # 読み取り面は照合済みの足から決まる派生値なので、初回に1度だけ作って覚える。
+            readable = PartitionedBars(self._bars, self._allowed)
+            object.__setattr__(self, "_readable", readable)
+        return readable
 
     def __getitem__(self, partition_id: PartitionId) -> tuple[Bar, ...]:
         return self._bars[partition_id]
@@ -506,6 +532,8 @@ class PartitionedBars:
 
     __slots__ = ("_by_series",)
 
+    _by_series: Mapping[SeriesId, tuple[Bar, ...]]
+
     def __init__(
         self,
         partition_bars: Mapping[PartitionId, Sequence[Bar]],
@@ -516,10 +544,28 @@ class PartitionedBars:
             if partition_id not in allowed_partitions:
                 continue
             by_series.setdefault(partition_id.series, []).extend(bars)
-        self._by_series = {
-            series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
-            for series, bars in by_series.items()
-        }
+        # 読み取り面は同じ run の複数の読み取り経路で共有される（`readable_surface`）ので、
+        # 構築後は付け替えも中身の差し替えもできない形で持つ（D03 §6.1）。
+        object.__setattr__(
+            self,
+            "_by_series",
+            MappingProxyType(
+                {
+                    series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
+                    for series, bars in by_series.items()
+                }
+            ),
+        )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise FrozenInstanceError(
+            f"PartitionedBars is immutable; cannot assign {name!r} (D03 §6.1)"
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise FrozenInstanceError(
+            f"PartitionedBars is immutable; cannot delete {name!r} (D03 §6.1)"
+        )
 
     def series(self) -> tuple[SeriesId, ...]:
         """読める系列の一覧（系列文字列の昇順）。"""
