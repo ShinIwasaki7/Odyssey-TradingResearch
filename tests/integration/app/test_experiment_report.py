@@ -354,3 +354,47 @@ def test_an_unreadable_manifest_is_an_argument_error(completed: Path, tmp_path: 
     assert code == 2
     assert "記録票" in error
     assert (directory / REPORT_FILE).read_bytes() == before
+
+
+def test_an_unreadable_outcome_is_an_argument_error(completed: Path, tmp_path: Path) -> None:
+    """結末記録があるのに読めなければ終了コード 2（D07 §22.2）。レポートを書き換えない。
+
+    無い結末記録（途中で止まった）とは違い、壊れた結末記録を無いことにして記録票だけの
+    レポートを書くと、終わった実験を「途中で止まった」と書いてしまう。
+    """
+    directory = _copy(completed, tmp_path)
+    (directory / EXPERIMENT_OUTCOME_FILE).write_text("{", encoding="utf-8")
+    before = (directory / REPORT_FILE).read_bytes()
+
+    code, _, error = _report(directory)
+
+    assert code == 2
+    assert "結末記録" in error
+    assert (directory / REPORT_FILE).read_bytes() == before
+    assert not (directory / "report.1.md").exists()
+
+
+@pytest.mark.parametrize(
+    "placed_at",
+    ["runs/experiments/strategy_b_t02_d1_2s/v2", "runs/experiments/another_experiment/v1"],
+)
+def test_a_manifest_under_another_name_or_version_is_an_argument_error(
+    completed: Path, tmp_path: Path, placed_at: str
+) -> None:
+    """記録票の実験名・版が置かれたディレクトリの名前・版と合わなければ終了コード 2。
+
+    D07 §19.1・§22.2。合わないディレクトリにレポートを書くと、その名前・版の実験の
+    記録として読まれてしまう。
+    """
+    directory = _copy(completed, tmp_path)
+    moved = tmp_path / placed_at
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    directory.rename(moved)
+    before = (moved / REPORT_FILE).read_bytes()
+
+    code, _, error = _report(moved)
+
+    assert code == 2
+    assert "ディレクトリの名前と版に合わない" in error
+    assert (moved / REPORT_FILE).read_bytes() == before
+    assert not (moved / "report.1.md").exists()
