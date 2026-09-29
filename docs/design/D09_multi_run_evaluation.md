@@ -72,7 +72,7 @@ v0.1（2026-09-29、段階5 の設計 PR）: 段階5「複数実行の評価」�
 |---|---|
 | D07 §3・§5・§10 | `EvaluateRun`、`EvaluationReport`、`MetricId`・`MetricRecord`・`Unavailable`、`EvaluationStatus`、採用指標と参考値の区別 |
 | D07 §18〜§21 | 書式 v2 のキーと読込の拒否規則、記録票・結末記録の項目、`ExperimentStatus`、研究ポリシー v1 の検査 P1〜P6、既存の run 成果物の再利用（§19.6）、終了コード（§21.3） |
-| D06 §3・§9.3・§10.1・§10.3 | `RunConfig`（`run_interval` と `compiled_ref` を含む）、run manifest の項目、run 末尾の手順（残った建玉は未決済のまま時価評価）、末尾の3集計 |
+| D06 §3・§9.3・§10.1・§10.3・§10.5 | 実行前のデータ能力検査（最終検証の消費前にも使う。第9.6節の3）、`RunConfig`（`run_interval` と `compiled_ref` を含む）、run manifest の項目、run 末尾の手順（残った建玉は未決済のまま時価評価）、末尾の3集計 |
 | D05 §5.2・§5.5 | コンパイル拒否の区分、`CompiledStrategyRef` のハッシュの対象 |
 | D04 §7・§13.2 | `ParameterSpec` / `ParameterValue`、戦略宣言の内容ハッシュ |
 | D03 §3.8・§3.8.1・§6.1・§7.4 | アクセス分類、封印状態の状態×出来事表、許可 partition 集合の受け取り、閲覧記録の値の伝播表の行 |
@@ -135,7 +135,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `HoldoutPermit` | `application.holdout_gate` | レコード | `permit_id: ContentDigest` / `experiment_id: ExperimentId` / `snapshot_id: SnapshotId` / `partitions: frozenset[PartitionId]` / `purpose: str` | §9.3 |
 | `GateRefusalKind` | `application.holdout_gate` | enum | `EXPERIMENT_NOT_ELIGIBLE` / `NOT_LEGACY_HOLDOUT` / `NOT_SEALED` / `ACCESS_LOG_UNREADABLE` / `ACCESS_LOG_UNTRACKED` / `PUSH_REJECTED` / `ORIGIN_UNREACHABLE` | §9.3 |
 | `GateRefusal` | `application.holdout_gate` | レコード | `kind: GateRefusalKind` / `detail: str` | §9.3 |
-| `HoldoutGate` | `application.holdout_gate` | 具体クラス（構築時に `HoldoutAccessLog` を受け取る） | `issue(manifest: ExperimentManifest, outcome: ExperimentOutcome, snapshot: SnapshotRef, partitions: frozenset[PartitionId]) -> HoldoutPermit \| GateRefusal` / `consume(permit: HoldoutPermit) -> frozenset[PartitionId] \| GateRefusal`（戻り値は公開してよい partition の集合） | §9.3 |
+| `HoldoutGate` | `application.holdout_gate` | 具体クラス（構築時に `HoldoutAccessLog` を受け取る） | `issue(manifest: ExperimentManifest, outcome: ExperimentOutcome, partitions: frozenset[PartitionId]) -> HoldoutPermit \| GateRefusal`（snapshot は引数で受けず、記録票の `snapshot_id` だけから決める） / `consume(permit: HoldoutPermit) -> frozenset[PartitionId] \| GateRefusal`（戻り値は公開してよい partition の集合） | §9.3 |
 | `PushResult` | `application.ports` | enum | `PUSHED` / `REJECTED_NON_FAST_FORWARD` / `ORIGIN_UNREACHABLE` / `NOT_TRACKED` | §9.3 |
 | `AccessLogReadFailure` | `application.ports` | レコード | `snapshot_id: SnapshotId` / `detail: str` | §9.3 |
 | `HoldoutAccessLog` | `application.ports` | Protocol | `fetch_states(snapshot: SnapshotRef, partitions: frozenset[PartitionId]) -> Mapping[PartitionId, HoldoutState] \| AccessLogReadFailure`（origin の既定ブランチを取得してから導出する）/ `append_consumption(permit: HoldoutPermit) -> PushResult`（消費記録の追記・コミット・push を1操作で行う）。所在は D01 §4 が確定済み。実装者は **Q11** | §9.3 |
@@ -214,10 +214,11 @@ search_plan:
 2. 軸の `(instance, parameter)` が戦略に無い、同じ組の軸が2つある、値の型が契約の `ParameterSpec.value_type` と合わない、値の列が空、同じ値が2回ある（正規化エンコードで比べる。D02 §9.3）。
 3. 列挙した試行の数が `max_trials` を超える。`max_trials` が正の整数でない。
 4. `search_plan` と `split` の片方だけが `NONE`（探索だけ・分割だけの実験は作らない。探索せずに分割する使い方は `axes` を1値の軸1本にして書く）。
-5. 分割の規則違反（第6.1節の検査1〜5）。
+5. 分割の規則違反（第6.1節の検査1〜6）。
 6. `split` が `NONE` でないのに、トップレベルの `run_interval` がある（fold の区間と二重になる。第6.1節）。
 7. `selection` / `acceptance` が無い、語彙に無い、参考値の指標を指す（第7.1節）。
 8. `split.kind` が `TRAIN_VALIDATION`（fold が1つ）なのに `acceptance.aggregation` が `MEDIAN`（1件の中央値は `ALL_FOLDS` と同じ判定になり、書いた意図と実際の判定が食い違う。第7.3節）。
+9. `acceptance.conditions` が空（合否の閾値を1つも事前に固定しない実験は、すべて満たすことが空集合で成り立ち、無条件に合格になる）。`selection.eligibility` の空は許す（選定の足切りを置かない実験はありうる）。
 
 ## 6. 分割
 
@@ -393,10 +394,10 @@ D07 §5.5 が「段階5」とした分布指標（最大連敗数・ソルティ
 
 ADR-0014 の fail-closed の手順（許可の発行 → 消費記録の追記 → データ公開）と消費遷移の直列化（origin への push を compare-and-set とする）を、`HoldoutGate` の2つの操作に割り当てる。**どの段で失敗してもデータを返さない**【合意済み】ADR-0014。
 
-**`issue`（許可の発行）**。入力は記録票・結末記録・snapshot・対象の partition 集合。次をこの順に確かめ、1つでも満たさなければ `GateRefusal` を返す（何も書かない）。
+**`issue`（許可の発行）**。入力は記録票・結末記録・対象の partition 集合。**snapshot は記録票の `snapshot_id`（D07 §19.2。探索が使った snapshot）だけから決め、別に受け取らない**。探索した snapshot と違う snapshot の封印期間を消費して、その結果を探索に結び付ける経路を作らないためである。対象の partition はすべてその snapshot の manifest の partition でなければならない（違えば `NOT_LEGACY_HOLDOUT` と同じく拒否する。下の2）。次をこの順に確かめ、1つでも満たさなければ `GateRefusal` を返す（何も書かない）。
 
 1. 実験が最終検証に進めること（`EXPERIMENT_NOT_ELIGIBLE`）: 結末記録の `status` が `COMPLETED`（D07 §19.4）、探索の合否が `PASSED`（第7.3節）、記録票の `split.final_holdout` が `NONE` でない、目的（`purpose`）が空白だけでない。
-2. 対象の partition がすべて `LEGACY_HOLDOUT` である（`NOT_LEGACY_HOLDOUT`。`QUARANTINED_UNASSIGNED` はいかなる経路でも許可しない【合意済み】D03 §3.8）。対象の集合は、`final_holdout.interval` と執行・入力の系列から合成が決め、`issue` に渡す。
+2. 対象の partition がすべて記録票の snapshot の `LEGACY_HOLDOUT` の partition である（`NOT_LEGACY_HOLDOUT`。`QUARANTINED_UNASSIGNED` はいかなる経路でも許可しない【合意済み】D03 §3.8）。対象の集合は、`final_holdout.interval` と執行・入力の系列から合成が決め、`issue` に渡す。
 3. origin の既定ブランチから閲覧記録を取得して状態を導出できる（`HoldoutAccessLog.fetch_states`。取得・導出の失敗は `ACCESS_LOG_UNREADABLE`）。
 4. 対象の partition がすべて `SEALED` である（`NOT_SEALED`）。1つでも `CONSUMED` なら拒否する。**`CONSUMED` は holdout としての再選定・最終評価に永久に使えない**【合意済み】ADR-0014。同じ実験の2回目の最終検証も、1回目で `CONSUMED` になっているのでここで拒否される。
 
@@ -444,7 +445,7 @@ D03 §7.4 の値の伝播表が「行の鍵は gate の実装とともに決め�
 
 1. 記録票と結末記録を読み、D07 §21.2 の手順1 と同じく `experiment_id` を再計算して照合する（改変された記録から最終検証へ進まない）。
 2. 最終検証へ進める試行を決める（第7.7節。最後の fold の選定記録）。
-3. **出力先の事前検査（消費より前）**: 最終検証の run の `RunConfig` と予測 `RunId`・予測の評価の識別子（D07 §9.2）を組み立て、次の**どれか1つでもあれば、消費せずに拒否して終える**（終了コード 5。何も書かない）: `final/permit.json`、`final/final_evaluation.json`、`runs/<予測 RunId>/`、その評価の保存先。**既存の成果物の再利用はしない**（最終検証の run の成果物が消費より前にあることは、封印期間を読んだ run が既にあることを意味し、再利用すると消費の記録と run の対応が崩れる）。出力の基点（`--out`）と実験の版のディレクトリの途中がリンクや別の種類なら、R4 と同じく失敗する（D07 §19.1）。これらはすべてデータの公開より前に判定できるので、**不可逆な消費の後に書き込みの衝突で止まる経路を作らない**。
+3. **出力先とデータ能力の事前検査（消費より前）**: 最終検証の run の `RunConfig` と予測 `RunId`・予測の評価の識別子（D07 §9.2）を組み立て、次の**どれか1つでもあれば、消費せずに拒否して終える**（終了コード 5。何も書かない）: `final/permit.json`、`final/final_evaluation.json`、`runs/<予測 RunId>/`、その評価の保存先。**既存の成果物の再利用はしない**（最終検証の run の成果物が消費より前にあることは、封印期間を読んだ run が既にあることを意味し、再利用すると消費の記録と run の対応が崩れる）。出力の基点（`--out`）と実験の版のディレクトリの途中がリンクや別の種類なら、R4 と同じく失敗する（D07 §19.1）。あわせて、**実行前のデータ能力検査（D06 §10.5）を消費より前に行う**。この検査は snapshot の manifest・完全性検査の報告（D03 §3.9。封印期間の partition についても構造の情報だけを持ち、価格を含まない）とコンパイル結果を照合するもので、足のデータを読まない。実行不可（`runnable = False`）なら消費せずに拒否して終える（終了コード 5）。これらはすべてデータの公開より前に判定できるので、**不可逆な消費の後に、書き込みの衝突や事前に分かっていた能力不足で止まる経路を作らない**。run の中の能力検査（D06 §10.5）は run の一部としてそのまま行う（同じ入力なので同じ結果になる）。
 4. `HoldoutGate.issue` → `consume`（第9.3節）。拒否されたら終了コード 7 で終える（第11.4節）。
 5. `consume` が公開してよい partition を返したら、run を始める前に**消費の控え `final/permit.json`**（`permit_id`・`snapshot_id`・partition・目的・試行番号）を書く（既にあれば何も書かずに失敗する。R4）。これ以降に止まると、封印期間は消費済みなのに最終検証の記録が無い状態になる（第9.5節）。`experiment report` は「控えがあり最終検証の記録が無い」を**「消費済み・最終検証は中断」**と先頭に表示する（第11.4節）。push の成功から控えを書き終えるまでのあいだに止まった場合は控えも残らないが、消費の正本は origin の閲覧記録であり（ADR-0014）、同じ実験の次の `finalize` が `NOT_SEALED` で拒否されることでその状態が分かる。
 6. 公開された partition と研究履歴の partition を許可集合にして、選んだ試行を `run_interval = final_holdout.interval` で run し、評価する。合否規則の `conditions` を当てて `verdict` を決める。判定の規則は fold の判定（第7.3節の最初の項目）と同じで、run や評価が正常に終わらなければ `VALIDATION_NOT_COMPLETED` とする（集約は1区間なので不要）。
@@ -609,7 +610,7 @@ runs/experiments/<名前>/v<版>/
 |---|---|---|
 | `experiment run` | `search_plan` / `split` が `NONE` でない書式 v2 を受ける | D07 §21.3 と同じ（0 / 2 / 3 / 4 / 5。1 は表に無い失敗）。0 は探索が最後まで進んだことで、合否は結末記録とレポートに出る |
 | `experiment report` | 探索の節を足す: 最終検証の状態（`final/permit.json` があり記録が無ければ「消費済み・最終検証は中断」。第9.6節の5）、合否と fold ごとの判定を先頭に、試行の状態の件数（試行済み・未試行・失敗・中断）、fold ごとの選定（選んだ試行と値、候補の区分の件数）、頑健性の表（第8節）、fold の独立な run という方式の注記（第6.5節） | D07 §21.3 のまま |
-| `experiment finalize`（新規） | 第9.6節 | 0 = 最終検証の記録を書いた（run や評価の失敗を含む）、7 = gate が拒否した（拒否の区分を表示）、5 = 出力先の事前検査で既存の成果物があった（消費していない。第9.6節の3）、2 = 引数・読込の誤り（記録票・結末記録が読めない・照合に失敗した）、1 = 表に無い失敗 |
+| `experiment finalize`（新規） | 第9.6節 | 0 = 最終検証の記録を書いた（run や評価の失敗を含む）、7 = gate が拒否した（拒否の区分を表示）、5 = 消費前の事前検査で止めた（既存の成果物がある、または実行前のデータ能力検査が実行不可。消費していない。第9.6節の3）、2 = 引数・読込の誤り（記録票・結末記録が読めない・照合に失敗した）、1 = 表に無い失敗 |
 | `experiment reproduce` | 探索の実験の版のディレクトリを渡されたら、引数の誤り（2）として拒否する（第15節） | D07 §21.3 のまま |
 
 ## 12. 値の伝播表（必須表）【提案】
@@ -689,6 +690,7 @@ runs/experiments/<名前>/v<版>/
 | 9 | D01 §4 | `HoldoutAccessLog` の実装者を Q11 の決定に合わせる（推奨: `marketdata` の閲覧記録の追記・導出と、git の取得・コミット・push を行う adapters を `app` が適合させる） | Q11 |
 | 10 | D08 §2.3・§7・§9.5 | 段階5 の受入テストの規約（第13節）、D09 の意味論の行、人工データの封印 partition の例外（Q2 を推奨で決めた場合） | 第13節・Q2 |
 | 11 | D06 §9.3 | 使用済み期間の opt-in の記録（Q10 で作ると決めた場合だけ） | Q10 |
+| 12 | D06 §10.5・§3 | 実行前のデータ能力検査を、run を始めずに呼べる操作として外に出す（最終検証の消費前の検査に使う。第9.6節の3）。検査の規則は変えない | 第9.6節 |
 
 ## 17. 要決定（Q1〜Q12）
 
