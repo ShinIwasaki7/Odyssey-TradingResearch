@@ -139,7 +139,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `PushResult` | `application.ports` | enum | `PUSHED` / `REJECTED_NON_FAST_FORWARD` / `ORIGIN_UNREACHABLE` / `NOT_TRACKED` | §9.3 |
 | `AccessLogReadFailure` | `application.ports` | レコード | `snapshot_id: SnapshotId` / `detail: str` | §9.3 |
 | `HoldoutAccessLog` | `application.ports` | Protocol | `fetch_states(snapshot: SnapshotRef, partitions: frozenset[PartitionId]) -> Mapping[PartitionId, HoldoutState] \| AccessLogReadFailure`（origin の既定ブランチを取得してから導出する）/ `append_consumption(permit: HoldoutPermit) -> PushResult`（消費記録の追記・コミット・push を1操作で行う）。所在は D01 §4 が確定済み。実装者は **Q11** | §9.3 |
-| `FinalEvaluationRecord` | `domain.experiment` | レコード | `experiment_id` / `permit_id: ContentDigest` / `partitions: tuple[PartitionId, ...]` / `purpose: str` / `trial_index: int` / `run_id: RunId \| None` / `run_status: RunStatus \| None` / `run_evaluation_id: RunEvaluationId \| None` / `evaluation_status: EvaluationStatus \| None` / `result_digest: ContentDigest \| None` / `verdict: FoldVerdict \| None` | §9.6 |
+| `FinalEvaluationRecord` | `domain.experiment` | レコード | `experiment_id` / `permit_id: ContentDigest` / `snapshot_id: SnapshotId`（消費した閲覧記録がある snapshot）/ `partitions: tuple[PartitionId, ...]` / `purpose: str` / `trial_index: int` / `run_id: RunId \| None` / `run_status: RunStatus \| None` / `run_evaluation_id: RunEvaluationId \| None` / `evaluation_status: EvaluationStatus \| None` / `result_digest: ContentDigest \| None` / `verdict: FoldVerdict \| None` | §9.6 |
 
 `MetricId` / `RunEvaluationId` / `EvaluationStatus` / `PolicyCheckResult` / `ExperimentManifest` / `ExperimentOutcome` / `PreparedExperiment` は D07、`RunConfig` / `RunStatus` は D06、`CompiledStrategy` は D05、`ParameterValue` は D04、`PartitionId` / `HoldoutState` / `SnapshotRef` は D03・D02、各 ID とダイジェストの型は D02 が正本である。
 
@@ -328,7 +328,7 @@ acceptance:
     - {metric: MAX_DRAWDOWN_MTM_RATE, comparator: LE, threshold: "0.2"}
 ```
 
-- 各 fold の判定（`FoldVerdict`）: 選んだ試行の**検証区間の評価**に `conditions` をすべて当て、すべて満たせば `PASSED`、1つでも満たさなければ `FAILED`。検証区間の単位が試行済みでない、または評価が `COMPLETED` でない、または事後検査が合格でないなら `VALIDATION_NOT_COMPLETED`。候補が無かった fold は `NO_CANDIDATE`。
+- 各 fold の判定（`FoldVerdict`）: 選んだ試行の**検証区間の評価**に `conditions` をすべて当て、すべて満たせば `PASSED`、1つでも満たさなければ `FAILED`。**値なし（`Unavailable`）の指標を指す条件は「満たさない」とする**（値なしを合格に寄せない。D07 §5.1）。検証区間の単位が試行済みでない、または評価が `COMPLETED` でない、または事後検査が合格でないなら `VALIDATION_NOT_COMPLETED`。候補が無かった fold は `NO_CANDIDATE`。
 - 実験の合否（`SearchVerdict`）は `aggregation` で決める。
   - `ALL_FOLDS`: **すべての fold が `PASSED`** なら `PASSED`、そうでなければ `FAILED`。
   - `MEDIAN`: 条件ごとに、全 fold の検証区間の値の**中央値**を求め、すべての条件を中央値が満たせば `PASSED`。fold の数が偶数なら中央の2つの平均（カーネル精度で1回割る。D02 §4.1）。**1つでも `PASSED` / `FAILED` 以外の fold（`NO_CANDIDATE` / `VALIDATION_NOT_COMPLETED`）があれば `FAILED`**、値なしの fold があればその条件の中央値は求めず `FAILED`（値なしを 0 や除外で埋めない。D07 §5.1）。
@@ -367,8 +367,10 @@ fold の選定を決めたら、**検証区間の単位を始める前に、選�
 
 **段階5 では頑健性を記録だけにし、合否には使わない**（**Q9** の推奨）。記録するのは次の2つで、どちらも既にある評価の値を並べるだけで、新しい指標を定義しない。
 
-1. **fold 間のばらつき**: 選定の指標と合否の条件の指標について、各 fold の選定区間（選んだ試行）と検証区間の値の最小・中央値・最大。レポートに表で出す（第11.4節）。
+1. **fold 間のばらつき**: 選定の指標と合否の条件の指標について、各 fold の選定区間（選んだ試行）と検証区間の値の最小・中央値・最大。レポートに表で出す（第11.4節）。候補なしの fold は選んだ試行が無いので数えない。
 2. **選んだ試行の近傍**: 各 fold で、選んだ試行と**1つの軸だけが1段隣の値**である試行（格子の近傍）の、選定区間の選定の指標の値と候補の区分。選んだ点だけが突出しているのかどうかを読むためのもの。
+
+**値なしの扱い**: 最小・中央値・最大は、その指標が値を持つ fold だけから求め、**値なし（`Unavailable`）の fold の数を理由ごとに並べて出す**。値を持つ fold が1つも無ければ3つとも「値なし」と表示する。値なしを 0 や除外の黙認で埋めない（D07 §5.1）。中央値の求め方は第7.3節の `MEDIAN` と同じ（偶数個なら中央の2つの平均）。近傍の値なしは、値の代わりに理由を表示する。**記録先はレポートだけ**である。どちらも集約表 `trial_metrics`（第11.2節）と選定記録から導く表示であり、新しく保存する値ではない（途中で止まった実験では集約表が無いので、頑健性の表は出さない）。合否（第7.3節）の値なしの扱いとは独立で、ここでの表示は合否を変えない。
 
 D07 §5.5 が「段階5」とした分布指標（最大連敗数・ソルティノレシオ・歪度・尖度）と、D07 §12 が段階5 に送った**遅延シナリオ別・執行粒度別の比較**は、推奨案では作らない（Q9 の選択肢2・3 で扱う。第17節）。執行粒度別の比較は Q9 のどの選択肢でも作らない（段階5 の実験設定は執行系列を1つだけ書く。必要なら別の実験として書き、レポートを並べて読む）。
 
@@ -426,13 +428,13 @@ D03 §7.4 の値の伝播表が「行の鍵は gate の実装とともに決め�
 
 ### 9.5 封印期間の許可の状態×出来事表（必須表）【提案】
 
-`experiment finalize` 1回の中で、1つの許可が進む状態。partition 1つの封印状態（`SEALED` / `CONSUMED`）の表は D03 §3.8.1 が正本であり、本表はそれを読む側（gate）の進み方である。
+`experiment finalize` 1回の中で、1つの許可が進む状態。表の「要求前」は、第9.6節の手順1〜3（記録の照合・試行の決定・出力先の事前検査）を通った後の状態である。手順1〜3 で止まった `finalize` は許可の要求に入らず、何も書かず閲覧記録にも触れない（終了コード 2 または 5。第11.4節）。partition 1つの封印状態（`SEALED` / `CONSUMED`）の表は D03 §3.8.1 が正本であり、本表はそれを読む側（gate）の進み方である。
 
 | 状態 ＼ 出来事 | 前提（第9.3節の `issue` の1・2）を満たす | 前提を満たさない | 閲覧記録の取得・導出に失敗 | 対象がすべて `SEALED` | 対象に `SEALED` でないものがある | push 成功（`PUSHED`） | push 拒否（non-fast-forward）・origin に到達できない・未追跡 | 最終検証の run と評価が終端した（状態は問わない） | 例外・中断 |
 |---|---|---|---|---|---|---|---|---|---|
 | **要求前** | → 閲覧記録の取得へ（同じ状態の中で手順3 に進む） | → **拒否**（終端。`EXPERIMENT_NOT_ELIGIBLE` または `NOT_LEGACY_HOLDOUT`。何も書かない） | → **拒否**（終端。`ACCESS_LOG_UNREADABLE`） | `permit` を作って → **許可済み**（メモリ上。データは公開しない） | → **拒否**（終端。`NOT_SEALED`） | 到達しない（push は許可の後） | 到達しない（同左） | 到達しない（run は公開の後） | 終了（何も書かない。データは公開していない） |
-| **許可済み**（メモリ上） | 到達しない（前提は検査済み） | 到達しない（同左） | 到達しない（取得は済んだ） | 到達しない（同左） | 到達しない（同左） | → **公開済み**。公開してよい partition を返し、`finalize` は消費の控え `final/permit.json` を書く（第9.3節の `consume` の2、第9.6節の4） | → **拒否**（終端。`PUSH_REJECTED` / `ORIGIN_UNREACHABLE` / `ACCESS_LOG_UNTRACKED`。データを返さない。ローカルに残った行は第9.3節の段落のとおり） | 到達しない（公開前に run しない） | 終了。push 前ならデータは公開されていない。push が成功したかどうかは origin の閲覧記録が正本であり、次の `issue` がそれを読む |
-| **公開済み**（最終検証の run 中） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない（push は1回） | 到達しない（同左） | 最終検証の記録（第9.6節）を書いて → **最終検証済み**（終端） | 終了。**消費は取り消さない**（`SEALED → CONSUMED` は不可逆。ADR-0014）。最終検証の記録は書かれず、同じ実験で再び最終検証はできない（次の `issue` の手順4 で拒否）。消費の控えが残るので `experiment report` が「消費済み・最終検証は中断」と表示する（第9.6節の4）。run の成果物は `runs/<run_id>/` に残りうる |
+| **許可済み**（メモリ上） | 到達しない（前提は検査済み） | 到達しない（同左） | 到達しない（取得は済んだ） | 到達しない（同左） | 到達しない（同左） | → **公開済み**。公開してよい partition を返し、`finalize` は消費の控え `final/permit.json` を書く（第9.3節の `consume` の2、第9.6節の5） | → **拒否**（終端。`PUSH_REJECTED` / `ORIGIN_UNREACHABLE` / `ACCESS_LOG_UNTRACKED`。データを返さない。ローカルに残った行は第9.3節の段落のとおり） | 到達しない（公開前に run しない） | 終了。push 前ならデータは公開されていない。push が成功したかどうかは origin の閲覧記録が正本であり、次の `issue` がそれを読む |
+| **公開済み**（最終検証の run 中） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない（push は1回） | 到達しない（同左） | 最終検証の記録（第9.6節）を書いて → **最終検証済み**（終端） | 終了。**消費は取り消さない**（`SEALED → CONSUMED` は不可逆。ADR-0014）。最終検証の記録は書かれず、同じ実験で再び最終検証はできない（次の `issue` の手順4 で拒否）。消費の控えが残るので `experiment report` が「消費済み・最終検証は中断」と表示する（第9.6節の5）。run の成果物は `runs/<run_id>/` に残りうる |
 | **最終検証済み**（終端） | 到達しない（1回の `finalize` はここで終わる） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 変化なし（記録は書き終えている） |
 | **拒否**（終端） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 変化なし |
 
@@ -442,10 +444,11 @@ D03 §7.4 の値の伝播表が「行の鍵は gate の実装とともに決め�
 
 1. 記録票と結末記録を読み、D07 §21.2 の手順1 と同じく `experiment_id` を再計算して照合する（改変された記録から最終検証へ進まない）。
 2. 最終検証へ進める試行を決める（第7.7節。最後の fold の選定記録）。
-3. `HoldoutGate.issue` → `consume`（第9.3節）。拒否されたら終了コード 7 で終える（第11.4節）。
-4. `consume` が公開してよい partition を返したら、run を始める前に**消費の控え `final/permit.json`**（`permit_id`・partition・目的・試行番号）を書く（既にあれば何も書かずに失敗する。R4）。これ以降に止まると、封印期間は消費済みなのに最終検証の記録が無い状態になる（第9.5節）。`experiment report` は「控えがあり最終検証の記録が無い」を**「消費済み・最終検証は中断」**と先頭に表示する（第11.4節）。push の成功から控えを書き終えるまでのあいだに止まった場合は控えも残らないが、消費の正本は origin の閲覧記録であり（ADR-0014）、同じ実験の次の `finalize` が `NOT_SEALED` で拒否されることでその状態が分かる。
-5. 公開された partition と研究履歴の partition を許可集合にして、選んだ試行を `run_interval = final_holdout.interval` で run し、評価する。合否規則の `conditions` を当てて `verdict` を決める（集約は1区間なので不要）。
-6. 最終検証の記録 `final/final_evaluation.json`（`FinalEvaluationRecord`）を実験の版のディレクトリに書く。既にあれば何も書かずに失敗する（R4）。
+3. **出力先の事前検査（消費より前）**: 最終検証の run の `RunConfig` と予測 `RunId`・予測の評価の識別子（D07 §9.2）を組み立て、次の**どれか1つでもあれば、消費せずに拒否して終える**（終了コード 5。何も書かない）: `final/permit.json`、`final/final_evaluation.json`、`runs/<予測 RunId>/`、その評価の保存先。**既存の成果物の再利用はしない**（最終検証の run の成果物が消費より前にあることは、封印期間を読んだ run が既にあることを意味し、再利用すると消費の記録と run の対応が崩れる）。出力の基点（`--out`）と実験の版のディレクトリの途中がリンクや別の種類なら、R4 と同じく失敗する（D07 §19.1）。これらはすべてデータの公開より前に判定できるので、**不可逆な消費の後に書き込みの衝突で止まる経路を作らない**。
+4. `HoldoutGate.issue` → `consume`（第9.3節）。拒否されたら終了コード 7 で終える（第11.4節）。
+5. `consume` が公開してよい partition を返したら、run を始める前に**消費の控え `final/permit.json`**（`permit_id`・`snapshot_id`・partition・目的・試行番号）を書く（既にあれば何も書かずに失敗する。R4）。これ以降に止まると、封印期間は消費済みなのに最終検証の記録が無い状態になる（第9.5節）。`experiment report` は「控えがあり最終検証の記録が無い」を**「消費済み・最終検証は中断」**と先頭に表示する（第11.4節）。push の成功から控えを書き終えるまでのあいだに止まった場合は控えも残らないが、消費の正本は origin の閲覧記録であり（ADR-0014）、同じ実験の次の `finalize` が `NOT_SEALED` で拒否されることでその状態が分かる。
+6. 公開された partition と研究履歴の partition を許可集合にして、選んだ試行を `run_interval = final_holdout.interval` で run し、評価する。合否規則の `conditions` を当てて `verdict` を決める。判定の規則は fold の判定（第7.3節の最初の項目）と同じで、run や評価が正常に終わらなければ `VALIDATION_NOT_COMPLETED` とする（集約は1区間なので不要）。
+7. 最終検証の記録 `final/final_evaluation.json`（`FinalEvaluationRecord`）を実験の版のディレクトリに書く。既にあれば何も書かずに失敗する（R4）。
 
 - 最終検証の run は研究ポリシーの検査 P2（研究履歴だけ）を満たさない。**P2 の代わりに gate の許可を検査とする**（第16節の改訂依頼。D07 §20.3 の P2 の適用範囲）。
 - **最終検証の結果だけが holdout 成績である**。使用済み期間（`CONSUMED`）を読んだ結果を holdout 成績として集計することは拒否する【合意済み】ADR-0014。本書の経路では、`CONSUMED` の partition は `issue` の手順4 で拒否されるので、最終検証の記録に `CONSUMED` の partition が入ることはない。
@@ -575,8 +578,8 @@ runs/experiments/<名前>/v<版>/
 │   ├── trial_units.parquet           # 集約表1（第11.2節）
 │   └── trial_metrics.parquet         # 集約表2（第11.2節）
 └── final/
-    ├── permit.json                   # 消費の控え（第9.6節の4）
-    └── final_evaluation.json         # 最終検証の記録（第9.6節の6）
+    ├── permit.json                   # 消費の控え（第9.6節の5）
+    └── final_evaluation.json         # 最終検証の記録（第9.6節の7）
 ```
 
 - ファイル名の `<k>` と `<i>` は 0 始まりの10進整数（桁を揃えない）。名前から鍵が一意に読めること、鍵から名前が一意に決まることを求める。
@@ -605,8 +608,8 @@ runs/experiments/<名前>/v<版>/
 | コマンド | 変更 | 終了コード |
 |---|---|---|
 | `experiment run` | `search_plan` / `split` が `NONE` でない書式 v2 を受ける | D07 §21.3 と同じ（0 / 2 / 3 / 4 / 5。1 は表に無い失敗）。0 は探索が最後まで進んだことで、合否は結末記録とレポートに出る |
-| `experiment report` | 探索の節を足す: 最終検証の状態（`final/permit.json` があり記録が無ければ「消費済み・最終検証は中断」。第9.6節の4）、合否と fold ごとの判定を先頭に、試行の状態の件数（試行済み・未試行・失敗・中断）、fold ごとの選定（選んだ試行と値、候補の区分の件数）、頑健性の表（第8節）、fold の独立な run という方式の注記（第6.5節） | D07 §21.3 のまま |
-| `experiment finalize`（新規） | 第9.6節 | 0 = 最終検証の記録を書いた（run や評価の失敗を含む）、7 = gate が拒否した（拒否の区分を表示）、2 = 引数・読込の誤り、1 = 表に無い失敗 |
+| `experiment report` | 探索の節を足す: 最終検証の状態（`final/permit.json` があり記録が無ければ「消費済み・最終検証は中断」。第9.6節の5）、合否と fold ごとの判定を先頭に、試行の状態の件数（試行済み・未試行・失敗・中断）、fold ごとの選定（選んだ試行と値、候補の区分の件数）、頑健性の表（第8節）、fold の独立な run という方式の注記（第6.5節） | D07 §21.3 のまま |
+| `experiment finalize`（新規） | 第9.6節 | 0 = 最終検証の記録を書いた（run や評価の失敗を含む）、7 = gate が拒否した（拒否の区分を表示）、5 = 出力先の事前検査で既存の成果物があった（消費していない。第9.6節の3）、2 = 引数・読込の誤り（記録票・結末記録が読めない・照合に失敗した）、1 = 表に無い失敗 |
 | `experiment reproduce` | 探索の実験の版のディレクトリを渡されたら、引数の誤り（2）として拒否する（第15節） | D07 §21.3 のまま |
 
 ## 12. 値の伝播表（必須表）【提案】
@@ -631,8 +634,9 @@ runs/experiments/<名前>/v<版>/
 | 試行の状態（`TrialStatus`） | 記録からの導出（第10.4節） | 集約表とレポートの作成 | 集約表 `trial_units.status`、結末記録の `search.trial_counts` | 単位ごとに1つ |
 | `permit_id` | `HoldoutGate.issue`（第9.3節） | `HoldoutPermit` → `HoldoutAccessLog.append_consumption` → 最終検証の記録 | 閲覧記録 `access_log.jsonl` の行（第9.4節）、`final/permit.json`、`final/final_evaluation.json` | 閲覧記録の行の鍵は `(partition, permit_id)`（第9.4節） |
 | 最終検証の partition（`PartitionId`） | 合成が `final_holdout.interval` と系列から決める（第9.3節の2） | `issue` の入力 → `HoldoutPermit.partitions` → `consume` の戻り値 → as-of ビューの許可集合（D03 §6.1） | 閲覧記録の行、最終検証の記録 | 同上 |
+| 最終検証の snapshot（`snapshot_id`） | 実験の記録票の `snapshot_id`（D07 §19.2） | `HoldoutPermit.snapshot_id` → `HoldoutAccessLog.append_consumption`（どの snapshot の閲覧記録に追記するか） | 閲覧記録のファイルの場所 `data/snapshots/<snapshot_id>/access_log.jsonl`、`final/permit.json`、`final/final_evaluation.json` | 最終検証1回に1つ |
 | 最終検証の目的（`purpose`） | 実験設定（人間。`split.final_holdout.purpose`） | 記録票 → `HoldoutPermit.purpose` | 記録票、閲覧記録の行、最終検証の記録 | 記録票に1つ |
-| 最終検証の run と評価の識別子・結果 | バックテスト・評価（第9.6節の4） | `RunExperiment` → `FinalEvaluationRecord` | `final/final_evaluation.json`、`runs/<run_id>/` | 実験の版に1つ（第11.3節） |
+| 最終検証の run と評価の識別子・結果 | バックテスト・評価（第9.6節の6） | `RunExperiment` → `FinalEvaluationRecord` | `final/final_evaluation.json`、`runs/<run_id>/` | 実験の版に1つ（第11.3節） |
 
 ## 13. 段階5 の完了条件の確かめ方【提案】
 
