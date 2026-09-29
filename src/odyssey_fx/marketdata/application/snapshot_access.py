@@ -21,7 +21,7 @@ as-of ビュー（D03 §6）と公開フィード（D03 §7）は、どちらも
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -47,7 +47,9 @@ __all__ = [
     "PENDING_DIRECTORY",
     "PartitionedBars",
     "ReadableSnapshot",
+    "VerifiedPartitionBars",
     "freeze_partition_bars",
+    "readable_surface",
     "require_matching_partition_content",
     "require_readable_snapshot",
     "require_recorded_content",
@@ -366,8 +368,19 @@ def require_readable_snapshot(
         if not isinstance(partition_id, PartitionId):
             raise MarketDataValueError(f"{label}.allowed_partitions must contain PartitionId")
 
-    # 先に写し取る。以降の照合も読み取りも、この写しだけを見る。
-    frozen = freeze_partition_bars(partition_bars)
+    # 同じ snapshot・同じ許可集合で**この関門を既に通った不変の写し**なら、内容の照合は
+    # 済んでいる（`VerifiedPartitionBars`）。写しは後から変更できないので、照合し直しても
+    # 同じ結果になる。許可集合と manifest の記録の検査は軽いので、下で毎回行う。
+    frozen: Mapping[PartitionId, tuple[Bar, ...]]
+    if isinstance(partition_bars, VerifiedPartitionBars) and partition_bars.verified_for(
+        snapshot, allowed_partitions
+    ):
+        verified = True
+        frozen = partition_bars
+    else:
+        verified = False
+        # 先に写し取る。以降の照合も読み取りも、この写しだけを見る。
+        frozen = freeze_partition_bars(partition_bars)
 
     manifest = snapshot.manifest
     _reject_quarantined(allowed_partitions)
@@ -376,7 +389,8 @@ def require_readable_snapshot(
             raise MarketDataValueError(
                 f"partition {partition_id} is not recorded in the snapshot manifest"
             )
-        require_matching_partition_content(manifest, partition_id, frozen.get(partition_id, ()))
+        if not verified:
+            require_matching_partition_content(manifest, partition_id, frozen.get(partition_id, ()))
     return frozen
 
 
@@ -397,6 +411,85 @@ def freeze_partition_bars(
         for partition_id, bars in partition_bars.items()
     }
     return MappingProxyType(frozen)
+
+
+class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
+    """読み取りの関門（`require_readable_snapshot`）を1度通した足の不変な写し（D03 §3.7.1・§6.1）。
+
+    1回の run では、as-of ビュー・執行系列ビュー・公開フィード（遅延シナリオがあれば公開
+    記録も）が**同じ snapshot・同じ許可集合・同じ足**を受け取り、それぞれが構築時に同じ
+    内容照合（足数・区間・内容ダイジェスト）を行っていた。照合は足の全件を文字列にして
+    ダイジェストを取るので、実データでは1回あたり約 30 秒かかる。
+
+    この型は、**構築そのもので関門を通す**（照合に失敗すれば作られない）。中身は構築時に
+    固定した写しで、後から変更できない。関門は、同じ snapshot（同一のオブジェクト）・同じ
+    許可集合についてこの型を受け取ると、内容の照合を繰り返さずにこの写しをそのまま使う。
+    許可集合・未分類の隔離期間・manifest の記録の検査は受け取るたびに行う。条件の合わない
+    組み合わせ（別の snapshot・別の許可集合）で渡された場合は、ふつうの足と同じく全件を
+    照合する。照合の条件と失敗の型・文言は変わらない。
+
+    許可された partition の読み取り面（`PartitionedBars`）も1度だけ作って共有する
+    （`readable_surface`）。読み取り面は読み取りの操作しか持たないので共有してよい。
+    """
+
+    __slots__ = ("_allowed", "_bars", "_readable", "_snapshot")
+
+    def __init__(
+        self,
+        snapshot: ReadableSnapshot,
+        allowed_partitions: frozenset[PartitionId],
+        partition_bars: Mapping[PartitionId, Sequence[Bar]],
+        *,
+        label: str,
+    ) -> None:
+        self._bars = require_readable_snapshot(
+            snapshot, allowed_partitions, label=label, partition_bars=partition_bars
+        )
+        self._snapshot = snapshot
+        self._allowed = allowed_partitions
+        self._readable: PartitionedBars | None = None
+
+    def verified_for(
+        self, snapshot: ReadableSnapshot, allowed_partitions: frozenset[PartitionId]
+    ) -> bool:
+        """この写しが、その snapshot・その許可集合で関門を通ったものか。"""
+        return self._snapshot is snapshot and self._allowed == allowed_partitions
+
+    def readable_for(self, allowed_partitions: frozenset[PartitionId]) -> PartitionedBars | None:
+        """許可集合が同じなら、許可された partition の読み取り面（初回に1度だけ作る）。
+
+        許可集合が違えば `None`（呼び出し側がその許可集合で作る）。
+        """
+        if self._allowed != allowed_partitions:
+            return None
+        if self._readable is None:
+            self._readable = PartitionedBars(self._bars, self._allowed)
+        return self._readable
+
+    def __getitem__(self, partition_id: PartitionId) -> tuple[Bar, ...]:
+        return self._bars[partition_id]
+
+    def __iter__(self) -> Iterator[PartitionId]:
+        return iter(self._bars)
+
+    def __len__(self) -> int:
+        return len(self._bars)
+
+
+def readable_surface(
+    partition_bars: Mapping[PartitionId, Sequence[Bar]],
+    allowed_partitions: frozenset[PartitionId],
+) -> PartitionedBars:
+    """許可された partition の読み取り面を返す（D03 §6.1）。
+
+    関門を通った写し（`VerifiedPartitionBars`）で許可集合が同じなら、1度だけ作った読み取り面を
+    共有する。それ以外は新しく作る。どちらも同じ足・同じ許可集合から作るので内容は同じである。
+    """
+    if isinstance(partition_bars, VerifiedPartitionBars):
+        shared = partition_bars.readable_for(allowed_partitions)
+        if shared is not None:
+            return shared
+    return PartitionedBars(partition_bars, allowed_partitions)
 
 
 class PartitionedBars:

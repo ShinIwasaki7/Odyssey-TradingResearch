@@ -31,6 +31,7 @@ from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.application.snapshot_access import (
     PartitionedBars,
     ReadableSnapshot,
+    readable_surface,
     require_readable_snapshot,
 )
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
@@ -183,7 +184,7 @@ class AsOfView:
         # `allowed_partitions` は上で固定したので、呼び出しごとに作り直しても同じものになる。
         # 作り直すと、1回の読み取りのたびに許可された全 partition の足を並べ直すことになる。
         object.__setattr__(
-            self, "_readable", PartitionedBars(self.partition_bars, self.allowed_partitions)
+            self, "_readable", readable_surface(self.partition_bars, self.allowed_partitions)
         )
         object.__setattr__(self, "_visibility", {})
 
@@ -677,7 +678,7 @@ class ExecutionSeriesView:
         object.__setattr__(self, "partition_bars", frozen)
         # 系列の足（時刻順）と、開始時刻で引く索引を1度だけ作る。系列が許可された partition
         # に無い場合は構築時には失敗させず、従来どおり最初の読み取りで構造エラーにする。
-        readable = PartitionedBars(frozen, self.allowed_partitions)
+        readable = readable_surface(frozen, self.allowed_partitions)
         if self.series in readable.series():
             bars = readable.require_series(self.series)
             by_start: dict[UtcTime, Bar] = {}
