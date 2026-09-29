@@ -63,6 +63,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultRepository,
     FileSystemResultWriter,
     FileSystemTraceSink,
+    ensure_experiment_directory,
     evaluation_directory,
     read_experiment_manifest,
     read_experiment_outcome,
@@ -1169,13 +1170,22 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
     """
     if not experiment_dir.is_dir():
         raise ConfigError(f"`--experiment-dir` が実験の版のディレクトリではない: {experiment_dir}")
-    root = _original_root(experiment_dir)
-    if root is None:
+    # **リンクを解決する前の経路で形と要素を確かめる**（PR #48 の Codex 第2系列の第1巡）。
+    # `resolve()` するとリンクの存在が消え、`runs/` より下の `experiments`・名前・版が
+    # リンクでも、リンク先を実ディレクトリとして書いてしまう（D07 §19.1 の境界。R4）。
+    # 経路は絶対化だけ行い、`..` を含む指定は拒否する（字面の形と実体がずれるため）。
+    directory = experiment_dir.absolute()
+    if ".." in directory.parts:
+        raise ConfigError(f"`--experiment-dir` に `..` を含めない: {experiment_dir}")
+    parents = directory.parents
+    if len(parents) < 4 or parents[1].name != "experiments" or parents[2].name != "runs":
         raise ConfigError(
             f"`--experiment-dir` は runs/experiments/<名前>/v<版> の形のディレクトリを指す"
             f"（run と評価の成果物を同じ根の runs/ から読むため。D07 §19.1）: {experiment_dir}"
         )
-    directory = experiment_dir.resolve()
+    root = parents[3]
+    # 途中がリンクなら何も書かずに `ArtifactAlreadyExists`（終了コード 1。D07 §22.2）。
+    ensure_experiment_directory(root, directory)
     try:
         manifest = read_experiment_manifest(directory)
         read_experiment_outcome(directory)

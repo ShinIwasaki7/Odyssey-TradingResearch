@@ -264,6 +264,26 @@ def test_a_directory_outside_the_experiment_layout_is_an_argument_error(
     assert not (directory / REPORT_FILE).exists()
 
 
+def test_a_linked_version_directory_is_not_written_through(completed: Path, tmp_path: Path) -> None:
+    """版のディレクトリがリンクなら、リンク先の配置が正しくても何も書かない（D07 §19.1、R4）。
+
+    リンクを解決してから形を確かめると、リンク先を実ディレクトリとして書いてしまう（PR #48 の
+    Codex 第2系列の第1巡）。
+    """
+    real = _copy(completed, tmp_path / "real")
+    (real / REPORT_FILE).write_text("# 手で書き換えたレポート\n", encoding="utf-8")
+    linked_parent = tmp_path / "linked/runs/experiments/strategy_b_t02_d1_2s"
+    linked_parent.mkdir(parents=True)
+    (linked_parent / "v1").symlink_to(real, target_is_directory=True)
+
+    code, _, error = _report(linked_parent / "v1")
+
+    assert code == 1
+    assert "symbolic link" in error
+    assert (real / REPORT_FILE).read_text(encoding="utf-8") == "# 手で書き換えたレポート\n"
+    assert not (real / "report.1.md").exists()
+
+
 def test_an_unreadable_manifest_is_an_argument_error(completed: Path, tmp_path: Path) -> None:
     """記録票が読めなければ終了コード 2（何の実験のレポートかを決められない）。"""
     directory = _copy(completed, tmp_path)
