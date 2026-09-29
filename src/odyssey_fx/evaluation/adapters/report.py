@@ -328,9 +328,14 @@ def _conclusion(inputs: _Inputs) -> str:
             "**採用不可**: 研究ポリシーの事後検査に合格しなかった"
             "（成果物は残すが採用しない。D07 §19.4）。"
         )
+    # **レポートが読む成果物が1つでも読めなければ採用可にしない**（PR #48 の Codex 第4巡）。
+    # 結末記録が指す run manifest と評価の成果物は、どちらも結果の根拠である。読めないまま
+    # 「採用可」と書くと、後段の「読めない」の説明と先頭の結論が食い違う。
+    if isinstance(inputs.run_manifest, str):
+        return f"**採用不可**: run manifest を読めない（{inputs.run_manifest}）。"
+    if isinstance(inputs.evaluation, str):
+        return f"**採用不可**: 評価の成果物を読めない（{inputs.evaluation}）。"
     if outcome.evaluation_status is EvaluationStatus.COMPLETED:
-        if isinstance(inputs.evaluation, str):
-            return f"**採用不可**: 評価の成果物を読めない（{inputs.evaluation}）。"
         return (
             "**採用可**: 研究ポリシーの検査に合格し、run と評価が正常に完了した"
             "（戦略の採否そのものは判断していない）。"

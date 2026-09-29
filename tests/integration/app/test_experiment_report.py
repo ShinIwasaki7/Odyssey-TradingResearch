@@ -207,6 +207,29 @@ def test_an_evaluation_manifest_that_is_not_the_recorded_one_is_unreadable(
     assert "NET_PROFIT" not in text
 
 
+@pytest.mark.parametrize("edit", ["missing", "other status"])
+def test_an_unreadable_run_manifest_is_not_adoptable(
+    completed: Path, tmp_path: Path, edit: str
+) -> None:
+    """run manifest が無い・結末記録と状態が食い違うなら採用可にしない（PR #48 の Codex 第4巡）。"""
+    directory = _copy(completed, tmp_path)
+    outcome = json.loads((directory / EXPERIMENT_OUTCOME_FILE).read_text(encoding="utf-8"))
+    manifest = tmp_path / "runs" / str(outcome["run_id"]) / "manifest.json"
+    if edit == "missing":
+        manifest.unlink()
+    else:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["status"] = "FAILED_RUNTIME"
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    code, output, error = _report(directory)
+
+    assert code == 0, output + error
+    conclusion = (directory / REPORT_FILE).read_text(encoding="utf-8").split("## 2.")[0]
+    assert "**採用不可**" in conclusion
+    assert "run manifest を読めない" in conclusion
+
+
 def test_rerunning_the_same_version_keeps_the_report_with_the_outcome(
     workspace: T02Workspace, tmp_path: Path
 ) -> None:
