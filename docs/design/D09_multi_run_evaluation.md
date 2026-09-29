@@ -109,7 +109,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `ParameterAxis` | `domain.search` | レコード | `instance_id: str` / `parameter: str` / `values: tuple[ParameterValue, ...]` | §5.1 |
 | `SearchPlan` | `domain.search` | レコード | `kind: SearchPlanKind` / `axes: tuple[ParameterAxis, ...]` / `max_trials: int` | §5.1 |
 | `ParameterAssignment` | `domain.search` | レコード | `values: tuple[tuple[str, str, ParameterValue], ...]`（`(instance_id, parameter, 値)` を `(instance_id, parameter)` の昇順で） | §5.2 |
-| `TrialPlan` | `domain.search` | レコード | `trial_index: int` / `assignment: ParameterAssignment` / `compiled_ref: CompiledStrategyRef \| None` / `compile_rejections: tuple[str, ...]`（コンパイル拒否の `check_id` と区分の正規化エンコード文字列。拒否が無ければ空）/ `expected_config_digests: tuple[tuple[TrialUnitKey, ConfigDigest], ...]` | §5.2・§10.2 |
+| `TrialPlan` | `domain.search` | レコード | `trial_index: int` / `assignment: ParameterAssignment` / `compiled_ref: CompiledStrategyRef \| None` / `compile_rejections: tuple[str, ...]`（コンパイル拒否の `check_id` と区分の正規化エンコード文字列。拒否が無ければ空）/ `expected_config_digests: tuple[tuple[TrialUnitKey, ConfigDigest], ...]`（コンパイル拒否の試行は空。`RunConfig` を組み立てられないため） | §5.2・§10.2 |
 | `TrialPhase` | `domain.search` | enum | `TRAIN` / `VALIDATION` | §6.2 |
 | `TrialUnitKey` | `domain.search` | レコード | `fold_index: int` / `phase: TrialPhase` / `trial_index: int` | §6.2 |
 | `TrialStatus` | `domain.search` | enum | `NOT_STARTED`（未試行）/ `COMPLETED`（試行済み）/ `FAILED`（失敗）/ `ABORTED`（中断） | §10.4 |
@@ -443,7 +443,7 @@ D03 §7.4 の値の伝播表が「行の鍵は gate の実装とともに決め�
 
 `odyssey-fx experiment finalize --experiment-dir <runs/experiments/<名前>/v<版>> --snapshots <基点> --out <基点>`。
 
-1. 記録票と結末記録を読み、D07 §21.2 の手順1 と同じく `experiment_id` を再計算して照合する（改変された記録から最終検証へ進まない）。
+1. 記録票と結末記録を読み、D07 §21.2 の手順1 と同じく `experiment_id` を再計算して照合する。**さらに、最終検証を許す値を正本から導き直して照合する**: `experiment_id` は記録票の事前固定の項目だけを束縛し、結末記録の `status` / `search`、選定記録、試行記録の中身を束縛しないためである。すなわち、全単位の試行記録が指す評価の成果物（`runs/<run_id>/eval/<run_evaluation_id>/` の評価 manifest と `METRICS` 表。D07 §8）を読み、評価 manifest の `run_evaluation_id` と `result_digest` が試行記録と一致することを確かめ、その指標から第7.2節の選定・第7.3節の fold の判定と実験の合否・第10.4節の試行の状態を**計算し直し**、選定記録と結末記録の値と1つでも違えば、消費せずに引数・読込の誤りとして終える（終了コード 2）。事後検査（P4・P5）も試行記録の値ではなく run manifest と評価 manifest から当て直す。これで、結末記録や選定記録を書き換えて封印期間を消費させる経路は無くなる。**評価の成果物そのものを整合的に作り替えることは、この照合でも防げない**（D07 §21 の再現と同じ水準の保証。成果物への署名は作らない）。
 2. 最終検証へ進める試行を決める（第7.7節。最後の fold の選定記録）。
 3. **出力先とデータ能力の事前検査（消費より前）**: 最終検証の run の `RunConfig` と予測 `RunId`・予測の評価の識別子（D07 §9.2）を組み立て、次の**どれか1つでもあれば、消費せずに拒否して終える**（終了コード 5。何も書かない）: `final/permit.json`、`final/final_evaluation.json`、`runs/<予測 RunId>/`、その評価の保存先。**既存の成果物の再利用はしない**（最終検証の run の成果物が消費より前にあることは、封印期間を読んだ run が既にあることを意味し、再利用すると消費の記録と run の対応が崩れる）。出力の基点（`--out`）と実験の版のディレクトリの途中がリンクや別の種類なら、R4 と同じく失敗する（D07 §19.1）。あわせて、**実行前のデータ能力検査（D06 §10.5）を消費より前に行う**。この検査は snapshot の manifest・完全性検査の報告（D03 §3.9。封印期間の partition についても構造の情報だけを持ち、価格を含まない）とコンパイル結果を照合するもので、足のデータを読まない。実行不可（`runnable = False`）なら消費せずに拒否して終える（終了コード 5）。これらはすべてデータの公開より前に判定できるので、**不可逆な消費の後に、書き込みの衝突や事前に分かっていた能力不足で止まる経路を作らない**。run の中の能力検査（D06 §10.5）は run の一部としてそのまま行う（同じ入力なので同じ結果になる）。
 4. `HoldoutGate.issue` → `consume`（第9.3節）。拒否されたら終了コード 7 で終える（第11.4節）。
@@ -491,7 +491,8 @@ D07 §19.2 の表に、探索の実験で次を足す（`NONE` の実験では�
 | 事前検査 | `pre_run_checks` | D07 §20.3 の P1・P2・P6 を**全単位の和**で1件ずつ（P2 は全単位の許可集合の和、P6 は上の最大値）。Q7 で試行数の上限を足せばその検査も入る |
 
 - 足した項目はすべて `experiment_id` の識別の入力に入る（D07 §19.2 の「識別の入力」の4 に足す。第16節の改訂依頼）。
-- 検証区間の単位の `expected_config_digest` は、**選ばれるかどうかにかかわらず全試行について**入れる。選定は run の後に決まるが、どの試行が選ばれてもその run の設定が事前に固定されているようにするためである（コンパイルとダイジェストの計算だけで run はしない）。
+- **コンパイル拒否の試行（`FAILED`）は `compiled_ref = None` で、`expected_config_digests` は空**とする。`RunConfig` は `compiled_ref` を要するので組み立てられず、その試行の単位は run を持たない（第5.2節・第10.5節）。その試行について予測 `RunId` の既存成果物の確認（第10.7節）も行わない。
+- 検証区間の単位の `expected_config_digest` は、**選ばれるかどうかにかかわらず、コンパイルが通った全試行について**入れる。選定は run の後に決まるが、どの試行が選ばれてもその run の設定が事前に固定されているようにするためである（コンパイルとダイジェストの計算だけで run はしない）。
 
 ### 10.3 試行記録【提案】
 
@@ -543,7 +544,7 @@ D07 §19.4 の表（1つの run の実験）を、探索の実験について書
 | 状態 ＼ 出来事 | 設定の読込に失敗 | 事前検査が全件合格 | 事前検査に合格でないものあり | 既存の run 成果物と衝突し再利用できない単位がある | 記録票の保存が成功（新規または同一） | 記録票が同じ版で内容違い | 全 fold が終端した | 例外・中断 |
 |---|---|---|---|---|---|---|---|---|
 | **読込前** | 終了（記録なし。`ConfigError`。第5.5節） | 到達しない（検査は読込・列挙・コンパイルの後） | 到達しない（同左） | 到達しない（同左） | 到達しない（同左） | 到達しない（同左） | 到達しない | 終了（記録なし） |
-| **検査済み**（記録票を組み立てた） | 到達しない | 全単位の予測 `RunId` について既存の成果物を確かめ（読むだけ）、衝突が無ければ保存へ | → 保存へ（不合格も記録票に残す。衝突の確認はしない。run しないため） | 記録票も結末記録も書かずに**拒否して終了**（`RUN_ARTIFACT_CONFLICT`、終了コード 5。D07 §19.6 の手順3） | 到達しない（保存の前） | 到達しない（同左） | 到達しない | 終了（記録なし） |
+| **検査済み**（記録票を組み立てた） | 到達しない | run を持つ全単位（コンパイル拒否の試行を除く）の予測 `RunId` について既存の成果物を確かめ（読むだけ）、衝突が無ければ保存へ | → 保存へ（不合格も記録票に残す。衝突の確認はしない。run しないため） | 記録票も結末記録も書かずに**拒否して終了**（`RUN_ARTIFACT_CONFLICT`、終了コード 5。D07 §19.6 の手順3） | 到達しない（保存の前） | 到達しない（同左） | 到達しない | 終了（記録なし） |
 | **保存を試みる** | 到達しない | 到達しない | 到達しない | 到達しない（衝突は保存の前に確かめた） | 事前検査が合格なら、旧い結末記録・レポート・探索の記録を退避して（第11.3節）→ **探索中**。不合格なら結末記録 `REJECTED_BY_POLICY` を書いて**終端** | 結末記録を書かず**拒否して終了**（検査 P3。終了コード 5。D07 §19.4） | 到達しない | 終了（記録票が書けたかは保存の原子性による。D07 §19.4） |
 | **探索中**（fold を順に進める。第6.6節） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 集約（第7.3節）して集約表・結末記録（`COMPLETED`、または事後検査が合格でない単位があれば `FAILED_POST_RUN_CHECK`）・レポートを書いて**終端** | **記録票・開始記録・試行記録・選定記録だけが残る**（結末記録なし）。`experiment report` が中断を導いて表示する（第10.4節） |
 | **終端** | 到達しない（コマンドは終わっている） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 変化なし |
@@ -624,7 +625,7 @@ runs/experiments/<名前>/v<版>/
 | `compiled_ref`（`CompiledStrategyRef`） | 合成が試行ごとにコンパイル（D05 §5.5） | `TrialPlan.compiled_ref` → `RunConfig.compiled_ref`（D06 §3） | 記録票の `trials`、run manifest（D06 §9.3）、集約表 `trial_units` | 試行ごとに1つ（読込時に重複を拒否。第5.5節の2 で値の重複を拒否するので割当は互いに異なる） |
 | `fold_index` と fold の区間 | `domain.splits` の展開（第6.1節） | `Fold` → 単位の `RunConfig.run_interval` | 記録票の `split`、試行記録の `unit`、選定記録、集約表 | 記録票の中で `fold_index` が一意 |
 | 単位の鍵（`TrialUnitKey`） | 合成が試行 × fold × 局面で組み立てる（第6.2節） | `PreparedTrial.run_configs` の鍵 | 開始記録・試行記録のファイル名と中身、集約表の主キー | `(fold_index, phase, trial_index)` |
-| 単位の `expected_config_digest` | 合成（run の前に `RunConfig` から。D06 §9.3） | `TrialPlan.expected_config_digests` | 記録票（識別に入る。第10.2節） | 単位ごとに1つ |
+| 単位の `expected_config_digest` | 合成（run の前に `RunConfig` から。D06 §9.3） | `TrialPlan.expected_config_digests` | 記録票（識別に入る。第10.2節） | 単位ごとに1つ（コンパイル拒否の試行の単位には無い） |
 | 単位の予測 `RunId` | 合成（`expected_config_digest` とこの実行の環境のダイジェストから。ADR-0006） | `PreparedTrial.expected_run_ids` | 開始記録・試行記録（記録票には入れない。D07 §19.2 と同じ理由） | 単位ごとに1つ。同じ実験の2つの単位が同じ値を持ちうる（第6.2節） |
 | 単位の `run_id` / `run_status` / `run_reused` | バックテスト（`BacktestRunner.run`）か既存の成果物の読み出し（D07 §19.6） | `RunExperiment` → `TrialRunRecord` | 試行記録、集約表 `trial_units`、`runs/<run_id>/` | 事後検査 P4 で予測 `RunId` と照合（第10.8節） |
 | 単位の `run_evaluation_id` / `evaluation_status` / `result_digest` | 評価（D07 §8.3・§9.2） | `EvaluateRun` → `TrialRunRecord` | 試行記録、集約表、`runs/<run_id>/eval/<run_evaluation_id>/` | D07 §9.2 |
