@@ -33,8 +33,8 @@ from typing import Any, Final
 import polars as pl
 
 from odyssey_fx.backtest.trace.manifest import RunManifest
+from odyssey_fx.backtest.trace.recorder import column_names
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.money import decimal_from_str, kernel_context
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.evaluation.adapters.fs_store import (
@@ -54,9 +54,13 @@ from odyssey_fx.evaluation.domain.experiment import (
     ExperimentOutcome,
     ExperimentStatus,
 )
-from odyssey_fx.evaluation.domain.metrics import MetricId
+from odyssey_fx.evaluation.domain.metrics import CategoryCount, MetricId, MetricRecord
 from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
-from odyssey_fx.evaluation.domain.status import CheckOutcome, EvaluationStatus
+from odyssey_fx.evaluation.domain.status import (
+    CheckOutcome,
+    ConsistencyCheckResult,
+    EvaluationStatus,
+)
 
 __all__ = [
     "ReportWrite",
@@ -101,13 +105,6 @@ _METRIC_LABELS: Final[Mapping[str, str]] = {
 #: 比率の表示の桁（小数第6位。D07 §22.1）。
 _RATIO_QUANTUM: Final = decimal_from_str("0.000001")
 
-#: 評価の表のうちレポートが読む3表（取引と約定の診断は件数の多い明細なので載せない）。
-_READ_TABLES: Final = (
-    EvaluationTable.METRICS,
-    EvaluationTable.CATEGORY_COUNTS,
-    EvaluationTable.CONSISTENCY_CHECKS,
-)
-
 
 class ReportWrite(Enum):
     """`write_report` の結果（D07 §22.1 の書き込み規則）。"""
@@ -149,8 +146,50 @@ def _cell_text(value: object) -> str:
     return str(value)
 
 
-def _read_evaluation(root: Path, run_id: str, run_evaluation_id: str) -> _Evaluation | str:
-    """評価の成果物を読む。読めなければ理由（絶対パスを含めない文）を返す。"""
+#: レポートが読む3表の行の型（列の顔ぶれは平坦化の規則で型から決まる。D06 §9.1、D07 §8.1）。
+_TABLE_ROW_TYPES: Final[Mapping[EvaluationTable, type]] = {
+    EvaluationTable.METRICS: MetricRecord,
+    EvaluationTable.CATEGORY_COUNTS: CategoryCount,
+    EvaluationTable.CONSISTENCY_CHECKS: ConsistencyCheckResult,
+}
+
+
+def _evaluation_mismatch(manifest: Mapping[str, Any], outcome: ExperimentOutcome) -> str | None:
+    """評価 manifest が結末記録の指す評価そのものかを確かめる。違えば理由を返す。
+
+    項目が欠けた・別の評価の manifest を「読めた」として数値を出すと、取り違えた成果物が
+    「採用可」の表示になる（PR #48 の Codex 第3巡）。結末記録は評価の識別子・状態・結果の
+    ダイジェストを持つので、それと照合する。
+    """
+    expected: dict[str, object] = {
+        "run_id": None if outcome.run_id is None else outcome.run_id.hex,
+        "run_evaluation_id": None
+        if outcome.run_evaluation_id is None
+        else outcome.run_evaluation_id.hex,
+        "result_digest": None if outcome.result_digest is None else outcome.result_digest.hex,
+        "status": None if outcome.evaluation_status is None else outcome.evaluation_status.value,
+    }
+    for key, value in expected.items():
+        if key not in manifest:
+            return f"evaluation.json に項目 {key} が無い"
+        if manifest[key] != value:
+            return (
+                f"evaluation.json の {key} が {manifest[key]!r} で、結末記録の {value!r} と"
+                "一致しない（別の評価の成果物か、書き換えられている）"
+            )
+    return None
+
+
+def _read_evaluation(root: Path, outcome: ExperimentOutcome) -> _Evaluation | str:
+    """結末記録が指す評価の成果物を読む。読めなければ理由（絶対パスを含めない文）を返す。
+
+    読めたことにするのは、評価 manifest が結末記録と一致し（`_evaluation_mismatch`）、3表が
+    必要な列をすべて持つときだけである。
+    """
+    if outcome.run_id is None or outcome.run_evaluation_id is None:  # pragma: no cover
+        raise KernelValueError("the outcome has no evaluation to read")
+    run_id = outcome.run_id.hex
+    run_evaluation_id = outcome.run_evaluation_id.hex
     relative = f"runs/{run_id}/eval/{run_evaluation_id}"
     directory = Path(root) / "runs" / run_id / "eval" / run_evaluation_id
     if directory.is_symlink() or not directory.is_dir():
@@ -159,7 +198,17 @@ def _read_evaluation(root: Path, run_id: str, run_evaluation_id: str) -> _Evalua
         manifest = json.loads((directory / "evaluation.json").read_text(encoding="utf-8"))
         if not isinstance(manifest, Mapping):
             return f"{relative}/evaluation.json が JSON のオブジェクトではない"
-        tables = {table: _read_rows(directory / f"{table.value}.parquet") for table in _READ_TABLES}
+        mismatch = _evaluation_mismatch(manifest, outcome)
+        if mismatch is not None:
+            return f"{relative}/: {mismatch}"
+        tables: dict[EvaluationTable, tuple[Mapping[str, str | None], ...]] = {}
+        for table, row_type in _TABLE_ROW_TYPES.items():
+            path = directory / f"{table.value}.parquet"
+            present = pl.read_parquet_schema(path)
+            missing = [name for name in column_names(row_type) if name not in present]
+            if missing:
+                return f"{relative}/{table.value}.parquet に列 {missing} が無い"
+            tables[table] = _read_rows(path)
     except OSError as exc:
         return f"{relative}/ の成果物を読めない: {type(exc).__name__}: {exc.strerror}"
     except (ValueError, pl.exceptions.PolarsError) as exc:
@@ -167,10 +216,22 @@ def _read_evaluation(root: Path, run_id: str, run_evaluation_id: str) -> _Evalua
     return _Evaluation(manifest=manifest, tables=tables)
 
 
-def _read_run_manifest(root: Path, run_id: RunId) -> RunManifest | str:
+def _read_run_manifest(root: Path, outcome: ExperimentOutcome) -> RunManifest | str:
+    """結末記録が指す run manifest を読む。読めない・別の run のものなら理由を返す。"""
+    if outcome.run_id is None:  # pragma: no cover - 呼び出し側で確かめ済み
+        raise KernelValueError("the outcome has no run to read")
+    run_id = outcome.run_id
     read = FileSystemResultRepository(root=Path(root)).read_manifest(run_id)
     if isinstance(read, ManifestReadFailure):
         return f"runs/{run_id}/manifest.json を読めない: {read.detail}"
+    if read.run_id != run_id:
+        return f"runs/{run_id}/manifest.json は別の run {read.run_id} のものである"
+    recorded = None if outcome.run_status is None else outcome.run_status.value
+    if read.status != recorded:
+        return (
+            f"runs/{run_id}/manifest.json の run の状態 {read.status!r} が結末記録の"
+            f" {recorded!r} と一致しない"
+        )
     return read
 
 
@@ -623,11 +684,9 @@ def build_report(experiment_dir: Path, artifacts_root: Path) -> str:
     run_manifest: RunManifest | str | None = None
     evaluation: _Evaluation | str | None = None
     if outcome is not None and outcome.run_id is not None:
-        run_manifest = _read_run_manifest(artifacts_root, outcome.run_id)
+        run_manifest = _read_run_manifest(artifacts_root, outcome)
         if outcome.run_evaluation_id is not None:
-            evaluation = _read_evaluation(
-                artifacts_root, outcome.run_id.hex, outcome.run_evaluation_id.hex
-            )
+            evaluation = _read_evaluation(artifacts_root, outcome)
     return _render(
         _Inputs(
             manifest=manifest,

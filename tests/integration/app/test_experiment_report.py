@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -165,6 +166,45 @@ def test_a_stopped_experiment_is_reported_from_the_manifest_alone(
     assert "**採用不可**" in conclusion
     assert "結末記録が無い＝途中で止まった" in conclusion
     assert "再現する結果（run と評価）が無い" in text
+
+
+@pytest.mark.parametrize(
+    "edit",
+    ["empty", "other digest"],
+)
+def test_an_evaluation_manifest_that_is_not_the_recorded_one_is_unreadable(
+    completed: Path, tmp_path: Path, edit: str
+) -> None:
+    """評価 manifest が結末記録の評価と合わなければ「読めない」とし、採用可にしない。
+
+    項目の欠けた manifest（`{}`）や、結果のダイジェストの違う manifest を読めたことにすると、
+    取り違えた成果物の数値が「採用可」として出る（PR #48 の Codex 第3巡）。
+    """
+    directory = _copy(completed, tmp_path)
+    outcome = json.loads((directory / EXPERIMENT_OUTCOME_FILE).read_text(encoding="utf-8"))
+    evaluation = (
+        tmp_path
+        / "runs"
+        / str(outcome["run_id"])
+        / "eval"
+        / str(outcome["run_evaluation_id"])
+        / "evaluation.json"
+    )
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    if edit == "empty":
+        payload = {}
+    else:
+        payload["result_digest"] = "0" * 64
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+
+    code, output, error = _report(directory)
+
+    assert code == 0, output + error
+    text = (directory / REPORT_FILE).read_text(encoding="utf-8")
+    conclusion = text.split("## 2.")[0]
+    assert "**採用不可**" in conclusion
+    assert "評価の成果物を読めない" in conclusion
+    assert "NET_PROFIT" not in text
 
 
 def test_rerunning_the_same_version_keeps_the_report_with_the_outcome(
