@@ -367,7 +367,9 @@ def _reject_rules_hitting_nothing(
       完全一致で引く（D03 §3.6）ので、時間足の整列とカレンダーで決まる足の開始でない時刻
       （例: 日足 NY17 の 21:00Z）はどの足にも当たらない。
     - **run の中での見え方を変えない足への特定の足の遅延**。通常の公開予定が run 区間の
-      終わり以後の足と、遅らせた公開時刻が run 区間の始まり以前の足（PR #48 の Codex 第2巡）。
+      終わりより後の足と、遅らせた公開時刻が run 区間の始まりより前の足（PR #48 の Codex
+      第2巡・第5巡）。
+    - **他の規則に完全に覆われる規則**（`_reject_dominated_rules`。PR #48 の Codex 第5巡）。
 
     snapshot に足が実在するかは読込では分からない（snapshot を開かない）。
     """
@@ -392,20 +394,58 @@ def _reject_rules_hitting_nothing(
                     "足は開始時刻との完全一致で引くので、この規則はどの足にも当たらない（D03 §3.6）"
                 )
             # 足の開始であっても、その足の公開が run の中の判断に届かなければ遅延は何も
-            # 変えない。(a) 通常の公開予定が run 区間の終わり以後の足は、遅延の有無に
-            # かかわらず run の中で公開されない（遅延は非負）。(b) 遅らせた公開時刻が run
-            # 区間の始まり以前の足は、遅延の有無にかかわらず run の最初の判断から見えている。
+            # 変えない。(a) 通常の公開予定が run 区間の終わり**より後**の足は、遅延の有無に
+            # かかわらず run の中で公開されない（遅延は非負。終わりちょうどの公開は終端の
+            # 判断に届くので受け付ける。D03 §7.1）。(b) 遅らせた公開時刻が run 区間の始まり
+            # **より前**の足は、遅延の有無にかかわらず run の最初の判断から見えている（始まり
+            # ちょうどへ移る遅延は、始まりの公開の出来事を生むので受け付ける）。
             run_interval = experiment.run_interval
             scheduled = SeriesSchedule(
                 series=rule.series, timeframe_def=definition, calendar=calendar
             ).scheduled_at(interval.end)
-            if scheduled >= run_interval.end or scheduled + rule.delay <= run_interval.start:
+            if scheduled > run_interval.end or scheduled + rule.delay < run_interval.start:
                 raise ConfigError(
                     f"{path}: {label} の足（{rule.series} の {rule.bar_start} 始まり）は、遅延の"
                     f"有無にかかわらず run 区間（{run_interval.start}〜{run_interval.end}）の中で"
-                    "の見え方が変わらない（公開が run の終わり以後、または遅らせても run の始まり"
-                    "以前）。当てても何も変わらないのに、遅延ありの run として記録される"
+                    "の見え方が変わらない（公開が run の終わりより後、または遅らせても run の"
+                    "始まりより前）。当てても何も変わらないのに、遅延ありの run として記録される"
                 )
+    _reject_dominated_rules(scenario, path)
+
+
+def _reject_dominated_rules(scenario: DelayScenario, path: Path) -> None:
+    """他の規則に完全に覆われる規則を拒否する（PR #48 の Codex 第5巡。仮置き 4 の拡張）。
+
+    同じ足に複数の規則が当たると最大の遅延を採る（D03 §3.6。`DelayScenario.delay_for`）。
+    そのため、ある規則が当たるすべての足に、それ以上の遅延を与える別の規則が当たるなら、
+    その規則はどの足の公開時刻も変えない。覆う側は次の2通りだけである。
+
+    - 同じ系列の系列全体の遅延（`FIXED_SERIES_DELAY`）で、遅延が同じかより長いもの。
+    - 特定の足の遅延（`INJECTED_BAR_DELAY`）どうしで、同じ系列・同じ足の開始のもの。
+
+    系列全体の遅延を特定の足の遅延が覆うことは無い（特定の足の遅延は1本にしか当たらない）。
+    同じ規則の重複は `_delay_scenario_of` が先に拒否している。
+    """
+    rules = [
+        rule for rule in scenario.rules if isinstance(rule, (FixedSeriesDelay, InjectedBarDelay))
+    ]
+    for index, rule in enumerate(rules):
+        for other_index, other in enumerate(rules):
+            if other_index == index or other.series != rule.series:
+                continue
+            covers = isinstance(other, FixedSeriesDelay) or (
+                isinstance(rule, InjectedBarDelay)
+                and isinstance(other, InjectedBarDelay)
+                and other.bar_start == rule.bar_start
+            )
+            if not covers or other.delay < rule.delay:
+                continue
+            raise ConfigError(
+                f"{path}: delay_scenario.rules[{index}] は rules[{other_index}] に覆われる"
+                f"（同じ足に同じかより長い遅延が当たり、最大の遅延を採るので、この規則はどの足の"
+                "公開時刻も変えない。D03 §3.6）。当てても何も変わらないのに、遅延ありの run"
+                " として記録される"
+            )
 
 
 def _rule_declaration(rule: DelayRule) -> dict[str, str]:
