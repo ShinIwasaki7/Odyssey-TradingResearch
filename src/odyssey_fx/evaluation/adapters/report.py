@@ -180,6 +180,21 @@ def _evaluation_mismatch(manifest: Mapping[str, Any], outcome: ExperimentOutcome
     return None
 
 
+def _linked_element(root: Path, parts: tuple[str, ...]) -> str | None:
+    """`runs/` より下の経路の要素のうち、リンク（リンク切れを含む）の最初のものを返す。
+
+    成果物の根 `runs/` より下のリンクは辿らない（D06 §9.1、R4。PR #48 の Codex 第2系列の
+    第4巡）。リンク越しに読んだ成果物を「読めた」とすると、別の場所の成果物で「採用可」を出す。
+    返す文は `runs/` からの相対の経路で、絶対パスを入れない。
+    """
+    current = Path(root) / "runs"
+    for index, part in enumerate(parts):
+        current = current / part
+        if current.is_symlink():
+            return "runs/" + "/".join(parts[: index + 1])
+    return None
+
+
 def _read_evaluation(root: Path, outcome: ExperimentOutcome) -> _Evaluation | str:
     """結末記録が指す評価の成果物を読む。読めなければ理由（絶対パスを含めない文）を返す。
 
@@ -192,7 +207,12 @@ def _read_evaluation(root: Path, outcome: ExperimentOutcome) -> _Evaluation | st
     run_evaluation_id = outcome.run_evaluation_id.hex
     relative = f"runs/{run_id}/eval/{run_evaluation_id}"
     directory = Path(root) / "runs" / run_id / "eval" / run_evaluation_id
-    if directory.is_symlink() or not directory.is_dir():
+    linked: str | None = None
+    for name in ("evaluation.json", *(f"{table.value}.parquet" for table in _TABLE_ROW_TYPES)):
+        linked = linked or _linked_element(root, (run_id, "eval", run_evaluation_id, name))
+    if linked is not None:
+        return f"{linked} がシンボリックリンクである（成果物の根より下のリンクは辿らない。R4）"
+    if not directory.is_dir():
         return f"{relative}/ が無い（またはディレクトリではない）"
     try:
         manifest = json.loads((directory / "evaluation.json").read_text(encoding="utf-8"))
@@ -221,6 +241,9 @@ def _read_run_manifest(root: Path, outcome: ExperimentOutcome) -> RunManifest | 
     if outcome.run_id is None:  # pragma: no cover - 呼び出し側で確かめ済み
         raise KernelValueError("the outcome has no run to read")
     run_id = outcome.run_id
+    linked = _linked_element(root, (run_id.hex, "manifest.json"))
+    if linked is not None:
+        return f"{linked} がシンボリックリンクである（成果物の根より下のリンクは辿らない。R4）"
     read = FileSystemResultRepository(root=Path(root)).read_manifest(run_id)
     if isinstance(read, ManifestReadFailure):
         return f"runs/{run_id}/manifest.json を読めない: {read.detail}"

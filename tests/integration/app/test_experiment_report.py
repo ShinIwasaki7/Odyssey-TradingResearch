@@ -301,6 +301,31 @@ def test_a_broken_link_is_refused_as_a_link_not_as_a_missing_directory(tmp_path:
     assert not (tmp_path / "nowhere").exists()
 
 
+@pytest.mark.parametrize("linked", ["run", "eval"])
+def test_run_artifacts_behind_a_link_are_not_read(
+    completed: Path, tmp_path: Path, linked: str
+) -> None:
+    """`runs/<run_id>/` や `eval/` がリンクなら、中身が整合していても読まずに採用不可にする。
+
+    成果物の根より下のリンクは辿らない（D06 §9.1、R4。PR #48 の Codex 第2系列の第4巡）。
+    """
+    directory = _copy(completed, tmp_path)
+    outcome = json.loads((directory / EXPERIMENT_OUTCOME_FILE).read_text(encoding="utf-8"))
+    run_directory = tmp_path / "runs" / str(outcome["run_id"])
+    target = run_directory if linked == "run" else run_directory / "eval"
+    moved = tmp_path / f"moved-{linked}"
+    target.rename(moved)
+    target.symlink_to(moved, target_is_directory=True)
+
+    code, output, error = _report(directory)
+
+    assert code == 0, output + error
+    text = (directory / REPORT_FILE).read_text(encoding="utf-8")
+    assert "**採用不可**" in text.split("## 2.")[0]
+    assert "シンボリックリンク" in text
+    assert str(tmp_path) not in text
+
+
 def test_an_outcome_of_another_experiment_is_an_argument_error(
     completed: Path, tmp_path: Path
 ) -> None:
