@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**、**2026-09-23 v2.6（§10.2 の snapshot ディレクトリ図に、確定 snapshot の検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）を git 管理対象として追記。2026-09-20 の人間の決定3件を 2026-09-23 に main へ追随させて取り込んだもの。ADR-0013 改訂、D03 v1.7。依存規則の変更なし）**、2026-09-25 v2.7（§10.3 の `runs/experiments/` の下のディレクトリ名を、実験の内容のダイジェストではなく人間が付けた名前と版にした。D07 v2.0 §19.1。依存規則の変更なし）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**、**2026-09-23 v2.6（§10.2 の snapshot ディレクトリ図に、確定 snapshot の検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）を git 管理対象として追記。2026-09-20 の人間の決定3件を 2026-09-23 に main へ追随させて取り込んだもの。ADR-0013 改訂、D03 v1.7。依存規則の変更なし）**、2026-09-25 v2.7（§10.3 の `runs/experiments/` の下のディレクトリ名を、実験の内容のダイジェストではなく人間が付けた名前と版にした。D07 v2.0 §19.1。依存規則の変更なし）、2026-09-30 v2.8（第4節: 閲覧記録のポート `HoldoutAccessLog` の実装者を、`evaluation.adapters.fs_store` から「`marketdata` の閲覧記録の追記・導出と、git の取得・コミット・push を行う adapters を `app` が適合させる」へ改めた。段階5 の設計 D09 v0.1（2026-09-30 承認、PR #52）§16 の9、2026-09-29 の人間の決定 Q11。閲覧記録の規則を `marketdata` の1か所に保つため（D03 §1.2 の担当と揃う）。ポートの所在と依存規則の変更なし）
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021, 0026](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -146,7 +146,7 @@ app → evaluation → backtest → strategy → marketdata → common
 | `SnapshotCatalog` | `evaluation.application.ports` | `marketdata.application`（`app` が適合させる） | 実験 manifest に固定する snapshot の参照と partition のアクセス分類の取得 |
 | `ResultRepository` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | 結果の読み書き |
 | `ExperimentStore` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | 実験 manifest・探索履歴の保存 |
-| `HoldoutAccessLog` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | holdout 閲覧履歴の記録 |
+| `HoldoutAccessLog` | `evaluation.application.ports` | `marketdata` の閲覧記録の追記・導出と、git の取得・コミット・push を行う adapters（`app` が適合させる。v2.8。D09 v0.1 §16 の9、2026-09-29 の人間の決定 Q11） | holdout 閲覧履歴の記録（操作は D09 の後続版） |
 
 ポート名は D02 以降で変更されうるが、**所在（どのパッケージの application が定義するか）と実装者の層**は本書で確定する。
 
