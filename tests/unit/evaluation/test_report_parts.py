@@ -29,6 +29,9 @@ from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
         ("6.873950262920658775071972376", "6.873950"),
         ("1", "1.000000"),
         ("-0.2686320000", "-0.268632"),
+        # 整数部の大きい値もカーネルの28桁を超えて表示できる（PR #48 の Codex 第2系列の第5巡）。
+        ("1E+22", "10000000000000000000000.000000"),
+        ("12345678901234567890123.4567895", "12345678901234567890123.456790"),
     ],
 )
 def test_a_ratio_is_shown_to_six_decimals_half_even(stored: str, shown: str) -> None:

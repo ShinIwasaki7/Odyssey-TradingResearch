@@ -285,7 +285,12 @@ def _ratio_text(text: str) -> str:
         value = decimal_from_str(text)
     except KernelValueError:
         return text
-    shown = value.quantize(_RATIO_QUANTUM, rounding=ROUND_HALF_EVEN, context=kernel_context())
+    # 表示の丸めに要る桁数は値の整数部の桁数 + 小数6桁。カーネルの28桁では整数部の大きい値
+    # （`1e22` など）の quantize が InvalidOperation になるので、表示のためだけに精度を足す
+    # （保存値と指標の計算の精度は変えない。PR #48 の Codex 第2系列の第5巡）。
+    context = kernel_context()
+    context.prec = max(context.prec, value.adjusted() + 1 + 6 + 1)
+    shown = value.quantize(_RATIO_QUANTUM, rounding=ROUND_HALF_EVEN, context=context)
     return format(shown, "f")
 
 
