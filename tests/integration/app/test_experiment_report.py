@@ -284,6 +284,23 @@ def test_a_linked_version_directory_is_not_written_through(completed: Path, tmp_
     assert not (real / "report.1.md").exists()
 
 
+def test_a_broken_link_is_refused_as_a_link_not_as_a_missing_directory(tmp_path: Path) -> None:
+    """版のディレクトリがリンク切れでも、無いとは扱わず、リンクとして終了コード 1 で拒否する。
+
+    リンク切れは存在しないように見えるので、存在の確かめ（終了コード 2）を先にすると
+    リンクの境界（D07 §19.1・§22.2）に届かない（PR #48 の Codex 第2系列の第2巡）。
+    """
+    parent = tmp_path / "linked/runs/experiments/strategy_b_t02_d1_2s"
+    parent.mkdir(parents=True)
+    (parent / "v1").symlink_to(tmp_path / "nowhere", target_is_directory=True)
+
+    code, _, error = _report(parent / "v1")
+
+    assert code == 1
+    assert "symbolic link" in error
+    assert not (tmp_path / "nowhere").exists()
+
+
 def test_an_unreadable_manifest_is_an_argument_error(completed: Path, tmp_path: Path) -> None:
     """記録票が読めなければ終了コード 2（何の実験のレポートかを決められない）。"""
     directory = _copy(completed, tmp_path)

@@ -145,6 +145,7 @@ __all__ = [
     "reproduction_path",
     "reproduction_payload",
     "require_absent",
+    "require_plain_experiment_path",
     "require_run_directory_absent",
     "reserve_run_directory",
     "result_from_payload",
@@ -1315,6 +1316,27 @@ def keep_previous_report(directory: Path) -> None:
 def ensure_experiment_directory(artifacts_root: Path, directory: Path) -> Path:
     """実験の版のディレクトリがリンクを経由しない実ディレクトリであることを確かめる（R4）。"""
     return _ensure_plain_directory(Path(artifacts_root) / "runs", Path(directory))
+
+
+def require_plain_experiment_path(artifacts_root: Path, directory: Path) -> bool:
+    """`runs/` より下の要素にリンクや別の種類が無いかを、**何も作らずに**確かめる（R4）。
+
+    要素がリンク（リンク切れを含む）か、ディレクトリでないものなら `ArtifactAlreadyExists`。
+    途中が無ければ `False`（版のディレクトリが無い）、すべて実ディレクトリなら `True`。
+    成果物の根 `runs/` そのものはリンクでもよい（D06 §9.1）。
+    """
+    base = Path(artifacts_root) / "runs"
+    current = base
+    for part in Path(directory).relative_to(base).parts:
+        current = current / part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            raise ArtifactAlreadyExists(
+                f"{current} is a symbolic link or not a directory; experiment records are never"
+                " written through links, and nothing was written (D07 §19.1・§22.2, R4)"
+            )
+        if not current.exists():
+            return False
+    return True
 
 
 def experiment_directory(root: Path, experiment_name: str, experiment_version: int) -> Path:

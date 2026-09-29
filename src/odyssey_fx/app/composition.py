@@ -63,13 +63,13 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultRepository,
     FileSystemResultWriter,
     FileSystemTraceSink,
-    ensure_experiment_directory,
     evaluation_directory,
     read_experiment_manifest,
     read_experiment_outcome,
     reproduction_path,
     reproduction_payload,
     require_absent,
+    require_plain_experiment_path,
     require_run_directory_absent,
     run_directory,
     write_reproduction,
@@ -1168,8 +1168,6 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
     根の `runs/` から読む。引数・読込の誤り（版のディレクトリの形でない、記録票が無い・読めない、
     結末記録があるのに読めない、名前と版がディレクトリと合わない）は `ConfigError`（終了コード 2）。
     """
-    if not experiment_dir.is_dir():
-        raise ConfigError(f"`--experiment-dir` が実験の版のディレクトリではない: {experiment_dir}")
     # **リンクを解決する前の経路で形と要素を確かめる**（PR #48 の Codex 第2系列の第1巡）。
     # `resolve()` するとリンクの存在が消え、`runs/` より下の `experiments`・名前・版が
     # リンクでも、リンク先を実ディレクトリとして書いてしまう（D07 §19.1 の境界。R4）。
@@ -1184,8 +1182,11 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
             f"（run と評価の成果物を同じ根の runs/ から読むため。D07 §19.1）: {experiment_dir}"
         )
     root = parents[3]
-    # 途中がリンクなら何も書かずに `ArtifactAlreadyExists`（終了コード 1。D07 §22.2）。
-    ensure_experiment_directory(root, directory)
+    # 途中がリンク（リンク切れを含む）なら、何も作らず何も書かずに `ArtifactAlreadyExists`
+    # （終了コード 1。D07 §22.2）。存在の確かめ（終了コード 2）より先に行う（PR #48 の
+    # Codex 第2系列の第2巡。リンク切れは存在しないように見えるため）。
+    if not require_plain_experiment_path(root, directory):
+        raise ConfigError(f"`--experiment-dir` が実験の版のディレクトリではない: {experiment_dir}")
     try:
         manifest = read_experiment_manifest(directory)
         read_experiment_outcome(directory)
