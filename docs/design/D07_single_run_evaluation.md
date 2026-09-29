@@ -1041,7 +1041,7 @@ split: NONE
 | `run_id` | バックテスト（`BacktestRunner.run` の戻り値の `BacktestResult`） | `RunExperiment` → `ExperimentOutcome` | 結末記録、`runs/<run_id>/` | ADR-0006。事後検査 P4 で結末記録の `expected_run_id` と照合 |
 | `run_evaluation_id` / `result_digest` | 評価（第8.3節・第9.2節） | `EvaluateRun` → `ExperimentOutcome` | 結末記録、評価 manifest | 第9.2節 |
 | `research_policy_ref` | 研究ポリシーファイル（第20.2節） | `app.config` → `ExperimentManifest` | 記録票 | `(id, version, digest)` の組で記録する。段階4（v2.6 まで）は、同じ `(id, version)` で内容が違うファイルを使った実験どうしを記録票の `digest` で後から見分けるだけだった。**v2.7 からは、読込が研究ポリシーの版の登録簿と照合し、未登録の版、または登録された `digest` と内容が違うファイルを設定の誤りとして拒否する**（`ConfigError`、終了コード 2。記録票は書かない。第20.2節の v2.7 の段落、D09 §10.9、2026-09-29 の人間の決定 Q8） |
-| 検査結果（`PolicyCheckResult`） | `evaluation.domain.research_policy`（第20.3節） | 事前（P1・P2・P6）は `ExperimentManifest`、保存時（P3）と事後（P4・P5）は `ExperimentOutcome` | 記録票の `pre_run_checks`、結末記録の `outcome_checks` | 検査名（`PolicyCheck`）ごとに1件。探索の実験では事前に P7 も入り、事後の P4・P5 は単位ごとに D09 の試行記録の `outcome_checks` に置く（v2.7。探索で足す値の伝播は D09 §12） |
+| 検査結果（`PolicyCheckResult`） | `evaluation.domain.research_policy`（第20.3節） | 事前（P1・P2・P6）は `ExperimentManifest`、保存時（P3）と事後（P4・P5）は `ExperimentOutcome` | 記録票の `pre_run_checks`、結末記録の `outcome_checks` | 記録票と結末記録の中では検査名（`PolicyCheck`）ごとに1件。探索の実験では事前に P7 も入る。**探索の実験の事後の P4・P5 は単位ごとに D09 の試行記録の `outcome_checks` に置き、主キーは `(TrialUnitKey, PolicyCheck)`**（試行記録は単位 `(fold_index, phase, trial_index)` ごとに1つで、その中で検査名ごとに1件。v2.7。D09 §10.3・§10.8・§12） |
 
 ### 19.6 同じ実験の再実行と、既存の run 成果物との衝突【提案】
 
