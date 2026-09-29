@@ -521,8 +521,8 @@ class SnapshotInputs:
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, tuple[Bar, ...]]
     schedules: Mapping[SeriesId, SeriesSchedule]
-    _verified: list[VerifiedPartitionBars] = field(
-        default_factory=list, init=False, repr=False, compare=False
+    _verified: VerifiedPartitionBars | None = field(
+        default=None, init=False, repr=False, compare=False
     )
 
     def bars_of(self, series: SeriesId) -> tuple[Bar, ...]:
@@ -541,13 +541,16 @@ class SnapshotInputs:
         従来と同じ時点・同じ型と文言で起きる。失敗した照合は覚えないので、次に呼べば同じ
         失敗になる。`label` は照合を行う経路の名前（型の検査の失敗の文言に載る）。
         """
-        if not self._verified:
-            self._verified.append(
-                VerifiedPartitionBars(
-                    self.snapshot, self.allowed_partitions, self.partition_bars, label=label
-                )
-            )
-        return self._verified[0]
+        cached = self._verified
+        # 覚えた写しは、この入力一式の snapshot・許可集合で関門を通ったものに限って使う。
+        # そうでなければ（外から差し替えられたものを含む）照合し直す。
+        if cached is not None and cached.verified_for(self.snapshot, self.allowed_partitions):
+            return cached
+        verified = VerifiedPartitionBars(
+            self.snapshot, self.allowed_partitions, self.partition_bars, label=label
+        )
+        object.__setattr__(self, "_verified", verified)
+        return verified
 
 
 def _require_matching_calendar(

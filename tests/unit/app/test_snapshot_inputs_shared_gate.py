@@ -82,3 +82,16 @@ def test_a_failed_check_is_not_remembered() -> None:
     for _ in range(2):
         with pytest.raises(PartitionContentMismatch, match="bar\\(s\\) but the manifest records"):
             inputs.verified_bars("AsOfView")
+
+
+def test_a_cached_copy_of_other_inputs_is_not_trusted() -> None:
+    """外から差し替えた別の入力一式の写しは使わず、この入力一式で照合し直す。"""
+    ours = _inputs(BARS)
+    theirs = _inputs(BARS)
+    foreign = theirs.verified_bars("AsOfView")
+    object.__setattr__(ours, "_verified", foreign)
+    mine = ours.verified_bars("AsOfView")
+    assert mine is not foreign
+    assert mine.verified_for(ours.snapshot, ours.allowed_partitions)
+    with pytest.raises(AttributeError):
+        ours._verified = foreign  # type: ignore[misc]
