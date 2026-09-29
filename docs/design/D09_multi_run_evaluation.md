@@ -130,7 +130,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `SplitKind` | `domain.splits` | enum | `NONE` / `TRAIN_VALIDATION` / `WALK_FORWARD` | §6.1 |
 | `Fold` | `domain.splits` | レコード | `fold_index: int` / `train: Interval` / `validation: Interval` | §6.1 |
 | `FinalHoldoutSpec` | `domain.splits` | レコード | `interval: Interval` / `purpose: str` | §9.2・§9.6 |
-| `SplitSpec` | `domain.splits` | レコード | `kind: SplitKind` / `folds: tuple[Fold, ...]` / `purge: timedelta` / `final_holdout: FinalHoldoutSpec \| None` | §6.1 |
+| `SplitSpec` | `domain.splits` | レコード | `kind: SplitKind` / `folds: tuple[Fold, ...]` / `purge_seconds: int`（0 以上の秒数）/ `final_holdout: FinalHoldoutSpec \| None` | §6.1 |
 | `PreparedTrial` | `application.run_experiment` | レコード | `plan: TrialPlan` / `compiled: CompiledStrategy \| None` / `run_configs: tuple[tuple[TrialUnitKey, RunConfig], ...]` / `expected_run_ids: tuple[tuple[TrialUnitKey, RunId], ...]` | §10.7 |
 | `PreparedSearch` | `application.run_experiment` | レコード | D07 §3 の `PreparedExperiment` の項目のうち `run_config` / `compiled` / `expected_run_id` を `trials: tuple[PreparedTrial, ...]` に置き換えたもの | §10.7 |
 | `HoldoutAccessLog` | `application.ports` | Protocol | 閲覧記録の取得と消費記録の追記。所在は D01 §4 が確定済み。**操作は後続版**（第19節） | §9.3 |
@@ -231,7 +231,7 @@ split:
 
 - **fold は区間を明示して並べる**。1つの fold は選定区間（`train`）と検証区間（`validation`）の組である。区間の長さ・ずらし幅・起点から fold を生成する書き方は作らない【提案】。生成規則を持つと、月・取引日・暦日のどれで数えるかという規則がもう1つ要り、生成した区間は結局記録票に展開して残すことになるため、最初から展開した形で書く。**評価窓の長さは結果を見る前に固定する**【合意済み】全体計画書 §5.5.2。区間そのものが実験設定に書かれ、記録票に入る（第10.2節）ので、長さも事前に固定される。
 - `kind` は `TRAIN_VALIDATION`（fold がちょうど1つ）か `WALK_FORWARD`（fold が2つ以上）。意味は同じ規則の上の呼び分けであり、処理は変わらない。
-- 区間は D02 の半開区間 `[start, end)`。期間は D04 §13.1 の `<整数><単位>`（`purge` は 0 を許すので `"0s"` と書ける）。
+- 区間は D02 の半開区間 `[start, end)`。期間は D04 §13.1 の `<整数><単位>`（`purge` は 0 を許すので `"0s"` と書ける）。**読込で `purge` を秒数の整数（`SplitSpec.purge_seconds`）に直して持つ**。共通カーネルの正規化エンコード（D02 §9.3）は期間（`timedelta`）を符号化しないので、`timedelta` のまま持つと記録票の識別子（第10.2節）を計算できない。単位は秒・分・時・日のどれでも秒の整数に直るので、`"90m"` と `"1h"` のように書き方が違っても同じ期間なら同じ値になる（書き方は識別に入らない）。区間の比較（第6.1節の検査2・4）はこの秒数で行う。
 - `final_holdout` は最終検証の区間と目的（第9.2節・第9.3節）。記録票に入って事前に固定される。最終検証での使い方は後続版（第19節）。使わない実験は `NONE` と書く（省略は拒否。暗黙の既定値を置かない）。
 
 読込時の検査（違反は第5.5節の5）:
