@@ -58,6 +58,7 @@ from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.adapters.fs_store import (
+    REPORT_FILE,
     FileSystemExperimentStore,
     FileSystemResultRepository,
     FileSystemResultWriter,
@@ -68,10 +69,12 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     reproduction_path,
     reproduction_payload,
     require_absent,
+    require_plain_experiment_path,
     require_run_directory_absent,
     run_directory,
     write_reproduction,
 )
+from odyssey_fx.evaluation.adapters.report import ReportWrite, write_report
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.evaluation.application.ports import ResultReadFailure
@@ -1018,12 +1021,17 @@ def _resolved_files(loaded: ExperimentV2, symbols: Sequence[Symbol]) -> tuple[Re
 
 @dataclass(frozen=True, slots=True)
 class ExperimentRunOutcome:
-    """`experiment run` の成果（CLI が表示と終了コードに使う）。"""
+    """`experiment run` の成果（CLI が表示と終了コードに使う）。
+
+    `report` は書いたレポート（`report.md`）の置き場。結末記録を書かずに拒否した場合
+    （`ExperimentRefusal`）は何も書かないので `None`（D07 §19.4）。
+    """
 
     manifest: ExperimentManifest
     result: ExperimentOutcome | ExperimentRefusal
     directory: Path
     expected_run_id: RunId
+    report: Path | None = None
 
 
 def build_experiment_manifest(
@@ -1128,12 +1136,79 @@ def run_experiment(
         git_commit=plan.git_commit,
         git_dirty=plan.git_dirty,
     )
+    result = use_case.execute(prepared)
+    report: Path | None = None
+    if isinstance(result, ExperimentOutcome):
+        # **`experiment run` の最後にレポートを作る**（D07 §22.1）。保存済みの成果物だけから
+        # 作るので、結末記録を書いた後に呼ぶ。拒否（結末記録を書かない経路）では何も書かない
+        # （D07 §19.4 の「検査済み」「保存を試みる」行）。
+        write_report(store.directory, artifacts_root)
+        report = store.directory / REPORT_FILE
     return ExperimentRunOutcome(
         manifest=manifest,
-        result=use_case.execute(prepared),
+        result=result,
         directory=store.directory,
         expected_run_id=plan.run_id,
+        report=report,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentReportOutcome:
+    """`experiment report` の成果（CLI が表示に使う）。"""
+
+    path: Path
+    written: ReportWrite
+
+
+def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
+    """保存済みの成果物だけからレポートを作り直す（D07 §22.1、`experiment report`）。
+
+    run と評価の成果物は、実験の版のディレクトリ `<根>/runs/experiments/<名前>/v<版>` と同じ
+    根の `runs/` から読む。引数・読込の誤り（版のディレクトリの形でない、記録票が無い・読めない、
+    結末記録があるのに読めない、名前と版がディレクトリと合わない）は `ConfigError`（終了コード 2）。
+    """
+    # **リンクを解決する前の経路で形と要素を確かめる**（PR #48 の Codex 第2系列の第1巡）。
+    # `resolve()` するとリンクの存在が消え、`runs/` より下の `experiments`・名前・版が
+    # リンクでも、リンク先を実ディレクトリとして書いてしまう（D07 §19.1 の境界。R4）。
+    # 経路は絶対化だけ行い、`..` を含む指定は拒否する（字面の形と実体がずれるため）。
+    directory = experiment_dir.absolute()
+    if ".." in directory.parts:
+        raise ConfigError(f"`--experiment-dir` に `..` を含めない: {experiment_dir}")
+    parents = directory.parents
+    if len(parents) < 4 or parents[1].name != "experiments" or parents[2].name != "runs":
+        raise ConfigError(
+            f"`--experiment-dir` は runs/experiments/<名前>/v<版> の形のディレクトリを指す"
+            f"（run と評価の成果物を同じ根の runs/ から読むため。D07 §19.1）: {experiment_dir}"
+        )
+    root = parents[3]
+    # 途中がリンク（リンク切れを含む）なら、何も作らず何も書かずに `ArtifactAlreadyExists`
+    # （終了コード 1。D07 §22.2）。存在の確かめ（終了コード 2）より先に行う（PR #48 の
+    # Codex 第2系列の第2巡。リンク切れは存在しないように見えるため）。
+    if not require_plain_experiment_path(root, directory):
+        raise ConfigError(f"`--experiment-dir` が実験の版のディレクトリではない: {experiment_dir}")
+    try:
+        manifest = read_experiment_manifest(directory)
+        outcome = read_experiment_outcome(directory)
+    except KernelValueError as exc:
+        raise ConfigError(f"記録票か結末記録を読めない: {exc}") from exc
+    if outcome is not None and outcome.experiment_id != manifest.experiment_id:
+        # 別の実験の結末記録を混ぜたレポートは作らない。読込の誤り（終了コード 2。D07 §22.2）。
+        raise ConfigError(
+            f"{experiment_dir} の結末記録は実験 {outcome.experiment_id} のもので、記録票の"
+            f" {manifest.experiment_id} と一致しない"
+        )
+    if (directory.parent.name, directory.name) != (
+        manifest.experiment_name,
+        f"v{manifest.experiment_version}",
+    ):
+        raise ConfigError(
+            f"{experiment_dir} の記録票は {manifest.experiment_name} 版"
+            f" {manifest.experiment_version} のもので、ディレクトリの名前と版に合わない"
+            "（D07 §19.1）"
+        )
+    written = write_report(directory, root)
+    return ExperimentReportOutcome(path=directory / REPORT_FILE, written=written)
 
 
 @dataclass(frozen=True, slots=True)

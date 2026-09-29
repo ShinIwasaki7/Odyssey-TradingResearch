@@ -113,11 +113,19 @@ def capability_report(
     # 1本ずつ読んで保護水準の到達を決めるので、欠落は run を続けられる状態ではない。
     # 重大度だけを見ていると、欠落を知りながら実行可能と判定し、建玉が開いたまま欠落区間の
     # 高値・安値が判定されず、古い評価価格のまま run が完走してしまう（D06 §10.5 の手順2）。
+    #
+    # **照合するのは要求した期間（run 区間）と重なる欠落だけ**である（D06 §10.5 の手順2
+    # 「要求した期間・系列…をカレンダーと照合する」）。完全性検査の報告は snapshot 全体
+    # （封印期間・隔離期間を含む）のものなので、区間を限らないと、run 区間の外（読めない
+    # 期間を含む）の欠落で、欠落の無い区間の run まで止まる（段階4 実装 PR 4 の仮置き。
+    # D07 §23.2 の Q9 決定は「欠落の無い 2018 年で完走する」ことを前提にしている）。
     executed_series = {config.execution_series, *execution_policy.resolution_hierarchy.levels}
     missing = tuple(
         result
         for result in integrity.results
-        if result.kind is CheckKind.MISSING_EXPECTED_BAR and result.series in executed_series
+        if result.kind is CheckKind.MISSING_EXPECTED_BAR
+        and result.series in executed_series
+        and result.interval.overlaps(config.run_interval)
     )
     if missing:
         reasons.append(

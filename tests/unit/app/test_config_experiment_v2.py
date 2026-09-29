@@ -406,6 +406,136 @@ def test_a_delay_on_the_execution_series_is_accepted(tmp_path: Path) -> None:
     assert str(scenario.rules[0].series) == "USDJPY/15m/bid"
 
 
+def test_a_delay_on_a_series_the_run_does_not_read_is_refused(tmp_path: Path) -> None:
+    """戦略も執行も読まない系列への遅延は、何も変えないので読込時に拒否する（PR 4 の仮置き）。
+
+    PR #45 のレビューで PR 4 へ送られた指摘: 当たらない規則は run を遅延なしと同じに動かす
+    のに、遅延シナリオの版参照が遅延ありとして manifest と `run_id` に入る。
+    """
+    path = _variant(
+        tmp_path,
+        'series: "USDJPY/1d_ny17/bid", delay: "2s"}',
+        'series: "USDJPY/4h_ny17/bid", delay: "2s"}',
+    )
+    assert "この run が読まない" in _refused(path, tmp_path)
+
+
+def test_an_injected_delay_off_a_bar_start_is_refused(tmp_path: Path) -> None:
+    """足の開始でない時刻への特定の足の遅延はどの足にも当たらないので拒否する（PR 4 の仮置き）。
+
+    日足 NY17 の足は 22:00Z（冬時間）に始まる。21:00Z はどの足の開始とも一致しない。
+    """
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        ' bar_start: "2015-01-06T21:00:00Z", delay: "25h"}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    assert "足の開始ではない" in _refused(path, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("bar_start", "delay"),
+    [
+        # run 区間（2015-01-04T22:00Z〜01-16T22:00Z）の終わりより後に終わる日足（次の週の最初）。
+        ("2015-01-18T22:00:00Z", "2s"),
+        # run の始まりより前に終わる日足を、遅らせても run の始まりより前にしか届かない。
+        ("2015-01-01T22:00:00Z", "2s"),
+    ],
+    ids=["after the run", "before the run"],
+)
+def test_an_injected_delay_that_cannot_change_the_run_is_refused(
+    tmp_path: Path, bar_start: str, delay: str
+) -> None:
+    """足の開始でも、run の中での見え方を変えない足への遅延は拒否する（PR #48 Codex 第2巡）。"""
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        f' bar_start: "{bar_start}", delay: "{delay}"}}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    assert "見え方が変わらない" in _refused(path, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("bar_start", "delay"),
+    [
+        # run の前に終わる日足でも、遅らせた公開が run の中に入る。
+        ("2015-01-01T22:00:00Z", "72h"),
+        # run の終わりちょうどに公開される日足: 遅延なしなら終端の判断に届く（D03 §7.1）。
+        ("2015-01-15T22:00:00Z", "2s"),
+    ],
+    ids=["reaches into the run", "published at the run end"],
+)
+def test_an_injected_delay_on_the_boundary_is_accepted(
+    tmp_path: Path, bar_start: str, delay: str
+) -> None:
+    """run の見え方を変えうる足への遅延は受け付ける（拒否の境界の確認。PR #48 Codex 第5巡）。"""
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        f' bar_start: "{bar_start}", delay: "{delay}"}}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    assert _load(path, tmp_path).experiment.delay_scenario is not None
+
+
+_DAILY = '"USDJPY/1d_ny17/bid"'
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        # 系列全体の 2 秒は、同じ系列の系列全体の 25 時間に覆われる。
+        [
+            f'{{kind: "FIXED_SERIES_DELAY", series: {_DAILY}, delay: "2s"}}',
+            f'{{kind: "FIXED_SERIES_DELAY", series: {_DAILY}, delay: "25h"}}',
+        ],
+        # 特定の足の 2 秒は、同じ系列の系列全体の 2 秒（同じ長さ）に覆われる。
+        [
+            f'{{kind: "INJECTED_BAR_DELAY", series: {_DAILY},'
+            ' bar_start: "2015-01-06T22:00:00Z", delay: "2s"}',
+            f'{{kind: "FIXED_SERIES_DELAY", series: {_DAILY}, delay: "2s"}}',
+        ],
+        # 同じ足への特定の足の遅延どうしでは、短い方が覆われる。
+        [
+            f'{{kind: "INJECTED_BAR_DELAY", series: {_DAILY},'
+            ' bar_start: "2015-01-06T22:00:00Z", delay: "2s"}',
+            f'{{kind: "INJECTED_BAR_DELAY", series: {_DAILY},'
+            ' bar_start: "2015-01-06T22:00:00Z", delay: "25h"}',
+        ],
+    ],
+    ids=["fixed under fixed", "injected under fixed", "injected under injected"],
+)
+def test_a_rule_covered_by_another_is_refused(tmp_path: Path, rules: list[str]) -> None:
+    """他の規則に完全に覆われる規則は、最大の遅延を採るので何も変えない（PR #48 Codex 第5巡）。"""
+    text = "".join(f"    - {rule}\n" for rule in rules)
+    path = _variant(tmp_path, _ONE_RULE, text)
+    assert "覆われる" in _refused(path, tmp_path)
+
+
+def test_a_fixed_delay_longer_than_an_injected_one_is_not_covered(tmp_path: Path) -> None:
+    """系列全体の遅延は、それより長い特定の足の遅延には覆われない（他の足にも当たるため）。"""
+    text = (
+        f'    - {{kind: "FIXED_SERIES_DELAY", series: {_DAILY}, delay: "2s"}}\n'
+        f'    - {{kind: "INJECTED_BAR_DELAY", series: {_DAILY},'
+        ' bar_start: "2015-01-06T22:00:00Z", delay: "25h"}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, text)
+    scenario = _load(path, tmp_path).experiment.delay_scenario
+    assert scenario is not None
+    assert len(scenario.rules) == 2
+
+
+def test_an_injected_delay_on_a_bar_start_is_accepted(tmp_path: Path) -> None:
+    """足の開始ちょうどの特定の足の遅延は受け付ける（上の拒否が境界を取り違えていないこと）。"""
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        ' bar_start: "2015-01-06T22:00:00Z", delay: "25h"}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    scenario = _load(path, tmp_path).experiment.delay_scenario
+    assert scenario is not None
+    assert len(scenario.rules) == 1
+
+
 def test_the_delay_reference_names_the_scenario() -> None:
     """遅延シナリオの版参照はシナリオの id と版をそのまま載せる（D07 §18.3）。"""
     ref = _load(B_EXPERIMENTS["d1_bar_hold"]).experiment.policy_ref("delay")
