@@ -18,9 +18,10 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 
@@ -145,6 +146,10 @@ class AsOfView:
     _recorded_at: Mapping[BarKey, UtcTime] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
+    _readable: PartitionedBars = field(init=False, repr=False, compare=False)
+    _visibility: dict[SeriesId, _SeriesVisibility] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.publication_log, PublicationLog):
@@ -174,6 +179,13 @@ class AsOfView:
                 {record.bar_key: record.available_at for record in self.publication_log.records}
             ),
         )
+        # 読み取り面（系列ごとに時刻順へ並べた足）も1度だけ作る。`partition_bars` と
+        # `allowed_partitions` は上で固定したので、呼び出しごとに作り直しても同じものになる。
+        # 作り直すと、1回の読み取りのたびに許可された全 partition の足を並べ直すことになる。
+        object.__setattr__(
+            self, "_readable", PartitionedBars(self.partition_bars, self.allowed_partitions)
+        )
+        object.__setattr__(self, "_visibility", {})
 
     @property
     def manifest(self) -> SnapshotManifest:
@@ -183,13 +195,12 @@ class AsOfView:
     # --- 内部 ---------------------------------------------------------------
 
     def _bars(self) -> PartitionedBars:
-        """許可された partition の読み取り面。
+        """許可された partition の読み取り面（構築時に1度だけ作ったもの）。
 
-        `partition_bars` は構築時に不変な写しへ置き換えてあるので、ここで組み立て直しても
-        外部の変更は入らない。frozen dataclass かつ `slots=True` なので、読み取り面そのもの
-        をキャッシュする属性は持てない。
+        `partition_bars` と `allowed_partitions` は構築時に不変な写しへ置き換えてあるので、
+        この読み取り面は呼び出しごとに組み立て直したものと同じ内容を持つ。
         """
-        return PartitionedBars(self.partition_bars, self.allowed_partitions)
+        return self._readable
 
     def _schedule(self, series: SeriesId) -> SeriesSchedule:
         schedule = self.schedules.get(series)
@@ -221,11 +232,25 @@ class AsOfView:
             )
         return recorded
 
-    def _visible_bars(self, series: SeriesId, at: UtcTime) -> tuple[Bar, ...]:
-        """`at` の時点で見えている足（`available_at <= at`）。"""
-        return tuple(
-            bar for bar in self._bars().require_series(series) if self._available_at(bar) <= at
-        )
+    def _series_visibility(self, series: SeriesId) -> _SeriesVisibility:
+        """系列の足と利用可能時刻の索引（系列ごとに初回の読み取りで1度だけ作る）。
+
+        索引は `partition_bars`・`schedules`・`publication_log` だけから決まり、判断時刻には
+        依らない。系列のすべての足の利用可能時刻を初回に求めるので、公開記録が通常の公開
+        予定を下回る足（設定の誤り）があれば、その系列を初めて読む時点で従来どおり構造
+        エラーになる。失敗した索引は保持しないので、次の読み取りでも同じエラーになる。
+        """
+        cached = self._visibility.get(series)
+        if cached is not None:
+            return cached
+        bars = self._bars().require_series(series)
+        built = _SeriesVisibility.build(bars, tuple(self._available_at(bar) for bar in bars))
+        self._visibility[series] = built
+        return built
+
+    def _first_visible(self, series: SeriesId, bar_start: UtcTime, at: UtcTime) -> Bar | None:
+        """`at` の時点で見えている、開始時刻が `bar_start` の足（時刻順で最初のもの）。"""
+        return self._series_visibility(series).first_visible(bar_start, at)
 
     # --- 読み取り操作（D03 §6.2）-------------------------------------------
 
@@ -255,9 +280,9 @@ class AsOfView:
         if bars_view.starts_before_data(series, expected.bar_start):
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         bars_view.require_covered(series, expected.bar_start)
-        for bar in self._visible_bars(series, at):
-            if bar.bar_start == expected.bar_start:
-                return bar
+        found = self._first_visible(series, expected.bar_start, at)
+        if found is not None:
+            return found
         return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
 
     def bar(self, series: SeriesId, bar_start: UtcTime, at: UtcTime) -> Bar | MissingInput:
@@ -265,9 +290,9 @@ class AsOfView:
         _require_utc(at, "bar")
         _require_utc(bar_start, "bar")
         self._bars().require_covered(series, bar_start)
-        for candidate in self._visible_bars(series, at):
-            if candidate.bar_start == bar_start:
-                return candidate
+        found = self._first_visible(series, bar_start, at)
+        if found is not None:
+            return found
         return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
 
     def freshness(self, series: SeriesId, bar: Bar) -> UtcTime:
@@ -342,7 +367,7 @@ class AsOfView:
         if bars_view.starts_before_data(series, base_bar_start):
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         bars_view.require_covered(series, base_bar_start)
-        if not any(bar.bar_start == base_bar_start for bar in self._visible_bars(series, at)):
+        if self._first_visible(series, base_bar_start, at) is None:
             return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
         return self._window_from(series, window, base_bar_start, at, end_offset_bars)
 
@@ -372,7 +397,7 @@ class AsOfView:
         schedule = self._schedule(series)
         definition = schedule.timeframe_def
         bars_view = self._bars()
-        visible = {bar.bar_start: bar for bar in self._visible_bars(series, at)}
+        visibility = self._series_visibility(series)
         remaining: int | None = None
         lower_bound: UtcTime | None = None
         if isinstance(max_lookback, BarsWindowLike):
@@ -392,7 +417,7 @@ class AsOfView:
                 if bars_view.starts_before_data(series, interval.start):
                     return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
                 bars_view.require_covered(series, interval.start)
-                found = visible.get(interval.start)
+                found = visibility.last_visible(interval.start, at)
                 if found is not None:
                     return found
             probe = definition.boundaries(probe - timedelta(microseconds=1)).start
@@ -439,15 +464,60 @@ class AsOfView:
             if bars_view.starts_before_data(series, start):
                 return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
             bars_view.require_covered(series, start)
-        visible = {bar.bar_start: bar for bar in self._visible_bars(series, at)}
+        visibility = self._series_visibility(series)
         collected: list[Bar] = []
         for start in wanted:
-            found = visible.get(start)
+            found = visibility.last_visible(start, at)
             if found is None:
                 return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
             collected.append(found)
         collected.reverse()  # 古い順に返す。
         return tuple(collected)
+
+
+@dataclass(frozen=True, slots=True)
+class _SeriesVisibility:
+    """1系列の足を開始時刻で引く索引と、各足の利用可能時刻（as-of 読み取りの高速化）。
+
+    従来は読み取りのたびに系列の全足を先頭から走査し、`available_at <= at` の足だけを
+    残してから開始時刻で探していた。結果は「開始時刻が一致し、かつ `at` で見えている足」
+    で決まるので、開始時刻で候補を引き、候補ごとに利用可能時刻を比べれば同じ足になる。
+
+    同じ開始時刻の足が複数あるときの選び方も従来と揃える。時刻順の走査で最初に一致した
+    足を返していた操作には `first_visible`、開始時刻から足への辞書（後の足が上書き）を
+    使っていた操作には `last_visible` を使う。承認済み snapshot では開始時刻は系列内で
+    一意なので、両者は同じ足を返す。
+
+    利用可能時刻は非単調でありうる（遅延シナリオで古い足が後から公開される）ので、
+    「見えている足は先頭からの連続区間」とは仮定しない。
+    """
+
+    candidates: Mapping[UtcTime, tuple[tuple[Bar, UtcTime], ...]]
+
+    @classmethod
+    def build(cls, bars: tuple[Bar, ...], available: tuple[UtcTime, ...]) -> _SeriesVisibility:
+        grouped: dict[UtcTime, list[tuple[Bar, UtcTime]]] = {}
+        for bar, available_at in zip(bars, available, strict=True):
+            grouped.setdefault(bar.bar_start, []).append((bar, available_at))
+        return cls(
+            candidates=MappingProxyType(
+                {start: tuple(entries) for start, entries in grouped.items()}
+            )
+        )
+
+    def first_visible(self, bar_start: UtcTime, at: UtcTime) -> Bar | None:
+        """`at` で見えている、開始時刻が `bar_start` の足のうち時刻順で最初のもの。"""
+        for bar, available_at in self.candidates.get(bar_start, ()):
+            if available_at <= at:
+                return bar
+        return None
+
+    def last_visible(self, bar_start: UtcTime, at: UtcTime) -> Bar | None:
+        """`at` で見えている、開始時刻が `bar_start` の足のうち時刻順で最後のもの。"""
+        for bar, available_at in reversed(self.candidates.get(bar_start, ())):
+            if available_at <= at:
+                return bar
+        return None
 
 
 def _require_offset(end_offset_bars: int, operation: str) -> None:
@@ -578,6 +648,13 @@ class ExecutionSeriesView:
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
     schedule: SeriesSchedule
+    _series_bars: tuple[Bar, ...] | None = field(
+        init=False, repr=False, compare=False, default=None
+    )
+    _starts: tuple[datetime, ...] = field(init=False, repr=False, compare=False, default=())
+    _by_start: Mapping[UtcTime, Bar] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.series, SeriesId):
@@ -598,6 +675,17 @@ class ExecutionSeriesView:
             partition_bars=self.partition_bars,
         )
         object.__setattr__(self, "partition_bars", frozen)
+        # 系列の足（時刻順）と、開始時刻で引く索引を1度だけ作る。系列が許可された partition
+        # に無い場合は構築時には失敗させず、従来どおり最初の読み取りで構造エラーにする。
+        readable = PartitionedBars(frozen, self.allowed_partitions)
+        if self.series in readable.series():
+            bars = readable.require_series(self.series)
+            by_start: dict[UtcTime, Bar] = {}
+            for bar in bars:
+                by_start.setdefault(bar.bar_start, bar)  # 時刻順で最初の足（従来の走査と同じ）
+            object.__setattr__(self, "_series_bars", bars)
+            object.__setattr__(self, "_starts", tuple(bar.bar_start.value for bar in bars))
+            object.__setattr__(self, "_by_start", MappingProxyType(by_start))
 
     @property
     def manifest(self) -> SnapshotManifest:
@@ -605,9 +693,12 @@ class ExecutionSeriesView:
         return self.snapshot.manifest
 
     def _bars(self) -> tuple[Bar, ...]:
-        return PartitionedBars(self.partition_bars, self.allowed_partitions).require_series(
-            self.series
-        )
+        if self._series_bars is None:
+            # 系列が許可された partition に無い。従来と同じ構造エラーを送出する。
+            return PartitionedBars(self.partition_bars, self.allowed_partitions).require_series(
+                self.series
+            )
+        return self._series_bars
 
     def bar(self, bar_key: BarKey) -> Bar | None:
         """執行足そのもの（D03 §6.3）。
@@ -620,10 +711,8 @@ class ExecutionSeriesView:
             raise MarketDataValueError(
                 f"ExecutionSeriesView of {self.series} was asked for {bar_key.series}"
             )
-        for bar in self._bars():
-            if bar.bar_start == bar_key.bar_start:
-                return bar
-        return None
+        self._bars()  # 系列が読めなければ従来どおり構造エラー。
+        return self._by_start.get(bar_key.bar_start)
 
     def open_of(self, bar_key: BarKey) -> Price | None:
         """執行足の始値（D03 §6.3）。足がなければ `None`。"""
@@ -637,10 +726,10 @@ class ExecutionSeriesView:
         存在しない区間は飛ばさず `None` を返す判断は呼び出し側（受付層）が行う。
         """
         _require_utc(moment, "next_bar_key_after")
-        for bar in self._bars():
-            if moment < bar.bar_start:
-                return bar.key
-        return None
+        bars = self._bars()
+        # 足は開始時刻の昇順なので、`moment < bar_start` を満たす最初の足を二分探索で引く。
+        index = bisect_right(self._starts, moment.value)
+        return bars[index].key if index < len(bars) else None
 
     def next_scheduled_open_after(self, moment: UtcTime) -> BarKey | None:
         """`moment` より後に始まる最初の**予定上の**執行足の鍵（D03 §6.3）。
