@@ -433,6 +433,38 @@ def test_an_injected_delay_off_a_bar_start_is_refused(tmp_path: Path) -> None:
     assert "足の開始ではない" in _refused(path, tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("bar_start", "delay"),
+    [
+        # run 区間（2015-01-04T22:00Z〜01-16T22:00Z）の終わりに終わる日足: 公開は run の終わり以後。
+        ("2015-01-15T22:00:00Z", "2s"),
+        # run の始まりより前に終わる日足を、遅らせても run の始まり以前にしか届かない。
+        ("2015-01-01T22:00:00Z", "2s"),
+    ],
+    ids=["after the run", "before the run"],
+)
+def test_an_injected_delay_that_cannot_change_the_run_is_refused(
+    tmp_path: Path, bar_start: str, delay: str
+) -> None:
+    """足の開始でも、run の中での見え方を変えない足への遅延は拒否する（PR #48 Codex 第2巡）。"""
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        f' bar_start: "{bar_start}", delay: "{delay}"}}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    assert "見え方が変わらない" in _refused(path, tmp_path)
+
+
+def test_an_injected_delay_that_reaches_into_the_run_is_accepted(tmp_path: Path) -> None:
+    """run の前に終わる足でも、遅らせた公開が run の中に入れば受け付ける（境界の確認）。"""
+    rule = (
+        '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+        ' bar_start: "2015-01-01T22:00:00Z", delay: "72h"}\n'
+    )
+    path = _variant(tmp_path, _ONE_RULE, rule)
+    assert _load(path, tmp_path).experiment.delay_scenario is not None
+
+
 def test_an_injected_delay_on_a_bar_start_is_accepted(tmp_path: Path) -> None:
     """足の開始ちょうどの特定の足の遅延は受け付ける（上の拒否が境界を取り違えていないこと）。"""
     rule = (

@@ -61,6 +61,7 @@ from odyssey_fx.marketdata.domain.schedule import (
     FixedSeriesDelay,
     InjectedBarDelay,
     SeededRandomDelay,
+    SeriesSchedule,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
@@ -365,6 +366,8 @@ def _reject_rules_hitting_nothing(
     - **足の開始でない時刻への特定の足の遅延**（`INJECTED_BAR_DELAY`）。足の鍵は開始時刻との
       完全一致で引く（D03 §3.6）ので、時間足の整列とカレンダーで決まる足の開始でない時刻
       （例: 日足 NY17 の 21:00Z）はどの足にも当たらない。
+    - **run の中での見え方を変えない足への特定の足の遅延**。通常の公開予定が run 区間の
+      終わり以後の足と、遅らせた公開時刻が run 区間の始まり以前の足（PR #48 の Codex 第2巡）。
 
     snapshot に足が実在するかは読込では分からない（snapshot を開かない）。
     """
@@ -387,6 +390,21 @@ def _reject_rules_hitting_nothing(
                     f"{path}: {label} の bar_start {rule.bar_start} は {rule.series} の足の開始"
                     "ではない（時間足の整列とカレンダーで決まる足の開始と一致しない、または休場）。"
                     "足は開始時刻との完全一致で引くので、この規則はどの足にも当たらない（D03 §3.6）"
+                )
+            # 足の開始であっても、その足の公開が run の中の判断に届かなければ遅延は何も
+            # 変えない。(a) 通常の公開予定が run 区間の終わり以後の足は、遅延の有無に
+            # かかわらず run の中で公開されない（遅延は非負）。(b) 遅らせた公開時刻が run
+            # 区間の始まり以前の足は、遅延の有無にかかわらず run の最初の判断から見えている。
+            run_interval = experiment.run_interval
+            scheduled = SeriesSchedule(
+                series=rule.series, timeframe_def=definition, calendar=calendar
+            ).scheduled_at(interval.end)
+            if scheduled >= run_interval.end or scheduled + rule.delay <= run_interval.start:
+                raise ConfigError(
+                    f"{path}: {label} の足（{rule.series} の {rule.bar_start} 始まり）は、遅延の"
+                    f"有無にかかわらず run 区間（{run_interval.start}〜{run_interval.end}）の中で"
+                    "の見え方が変わらない（公開が run の終わり以後、または遅らせても run の始まり"
+                    "以前）。当てても何も変わらないのに、遅延ありの run として記録される"
                 )
 
 
