@@ -11,7 +11,9 @@
 - 隣接する（前の終端 == 次の始端）``DATA_GAP`` の記録を結合して 1 つの「欠落区間」にする。
 - 原因の帰属は時刻のパターンによる機械的な分類で、決定ではない（文書の第 4 節）。
 - 原データ（``data/raw/market/<SYMBOL>_<tf>_merged.csv``。git 管理外）があれば、各欠落区間に
-  足の開始時刻が入る行の数を数える（0 なら原データにその足が無い）。
+  足の開始時刻が入る行の数を数える（0 なら原データにその足が無い）。数える前に、各ファイルの
+  sha256 と行数が manifest の ``sources``（受入れ時の原データの記録。D03 §3.7）と一致することを
+  確かめ、1 つでも欠けるか一致しなければ何も書かずに失敗する。
 
 戦略の成績（指標・レポート）は読まない。標準ライブラリだけを使う。
 """
@@ -21,6 +23,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -232,9 +235,11 @@ def classify(gap: GapInterval) -> tuple[str, str, str]:
     if (s.year, s.month, s.day) == (2017, 1, 1) and (e.year, e.month, e.day) == (2017, 1, 2):
         return (
             CALENDAR,
-            "HIGH",
-            "2017 年元日。fx_ny17 v2 の休場宣言は 2017-12-25 から始まり、2017-01-01 は未宣言。"
-            "2018 年以降の元日休場と同じ形",
+            "LOW",
+            "2017 年元日（日曜）の週の開場（日 17:00 NY）から月 02:00 NY までの 9 時間。"
+            "fx_ny17 v2 の休場宣言は 2017-12-25 から始まり、2017 年の元日の前後は未宣言。"
+            "2018 年以降の元日の宣言（前日 17:00〜当日 17:00 NY の 24 時間）とは"
+            "長さも位置も一致しない",
         )
     if (s.year, s.month, s.day) == (2016, 12, 26):
         return (
@@ -273,15 +278,41 @@ def classify(gap: GapInterval) -> tuple[str, str, str]:
     )
 
 
-def load_raw_timestamps(raw_dir: Path, symbol: str, timeframe: str) -> list[str] | None:
-    """原 CSV の先頭列（足の開始時刻、``YYYY-MM-DD HH:MM:SS+00:00``）を昇順で返す。"""
+class RawSourceMismatch(RuntimeError):
+    """原 CSV が snapshot の受入れ時の記録（manifest の ``sources``）と一致しない。"""
+
+
+def source_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """manifest の ``sources`` を (銘柄, 時間足) で引けるようにする。"""
+    return {(src["symbol"], src["timeframe"]): src for src in manifest["sources"]}
+
+
+def load_raw_timestamps(
+    raw_dir: Path, symbol: str, timeframe: str, expected: dict[str, Any] | None
+) -> list[str]:
+    """原 CSV の先頭列（足の開始時刻、``YYYY-MM-DD HH:MM:SS+00:00``）を昇順で返す。
+
+    ファイルの sha256 と行数（見出しを除く）が manifest の記録と一致しなければ
+    ``RawSourceMismatch`` を送出する。
+    """
     path = raw_dir / f"{symbol}_{RAW_FILE_SUFFIX[timeframe]}_merged.csv"
+    if expected is None:
+        raise RawSourceMismatch(f"manifest の sources に記録が無い: {symbol} {timeframe}")
     if not path.is_file():
-        return None
-    with path.open(newline="") as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        stamps = [row[0] for row in reader if row]
+        raise RawSourceMismatch(f"原 CSV が無い: {path}")
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected["sha256"]:
+        raise RawSourceMismatch(
+            f"sha256 が manifest と一致しない: {path}（{digest} != {expected['sha256']}）"
+        )
+    reader = csv.reader(data.decode("utf-8").splitlines())
+    next(reader, None)
+    stamps = [row[0] for row in reader if row]
+    if len(stamps) != expected["rows"]:
+        raise RawSourceMismatch(
+            f"行数が manifest と一致しない: {path}（{len(stamps)} != {expected['rows']}）"
+        )
     stamps.sort()
     return stamps
 
@@ -296,6 +327,7 @@ def build_interval_rows(
     merged: dict[tuple[str, str], list[Interval]],
     overlap_rows: list[dict[str, Any]],
     raw_dir: Path | None,
+    sources: dict[tuple[str, str], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     all10: dict[str, list[Interval]] = defaultdict(list)
     for r in overlap_rows:
@@ -306,7 +338,11 @@ def build_interval_rows(
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
             other = TIMEFRAMES[1] if tf == TIMEFRAMES[0] else TIMEFRAMES[0]
-            stamps = load_raw_timestamps(raw_dir, symbol, tf) if raw_dir is not None else None
+            stamps = (
+                load_raw_timestamps(raw_dir, symbol, tf, sources.get((symbol, tf)))
+                if raw_dir is not None
+                else None
+            )
             for s, e in merged[(symbol, tf)]:
                 gap = GapInterval(symbol, tf, s, e)
                 attribution, confidence, rationale = classify(gap)
@@ -431,7 +467,10 @@ def main(argv: list[str] | None = None) -> int:
         "--raw-dir",
         type=Path,
         default=Path("data/raw/market"),
-        help="原 CSV の置き場。無ければ原データでの確認列を空にする",
+        help=(
+            "原 CSV の置き場。ディレクトリが無ければ原データでの確認列を空にする。"
+            "あれば 20 ファイルすべてが manifest の sources と一致することを要求する"
+        ),
     )
     parser.add_argument("--out", type=Path, required=True, help="CSV の出力先ディレクトリ")
     args = parser.parse_args(argv)
@@ -446,7 +485,11 @@ def main(argv: list[str] | None = None) -> int:
     merged, bounds = collect_gaps(manifest)
     overlap_rows = sweep_overlap(merged)
     raw_dir = args.raw_dir if args.raw_dir.is_dir() else None
-    rows = build_interval_rows(merged, overlap_rows, raw_dir)
+    try:
+        rows = build_interval_rows(merged, overlap_rows, raw_dir, source_records(manifest))
+    except RawSourceMismatch as exc:
+        print(f"原データが snapshot の記録と一致しない: {exc}", file=sys.stderr)
+        return 1
 
     write_csv(args.out / "gap_intervals.csv", INTERVAL_FIELDS, rows)
     write_csv(args.out / "cross_symbol_overlap.csv", OVERLAP_FIELDS, overlap_rows)

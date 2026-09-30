@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,7 +73,12 @@ def _record(symbol: str, tf: str, start: str, end: str, outcome: str) -> dict[st
     }
 
 
-def test_main_writes_csvs_from_manifest(tmp_path: Path) -> None:
+RAW_HEADER = ",open,high,low,close,volume,source\n"
+RAW_ROW = "2019-03-15 19:45:00+00:00,1,1,1,1,0,histdata\n"
+
+
+def _write_snapshot(tmp_path: Path, raw_content: dict[tuple[str, str], str]) -> list[str]:
+    """20 系列の研究履歴 partition と原 CSV を持つ最小の snapshot を作り、main の引数を返す。"""
     snapshot_id = "s" * 8
     partitions = [
         {
@@ -91,34 +97,47 @@ def test_main_writes_csvs_from_manifest(tmp_path: Path) -> None:
         _record("USDJPY", "15m@v1", "2019-03-16T20:00:00Z", "2019-03-16T20:15:00Z", "CLOSURE"),
         _record("USDJPY", "15m@v1", "2021-03-15T20:00:00Z", "2021-03-15T20:15:00Z", "DATA_GAP"),
     ]
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    sources = []
+    for s in rhg.SYMBOLS:
+        for tf in rhg.TIMEFRAMES:
+            accepted = RAW_HEADER + RAW_ROW
+            path = raw / f"{s}_{rhg.RAW_FILE_SUFFIX[tf]}_merged.csv"
+            path.write_text(raw_content.get((s, tf), accepted))
+            sources.append(
+                {
+                    "symbol": s,
+                    "timeframe": tf,
+                    "rows": 1,
+                    "sha256": hashlib.sha256(accepted.encode()).hexdigest(),
+                }
+            )
     manifest = {
         "snapshot_id": snapshot_id,
         "partitions": partitions,
         "resolved_classifications": records,
+        "sources": sources,
     }
     (tmp_path / "snap" / snapshot_id).mkdir(parents=True)
     (tmp_path / "snap" / snapshot_id / "manifest.json").write_text(json.dumps(manifest))
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "USDJPY_15m_merged.csv").write_text(
-        ",open,high,low,close,volume,source\n2019-03-15 19:45:00+00:00,1,1,1,1,0,histdata\n"
-    )
+    return [
+        "--snapshot-root",
+        str(tmp_path / "snap"),
+        "--snapshot-id",
+        snapshot_id,
+        "--raw-dir",
+        str(raw),
+        "--out",
+        str(tmp_path / "out"),
+    ]
 
-    out = tmp_path / "out"
-    code = rhg.main(
-        [
-            "--snapshot-root",
-            str(tmp_path / "snap"),
-            "--snapshot-id",
-            snapshot_id,
-            "--raw-dir",
-            str(raw),
-            "--out",
-            str(out),
-        ]
-    )
+
+def test_main_writes_csvs_from_manifest(tmp_path: Path) -> None:
+    code = rhg.main(_write_snapshot(tmp_path, {}))
 
     assert code == 0
+    out = tmp_path / "out"
     with (out / "gap_intervals.csv").open() as f:
         rows = list(csv.DictReader(f))
     assert [(r["symbol"], r["start_utc"], r["end_utc"]) for r in rows] == [
@@ -129,3 +148,12 @@ def test_main_writes_csvs_from_manifest(tmp_path: Path) -> None:
     with (out / "cross_symbol_overlap.csv").open() as f:
         overlap = list(csv.DictReader(f))
     assert [(r["n_symbols"], r["symbols"]) for r in overlap] == [("1", "USDJPY")]
+
+
+def test_main_fails_when_raw_csv_differs_from_snapshot_sources(tmp_path: Path) -> None:
+    # 受入れ後に書き換えた（区間内に足を足した）原 CSV は snapshot の記録と一致しない
+    edited = RAW_HEADER + RAW_ROW + "2019-03-15 20:00:00+00:00,1,1,1,1,0,histdata\n"
+    code = rhg.main(_write_snapshot(tmp_path, {("USDJPY", "15m@v1"): edited}))
+
+    assert code == 1
+    assert not (tmp_path / "out").exists()
