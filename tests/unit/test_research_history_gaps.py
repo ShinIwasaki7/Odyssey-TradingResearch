@@ -145,6 +145,7 @@ def test_main_writes_csvs_from_manifest(tmp_path: Path) -> None:
     ]
     assert rows[0]["attribution"] == rhg.SOURCE_DATA
     assert rows[0]["raw_rows_in_interval"] == "0"
+    assert (rows[0]["raw_prev_row_utc"], rows[0]["raw_next_row_utc"]) == ("2019-03-15T19:45Z", "")
     with (out / "cross_symbol_overlap.csv").open() as f:
         overlap = list(csv.DictReader(f))
     assert [(r["n_symbols"], r["symbols"]) for r in overlap] == [("1", "USDJPY")]

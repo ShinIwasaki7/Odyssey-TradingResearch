@@ -82,6 +82,8 @@ INTERVAL_FIELDS: tuple[str, ...] = (
     "in_all10_overlap",
     "matches_other_timeframe_gap",
     "raw_rows_in_interval",
+    "raw_prev_row_utc",
+    "raw_next_row_utc",
 )
 OVERLAP_FIELDS: tuple[str, ...] = ("timeframe", "start_utc", "end_utc", "n_symbols", "symbols")
 
@@ -323,6 +325,21 @@ def raw_rows_between(stamps: list[str], start: datetime, end: datetime) -> int:
     return bisect.bisect_left(stamps, hi) - bisect.bisect_left(stamps, lo)
 
 
+def _stamp_to_utc(stamp: str) -> str:
+    return fmt_utc(datetime.fromisoformat(stamp))
+
+
+def raw_neighbors(stamps: list[str], start: datetime, end: datetime) -> tuple[str, str]:
+    """区間の直前（始端より前の最後）と直後（終端以後の最初）の原 CSV の行の時刻。無ければ空。"""
+    lo = start.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S+00:00")
+    hi = end.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S+00:00")
+    i = bisect.bisect_left(stamps, lo)
+    j = bisect.bisect_left(stamps, hi)
+    prev = _stamp_to_utc(stamps[i - 1]) if i > 0 else ""
+    nxt = _stamp_to_utc(stamps[j]) if j < len(stamps) else ""
+    return prev, nxt
+
+
 def build_interval_rows(
     merged: dict[tuple[str, str], list[Interval]],
     overlap_rows: list[dict[str, Any]],
@@ -364,6 +381,12 @@ def build_interval_rows(
                         "raw_rows_in_interval": ""
                         if stamps is None
                         else raw_rows_between(stamps, s, e),
+                        "raw_prev_row_utc": ""
+                        if stamps is None
+                        else raw_neighbors(stamps, s, e)[0],
+                        "raw_next_row_utc": ""
+                        if stamps is None
+                        else raw_neighbors(stamps, s, e)[1],
                     }
                 )
     return rows

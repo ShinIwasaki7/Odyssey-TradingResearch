@@ -139,7 +139,7 @@ manifest の分類の記録（`closure_decisions`）で、個別の注記があ�
 
 ### 4.4 USDJPY 15 分足 33 区間の個別の帰属
 
-USDJPY 15 分足の 33 区間は、原データの前後の行を 1 区間ずつ見て帰属を付けた（`usdjpy_15m_attribution.csv`）。
+USDJPY 15 分足の 33 区間は、原因帰属の調査で 1 区間ずつ帰属を付けた（`usdjpy_15m_attribution.csv`）。原データで欠落の直前・直後にある行の時刻は、スクリプトが原データから求めた `raw_prev_row_utc`・`raw_next_row_utc` 列を正とする（調査時のメモにあった前後の行の時刻の記述は、原データと合わないものがあったため根拠の文から除いた）。
 
 | 帰属 | 件数 | 合計 | 区間の番号 |
 |---|---|---|---|
@@ -202,7 +202,7 @@ USDJPY 15 分足の 33 区間は、原データの前後の行を 1 区間ずつ
 ## 8. 元データの所在と取得の経緯
 
 - 原データは `data/raw/market/` の 20 ファイル（`<SYMBOL>_15m_merged.csv`・`<SYMBOL>_1h_merged.csv`。git 管理外）。提供元は **histdata** と **dukascopy** で、各行の `source` 列に出所が入る（D03 §2。manifest の `sources` に銘柄ごとの行数の内訳がある）。
-- **元データを取得・再取得するスクリプトや手順は repo に無い**（`tools/`・`docs/`・`data/raw/` に取得の記述は無く、histdata / dukascopy の記述は D03 の出所の説明と、`source` 列の語彙を使うテストだけである）。
+- **元データを取得・再取得するスクリプトや手順は repo に無い**（`tools/`・`docs/`・`data/raw/` に取得の手順を書いたものは無い。histdata / dukascopy が現れるのは、出所の説明（D03 §2、上位設計書、全体計画書）、データソースの設定 `configs/datasources/legacy_merged_csv_v1.yaml` の `source` の語彙、市場データの型と受入れ検査のコード、テストだけである）。
 - snapshot は一度書いたら上書きできない（D03 §3.7.2）。元データの補充やカレンダーの修正を行えば、受入れ（`data accept`）→ 分類（`data classify`）→ 承認（`data approve`）を経た新しい snapshot の識別子になる（D03 §10）。
 
 ## 9. 文書の数字の訂正
@@ -222,7 +222,7 @@ uv run python tools/ops/research_history_gaps.py \
 ```
 
 - 出力: `gap_intervals.csv`（733 区間と帰属）と `cross_symbol_overlap.csv`（銘柄横断の重なり）。第2〜7節の数字は標準出力に出る。
-- `usdjpy_15m_attribution.csv`（USDJPY 15 分足 33 区間の個別の帰属）は、原データの前後の行を人が 1 区間ずつ見た記録で、スクリプトは作らない。区間の始端・終端・`rule_based_attribution`・`raw_rows_in_interval` はスクリプトの出力と一致する。
+- `usdjpy_15m_attribution.csv`（USDJPY 15 分足 33 区間の個別の帰属）は、原因帰属の調査で 1 区間ずつ付けた記録で、スクリプトは作らない。区間の始端・終端・`rule_based_attribution`・`raw_rows_in_interval`・`raw_prev_row_utc`・`raw_next_row_utc` はスクリプトの出力と一致する。
 
 ### 10.1 CSV の列
 
@@ -238,6 +238,7 @@ uv run python tools/ops/research_history_gaps.py \
 | `in_all10_overlap` | 全 10 銘柄で共通する重なりの中に収まるか |
 | `matches_other_timeframe_gap` | 同じ銘柄のもう一方の時間足の欠落と時刻が重なるか |
 | `raw_rows_in_interval` | 原データで区間内に開始時刻が入る行の数（空は原データを読まなかった） |
+| `raw_prev_row_utc` / `raw_next_row_utc` | 原データで区間の直前（始端より前の最後）・直後（終端以後の最初）の行の足の開始時刻（空は原データを読まなかったか、該当の行が無い） |
 
 `research_history_gaps/cross_symbol_overlap.csv`
 
@@ -257,3 +258,4 @@ uv run python tools/ops/research_history_gaps.py \
 | `attribution` / `confidence` / `rationale` | 個別に確認した帰属・確度・根拠（`CALENDAR_ADJACENT` はこの CSV だけの値。第4.4節） |
 | `rule_based_attribution` | 第4.1節の機械的な分類 |
 | `raw_rows_in_interval` | 原データで区間内に開始時刻が入る行の数 |
+| `raw_prev_row_utc` / `raw_next_row_utc` | 原データで区間の直前・直後の行の足の開始時刻 |
