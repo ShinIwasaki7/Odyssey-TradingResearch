@@ -196,6 +196,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `ComparisonBasis` | `domain.search` | レコード | 比較の前提（v0.2）: `research_policy_ref`（記録票の `research_policy_ref` と同じ値。D07 §19.2）/ `snapshot_id` / `execution_series: SeriesId` / `account: AccountSpec` / `risk_policy_ref: PolicyRef` / `execution_policy_ref: PolicyRef` / `cost_model_ref: PolicyRef` / `conversion_policy_ref: PolicyRef` / `delay_scenario_ref: PolicyRef` / `metric_set_version: int` / `code_digest: CodeDigest` / `lock_digest: LockDigest` / `env_digest: EnvDigest`（**この実行**の環境。D07 §19.3 の結末記録の環境の群と同じ値。コードを直す前後の実行を同じ前提と見誤らないため） | §10.10・§11.5 |
 | `TrialLedgerEvent` | `domain.search` | enum | `STARTED` / `FINISHED`（v0.2） | §10.10 |
 | `TrialLedgerEntry` | `domain.search` | レコード | 試行台帳の1行（v0.2）: `schema_version: int` / `event: TrialLedgerEvent` / `experiment_id: ExperimentId` / `execution: int` / `experiment_name: str` / `experiment_version: int` / `strategy_id: str` / `basis: ComparisonBasis` / `trial_count: int` / `validation_intervals: tuple[Interval, ...]` / `final_holdout: Interval \| None` / `status: ExperimentStatus \| None` / `verdict: SearchVerdict \| None` / `frequency_class: str \| None`（後ろの3つは `FINISHED` の行だけ値を持つ） | §10.10 |
+| `TrialLedgerContents` | `application.ports` | レコード | `entries: tuple[TrialLedgerEntry, ...]`（改行で終わった行を書かれた順に）/ `has_partial_tail: bool`（改行で終わらない書きかけの末尾があるか）（v0.2） | §10.10 |
 | `TrialLedgerReadFailure` | `application.ports` | レコード | `detail: str`（読めなかった理由。正規化エンコード文字列。D07 §3 の `ManifestReadFailure` と同じ考え方）（v0.2） | §10.10 |
 | `SplitKind` | `domain.splits` | enum | `NONE` / `STANDARD`（v0.2 で `TRAIN_VALIDATION` / `WALK_FORWARD` を `STANDARD` に置き換えた） | §6.1 |
 | `SplitWindow` | `domain.splits` | enum | `ROLLING`（選定区間の長さを保って進める）/ `EXPANDING`（選定区間の始まりを評価範囲の始まりに固定して伸ばす）（v0.2） | §6.1 |
@@ -755,7 +756,7 @@ D07 §19.4 の表（1つの run の実験）を、探索の実験について書
 | 止まった位置（書けたもの） | この実行の扱い | 台帳 | 人間が次にすること |
 |---|---|---|---|
 | (1) の途中か後、(2) の前（集約表の全部か一部） | 途中で止まった実行（結末記録なし）。`experiment report` は記録票・開始記録・試行記録・選定記録から導いて表示し、集約表は読まない（第10.4節） | 開始の行だけ | 同じ版を再実行する（新しい実行番号の実行になる。前の探索の記録は退避される。第11.3節） |
-| (2) の後、(3) の前（結末記録まで） | **終端した実行**。判定は結末記録にある | 開始の行だけ。台帳の一覧とレポートの台帳の節は、この実行を「結末の行なし」と表示する（台帳は結末記録を読まないので判定は出ない） | 再実行は要らない。レポートは `experiment report` で作れる（台帳の結末の行は後から足さない。台帳は `experiment run` の追記でだけ伸びる） |
+| (2) の後、(3) の前（結末記録まで） | **終端した実行**。判定は結末記録にある | 開始の行だけ。台帳の一覧とレポートの台帳の節は、この実行を「結末の行なし」と表示する（台帳は結末記録を読まないので判定は出ない） | レポートは `experiment report` で作れる（台帳の結末の行は後から足さない。台帳は `experiment run` の追記でだけ伸びる）。**この実行は台帳の結末の行を持たないので、最終検証の申請に使えない**（申請は台帳に開始と結末の行がそろった実行だけ。第19節の12）。最終検証に進めたいときは同じ版を再実行し、新しい実行番号の実行として開始と結末の行をそろえる（新しい実行として数えられる） |
 | (3) の後、(4) の前（台帳の結末の行まで） | **終端した実行**。レポートが無いだけ | 開始と結末の行がそろう | 再実行しない。`experiment report` でレポートを作る（D07 §22.1。保存済みの成果物と台帳だけから作る派生の表示なので、同じ内容になる） |
 
 - 「終端した実行」を同じ版で再実行することもできる（D07 §19.3 の同じ版の再実行）が、それは**新しい実行**として台帳に開始の行が足され、同じ検証区間をもう一度見たことに数えられる（第10.10節）。レポートが無いだけの実行を作り直すのに再実行を使わない。
@@ -794,7 +795,8 @@ Q7 と Q8 の決定は v0.2 でも維持する（第0.1節）。Q7 の試行数�
 
 - **置き場所**: `<リポジトリの根>/research/trial_ledger.jsonl`。**版管理するファイル**であり、追記専用とする（D01 §10 への改訂依頼。第16.2節の7）。無ければ最初の追記で作る。追記の後のコミットと push は、実験設定のファイルと同じく人間が行う。最終検証の申請で、台帳がその実験の行まで origin に届いていることを確かめる手順は後続版で定める（第19節の12）。
 - **形式**: JSON Lines（ADR-0027 の JSON）。1行が1つの `TrialLedgerEntry`（第3節。`schema_version: 1`）で、行の中のキーは辞書順に並べ、行末は改行1つとする。既存の行を書き換えない・消さない・並べ替えない。**記録時刻を入れない**（D07 §19.2 の記録票と同じ理由。行の順序が時間の順序を表す）。
-- **読み書き**: `ExperimentStore`（D01 §4）に2つの操作を足す: `append_trial_ledger(entry: TrialLedgerEntry) -> None`（1行を追記する）と `read_trial_ledger() -> tuple[TrialLedgerEntry, ...] | TrialLedgerReadFailure`（全行を書かれた順に読む。行が JSON でない、項目が型に合わない、下の主キーが重複する、結末の行に対応する開始の行が無い、のどれかなら `TrialLedgerReadFailure`）。実装は `evaluation.adapters.fs_store`（D07 §3 への改訂依頼。第16.2節の5）。
+- **書きかけの末尾の扱い**: 1行の追記は、行全体（改行を含む）を1回の書き込みで足し、ディスクへの同期（fsync）が成功して初めて「追記した」とする（開始の行なら、ここで初めて run を始めてよい）。追記の途中でプロセスが止まる・ディスクが尽きると、ファイルの末尾に**改行で終わらない断片**が残りうる。断片は行ではない（改行で終わった行だけが行である）ので、(1) 読むときは断片を行として数えず、「書きかけの末尾がある」と `read_trial_ledger` の結果に添えて返し（レポートと台帳の一覧はその旨を表示する）、(2) 次の追記は、書く前に断片だけを切り詰めて（最後の改行の直後まで戻して）から行を足す。**改行で終わった既存の行は切り詰めない**（書き換えない・消さない規則はそのまま）。断片が開始の行だったなら、その実行は run を1つも始めていない（上の同期の規則）。結末の行だったなら、下の第10.7節の「終端の書き込みの順序と途中停止」の表の2行目（結末記録はあるが台帳は開始の行だけ）と同じ扱いになる。改行で終わった行が JSON として読めない場合は、断片ではなく台帳の破損であり、`TrialLedgerReadFailure` として止める（人間が版管理の履歴から直す）。
+- **読み書き**: `ExperimentStore`（D01 §4）に2つの操作を足す: `append_trial_ledger(entry: TrialLedgerEntry) -> None`（1行を追記する）と `read_trial_ledger() -> TrialLedgerContents | TrialLedgerReadFailure`（改行で終わった全行を書かれた順に読み、書きかけの末尾の有無を添える。改行で終わった行が JSON でない、項目が型に合わない、下の主キーが重複する、結末の行に対応する開始の行が無い、のどれかなら `TrialLedgerReadFailure`）。実装は `evaluation.adapters.fs_store`（D07 §3 への改訂依頼。第16.2節の5）。
 - **書く対象**: 探索の実験だけ。単一実行の実験は検証区間を持たないので書かない。
 - **行を書く時点**（第10.7節の表のマス）:
   - **開始の行（`STARTED`）**: 記録票の保存と退避が済み、事前検査が全件合格した直後、**最初の単位の開始記録より前**に1行書く。事前検査で止まった実験（`REJECTED_BY_POLICY`）、読込で止まった実験、保存の前に拒否した実験（終了コード 5）は書かない（run をせず、どの区間も見ていないため）。開始の行を書けなければ（台帳が読めない場合を含む）例外で止まり、run は1つも始まらない。
@@ -1028,7 +1030,7 @@ runs/experiments/<名前>/v<版>/
 | 2 | D07 §19.2 | 記録票の `selection` / `acceptance` の行を撤回し、`evaluation_standard`（研究ポリシーから読んだ解決済みの評価基準）と `final_holdout` を足す。`split` は研究ポリシーの標準規則から生成した fold と `purge`（`final_holdout` を含まない）。探索の実験の識別の入力を第10.2節のとおりに改める（入力2 から `search_plan` / `split` / `final_holdout` を除き、入力4 に解決済みの `SearchPlan` / `SplitSpec` / `FinalHoldoutSpec` / `EvaluationStandard` と `trials` を入れる） | 第10.2節 | 確定 |
 | 3 | D07 §19.3・§22.1 | 結末記録の `search`（`SearchOutcome`）の中身が v0.2 で変わること（判定の4値・頻度区分・条件ごとの結果・証拠不足の理由。型の正本は D09 §3）。「合否」の語を「判定」に改める。探索の実験のレポートは D09 §11.5 の書式（判定の節と診断の節、定型の注記、比較の前提、台帳の節）で出し、単一実行の節の「採用可」を探索の実験では出さないこと | 第7.3節・第10.6節・第11.5節・第0.2節 | 確定 |
 | 4 | D07 §20.2・§3・§20.3 | 研究ポリシーの**版 3**: `evaluation_standard`（`split` / `selection` / `validation` / `sufficiency`）を足し、`ResearchPolicy` に `evaluation_standard: EvaluationStandard \| None`（型は D09 §3）を足す。ダイジェストの入力（すべての値の項目）に評価基準が入ること。研究ポリシーを読むときの評価基準の検査（D09 §6.1 の検査1〜3・5〜7、§7.1 の E1〜E4）を読込の誤りとして足すこと。§20.3 の検査の一覧は変えない（新しい検査 P を足さない） | 第10.9節 | 確定（値は Q14） |
-| 5 | D07 §3（`ExperimentStore`） | 試行台帳の2つの操作 `append_trial_ledger` / `read_trial_ledger` と、`TrialLedgerReadFailure`（型は D09 §3） | 第10.10節 | 確定 |
+| 5 | D07 §3（`ExperimentStore`） | 試行台帳の2つの操作 `append_trial_ledger` / `read_trial_ledger` と、`TrialLedgerContents` / `TrialLedgerReadFailure`（型は D09 §3）。追記は1回の書き込みと同期で行い、書きかけの末尾の断片だけを次の追記の前に切り詰める規則（D09 §10.10） | 第10.10節 | 確定 |
 | 6 | D07 §21.3 | 新しいコマンド `experiment ledger` と終了コード（0 / 2）。`experiment run` の終了コード 1 に台帳の読み書きの失敗を含めること | 第11.4節 | 確定 |
 | 7 | D01 §10（ディレクトリ構成）と §4（`ExperimentStore` の行） | リポジトリの根に `research/trial_ledger.jsonl`（版管理・追記専用の試行台帳）を足す。`ExperimentStore` の責務に「試行台帳」を足す（所在と実装者は変えない） | 第10.10節 | 確定 |
 | 8 | D08 §7.4・§2.4 | v0.2 の意味論の行7行（第13節の「v0.2 の規則の意味論テスト」）を足す。受入テストの規約に、完了条件2 の (d)（台帳の行）と、試験用の研究ポリシー（版 3）・登録簿・台帳をテストの中で作ることを足す | 第13節 | 確定 |
