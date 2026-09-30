@@ -192,7 +192,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `SearchVerdict` | `domain.search` | enum | `MEETS_STANDARD`（共通基準を満たす）/ `BELOW_STANDARD`（満たさない）/ `INSUFFICIENT_EVIDENCE`（証拠不足）/ `INCOMPLETE`（判定できない）（v0.2 で値を改めた。第0.2節） | §7.3 |
 | `TrialStartRecord` | `domain.search` | レコード | `experiment_id: ExperimentId` / `unit: TrialUnitKey` / `expected_run_id: RunId` | §10.3 |
 | `TrialRunRecord` | `domain.search` | レコード | `experiment_id` / `unit: TrialUnitKey` / `status: TrialStatus`（`COMPLETED` だけを書く）/ `expected_run_id: RunId` / `run_id: RunId` / `run_status: RunStatus` / `run_reused: bool` / `run_evaluation_id: RunEvaluationId` / `evaluation_status: EvaluationStatus` / `result_digest: ContentDigest` / `outcome_checks: tuple[PolicyCheckResult, ...]`（P4・P5） | §10.3 |
-| `SearchOutcome` | `domain.search` | レコード | `selections: tuple[FoldSelection, ...]` / `fold_verdicts: tuple[tuple[int, FoldVerdict], ...]` / `verdict: SearchVerdict` / `frequency: FrequencyAssessment \| None`（選んだ試行のある fold が1つも無ければ `None`）/ `condition_results: tuple[ConditionResult, ...]` / `shortfalls: tuple[SufficiencyShortfall, ...]` / `trial_counts: tuple[tuple[TrialStatus, int], ...]`（`TrialStatus` の宣言順、0件も出す）（v0.2 で `frequency` / `condition_results` / `shortfalls` を足した） | §10.6 |
+| `SearchOutcome` | `domain.search` | レコード | `selections: tuple[FoldSelection, ...]` / `fold_verdicts: tuple[tuple[int, FoldVerdict], ...]` / `verdict: SearchVerdict` / `frequency: FrequencyAssessment \| None`（選んだ試行のある fold が1つも無ければ `None`）/ `condition_results: tuple[ConditionResult, ...]` / `shortfalls: tuple[SufficiencyShortfall, ...]` / `trial_counts: tuple[tuple[TrialStatus, int], ...]`（`TrialStatus` の宣言順、0件も出す）/ `ledger_execution: int`（この実行の試行台帳の実行番号。第10.10節の「実行番号を成果物へ束縛する」）（v0.2 で `frequency` / `condition_results` / `shortfalls` / `ledger_execution` を足した） | §10.6 |
 | `ComparisonBasis` | `domain.search` | レコード | 比較の前提（v0.2）。**規則: run manifest（D06 §9.3）の「入力」と「ポリシー」の群から、単位ごとに違う `compiled_ref` と `run_interval` を除いた全項目**に、実験の側の値と環境を足したもの。D06 §9.3 の2つの群に項目が足されたら、ここにも同じ名前・同じ型で足す（比較の前提から実行の入力が漏れないようにするため）。v0.2 時点の項目: `research_policy_ref`（記録票の `research_policy_ref` と同じ値。D07 §19.2）/ `metric_set_version: int` / `snapshot_ref` / `strategy_ref` / `execution_series: SeriesId` / `seed: int` / `account: AccountSpec` / `risk_policy_ref` / `execution_policy_ref` / `cost_model_ref` / `conversion_policy_ref` / `delay_scenario_ref` / `symbol_spec_ref` / `calendar_ref` / `timeframe_def_refs`（型は D06 §9.3 の run manifest と同じ）/ `code_digest: CodeDigest` / `lock_digest: LockDigest` / `env_digest: EnvDigest`（**この実行**の環境。D07 §19.3 の結末記録の環境の群と同じ値。コードを直す前後の実行を同じ前提と見誤らないため） | §10.10・§11.5 |
 | `TrialLedgerEvent` | `domain.search` | enum | `STARTED` / `FINISHED`（v0.2） | §10.10 |
 | `TrialLedgerEntry` | `domain.search` | レコード | 試行台帳の1行（v0.2）: `schema_version: int` / `event: TrialLedgerEvent` / `experiment_id: ExperimentId` / `execution: int` / `experiment_name: str` / `experiment_version: int` / `strategy_id: str` / `basis: ComparisonBasis` / `trial_count: int` / `search_plan_digest: ContentDigest` / `validation_intervals: tuple[Interval, ...]` / `final_holdout: Interval \| None` / `status: ExperimentStatus \| None` / `verdict: SearchVerdict \| None` / `frequency_class: str \| None`（後ろの3つは `FINISHED` の行だけ値を持つ） | §10.10 |
@@ -750,7 +750,7 @@ D07 §19.4 の表（1つの run の実験）を、探索の実験について書
 |---|---|---|---|---|---|---|---|---|---|
 | **読込前** | 終了（記録なし。`ConfigError`。第5.5節） | 記録票を組み立て、研究ポリシーの事前検査を行って → **検査済み**（第4.1節の1・2、第10.8節） | 到達しない（検査は読込・列挙・コンパイルの後） | 到達しない（同左） | 到達しない（同左） | 到達しない（同左） | 到達しない（同左） | 到達しない | 終了（記録なし） |
 | **検査済み**（記録票を組み立てた） | 到達しない | 到達しない（読込は1回） | 記録票が予測ダイジェストを持つ全単位（コンパイルが通った全試行の選定区間と検証区間の単位。第10.5節の注記）の予測 `RunId` について既存の成果物を確かめる（読むだけ）。各単位の成果物が「無い」か「ある・再利用できる」（D07 §19.6 の手順1・2）なら保存へ（再利用できる単位は実行時に読み出す。第10.5節）。最終検証を行った版の再実行の扱いは後続版（第19節） | → 保存へ（不合格も記録票に残す。run の成果物の衝突の確認はしない。run しないため） | 記録票も結末記録も書かず、退避もせずに**拒否して終了**（`RUN_ARTIFACT_CONFLICT`、終了コード 5。D07 §19.6 の手順3） | 到達しない（保存の前） | 到達しない（同左） | 到達しない | 終了（記録なし） |
-| **保存を試みる** | 到達しない | 到達しない（読込は済んだ） | 到達しない | 到達しない | 到達しない（衝突は保存の前に確かめた） | **事前検査の合否によらず**、まず「退避中」の印があれば前回の退避を回復し、そのうえで旧い結末記録・レポート・探索の記録（あれば）を、印を書いてから退避して印を消す（第11.3節の Q13 の規則。D07 §19.3 の「記録票の保存が成功した直後」と同じ時点）。回復で元の場所と退避先の両方に同じ記録があれば何も動かさずに**終了**（終了コード 1。結末記録は書かない。第11.3節の5）。そのうえで、事前検査が合格なら**試行台帳に開始の行（`STARTED`）を追記して**（v0.2。第10.10節）→ **探索中**。不合格なら結末記録 `REJECTED_BY_POLICY` を書いて**終端**（台帳には何も書かない。run をせず、どの区間も見ていないため） | 結末記録を書かず**拒否して終了**（検査 P3。終了コード 5。D07 §19.4） | 到達しない | 終了（記録票が書けたかは保存の原子性による。D07 §19.4）。退避の途中で止まれば「退避中」の印が残り、次の実行が回復する（第11.3節の4）。台帳の追記（台帳が読めない場合を含む）で止まれば、開始の行が無いまま run は1つも始まっていない（台帳への追記は run より前。第10.10節） |
+| **保存を試みる** | 到達しない | 到達しない（読込は済んだ） | 到達しない | 到達しない | 到達しない（衝突は保存の前に確かめた） | **事前検査の合否によらず**、まず「退避中」の印があれば前回の退避を回復し、そのうえで旧い結末記録・レポート・探索の記録（あれば）を、印を書いてから退避して印を消す（第11.3節の Q13 の規則。D07 §19.3 の「記録票の保存が成功した直後」と同じ時点）。回復で元の場所と退避先の両方に同じ記録があれば何も動かさずに**終了**（終了コード 1。結末記録は書かない。第11.3節の5）。そのうえで、事前検査が合格なら**試行台帳に開始の行（`STARTED`）を追記し、その実行番号を `search/ledger_execution.json` に書いて**（v0.2。第10.10節）→ **探索中**。不合格なら結末記録 `REJECTED_BY_POLICY` を書いて**終端**（台帳には何も書かない。run をせず、どの区間も見ていないため） | 結末記録を書かず**拒否して終了**（検査 P3。終了コード 5。D07 §19.4） | 到達しない | 終了（記録票が書けたかは保存の原子性による。D07 §19.4）。退避の途中で止まれば「退避中」の印が残り、次の実行が回復する（第11.3節の4）。台帳の追記（台帳が読めない場合を含む）で止まれば、開始の行が無いまま run は1つも始まっていない（台帳への追記は run より前。第10.10節）。開始の行の追記の後、`search/ledger_execution.json` を書く前に止まれば、開始の行は残り（数えられる）、run は1つも始まっていない |
 | **探索中**（fold を順に進める。第6.6節） | 到達しない | 到達しない（同上） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 頻度区分を決めて判定し（第7.8節・第7.3節）、集約表・結末記録（`COMPLETED`、または事後検査が合格でない単位があれば `FAILED_POST_RUN_CHECK`）を書き、**試行台帳に結末の行（`FINISHED`）を追記し**（v0.2。第10.10節）、レポートを書いて**終端** | **記録票・開始記録・試行記録・選定記録と、台帳の開始の行だけが残る**（結末記録なし・台帳の結末の行なし）。`experiment report` が中断を導いて表示する（第10.4節）。終端の書き込みの途中で止まった場合は、下の「終端の書き込みの順序と途中停止」の表のとおり |
 | **終端** | 到達しない（コマンドは終わっている） | 到達しない（同左） | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 到達しない | 変化なし |
 
@@ -806,6 +806,8 @@ Q7 と Q8 の決定は v0.2 でも維持する（第0.1節）。Q7 の試行数�
   - **結末の行（`FINISHED`）**: 全 fold が終端し、結末記録を書いた直後、レポートより前に1行書く。
   - 途中で止まった実行は開始の行だけが残る。**開始の行だけの実行も、見た区間と試行の数に数える**（途中で止めた実行を記録から消して回数を減らす経路を作らない）。
 - **実行番号 `execution`**: 開始の行を書くとき、台帳を読み、同じ `experiment_id` の開始の行の数 + 1 とする。結末の行は同じ実行の番号を使う。同じ実験の同じ版を再実行すると（D07 §19.3・第11.3節）、`experiment_id` は同じで実行番号が増える。コードを直して再実行すれば、同じ検証区間をもう一度見たことになるからである。
+- **実行番号を成果物へ束縛する**: 台帳の実行番号は台帳の中だけで決まるので、そのままでは実験の版のディレクトリにある現行の世代の成果物（結末記録・探索の記録）が台帳のどの実行かを、成果物から一意に言えない（例: 実行1 が終端した後、実行2 が結末記録まで書いて結末の行の追記の前に止まると、台帳の最後の結末の行は実行1 のものである）。そこで、開始の行の追記（同期まで）が成功した直後、**最初の単位の開始記録より前**に、`search/ledger_execution.json`（`{schema_version: 1, experiment_id, execution}`）を既存を上書きしない書き込み（R4）で書き、結末記録の `search.ledger_execution` にも同じ値を写す。書けなければ例外で止まる（終了コード 1。開始の行は残って数えられ、run は1つも始まっていない）。このファイルは `search/` の中にあるので、同じ版の再実行の退避（第11.3節）で探索の記録とともに `search.<n>/` へ移り、世代と一緒に動く。
+  - **読む側の照合**（`experiment report`）: 現行の世代の実行番号は `search/ledger_execution.json` から読む。結末記録があればその `search.ledger_execution` と一致しなければ読込の誤り（終了コード 2。同じ世代の記録が食い違う）。ファイルが無いのに `search/` に開始記録がある、`experiment_id` が記録票と違う、は構造の誤り（同じく終了コード 2）。結末記録が `REJECTED_BY_POLICY` の実行は台帳に書かない（上の「行を書く時点」）ので、台帳の節は「事前検査で止めたので台帳に書いていない」とし、この照合をしない。それ以外で、ファイルが無く開始記録も無い（開始の行の追記の前か後、ファイルを書く前に止まった）ときは、レポートの台帳の節に「この実行と台帳の行を対応付けられない（実行番号の記録が無い）」と書き、数え方の (a)(b) を出さない。台帳に `(experiment_id, 実行番号, STARTED)` の行が無ければ「台帳にこの実行の開始の行が無い」と書き、同じく (a)(b) を出さない（台帳は版管理のファイルなので、履歴を戻すと行が消えうる）。台帳の結末の行の有無は、この番号の `FINISHED` の行で見る（最後の結末の行では見ない）。
 - **主キー**: `(experiment_id, execution, event)`。読むときに重複があれば構造エラー（`TrialLedgerReadFailure`）。2つの `experiment run` を同時に同じ台帳へ追記することは想定しない（並列実行は D10）。同時に追記して実行番号が重なった場合は、この主キーの重複として読むときに見つかる。
 - **各行の項目**（型は第3節の `TrialLedgerEntry`）:
 
@@ -820,7 +822,7 @@ Q7 と Q8 の決定は v0.2 でも維持する（第0.1節）。Q7 の試行数�
 | `final_holdout` | 区間か `None` | 同左 | 記録票の `final_holdout` |
 | `status` / `verdict` / `frequency_class` | `None` | 結末記録の `status`・`search.verdict`・頻度区分の名前（無ければ `None`） | 結末記録（第10.6節） |
 
-- **数え方**（レポートの台帳の節。第11.5節）: **その実行の開始の行より前にある行だけ**を数える。後から台帳が伸びても、ある実行のレポートの数字は変わらない（同じ成果物と同じ台帳からは同じレポートが出る。D07 §22.1 の決定論）。
+- **数え方**（レポートの台帳の節。第11.5節）: **その実行の開始の行（上の「実行番号を成果物へ束縛する」で成果物から引いた実行番号の `STARTED` の行）より前にある行だけ**を数える。後から台帳が伸びても、ある実行のレポートの数字は変わらない（同じ成果物と同じ台帳からは同じレポートが出る。D07 §22.1 の決定論）。
   - (a) **同じ検証区間を見た先行の実行**: 先行の開始の行のうち、`validation_intervals` のどれかが、この実行の検証区間のどれかと重なる行の数と、それらの `trial_count` の合計。戦略や実験の名前によらず数えるので、名前を付け替えても減らない。
   - (b) **同じ戦略の先行の実行**: 先行の開始の行のうち `strategy_id` が同じものの一覧（実験の名前・版・実行番号・研究ポリシーの版・結末の行があれば判定）。
 - **台帳がしないこと**: 実験を止めたり、判定を変えたりしない（数えて表示するだけ）。累計には上限も補正も置かない【合意済み】（2026-09-30 の人間の決定 Q17: 選択肢1。記録と表示と最終検証の申請への添付だけ）。累計が大きいことの確認は封印期間の最終検証が担う（第9.9節）。
@@ -856,6 +858,7 @@ runs/experiments/<名前>/v<版>/
 ├── search/
 │   ├── units/f<k>_<TRAIN|VALIDATION>_t<i>.start.json   # 開始記録（第10.3節）
 │   ├── units/f<k>_<TRAIN|VALIDATION>_t<i>.json         # 試行記録（第10.3節）
+│   ├── ledger_execution.json         # この実行の試行台帳の実行番号（第10.10節。v0.2）
 │   ├── selection_f<k>.json           # 選定記録（第7.5節）
 │   ├── trial_units.parquet           # 集約表1（第11.2節）
 │   └── trial_metrics.parquet         # 集約表2（第11.2節）
@@ -917,7 +920,7 @@ runs/experiments/<名前>/v<版>/
 | 5 | fold 全体の水準 | 集約条件ごとに: 指標・統計（`MEDIAN`）・値・閾値・結果（判定していなければ理由） |
 | 6 | 証拠の十分さ | 頻度区分の名前と根拠（選んだ試行の選定区間の取引件数の合計・選定区間の長さの合計・365 日あたりの頻度）、その区分の要件（fold ごと・合計）、fold ごとの検証区間の取引件数と合計、不足の理由 |
 | 7 | 比較の前提 | `ComparisonBasis` の全項目（研究ポリシーの id・版・ダイジェスト、指標集合の版、run manifest の入力とポリシーの群のうち単位で共通の全項目＝snapshot・戦略・執行系列・seed・口座（id・通貨・初期残高）・リスク・執行・費用・換算・遅延・銘柄仕様・カレンダー・時間足定義の参照、この実行のコード・lock・環境のダイジェスト。第3節の規則）。**別の実験のレポートと並べたときに違いが分かるよう、項目名と順序を固定する**。1回の実行に1組で足りるのは、単位ごとに違うのが `compiled_ref` と `run_interval` だけだからである（第6.2節） |
-| 8 | 試行台帳 | 第10.10節の数え方: (a) この実行より前に同じ検証区間を見た実行の数と試行の累計、(b) 同じ戦略の先行の実行の一覧（名前・版・実行番号・研究ポリシーの版・判定）。台帳が読めなければ「台帳が読めない（理由）」 |
+| 8 | 試行台帳 | この実行の実行番号（`search/ledger_execution.json` から。第10.10節の「実行番号を成果物へ束縛する」）と、その番号の結末の行の有無。第10.10節の数え方: (a) この実行より前に同じ検証区間を見た実行の数と試行の累計、(b) 同じ戦略の先行の実行の一覧（名前・版・実行番号・研究ポリシーの版・判定）。台帳が読めなければ「台帳が読めない（理由）」 |
 | 9 | 診断（判定に使わない） | 近傍の試行の値と fold 間のばらつき（第8節）、試行の状態の件数（試行済み・未試行・失敗・中断）、fold ごとの選定（選んだ試行と選定の指標の値、候補の区分の件数）、fold の独立な run という方式の注記（第6.5節） |
 
 - **最長の無取引期間**（建玉を1つも持っていなかった最長の連続期間）は表示のための導出値であり、指標ではない（判定に使わない。D07 の指標を作り直さない）。検証区間の中の**保有区間の和集合の補集合**のうち最長の区間の長さとする。保有区間は、完了取引は評価の取引表（D07 §8.1 の `TRADES`）の入場時刻 `entry_at` から決済時刻 `exit_at` まで、未決済の建玉は run の建玉の表（D06 §9.2 の表11 `POSITIONS`。run の終わりに未決済の建玉も含めて全建玉を1行ずつ持つ。`status` が未決済の行）の `opened_at` から区間の終わりまでとする。建玉が0件なら区間の長さそのもの。未決済の建玉が残っているか（上の表の併記）も表11 の `status` から読む。どちらかの表が読めなければ「読めない」と表示する。
@@ -949,7 +952,7 @@ runs/experiments/<名前>/v<版>/
 | fold の判定・実験の判定（`FoldVerdict` / `SearchVerdict`）（v0.2 で値を改めた） | `domain.search` の判定（第7.3節） | → `SearchOutcome` → 台帳の結末の行 → 最終検証に進めるかの判断（第9.3節の原則2。判断の手順は後続版） | 結末記録の `search`、台帳の結末の行の `verdict`、レポートの順1 | 実験の1回の実行に1つ（fold の判定は fold ごとに1つ） |
 | 試行の状態（`TrialStatus`） | 記録からの導出（第10.4節） | 集約表とレポートの作成 | 集約表 `trial_units.status`、結末記録の `search.trial_counts` | 単位ごとに1つ |
 | 比較の前提（`ComparisonBasis`）（v0.2） | 合成（記録票の `research_policy_ref` / `metric_set_version`、run manifest（D06 §9.3）の入力とポリシーの群のうち単位で共通の全項目、この実行の環境のダイジェストから。第10.10節） | → 台帳の行 → 台帳の一覧・レポート | 台帳の開始の行と結末の行の `basis`、レポートの順7、`experiment ledger` の出力 | 台帳の行の主キー `(experiment_id, execution, event)` |
-| 試行台帳の行（`TrialLedgerEntry`）と実行番号 `execution`（v0.2） | `RunExperiment`。開始の行は事前検査の合格の直後、結末の行は結末記録の直後（第10.10節）。実行番号は台帳の同じ `experiment_id` の開始の行の数 + 1 | `ExperimentStore.append_trial_ledger` → 台帳。`read_trial_ledger` → レポートの順8・`experiment ledger` | `<リポジトリの根>/research/trial_ledger.jsonl`（版管理。追記専用） | `(experiment_id, execution, event)` |
+| 試行台帳の行（`TrialLedgerEntry`）と実行番号 `execution`（v0.2） | `RunExperiment`。開始の行は事前検査の合格の直後、結末の行は結末記録の直後（第10.10節）。実行番号は台帳の同じ `experiment_id` の開始の行の数 + 1 | `ExperimentStore.append_trial_ledger` → 台帳。実行番号は `search/ledger_execution.json` と結末記録の `search.ledger_execution` へ写す（成果物から台帳の行を引く鍵。第10.10節）。`read_trial_ledger` → レポートの順8・`experiment ledger` | `<リポジトリの根>/research/trial_ledger.jsonl`（版管理。追記専用）、`search/ledger_execution.json`、結末記録の `search.ledger_execution` | `(experiment_id, execution, event)` |
 | 退避の連番 `n`（「退避中」の印の `n`） | 合成（`experiment run`）が退避の直前に決める（第11.3節: 退避済みの結末記録・レポート・探索の記録の番号の最大 + 1） | 印 `retreat_in_progress.json` → 同じ実行の退避、または次の実行の回復 | 退避先の名前（`experiment_outcome.<n>.json`・`report.<n>.md`・`search.<n>/`）。印は退避を終えると消える | 版のディレクトリの中で一意（同じ `n` の3つが同じ世代。印は版のディレクトリに高々1つ） |
 | 許可の識別子（`permit_id`） | 後続版（第19節） | 後続版 | 後続版 | 後続版 |
 | 最終検証の partition（`PartitionId`） | 後続版（第19節） | 後続版 | 後続版 | 後続版 |
