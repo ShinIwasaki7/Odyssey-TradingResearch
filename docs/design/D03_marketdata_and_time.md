@@ -286,7 +286,7 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検�
 
 | 状態＼出来事 | 受入れで partition を作る | `holdout_gate` を通る最終評価の読み取り（push 成功） | 同（push が non-fast-forward で拒否） | 同（origin に到達できない） | 研究・開発用途の明示の opt-in での読み取り | opt-in も gate も無い既定の読み取り |
 |---|---|---|---|---|---|---|
-| 生成前 | → `SEALED`（旧基盤で未観測と確認できた partition だけ）。それ以外は → `CONSUMED`、または `QUARANTINED_UNASSIGNED` へ再分類（本節、ADR-0014） | 到達しない（partition が無い） | 到達しない（同） | 到達しない（同） | 到達しない（同） | 到達しない（同） |
+| 生成前 | → `SEALED`（旧基盤で未観測と確認できた partition だけ。補充分を含む snapshot は、入力 snapshot の同じ系列の封印期間がすべて `SEALED` であることも要る。第14.4.1節の 4。v1.15）。それ以外は → `CONSUMED`、または `QUARANTINED_UNASSIGNED` へ再分類（本節、ADR-0014） | 到達しない（partition が無い） | 到達しない（同） | 到達しない（同） | 到達しない（同） | 到達しない（同） |
 | `SEALED` | 到達しない（受入れと確定段階の再実行が作るのは別の snapshot の partition であり、access log も snapshot ごとに置く。既存 partition の状態は変えない。第3.7.1節・ADR-0014） | → `CONSUMED`。許可発行 → 消費記録の追記 → push 成功 → 公開の順（本節、ADR-0014） | 変化なし（再導出した状態のまま）。状態を再導出して拒否し、データを返さない。再試行は人間の判断（ADR-0014） | 変化なし。`SEALED` は読めない（本節） | 拒否（`HoldoutAccessViolation`）。`SEALED` を読めるのは gate を通る最終評価だけで、opt-in は `CONSUMED` のための経路である（ADR-0014 の表、第6.1節） | 拒否（`HoldoutAccessViolation`。許可集合に入らない。第6.1節） |
 | `CONSUMED` | 到達しない（同上） | 拒否。holdout としての再選定・最終評価に永久に使えない（本節、ADR-0014 の手順(1)） | 到達しない（手順(1)で既に `CONSUMED` なら push まで進まない。ADR-0014） | 到達しない（同） | 変化なし。読める。使用の事実と目的を run manifest に記録し、結果を holdout 成績として扱わない（本節） | 拒否（`HoldoutAccessViolation`。既定では読めない。本節・第6.1節） |
 
@@ -644,7 +644,11 @@ decisions:
 | 報告（第14.15節） | 第14.15節のとおり | 補充の本数・作らなかった本数・合否と件数、残存欠落の区間（時刻）と理由、実行可能な連続期間。価格・差・「要確認」の塊の一覧は書かない |
 
 3. **価格を持つファイルは原データと同じ扱い**: 封印期間の補充した足のファイル（`<refill_id>/<SYMBOL>_<15m|1h>_refill.csv`）と tick の保管場所は、原データの CSV と同じく git 管理外で、価格を人に見せる手順を持たない。受入れがそれを読んで封印期間の partition を作るのは、原データの CSV から封印期間の partition を作る既存の受入れと同じ機械の処理である。
-4. **封印期間の状態（`HoldoutState`）は変えない**: 再取得ツールは snapshot の partition を読まず、閲覧記録 `access_log.jsonl` に追記しない。新しい snapshot の封印期間の partition の初期状態は、既存の規則どおり旧基盤の閲覧履歴（`legacy_access`）から決まる（第3.8節・第3.8.1節。ADR-0014）。補充したことで `SEALED` にも `CONSUMED` にもならない。封印期間の読み取りの関門（`holdout_gate`。D09・段階5）は変えない。
+4. **再取得ツールは封印期間の状態（`HoldoutState`）に触れず、新しい snapshot は消費を引き継ぐ**: 再取得ツールは snapshot の partition を読まず、閲覧記録 `access_log.jsonl` に追記しない。補充分を含む新しい snapshot を受け入れるとき（`data accept --refill`）、封印期間の partition の初期状態は既存の規則（旧基盤の閲覧履歴 `legacy_access` で未観測と確認できたものだけ `SEALED`。第3.8節・ADR-0014）に**加えて**、次をすべて満たすときだけ `SEALED` とし、それ以外は `CONSUMED` にする（ADR-0014 の「使用済み、または履歴不明なら `CONSUMED`」を、同じ価格を含む前の snapshot の消費に当てはめたもの。同じ封印期間を新しい識別子の snapshot で読み直して最終評価に 2 度使うことを防ぐ）:
+   - 補充分の連鎖に現れるすべての入力 snapshot（各補充分の manifest の入力 snapshot の識別子。第14.11節の連鎖の検査と同じ集合）について、同じ系列の封印期間の partition の状態を **origin の既定ブランチ上の閲覧記録**から導き直し、すべて `SEALED` であること（1 つでも `CONSUMED` なら `CONSUMED`）。
+   - 閲覧記録を確認できない（origin に到達できない・閲覧記録が無い・読めない）ときは `CONSUMED` に倒す（fail-closed。第3.8節の `SEALED` の読み取りと同じ考え方）。
+   - どの入力 snapshot の閲覧記録から決めたか（識別子と、読んだ閲覧記録のコミット）を新しい snapshot の manifest に記録する。
+   補充したこと自体では `SEALED` にも `CONSUMED` にもならない。封印期間の読み取りの関門（`holdout_gate`。D09・段階5）は変えない。2026-09-30 の時点で承認済み snapshot に `SEALED` の封印期間は無い（D09 §9.2）ので、いまの手順では新しい snapshot の封印期間もすべて `CONSUMED` になる。
 5. **封印期間の計画が不合格になったとき**: 上の 2 のとおり差を記録しないので、人間は原因（時刻のずれ・訂正された tick・価格の桁など）を記録から読めない。原因を調べる手段は要決定 RF-22（第14.19節）。決まるまでは、封印期間の計画の不合格は不合格のまま（補充分を書き出さない）とし、差を表示する経路を作らない。
 6. **代表例の試行（第14.14節の段 3）は研究履歴の計画だけで行う**（試行の目的は取得と検証の手順を確かめることで、封印期間の価格を読む必要が無い）。
 
@@ -804,6 +808,7 @@ data/raw/market/
 | 補充した足（`Bar`。出所 `dukascopy_refill`） | 集約（第14.6節） | 補充した足のファイル → 受入れの原系列（第4節の v1.15 の追記） | 補充した足のファイル（git 管理外）、新しい snapshot の partition | `(系列, bar_start)`（第3.3節の自然キー） |
 | 検証記録（照合の件数・前後の足との差・要確認の印） | `data refill finalize`（第14.7節） | 人が読む（報告。第14.15節）。封印期間の計画は合否と件数だけが渡る（第14.4.1節） | `validation.json`（git 管理） | `refill_id` と、前後の差は `(系列, 塊の開始時刻)`（研究履歴の計画だけ） |
 | 計画の区分（`RESEARCH_HISTORY`・`LEGACY_HOLDOUT`） | `data refill plan --access-class`（第14.4.1節） | 対象足・照合・前後の比較の範囲、記録と表示の形 | `plan.json`（`plan_id` に入る）、補充の manifest | `plan_id` |
+| 新しい snapshot の封印期間の初期状態の根拠（入力 snapshot の識別子と、読んだ閲覧記録のコミット） | `data accept --refill`（第14.4.1節の 4） | 封印期間の partition の初期状態（`SEALED` か `CONSUMED`）の決定 | 新しい snapshot の manifest | `(snapshot_id, 系列)` |
 | 休場の根拠の記録と採否 | 人間（第3.4.2節） | カレンダー版 3 の宣言の `note`、分類ファイルの `calendar`（**初版は採用が 0 件で版 3 を作らないので、根拠の記録だけが置かれる**。第3.4.2節） | `docs/data/calendar_evidence_fx_ny17_v3.md`、`configs/calendars/fx_ny17_v3.yaml` | 候補の番号（日付と系列） |
 | 新しい snapshot の識別子 | 既存の受入れ・確定（第3.7.1節） | 報告（第14.15節）、段階5 の研究ポリシー版 3 の一体提案の前提（第14.17節） | 新しい snapshot の manifest。報告の文書。研究ポリシー側の記録先は D09 が決める | `snapshot_id` |
 | 残存欠落と実行可能な連続期間 | 報告の作成（第14.15節）。新しい snapshot の manifest の確定済みの分類から計算する | 人が読む。D09 の一体提案が評価範囲を選ぶ材料にする | 報告の文書（`docs/data/research_history_gaps.md`。RF-9 の決定） | 欠落は `(系列, 区間の開始時刻)`、連続期間は `(対象の系列の集合, 開始時刻)` |
