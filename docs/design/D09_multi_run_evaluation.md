@@ -186,7 +186,7 @@ D01 §7.2 の一覧のうち段階5 で作るものを挙げる。モジュー�
 | `ConditionOutcome` | `domain.search` | enum | `MET` / `NOT_MET` / `UNCOMPUTABLE`（v0.2） | §7.3 |
 | `ConditionResult` | `domain.search` | レコード | `scope: ConditionScope` / `fold_index: int \| None`（集約条件は `None`）/ `metric: MetricId` / `statistic: FoldStatistic \| None`（最低条件は `None`）/ `comparator: Comparator` / `threshold: Decimal` / `observed: Decimal \| None` / `outcome: ConditionOutcome` / `unavailable_reason: MetricUnavailableReason \| None`（v0.2） | §7.3 |
 | `SufficiencyShortfallKind` | `domain.search` | enum | `FOLD_TRADES_BELOW` / `TOTAL_TRADES_BELOW` / `METRIC_UNCOMPUTABLE` / `NO_CANDIDATE_METRIC_UNAVAILABLE`（v0.2） | §7.8 |
-| `SufficiencyShortfall` | `domain.search` | レコード | `kind: SufficiencyShortfallKind` / `fold_index: int \| None` / `metric: MetricId \| None` / `reason: MetricUnavailableReason \| None` / `required: int \| None` / `observed: int \| None`（v0.2） | §7.8 |
+| `SufficiencyShortfall` | `domain.search` | レコード | `kind: SufficiencyShortfallKind` / `fold_index: int \| None` / `trial_index: int \| None`（候補なしの fold の観測不足では、観測不足で除外された試行ごとに1件。それ以外は選んだ試行の番号か `None`）/ `metric: MetricId \| None` / `reason: MetricUnavailableReason \| None` / `required: int \| None` / `observed: int \| None`（v0.2） | §7.8 |
 | `FrequencyAssessment` | `domain.search` | レコード | `class_name: str` / `train_trade_count: int`（選んだ試行の選定区間の取引件数の合計）/ `train_seconds: int`（それらの選定区間の長さの合計）（v0.2） | §7.8 |
 | `FoldVerdict` | `domain.search` | enum | `FLOORS_MET`（最低条件を満たす）/ `FLOOR_BREACHED`（最低条件を割った）/ `INSUFFICIENT_EVIDENCE`（証拠不足）/ `NO_ELIGIBLE_TRIAL`（足切りを通る試行が無い）/ `INCOMPLETE`（判定できない）（v0.2 で値を改めた） | §7.3・§7.4 |
 | `SearchVerdict` | `domain.search` | enum | `MEETS_STANDARD`（共通基準を満たす）/ `BELOW_STANDARD`（満たさない）/ `INSUFFICIENT_EVIDENCE`（証拠不足）/ `INCOMPLETE`（判定できない）（v0.2 で値を改めた。第0.2節） | §7.3 |
@@ -546,7 +546,7 @@ evaluation_standard:
 - **頻度区分を何から決めるか**【要決定】（Q15。推奨の選択肢1 で書いた）: 各 fold の選定記録にある「選んだ試行の選定区間の取引件数」を、選んだ試行のある fold について合計し（`train_trade_count`）、それらの fold の選定区間の長さの合計（`train_seconds`）で割って 365 日（31,536,000 秒）あたりに直した頻度 `r = (train_trade_count × 31536000) ÷ train_seconds`（カーネル精度で1回割る）を求め、区分の一覧を上から順に見て `r >= min_train_trades_per_365d` を満たす最初の区分にする（最後の区分の下限は 0 なので必ずどれかに入る）。結果は `FrequencyAssessment` として結末記録に残す。
 - **いつ確定するか**: 頻度区分の材料（選んだ試行の選定区間の取引件数）は、**各 fold の選定記録として、その fold の検証区間の run より前に保存される**（第7.5節）。区分を計算するのは全 fold が終端した後だが、その関数の入力は選定記録だけであり、**検証区間の結果は型として渡せない**（第7.2節の選定関数と同じ構造上の保証）。研究者が区分を選ぶ経路は無く、実験設定に区分を書くキーも無い。区分の境界と要件は研究ポリシーの版として事前に登録されている（Q8 決定）。
 - **証拠の要件の当て方**: fold ごとに `min_validation_trades_per_fold`（第7.3節の fold の判定の手順4）、実験全体で `min_validation_trades_total`（検証結果のある fold の検証区間の取引件数の合計。実験の判定の手順3）。判定に使う指標が観測不足で値なしなら、件数によらず証拠不足（手順4 の `METRIC_UNCOMPUTABLE`）。**要件の比較は取引件数（#3）の値だけで行い、成績の指標の値は見ない**。
-- **証拠不足の理由を残す**: `SufficiencyShortfall` として、種類（fold の件数不足・合計の件数不足・判定に使う指標が計算できない・候補なしで観測不足の試行がある）、fold、指標と値なしの理由、要件と観測値を結末記録に残し、レポートに同じ書式で出す（第11.5節）。
+- **証拠不足の理由を残す**: `SufficiencyShortfall` として、種類（fold の件数不足・合計の件数不足・判定に使う指標が計算できない・候補なしで観測不足の試行がある）、fold、試行、指標と値なしの理由、要件と観測値を結末記録に残し、レポートに同じ書式で出す（第11.5節）。候補なしの fold では、観測不足で除外された試行ごと・値なしの指標ごと・理由ごとに1件ずつ残し、まとめない（主キーは第12節の表）。
 - **研究ポリシーを読むときの検査 E4**: 区分が1つ以上、区分名が一意で `[A-Z][A-Z0-9_]*` に完全一致、`min_train_trades_per_365d` が十進数で厳密に降順、最後の区分の下限が 0、要件の整数が 0 以上。区分が1つだけの評価基準も書ける（頻度で分けない選択。値の決定は Q14）。
 
 ### 7.9 証拠を集める方法と、禁止する経路【提案】（v0.2。人間の指示9）
@@ -914,7 +914,7 @@ runs/experiments/<名前>/v<版>/
 | 8 | 試行台帳 | 第10.10節の数え方: (a) この実行より前に同じ検証区間を見た実行の数と試行の累計、(b) 同じ戦略の先行の実行の一覧（名前・版・実行番号・研究ポリシーの版・判定）。台帳が読めなければ「台帳が読めない（理由）」 |
 | 9 | 診断（判定に使わない） | 近傍の試行の値と fold 間のばらつき（第8節）、試行の状態の件数（試行済み・未試行・失敗・中断）、fold ごとの選定（選んだ試行と選定の指標の値、候補の区分の件数）、fold の独立な run という方式の注記（第6.5節） |
 
-- **最長の無取引期間**は表示のための導出値であり、指標ではない（判定に使わない。D07 の指標を作り直さない）。検証区間の run の建玉の表（D06 §9.2 の表11 `POSITIONS`。run の終わりに**未決済の建玉も含めて**全建玉を1行ずつ持つ）の入場時刻（`opened_at`）から、区間の始まり → 最初の入場、入場と次の入場の間、最後の入場 → 区間の終わりのうち最長のものとする（評価の取引表 `TRADES` は完了取引だけなので使わない）。建玉が0件なら区間の長さそのもの。未決済の建玉が残っているか（上の表の併記）も同じ表の `status` から読む。表が読めなければ「読めない」と表示する。
+- **最長の無取引期間**（建玉を1つも持っていなかった最長の連続期間）は表示のための導出値であり、指標ではない（判定に使わない。D07 の指標を作り直さない）。検証区間の中の**保有区間の和集合の補集合**のうち最長の区間の長さとする。保有区間は、完了取引は評価の取引表（D07 §8.1 の `TRADES`）の入場時刻 `entry_at` から決済時刻 `exit_at` まで、未決済の建玉は run の建玉の表（D06 §9.2 の表11 `POSITIONS`。run の終わりに未決済の建玉も含めて全建玉を1行ずつ持つ。`status` が未決済の行）の `opened_at` から区間の終わりまでとする。建玉が0件なら区間の長さそのもの。未決済の建玉が残っているか（上の表の併記）も表11 の `status` から読む。どちらかの表が読めなければ「読めない」と表示する。
 - 見出しの語には「合格」「採用」を使わない（第0.2節）。D07 §22.1 の単一実行の節の「採用可」（記録として使える結果かどうか）は探索の実験のレポートでは出さず、探索の実験の結論は順1 の判定で表す。
 
 ## 12. 値の伝播表（必須表）【提案】
@@ -939,7 +939,7 @@ runs/experiments/<名前>/v<版>/
 | 選んだ試行（`FoldSelection.selected_trial_index`） | `domain.search` の選定（第7.2節） | 選定記録 → 検証区間の単位の選択（第7.7節）→ 最終検証の試行（第9.3節。渡り方の先は後続版） | 選定記録 `selection_f<k>.json`、結末記録の `search.selections`、集約表 `trial_units.selected`。最終検証の記録は後続版 | fold ごとに1つ（候補なしは `None`） |
 | 選んだ試行の選定区間の取引件数（`FoldSelection.selected_train_trade_count`）（v0.2） | `domain.search` の選定（選んだ試行の選定区間の評価の `TRADE_COUNT`。第7.5節） | 選定記録 → 頻度区分の関数（第7.8節） | 選定記録、結末記録の `search.selections` | fold ごとに1つ（候補なしは `None`） |
 | 頻度区分（`FrequencyAssessment`）（v0.2） | `domain.search`。全 fold の終端の後、選定記録と記録票の fold の区間だけから（第7.8節） | → fold の判定と実験の判定の証拠の要件（第7.3節） | 結末記録の `search.frequency`、台帳の結末の行の `frequency_class`、レポートの順6 | 実験の1回の実行に1つ（選んだ試行のある fold が無ければ `None`） |
-| 条件ごとの結果（`ConditionResult`）と証拠不足の理由（`SufficiencyShortfall`）（v0.2） | `domain.search` の判定（第7.3節・第7.8節） | → `SearchOutcome` → レポート | 結末記録の `search.condition_results`・`search.shortfalls`、レポートの順2〜6 | 結末記録の中で、`ConditionResult` は `(scope, fold_index, 条件の書いた順)`、`SufficiencyShortfall` は `(kind, fold_index, metric)` で一意 |
+| 条件ごとの結果（`ConditionResult`）と証拠不足の理由（`SufficiencyShortfall`）（v0.2） | `domain.search` の判定（第7.3節・第7.8節） | → `SearchOutcome` → レポート | 結末記録の `search.condition_results`・`search.shortfalls`、レポートの順2〜6 | 結末記録の中で、`ConditionResult` は `(scope, fold_index, 条件の書いた順)`、`SufficiencyShortfall` は `(kind, fold_index, trial_index, metric, reason)` で一意（同じ fold・同じ指標でも試行や値なしの理由が違えば別の件として全件残す） |
 | fold の判定・実験の判定（`FoldVerdict` / `SearchVerdict`）（v0.2 で値を改めた） | `domain.search` の判定（第7.3節） | → `SearchOutcome` → 台帳の結末の行 → 最終検証に進めるかの判断（第9.3節の原則2。判断の手順は後続版） | 結末記録の `search`、台帳の結末の行の `verdict`、レポートの順1 | 実験の1回の実行に1つ（fold の判定は fold ごとに1つ） |
 | 試行の状態（`TrialStatus`） | 記録からの導出（第10.4節） | 集約表とレポートの作成 | 集約表 `trial_units.status`、結末記録の `search.trial_counts` | 単位ごとに1つ |
 | 比較の前提（`ComparisonBasis`）（v0.2） | 合成（記録票の `research_policy_ref` / `metric_set_version`、run manifest（D06 §9.3）の入力とポリシーの群のうち単位で共通の全項目、この実行の環境のダイジェストから。第10.10節） | → 台帳の行 → 台帳の一覧・レポート | 台帳の開始の行と結末の行の `basis`、レポートの順7、`experiment ledger` の出力 | 台帳の行の主キー `(experiment_id, execution, event)` |
