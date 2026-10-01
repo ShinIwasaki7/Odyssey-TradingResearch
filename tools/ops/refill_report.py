@@ -22,15 +22,21 @@
 
 読むもの（戦略の成績は読まない。D03 §14.2 の 7）: snapshot の ``manifest.json``、補充分の
 ``refill_manifest.json`` と ``validation.json``、作業ディレクトリの ``plan.json`` と
-``journal.jsonl``。
+``journal.jsonl``。使う前に記録から導ける識別子とダイジェストを計算し直す（D03 §14.11.1 の
+W3・W5。``plan_id``・``refill_id``・``validation.json`` の sha256・取得記録の行のダイジェスト）。
+
+出力（報告と CSV）は「存在すれば失敗」: 出力先にどちらかが既にあれば、どちらも書かずに止める。
 
 実行はリポジトリの根で ``uv run python -m tools.ops.refill_report …``（``tools`` パッケージとして
-import するため、ファイルのパスを直接渡す形では動かない）。標準ライブラリだけを使う。
+import するため、ファイルのパスを直接渡す形では動かない）。識別子とダイジェストの計算には
+本体の正規化エンコード（``odyssey_fx.common.canonical``）を使う。
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import re
 import sys
@@ -40,6 +46,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from odyssey_fx.common import canonical
 from tools.ops import research_history_gaps as rhg
 
 # --- 語彙 ----------------------------------------------------------------------------
@@ -168,12 +175,69 @@ def refill_ids_of(manifest: dict[str, Any]) -> list[str]:
     return sorted(found)
 
 
+def _digest(payload: Any) -> str:
+    return canonical.digest(payload).hex
+
+
+def refill_id_from(manifest: dict[str, Any]) -> str:
+    """補充の manifest の記録から ``refill_id`` を計算し直す（D03 §14.10）。"""
+    hours = sorted(
+        manifest["hours"], key=lambda item: (item["hour"]["symbol"], item["hour"]["start"])
+    )
+    return _digest(
+        {
+            "aggregation_rule_version": manifest["aggregation_rule_version"],
+            "code_version": manifest["code_version"],
+            "hours": [
+                {
+                    "outcome": item["outcome"],
+                    "start": item["hour"]["start"],
+                    "symbol": item["hour"]["symbol"],
+                    "tick_digest": item["tick_digest"] or "",
+                }
+                for item in hours
+            ],
+            "plan_id": manifest["plan_id"],
+        }
+    )
+
+
+def verified_refill_manifest(refill_root: Path, refill_id: str) -> dict[str, Any]:
+    """補充の manifest を読み、記録から導ける識別子を計算し直して確かめる（D03 §14.11.1 の W5）。
+
+    計画の中身から ``plan_id``、時間ファイルの記録と版から ``refill_id`` を計算し直し、記録と
+    ディレクトリ名に一致すること。入力 snapshot の識別子が計画の中身と一致すること。
+    """
+    path = refill_root / refill_id / "refill_manifest.json"
+    manifest = _load_json(path)
+    try:
+        if not isinstance(manifest, dict) or manifest.get("refill_id") != refill_id:
+            raise ReportInputError(f"refill_id がディレクトリ名と一致しない: {path}")
+        if _digest(manifest["plan"]) != manifest["plan_id"]:
+            raise ReportInputError(f"plan_id が計画の中身と一致しない: {path}")
+        if refill_id_from(manifest) != refill_id:
+            raise ReportInputError(f"refill_id が記録から計算し直した値と一致しない: {path}")
+        if manifest["snapshot_id"] != manifest["plan"]["snapshot_id"]:
+            raise ReportInputError(f"入力 snapshot の識別子が計画の中身と一致しない: {path}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReportInputError(f"補充の manifest の形が読めない: {path} ({exc})") from exc
+    return manifest
+
+
 def load_refill(refill_root: Path, refill_id: str) -> dict[str, Any]:
-    """補充分の manifest と検証記録を読む（識別子がディレクトリ名と一致すること）。"""
-    manifest = _load_json(refill_root / refill_id / "refill_manifest.json")
-    if not isinstance(manifest, dict) or manifest.get("refill_id") != refill_id:
-        raise ReportInputError(f"refill_id が一致しない: {refill_root / refill_id}")
-    validation = _load_json(refill_root / refill_id / "validation.json")
+    """補充分の manifest と検証記録を読む（W5 の検算と、検証記録の sha256 の照合）。"""
+    manifest = verified_refill_manifest(refill_root, refill_id)
+    path = refill_root / refill_id / "validation.json"
+    if not path.is_file():
+        raise ReportInputError(f"ファイルが無い: {path}")
+    content = path.read_bytes()
+    recorded = [item for item in manifest.get("files", []) if item.get("name") == path.name]
+    if len(recorded) != 1 or recorded[0].get("sha256") != hashlib.sha256(content).hexdigest():
+        raise ReportInputError(f"検証記録の sha256 が補充の manifest と一致しない: {path}")
+    try:
+        validation = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReportInputError(f"読めない: {path} ({exc})") from exc
     return {"manifest": manifest, "validation": validation}
 
 
@@ -198,9 +262,7 @@ def snapshot_chain(
         found: set[str] = set()
         for refill_id in refill_ids_of(load_snapshot(snapshot_root, current)):
             found.add(refill_id)
-            manifest = _load_json(refill_root / refill_id / "refill_manifest.json")
-            if not isinstance(manifest, dict) or manifest.get("refill_id") != refill_id:
-                raise ReportInputError(f"refill_id が一致しない: {refill_root / refill_id}")
+            manifest = verified_refill_manifest(refill_root, refill_id)
             found |= closure(str(manifest["snapshot_id"]))
         visiting.discard(current)
         closures[current] = frozenset(found)
@@ -266,23 +328,38 @@ def _not_built(records: list[dict[str, Any]]) -> dict[BarKey, str]:
 
 
 def _read_journal(path: Path) -> tuple[list[dict[str, Any]], str | None]:
-    """取得記録の行（``entry``）を読む。最後の行だけの壊れは途中停止として除く（W3）。"""
+    """取得記録の行（``entry``）を読み、行ごとのダイジェストを検算する（D03 §14.11.1 の W3）。
+
+    最後の行だけが不完全（改行で終わらない・JSON として読めない・ダイジェストが合わない）なら
+    書き込みの途中で止まった行として除く。最後の行以外が壊れていれば読めない取得記録とする。
+    """
     if not path.is_file():
         return [], None
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
+        content = path.read_bytes()
+    except OSError as exc:
         return [], f"取得記録が読めない: {path} ({exc})"
+    segments = content.split(b"\n")
+    terminated = segments[-1] == b""
+    lines = segments[:-1] if terminated else segments
     entries: list[dict[str, Any]] = []
     for number, line in enumerate(lines, start=1):
+        last = number == len(lines)
         try:
-            entry = json.loads(line)["entry"]
+            if last and not terminated:
+                raise ValueError("not terminated by a newline")
+            record = json.loads(line.decode("utf-8"))
+            if not isinstance(record, dict) or set(record) != {"digest", "entry"}:
+                raise ValueError("not a {digest, entry} record")
+            entry = record["entry"]
             if not isinstance(entry, dict):
-                raise TypeError("entry is not an object")
-        except (ValueError, KeyError, TypeError):
-            if number == len(lines):
+                raise ValueError("the entry is not an object")
+            if hashlib.sha256(canonical.encode(entry)).hexdigest() != record["digest"]:
+                raise ValueError("the digest does not match the entry")
+        except (ValueError, UnicodeDecodeError) as exc:
+            if last:
                 continue
-            return [], f"取得記録の {number} 行目が読めない: {path}"
+            return [], f"取得記録の {number} 行目が読めない（{exc}）: {path}"
         entries.append(entry)
     return entries, None
 
@@ -318,9 +395,7 @@ def collect_records(
             problems.append(f"書きかけの補充分（refill_manifest.json が無い）: {directory}")
             continue
         try:
-            manifest = _load_json(manifest_path)
-            if not isinstance(manifest, dict) or manifest.get("refill_id") != name:
-                raise ReportInputError(f"refill_id が一致しない: {directory}")
+            manifest = verified_refill_manifest(refill_root, name)
             snapshot_id = str(manifest["snapshot_id"])
             if snapshot_id not in chain:
                 continue
@@ -356,6 +431,8 @@ def collect_records(
             continue
         try:
             plan = _load_json(work / "plan.json")
+            if _digest(plan) != work.name:
+                raise ReportInputError("plan_id が計画の中身から計算し直した値と一致しない")
             snapshot_id = str(plan["snapshot_id"])
             if snapshot_id not in chain:
                 continue
@@ -857,6 +934,18 @@ def render_report(
     return "\n".join(lines) + "\n"
 
 
+def write_outputs(
+    csv_path: Path, rows: list[dict[str, Any]], report_path: Path, report: str
+) -> None:
+    """CSV と報告を排他的に作成する（既にあれば失敗し、上書きしない）。"""
+    with csv_path.open("x", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(RESIDUAL_FIELDS), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    with report_path.open("x", encoding="utf-8") as handle:
+        handle.write(report)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--snapshot-root", type=Path, default=Path("data/snapshots"))
@@ -918,9 +1007,18 @@ def main(argv: list[str] | None = None) -> int:
         command=command,
     )
     suffix = "" if approved else "_draft"
+    csv_path = args.out / f"residual_gaps{suffix}.csv"
+    report_path = args.out / f"refill_report{suffix}.md"
+    existing = [path for path in (csv_path, report_path) if path.exists() or path.is_symlink()]
+    if existing:
+        print(
+            "出力先に報告が既にある（上書きしない。どちらも書かなかった）: "
+            + ", ".join(str(path) for path in existing),
+            file=sys.stderr,
+        )
+        return 1
     args.out.mkdir(parents=True, exist_ok=True)
-    rhg.write_csv(args.out / f"residual_gaps{suffix}.csv", RESIDUAL_FIELDS, rows)
-    (args.out / f"refill_report{suffix}.md").write_text(report, encoding="utf-8")
+    write_outputs(csv_path, rows, report_path, report)
     print(report)
     return 0
 

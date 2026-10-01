@@ -8,20 +8,19 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+from odyssey_fx.common import canonical
 from tools.ops import refill_report as rr
 from tools.ops import research_history_gaps as rhg
 
 OLD = "o" * 64
 NEW = "n" * 64
-REFILL = "a" * 64
-PLAN_A = "c" * 64  # REFILL の計画（一度不合格になった後に取り直して書き出した）
-REJECTED = "b" * 64
 APPROVAL = {"approved_by": "human", "approved_at": "2026-10-02T00:00:00Z", "comment": ""}
 
 
@@ -68,7 +67,9 @@ def _target(series: str, start: str, end: str) -> dict[str, Any]:
 
 
 def _line(entry: dict[str, Any]) -> str:
-    return json.dumps({"digest": "x", "entry": entry}) + "\n"
+    """取得記録の 1 行（W3: 内容の正規化エンコードの sha256 を添える）。"""
+    digest = hashlib.sha256(canonical.encode(entry)).hexdigest()
+    return json.dumps({"digest": digest, "entry": entry}) + "\n"
 
 
 def _failed(at: str, not_built: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -87,6 +88,67 @@ TARGETS_A = [
     _target(USDJPY_15M, "2020-06-01T10:15:00Z", "2020-06-01T10:30:00Z"),
     _target(USDJPY_15M, "2020-07-01T10:00:00Z", "2020-07-01T10:15:00Z"),
 ]
+SERIES = {"series": USDJPY_15M, "timeframe_version": 1}
+PLAN_A_PAYLOAD = {"snapshot_id": OLD, "target_bars": TARGETS_A}
+#: 補充分 REFILL の計画（一度不合格になった後に取り直して書き出した）。識別子は中身から計算する。
+PLAN_A = canonical.digest(PLAN_A_PAYLOAD).hex
+REJECTED_PAYLOAD = {
+    "snapshot_id": OLD,
+    "target_bars": [_target("AUDJPY/1h/bid", "2020-08-03T10:00:00Z", "2020-08-03T11:00:00Z")],
+}
+REJECTED = canonical.digest(REJECTED_PAYLOAD).hex
+VALIDATION = json.dumps(
+    {
+        "reconciled_count": 8,
+        "matched_count": 8,
+        "out_of_range_tick_count": 0,
+        "bid_above_ask_tick_count": 0,
+        "neighbors": [
+            {
+                **SERIES,
+                "chunk_start": "2020-06-01T10:00:00Z",
+                "side": "BEFORE",
+                "difference_pips": "12.5",
+                "needs_review": True,
+            }
+        ],
+    }
+).encode("utf-8")
+
+
+def _refill_manifest() -> dict[str, Any]:
+    manifest: dict[str, Any] = {
+        "plan_id": PLAN_A,
+        "plan": PLAN_A_PAYLOAD,
+        "snapshot_id": OLD,
+        "aggregation_rule_version": "refill_ticks_v1",
+        "code_version": "test",
+        "hours": [
+            {
+                "hour": {"symbol": "USDJPY", "start": "2020-06-01T10:00:00Z"},
+                "outcome": "NOT_FETCHED",
+                "tick_digest": None,
+            }
+        ],
+        "files": [{"name": "validation.json", "sha256": hashlib.sha256(VALIDATION).hexdigest()}],
+        "created_at": "2026-10-03T00:00:00Z",
+        "series_counts": [{**SERIES, "targets": 3, "built": 1, "not_built": 2}],
+        "not_built": [
+            {
+                **SERIES,
+                "start": "2020-06-01T10:15:00Z",
+                "reason": "HOUR_NOT_FETCHED",
+                "detail": "HTTP_404",
+            },
+            {**SERIES, "start": "2020-07-01T10:00:00Z", "reason": "UNRECONCILED", "detail": ""},
+        ],
+        "unreconciled": [{**SERIES, "chunk_start": "2020-07-01T10:00:00Z", "target_count": 1}],
+    }
+    manifest["refill_id"] = rr.refill_id_from(manifest)
+    return manifest
+
+
+REFILL = _refill_manifest()["refill_id"]
 
 
 def _write(tmp_path: Path, *, approved: bool = True) -> list[str]:
@@ -127,60 +189,12 @@ def _write(tmp_path: Path, *, approved: bool = True) -> list[str]:
         )
     refill = tmp_path / "refill" / REFILL
     refill.mkdir(parents=True)
-    series = {"series": USDJPY_15M, "timeframe_version": 1}
-    plan_a = {"snapshot_id": OLD, "target_bars": TARGETS_A}
-    (refill / "refill_manifest.json").write_text(
-        json.dumps(
-            {
-                "refill_id": REFILL,
-                "plan_id": PLAN_A,
-                "plan": plan_a,
-                "snapshot_id": OLD,
-                "created_at": "2026-10-03T00:00:00Z",
-                "series_counts": [{**series, "targets": 3, "built": 1, "not_built": 2}],
-                "not_built": [
-                    {
-                        **series,
-                        "start": "2020-06-01T10:15:00Z",
-                        "reason": "HOUR_NOT_FETCHED",
-                        "detail": "HTTP_404",
-                    },
-                    {
-                        **series,
-                        "start": "2020-07-01T10:00:00Z",
-                        "reason": "UNRECONCILED",
-                        "detail": "",
-                    },
-                ],
-                "unreconciled": [
-                    {**series, "chunk_start": "2020-07-01T10:00:00Z", "target_count": 1}
-                ],
-            }
-        )
-    )
-    (refill / "validation.json").write_text(
-        json.dumps(
-            {
-                "reconciled_count": 8,
-                "matched_count": 8,
-                "out_of_range_tick_count": 0,
-                "bid_above_ask_tick_count": 0,
-                "neighbors": [
-                    {
-                        **series,
-                        "chunk_start": "2020-06-01T10:00:00Z",
-                        "side": "BEFORE",
-                        "difference_pips": "12.5",
-                        "needs_review": True,
-                    }
-                ],
-            }
-        )
-    )
+    (refill / "refill_manifest.json").write_text(json.dumps(_refill_manifest()))
+    (refill / "validation.json").write_bytes(VALIDATION)
     # 計画 A の作業ディレクトリ: 一度不合格になり、取り直して（最終結果の行）書き出した。
     work_a = tmp_path / "refill/_work" / PLAN_A
     work_a.mkdir(parents=True)
-    (work_a / "plan.json").write_text(json.dumps(plan_a))
+    (work_a / "plan.json").write_text(json.dumps(PLAN_A_PAYLOAD))
     (work_a / "journal.jsonl").write_text(
         _line(_failed("2026-10-02T00:00:00Z"))
         + _line({"kind": "final", "at": "2026-10-02T01:00:00Z"})
@@ -188,30 +202,16 @@ def _write(tmp_path: Path, *, approved: bool = True) -> list[str]:
     # 不合格のままの計画（補充分なし）。手で指定しなくても自動で集める。
     work = tmp_path / "refill/_work" / REJECTED
     work.mkdir(parents=True)
-    (work / "plan.json").write_text(
-        json.dumps(
-            {
-                "snapshot_id": OLD,
-                "target_bars": [
-                    _target("AUDJPY/1h/bid", "2020-08-03T10:00:00Z", "2020-08-03T11:00:00Z")
-                ],
-            }
-        )
-    )
+    (work / "plan.json").write_text(json.dumps(REJECTED_PAYLOAD))
     (work / "journal.jsonl").write_text(_line(_failed("2026-10-02T02:00:00Z")))
     # 関係しない snapshot を入力にした計画は集めない。
-    other = tmp_path / "refill/_work" / ("d" * 64)
+    other_plan = {
+        "snapshot_id": "z" * 64,
+        "target_bars": [_target(USDJPY_15M, "2020-06-01T10:30:00Z", "2020-06-01T10:45:00Z")],
+    }
+    other = tmp_path / "refill/_work" / canonical.digest(other_plan).hex
     other.mkdir(parents=True)
-    (other / "plan.json").write_text(
-        json.dumps(
-            {
-                "snapshot_id": "z" * 64,
-                "target_bars": [
-                    _target(USDJPY_15M, "2020-06-01T10:30:00Z", "2020-06-01T10:45:00Z")
-                ],
-            }
-        )
-    )
+    (other / "plan.json").write_text(json.dumps(other_plan))
     return [
         "--snapshot-root",
         str(snapshots),
@@ -382,6 +382,45 @@ def test_a_bar_without_records_is_not_planned_only_when_coverage_is_known() -> N
     unknown = rr.bar_states([KEY], rr.Collection([], ["読めない計画"]), {})[KEY]
     assert complete.states == (rr.NOT_PLANNED,)
     assert unknown.states == (rr.UNDETERMINED,)
+
+
+def test_a_journal_line_whose_digest_does_not_match_is_not_used(tmp_path: Path) -> None:
+    """取得記録の行のダイジェストを検算する（W3）。合わない行の記録を状態に使わない。"""
+    args = _write(tmp_path)
+    journal = tmp_path / "refill/_work" / REJECTED / "journal.jsonl"
+    record = json.loads(journal.read_text(encoding="utf-8"))
+    record["entry"]["reasons"] = ["altered"]  # 中身だけを書き換え、ダイジェストは古いまま
+    journal.write_text(
+        json.dumps(record) + "\n" + _line({"kind": "pause_end", "at": "2026-10-02T03:00:00Z"})
+    )
+    assert rr.main(args) == 0
+    rows = _rows(tmp_path / "out/residual_gaps.csv")
+    # 最後以外の行が壊れた取得記録は読めないので網羅性不明。その計画の足は「理由未確定」。
+    assert rows[("AUDJPY", "1h@v1", "2020-08-03T10:00Z")]["states"] == rr.UNDETERMINED
+    report = (tmp_path / "out/refill_report.md").read_text(encoding="utf-8")
+    assert "the digest does not match the entry" in report
+
+
+def test_a_refill_whose_identity_does_not_recompute_is_refused(tmp_path: Path) -> None:
+    """補充分の識別子は記録から計算し直して確かめる（W5）。合わなければ何も書かずに止まる。"""
+    args = _write(tmp_path)
+    path = tmp_path / "refill" / REFILL / "refill_manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["code_version"] = "something-else"
+    path.write_text(json.dumps(payload))
+    assert rr.main(args) == 1
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:
+    """出力は「存在すれば失敗」: どちらかが既にあれば、どちらも書かない。"""
+    args = _write(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "refill_report.md").write_text("earlier report")
+    assert rr.main(args) == 1
+    assert (out / "refill_report.md").read_text() == "earlier report"
+    assert not (out / "residual_gaps.csv").exists()
 
 
 # --- 本文・入力・再現 ------------------------------------------------------------------
