@@ -182,6 +182,11 @@ OLD_MANIFEST = _snapshot(
 OLD = str(OLD_MANIFEST.snapshot_id())
 
 
+def _other_snapshot() -> SnapshotManifest:
+    """新 snapshot の祖先でない snapshot（04 時の 15分足の欠落だけを持つ）。"""
+    return _snapshot([_gap(USDJPY_15M, "2020-11-30T04:00:00Z", "2020-11-30T04:15:00Z")])
+
+
 class _Inputs:
     """書き出しが計画から読むもの（原データの代わりとカレンダー）。"""
 
@@ -366,7 +371,7 @@ def _scene(
     if with_other:
         # 計画 X: 新 snapshot の祖先でない snapshot（04 時の 15分足の欠落だけを持つ）を入力に
         # した、04 時の足の計画。照合の時間の原データは人工の値なので、検証で不合格になる。
-        other = _snapshot([_gap(USDJPY_15M, "2020-11-30T04:00:00Z", "2020-11-30T04:15:00Z")])
+        other = _other_snapshot()
         snapshots.write_manifest(str(other.snapshot_id()), other)
         hours = (HOUR_03, HOUR_04, HOUR_04 + timedelta(hours=1))
         plan_c, refill_x = _run(
@@ -471,6 +476,21 @@ def test_a_rejected_plan_on_a_snapshot_outside_the_ancestry_is_collected(
     assert row["states"] == rr.VALIDATION_REJECTED
     assert row["basis_plan_ids"] == scene.plan_c
     assert "置き場の中はすべて読めた" in scene.report()
+
+
+def test_an_unreadable_input_snapshot_of_a_record_leaves_coverage_unknown(
+    tmp_path: Path,
+) -> None:
+    """R4: 集めた記録の入力 snapshot が読めなければ前後を確かめられないので網羅性不明。"""
+    scene = _scene(tmp_path, with_other=True)
+    other = str(_other_snapshot().snapshot_id())
+    (tmp_path / "snapshots" / other / "manifest.json").write_text("{")
+    assert rr.main(scene.args) == 0
+    rows = scene.rows()
+    assert rows[ROW_2017]["states"] == rr.UNDETERMINED
+    report = scene.report()
+    assert "網羅性を確かめられない" in report
+    assert f"記録の入力 snapshot の補充分の参照を辿れない: {other}" in report
 
 
 def test_each_state_has_its_own_count_column(tmp_path: Path) -> None:
