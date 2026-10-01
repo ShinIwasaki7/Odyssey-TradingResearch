@@ -492,3 +492,26 @@ def test_an_input_snapshot_directory_holding_another_manifest_is_refused(
     assert _accept_with(repo, refill_dir) == 1
     err = capsys.readouterr().err
     assert "holds the manifest of" in err and "structurally broken" in err
+
+
+def test_accept_rechecks_the_refill_file_it_actually_reads(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """検算の後に差し替わった足のファイルは、受入れが読んだ内容の照合で止める（決定 13）。"""
+    plan_id = _fetch_all(repo, monkeypatch)
+    assert _finalize(repo, plan_id) == 0
+    refill_dir = repo / "data/raw/market/refill" / _refill_id(repo)
+    verified = composition.load_refills_for_acceptance
+
+    def swap_after_check(**kwargs: object) -> object:
+        manifests = verified(**kwargs)  # type: ignore[arg-type]
+        csv = refill_dir / "USDJPY_1h_refill.csv"
+        csv.write_text(csv.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        return manifests
+
+    monkeypatch.setattr(composition, "load_refills_for_acceptance", swap_after_check)
+    capsys.readouterr()
+    assert _accept_with(repo, refill_dir) == 1
+    assert "differ from the refill manifest" in capsys.readouterr().err
+    pending = repo / "data/snapshots/_pending"
+    assert not pending.exists() or not any(pending.iterdir())

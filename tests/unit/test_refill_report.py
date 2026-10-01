@@ -80,6 +80,7 @@ from tools.ops import research_history_gaps as rhg
 
 HOUR_02 = UtcTime.parse("2020-11-30T02:00:00Z")
 HOUR_03 = UtcTime.parse("2020-11-30T03:00:00Z")
+_URLS_00_02 = tuple(url_of(hour) for hour in (HOUR_00, HOUR_01, HOUR_02))
 NOW = UtcTime.parse("2026-10-01T12:00:00Z")
 WINDOW = Interval(
     start=UtcTime.parse("2016-01-01T00:00:00Z"), end=UtcTime.parse("2021-01-01T00:00:00Z")
@@ -273,7 +274,12 @@ class Scene:
 
 
 def _scene(
-    root: Path, *, with_b: bool = False, with_later: bool = False, approved: bool = True
+    root: Path,
+    *,
+    with_b: bool = False,
+    with_later: bool = False,
+    with_open: bool = False,
+    approved: bool = True,
 ) -> Scene:
     """計画 A（と B）を本体で計画・取得・書き出しし、新 snapshot を書く。"""
     store = FsRefillStore(root=root / "refill")
@@ -336,6 +342,17 @@ def _scene(
         "--out",
         str(root / "out"),
     ]
+    if with_open:
+        # 計画 D: 計画だけ（取得も書き出しもまだ）。計画 E: 書き出したが、その補充分は新
+        # snapshot に入れない（02 時の足も作る）。
+        create_plan(_plan(11), store)
+        _, refill_e = _run(
+            store,
+            _plan(12),
+            {url: [BI5_00H if url == url_of(HOUR_00) else BI5_01H] for url in _URLS_00_02},
+            _Inputs(_raw()),
+        )
+        assert refill_e is not None
     plan_c = None
     if with_later:
         # 計画 C: A の補充分を含む新 snapshot を入力にした、02 時の足の計画（補充を重ねる）。
@@ -400,6 +417,24 @@ def test_a_record_built_on_a_snapshot_containing_the_refill_is_later(tmp_path: P
     assert row["bars_with_unordered_records"] == "0"
     assert f"plan={scene.plan_a} refill:{scene.refill_a} {rr.NOT_FETCHED}×4" in row["history"]
     assert f"plan={scene.plan_c} journal:" in row["history"]
+
+
+def test_unfinished_and_unused_records_make_the_state_undetermined(tmp_path: Path) -> None:
+    """R3: 途中の計画と、足を作ったのに新 snapshot に入っていない補充分は「理由未確定」。
+
+    どちらも A とは参照関係で比べられないので、A の結果と併記する。履歴にそれぞれの結果を示す。
+    """
+    scene = _scene(tmp_path, with_open=True)
+    assert rr.main(scene.args) == 0
+    row = scene.rows()[ROW_02_15M]
+    assert row["states"] == f"{rr.NOT_FETCHED}|{rr.UNDETERMINED}"
+    assert row[f"bars_{rr.UNDETERMINED}"] == "4"
+    assert row["bars_with_unordered_records"] == "4"
+    assert len(row["basis_plan_ids"].split("|")) == 3
+    assert f" plan {rr.IN_PROGRESS}×4" in row["history"]
+    assert f"{rr.BUILT_NOT_IN_SNAPSHOT}×4" in row["history"]
+    # 計画の無い足は変わらない（置き場はすべて読めた）。
+    assert scene.rows()[ROW_04_15M]["states"] == rr.NOT_PLANNED
 
 
 def test_each_state_has_its_own_count_column(tmp_path: Path) -> None:
@@ -615,8 +650,9 @@ def test_the_report_has_the_five_sections_and_no_prices(tmp_path: Path) -> None:
     assert f"`{scene.refill_a}`" in report
     assert "計画 1 件・補充分 1 件" in report
     assert "置き場の中はすべて読めた" in report
-    assert "| USDJPY/15m/bid | 8 | 4 | 4 | HOUR_NOT_FETCHED 4 |" in report
-    assert "| USDJPY/1h/bid | 2 | 1 | 1 | HOUR_NOT_FETCHED 1 |" in report
+    short = f"`{scene.refill_a[:12]}…`"
+    assert f"| {short} | USDJPY/15m/bid | 8 | 4 | 4 | HOUR_NOT_FETCHED 4 |" in report
+    assert f"| {short} | USDJPY/1h/bid | 2 | 1 | 1 | HOUR_NOT_FETCHED 1 |" in report
     assert "| USDJPY 15m@v1 | 2 / 2.25h | 2 / 1.25h |" in report
     assert "104.0" not in report  # 価格は書かない
     assert "戦略の成績" in report

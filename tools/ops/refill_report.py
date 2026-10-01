@@ -629,8 +629,11 @@ def render_report(
         "補充した足の出来高は 0 で、「出来高不明」を意味する"
         "（実際の出来高として使わない。D03 §14.6）。",
         "",
-        "| 系列 | 対象足 | 補充した | 作らなかった | 理由別（作らなかった足） |",
-        "|---|---|---|---|---|",
+        "補充分ごとの行（補充を重ねたとき、前の補充分の「作らなかった」には後の補充分が"
+        "補充した足も含まれる。行を足し合わせない）。",
+        "",
+        "| 補充分 | 系列 | 対象足 | 補充した | 作らなかった | 理由別（作らなかった足） |",
+        "|---|---|---|---|---|---|",
     ]
     for refill in refills:
         by_reason: dict[SeriesId, Counter[str]] = defaultdict(Counter)
@@ -641,7 +644,8 @@ def render_report(
                 f"{reason} {number}" for reason, number in sorted(by_reason[count.series].items())
             )
             lines.append(
-                f"| {count.series} | {count.targets} | {count.built} |"
+                f"| `{refill.manifest.refill_id[:12]}…` | {count.series} | {count.targets} |"
+                f" {count.built} |"
                 f" {count.not_built} | {detail or '—'} |"
             )
     lines.append("")

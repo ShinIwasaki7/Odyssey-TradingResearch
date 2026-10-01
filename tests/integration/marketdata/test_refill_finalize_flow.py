@@ -60,6 +60,10 @@ from odyssey_fx.marketdata.domain.errors import (
 )
 from odyssey_fx.marketdata.domain.refill import (
     FailureKind,
+    FinalResult,
+    HourKey,
+    HourOutcome,
+    Invalidation,
     RefillFilter,
     RefillPlan,
     ValidationRecord,
@@ -588,3 +592,48 @@ def test_the_survey_collects_plans_and_refills_and_lists_what_it_cannot_read(
     assert not unknown.complete
     assert any("notes.txt" in problem for problem in unknown.problems)
     assert any("_work/stray" in problem for problem in unknown.problems)
+
+
+# --- 書き出し済みの計画を書き出し直す前の照合（PR #59 の仮置き 14 への決定）---------------
+
+
+def _refinalize_after(tmp_path: Path, entry: Mapping[str, object]) -> FinalizeReport:
+    store, plan_id, _ = _fetched(tmp_path)
+    _finalize(store, plan_id)
+    store.append_journal(plan_id, entry)
+    return _finalize(store, plan_id, code="code-v2")
+
+
+def test_refinalizing_needs_every_final_result_of_the_finalized_refill(tmp_path: Path) -> None:
+    """既存の補充分の時間に有効な最終結果が無ければ、書き出し直さない（RefillNotFetched）。"""
+    invalidation = Invalidation(hour=_hour_01(), reason="test", at=NOW)
+    with pytest.raises(RefillNotFetched, match="no valid final result"):
+        _refinalize_after(tmp_path, invalidation.payload())
+    assert len(_refill_dirs(tmp_path)) == 1
+
+
+def test_refinalizing_refuses_a_final_result_that_differs_from_the_refill(tmp_path: Path) -> None:
+    """取得記録の最終結果が既存の補充分と違えば食い違い（RefillStoreInconsistent）。"""
+    differing = FinalResult(
+        hour=_hour_01(),
+        outcome=HourOutcome.NOT_FETCHED,
+        from_archive=False,
+        tick_digest=None,
+        tick_count=None,
+        archive_file=None,
+        url=URL_01,
+        fetched_at=NOW,
+        http_status=404,
+        response_sha256="0" * 64,
+        attempts=1,
+        failure=FailureKind.HTTP_404,
+        detail="test",
+        at=NOW,
+    )
+    with pytest.raises(RefillStoreInconsistent, match="differs from the finalized refill"):
+        _refinalize_after(tmp_path, differing.payload())
+    assert len(_refill_dirs(tmp_path)) == 1
+
+
+def _hour_01() -> HourKey:
+    return HourKey(symbol=USDJPY_15M.symbol, start=HOUR_01)
