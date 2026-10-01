@@ -11,7 +11,9 @@
 **状態**（D03 §14.12）は作業ディレクトリと補充分のディレクトリの中身から決まる:
 
 - 書き出し済み: 完成した補充分のうち `refill_manifest.json` の `plan_id` がこの計画のものが
-  ある（ほかの判定より先に行う）。
+  ある（ほかの判定より先に行う）。manifest の形・時間の列・同じ計画の補充分どうしの一致を
+  検算してから使う（W5）。書き出し済みでも、保管場所のファイルが消えた時間があれば、その
+  時間だけを取り直して保管場所を元に戻す（D03 §14.12 の書き出し済み×出来事2）。
 - 不合格: 最後の検証の結果の行が不合格で、その後に最終結果・無効化・取り直しの印の行が無い。
 - 取得終了: すべての時間ファイルに有効な最終結果がある。
 - 計画済み: 最終結果・取り直しの印・無効化の行が 1 行も無い。
@@ -40,11 +42,13 @@ from odyssey_fx.marketdata.domain.errors import (
     MarketDataValueError,
     RefillAlreadyFinalized,
     RefillPlanNotFound,
+    RefillSourceRefused,
     RefillStoreInconsistent,
     RefillValidationFailed,
 )
 from odyssey_fx.marketdata.domain.refill import (
     RETRYABLE_FAILURES,
+    STOPPING_FAILURES,
     ArchiveProvenance,
     ArchiveRead,
     AttemptRecord,
@@ -57,8 +61,10 @@ from odyssey_fx.marketdata.domain.refill import (
     HttpResult,
     Invalidation,
     JournalEntry,
+    ManifestHour,
     PauseEnd,
     PauseStart,
+    RefillManifestCore,
     RefillPlan,
     RetryMark,
     ValidationRecord,
@@ -245,13 +251,20 @@ def _read_archive_for(
 
 
 def classify_status(status: int) -> FailureKind | None:
-    """HTTP の状態を失敗の種類へ分ける。200 は `None`（成功）。"""
+    """HTTP の状態を失敗の種類へ分ける。200 は `None`（成功）。
+
+    401・403 は `HTTP_AUTH`、404・429 以外の 4xx は `HTTP_CLIENT`（どちらも計画を止める）。
+    """
     if status == 200:
         return None
     if status == 404:
         return FailureKind.HTTP_404
     if status == 429:
         return FailureKind.HTTP_429
+    if status in (401, 403):
+        return FailureKind.HTTP_AUTH
+    if 400 <= status <= 499:
+        return FailureKind.HTTP_CLIENT
     if 500 <= status <= 599:
         return FailureKind.HTTP_5XX
     return FailureKind.HTTP_OTHER
@@ -272,7 +285,13 @@ def seconds_to_wait(
 
 @dataclass(slots=True)
 class FetchReport:
-    """取得 1 回の集計（代表例の試行の見直しの材料。D03 §14.9・§14.14 の段 3）。"""
+    """取得 1 回の集計（代表例の試行の見直しの材料。D03 §14.9・§14.14 の段 3）。
+
+    `started_at`〜`finished_at` は今回の実行時間（通信の値の見直しに使う）。`hour_locked` は
+    時間のロックを取れずに未取得のまま残した時間ファイルの数。`restoring` は書き出し済みの
+    計画で消えた保管場所のファイルを取り直した回で、`not_restored` はそのうち取得できず
+    未取得のまま残した時間ファイルの数。
+    """
 
     plan_id: str
     state_before: PlanState
@@ -288,6 +307,9 @@ class FetchReport:
     started_at: UtcTime | None = None
     finished_at: UtcTime | None = None
     journal: JournalSummary | None = None
+    hour_locked: int = 0
+    restoring: bool = False
+    not_restored: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,7 +319,9 @@ class JournalSummary:
     `outcomes` は有効な最終結果の区分ごとの数、`failures` は失敗の種類ごとの回数（再試行した
     失敗は試行の行、再試行しない失敗は最終結果の行から数える）、`requests` は提供元への要求の
     回数（保管場所から読んだ時間と時間のロックの失敗は数えない）、`pauses` は一時停止の回数、
-    `first_at`・`last_at` は記録の最初と最後の行の時刻（全体の所要時間の目安）。
+    `first_at`・`last_at` は記録の最初と最後の行の時刻。その差は**全体の暦上の経過時間**で、
+    中断して止めていた時間も含むので、通信の値の見直しには使わない（今回の実行時間を使う。
+    PR #58 の仮置きの 17 への人間の修正指示 2026-10-01）。
     """
 
     outcomes: Mapping[HourOutcome, int]
@@ -350,7 +374,9 @@ class _Fetcher:
         store: RefillStore,
         source: TickArchiveSource,
         report: FetchReport,
+        expected: Mapping[HourKey, ManifestHour] | None = None,
     ) -> None:
+        self._expected = expected
         self._plan_id = plan_id
         self._plan = plan
         self._store = store
@@ -398,9 +424,47 @@ class _Fetcher:
         self._report.pauses += 1
         self._consecutive_failures = 0
 
+    def _require_expected(self, hour: HourKey, tick_digest: str, what: str) -> None:
+        """書き出し済みの計画の取り直しで、tick が補充分の manifest の記録と同じか確かめる。
+
+        違えば保管せずに `RefillStoreInconsistent`（提供元の訂正版を取り込まない。D03 §14.5・
+        §14.12 の書き出し済み×出来事2、W6）。
+        """
+        if self._expected is None:
+            return
+        recorded = self._expected[hour]
+        if recorded.tick_digest != tick_digest:
+            raise RefillStoreInconsistent(
+                f"{what} of {hour} give the tick digest {tick_digest}, but the finalized refill"
+                f" of the plan {self._plan_id} records {recorded.tick_digest}. Nothing was"
+                " stored; a provider correction is not taken in (D03 §14.5・§14.12, W6)"
+            )
+
     def _finish_not_fetched(
-        self, hour: HourKey, attempts: int, failure: FailureKind, result: HttpResult | None
+        self,
+        hour: HourKey,
+        attempts: int,
+        failure: FailureKind,
+        result: HttpResult | None,
+        *,
+        recorded: bool,
     ) -> None:
+        if self._expected is not None:
+            # 書き出し済みの計画の取り直しでは `NOT_FETCHED` を書かない（補充分の manifest の
+            # 記録と食い違う最終結果を作らない）。試行の行だけを残し、未取得のまま残す。
+            if not recorded:
+                self._append(
+                    AttemptRecord(
+                        hour=hour,
+                        attempt=attempts,
+                        failure=failure,
+                        http_status=None if result is None else result.status,
+                        detail="" if result is None else result.detail,
+                        at=self._source.now(),
+                    )
+                )
+            self._report.not_restored += 1
+            return
         self._append(
             FinalResult(
                 hour=hour,
@@ -439,6 +503,7 @@ class _Fetcher:
         if read is None:  # pragma: no cover - 一覧の直後に消えた
             return False
         decoded = verify_archive(read, self._plan)
+        self._require_expected(hour, decoded.tick_digest, read.path)
         self._append(
             FinalResult(
                 hour=hour,
@@ -462,71 +527,88 @@ class _Fetcher:
         return True
 
     def fetch_hour(self, hour: HourKey) -> None:
-        """時間ファイル 1 本を取り、最終結果を 1 行追記する（D03 §14.9・§14.12）。"""
+        """時間ファイル 1 本を取り、最終結果を 1 行追記する（D03 §14.9・§14.12）。
+
+        - 時間のロックを取れなければ通信せず、`HOUR_LOCKED` の行を残して未取得のまま次へ進む
+          （通信の再試行の回数を使わない。`NOT_FETCHED` にしない）。
+        - 401・403・その他の 4xx（404・429 を除く）は試行の行を残して `RefillSourceRefused`
+          で計画を止める（欠落として続けない）。
+        - 404 とその他の状態は再試行せず `NOT_FETCHED`。再試行の対象は上限まで取り直す。
+        """
         settings = self._plan.provider.settings
         url = settings.url_for(hour)
-        attempts = 0
-        locked = False
+        if not self._store.acquire_hour_lock(hour):
+            self._report.failures[FailureKind.HOUR_LOCKED] += 1
+            self._report.hour_locked += 1
+            self._append(
+                AttemptRecord(
+                    hour=hour,
+                    attempt=0,
+                    failure=FailureKind.HOUR_LOCKED,
+                    http_status=None,
+                    detail="another command holds the hour lock; fetch the plan again later",
+                    at=self._source.now(),
+                )
+            )
+            return
         try:
+            if self._use_archive(hour):
+                return
+            attempts = 0
             while True:
-                failure: FailureKind | None = None
-                result: HttpResult | None = None
-                if not locked:
-                    locked = self._store.acquire_hour_lock(hour)
-                    if locked and self._use_archive(hour):
+                required = float(self._comm.request_interval_seconds)
+                if attempts:
+                    required = max(required, float(self._comm.backoff_seconds(attempts)))
+                self._wait_for_request(required)
+                result = self._source.request(url, self._comm.request_timeout_seconds)
+                self._last_request_end = self._source.now()
+                self._report.requests += 1
+                failure = (
+                    result.failure if result.status is None else classify_status(result.status)
+                )
+                if failure is None:
+                    try:
+                        decoded = self._source.decode(result.body)
+                    except MarketDataValueError as exc:
+                        failure = FailureKind.INVALID_CONTENT
+                        result = HttpResult(
+                            url=result.url,
+                            status=result.status,
+                            body=b"",
+                            failure=None,
+                            detail=str(exc),
+                            fetched_at=result.fetched_at,
+                        )
+                    else:
+                        self._consecutive_failures = 0
+                        self._require_expected(hour, decoded.tick_digest, "the re-fetched ticks")
+                        self._store_fetched(hour, attempts + 1, result, decoded)
                         return
-                if not locked:
-                    failure = FailureKind.HOUR_LOCKED
-                else:
-                    required = float(self._comm.request_interval_seconds)
-                    if attempts:
-                        required = max(required, float(self._comm.backoff_seconds(attempts)))
-                    self._wait_for_request(required)
-                    result = self._source.request(url, self._comm.request_timeout_seconds)
-                    self._last_request_end = self._source.now()
-                    self._report.requests += 1
-                    failure = (
-                        result.failure if result.status is None else classify_status(result.status)
-                    )
-                    if failure is None:
-                        try:
-                            decoded = self._source.decode(result.body)
-                        except MarketDataValueError as exc:
-                            failure = FailureKind.INVALID_CONTENT
-                            result = HttpResult(
-                                url=result.url,
-                                status=result.status,
-                                body=b"",
-                                failure=None,
-                                detail=str(exc),
-                                fetched_at=result.fetched_at,
-                            )
-                        else:
-                            self._consecutive_failures = 0
-                            self._store_fetched(hour, attempts + 1, result, decoded)
-                            return
                 attempts += 1
+                if failure in STOPPING_FAILURES:
+                    self._record_failure(hour, attempts, failure, result)
+                    raise RefillSourceRefused(
+                        f"the provider answered HTTP {result.status} for {url} ({failure.value});"
+                        " this points at an authentication, permission or request error, so the"
+                        " plan was stopped instead of recording the hour as missing. Fix the"
+                        " cause, then run `odyssey-fx data refill fetch` again"
+                    )
                 if failure not in RETRYABLE_FAILURES:
                     # HTTP 404 とその他の状態は再試行しない（D03 §14.18 の 3）。
                     self._consecutive_failures = 0
                     self._report.failures[failure] += 1
-                    self._finish_not_fetched(hour, attempts, failure, result)
+                    self._finish_not_fetched(hour, attempts, failure, result, recorded=False)
                     return
                 self._record_failure(hour, attempts, failure, result)
-                if failure is not FailureKind.HOUR_LOCKED:
-                    self._consecutive_failures += 1
-                if failure is not FailureKind.HOUR_LOCKED:
-                    # 上限に達した最後の失敗でも、連続失敗が数に達していれば一時停止してから
-                    # 次の時間ファイルへ進む（別の時間ファイルをまたいで数える。D03 §14.9）。
-                    self._pause_if_needed()
+                self._consecutive_failures += 1
+                # 上限に達した最後の失敗でも、連続失敗が数に達していれば一時停止してから
+                # 次の時間ファイルへ進む（別の時間ファイルをまたいで数える。D03 §14.9）。
+                self._pause_if_needed()
                 if attempts > self._comm.max_retries:
-                    self._finish_not_fetched(hour, attempts, failure, result)
+                    self._finish_not_fetched(hour, attempts, failure, result, recorded=True)
                     return
-                if failure is FailureKind.HOUR_LOCKED:
-                    self._source.wait(self._comm.backoff_seconds(attempts))
         finally:
-            if locked:
-                self._store.release_hour_lock(hour)
+            self._store.release_hour_lock(hour)
 
     def _store_fetched(
         self, hour: HourKey, attempts: int, result: HttpResult, decoded: DecodedTicks
@@ -618,24 +700,26 @@ def fetch_plan(
 
     手順:
 
-    1. 作業ディレクトリが無ければ、この計画の補充分があれば `RefillAlreadyFinalized`、無ければ
-       `RefillPlanNotFound`。
+    1. 作業ディレクトリが無ければ、この計画の補充分があれば（manifest を検算してから）
+       `RefillAlreadyFinalized`、無ければ `RefillPlanNotFound`。
     2. 計画のロックを取る（取れなければ `RefillPlanLocked`。状態を判定しない）。
     3. 検算（W5・W6）: 書きかけの補充分、`plan.json` の `plan_id`、取得記録の各行、有効な
        最終結果が指す保管場所のもの。最後の行だけが不完全なら切り詰める（W3）。
-    4. 状態を判定する。書き出し済みなら `RefillAlreadyFinalized`（書き出した計画は取得し
-       直さない）。
+    4. 状態を判定する。書き出し済みなら `_restore_finalized`（消えた保管場所のファイルの
+       時間だけを取り直す。無ければ `RefillAlreadyFinalized`）。
     5. 指すものが消えた最終結果は無効化の行を追記する（以後は取り直しの対象）。
     6. `retry_failed` なら、計画済みでは何もしない。不合格で `NOT_FETCHED` が無ければ
        `RefillValidationFailed`。それ以外は `NOT_FETCHED` の時間ごとに取り直しの印を追記する。
     7. 有効な最終結果の無い時間ファイルを計画の順に取得する。
     """
     if not store.work_dir_exists(plan_id):
-        finished = finalized_refills(store, plan_id)
+        finished = finalized_refills(store, plan_id, None)
         if finished:
             raise RefillAlreadyFinalized(
-                f"the plan {plan_id} is already finalized as {', '.join(finished)};"
-                " a finalized plan is not fetched again (D03 §14.12)"
+                f"the plan {plan_id} is already finalized as"
+                f" {', '.join(name for name, _ in finished)} and its work directory is gone;"
+                " a finalized plan is not fetched again, and restoring archive files without"
+                " the work directory is not defined (D03 §14.12)"
             )
         raise RefillPlanNotFound(
             f"no refill plan {plan_id} under _work/; create it with"
@@ -658,11 +742,16 @@ def _fetch_locked(
     require_consistent_refills(store)
     plan = require_plan_matches(plan_id, store.read_plan(plan_id))
     journal = read_journal(plan_id, store.read_journal(plan_id), plan)
-    finalized = bool(finalized_refills(store, plan_id))
-    if finalized:
-        raise RefillAlreadyFinalized(
-            f"the plan {plan_id} is already finalized; a finalized plan is not fetched again."
-            " Retry failed hours with a new plan from the new snapshot (D03 §14.12, RF-7)"
+    finished = finalized_refills(store, plan_id, plan)
+    if finished:
+        return _restore_finalized(
+            plan_id,
+            plan,
+            store=store,
+            source=source,
+            journal=journal,
+            manifest=finished[0][1],
+            retry_failed=retry_failed,
         )
     if journal.broken_tail_offset is not None:
         store.truncate_journal(plan_id, journal.broken_tail_offset)
@@ -714,6 +803,92 @@ def _fetch_locked(
 
     lines = read_journal(plan_id, store.read_journal(plan_id), plan)
     report.state_after = derive_state(plan, lines.entries, finalized=False)
+    report.finished_at = source.now()
+    report.journal = summarize_journal(lines.entries)
+    return report
+
+
+def _restore_finalized(
+    plan_id: str,
+    plan: RefillPlan,
+    *,
+    store: RefillStore,
+    source: TickArchiveSource,
+    journal: JournalState,
+    manifest: RefillManifestCore,
+    retry_failed: bool,
+) -> FetchReport:
+    """書き出し済みの計画への `fetch`（D03 §14.12 の書き出し済み×出来事2・9）。
+
+    1. 取得記録の有効な最終結果が補充分の manifest の記録（区分と tick の内容のダイジェスト）と
+       一致することを確かめる（W5。違えば `RefillStoreInconsistent`）。
+    2. 有効な最終結果が指す保管場所のものを検算する。消えていれば無効化の行の候補にする。
+    3. `--retry-failed`（出来事9）は拒否する（`RefillAlreadyFinalized`）。
+    4. 取り直す時間（消えた時間と、前の取り直しで取れなかった時間）が無ければ
+       `RefillAlreadyFinalized`（何も書かない）。
+    5. 無効化の行を追記してから、その時間だけを取り直す。取り直した tick の内容のダイジェストが
+       manifest の記録と違えば保管せずに `RefillStoreInconsistent`（提供元の訂正版を取り込まない）。
+       既存の補充分と残っている保管場所のファイルには書かない。状態は書き出し済みのまま。
+    """
+    entries = list(journal.entries)
+    expected = manifest.digests()
+    finals = effective_finals(entries)
+    for hour, final in sorted(finals.items(), key=lambda item: item[0].sort_key()):
+        recorded = expected[hour]
+        if (final.outcome, final.tick_digest) != (recorded.outcome, recorded.tick_digest):
+            raise RefillStoreInconsistent(
+                f"_work/{plan_id}/journal.jsonl: the final result of {hour}"
+                f" ({final.outcome.value}, {final.tick_digest}) differs from the finalized"
+                f" refill's record ({recorded.outcome.value}, {recorded.tick_digest})."
+                " Nothing was written (D03 §14.11.1 W5・W6)"
+            )
+    invalidations = _check_finals(plan_id, plan, store, entries, source.now())
+    invalidated = {item.hour for item in invalidations}
+    pending = [hour for hour in plan.hour_keys if hour not in finals or hour in invalidated]
+    for hour in pending:
+        if expected[hour].outcome is HourOutcome.NOT_FETCHED:
+            raise RefillStoreInconsistent(
+                f"_work/{plan_id}/journal.jsonl has no valid final result for {hour}, which the"
+                " finalized refill records as NOT_FETCHED. Nothing was written"
+                " (D03 §14.11.1 W5・W6)"
+            )
+    if retry_failed:
+        raise RefillAlreadyFinalized(
+            f"the plan {plan_id} is already finalized; `--retry-failed` is refused. Retry failed"
+            " hours with a new plan from the new snapshot (D03 §14.12, RF-7)"
+        )
+    if not pending:
+        raise RefillAlreadyFinalized(
+            f"the plan {plan_id} is already finalized and no archive file is missing; a"
+            " finalized plan is not fetched again. Nothing was written (D03 §14.12)"
+        )
+    if journal.broken_tail_offset is not None:
+        store.truncate_journal(plan_id, journal.broken_tail_offset)
+    report = FetchReport(
+        plan_id=plan_id,
+        state_before=PlanState.FINALIZED,
+        state_after=PlanState.FINALIZED,
+        started_at=source.now(),
+        restoring=True,
+    )
+    for invalidation in invalidations:
+        store.append_journal(plan_id, invalidation.payload())
+        report.invalidations += 1
+    fetcher = _Fetcher(
+        plan_id=plan_id,
+        plan=plan,
+        store=store,
+        source=source,
+        report=report,
+        expected=expected,
+    )
+    targets = set(pending)
+    for hour in plan.hour_keys:
+        if hour not in targets:
+            report.skipped += 1
+            continue
+        fetcher.fetch_hour(hour)
+    lines = read_journal(plan_id, store.read_journal(plan_id), plan)
     report.finished_at = source.now()
     report.journal = summarize_journal(lines.entries)
     return report

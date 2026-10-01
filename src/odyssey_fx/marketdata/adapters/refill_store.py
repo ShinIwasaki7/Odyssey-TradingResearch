@@ -249,7 +249,7 @@ class FsRefillStore:
                     )
                 )
                 continue
-            found.append(RefillDirectory(name=name, plan_id=plan_id, problem=""))
+            found.append(RefillDirectory(name=name, plan_id=plan_id, problem="", manifest=payload))
         return tuple(found)
 
     # --- 作業ディレクトリ --------------------------------------------------------------

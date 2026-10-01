@@ -25,11 +25,13 @@ from odyssey_fx.marketdata.domain.refill import (
     HourKey,
     HourOutcome,
     Invalidation,
+    ManifestHour,
     PauseEnd,
     PauseStart,
     PlanHour,
     ProviderSymbol,
     RefillFilter,
+    RefillManifestCore,
     RefillPlan,
     RetryMark,
     TargetBar,
@@ -252,6 +254,14 @@ def _fetched(**overrides: object) -> FinalResult:
             detail="timed out",
             at=AT,
         ),
+        AttemptRecord(
+            hour=HourKey(symbol=market.USDJPY, start=HOUR_01),
+            attempt=0,
+            failure=FailureKind.HOUR_LOCKED,
+            http_status=None,
+            detail="locked",
+            at=AT,
+        ),
         RetryMark(hour=HourKey(symbol=market.USDJPY, start=HOUR_01), at=AT),
         Invalidation(hour=HourKey(symbol=market.USDJPY, start=HOUR_01), reason="gone", at=AT),
         PauseStart(consecutive_failures=3, seconds=180, at=AT),
@@ -284,3 +294,78 @@ def test_an_outcome_must_match_the_tick_count() -> None:
 def test_an_unknown_journal_kind_is_rejected() -> None:
     with pytest.raises(MarketDataValueError):
         journal_entry_from_payload({"kind": "something"})
+
+
+def test_only_an_hour_lock_record_has_attempt_zero() -> None:
+    """時間のロックの競合は通信していないので試行の回数 0。ほかの失敗は 1 以上。"""
+    hour = HourKey(symbol=market.USDJPY, start=HOUR_01)
+    with pytest.raises(MarketDataValueError):
+        AttemptRecord(
+            hour=hour, attempt=0, failure=FailureKind.TIMEOUT, http_status=None, detail="", at=AT
+        )
+    with pytest.raises(MarketDataValueError):
+        AttemptRecord(
+            hour=hour,
+            attempt=1,
+            failure=FailureKind.HOUR_LOCKED,
+            http_status=None,
+            detail="",
+            at=AT,
+        )
+
+
+# --- 補充の manifest のうち PR 1 が読む部分 -------------------------------------------
+
+
+def _manifest_hours() -> list[dict[str, object]]:
+    return [
+        {
+            "hour": HourKey(symbol=market.USDJPY, start=HOUR_00).payload(),
+            "outcome": "FETCHED",
+            "tick_digest": DIGEST,
+        },
+        {
+            "hour": HourKey(symbol=market.USDJPY, start=HOUR_01).payload(),
+            "outcome": "NOT_FETCHED",
+            "tick_digest": None,
+        },
+    ]
+
+
+def test_the_manifest_core_reads_back_and_ignores_other_keys() -> None:
+    core = RefillManifestCore.from_payload(
+        {"plan_id": DIGEST, "hours": _manifest_hours(), "refill_id": "x", "files": []}
+    )
+    assert core.plan_id == DIGEST
+    assert [item.outcome for item in core.hours] == [
+        HourOutcome.FETCHED,
+        HourOutcome.NOT_FETCHED,
+    ]
+    assert RefillManifestCore.from_payload(core.payload()) == core
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"plan_id": DIGEST},
+        {"hours": _manifest_hours()},
+        {"plan_id": "short", "hours": _manifest_hours()},
+        {"plan_id": DIGEST, "hours": []},
+        {"plan_id": DIGEST, "hours": list(reversed(_manifest_hours()))},
+        {"plan_id": DIGEST, "hours": [_manifest_hours()[0], _manifest_hours()[0]]},
+        {"plan_id": DIGEST, "hours": [{**_manifest_hours()[0], "tick_digest": None}]},
+        {"plan_id": DIGEST, "hours": [{**_manifest_hours()[1], "tick_digest": DIGEST}]},
+        {"plan_id": DIGEST, "hours": [{"hour": _manifest_hours()[0]["hour"]}]},
+        [],
+    ],
+)
+def test_an_invalid_manifest_core_is_rejected(payload: object) -> None:
+    with pytest.raises(MarketDataValueError):
+        RefillManifestCore.from_payload(payload)
+
+
+def test_a_manifest_hour_keeps_digests_only_for_fetched_hours() -> None:
+    hour = HourKey(symbol=market.USDJPY, start=HOUR_00)
+    assert ManifestHour(hour=hour, outcome=HourOutcome.FETCHED_EMPTY, tick_digest=DIGEST)
+    with pytest.raises(MarketDataValueError):
+        ManifestHour(hour=hour, outcome=HourOutcome.NOT_FETCHED, tick_digest=DIGEST)

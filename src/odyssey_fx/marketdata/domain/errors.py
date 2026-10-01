@@ -37,6 +37,7 @@ __all__ = [
     "RefillPlanEmpty",
     "RefillPlanLocked",
     "RefillPlanNotFound",
+    "RefillSourceRefused",
     "RefillStoreInconsistent",
     "RefillValidationFailed",
     "SnapshotAlreadyExists",
@@ -155,6 +156,15 @@ class RefillStoreInconsistent(RefillError):
 
     自動で直さない・置き換えない・消さない。食い違ったパスと理由を表示して止まり、人間が
     `data/raw/market/refill/` の下のそのものを消してからやり直す（W6）。
+    """
+
+
+class RefillSourceRefused(RefillError):
+    """提供元が認証・権限・要求の誤りを示す応答（404・429 以外の 4xx）を返した。
+
+    欠落として取得を続けず、計画を止めて原因（URL・HTTP の状態）を表示する（PR #58 の仮置き
+    の 3 への人間の修正指示 2026-10-01。型の名前は仮置き）。その時間には最終結果を書かないので、
+    設定を直してから同じ計画で `fetch` を再開すれば取り直す。
     """
 
 

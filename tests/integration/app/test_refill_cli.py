@@ -192,6 +192,10 @@ def test_plan_then_fetch_through_the_commands(
     assert "PLANNED → FETCH_DONE" in shown
     assert "最終結果 FETCHED: 2" in shown
     assert "104." not in shown and "103." not in shown  # 価格を出さない
+    # 時間は「今回の実行時間」と「全体の暦上の経過時間」を別の名前で出す（所要時間とは呼ばない）。
+    assert "今回の実行時間:" in shown
+    assert "全体の暦上の経過時間:" in shown
+    assert "所要" not in shown
     # 再実行は取り直さない（偽の取得元は応答を使い切っている）。
     assert _run("data", "refill", "fetch", "--plan", plan_id, "--out", refill) == 0
     assert "取得済みとして飛ばした時間ファイル: 2" in capsys.readouterr().out

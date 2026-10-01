@@ -66,8 +66,11 @@ __all__ = [
     "ProviderRef",
     "ProviderSettings",
     "ProviderSymbol",
+    "ManifestHour",
     "RETRYABLE_FAILURES",
+    "STOPPING_FAILURES",
     "RefillFilter",
+    "RefillManifestCore",
     "RefillPlan",
     "RetryMark",
     "TargetBar",
@@ -260,9 +263,19 @@ class FailureKind(Enum):
     """1 回の試行の失敗の種類（D03 §14.9）。
 
     `TIMEOUT`・`CONNECTION`・`HTTP_429`・`HTTP_5XX` は再試行の対象（D03 §14.9 の表）。
-    `HTTP_404` は再試行しない（D03 §14.18 の 3）。`HTTP_OTHER`（その他の HTTP の状態）・
-    `INVALID_CONTENT`（成功の応答の中身が bi5 として読めない）・`HOUR_LOCKED`（保管場所の
-    時間のロックを取れない。通信はしない。D03 §14.11.1 の W1）の扱いは実装の仮置き。
+    `HTTP_404` は再試行せず `NOT_FETCHED`（D03 §14.18 の 3）。
+
+    PR #58 の仮置きへの人間の決定（2026-10-01）による扱い:
+
+    - `HTTP_AUTH`（401・403。認証・権限の誤り）と `HTTP_CLIENT`（404・429 以外の 4xx。要求や
+      設定の誤り）は、欠落として取得を続けず、計画を止めて原因を表示する（`RefillSourceRefused`）。
+      その時間には最終結果を書かない（設定を直してから同じ計画で再開すれば取り直す）。
+    - `HTTP_OTHER`（4xx・5xx・200 以外の状態）は再試行せず `NOT_FETCHED`。
+    - `INVALID_CONTENT`（成功の応答の中身が bi5 として読めない）は再試行し、上限に達したら
+      理由を `INVALID_CONTENT` として `NOT_FETCHED` にする。tick が無いという判断には読み替えない。
+    - `HOUR_LOCKED`（保管場所の時間のロックを取れない。通信はしない。D03 §14.11.1 の W1）は
+      通信の再試行の回数を使わず、別の理由として取得記録に残し、その時間を未取得のまま残す
+      （`NOT_FETCHED` にしない。同じ計画をもう一度 `fetch` すれば取る）。
     """
 
     TIMEOUT = "TIMEOUT"
@@ -270,12 +283,14 @@ class FailureKind(Enum):
     HTTP_429 = "HTTP_429"
     HTTP_5XX = "HTTP_5XX"
     HTTP_404 = "HTTP_404"
+    HTTP_AUTH = "HTTP_AUTH"
+    HTTP_CLIENT = "HTTP_CLIENT"
     HTTP_OTHER = "HTTP_OTHER"
     INVALID_CONTENT = "INVALID_CONTENT"
     HOUR_LOCKED = "HOUR_LOCKED"
 
 
-#: 再試行の対象にする失敗の種類（D03 §14.9。`INVALID_CONTENT`・`HOUR_LOCKED` は仮置き）。
+#: 再試行の対象にする失敗の種類（D03 §14.9。`INVALID_CONTENT` は人間の条件付き承認 2026-10-01）。
 RETRYABLE_FAILURES: Final = frozenset(
     {
         FailureKind.TIMEOUT,
@@ -283,9 +298,11 @@ RETRYABLE_FAILURES: Final = frozenset(
         FailureKind.HTTP_429,
         FailureKind.HTTP_5XX,
         FailureKind.INVALID_CONTENT,
-        FailureKind.HOUR_LOCKED,
     }
 )
+
+#: 計画を止めて原因を表示する失敗の種類（認証・権限・設定の誤り。人間の修正指示 2026-10-01）。
+STOPPING_FAILURES: Final = frozenset({FailureKind.HTTP_AUTH, FailureKind.HTTP_CLIENT})
 
 
 # --- tick（D03 §14.3・§14.6）--------------------------------------------------------
@@ -1317,7 +1334,11 @@ class FinalResult:
 
 @dataclass(frozen=True, slots=True)
 class AttemptRecord:
-    """失敗した試行 1 回の行（D03 §14.12 の出来事4。成功の試行は最終結果の行が表す）。"""
+    """失敗した試行 1 回の行（D03 §14.12 の出来事4。成功の試行は最終結果の行が表す）。
+
+    `HOUR_LOCKED`（時間のロックを取れなかった）の行は通信していないので `attempt` が 0 で、
+    通信の再試行の回数に数えない。それ以外の失敗の `attempt` は 1 以上。
+    """
 
     hour: HourKey
     attempt: int
@@ -1331,9 +1352,15 @@ class AttemptRecord:
     def __post_init__(self) -> None:
         if not isinstance(self.hour, HourKey):
             raise MarketDataValueError("AttemptRecord.hour must be an HourKey")
-        _require_int(self.attempt, "AttemptRecord.attempt", minimum=1)
         if not isinstance(self.failure, FailureKind):
             raise MarketDataValueError("AttemptRecord.failure must be a FailureKind")
+        if self.failure is FailureKind.HOUR_LOCKED:
+            if self.attempt != 0 or self.http_status is not None:
+                raise MarketDataValueError(
+                    "an HOUR_LOCKED record made no request: attempt 0 and no HTTP status"
+                )
+        else:
+            _require_int(self.attempt, "AttemptRecord.attempt", minimum=1)
         if self.http_status is not None:
             _require_int(self.http_status, "AttemptRecord.http_status", minimum=100)
         _require_str(self.detail, "AttemptRecord.detail", allow_empty=True)
@@ -1477,6 +1504,104 @@ class ValidationRecord:
         }
 
 
+# --- 補充の manifest のうち PR 1 が読む部分（D03 §14.11・§14.12「書き出し済み」）--------
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestHour:
+    """補充の manifest の時間ファイル 1 本の記録（時間・区分・tick の内容のダイジェスト）。
+
+    `NOT_FETCHED` はダイジェストを持たない（`None`）。それ以外は 16進 64 文字。
+    """
+
+    hour: HourKey
+    outcome: HourOutcome
+    tick_digest: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.hour, HourKey):
+            raise MarketDataValueError("ManifestHour.hour must be an HourKey")
+        if not isinstance(self.outcome, HourOutcome):
+            raise MarketDataValueError("ManifestHour.outcome must be an HourOutcome")
+        if self.outcome is HourOutcome.NOT_FETCHED:
+            if self.tick_digest is not None:
+                raise MarketDataValueError("a NOT_FETCHED hour has no tick digest")
+        else:
+            require_hex_digest(self.tick_digest, "ManifestHour.tick_digest")
+
+    def payload(self) -> Mapping[str, Any]:
+        """manifest に書く形。"""
+        return {
+            "hour": self.hour.payload(),
+            "outcome": self.outcome.value,
+            "tick_digest": self.tick_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RefillManifestCore:
+    """補充の manifest `refill_manifest.json` のうち、書き出し済みの判定と取り直しに使う部分。
+
+    PR 1 が定める最小の項目（PR 2 の書き出しはこれを含めて拡張する。ほかの鍵は読まない）:
+
+    - `plan_id`: この補充分を書き出した計画（16進 64 文字）。
+    - `hours`: 時間ファイルごとの `{"hour": {"symbol", "start"}, "outcome", "tick_digest"}` の
+      列。`(銘柄, 時刻)` で整列し、同じ時間は 1 回だけ。
+    - 完成の印: `refill_manifest.json` そのもの（補充分の他のファイルをすべて置いた後に置く。
+      D03 §14.11.1 の W4）。
+
+    形が違えば `MarketDataValueError`（読み手は `RefillStoreInconsistent` にする。W5・W6）。
+    """
+
+    plan_id: str
+    hours: tuple[ManifestHour, ...]
+
+    def __post_init__(self) -> None:
+        require_hex_digest(self.plan_id, "RefillManifestCore.plan_id")
+        if not isinstance(self.hours, tuple) or not self.hours:
+            raise MarketDataValueError("RefillManifestCore.hours must be a non-empty tuple")
+        keys = [item.hour.sort_key() for item in self.hours]
+        if any(earlier >= later for earlier, later in zip(keys, keys[1:], strict=False)):
+            raise MarketDataValueError(
+                "RefillManifestCore.hours must be sorted by (symbol, start) without duplicates"
+            )
+
+    def digests(self) -> dict[HourKey, ManifestHour]:
+        """時間ごとの記録。"""
+        return {item.hour: item for item in self.hours}
+
+    def payload(self) -> Mapping[str, Any]:
+        """manifest に書く形（PR 1 の範囲の鍵だけ）。"""
+        return {"hours": [item.payload() for item in self.hours], "plan_id": self.plan_id}
+
+    @classmethod
+    def from_payload(cls, payload: object) -> RefillManifestCore:
+        """manifest の内容から読む（ほかの鍵は PR 2 のもので、ここでは読まない）。"""
+        label = "refill_manifest.json"
+        mapping = _mapping(payload, label)
+        for key in ("plan_id", "hours"):
+            if key not in mapping:
+                raise MarketDataValueError(f"{label} lacks {key!r}")
+        hours: list[ManifestHour] = []
+        for index, item in enumerate(_sequence(mapping["hours"], f"{label}.hours")):
+            item_label = f"{label}.hours[{index}]"
+            entry = _mapping(item, item_label)
+            for key in ("hour", "outcome", "tick_digest"):
+                if key not in entry:
+                    raise MarketDataValueError(f"{item_label} lacks {key!r}")
+            hours.append(
+                ManifestHour(
+                    hour=HourKey.from_payload(entry["hour"], f"{item_label}.hour"),
+                    outcome=_enum(entry["outcome"], HourOutcome, f"{item_label}.outcome"),
+                    tick_digest=_optional_hex(entry["tick_digest"], f"{item_label}.tick_digest"),
+                )
+            )
+        return cls(
+            plan_id=require_hex_digest(mapping["plan_id"], f"{label}.plan_id"),
+            hours=tuple(hours),
+        )
+
+
 #: 取得記録の行の型。
 JournalEntry = (
     FinalResult
@@ -1551,7 +1676,7 @@ def journal_entry_from_payload(payload: object) -> JournalEntry:
         )
         return AttemptRecord(
             hour=HourKey.from_payload(mapping["hour"], f"{label}.hour"),
-            attempt=_require_int(mapping["attempt"], f"{label}.attempt", minimum=1),
+            attempt=_require_int(mapping["attempt"], f"{label}.attempt", minimum=0),
             failure=_enum(mapping["failure"], FailureKind, f"{label}.failure"),
             http_status=_optional_int(mapping["http_status"], f"{label}.http_status", minimum=100),
             detail=_require_str(mapping["detail"], f"{label}.detail", allow_empty=True),

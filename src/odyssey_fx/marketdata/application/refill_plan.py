@@ -55,6 +55,7 @@ from odyssey_fx.marketdata.domain.refill import (
     PlanHour,
     ProviderRef,
     RefillFilter,
+    RefillManifestCore,
     RefillPlan,
     TargetBar,
 )
@@ -449,9 +450,51 @@ def require_consistent_refills(store: RefillStore) -> None:
         )
 
 
-def finalized_refills(store: RefillStore, plan_id: str) -> tuple[str, ...]:
-    """この計画の完成した補充分のディレクトリ名（D03 §14.12「書き出し済み」の判定）。"""
-    return tuple(entry.name for entry in store.list_refills() if entry.plan_id == plan_id)
+def finalized_refills(
+    store: RefillStore, plan_id: str, plan: RefillPlan | None
+) -> tuple[tuple[str, RefillManifestCore], ...]:
+    """この計画の完成した補充分（D03 §14.12「書き出し済み」の判定）を検算して返す。
+
+    `refill_manifest.json` の `plan_id` がこの計画のものを集め、判定と取り直しに使う記録の
+    整合を確かめる（D03 §14.11.1 の W5。`plan_id` の鍵だけでは判定しない。PR #58 の仮置き
+    の 14 への人間の決定 2026-10-01）:
+
+    - manifest の形（`RefillManifestCore`）が読めること。
+    - 計画（`plan`。作業ディレクトリがあるとき）の時間ファイルの列と manifest の時間の列が
+      一致すること。
+    - 同じ計画の補充分が複数あれば、時間ごとの区分と tick の内容のダイジェストがすべて同じで
+      あること（どれも同じ保管場所の tick から書き出すので、違えば食い違い）。
+
+    合わなければ `RefillStoreInconsistent`（W6）。返すのは `(ディレクトリ名, manifest)` の列。
+    """
+    found: list[tuple[str, RefillManifestCore]] = []
+    for entry in store.list_refills():
+        if entry.plan_id != plan_id:
+            continue
+        try:
+            core = RefillManifestCore.from_payload(entry.manifest)
+        except MarketDataValueError as exc:
+            raise RefillStoreInconsistent(
+                f"{entry.name}/refill_manifest.json names the plan {plan_id} but cannot be read:"
+                f" {exc}. Nothing was written; check the refill directory (D03 §14.11.1 W5・W6)"
+            ) from exc
+        if core.plan_id != plan_id:  # pragma: no cover - adapters が読んだ値と同じ
+            raise RefillStoreInconsistent(f"{entry.name}/refill_manifest.json plan_id differs")
+        if plan is not None and [item.hour for item in core.hours] != sorted(
+            plan.hour_keys, key=lambda key: key.sort_key()
+        ):
+            raise RefillStoreInconsistent(
+                f"{entry.name}/refill_manifest.json lists hour files that differ from the plan"
+                f" {plan_id}. Nothing was written (D03 §14.11.1 W5・W6)"
+            )
+        if found and core.hours != found[0][1].hours:
+            raise RefillStoreInconsistent(
+                f"the refill directories {found[0][0]} and {entry.name} of the plan {plan_id}"
+                " record different hour results or tick digests. Nothing was written"
+                " (D03 §14.11.1 W5・W6)"
+            )
+        found.append((entry.name, core))
+    return tuple(found)
 
 
 def require_plan_matches(plan_id: str, payload: Mapping[str, object] | None) -> RefillPlan:
@@ -492,10 +535,10 @@ def create_plan(plan: RefillPlan, store: RefillStore) -> str:
     """
     plan_id = plan.plan_id()
     require_consistent_refills(store)
-    finished = finalized_refills(store, plan_id)
+    finished = finalized_refills(store, plan_id, plan)
     if finished:
         raise RefillAlreadyFinalized(
-            f"the plan {plan_id} is already finalized as {', '.join(finished)};"
+            f"the plan {plan_id} is already finalized as {', '.join(n for n, _ in finished)};"
             " nothing was written (D03 §14.12)"
         )
     if store.work_dir_exists(plan_id):

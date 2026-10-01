@@ -165,13 +165,16 @@ class JournalLine:
 class RefillDirectory:
     """補充の置き場の直下にある補充分のディレクトリ 1 つ（D03 §14.11・§14.12）。
 
-    完成の印 `refill_manifest.json` があれば、その `plan_id` を持つ。無ければ書きかけで
-    `plan_id` は `None`（D03 §14.11.1 の W4・W6）。`problem` は読めなかった理由。
+    完成の印 `refill_manifest.json` があれば、その `plan_id` と manifest の内容（`manifest`。
+    JSON として読んだもの）を持つ。無ければ書きかけで `plan_id`・`manifest` は `None`（D03
+    §14.11.1 の W4・W6）。`problem` は読めなかった理由。manifest の形の検算は application が
+    行う（W5）。
     """
 
     name: str
     plan_id: str | None
     problem: str
+    manifest: Mapping[str, Any] | None = None
 
 
 class RefillStore(Protocol):

@@ -316,18 +316,37 @@ def refill_plan_lines(plan: RefillPlan, plan_id: str) -> list[str]:
 
 
 def refill_fetch_lines(report: FetchReport) -> list[str]:
-    """取得 1 回の集計（D03 §14.9。代表例の試行の見直しの材料）。"""
-    elapsed = ""
-    if report.started_at is not None and report.finished_at is not None:
-        seconds = (report.finished_at - report.started_at).total_seconds()
-        elapsed = f"（所要 {seconds:.0f} 秒）"
+    """取得 1 回の集計（D03 §14.9。代表例の試行の見直しの材料）。
+
+    時間は「今回の実行時間」（この `fetch` の開始から終了まで）と「全体の暦上の経過時間」
+    （取得記録の最初の行から最後の行まで。中断して止めていた時間を含む）を別の名前で出す。
+    通信の値の見直しに使うのは今回の実行時間である（PR #58 の仮置きの 17 への人間の修正指示
+    2026-10-01）。
+    """
     lines = [
         f"取得計画: {report.plan_id}",
-        f"状態: {report.state_before.value} → {report.state_after.value}{elapsed}",
-        f"取得済みとして飛ばした時間ファイル: {report.skipped}",
-        f"保管場所から読んだ時間ファイル: {report.from_archive}",
-        f"要求の回数: {report.requests}、一時停止: {report.pauses} 回",
+        f"状態: {report.state_before.value} → {report.state_after.value}",
     ]
+    if report.started_at is not None and report.finished_at is not None:
+        seconds = (report.finished_at - report.started_at).total_seconds()
+        lines.append(f"今回の実行時間: {seconds:.0f} 秒（通信の値の見直しにはこの値を使う）")
+    if report.restoring:
+        lines.append(
+            "書き出し済みの計画: 保管場所のファイルが消えた時間だけを取り直した"
+            f"（取れずに未取得のまま残した時間ファイル: {report.not_restored}）"
+        )
+    lines.extend(
+        [
+            f"取得済みとして飛ばした時間ファイル: {report.skipped}",
+            f"保管場所から読んだ時間ファイル: {report.from_archive}",
+            f"要求の回数: {report.requests}、一時停止: {report.pauses} 回",
+        ]
+    )
+    if report.hour_locked:
+        lines.append(
+            f"時間のロックを取れず未取得のまま残した時間ファイル: {report.hour_locked}"
+            "（別のコマンドが取得中。終わってから同じ計画をもう一度 fetch する）"
+        )
     if report.retry_marks:
         lines.append(f"取り直しの対象に戻した時間ファイル: {report.retry_marks}")
     if report.invalidations:
@@ -338,14 +357,16 @@ def refill_fetch_lines(report: FetchReport) -> list[str]:
         lines.append(f"  失敗 {failure.value}: {report.failures[failure]}")
     journal = report.journal
     if journal is not None:
-        span = ""
-        if journal.first_at is not None and journal.last_at is not None:
-            seconds = (journal.last_at - journal.first_at).total_seconds()
-            span = f"、最初の行から最後の行まで {seconds:.0f} 秒"
         lines.append(
             f"取得記録全体（中断・再開をまたぐ）: 要求 {journal.requests} 回、"
-            f"一時停止 {journal.pauses} 回{span}"
+            f"一時停止 {journal.pauses} 回"
         )
+        if journal.first_at is not None and journal.last_at is not None:
+            seconds = (journal.last_at - journal.first_at).total_seconds()
+            lines.append(
+                f"  全体の暦上の経過時間: {seconds:.0f} 秒（最初の行から最後の行まで。"
+                "中断して止めていた時間を含むので通信の値の見直しには使わない）"
+            )
         for outcome in sorted(journal.outcomes, key=lambda item: item.value):
             lines.append(f"  有効な最終結果 {outcome.value}: {journal.outcomes[outcome]}")
         for failure in sorted(journal.failures, key=lambda item: item.value):
