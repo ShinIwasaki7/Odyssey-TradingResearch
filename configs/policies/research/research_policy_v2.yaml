@@ -1,0 +1,22 @@
+# 研究ポリシー v2（D07 §20.2 v2.7、D09 §10.9、2026-09-29 の人間の決定 Q7・Q8）
+#
+# 版 1 の複雑性の上限4件は据え置き、1実験の試行数（列挙した試行の数。コンパイル拒否の試行を
+# 含む）の上限 `search_limits.trials` を足した版である（Q7 決定の初期値 100）。検査 P7
+# （`trial_count_within_limit`）がこの値と列挙した試行の数を比べる。
+#
+# 版 2 は評価基準の群（`evaluation_standard`）を持たないので、探索の実験は指せない（探索の実験が
+# 指せるのは版 3 以上。D09 §5.5 の10）。単一実行の実験はどの版も指せる。
+#
+# **版を上げずに中身を変えない**。この版のダイジェストは `registry.yaml` に登録してあり、中身を
+# 変えると読込で拒否される（Q8 決定）。
+
+schema_version: 1
+id: research_policy
+version: 2
+complexity_limits:
+  component_kinds: 30
+  instances: 36
+  parameters: 33
+  decision_outputs: 18
+search_limits:
+  trials: 100

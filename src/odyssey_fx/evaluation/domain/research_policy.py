@@ -3,7 +3,8 @@
 **検査の規則はコードに置き、ファイルは上限の値だけを持つ**（D07 §20.2）。規則をファイルで
 書ける形にすると、検査の意味が設定で変わり、「共通1種類」（上位設計書 §6）の意味が崩れる。
 
-検査は6件（D07 §20.3 の P1〜P6）で、時点は3つ（事前・保存時・事後）である。
+検査は7件（D07 §20.3 の P1〜P7）で、時点は3つ（事前・保存時・事後）である。P7 は探索の
+実験だけに当てる（D09 §10.9。2026-09-29 の人間の決定 Q7）。
 
 | # | 検査 | 時点 | 合格の条件 |
 |---|---|---|---|
@@ -13,6 +14,7 @@
 | P4 | `run_matches_preregistration` | 事後 | run の `ConfigDigest` と `run_id` が予測どおり |
 | P5 | `evaluation_rule_matches` | 事後 | 評価の指標集合の版が記録票と一致 |
 | P6 | `complexity_within_limits` | 事前 | 複雑性の計測値4件がすべて上限以下 |
+| P7 | `trial_count_within_limit` | 事前 | 列挙した試行の数が試行数の上限以下（探索の実験だけ） |
 
 **合格は `PASSED` だけ**である。`FAILED` と `UNREADABLE`（計測や照合ができなかった）は
 どちらも「合格でない」として扱う（D07 §20.3）。計測できなかった複雑性を 0 で埋めると上限の
@@ -21,6 +23,11 @@
 計測の**規則**は本モジュールの純粋関数に置き、**材料**（使用箇所ごとの `InstanceProfile`）は
 合成（`app`）が組み立てて渡す。材料には部品の契約（出力のデータ型）が要るが、評価は部品
 カタログを参照できない（D01 §3.2 の契約 F8。D07 §20.4）。
+
+**研究ポリシーの版**（D07 §20.2、D09 §10.9）: 版 1 は複雑性の上限だけ、版 2 は試行数の上限
+（`trial_limit`）を足し、版 3 以上は評価基準の群（`evaluation_standard`）も持つ。版の登録簿の
+要素（`RegistryEntry`）と、「現行の版」を決める関数（`current_standard_version`。D09 §10.11 の2）
+も本モジュールに置く。登録簿のファイルの読込と照合は `app.config` が行う。
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from typing import Final
 from odyssey_fx.common.canonical import encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.refs import ContentDigest
+from odyssey_fx.evaluation.domain.search import EvaluationStandard, StandardPurpose
 from odyssey_fx.evaluation.domain.status import CheckOutcome
 from odyssey_fx.marketdata.domain.access import AccessClass
 
@@ -44,6 +52,7 @@ __all__ = [
     "PolicyCheck",
     "PolicyCheckResult",
     "PolicyCheckStage",
+    "RegistryEntry",
     "ResearchPolicy",
     "all_passed",
     "check_complexity",
@@ -52,6 +61,8 @@ __all__ = [
     "check_preregistration",
     "check_research_history_only",
     "check_run_matches",
+    "check_trial_count",
+    "current_standard_version",
     "failed_checks",
     "measure_complexity",
 ]
@@ -80,7 +91,7 @@ def _require_count(value: object, label: str, *, positive: bool) -> None:
 
 
 class PolicyCheck(Enum):
-    """研究ポリシーの検査6件（D07 §20.3 の P1〜P6。宣言順がその順）。"""
+    """研究ポリシーの検査7件（D07 §20.3 の P1〜P7。宣言順がその順）。"""
 
     HYPOTHESIS_PRESENT = "hypothesis_present"
     RESEARCH_HISTORY_ONLY = "research_history_only"
@@ -88,6 +99,8 @@ class PolicyCheck(Enum):
     RUN_MATCHES_PREREGISTRATION = "run_matches_preregistration"
     EVALUATION_RULE_MATCHES = "evaluation_rule_matches"
     COMPLEXITY_WITHIN_LIMITS = "complexity_within_limits"
+    #: P7（D07 §20.3 v2.7、D09 §10.9）。探索の実験だけに当てる。
+    TRIAL_COUNT_WITHIN_LIMIT = "trial_count_within_limit"
 
 
 #: 検査の宣言順（`failed_checks` の並びに使う。D07 §19.3）。
@@ -97,7 +110,7 @@ _CHECK_ORDER: Final = {check: index for index, check in enumerate(PolicyCheck)}
 class PolicyCheckStage(Enum):
     """検査の時点（D07 §20.3）。"""
 
-    #: run の前（P1・P2・P6）。結果は記録票の `pre_run_checks` に入る。
+    #: run の前（P1・P2・P6・P7）。結果は記録票の `pre_run_checks` に入る。
     PRE_RUN = "PRE_RUN"
     #: 記録票の保存時（P3）。結果は結末記録の `outcome_checks` に入る。
     ON_SAVE = "ON_SAVE"
@@ -113,6 +126,7 @@ _STAGE_OF: Final = {
     PolicyCheck.RUN_MATCHES_PREREGISTRATION: PolicyCheckStage.POST_RUN,
     PolicyCheck.EVALUATION_RULE_MATCHES: PolicyCheckStage.POST_RUN,
     PolicyCheck.COMPLEXITY_WITHIN_LIMITS: PolicyCheckStage.PRE_RUN,
+    PolicyCheck.TRIAL_COUNT_WITHIN_LIMIT: PolicyCheckStage.PRE_RUN,
 }
 
 
@@ -168,7 +182,7 @@ def all_passed(results: Sequence[PolicyCheckResult]) -> bool:
 
 
 def failed_checks(results: Sequence[PolicyCheckResult]) -> tuple[PolicyCheck, ...]:
-    """合格でなかった検査の名前を、検査の宣言順（P1〜P6）で返す（D07 §19.3 の `failed_checks`）。"""
+    """合格でなかった検査の名前を、検査の宣言順（P1〜P7）で返す（D07 §19.3 の `failed_checks`）。"""
     return tuple(
         sorted({item.check for item in results if not item.passed}, key=_CHECK_ORDER.__getitem__)
     )
@@ -212,12 +226,23 @@ class ComplexityMeasures:
 
 @dataclass(frozen=True, slots=True)
 class ResearchPolicy:
-    """研究ポリシー（D07 §20.2）。版参照は `(policy_id, version, digest)` で記録票に入る。"""
+    """研究ポリシー（D07 §20.2・§3、D09 §10.9）。
+
+    版参照は `(policy_id, version, digest)` で記録票に入る。
+
+    - `trial_limit`: 1実験の試行数の上限（版 2 以上。版 1 は `None`。Q7 決定）。
+    - `evaluation_standard`: 評価基準の群（版 3 以上。版 1・2 は `None`。D09 §10.9）。
+      評価基準の群を持つ版は試行数の上限も持つ。
+
+    版の番号とどの項目を持つかの対応は、研究ポリシーのファイルの読込（`app.config`）が強制する。
+    """
 
     policy_id: str
     version: int
     digest: ContentDigest
     limits: ComplexityLimits
+    trial_limit: int | None = None
+    evaluation_standard: EvaluationStandard | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy_id, str) or not self.policy_id:
@@ -227,6 +252,58 @@ class ResearchPolicy:
             raise KernelValueError("ResearchPolicy.digest must be a ContentDigest")
         if not isinstance(self.limits, ComplexityLimits):
             raise KernelValueError("ResearchPolicy.limits must be ComplexityLimits")
+        if self.trial_limit is not None:
+            _require_count(self.trial_limit, "ResearchPolicy.trial_limit", positive=True)
+        if self.evaluation_standard is not None:
+            if not isinstance(self.evaluation_standard, EvaluationStandard):
+                raise KernelValueError(
+                    "ResearchPolicy.evaluation_standard must be an EvaluationStandard"
+                )
+            if self.trial_limit is None:
+                raise KernelValueError(
+                    "a research policy with an evaluation standard must also carry a trial limit"
+                    " (D09 §10.9: version 3 keeps the search_limits of version 2)"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryEntry:
+    """研究ポリシーの版の登録簿の要素1件（D09 §10.9、D07 §20.2。Q8・Q33 決定）。
+
+    `digest` は研究ポリシーのダイジェスト。`purpose` は評価基準の群を持つ版（版 3 以上）だけが
+    持ち、版 1・2 は `None`（その対応は登録簿の読込が強制する）。
+    """
+
+    policy_id: str
+    version: int
+    digest: ContentDigest
+    purpose: StandardPurpose | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy_id, str) or not self.policy_id:
+            raise KernelValueError("RegistryEntry.policy_id must be a non-empty str")
+        _require_count(self.version, "RegistryEntry.version", positive=True)
+        if not isinstance(self.digest, ContentDigest):
+            raise KernelValueError("RegistryEntry.digest must be a ContentDigest")
+        if self.purpose is not None and not isinstance(self.purpose, StandardPurpose):
+            raise KernelValueError("RegistryEntry.purpose must be a StandardPurpose or None")
+
+
+def current_standard_version(entries: Sequence[RegistryEntry], policy_id: str) -> int | None:
+    """「現行の版」を登録簿だけから決める（D09 §10.11 の2、D07 §20.2。Q33 決定）。
+
+    同じ `policy_id` の要素のうち、**用途が `STANDARD` の要素の中で最大の版**。`STANDARD` の
+    要素が1つも無ければ `None`（現行の版は無い）。用途が `MECHANISM_CHECK` の版は、番号が最大
+    でも現行の版にならない。
+    """
+    if not all(isinstance(entry, RegistryEntry) for entry in entries):
+        raise KernelValueError("current_standard_version requires RegistryEntry values")
+    versions = [
+        entry.version
+        for entry in entries
+        if entry.policy_id == policy_id and entry.purpose is StandardPurpose.STANDARD
+    ]
+    return max(versions) if versions else None
 
 
 # --- 複雑性の計測（D07 §20.4）-------------------------------------------------
@@ -421,4 +498,21 @@ def check_evaluation_rule(expected_version: int, observed_version: int) -> Polic
         CheckOutcome.PASSED if expected_version == observed_version else CheckOutcome.FAILED,
         {"metric_set_version": expected_version},
         {"metric_set_version": observed_version},
+    )
+
+
+def check_trial_count(trial_count: int, trial_limit: int) -> PolicyCheckResult:
+    """P7: 列挙した試行の数（コンパイル拒否の試行を含む）が試行数の上限以下。
+
+    D07 §20.3、D09 §10.9（2026-09-29 の人間の決定 Q7）。
+
+    探索の実験だけに当てる（単一実行の実験では当てない。試行は1つ）。
+    """
+    _require_count(trial_count, "trial_count", positive=False)
+    _require_count(trial_limit, "trial_limit", positive=True)
+    return _result(
+        PolicyCheck.TRIAL_COUNT_WITHIN_LIMIT,
+        CheckOutcome.PASSED if trial_count <= trial_limit else CheckOutcome.FAILED,
+        {"trial_limit": trial_limit},
+        {"trial_count": trial_count},
     )

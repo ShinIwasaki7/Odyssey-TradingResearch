@@ -49,6 +49,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
+from tests.fixtures.evaluation.research_policies import append_registry_entry
 
 #: 完走する実験（検証戦略 B・遅延シナリオ d1_2s。待機と再開を含む経路）。
 _COMPLETED = "configs/experiments/strategy_b_t02_d1_2s.yaml"
@@ -272,15 +273,22 @@ def test_a_policy_violation_is_explained_without_running(
 
     検証戦略 B の使用箇所は 12（D07 §20.4）。上限を 11 にした研究ポリシーの版 2 を置いて
     指す（同じ版の中身を書き換えると、同じ作業場の他の実験の前提が変わるため）。
+
+    研究ポリシーの版の登録簿（D09 §10.9）は版を登録簿に載ったものだけに限るので、この試験用の
+    版 2 を**作業場の登録簿**へ1行足して使う（作業場の登録簿はテストの中で作ったもので、
+    リポジトリの登録簿の版 2 とは別物。段階5 実装 PR 1 の仮置き）。版 2 の形（試行数の上限
+    `search_limits` を持つ）に合わせて、正本の版 1 の写しに試行数の上限を足す。
     """
     policy = workspace.repo / "configs/policies/research/research_policy_v2.yaml"
     policy.write_text(
         (workspace.repo / "configs/policies/research/research_policy_v1.yaml")
         .read_text(encoding="utf-8")
         .replace("\nversion: 1\n", "\nversion: 2\n")
-        .replace("instances: 36", "instances: 11"),
+        .replace("instances: 36", "instances: 11")
+        + "search_limits:\n  trials: 100\n",
         encoding="utf-8",
     )
+    append_registry_entry(workspace.repo, "research_policy", 2)
     experiment = _variant(
         workspace,
         "stage4_policy_violation",

@@ -30,6 +30,11 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation, ImmediateEntry
 from tests.fixtures.acceptance.t02_run import CASES
+from tests.fixtures.evaluation.research_policies import (
+    append_registry_entry,
+    policy_v3_text,
+    write_policy,
+)
 from tests.fixtures.strategy.strategy_a import strategy_a
 from tests.fixtures.strategy.strategy_b import strategy_b
 
@@ -193,6 +198,7 @@ def _workspace(tmp_path: Path) -> Path:
         "configs/symbols/USDJPY.yaml",
         "configs/strategies/strategy_b_v1.yaml",
         "configs/policies/research/research_policy_v1.yaml",
+        "configs/policies/research/registry.yaml",
         "configs/experiments/strategy_b_t02_d1_2s.yaml",
     ):
         target = tmp_path / relative
@@ -275,6 +281,36 @@ _REFUSALS: list[tuple[str, str, str, str | None, str]] = [
         "外を指している",
     ),
     ("metric set version", "metric_set_version: 2", "metric_set_version: 99", None, "99"),
+    # 評価基準は研究ポリシーの版で決まる（D07 §18.2 v2.9、D09 §5.5 の7。旧 Q3 の撤回）
+    (
+        "selection key",
+        "seed: 0",
+        "seed: 0\nselection: {metric: NET_RETURN_RATE, direction: MAXIMIZE}",
+        None,
+        "研究ポリシーの版で決まる",
+    ),
+    (
+        "acceptance key",
+        "seed: 0",
+        "seed: 0\nacceptance: []",
+        None,
+        "研究ポリシーの版で決まる",
+    ),
+    # 研究ポリシーの版の登録簿との照合（D09 §10.9。Q8 決定）
+    (
+        "policy changed without a new version",
+        "instances: 36",
+        "instances: 11",
+        "configs/policies/research/research_policy_v1.yaml",
+        "ダイジェスト",
+    ),
+    (
+        "policy version not in the registry",
+        "  - {id: research_policy, version: 1,",
+        "  - {id: other_policy, version: 1,",
+        "configs/policies/research/registry.yaml",
+        "登録簿に無い",
+    ),
     ("schema version", "schema_version: 2", "schema_version: 3", None, "schema_version"),
     (
         "v1 entry policy string",
@@ -542,3 +578,37 @@ def test_the_delay_reference_names_the_scenario() -> None:
     assert ref.policy_kind == "delay"
     assert ref.policy_id == "d1_bar_hold"
     assert ref.version == 1
+
+
+def test_a_missing_registry_is_refused(tmp_path: Path) -> None:
+    """版の登録簿が無ければ読めない（D09 §10.9 の照合 (1)。未登録の版は使えない）。"""
+    root = _workspace(tmp_path)
+    (root / "configs/policies/research/registry.yaml").unlink()
+    message = _refused(root / "configs/experiments/strategy_b_t02_d1_2s.yaml", root)
+    assert "登録簿" in message
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_a_single_run_experiment_may_point_at_any_registered_version(
+    tmp_path: Path, version: int
+) -> None:
+    """単一実行の実験はどの版も指せ、評価基準は使わない（D07 §20.2 v2.9、D09 §10.9）。
+
+    版 2 はリポジトリの正本、版 3 はテストの中で作った試験用の版（登録簿にも作業場で載せる）。
+    """
+    root = _workspace(tmp_path)
+    if version == 2:
+        relative = "configs/policies/research/research_policy_v2.yaml"
+        (root / relative).write_bytes((REPO_ROOT / relative).read_bytes())
+    else:
+        write_policy(root, "research_policy", 3, policy_v3_text())
+        append_registry_entry(root, "research_policy", 3)
+    experiment = root / "configs/experiments/strategy_b_t02_d1_2s.yaml"
+    text = experiment.read_text(encoding="utf-8")
+    experiment.write_text(text.replace("version: 1}", f"version: {version}}}"), encoding="utf-8")
+
+    loaded = _load(experiment, root)
+
+    assert loaded.policy.version == version
+    assert loaded.policy.trial_limit == 100
+    assert (loaded.policy.evaluation_standard is not None) is (version == 3)

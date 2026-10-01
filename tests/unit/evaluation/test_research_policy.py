@@ -7,6 +7,7 @@ import json
 import pytest
 
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
     ComplexityMeasures,
@@ -14,6 +15,8 @@ from odyssey_fx.evaluation.domain.research_policy import (
     PolicyCheck,
     PolicyCheckResult,
     PolicyCheckStage,
+    RegistryEntry,
+    ResearchPolicy,
     all_passed,
     check_complexity,
     check_evaluation_rule,
@@ -21,9 +24,12 @@ from odyssey_fx.evaluation.domain.research_policy import (
     check_preregistration,
     check_research_history_only,
     check_run_matches,
+    check_trial_count,
+    current_standard_version,
     failed_checks,
     measure_complexity,
 )
+from odyssey_fx.evaluation.domain.search import StandardPurpose
 from odyssey_fx.evaluation.domain.status import CheckOutcome
 from odyssey_fx.marketdata.domain.access import AccessClass
 
@@ -231,3 +237,63 @@ def test_a_check_result_is_bound_to_its_stage() -> None:
             expected="",
             observed="",
         )
+
+
+# --- P7（D07 §20.3 v2.7、D09 §10.9。段階5 実装 PR 1）-----------------------------
+
+
+def test_the_trial_count_passes_up_to_the_limit_and_fails_above_it() -> None:
+    """P7: 列挙した試行の数が試行数の上限以下なら合格（Q7 決定）。時点は事前。"""
+    at_limit = check_trial_count(100, 100)
+    assert at_limit.outcome is CheckOutcome.PASSED
+    assert at_limit.stage is PolicyCheckStage.PRE_RUN
+    over = check_trial_count(101, 100)
+    assert over.outcome is CheckOutcome.FAILED
+    assert json.loads(over.expected) == {"trial_limit": 100}
+    assert json.loads(over.observed) == {"trial_count": 101}
+    assert failed_checks((over, check_hypothesis(""))) == (
+        PolicyCheck.HYPOTHESIS_PRESENT,
+        PolicyCheck.TRIAL_COUNT_WITHIN_LIMIT,
+    )
+    with pytest.raises(KernelValueError):
+        check_trial_count(1, 0)
+
+
+# --- 研究ポリシーの版と登録簿（D09 §10.9・§10.11）------------------------------
+
+_DIGEST = ContentDigest(algorithm="sha256", hex="a" * 64)
+
+
+def test_a_policy_with_an_evaluation_standard_must_carry_a_trial_limit() -> None:
+    """版 3 は版 2 の試行数の上限を保つ（D09 §10.9）。版 1 は両方 `None`。"""
+    v1 = ResearchPolicy(policy_id="research_policy", version=1, digest=_DIGEST, limits=LIMITS)
+    assert v1.trial_limit is None
+    assert v1.evaluation_standard is None
+    with pytest.raises(KernelValueError):
+        ResearchPolicy(
+            policy_id="research_policy", version=2, digest=_DIGEST, limits=LIMITS, trial_limit=0
+        )
+
+
+def _entry(
+    version: int, purpose: StandardPurpose | None, policy_id: str = "research_policy"
+) -> RegistryEntry:
+    return RegistryEntry(policy_id=policy_id, version=version, digest=_DIGEST, purpose=purpose)
+
+
+def test_the_current_version_is_the_largest_standard_version() -> None:
+    """「現行の版」は用途が `STANDARD` の要素の中で最大の版（D09 §10.11 の2。Q33 決定）。
+
+    番号の大きい `MECHANISM_CHECK` の版があっても変わらない。`STANDARD` が無ければ `None`。
+    """
+    entries = (
+        _entry(1, None),
+        _entry(2, None),
+        _entry(3, StandardPurpose.MECHANISM_CHECK),
+        _entry(4, StandardPurpose.STANDARD),
+        _entry(5, StandardPurpose.MECHANISM_CHECK),
+        _entry(9, StandardPurpose.STANDARD, policy_id="another_policy"),
+    )
+    assert current_standard_version(entries, "research_policy") == 4
+    assert current_standard_version(entries[:3], "research_policy") is None
+    assert current_standard_version((), "research_policy") is None

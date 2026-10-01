@@ -21,8 +21,10 @@
 
 **読込時に拒否するもの**（D07 §18.6）: 未宣言キー・型不一致・`schema_version` が 1・2 以外、
 空の仮説、`NONE` 以外の探索計画・分割、空の遅延規則・確率的遅延・負の遅延、無い・読めない
-パス、この実装の持たない指標集合の版。研究ポリシーの検査（D07 §20）と実行前のデータ能力検査
-（D06 §10.5）は読込では行わない。
+パス、この実装の持たない指標集合の版、`selection` / `acceptance` のキー（評価基準は研究
+ポリシーの版で決まる。D07 §18.2 v2.9、D09 §5.5 の7・§7.6）、研究ポリシーの版の登録簿に無い版・
+登録簿と中身や用途が食い違う版（D09 §10.9。Q8・Q33 決定）。研究ポリシーの検査（D07 §20）と
+実行前のデータ能力検査（D06 §10.5）は読込では行わない。
 """
 
 from __future__ import annotations
@@ -44,7 +46,13 @@ from odyssey_fx.app.config.experiment import (
 )
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.app.config.models import StrictModel, require_schema_version, validate
-from odyssey_fx.app.config.research_policy import load_research_policy, research_policy_path
+from odyssey_fx.app.config.research_policy import (
+    load_research_policy,
+    load_research_policy_registry,
+    research_policy_path,
+    research_policy_registry_path,
+    verify_registered,
+)
 from odyssey_fx.app.config.strategy_file import load_strategy_file
 from odyssey_fx.app.config.strategy_parts import parse_series
 from odyssey_fx.app.config.symbols import load_symbol_spec, symbol_spec_files
@@ -93,6 +101,10 @@ _SCHEMA_VERSION = 2
 #: 段階5 で D09 が語彙を足す。
 SEARCH_PLAN_NONE: Final = "NONE"
 SPLIT_NONE: Final = "NONE"
+
+#: 書けば読込で拒否するキー（D07 §18.2 v2.9、D09 v0.2 §5.5 の7）。旧 Q3（実験ごとに選定規則と
+#: 判定の条件を書く）の撤回により、評価基準は研究ポリシーの版が持つ。
+_WITHDRAWN_STANDARD_KEYS: Final = ("selection", "acceptance")
 
 #: 書式でも受け付けない遅延規則の区分（D03 §3.6、D07 §18.3）。
 _SEEDED_RANDOM_DELAY: Final = "SEEDED_RANDOM_DELAY"
@@ -533,6 +545,12 @@ def _validated(
     payload: dict[str, Any], path: Path, metric_set_versions: Collection[int]
 ) -> _ExperimentV2Model:
     """書式 v2 の形と、読込時に拒否する値（D07 §18.6）を確かめる。"""
+    for key in _WITHDRAWN_STANDARD_KEYS:
+        if key in payload:
+            raise ConfigError(
+                f"{path}: `{key}` は書けない。評価基準は研究ポリシーの版で決まる（選定規則・判定の"
+                "条件を実験ごとに書く経路は無い。D07 §18.2 v2.9、D09 §5.5 の7・§7.6）"
+            )
     _reject_unwritable_delay(payload, path)
     model = validate(_ExperimentV2Model, payload, path)
     require_schema_version(model.schema_version, _SCHEMA_VERSION, path)
@@ -567,10 +585,13 @@ def _assemble(
     symbol_texts: Mapping[str, tuple[Path, str]],
     paths: tuple[Path | None, Path | None, Path | None, Path | None],
     registry: ComponentRegistry,
+    policy_registry_path: Path | None,
 ) -> ExperimentV2:
     """読んだ本文から書式 v2 の読込結果を組み立てる。
 
     ファイルから読むときも、記録票の本文から読むときも同じ関数を通す。
+    `policy_registry_path` を渡せば、研究ポリシーを読んだ直後に版の登録簿と照合する
+    （D09 §10.9）。記録票の本文から組み立て直すときは `None`（照合しない）。
     """
     calendar_path, timeframes_path, symbols_path, strategy_path = paths
     timeframe_defs = load_timeframes(labels[ROLE_TIMEFRAMES], text=texts[ROLE_TIMEFRAMES])
@@ -599,6 +620,12 @@ def _assemble(
         version=model.research_policy.version,
         text=texts[ROLE_RESEARCH_POLICY],
     )
+    if policy_registry_path is not None:
+        verify_registered(
+            policy,
+            load_research_policy_registry(policy_registry_path),
+            registry_path=policy_registry_path,
+        )
 
     if model.delay_scenario is None:
         delay_scenario = None
@@ -655,7 +682,8 @@ def load_experiment_v2(
     （`app.config` が評価の版を決め打ちしないため）。
 
     研究ポリシーは版参照 `{id, version}` から `configs/policies/research/<id>_v<version>.yaml`
-    を読む（D07 §20.2）。
+    を読み（D07 §20.2）、読んだ直後に同じディレクトリの版の登録簿 `registry.yaml` と照合する
+    （D09 §10.9。Q8 決定）。
     """
     if not path.is_file():
         raise ConfigError(f"設定ファイルが見つからない: {path}")
@@ -705,6 +733,7 @@ def load_experiment_v2(
         symbol_texts=symbol_texts,
         paths=(calendar_path, timeframes_path, symbols_path, strategy_path),
         registry=registry,
+        policy_registry_path=research_policy_registry_path(repo_root.resolve()),
     )
 
 
@@ -740,4 +769,5 @@ def experiment_v2_from_texts(
         },
         paths=(None, None, None, None),
         registry=registry,
+        policy_registry_path=None,
     )
