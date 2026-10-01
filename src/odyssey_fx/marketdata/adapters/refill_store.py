@@ -112,6 +112,22 @@ class FsRefillStore:
 
     # --- パス --------------------------------------------------------------------------
 
+    def _require_plain_root(self) -> None:
+        """置き場そのものがリンクでもディレクトリでないものでもないことを確かめる（W6）。
+
+        置き場がリンクだと、`_work`・`_ticks` の作成と書き込みがリンク先（所定の置き場の外）で
+        行われる。リンクは辿らずに食い違いとして止める。
+        """
+        if self._root.is_symlink():
+            raise RefillStoreInconsistent(
+                f"the refill root {self._root} is a symbolic link; the refill store never"
+                " follows links. Nothing was written (D03 §14.11.1 W6)"
+            )
+        if self._root.exists() and not self._root.is_dir():
+            raise RefillStoreInconsistent(
+                f"the refill root {self._root} is not a directory (D03 §14.11)"
+            )
+
     def _inside(self, relative: str, *, create_parents: bool) -> Path:
         """置き場からの相対パスを、リンクを辿らずに組み立てる。
 
@@ -121,10 +137,7 @@ class FsRefillStore:
         parts = Path(relative).parts
         if not parts or any(part in ("", ".", "..") or "/" in part for part in parts):
             raise MarketDataValueError(f"invalid path under the refill root: {relative!r}")
-        if self._root.exists() and not self._root.is_dir():
-            raise RefillStoreInconsistent(
-                f"the refill root {self._root} is not a directory (D03 §14.11)"
-            )
+        self._require_plain_root()
         current = self._root
         if create_parents:
             current.mkdir(parents=True, exist_ok=True)
@@ -187,10 +200,9 @@ class FsRefillStore:
 
     def list_refills(self) -> tuple[RefillDirectory, ...]:
         """置き場の直下の補充分（名前が 16進 64 文字のもの）を名前順に返す。"""
+        self._require_plain_root()
         if not self._root.exists():
             return ()
-        if not self._root.is_dir():
-            raise RefillStoreInconsistent(f"the refill root {self._root} is not a directory")
         found: list[RefillDirectory] = []
         for path in sorted(self._root.iterdir(), key=lambda item: item.name):
             name = path.name

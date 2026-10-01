@@ -179,6 +179,18 @@ def test_symbolic_links_are_not_followed(tmp_path: Path) -> None:
     assert list(elsewhere.iterdir()) == []
 
 
+def test_a_linked_refill_root_is_not_followed(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "refill").symlink_to(elsewhere)
+    store = _store(tmp_path)
+    with pytest.raises(RefillStoreInconsistent, match="symbolic link"):
+        store.create_work_dir(PLAN)
+    with pytest.raises(RefillStoreInconsistent, match="symbolic link"):
+        store.list_refills()
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_refill_directories_report_their_plan_or_incompleteness(tmp_path: Path) -> None:
     root = tmp_path / "refill"
     complete = root / ("b" * 64)
