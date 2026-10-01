@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -128,6 +129,19 @@ def test_the_source_digest_ignores_communication_values() -> None:
         url_template="https://example.invalid/{symbol}/{year}/{month0}/{day}/{hour}"
     ).settings
     assert third.source_digest() != first.source_digest()
+
+
+def test_the_source_digest_ignores_price_scales_and_pips() -> None:
+    """価格の桁・pip は保管した後の集約と比較にだけ使うので保管場所の鍵に入れない（D03 §14.5）。"""
+    base = provider_ref().settings
+    changed = replace(
+        base,
+        symbols=tuple(
+            replace(entry, pip_size=entry.pip_size * 10, price_scale=entry.price_scale * 10)
+            for entry in base.symbols
+        ),
+    )
+    assert changed.source_digest() == base.source_digest()
 
 
 def test_the_url_template_must_hold_each_placeholder_once() -> None:
