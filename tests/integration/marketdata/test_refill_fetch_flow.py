@@ -246,6 +246,21 @@ def test_consecutive_failures_pause_across_hours(tmp_path: Path) -> None:
     ]
 
 
+def test_the_last_failed_retry_still_pauses_before_the_next_hour(tmp_path: Path) -> None:
+    """上限に達した最後の失敗で連続失敗が数に達したら、次の時間ファイルの前に一時停止する。"""
+    store, plan_id, plan = _setup(tmp_path, max_retries=2, pause_after_consecutive_failures=3)
+    source = FakeTickSource(
+        {URL_00: [FailureKind.TIMEOUT, FailureKind.TIMEOUT, FailureKind.TIMEOUT], URL_01: [BI5_01H]}
+    )
+    report = fetch_plan(plan_id, store=store, source=source, retry_failed=False)
+    assert report.pauses == 1
+    last_00 = [moment for moment, url in source.requests if url == URL_00][-1]
+    (first_01,) = [moment for moment, url in source.requests if url == URL_01]
+    assert (first_01 - last_00).total_seconds() >= 1 + 180
+    finals = _finals(store, plan_id, plan)
+    assert [final.outcome for final in finals] == [HourOutcome.NOT_FETCHED, HourOutcome.FETCHED]
+
+
 def test_an_empty_response_is_fetched_empty(tmp_path: Path) -> None:
     store, plan_id, plan = _setup(tmp_path)
     source = FakeTickSource({URL_00: [BI5_00H], URL_01: [b""]})

@@ -462,13 +462,15 @@ class _Fetcher:
                 self._record_failure(hour, attempts, failure, result)
                 if failure is not FailureKind.HOUR_LOCKED:
                     self._consecutive_failures += 1
+                if failure is not FailureKind.HOUR_LOCKED:
+                    # 上限に達した最後の失敗でも、連続失敗が数に達していれば一時停止してから
+                    # 次の時間ファイルへ進む（別の時間ファイルをまたいで数える。D03 §14.9）。
+                    self._pause_if_needed()
                 if attempts > self._comm.max_retries:
                     self._finish_not_fetched(hour, attempts, failure, result)
                     return
                 if failure is FailureKind.HOUR_LOCKED:
                     self._source.wait(self._comm.backoff_seconds(attempts))
-                else:
-                    self._pause_if_needed()
         finally:
             if locked:
                 self._store.release_hour_lock(hour)
