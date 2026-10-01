@@ -13,6 +13,8 @@
 - `UnsupportedCapability`: 初版が受け付けない能力の要求（D03 §3.6 の `SeededRandomDelay`）。
 - `SnapshotAlreadyExists`: 書き出し先の snapshot ディレクトリが既にある（D03 §3.7.2・§10。
   成果物の書き込みを「存在すれば失敗」に統一する規則 R4）。
+- `Refill*`: 元データの再取得（補充）の失敗（D03 §14.12・§14.18 の 12。名前は 2026-10-01 の
+  人間の決定）。基底は `MarketDataError` で、CLI は 1 行の失敗として表示し終了コード 1 で終える。
 """
 
 from __future__ import annotations
@@ -25,6 +27,18 @@ __all__ = [
     "MarketDataError",
     "MarketDataValueError",
     "PartitionContentMismatch",
+    "RefillAlreadyExists",
+    "RefillAlreadyFinalized",
+    "RefillChainIncomplete",
+    "RefillError",
+    "RefillNotFetched",
+    "RefillPlanAlreadyExists",
+    "RefillPlanDuplicated",
+    "RefillPlanEmpty",
+    "RefillPlanLocked",
+    "RefillPlanNotFound",
+    "RefillStoreInconsistent",
+    "RefillValidationFailed",
     "SnapshotAlreadyExists",
     "SnapshotNotApproved",
     "UnsupportedCapability",
@@ -83,3 +97,66 @@ class SnapshotAlreadyExists(MarketDataError):
     （`_pending/<provisional_id>/`）も確定ディレクトリ（`<snapshot_id>/`）も同じ規則で、
     置換の指示は持たない。作り直すときは人間が先にそのディレクトリを移動または削除する。
     """
+
+
+# --- 元データの再取得（補充）の失敗（D03 §14.12・§14.18 の 12）------------------------
+
+
+class RefillError(MarketDataError):
+    """再取得ツールの失敗の基底（D03 §14.12）。
+
+    状態×出来事表（D03 §14.12）の「拒否」はすべてこの派生型で表す。何も書かずに止まる
+    （書きかけを残さない）ことが、どの派生型にも共通する約束である。
+    """
+
+
+class RefillPlanNotFound(RefillError):
+    """指定した取得計画の作業ディレクトリが無い（D03 §14.12 の生成前×出来事2・9・10）。"""
+
+
+class RefillPlanEmpty(RefillError):
+    """対象足が 1 本も無いので計画を作らない（D03 §14.4）。"""
+
+
+class RefillPlanAlreadyExists(RefillError):
+    """同じ `plan_id` の作業ディレクトリが既にある（D03 §14.12 の出来事1、「存在すれば失敗」）。"""
+
+
+class RefillPlanLocked(RefillError):
+    """計画のロックを取れない（D03 §14.9・§14.11.1 の W1）。
+
+    別のコマンドが同じ計画を扱っているか、止まったプロセスのロックが残っている。残った
+    ロックは自動で外さない。人間が書き手のプロセスが無いことを確かめて消す（W1）。
+    """
+
+
+class RefillNotFetched(RefillError):
+    """最終結果の無い時間ファイルが残っているので書き出せない（D03 §14.12 の出来事10）。"""
+
+
+class RefillAlreadyFinalized(RefillError):
+    """この計画の補充分は書き出し済みである（D03 §14.12 の書き出し済みの行）。"""
+
+
+class RefillAlreadyExists(RefillError):
+    """書き出し先の補充分のディレクトリが既にある（D03 §14.11.1 の W2）。"""
+
+
+class RefillValidationFailed(RefillError):
+    """検証が不合格で、取り直す時間ファイルも無い（D03 §14.12 の不合格×出来事9）。"""
+
+
+class RefillChainIncomplete(RefillError):
+    """受入れに渡した補充分の集合が、入力 snapshot の補充分をすべて含まない（D03 §14.11）。"""
+
+
+class RefillStoreInconsistent(RefillError):
+    """保管場所・作業ディレクトリ・補充分の検算が合わない（D03 §14.11.1 の W5・W6）。
+
+    自動で直さない・置き換えない・消さない。食い違ったパスと理由を表示して止まり、人間が
+    `data/raw/market/refill/` の下のそのものを消してからやり直す（W6）。
+    """
+
+
+class RefillPlanDuplicated(RefillError):
+    """同じ `plan_id` の補充分を 2 つ以上、受入れに渡した（D03 §14.11）。"""

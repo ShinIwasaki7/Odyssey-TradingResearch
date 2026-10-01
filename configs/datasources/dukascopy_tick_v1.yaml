@@ -1,0 +1,73 @@
+# 元データの再取得（補充）の提供元の設定（D03 §9・§14.5・§14.9。ファイル名と項目は
+# 2026-10-01 の人間の決定、D03 §14.18 の 1）
+#
+# 提供元 dukascopy の tick を、銘柄 × UTC の 1 時間の bi5 ファイル 1 本ずつ取る（D03 §14.3）。
+# URL の型の {month0} は **0 始まりの月**（1 月 = 00）。tick の保管場所のパスの月は 1 始まり
+# なので、URL を組み立てるときにだけ 1 を引く（D03 §14.5）。
+#
+# 銘柄ごとの価格の桁（price_scale）は、tick の整数値を割って価格にする値（JPY を含む銘柄は
+# 1000、他は 100000）。照合（D03 §14.7 の 2）で毎回確かめる。pip の大きさ（pip_size）は前後の
+# 足との差を pip で表すためだけに使う（JPY を含む銘柄は 0.01、他は 0.0001）。価格は文字列で
+# 書く（浮動小数を経由しない。ADR-0012）。
+#
+# 通信の値（communication）は**代表例の試行（D03 §14.14 の段 3）に限る初期値**である（D03
+# §14.18 の 8。2026-09-30 の実測の制約だけが根拠）。試行の取得記録から成功率・HTTP 429・503・
+# タイムアウトの件数・所要時間を集計し、全件の取得の前に人間が見直してここに書く。
+#
+# このファイルの正規化内容（コメントを除く中身）のダイジェストは取得計画の識別子 plan_id に
+# 入る（D03 §14.10）。同じ版のまま中身を変えても別の計画になる。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+id: dukascopy_tick
+version: 1
+
+url_template: "https://datafeed.dukascopy.com/datafeed/{symbol}/{year}/{month0}/{day}/{hour}h_ticks.bi5"
+
+symbols:
+  - symbol: AUDJPY
+    price_scale: 1000
+    pip_size: "0.01"
+  - symbol: AUDUSD
+    price_scale: 100000
+    pip_size: "0.0001"
+  - symbol: EURGBP
+    price_scale: 100000
+    pip_size: "0.0001"
+  - symbol: EURJPY
+    price_scale: 1000
+    pip_size: "0.01"
+  - symbol: EURUSD
+    price_scale: 100000
+    pip_size: "0.0001"
+  - symbol: GBPJPY
+    price_scale: 1000
+    pip_size: "0.01"
+  - symbol: GBPUSD
+    price_scale: 100000
+    pip_size: "0.0001"
+  - symbol: USDCAD
+    price_scale: 100000
+    pip_size: "0.0001"
+  - symbol: USDCHF
+    price_scale: 100000
+    pip_size: "0.0001"
+  - symbol: USDJPY
+    price_scale: 1000
+    pip_size: "0.01"
+
+communication:
+  # 前の要求の終わりから次の要求の始まりまで（実測で 4 秒でも連続約 19 回で接続できなくなった）。
+  request_interval_seconds: 8
+  # 1 回の要求の待ち時間の上限。
+  request_timeout_seconds: 60
+  # 同じ時間ファイルの再試行の上限（最初の試行を含まない回数）。HTTP 404 は再試行しない。
+  max_retries: 5
+  # 再試行の前の待ち。30 秒から倍にして最大 480 秒（指数バックオフ）。
+  backoff_initial_seconds: 30
+  backoff_max_seconds: 480
+  # 連続 3 回の失敗（別の時間ファイルをまたいで数える）で 180 秒の一時停止（実測の回復 2.5〜3 分）。
+  pause_after_consecutive_failures: 3
+  pause_seconds: 180

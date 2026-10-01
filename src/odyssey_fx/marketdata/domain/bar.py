@@ -35,12 +35,14 @@ class ProvenanceKind(Enum):
     """足の出所（D03 §3.3）。
 
     `HISTDATA` / `DUKASCOPY` は原 CSV の `source` 列、`AGGREGATED` は本基盤が 1h から
-    生成した上位足（D03 §5）。
+    生成した上位足（D03 §5）。`DUKASCOPY_REFILL` は提供元から取り直した tick で補充した足
+    （D03 §3.3・§14.6 の v1.15。出来高 0 は「出来高不明」を意味する）。
     """
 
     HISTDATA = "histdata"
     DUKASCOPY = "dukascopy"
     AGGREGATED = "aggregated"
+    DUKASCOPY_REFILL = "dukascopy_refill"
 
 
 @dataclass(frozen=True, slots=True)
