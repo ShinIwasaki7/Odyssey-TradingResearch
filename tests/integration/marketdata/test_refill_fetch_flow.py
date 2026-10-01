@@ -157,6 +157,26 @@ def test_resuming_fetches_only_the_hours_without_a_final_result(tmp_path: Path) 
     assert report.state_after is PlanState.FETCH_DONE
 
 
+def test_the_journal_summary_spans_interruptions(tmp_path: Path) -> None:
+    """代表例の試行の集計は取得記録全体から作る（中断・再開をまたぐ。D03 §14.9）。"""
+    store, plan_id, _ = _setup(tmp_path, max_retries=1)
+    fetch_plan(
+        plan_id,
+        store=store,
+        source=FakeTickSource({URL_00: [429, BI5_00H], URL_01: [404]}),
+        retry_failed=False,
+    )
+    report = fetch_plan(
+        plan_id, store=store, source=FakeTickSource({URL_01: [BI5_01H]}), retry_failed=True
+    )
+    assert report.requests == 1  # この回の要求だけ
+    journal = report.journal
+    assert journal is not None
+    assert journal.requests == 4  # 429・00 時の成功・404・01 時の成功
+    assert dict(journal.failures) == {FailureKind.HTTP_429: 1, FailureKind.HTTP_404: 1}
+    assert dict(journal.outcomes) == {HourOutcome.FETCHED: 2}
+
+
 def test_a_broken_last_line_is_truncated_and_the_hour_fetched_again(tmp_path: Path) -> None:
     store, plan_id, plan = _setup(tmp_path)
     source = FakeTickSource({URL_00: [BI5_00H], URL_01: [BI5_01H]})

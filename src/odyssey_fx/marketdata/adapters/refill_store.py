@@ -112,17 +112,37 @@ class FsRefillStore:
 
     # --- パス --------------------------------------------------------------------------
 
+    def _root_chain(self) -> list[Path]:
+        """リンクでないことを確かめる道筋: 置き場そのものと、現在のディレクトリから置き場まで
+        の途中のディレクトリ（置き場が現在のディレクトリの下にあるとき）。
+
+        現在のディレクトリより上（`/var` など環境のリンク）は利用者の環境なので見ない。
+        """
+        absolute = self._root if self._root.is_absolute() else Path.cwd() / self._root
+        try:
+            relative = absolute.relative_to(Path.cwd())
+        except ValueError:
+            return [self._root]
+        chain: list[Path] = []
+        current = Path.cwd()
+        for part in relative.parts:
+            current = current / part
+            chain.append(current)
+        return chain or [self._root]
+
     def _require_plain_root(self) -> None:
         """置き場そのものがリンクでもディレクトリでないものでもないことを確かめる（W6）。
 
         置き場がリンクだと、`_work`・`_ticks` の作成と書き込みがリンク先（所定の置き場の外）で
         行われる。リンクは辿らずに食い違いとして止める。
         """
-        if self._root.is_symlink():
-            raise RefillStoreInconsistent(
-                f"the refill root {self._root} is a symbolic link; the refill store never"
-                " follows links. Nothing was written (D03 §14.11.1 W6)"
-            )
+        for path in self._root_chain():
+            if path.is_symlink():
+                raise RefillStoreInconsistent(
+                    f"{path} (the refill root or a directory on the way to it) is a symbolic"
+                    " link; the refill store never follows links. Nothing was written"
+                    " (D03 §14.11.1 W6)"
+                )
         if self._root.exists() and not self._root.is_dir():
             raise RefillStoreInconsistent(
                 f"the refill root {self._root} is not a directory (D03 §14.11)"

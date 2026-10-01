@@ -191,6 +191,20 @@ def test_a_linked_refill_root_is_not_followed(tmp_path: Path) -> None:
     assert list(elsewhere.iterdir()) == []
 
 
+def test_a_linked_directory_on_the_way_to_the_root_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/raw").symlink_to(elsewhere)
+    monkeypatch.chdir(tmp_path)
+    store = FsRefillStore(root=Path("data/raw/market/refill"))
+    with pytest.raises(RefillStoreInconsistent, match="symbolic"):
+        store.create_work_dir(PLAN)
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_refill_directories_report_their_plan_or_incompleteness(tmp_path: Path) -> None:
     root = tmp_path / "refill"
     complete = root / ("b" * 64)

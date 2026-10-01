@@ -336,4 +336,18 @@ def refill_fetch_lines(report: FetchReport) -> list[str]:
         lines.append(f"  最終結果 {outcome.value}: {report.outcomes[outcome]}")
     for failure in sorted(report.failures, key=lambda item: item.value):
         lines.append(f"  失敗 {failure.value}: {report.failures[failure]}")
+    journal = report.journal
+    if journal is not None:
+        span = ""
+        if journal.first_at is not None and journal.last_at is not None:
+            seconds = (journal.last_at - journal.first_at).total_seconds()
+            span = f"、最初の行から最後の行まで {seconds:.0f} 秒"
+        lines.append(
+            f"取得記録全体（中断・再開をまたぐ）: 要求 {journal.requests} 回、"
+            f"一時停止 {journal.pauses} 回{span}"
+        )
+        for outcome in sorted(journal.outcomes, key=lambda item: item.value):
+            lines.append(f"  有効な最終結果 {outcome.value}: {journal.outcomes[outcome]}")
+        for failure in sorted(journal.failures, key=lambda item: item.value):
+            lines.append(f"  失敗 {failure.value}: {journal.failures[failure]}")
     return lines

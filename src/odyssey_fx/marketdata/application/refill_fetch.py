@@ -24,9 +24,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.application.ports import JournalLine, RefillStore, TickArchiveSource
@@ -67,6 +68,7 @@ from odyssey_fx.marketdata.domain.refill import (
 
 __all__ = [
     "FetchReport",
+    "JournalSummary",
     "JournalState",
     "PlanState",
     "classify_status",
@@ -75,6 +77,7 @@ __all__ = [
     "fetch_plan",
     "read_journal",
     "seconds_to_wait",
+    "summarize_journal",
     "verify_archive",
 ]
 
@@ -284,6 +287,56 @@ class FetchReport:
     requests: int = 0
     started_at: UtcTime | None = None
     finished_at: UtcTime | None = None
+    journal: JournalSummary | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class JournalSummary:
+    """取得記録全体の集計（中断・再開をまたぐ。D03 §14.9 の「取得記録から集計して報告」）。
+
+    `outcomes` は有効な最終結果の区分ごとの数、`failures` は失敗の種類ごとの回数（再試行した
+    失敗は試行の行、再試行しない失敗は最終結果の行から数える）、`requests` は提供元への要求の
+    回数（保管場所から読んだ時間と時間のロックの失敗は数えない）、`pauses` は一時停止の回数、
+    `first_at`・`last_at` は記録の最初と最後の行の時刻（全体の所要時間の目安）。
+    """
+
+    outcomes: Mapping[HourOutcome, int]
+    failures: Mapping[FailureKind, int]
+    requests: int
+    pauses: int
+    first_at: UtcTime | None
+    last_at: UtcTime | None
+
+
+def summarize_journal(entries: Sequence[JournalEntry]) -> JournalSummary:
+    """取得記録の全行から集計する（D03 §14.9。代表例の試行の見直しの材料）。"""
+    failures: Counter[FailureKind] = Counter()
+    requests = 0
+    pauses = 0
+    moments: list[UtcTime] = []
+    for entry in entries:
+        moments.append(entry.at)
+        if isinstance(entry, AttemptRecord):
+            failures[entry.failure] += 1
+            if entry.failure is not FailureKind.HOUR_LOCKED:
+                requests += 1
+        elif isinstance(entry, FinalResult) and not entry.from_archive:
+            if entry.outcome is not HourOutcome.NOT_FETCHED:
+                requests += 1
+            elif entry.failure is not None and entry.failure not in RETRYABLE_FAILURES:
+                failures[entry.failure] += 1
+                requests += 1
+        elif isinstance(entry, PauseStart):
+            pauses += 1
+    outcomes = Counter(final.outcome for final in effective_finals(entries).values())
+    return JournalSummary(
+        outcomes=MappingProxyType(dict(outcomes)),
+        failures=MappingProxyType(dict(failures)),
+        requests=requests,
+        pauses=pauses,
+        first_at=min(moments, default=None),
+        last_at=max(moments, default=None),
+    )
 
 
 class _Fetcher:
@@ -638,6 +691,7 @@ def _fetch_locked(
         ]
         if state is PlanState.PLANNED:
             report.finished_at = source.now()
+            report.journal = summarize_journal(entries)
             return report  # 取り直す時間ファイルが無い（D03 §14.12 の計画済み×出来事9）
         if state is PlanState.REJECTED and not failed:
             raise RefillValidationFailed(
@@ -661,4 +715,5 @@ def _fetch_locked(
     lines = read_journal(plan_id, store.read_journal(plan_id), plan)
     report.state_after = derive_state(plan, lines.entries, finalized=False)
     report.finished_at = source.now()
+    report.journal = summarize_journal(lines.entries)
     return report
