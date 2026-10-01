@@ -528,24 +528,28 @@ def create_plan(plan: RefillPlan, store: RefillStore) -> str:
     """計画を作業ディレクトリに書き、`plan_id` を返す（D03 §14.12 の出来事1）。
 
     - 書きかけの補充分が残っていれば止める（W6）。
-    - この計画の補充分が既にあれば `RefillAlreadyFinalized`（計画を作る前に補充分を探す）。
+    - この計画の補充分の manifest を検算する（合わなければ `RefillStoreInconsistent`）。
     - 同じ `plan_id` の作業ディレクトリがあれば、書きかけ（`plan.json` が無い・合わない）なら
-      `RefillStoreInconsistent`、完成していれば `RefillPlanAlreadyExists`（存在すれば失敗）。
+      `RefillStoreInconsistent`、完成していれば `RefillPlanAlreadyExists`（存在すれば失敗。
+      書き出し済みでも同じ）。
+    - 作業ディレクトリが無く、この計画の補充分があれば `RefillAlreadyFinalized`。
     - 作業ディレクトリを排他的に作ってから `plan.json` を置く（W2・W4）。
     """
     plan_id = plan.plan_id()
     require_consistent_refills(store)
     finished = finalized_refills(store, plan_id, plan)
-    if finished:
-        raise RefillAlreadyFinalized(
-            f"the plan {plan_id} is already finalized as {', '.join(n for n, _ in finished)};"
-            " nothing was written (D03 §14.12)"
-        )
     if store.work_dir_exists(plan_id):
+        # 書き出し済みでも作業ディレクトリが残っていれば RefillPlanAlreadyExists（D03 §14.12 の
+        # 書き出し済み×出来事1）。manifest の検算は上で済ませている。
         require_plan_matches(plan_id, store.read_plan(plan_id))
         raise RefillPlanAlreadyExists(
             f"the plan {plan_id} already exists under _work/; resume it with"
             " `odyssey-fx data refill fetch`. Nothing was written (D03 §14.12)"
+        )
+    if finished:
+        raise RefillAlreadyFinalized(
+            f"the plan {plan_id} is already finalized as {', '.join(n for n, _ in finished)};"
+            " nothing was written (D03 §14.12)"
         )
     store.create_work_dir(plan_id)
     store.write_plan(plan_id, plan.identity_payload())

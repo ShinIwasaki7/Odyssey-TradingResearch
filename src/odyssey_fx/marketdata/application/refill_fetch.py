@@ -765,9 +765,11 @@ def _fetch_locked(
             manifest=finished[0][1],
             retry_failed=retry_failed,
         )
+    entries = list(journal.entries)
+    # 保管場所の検算（W5）をすべて済ませてから書く（壊れた最後の行の切り詰めも書き込み）。
+    invalidations = _check_finals(plan_id, plan, store, entries, source.now())
     if journal.broken_tail_offset is not None:
         store.truncate_journal(plan_id, journal.broken_tail_offset)
-    entries = list(journal.entries)
     state_before = derive_state(plan, entries, finalized=False)
     report = FetchReport(
         plan_id=plan_id,
@@ -776,7 +778,7 @@ def _fetch_locked(
         started_at=source.now(),
     )
 
-    for invalidation in _check_finals(plan_id, plan, store, entries, source.now()):
+    for invalidation in invalidations:
         store.append_journal(plan_id, invalidation.payload())
         entries.append(invalidation)
         report.invalidations += 1

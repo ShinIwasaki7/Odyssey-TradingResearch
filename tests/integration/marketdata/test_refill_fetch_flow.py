@@ -615,9 +615,10 @@ def test_a_finalized_plan_without_missing_files_is_not_fetched_again(tmp_path: P
         fetch_plan(plan_id, store=store, source=FakeTickSource({}), retry_failed=False)
     with pytest.raises(RefillAlreadyFinalized, match="retry-failed"):
         fetch_plan(plan_id, store=store, source=FakeTickSource({}), retry_failed=True)
-    assert _snapshot_tree(tmp_path / "refill") == before
-    with pytest.raises(RefillAlreadyFinalized):
+    # 作業ディレクトリが残っていれば、計画の作り直しは RefillPlanAlreadyExists（D03 §14.12）。
+    with pytest.raises(RefillPlanAlreadyExists):
         create_plan(plan, store)
+    assert _snapshot_tree(tmp_path / "refill") == before
 
 
 def test_a_finalized_plan_restores_only_the_missing_hour(tmp_path: Path) -> None:
@@ -778,3 +779,21 @@ def test_a_finalized_plan_without_its_work_directory_is_refused(tmp_path: Path) 
         fetch_plan(plan_id, store=store, source=FakeTickSource({}), retry_failed=False)
     with pytest.raises(RefillAlreadyFinalized):
         create_plan(plan, store)
+
+
+def test_a_broken_last_line_is_kept_when_an_archive_is_inconsistent(tmp_path: Path) -> None:
+    """検算で止まるときは、壊れた最後の行の切り詰めも含めて何も書かない（W5・W6）。"""
+    store, plan_id, plan = _setup(tmp_path)
+    _fetch_all(store, plan_id)
+    journal = tmp_path / "refill/_work" / plan_id / "journal.jsonl"
+    journal.write_bytes(journal.read_bytes() + b'{"broken')
+    archived = _finals(store, plan_id, plan)[0].archive_file
+    assert archived is not None
+    path = tmp_path / "refill" / archived
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["provenance"]["tick_count"] += 1
+    path.write_text(json.dumps(record), encoding="utf-8")
+    before = journal.read_bytes()
+    with pytest.raises(RefillStoreInconsistent, match="tick count"):
+        fetch_plan(plan_id, store=store, source=FakeTickSource({}), retry_failed=False)
+    assert journal.read_bytes() == before
