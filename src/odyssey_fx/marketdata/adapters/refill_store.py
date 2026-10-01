@@ -184,7 +184,8 @@ class FsRefillStore:
 
     def _work_file(self, plan_id: str, name: str) -> Path:
         directory = self._work_dir(plan_id)
-        if directory.is_symlink() or not directory.is_dir():
+        _refuse_link(directory)
+        if not directory.is_dir():
             raise RefillPlanNotFound(f"no refill plan {plan_id} under {WORK_DIRECTORY}/")
         return directory / name
 
@@ -278,8 +279,7 @@ class FsRefillStore:
     def read_plan(self, plan_id: str) -> Mapping[str, Any] | None:
         """`plan.json` を読む。無ければ `None`。"""
         target = self._work_file(plan_id, _PLAN_FILE)
-        if target.is_symlink():
-            raise RefillStoreInconsistent(f"{target} is a symbolic link (D03 §14.11.1 W6)")
+        _refuse_link(target)
         if not target.exists():
             return None
         try:
@@ -303,8 +303,8 @@ class FsRefillStore:
 
     def _release(self, target: Path) -> None:
         content = self._held_locks.pop(target, None)
-        if content is None:
-            return
+        if content is None or target.is_symlink():
+            return  # 自分のものでない（リンクに置き換えられた）ものには触らない
         try:
             current = target.read_bytes()
         except FileNotFoundError:
@@ -317,9 +317,10 @@ class FsRefillStore:
         """計画のロックを取る。取れなければ `RefillPlanLocked`（W1）。"""
         target = self._work_file(plan_id, _LOCK_FILE)
         if not self._acquire(target):
+            _refuse_link(target)
             try:
                 holder = target.read_text(encoding="utf-8").strip()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 holder = "(unreadable)"
             raise RefillPlanLocked(
                 f"{target} exists (held by {holder}); another command is handling the plan, or"
@@ -336,8 +337,7 @@ class FsRefillStore:
     def read_journal(self, plan_id: str) -> tuple[JournalLine, ...]:
         """取得記録の全行を読み、行ごとのダイジェストを検算する。"""
         target = self._work_file(plan_id, _JOURNAL_FILE)
-        if target.is_symlink():
-            raise RefillStoreInconsistent(f"{target} is a symbolic link (D03 §14.11.1 W6)")
+        _refuse_link(target)
         if not target.exists():
             return ()
         content = target.read_bytes()
@@ -358,6 +358,7 @@ class FsRefillStore:
     def truncate_journal(self, plan_id: str, offset: int) -> None:
         """取得記録を `offset` バイトに切り詰める（不完全な最後の行を除く。W3）。"""
         target = self._work_file(plan_id, _JOURNAL_FILE)
+        _refuse_link(target)
         size = target.stat().st_size
         if not 0 <= offset <= size:
             raise MarketDataValueError(f"cannot truncate {target} to {offset} bytes (size {size})")
@@ -418,8 +419,7 @@ class FsRefillStore:
         directory = self._archive_dir(hour, source_digest, create=False)
         target = directory / f"{tick_digest}.json"
         relative = f"{hour.archive_directory}/{source_digest}/{tick_digest}.json"
-        if target.is_symlink():
-            raise RefillStoreInconsistent(f"{target} is a symbolic link (D03 §14.11.1 W6)")
+        _refuse_link(target)
         if not target.exists():
             return None
         try:
@@ -471,6 +471,15 @@ class FsRefillStore:
                 " (D03 §14.11.1 W2・W6)"
             )
         return f"{hour.archive_directory}/{provenance.source_digest}/{name}"
+
+
+def _refuse_link(path: Path) -> None:
+    """置き場の中のファイルがリンクなら、辿らずに食い違いとして止める（W6）。"""
+    if path.is_symlink():
+        raise RefillStoreInconsistent(
+            f"{path} is a symbolic link; the refill store never follows links."
+            " Nothing was written (D03 §14.11.1 W6)"
+        )
 
 
 def _fsync_directory(directory: Path) -> None:

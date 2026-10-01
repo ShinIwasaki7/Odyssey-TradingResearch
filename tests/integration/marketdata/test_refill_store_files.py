@@ -205,6 +205,29 @@ def test_a_linked_directory_on_the_way_to_the_root_is_not_followed(
     assert list(elsewhere.iterdir()) == []
 
 
+def test_linked_files_in_the_work_directory_are_not_followed(tmp_path: Path) -> None:
+    """ロック・取得記録・作業ディレクトリがリンクなら、読まず・書かずに止める（W6）。"""
+    store = _store(tmp_path)
+    store.create_work_dir(PLAN)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"\xff\xfe secret")
+    work = tmp_path / "refill/_work" / PLAN
+    (work / "lock").symlink_to(outside)
+    with pytest.raises(RefillStoreInconsistent, match="symbolic link"):
+        store.acquire_plan_lock(PLAN)
+    (work / "lock").unlink()
+    (work / "journal.jsonl").symlink_to(outside)
+    with pytest.raises(RefillStoreInconsistent, match="symbolic link"):
+        store.truncate_journal(PLAN, 0)
+    with pytest.raises(RefillStoreInconsistent, match="symbolic link"):
+        store.read_journal(PLAN)
+    assert outside.read_bytes() == b"\xff\xfe secret"
+    other = "b" * 64
+    (tmp_path / "refill/_work" / other).symlink_to(tmp_path)
+    with pytest.raises(RefillStoreInconsistent, match="symbolic link"):
+        store.read_plan(other)
+
+
 def test_refill_directories_report_their_plan_or_incompleteness(tmp_path: Path) -> None:
     root = tmp_path / "refill"
     complete = root / ("b" * 64)
