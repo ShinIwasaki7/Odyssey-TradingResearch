@@ -181,7 +181,23 @@ def test_the_journal_summary_spans_interruptions(tmp_path: Path) -> None:
     assert journal is not None
     assert journal.requests == 4  # 429・00 時の成功・404・01 時の成功
     assert dict(journal.failures) == {FailureKind.HTTP_429: 1, FailureKind.HTTP_404: 1}
+    assert dict(journal.statuses) == {429: 1, 404: 1}
     assert dict(journal.outcomes) == {HourOutcome.FETCHED: 2}
+
+
+def test_http_statuses_are_counted_one_by_one(tmp_path: Path) -> None:
+    """503 は 500 と分けて数える（D03 §14.9 の試行の集計）。"""
+    store, plan_id, _ = _setup(tmp_path, max_retries=2, pause_after_consecutive_failures=10)
+    report = fetch_plan(
+        plan_id,
+        store=store,
+        source=FakeTickSource({URL_00: [500, 503, BI5_00H], URL_01: [503, BI5_01H]}),
+        retry_failed=False,
+    )
+    assert dict(report.statuses) == {500: 1, 503: 2}
+    assert report.journal is not None
+    assert dict(report.journal.statuses) == {500: 1, 503: 2}
+    assert report.failures[FailureKind.HTTP_5XX] == 3
 
 
 def test_a_broken_last_line_is_truncated_and_the_hour_fetched_again(tmp_path: Path) -> None:

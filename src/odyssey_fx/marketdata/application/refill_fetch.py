@@ -308,6 +308,7 @@ class FetchReport:
     finished_at: UtcTime | None = None
     journal: JournalSummary | None = None
     hour_locked: int = 0
+    statuses: Counter[int] = field(default_factory=Counter)
     restoring: bool = False
     not_restored: int = 0
 
@@ -319,13 +320,16 @@ class JournalSummary:
     `outcomes` は有効な最終結果の区分ごとの数、`failures` は失敗の種類ごとの回数（再試行した
     失敗は試行の行、再試行しない失敗は最終結果の行から数える）、`requests` は提供元への要求の
     回数（保管場所から読んだ時間と時間のロックの失敗は数えない）、`pauses` は一時停止の回数、
-    `first_at`・`last_at` は記録の最初と最後の行の時刻。その差は**全体の暦上の経過時間**で、
+    `statuses` は失敗した要求の HTTP の状態ごとの回数（429・503 などを個別に数える。D03
+    §14.9）。`first_at`・`last_at` は記録の最初と最後の行の時刻。その差は**全体の暦上の経過
+    時間**で、
     中断して止めていた時間も含むので、通信の値の見直しには使わない（今回の実行時間を使う。
     PR #58 の仮置きの 17 への人間の修正指示 2026-10-01）。
     """
 
     outcomes: Mapping[HourOutcome, int]
     failures: Mapping[FailureKind, int]
+    statuses: Mapping[int, int]
     requests: int
     pauses: int
     first_at: UtcTime | None
@@ -335,6 +339,7 @@ class JournalSummary:
 def summarize_journal(entries: Sequence[JournalEntry]) -> JournalSummary:
     """取得記録の全行から集計する（D03 §14.9。代表例の試行の見直しの材料）。"""
     failures: Counter[FailureKind] = Counter()
+    statuses: Counter[int] = Counter()
     requests = 0
     pauses = 0
     moments: list[UtcTime] = []
@@ -344,18 +349,23 @@ def summarize_journal(entries: Sequence[JournalEntry]) -> JournalSummary:
             failures[entry.failure] += 1
             if entry.failure is not FailureKind.HOUR_LOCKED:
                 requests += 1
+            if entry.http_status is not None:
+                statuses[entry.http_status] += 1
         elif isinstance(entry, FinalResult) and not entry.from_archive:
             if entry.outcome is not HourOutcome.NOT_FETCHED:
                 requests += 1
             elif entry.failure is not None and entry.failure not in RETRYABLE_FAILURES:
                 failures[entry.failure] += 1
                 requests += 1
+                if entry.http_status is not None:
+                    statuses[entry.http_status] += 1
         elif isinstance(entry, PauseStart):
             pauses += 1
     outcomes = Counter(final.outcome for final in effective_finals(entries).values())
     return JournalSummary(
         outcomes=MappingProxyType(dict(outcomes)),
         failures=MappingProxyType(dict(failures)),
+        statuses=MappingProxyType(dict(statuses)),
         requests=requests,
         pauses=pauses,
         first_at=min(moments, default=None),
@@ -585,6 +595,8 @@ class _Fetcher:
                         self._store_fetched(hour, attempts + 1, result, decoded)
                         return
                 attempts += 1
+                if result.status is not None:
+                    self._report.statuses[result.status] += 1
                 if failure in STOPPING_FAILURES:
                     self._record_failure(hour, attempts, failure, result)
                     raise RefillSourceRefused(

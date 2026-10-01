@@ -355,6 +355,8 @@ def refill_fetch_lines(report: FetchReport) -> list[str]:
         lines.append(f"  最終結果 {outcome.value}: {report.outcomes[outcome]}")
     for failure in sorted(report.failures, key=lambda item: item.value):
         lines.append(f"  失敗 {failure.value}: {report.failures[failure]}")
+    for status in sorted(report.statuses):
+        lines.append(f"  失敗した応答の HTTP の状態 {status}: {report.statuses[status]}")
     journal = report.journal
     if journal is not None:
         lines.append(
@@ -371,4 +373,6 @@ def refill_fetch_lines(report: FetchReport) -> list[str]:
             lines.append(f"  有効な最終結果 {outcome.value}: {journal.outcomes[outcome]}")
         for failure in sorted(journal.failures, key=lambda item: item.value):
             lines.append(f"  失敗 {failure.value}: {journal.failures[failure]}")
+        for status in sorted(journal.statuses):
+            lines.append(f"  失敗した応答の HTTP の状態 {status}: {journal.statuses[status]}")
     return lines
