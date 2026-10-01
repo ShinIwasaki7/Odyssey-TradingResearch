@@ -534,6 +534,23 @@ def test_an_altered_snapshot_manifest_is_refused(tmp_path: Path) -> None:
     assert not scene.out.exists()
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [("approved_by", ["human"]), ("comment", {"note": "x"}), ("approved_at", 20261002)],
+)
+def test_an_approval_record_of_another_shape_is_refused(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """承認の記録は識別子の計算対象外なので、文字列へ変換せずに形と型を確かめる（R1）。"""
+    scene = _scene(tmp_path)
+    path = tmp_path / "snapshots" / scene.new / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["approval"][field] = value
+    path.write_text(json.dumps(payload))
+    assert rr.main(scene.args) == 1
+    assert not scene.out.exists()
+
+
 def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:
     """出力は「存在すれば失敗」: どちらかが既にあれば、どちらも書かない。"""
     scene = _scene(tmp_path)

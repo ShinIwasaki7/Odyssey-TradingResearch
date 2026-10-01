@@ -364,13 +364,29 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
             declared_by=str(declaration["declared_by"]),
             declared_at=UtcTime.parse(str(declaration["declared_at"])),
         ),
-        approval=None
-        if approval is None
-        else Approval(
-            approved_by=str(approval["approved_by"]),
-            approved_at=UtcTime.parse(str(approval["approved_at"])),
-            comment=str(approval["comment"]),
-        ),
+        approval=None if approval is None else _approval_from_payload(approval),
+    )
+
+
+def _approval_from_payload(payload: object) -> Approval:
+    """承認の記録を、文字列へ変換せずに形と型のまま確かめて読む（D03 §3.7.1 の 3）。
+
+    承認の記録は snapshot の識別子の計算対象外なので、識別子の計算し直しでは改変を見つけ
+    られない。書き手の形（`approved_at`・`approved_by`・`comment` の 3 つの文字列）と違えば
+    `MarketDataValueError`（D03 v1.17 §14.15 の R1「承認の記録の形を確かめてから使う」）。
+    """
+    expected = {"approved_at", "approved_by", "comment"}
+    if not isinstance(payload, dict) or set(payload) != expected:
+        raise MarketDataValueError(
+            f"manifest approval must be an object with the keys {sorted(expected)}"
+        )
+    for key in sorted(expected):
+        if not isinstance(payload[key], str):
+            raise MarketDataValueError(f"manifest approval.{key} must be a string")
+    return Approval(
+        approved_by=payload["approved_by"],
+        approved_at=UtcTime.parse(payload["approved_at"]),
+        comment=payload["comment"],
     )
 
 
