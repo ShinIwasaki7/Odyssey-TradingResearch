@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -472,3 +473,22 @@ def test_an_unreadable_input_snapshot_is_a_structural_error_not_a_missing_refill
     err = capsys.readouterr().err
     assert "cannot be read" in err and "structurally broken" in err
     assert "not all given" not in err
+
+
+def test_an_input_snapshot_directory_holding_another_manifest_is_refused(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """入力 snapshot のディレクトリに別の（それ自体は整合した）manifest があれば構造エラー。"""
+    plan_id = _fetch_all(repo, monkeypatch)
+    assert _finalize(repo, plan_id) == 0
+    refill_dir = repo / "data/raw/market/refill" / _refill_id(repo)
+    payload = json.loads((refill_dir / "refill_manifest.json").read_text(encoding="utf-8"))
+    store = ParquetSnapshotStore(root=repo / "data/snapshots")
+    original = store.read_manifest(payload["snapshot_id"])
+    other = replace(original, resolved_classifications=())
+    assert str(other.snapshot_id()) != payload["snapshot_id"]
+    store.write_manifest(payload["snapshot_id"], other)
+    capsys.readouterr()
+    assert _accept_with(repo, refill_dir) == 1
+    err = capsys.readouterr().err
+    assert "holds the manifest of" in err and "structurally broken" in err

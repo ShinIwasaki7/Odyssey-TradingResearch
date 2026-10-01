@@ -128,7 +128,9 @@ RESIDUAL_FIELDS: tuple[str, ...] = (
 BAR_LENGTH: dict[str, timedelta] = {"15m@v1": timedelta(minutes=15), "1h@v1": timedelta(hours=1)}
 
 REFILL_PREFIX = "data/raw/market/refill/"
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+#: 補充の置き場の直下で、補充分ではないが置いてよいもの（tick の保管場所と作業ディレクトリ）。
+_SPECIAL_DIRS = frozenset({"_ticks", "_work"})
 
 BarKey = tuple[str, str, datetime]
 
@@ -404,10 +406,14 @@ def collect_records(
     refill_count = 0
     for directory in sorted(refill_root.iterdir(), key=lambda item: item.name):
         name = directory.name
-        if name.startswith(("_", ".")) or not directory.is_dir():
+        plain_dir = directory.is_dir() and not directory.is_symlink()
+        if name in _SPECIAL_DIRS and plain_dir:
             continue
-        if not _HEX64.match(name):
-            problems.append(f"補充分の名前ではないディレクトリ: {directory}")
+        if not plain_dir or not _HEX64.fullmatch(name):
+            problems.append(
+                f"補充の置き場に想定外のもの（補充分・_ticks・_work 以外の名前、ファイル、リンク）:"
+                f" {directory}"
+            )
             continue
         manifest_path = directory / "refill_manifest.json"
         if not manifest_path.is_file():
@@ -442,11 +448,15 @@ def collect_records(
     plan_count = 0
     work_root = refill_root / "_work"
     work_dirs = sorted(work_root.iterdir(), key=lambda p: p.name) if work_root.is_dir() else []
+    if work_root.is_symlink() or (work_root.exists() and not work_root.is_dir()):
+        problems.append(f"作業ディレクトリの置き場がディレクトリではない: {work_root}")
+        work_dirs = []
     for work in work_dirs:
-        if not work.is_dir():
-            continue
-        if not _HEX64.match(work.name):
-            problems.append(f"計画の名前ではない作業ディレクトリ: {work}")
+        if work.is_symlink() or not work.is_dir() or not _HEX64.fullmatch(work.name):
+            problems.append(
+                f"作業ディレクトリの置き場に想定外のもの（計画以外の名前、ファイル、リンク）:"
+                f" {work}"
+            )
             continue
         try:
             plan = _load_json(work / "plan.json")

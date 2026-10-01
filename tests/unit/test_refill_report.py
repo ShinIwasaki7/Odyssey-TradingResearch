@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from odyssey_fx.common import canonical
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
@@ -457,6 +459,26 @@ def test_a_not_built_record_outside_the_plan_is_refused(tmp_path: Path) -> None:
     path.write_text(json.dumps(payload))
     assert rr.main(args) == 1
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("stray", ["file", "link", "dir", "work_file"])
+def test_anything_unexpected_in_the_store_leaves_coverage_unknown(
+    tmp_path: Path, stray: str
+) -> None:
+    """補充分・_ticks・_work・計画以外のものを黙って飛ばさない（D03 v1.17 §14.15 の R4）。"""
+    args = _write(tmp_path)
+    root = tmp_path / "refill"
+    if stray == "file":
+        (root / ("9" * 64)).write_text("not a refill")
+    elif stray == "link":
+        (root / ("8" * 64)).symlink_to(root / REFILL)
+    elif stray == "dir":
+        (root / "_orphan").mkdir()
+    else:
+        (root / "_work" / "notes.txt").write_text("x")
+    assert rr.main(args) == 0
+    rows = _rows(tmp_path / "out/residual_gaps.csv")
+    assert rows[("USDJPY", "1h@v1", "2017-01-02T03:00Z")]["states"] == rr.UNDETERMINED
 
 
 def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:

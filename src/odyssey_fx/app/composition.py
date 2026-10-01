@@ -1746,6 +1746,12 @@ def load_refills_for_acceptance(
                 f" {manifest.refill_id} cannot be read ({exc}); the input is structurally broken"
                 " (D03 §14.11). Nothing was written"
             ) from exc
+        if str(source_manifest.snapshot_id()) != manifest.snapshot_id:
+            raise MarketDataValueError(
+                f"the directory of the input snapshot {manifest.snapshot_id} of the refill"
+                f" {manifest.refill_id} holds the manifest of {source_manifest.snapshot_id()};"
+                " the input is structurally broken (D03 §3.7.1, §14.11). Nothing was written"
+            )
         input_sources[manifest.snapshot_id] = tuple(
             record.path for record in source_manifest.sources
         )
