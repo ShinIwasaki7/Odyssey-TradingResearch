@@ -22,7 +22,8 @@
 4. 実行可能な連続期間（20 系列すべて・USDJPY 15 分足の上位、旧 snapshot との比較）。
 5. 再現のコマンドと、戦略の成績を読んでいないことの明記。
 
-標準ライブラリだけを使う。
+実行はリポジトリの根で ``uv run python -m tools.ops.refill_report …``（``tools`` パッケージとして
+import するため、ファイルのパスを直接渡す形では動かない）。標準ライブラリだけを使う。
 """
 
 from __future__ import annotations
@@ -476,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = residual_rows(new_merged, bar_reasons(refills, rejected, layers))
     command = " ".join(
         [
-            "uv run python tools/ops/refill_report.py",
+            "uv run python -m tools.ops.refill_report",
             f"--snapshot-root {args.snapshot_root}",
             f"--snapshot-id {args.snapshot_id}",
             f"--previous-snapshot-id {args.previous_snapshot_id}",

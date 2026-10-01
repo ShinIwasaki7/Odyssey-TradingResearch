@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -224,3 +226,20 @@ def test_a_later_layer_decides_the_reason_regardless_of_the_id_order() -> None:
     for order in ([first, second], [second, first]):
         reasons = rr.bar_reasons(order, [], {"s0": 0, "s1": 1})
         assert reasons[key] == rr.PROVIDER_NO_TICKS
+
+
+def test_the_reproduction_command_runs_from_the_repository_root(tmp_path: Path) -> None:
+    """報告の「再現」に書くコマンドの形（``-m tools.ops.refill_report``）で起動できる。"""
+    args = _write(tmp_path)
+    assert rr.main(args) == 0
+    report = (tmp_path / "out/refill_report.md").read_text(encoding="utf-8")
+    assert "uv run python -m tools.ops.refill_report" in report
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-m", "tools.ops.refill_report", "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

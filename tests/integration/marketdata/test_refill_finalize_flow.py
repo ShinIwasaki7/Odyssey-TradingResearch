@@ -341,6 +341,9 @@ def test_an_incomplete_refill_directory_blocks_finalizing(tmp_path: Path) -> Non
     (tmp_path / "refill" / ("e" * 64)).mkdir()
     with pytest.raises(RefillStoreInconsistent, match="incomplete refill"):
         _finalize(store, plan_id)
+    # 作業ディレクトリの無い計画でも、状態を判定する前に書きかけを検算する（D03 §14.12 の注記）。
+    with pytest.raises(RefillStoreInconsistent, match="incomplete refill"):
+        _finalize(store, "f" * 64)
 
 
 def test_an_unknown_plan_and_a_finalized_plan_without_its_work_directory(tmp_path: Path) -> None:

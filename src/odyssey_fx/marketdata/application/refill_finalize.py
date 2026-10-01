@@ -496,6 +496,8 @@ def finalize_plan(
        足のファイルと `validation.json` を置き、`refill_manifest.json` を最後に置く。書いた直後
        に検算し直す。
     """
+    # どの出来事でも、状態を判定する前に書きかけの補充分を検算する（D03 §14.12 の注記、W6）。
+    require_consistent_refills(store)
     if not store.work_dir_exists(plan_id):
         finished = finalized_refills(store, plan_id, None)
         if finished:
