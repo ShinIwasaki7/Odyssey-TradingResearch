@@ -80,6 +80,7 @@ from tools.ops import research_history_gaps as rhg
 
 HOUR_02 = UtcTime.parse("2020-11-30T02:00:00Z")
 HOUR_03 = UtcTime.parse("2020-11-30T03:00:00Z")
+HOUR_04 = UtcTime.parse("2020-11-30T04:00:00Z")
 _URLS_00_02 = tuple(url_of(hour) for hour in (HOUR_00, HOUR_01, HOUR_02))
 NOW = UtcTime.parse("2026-10-01T12:00:00Z")
 WINDOW = Interval(
@@ -91,6 +92,12 @@ FILTER = RefillFilter(
     symbols=(market.USDJPY,),
     interval=Interval(
         start=UtcTime.parse("2020-11-30T00:00:00Z"), end=UtcTime.parse("2020-11-30T03:00:00Z")
+    ),
+)
+FILTER_04 = RefillFilter(
+    symbols=(market.USDJPY,),
+    interval=Interval(
+        start=UtcTime.parse("2020-11-30T04:00:00Z"), end=HOUR_04 + timedelta(hours=1)
     ),
 )
 SOURCES = (
@@ -211,6 +218,7 @@ def _plan(
     comm_interval: int,
     manifest: SnapshotManifest = OLD_MANIFEST,
     raw: Mapping[SeriesId, Sequence[Bar]] | None = None,
+    refill_filter: RefillFilter = FILTER,
 ) -> RefillPlan:
     return build_plan(
         manifest=manifest,
@@ -220,7 +228,7 @@ def _plan(
         timeframe_defs=market.TIMEFRAME_DEFS,
         boundaries=INITIAL_ACCESS_BOUNDARIES,
         provider=provider_ref(comm=communication(request_interval_seconds=comm_interval)),
-        refill_filter=FILTER,
+        refill_filter=refill_filter,
     )
 
 
@@ -279,6 +287,7 @@ def _scene(
     with_b: bool = False,
     with_later: bool = False,
     with_open: bool = False,
+    with_other: bool = False,
     approved: bool = True,
 ) -> Scene:
     """計画 A（と B）を本体で計画・取得・書き出しし、新 snapshot を書く。"""
@@ -354,6 +363,19 @@ def _scene(
         )
         assert refill_e is not None
     plan_c = None
+    if with_other:
+        # 計画 X: 新 snapshot の祖先でない snapshot（04 時の 15分足の欠落だけを持つ）を入力に
+        # した、04 時の足の計画。照合の時間の原データは人工の値なので、検証で不合格になる。
+        other = _snapshot([_gap(USDJPY_15M, "2020-11-30T04:00:00Z", "2020-11-30T04:15:00Z")])
+        snapshots.write_manifest(str(other.snapshot_id()), other)
+        hours = (HOUR_03, HOUR_04, HOUR_04 + timedelta(hours=1))
+        plan_c, refill_x = _run(
+            store,
+            _plan(13, other, _raw(), FILTER_04),
+            {url_of(hour): [BI5_01H] for hour in hours},
+            _Inputs(_raw()),
+        )
+        assert refill_x is None
     if with_later:
         # 計画 C: A の補充分を含む新 snapshot を入力にした、02 時の足の計画（補充を重ねる）。
         # 照合の時間の原データは人工の値なので、検証で不合格になる。
@@ -435,6 +457,20 @@ def test_unfinished_and_unused_records_make_the_state_undetermined(tmp_path: Pat
     assert f"{rr.BUILT_NOT_IN_SNAPSHOT}×4" in row["history"]
     # 計画の無い足は変わらない（置き場はすべて読めた）。
     assert scene.rows()[ROW_04_15M]["states"] == rr.NOT_PLANNED
+
+
+def test_a_rejected_plan_on_a_snapshot_outside_the_ancestry_is_collected(
+    tmp_path: Path,
+) -> None:
+    """R4（決定 2026-10-01「置き場の全計画」）: 祖先でない snapshot を入力にした不合格の計画も
+    集めて足ごとに突き合わせる。その足を「計画されていない」と示さない。"""
+    scene = _scene(tmp_path, with_other=True)
+    assert rr.main(scene.args) == 0
+    row = scene.rows()[ROW_04_15M]
+    assert rr.NOT_PLANNED not in row["states"]
+    assert row["states"] == rr.VALIDATION_REJECTED
+    assert row["basis_plan_ids"] == scene.plan_c
+    assert "置き場の中はすべて読めた" in scene.report()
 
 
 def test_each_state_has_its_own_count_column(tmp_path: Path) -> None:

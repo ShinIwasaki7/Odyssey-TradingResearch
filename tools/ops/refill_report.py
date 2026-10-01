@@ -15,9 +15,10 @@
 - **前後関係は参照関係で決める**: 記録 X が記録 Y より前とみなすのは、X の補充分が Y の入力
   snapshot に（重ねた補充を辿って）含まれるときだけ。補充分の数や識別子の並びで 1 つを選ばない。
   比較できない記録が残れば併記する。
-- **自動収集**: 補充の置き場から、対象 snapshot とその前の snapshot を入力にした計画と補充分を
-  すべて集める。置き場の中に読めないものがあって網羅性を確かめられなければ、どの記録も無い足を
-  「対象だが計画・試行されていない」とせず「理由未確定」とする。
+- **自動収集**: 補充の置き場から、入力 snapshot を問わず計画と補充分をすべて集め、足ごとに
+  突き合わせる（2026-10-01 の人間の決定「R4 は置き場の全計画」）。置き場の中に読めないものが
+  あって網羅性を確かめられなければ、どの記録も無い足を「対象だが計画・試行されていない」と
+  せず「理由未確定」とする。
 - **件数の表示**: 理由ごとに件数の列を分け、複数の理由を含む区間を 1 つの理由として数えない。
 
 **入力の検算は本体の関数だけで行う**（2026-10-01 の人間の決定。報告の側で読み方を書き直さ
@@ -204,9 +205,46 @@ def snapshot_chain(
     （前後関係を確かめられないため）。
     """
     closures: dict[str, frozenset[str]] = {}
+    _close(snapshot_root, store, snapshot_id, closures)
+    return closures
+
+
+def extend_chain(
+    snapshot_root: Path,
+    store: RefillStore,
+    chain: dict[str, frozenset[str]],
+    snapshot_ids: set[str],
+) -> list[str]:
+    """集めた記録の入力 snapshot についても、補充分の参照を辿った集合を ``chain`` に足す。
+
+    R4 は置き場の全計画を集めるので、新 snapshot の祖先でない snapshot を入力にした記録も
+    ある。その前後関係（R3）を確かめるために辿る。読めなければ止めずに、網羅性を確かめられ
+    ない理由として返す（その記録の前後を確かめられないため）。
+    """
+    problems: list[str] = []
+    for snapshot_id in sorted(snapshot_ids - set(chain)):
+        try:
+            _close(snapshot_root, store, snapshot_id, chain)
+        except ReportInputError as exc:
+            problems.append(f"記録の入力 snapshot の補充分の参照を辿れない: {snapshot_id}（{exc}）")
+    return problems
+
+
+def _close(
+    snapshot_root: Path,
+    store: RefillStore,
+    snapshot_id: str,
+    closures: dict[str, frozenset[str]],
+) -> None:
+    """``snapshot_id`` から補充分の参照を辿り、``closures`` に足す（読めなければ止める）。"""
     visiting: set[str] = set()
+    found_here: dict[str, frozenset[str]] = {}
 
     def closure(current: str) -> frozenset[str]:
+        if current in closures:
+            return closures[current]
+        if current in found_here:
+            return found_here[current]
         if current in closures:
             return closures[current]
         if current in visiting:
@@ -217,11 +255,11 @@ def snapshot_chain(
             found.add(refill_id)
             found |= closure(load_refill(store, refill_id).manifest.snapshot_id)
         visiting.discard(current)
-        closures[current] = frozenset(found)
-        return closures[current]
+        found_here[current] = frozenset(found)
+        return found_here[current]
 
     closure(snapshot_id)
-    return closures
+    closures.update(found_here)
 
 
 # --- 記録（検算済みの型から作る）--------------------------------------------------------
@@ -330,18 +368,28 @@ def records_from(inventory: RefillInventory, in_snapshot: frozenset[str]) -> Col
 
 
 def collect_records(
-    store: RefillStore, chain: dict[str, frozenset[str]], in_snapshot: frozenset[str]
+    snapshot_root: Path,
+    store: RefillStore,
+    chain: dict[str, frozenset[str]],
+    in_snapshot: frozenset[str],
 ) -> Collection:
-    """対象 snapshot とその前の snapshot を入力にした計画・補充分の記録をすべて集める。
+    """置き場にある計画・補充分の記録を、入力 snapshot を問わずすべて集める（R4）。
 
-    集めて検算するのは本体（``survey_refill_store``）。置き場そのものが読めなければ、網羅性を
-    確かめられないとする。
+    集めて検算するのは本体（``survey_refill_store``）。記録の入力 snapshot の参照も辿って
+    ``chain`` に足す（R3 の前後関係のため。足ごとの突き合わせは ``bar_states``）。置き場その
+    ものや記録の入力 snapshot が読めなければ、網羅性を確かめられないとする。
     """
     try:
-        inventory = survey_refill_store(store, chain)
+        inventory = survey_refill_store(store)
     except (MarketDataError, OSError) as exc:
         return Collection([], [f"補充の置き場が読めない: {exc}"])
-    return records_from(inventory, in_snapshot)
+    inputs = {item.manifest.snapshot_id for item in inventory.refills} | {
+        item.plan.snapshot_id for item in inventory.plans
+    }
+    problems = extend_chain(snapshot_root, store, chain, inputs)
+    collection = records_from(inventory, in_snapshot)
+    collection.problems.extend(problems)
+    return collection
 
 
 # --- 足ごとの状態 ----------------------------------------------------------------------
@@ -608,7 +656,7 @@ def render_report(
     ]
     lines.append(
         f"補充の置き場の自動収集: 計画 {collection.plan_count} 件・補充分"
-        f" {collection.refill_count} 件（新 snapshot とその前の snapshot を入力にしたもの）。"
+        f" {collection.refill_count} 件（入力 snapshot を問わず置き場のすべて）。"
         + (
             "置き場の中はすべて読めた（網羅性を確かめた）。"
             if collection.complete
@@ -850,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
     except ReportInputError as exc:
         print(f"報告の入力が読めない: {exc}", file=sys.stderr)
         return 1
-    collection = collect_records(store, chain, frozenset(new.refill_ids))
+    collection = collect_records(args.snapshot_root, store, chain, frozenset(new.refill_ids))
     new_merged, new_bounds = rhg.collect_gaps(new.payload)
     old_merged, old_bounds = rhg.collect_gaps(old.payload)
     candidates = candidate_intervals(rhg.collect_gaps(candidates_snapshot.payload)[0])

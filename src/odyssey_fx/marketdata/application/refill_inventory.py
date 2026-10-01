@@ -207,14 +207,20 @@ class RefillInventory:
         return not self.problems
 
 
-def survey_refill_store(store: RefillStore, snapshot_ids: Collection[str]) -> RefillInventory:
-    """`snapshot_ids` のどれかを入力にした補充分と計画をすべて集める（読み取り専用）。
+def survey_refill_store(
+    store: RefillStore, snapshot_ids: Collection[str] | None = None
+) -> RefillInventory:
+    """置き場の補充分と計画をすべて集める（読み取り専用）。
+
+    `snapshot_ids` を渡せば、そのどれかを入力にしたものだけを返す（省略すれば入力 snapshot を
+    問わずすべて。報告の規則 R4 は置き場の全計画を集める。D03 v1.17 §14.15、2026-10-01 の
+    人間の決定）。
 
     補充分は `load_verified_refill`、計画は `require_plan_matches`・`read_journal`・
     `finalized_refills`・`derive_state` で検算する。対象外の snapshot を入力にしたものは、
     読めれば数えない。読めなければ（対象かどうか分からないので）`problems` に残す。
     """
-    wanted = frozenset(snapshot_ids)
+    wanted = None if snapshot_ids is None else frozenset(snapshot_ids)
     problems: list[str] = [
         f"補充の置き場に想定外のもの（補充分・_ticks・_work・計画以外の名前、ファイル、リンク）:"
         f" {name}"
@@ -230,13 +236,13 @@ def survey_refill_store(store: RefillStore, snapshot_ids: Collection[str]) -> Re
         except MarketDataError as exc:
             problems.append(f"補充分の検算が合わない: {entry.name}（{exc}）")
             continue
-        if verified.manifest.snapshot_id in wanted:
+        if wanted is None or verified.manifest.snapshot_id in wanted:
             refills.append(verified)
     plans: list[PlanRecord] = []
     for plan_id in store.list_plans():
         try:
             plan = require_plan_matches(plan_id, store.read_plan(plan_id))
-            if plan.snapshot_id not in wanted:
+            if wanted is not None and plan.snapshot_id not in wanted:
                 continue
             plans.append(_plan_record(store, plan_id, plan))
         except MarketDataError as exc:
