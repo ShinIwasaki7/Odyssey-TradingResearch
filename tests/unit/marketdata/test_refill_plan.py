@@ -40,6 +40,7 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 from tests.fixtures.refill import (
     HOUR_00,
     HOUR_01,
+    REFILL_CALENDAR,
     USDJPY_1H,
     USDJPY_15M,
     calendar_ref,
@@ -62,7 +63,7 @@ def _plan(
     boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
     approved: bool = True,
 ) -> RefillPlan:
-    trading = market.calendar() if calendar is None else calendar
+    trading = REFILL_CALENDAR if calendar is None else calendar
     return build_plan(
         manifest=manifest_for(
             gap_resolutions() if resolved is None else resolved, approved=approved
@@ -80,7 +81,7 @@ def _plan(
 def test_targets_are_the_data_gaps_of_original_series() -> None:
     targets = derive_target_bars(
         manifest_for(gap_resolutions()),
-        market.calendar(),
+        REFILL_CALENDAR,
         market.TIMEFRAME_DEFS,
         INITIAL_ACCESS_BOUNDARIES,
         RefillFilter(),
@@ -190,3 +191,16 @@ def test_hours_of_the_plan_are_sorted_by_symbol_and_time() -> None:
     plan = _plan()
     keys = [hour.hour for hour in plan.hours]
     assert keys == sorted(keys, key=HourKey.sort_key)
+
+
+def test_a_calendar_other_than_version_2_or_3_is_refused() -> None:
+    with pytest.raises(MarketDataValueError, match="not a refill calendar"):
+        _plan(calendar=market.calendar(version=1))
+
+
+def test_the_raw_bar_index_cannot_be_mutated() -> None:
+    index = RawBarIndex.build(raw_bars(), INITIAL_ACCESS_BOUNDARIES)
+    with pytest.raises(TypeError):
+        index.research[USDJPY_1H] = ()  # type: ignore[index]
+    with pytest.raises(TypeError):
+        index.starts[USDJPY_1H] = ()  # type: ignore[index]

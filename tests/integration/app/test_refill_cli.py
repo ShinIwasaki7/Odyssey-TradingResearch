@@ -146,7 +146,7 @@ def _plan(repo: Path, snapshot: str, *extra: str) -> int:
         "--snapshot",
         snapshot,
         "--calendar",
-        str(configs / "calendars/fx_ny17_v1.yaml"),
+        str(configs / "calendars/fx_ny17_v2.yaml"),
         "--provider",
         str(configs / "datasources/dukascopy_tick_v1.yaml"),
         "--out",

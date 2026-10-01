@@ -39,6 +39,7 @@ from tests.fixtures.refill import (
     BI5_01H,
     HOUR_00,
     HOUR_01,
+    REFILL_CALENDAR,
     USDJPY_1H,
     USDJPY_15M,
     calendar_ref,
@@ -61,7 +62,7 @@ def _plan(*, reverse: bool = False, interval_seconds: int = 8) -> RefillPlan:
     return build_plan(
         manifest=manifest_for(tuple(reversed(resolved)) if reverse else resolved),
         raw_bars=raw_bars(),
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
         calendar_ref=calendar_ref(),
         timeframe_defs=market.TIMEFRAME_DEFS,
         boundaries=INITIAL_ACCESS_BOUNDARIES,
@@ -130,7 +131,7 @@ def _validate(hours: dict[HourKey, HourData]) -> RefillValidation:
         hours=hours,
         originals=(USDJPY_15M, USDJPY_1H),
         raw=RawBarIndex.build(bars, INITIAL_ACCESS_BOUNDARIES),
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
     )
 
 

@@ -27,6 +27,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Final
 
 from odyssey_fx.common.symbol import Symbol
@@ -63,6 +64,7 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
 __all__ = [
     "REFERENCE_SEARCH_HOURS",
+    "REFILL_CALENDAR_VERSIONS",
     "RawBarIndex",
     "build_plan",
     "create_plan",
@@ -74,6 +76,9 @@ __all__ = [
     "require_consistent_refills",
     "require_plan_matches",
 ]
+
+#: 計画が受けるカレンダーの版（版 2 または版 3。D03 §14.4・§3.4.2）。
+REFILL_CALENDAR_VERSIONS: Final = frozenset({2, 3})
 
 #: 照合用の時間を探す範囲（塊の始まりから遡る時間数。直前 24 時間以内。D03 §14.18 の 2）。
 REFERENCE_SEARCH_HOURS: Final = 24
@@ -141,7 +146,7 @@ class RawBarIndex:
     （D03 §14.4 の v1.15 の第1巡の指摘への対処）。`research` はその足だけを系列ごとに
     開始時刻の順で持つ。`starts` は区分によらず原データにある足の開始時刻（価格を持たない。
     重複の検査と「研究履歴区分の外に足がある」の判定に使う）。検索用の鍵の列は構築時に
-    1 回だけ作る。
+    1 回だけ作る。写像はすべて読み取り専用（値は tuple）で、構築後に書き換えられない。
     """
 
     research: Mapping[SeriesId, tuple[Bar, ...]]
@@ -166,20 +171,26 @@ class RawBarIndex:
                 if boundaries.classify(bar.bar_end) is AccessClass.RESEARCH_HISTORY
             )
         return cls(
-            research=research,
-            starts=starts,
-            _research_starts={
-                series: tuple(bar.bar_start.value for bar in bars)
-                for series, bars in research.items()
-            },
-            _research_ends={
-                series: tuple(bar.bar_end.value for bar in bars)
-                for series, bars in research.items()
-            },
-            _all_starts={
-                series: tuple(moment.value for moment in moments)
-                for series, moments in starts.items()
-            },
+            research=MappingProxyType(research),
+            starts=MappingProxyType(starts),
+            _research_starts=MappingProxyType(
+                {
+                    series: tuple(bar.bar_start.value for bar in bars)
+                    for series, bars in research.items()
+                }
+            ),
+            _research_ends=MappingProxyType(
+                {
+                    series: tuple(bar.bar_end.value for bar in bars)
+                    for series, bars in research.items()
+                }
+            ),
+            _all_starts=MappingProxyType(
+                {
+                    series: tuple(moment.value for moment in moments)
+                    for series, moments in starts.items()
+                }
+            ),
         )
 
     def research_bars_in(self, series: SeriesId, interval: Interval) -> tuple[Bar, ...]:
@@ -381,6 +392,12 @@ def build_plan(
     refill_filter: RefillFilter,
 ) -> RefillPlan:
     """取得計画を組み立てる（D03 §14.4・§14.10）。対象足が 0 本なら `RefillPlanEmpty`。"""
+    if calendar.version not in REFILL_CALENDAR_VERSIONS:
+        raise MarketDataValueError(
+            f"the calendar {calendar.id} v{calendar.version} is not a refill calendar; a plan"
+            f" takes version {' or '.join(str(v) for v in sorted(REFILL_CALENDAR_VERSIONS))}"
+            " (D03 §14.4)"
+        )
     if (calendar.id, calendar.version) != (calendar_ref.id, calendar_ref.version):
         raise MarketDataValueError(
             f"the calendar {calendar.id} v{calendar.version} does not match its record"

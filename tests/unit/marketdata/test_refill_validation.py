@@ -42,6 +42,7 @@ from tests.fixtures.refill import (
     BI5_01H,
     HOUR_00,
     HOUR_01,
+    REFILL_CALENDAR,
     USDJPY_1H,
     USDJPY_15M,
     calendar_ref,
@@ -64,7 +65,7 @@ def _plan(raw: Mapping[SeriesId, Sequence[Bar]] | None = None) -> RefillPlan:
     return build_plan(
         manifest=manifest_for(gap_resolutions()),
         raw_bars=raw_bars() if raw is None else raw,
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
         calendar_ref=calendar_ref(),
         timeframe_defs=market.TIMEFRAME_DEFS,
         boundaries=INITIAL_ACCESS_BOUNDARIES,
@@ -144,7 +145,7 @@ def _validate(
         hours=data,
         originals=ORIGINALS,
         raw=RawBarIndex.build(bars, INITIAL_ACCESS_BOUNDARIES),
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
     )
 
 
@@ -257,7 +258,7 @@ def test_an_unreconciled_chunk_is_not_written_and_not_failed_alone() -> None:
         hours={KEY_01: _fetched(KEY_01, decoded(BI5_01H))},
         originals=ORIGINALS,
         raw=RawBarIndex.build(bars, INITIAL_ACCESS_BOUNDARIES),
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
     )
     assert {item.reason for item in result.not_built} == {NotBuiltReason.UNRECONCILED}
     assert [(str(item.series), item.target_count) for item in result.unreconciled] == [
@@ -324,7 +325,7 @@ def test_a_bar_already_in_the_raw_data_is_a_duplicate() -> None:
         },
         originals=ORIGINALS,
         raw=tampered,
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
     )
     assert any("already has this bar" in reason for reason in result.failures)
 
@@ -343,5 +344,5 @@ def test_a_reference_hour_the_raw_data_does_not_need_is_rejected() -> None:
             },
             originals=ORIGINALS,
             raw=RawBarIndex.build(with_bar, INITIAL_ACCESS_BOUNDARIES),
-            calendar=market.calendar(),
+            calendar=REFILL_CALENDAR,
         )

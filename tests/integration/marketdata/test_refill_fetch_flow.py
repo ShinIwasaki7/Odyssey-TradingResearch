@@ -53,6 +53,7 @@ from tests.fixtures.refill import (
     BI5_01H,
     HOUR_00,
     HOUR_01,
+    REFILL_CALENDAR,
     FakeTickSource,
     calendar_ref,
     communication,
@@ -72,7 +73,7 @@ def _plan(**comm: int) -> RefillPlan:
     return build_plan(
         manifest=manifest_for(gap_resolutions()),
         raw_bars=raw_bars(),
-        calendar=market.calendar(),
+        calendar=REFILL_CALENDAR,
         calendar_ref=calendar_ref(),
         timeframe_defs=market.TIMEFRAME_DEFS,
         boundaries=INITIAL_ACCESS_BOUNDARIES,

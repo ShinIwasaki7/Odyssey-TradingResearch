@@ -85,6 +85,11 @@ WINDOW: Final = Interval(
 )
 
 
+#: 補充の計画に使うカレンダー（版 2。D03 §14.4 は版 2 または版 3 を受ける）。人工の週の開閉で、
+#: 2020-11-30 の前後に休場の宣言は無い。
+REFILL_CALENDAR: Final = market.calendar(version=2)
+
+
 def decoded(body: bytes) -> DecodedTicks:
     """録画した bi5 を解凍する。"""
     return decode_bi5(body)
@@ -257,7 +262,7 @@ def provider_ref(
 
 def calendar_ref(calendar: TradingCalendar | None = None) -> CalendarRef:
     """カレンダーの記録（人工のカレンダーの識別と版、正規化内容は簡略）。"""
-    trading = market.calendar() if calendar is None else calendar
+    trading = REFILL_CALENDAR if calendar is None else calendar
     content = {"id": trading.id, "version": trading.version, "note": "synthetic"}
     return CalendarRef(
         id=trading.id,
