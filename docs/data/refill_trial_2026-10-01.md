@@ -122,15 +122,15 @@ SNAP=a498b8cf4f90aeca1fa8af7a1e59112db197413eaa8c0a0d318eb2368a770cb3
 COMMON="--snapshot $SNAP --calendar configs/calendars/fx_ny17_v2.yaml --provider configs/datasources/dukascopy_tick_v1.yaml --out data/raw/market/refill"
 
 # 計画 A〜D（plan の --interval は欠落を含む UTC の区間）
-odyssey-fx data refill plan $COMMON --symbols USDJPY --interval 2020-11-30T00:00:00Z 2020-12-01T00:00:00Z  # A
-odyssey-fx data refill plan $COMMON --symbols USDJPY --interval 2021-05-31T00:00:00Z 2021-06-01T00:00:00Z  # B
-odyssey-fx data refill plan $COMMON --symbols USDJPY --interval 2019-12-31T14:00:00Z 2019-12-31T17:00:00Z  # C
-odyssey-fx data refill plan $COMMON --symbols EURUSD --interval 2021-04-20T20:00:00Z 2021-04-20T23:00:00Z  # D
+uv run odyssey-fx data refill plan $COMMON --symbols USDJPY --interval 2020-11-30T00:00:00Z 2020-12-01T00:00:00Z  # A
+uv run odyssey-fx data refill plan $COMMON --symbols USDJPY --interval 2021-05-31T00:00:00Z 2021-06-01T00:00:00Z  # B
+uv run odyssey-fx data refill plan $COMMON --symbols USDJPY --interval 2019-12-31T14:00:00Z 2019-12-31T17:00:00Z  # C
+uv run odyssey-fx data refill plan $COMMON --symbols EURUSD --interval 2021-04-20T20:00:00Z 2021-04-20T23:00:00Z  # D
 
 # 計画ごとに取得と書き出し（<plan_id> は plan の出力）
-odyssey-fx data refill fetch --plan <plan_id> --out data/raw/market/refill --repo-root .
-odyssey-fx data refill fetch --plan <plan_id> --retry-failed --out data/raw/market/refill --repo-root .  # 未取得が残ったとき（B で 1 回）
-odyssey-fx data refill finalize --plan <plan_id> --out data/raw/market/refill
+uv run odyssey-fx data refill fetch --plan <plan_id> --out data/raw/market/refill --repo-root .
+uv run odyssey-fx data refill fetch --plan <plan_id> --retry-failed --out data/raw/market/refill --repo-root .  # 未取得が残ったとき（B で 1 回）
+uv run odyssey-fx data refill finalize --plan <plan_id> --out data/raw/market/refill
 ```
 
 試行の計画の識別子:
