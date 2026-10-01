@@ -24,8 +24,10 @@ from odyssey_fx.evaluation.domain.metrics import (
     TradeRecord,
 )
 from odyssey_fx.evaluation.domain.status import CheckOutcome, ConsistencyCheckResult
+from odyssey_fx.marketdata.application.refill_fetch import FetchReport
 from odyssey_fx.marketdata.domain.classification import CLASSIFIABLE_KINDS
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
+from odyssey_fx.marketdata.domain.refill import RefillPlan
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 
 __all__ = [
@@ -36,6 +38,8 @@ __all__ = [
     "merged_warning_spans",
     "metric_lines",
     "partition_lines",
+    "refill_fetch_lines",
+    "refill_plan_lines",
     "resolved_lines",
     "series_lines",
     "severity_totals",
@@ -284,4 +288,91 @@ def category_lines(categories: Sequence[CategoryCount]) -> list[str]:
             current = count.category.value
             lines.append(f"  {current}:")
         lines.append(f"    {count.key}: {count.count}")
+    return lines
+
+
+# --- 元データの再取得（補充）（D03 §14）------------------------------------------------
+
+
+def refill_plan_lines(plan: RefillPlan, plan_id: str) -> list[str]:
+    """取得計画の要約（件数だけ。価格は出さない）。"""
+    by_series: dict[str, int] = {}
+    for target in plan.target_bars:
+        by_series[str(target.series)] = by_series.get(str(target.series), 0) + 1
+    reference = sum(1 for hour in plan.hours if hour.reference)
+    lines = [
+        f"取得計画の識別子（plan_id）: {plan_id}",
+        f"入力の snapshot: {plan.snapshot_id}",
+        f"カレンダー: {plan.calendar.id} v{plan.calendar.version}",
+        f"提供元の設定: {plan.provider.settings.id} v{plan.provider.settings.version}",
+        f"対象足: {len(plan.target_bars)} 本",
+    ]
+    lines.extend(f"  {series}: {count} 本" for series, count in sorted(by_series.items()))
+    lines.append(
+        f"時間ファイル: {len(plan.hours)} 本（対象の時間 {len(plan.hours) - reference}、"
+        f"照合用の時間 {reference}）"
+    )
+    return lines
+
+
+def refill_fetch_lines(report: FetchReport) -> list[str]:
+    """取得 1 回の集計（D03 §14.9。代表例の試行の見直しの材料）。
+
+    時間は「今回の実行時間」（この `fetch` の開始から終了まで）と「全体の暦上の経過時間」
+    （取得記録の最初の行から最後の行まで。中断して止めていた時間を含む）を別の名前で出す。
+    通信の値の見直しに使うのは今回の実行時間である（PR #58 の仮置きの 17 への人間の修正指示
+    2026-10-01）。
+    """
+    lines = [
+        f"取得計画: {report.plan_id}",
+        f"状態: {report.state_before.value} → {report.state_after.value}",
+    ]
+    if report.started_at is not None and report.finished_at is not None:
+        seconds = (report.finished_at - report.started_at).total_seconds()
+        lines.append(f"今回の実行時間: {seconds:.0f} 秒（通信の値の見直しにはこの値を使う）")
+    if report.restoring:
+        lines.append(
+            "書き出し済みの計画: 保管場所のファイルが消えた時間だけを取り直した"
+            f"（取れずに未取得のまま残した時間ファイル: {report.not_restored}）"
+        )
+    lines.extend(
+        [
+            f"取得済みとして飛ばした時間ファイル: {report.skipped}",
+            f"保管場所から読んだ時間ファイル: {report.from_archive}",
+            f"要求の回数: {report.requests}、一時停止: {report.pauses} 回",
+        ]
+    )
+    if report.hour_locked:
+        lines.append(
+            f"時間のロックを取れず未取得のまま残した時間ファイル: {report.hour_locked}"
+            "（別のコマンドが取得中。終わってから同じ計画をもう一度 fetch する）"
+        )
+    if report.retry_marks:
+        lines.append(f"取り直しの対象に戻した時間ファイル: {report.retry_marks}")
+    if report.invalidations:
+        lines.append(f"保管場所のものが無く無効にした最終結果: {report.invalidations}")
+    for outcome in sorted(report.outcomes, key=lambda item: item.value):
+        lines.append(f"  最終結果 {outcome.value}: {report.outcomes[outcome]}")
+    for failure in sorted(report.failures, key=lambda item: item.value):
+        lines.append(f"  失敗 {failure.value}: {report.failures[failure]}")
+    for status in sorted(report.statuses):
+        lines.append(f"  失敗した応答の HTTP の状態 {status}: {report.statuses[status]}")
+    journal = report.journal
+    if journal is not None:
+        lines.append(
+            f"取得記録全体（中断・再開をまたぐ）: 要求 {journal.requests} 回、"
+            f"一時停止 {journal.pauses} 回"
+        )
+        if journal.first_at is not None and journal.last_at is not None:
+            seconds = (journal.last_at - journal.first_at).total_seconds()
+            lines.append(
+                f"  全体の暦上の経過時間: {seconds:.0f} 秒（最初の行から最後の行まで。"
+                "中断して止めていた時間を含むので通信の値の見直しには使わない）"
+            )
+        for outcome in sorted(journal.outcomes, key=lambda item: item.value):
+            lines.append(f"  有効な最終結果 {outcome.value}: {journal.outcomes[outcome]}")
+        for failure in sorted(journal.failures, key=lambda item: item.value):
+            lines.append(f"  失敗 {failure.value}: {journal.failures[failure]}")
+        for status in sorted(journal.statuses):
+            lines.append(f"  失敗した応答の HTTP の状態 {status}: {journal.statuses[status]}")
     return lines

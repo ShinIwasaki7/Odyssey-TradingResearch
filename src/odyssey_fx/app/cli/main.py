@@ -8,6 +8,8 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 - `odyssey-fx data classify`: 人間の分類を記入し、最終の識別子を計算して
   `data/snapshots/<最終 ID>/` へ確定する。
 - `odyssey-fx data approve`: 確定済み snapshot に承認と価格基準の宣言記録を記入する。
+- `odyssey-fx data refill plan` / `fetch`（D03 §14）: 承認済み snapshot でデータ欠損と分類した
+  足を提供元から取り直すための取得計画を作り、時間ファイルを取得する（書き出しは後続の実装）。
 - `odyssey-fx run`: 実験設定から1回の run を実行し、`runs/<run_id>/` に判断履歴19表・
   run manifest・結果を書く。実験設定は書式 v1 と v2 の両方を受け、`schema_version` で
   分岐する（D07 §18.5、Q12 決定）。
@@ -60,11 +62,13 @@ from odyssey_fx.app.config.experiment_v2 import (
     experiment_schema_version,
     load_experiment_v2,
 )
+from odyssey_fx.app.config.refill import load_calendar_ref, load_refill_provider
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.adapters.report import ReportWrite
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.evaluation.application.ports import ResultReadFailure
@@ -86,6 +90,8 @@ from odyssey_fx.marketdata.application.acceptance import (
 )
 from odyssey_fx.marketdata.application.classification import require_recorded_classification
 from odyssey_fx.marketdata.application.ports import SnapshotStore
+from odyssey_fx.marketdata.application.refill_fetch import fetch_plan
+from odyssey_fx.marketdata.application.refill_plan import create_plan
 from odyssey_fx.marketdata.application.snapshot_access import (
     PENDING_DIRECTORY,
     require_recorded_content,
@@ -94,6 +100,7 @@ from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.refill import RefillFilter
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
@@ -177,6 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
     approve_command.add_argument(
         "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
     )
+
+    _add_refill_parsers(data)
 
     run_command = top.add_parser(
         "run",
@@ -320,6 +329,87 @@ def build_parser() -> argparse.ArgumentParser:
         help="現在の環境の `uv.lock` を読むリポジトリの位置（設定ファイルは読まない）",
     )
     return parser
+
+
+def _add_refill_parsers(data: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """元データの再取得（補充）のコマンド（D03 §10 の v1.15、§14.12）。
+
+    `plan`（計画を作る）と `fetch`（取得する・再開する。`--retry-failed` で取得できなかった
+    時間を取り直す）。書き出し（`finalize`）は後続の実装。
+    """
+    refill = data.add_parser(
+        "refill", help="欠落と分類した足を提供元から取り直して補う（D03 §14）"
+    ).add_subparsers(dest="refill_command", required=True)
+
+    plan = refill.add_parser(
+        "plan", help="承認済み snapshot から取得計画を作り plan_id を表示する（D03 §14.4）"
+    )
+    plan.set_defaults(command="refill_plan")
+    plan.add_argument("--snapshot", required=True, help="承認済み snapshot の識別子")
+    plan.add_argument("--calendar", type=Path, required=True, help="取引カレンダー（YAML）")
+    plan.add_argument(
+        "--provider",
+        type=Path,
+        required=True,
+        help="提供元の設定（configs/datasources/dukascopy_tick_v1.yaml）",
+    )
+    plan.add_argument(
+        "--symbols", nargs="+", default=None, help="絞り込む銘柄（任意。代表例の試行に使う）"
+    )
+    plan.add_argument(
+        "--interval",
+        nargs=2,
+        metavar=("START", "END"),
+        default=None,
+        help="絞り込む区間（任意。UTC の時刻 2 つ。足の区間がこの中に収まる対象足だけを残す）",
+    )
+    plan.add_argument(
+        "--out", type=Path, required=True, help="補充の置き場（data/raw/market/refill/）"
+    )
+    plan.add_argument(
+        "--snapshots",
+        type=Path,
+        default=Path("data/snapshots"),
+        help="snapshot の基点（既定は data/snapshots）",
+    )
+    plan.add_argument(
+        "--datasource",
+        type=Path,
+        default=Path("configs/datasources/legacy_merged_csv_v1.yaml"),
+        help="原データの列対応の宣言（既定は configs/datasources/legacy_merged_csv_v1.yaml）",
+    )
+    plan.add_argument(
+        "--timeframes",
+        type=Path,
+        default=Path("configs/calendars/timeframes_v1.yaml"),
+        help="時間足定義（既定は configs/calendars/timeframes_v1.yaml）",
+    )
+    plan.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="原データのパスを解決するリポジトリの位置（既定は現在のディレクトリ）",
+    )
+
+    fetch = refill.add_parser(
+        "fetch", help="取得計画の時間ファイルを取得し、取得記録に追記する（D03 §14.9）"
+    )
+    fetch.set_defaults(command="refill_fetch")
+    fetch.add_argument("--plan", required=True, help="取得計画の識別子（plan_id）")
+    fetch.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="取得できなかった時間ファイルを取り直しの対象に戻してから取得する（D03 §14.12）",
+    )
+    fetch.add_argument(
+        "--out", type=Path, required=True, help="補充の置き場（data/raw/market/refill/）"
+    )
+    fetch.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="リポジトリの位置（既定は現在のディレクトリ。補充の置き場の検査に使う）",
+    )
 
 
 # --- accept -----------------------------------------------------------------
@@ -614,6 +704,86 @@ def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
     if args.comment:
         out.line(f"コメント: {args.comment}")
     out.line(f"価格基準の宣言: {approved.basis_declaration.value.value}（検証済みではない）")
+    return _EXIT_OK
+
+
+# --- refill（D03 §14）---------------------------------------------------------
+
+
+def _refill_filter(args: argparse.Namespace) -> RefillFilter:
+    """絞り込みの引数を読む（D03 §14.4 の 5）。"""
+    try:
+        symbols = None if args.symbols is None else tuple(Symbol(code) for code in args.symbols)
+        interval = (
+            None
+            if args.interval is None
+            else Interval(
+                start=UtcTime.parse(args.interval[0]), end=UtcTime.parse(args.interval[1])
+            )
+        )
+        return RefillFilter(symbols=symbols, interval=interval)
+    except (KernelValueError, ValueError) as exc:
+        raise ConfigError(f"絞り込みの指定が読めない: {exc}") from exc
+
+
+#: 補充の置き場（リポジトリからの相対。D03 §14.11）。
+_REFILL_ROOT = Path("data/raw/market/refill")
+
+
+def _refill_root(args: argparse.Namespace) -> Path:
+    """`--out` が所定の補充の置き場 `<repo-root>/data/raw/market/refill` であることを確かめる。
+
+    snapshot の下や任意の場所に補充のファイルを書かない（D03 §14.2 の原則2・§14.11）。
+    リンクを解いた絶対パスで比べ、違えば何も書かずに設定の誤りとして止める。
+    """
+    expected = (args.repo_root / _REFILL_ROOT).resolve()
+    given = args.out.resolve()
+    if given != expected:
+        raise ConfigError(
+            f"--out は補充の置き場 {expected} でなければならない（指定: {given}。"
+            "D03 §14.11）。何も書いていない"
+        )
+    return Path(args.out)
+
+
+def _run_refill_plan(args: argparse.Namespace, out: _Writer) -> int:
+    """取得計画を作る（D03 §14.4・§14.10・§14.12 の出来事1）。"""
+    refill_root = _refill_root(args)
+    datasource = load_datasource(args.datasource)
+    timeframe_defs = load_timeframes(args.timeframes)
+    calendar, calendar_ref = load_calendar_ref(args.calendar)
+    provider = load_refill_provider(args.provider)
+    plan = composition.prepare_refill_plan(
+        snapshot_id=args.snapshot,
+        snapshots_root=args.snapshots,
+        repo_root=args.repo_root,
+        datasource=datasource,
+        timeframe_defs=timeframe_defs,
+        calendar=calendar,
+        calendar_ref=calendar_ref,
+        provider=provider,
+        refill_filter=_refill_filter(args),
+    )
+    plan_id = create_plan(plan, composition.refill_store(refill_root))
+    out.lines(summary.refill_plan_lines(plan, plan_id))
+    out.line("")
+    out.line(
+        "取得は `odyssey-fx data refill fetch --plan "
+        f"{plan_id} --out {args.out} --repo-root {args.repo_root}` で行う"
+        "（中断しても同じコマンドで再開できる）"
+    )
+    return _EXIT_OK
+
+
+def _run_refill_fetch(args: argparse.Namespace, out: _Writer) -> int:
+    """取得する・再開する（D03 §14.9・§14.12 の出来事2・9）。"""
+    report = fetch_plan(
+        args.plan,
+        store=composition.refill_store(_refill_root(args)),
+        source=composition.tick_archive_source(),
+        retry_failed=args.retry_failed,
+    )
+    out.lines(summary.refill_fetch_lines(report))
     return _EXIT_OK
 
 
@@ -1022,6 +1192,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "accept": _run_accept,
         "classify": _run_classify,
         "approve": _run_approve,
+        "refill_plan": _run_refill_plan,
+        "refill_fetch": _run_refill_fetch,
         "run": _run_run,
         "evaluate": _run_evaluate,
         "experiment_run": _run_experiment_run,

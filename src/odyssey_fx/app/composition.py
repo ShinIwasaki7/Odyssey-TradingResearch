@@ -102,7 +102,9 @@ from odyssey_fx.evaluation.domain.research_policy import (
     measure_complexity,
 )
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
+from odyssey_fx.marketdata.adapters.dukascopy_source import DukascopyTickSource
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+from odyssey_fx.marketdata.adapters.refill_store import FsRefillStore
 from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
     RawFile,
@@ -113,6 +115,11 @@ from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSI
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
 from odyssey_fx.marketdata.application.publication import build_feed, build_publication_log
+from odyssey_fx.marketdata.application.refill_plan import (
+    build_plan,
+    derive_target_bars,
+    load_raw_bars,
+)
 from odyssey_fx.marketdata.application.snapshot_access import (
     PartitionedBars,
     ReadableSnapshot,
@@ -128,6 +135,13 @@ from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import CheckResult
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
+from odyssey_fx.marketdata.domain.refill import (
+    CalendarRef,
+    ProviderRef,
+    RefillFilter,
+    RefillPlan,
+    require_hex_digest,
+)
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
@@ -1441,3 +1455,67 @@ def recompute_experiment_id(manifest: ExperimentManifest) -> ExperimentId:
         Path("resolved_files[experiment]"), text=manifest.file("experiment").text
     )
     return experiment_id_of(manifest, values)
+
+
+# --- 元データの再取得（補充）（D03 §14、D01 §4 v2.9）--------------------------------
+
+
+def refill_store(refill_root: Path) -> FsRefillStore:
+    """補充の置き場の読み書きを組み立てる（D03 §14.11）。`refill_root` は
+    `data/raw/market/refill/`。"""
+    return FsRefillStore(root=refill_root)
+
+
+def tick_archive_source() -> DukascopyTickSource:
+    """提供元の時間ファイルの取得を組み立てる（D03 §14.3・§14.9）。"""
+    return DukascopyTickSource()
+
+
+def prepare_refill_plan(
+    *,
+    snapshot_id: str,
+    snapshots_root: Path,
+    repo_root: Path,
+    datasource: DataSourceConfig,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    calendar: TradingCalendar,
+    calendar_ref: CalendarRef,
+    provider: ProviderRef,
+    refill_filter: RefillFilter,
+) -> RefillPlan:
+    """承認済み snapshot から取得計画を組み立てる（D03 §14.4・§14.10。まだ書かない）。
+
+    manifest を読み、識別子がディレクトリ名と一致し承認済みであることを確かめてから、対象足の
+    ある銘柄の原データだけを読む（sha256 と行数を manifest と照合する）。計画の作成と書き出し
+    の規則は `marketdata.application.refill_plan` にある。
+    """
+    require_hex_digest(snapshot_id, "--snapshot")
+    store = snapshot_store(snapshots_root)
+    manifest = store.read_manifest(snapshot_id)
+    if str(manifest.snapshot_id()) != snapshot_id:
+        raise MarketDataValueError(
+            f"the manifest under {snapshot_id} describes the snapshot {manifest.snapshot_id()};"
+            " only a settled and approved snapshot can be the input of a refill plan (D03 §14.4)"
+        )
+    targets = derive_target_bars(
+        manifest, calendar, timeframe_defs, INITIAL_ACCESS_BOUNDARIES, refill_filter
+    )
+    symbols = {target.series.symbol for target in targets}
+    raw_bars = load_raw_bars(
+        manifest,
+        raw_bar_source(repo_root, datasource.mapping.time_column),
+        datasource.mapping,
+        timeframe_defs,
+        calendar,
+        symbols,
+    )
+    return build_plan(
+        manifest=manifest,
+        raw_bars=raw_bars,
+        calendar=calendar,
+        calendar_ref=calendar_ref,
+        timeframe_defs=timeframe_defs,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        provider=provider,
+        refill_filter=refill_filter,
+    )
