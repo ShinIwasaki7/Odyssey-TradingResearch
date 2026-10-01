@@ -79,6 +79,7 @@ from tools.ops import refill_report as rr
 from tools.ops import research_history_gaps as rhg
 
 HOUR_02 = UtcTime.parse("2020-11-30T02:00:00Z")
+HOUR_03 = UtcTime.parse("2020-11-30T03:00:00Z")
 NOW = UtcTime.parse("2026-10-01T12:00:00Z")
 WINDOW = Interval(
     start=UtcTime.parse("2016-01-01T00:00:00Z"), end=UtcTime.parse("2021-01-01T00:00:00Z")
@@ -205,10 +206,14 @@ def _raw_with_changed_reference() -> dict[SeriesId, tuple[Bar, ...]]:
     return {**bars, USDJPY_15M: tuple(changed)}
 
 
-def _plan(comm_interval: int) -> RefillPlan:
+def _plan(
+    comm_interval: int,
+    manifest: SnapshotManifest = OLD_MANIFEST,
+    raw: Mapping[SeriesId, Sequence[Bar]] | None = None,
+) -> RefillPlan:
     return build_plan(
-        manifest=OLD_MANIFEST,
-        raw_bars=_raw(),
+        manifest=manifest,
+        raw_bars=_raw() if raw is None else raw,
         calendar=REFILL_CALENDAR,
         calendar_ref=calendar_ref(),
         timeframe_defs=market.TIMEFRAME_DEFS,
@@ -247,6 +252,7 @@ class Scene:
     plan_b: str | None
     new: str
     args: list[str]
+    plan_c: str | None = None
 
     @property
     def refill_root(self) -> Path:
@@ -266,7 +272,9 @@ class Scene:
         return (self.out / name).read_text(encoding="utf-8")
 
 
-def _scene(root: Path, *, with_b: bool = False, approved: bool = True) -> Scene:
+def _scene(
+    root: Path, *, with_b: bool = False, with_later: bool = False, approved: bool = True
+) -> Scene:
     """計画 A（と B）を本体で計画・取得・書き出しし、新 snapshot を書く。"""
     store = FsRefillStore(root=root / "refill")
     plan_a, refill_a = _run(
@@ -328,7 +336,19 @@ def _scene(root: Path, *, with_b: bool = False, approved: bool = True) -> Scene:
         "--out",
         str(root / "out"),
     ]
-    return Scene(root, plan_a, refill_a, plan_b, new, args)
+    plan_c = None
+    if with_later:
+        # 計画 C: A の補充分を含む新 snapshot を入力にした、02 時の足の計画（補充を重ねる）。
+        # 照合の時間の原データは人工の値なので、検証で不合格になる。
+        later_raw = raw_bars(drop_hours=(HOUR_02,))
+        plan_c, refill_c = _run(
+            store,
+            _plan(10, new_manifest, later_raw),
+            {url: [BI5_01H] for url in (url_of(HOUR_01), url_of(HOUR_02), url_of(HOUR_03))},
+            _Inputs(later_raw),
+        )
+        assert refill_c is None
+    return Scene(root, plan_a, refill_a, plan_b, new, args, plan_c)
 
 
 # --- 状態・履歴・根拠（D03 §14.15 の R2）--------------------------------------------------
@@ -365,6 +385,21 @@ def test_records_that_cannot_be_ordered_are_shown_side_by_side(tmp_path: Path) -
     report = scene.report()
     assert f"| 不合格のままの計画（自動収集） | `{scene.plan_b}` |" in report
     assert "計画 2 件・補充分 1 件" in report
+
+
+def test_a_record_built_on_a_snapshot_containing_the_refill_is_later(tmp_path: Path) -> None:
+    """R3: 補充分 A を含む snapshot を入力にした計画 C の記録が後（参照関係で確かめる）。
+
+    A の結果（取得できなかった）は状態に使わず履歴にだけ残し、C の結果だけを状態にする。
+    """
+    scene = _scene(tmp_path, with_later=True)
+    assert rr.main(scene.args) == 0
+    row = scene.rows()[ROW_02_15M]
+    assert row["states"] == rr.VALIDATION_REJECTED
+    assert row["basis_plan_ids"] == scene.plan_c
+    assert row["bars_with_unordered_records"] == "0"
+    assert f"plan={scene.plan_a} refill:{scene.refill_a} {rr.NOT_FETCHED}×4" in row["history"]
+    assert f"plan={scene.plan_c} journal:" in row["history"]
 
 
 def test_each_state_has_its_own_count_column(tmp_path: Path) -> None:
