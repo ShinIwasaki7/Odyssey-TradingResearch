@@ -19,7 +19,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from odyssey_fx.common.errors import KernelValueError
+
+if TYPE_CHECKING:
+    from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 
 __all__ = [
     "HoldoutAccessViolation",
@@ -75,7 +80,15 @@ class IntegrityCheckFailed(MarketDataValueError):
     重複した開始時刻、OHLC の整合違反、タイムゾーン違反、整列に合わない開始時刻は、
     いずれも構造的に無効なデータである。これらを残したまま snapshot を確定・承認できる
     経路を作らないため、暫定 manifest の生成と確定の両方で送出する。
+
+    `report` は止めた理由の構造化された検査結果（件数・系列・時刻を持つ `CheckResult` の列。
+    任意）。補充分と原データの重複（`DUPLICATE_TIMESTAMP`）はこれを持つ（D03 v1.17 §14.11。
+    PR #59 の仮置き 12 への決定 2026-10-01: 文字列だけの例外にしない）。
     """
+
+    def __init__(self, message: str, *, report: IntegrityReport | None = None) -> None:
+        super().__init__(message)
+        self.report = report
 
 
 class PartitionContentMismatch(MarketDataValueError):

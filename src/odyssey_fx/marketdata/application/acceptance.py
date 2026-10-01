@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
 from odyssey_fx.common.ids import SnapshotId
@@ -303,6 +304,8 @@ def merge_refill_bars(
     - 同じ系列・同じ開始時刻の足が原データや他の補充分と重なれば、重複（`DUPLICATE_TIMESTAMP`、
       ERROR）として受入れを失敗させる（片方を黙って選ばない。D03 §4・§14.7）。上位足の生成より
       前に確かめる（生成は重複した足を受けないので、重複を構造検査の誤りとして示すため）。
+      重複は系列・時刻・件数・出所を持つ検査結果（`CheckResult`）の列として例外の `report` に
+      残す（文字列だけにしない。D03 v1.17 §14.11）。
 
     合わせた足は時刻順に並べる。
     """
@@ -322,23 +325,38 @@ def merge_refill_bars(
                 )
         merged[series].extend(bars)
     result: dict[SeriesId, tuple[Bar, ...]] = {}
-    duplicates: list[str] = []
+    findings: list[CheckResult] = []
     for series, collected in merged.items():
         ordered = tuple(sorted(collected, key=lambda bar: bar.bar_start.value))
-        for earlier, later in zip(ordered, ordered[1:], strict=False):
-            if earlier.bar_start == later.bar_start:
-                duplicates.append(
-                    f"{series} {later.bar_start} ({earlier.provenance.source_ref},"
-                    f" {later.provenance.source_ref})"
+        by_start: dict[UtcTime, list[Bar]] = {}
+        for bar in ordered:
+            by_start.setdefault(bar.bar_start, []).append(bar)
+        for start, group in by_start.items():
+            if len(group) > 1:
+                findings.append(
+                    CheckResult.create(
+                        CheckKind.DUPLICATE_TIMESTAMP,
+                        series,
+                        Interval(start=start, end=start + timedelta(microseconds=1)),
+                        detail={
+                            "rows": str(len(group)),
+                            "sources": "|".join(sorted(bar.provenance.source_ref for bar in group)),
+                        },
+                    )
                 )
         result[series] = ordered
-    if duplicates:
-        listed = ", ".join(duplicates[:10])
+    if findings:
+        report = IntegrityReport(results=tuple(findings))
+        listed = ", ".join(
+            f"{item.series} {item.interval.start} ({dict(item.detail)['sources']})"
+            for item in report.results[:10]
+        )
         raise IntegrityCheckFailed(
-            f"the integrity check reported {len(duplicates)} error(s)"
-            f" ({CheckKind.DUPLICATE_TIMESTAMP.value}={len(duplicates)}: {listed}); a refilled"
-            " bar overlaps a raw bar or another refill. Acceptance fails and no snapshot is"
-            " produced (D03 §4 の 4, §14.7)"
+            f"the integrity check reported {len(report.results)} error(s)"
+            f" ({CheckKind.DUPLICATE_TIMESTAMP.value}={len(report.results)}: {listed}); a"
+            " refilled bar overlaps a raw bar or another refill. Acceptance fails and no"
+            " snapshot is produced (D03 §4 の 4, §14.7)",
+            report=report,
         )
     return result
 

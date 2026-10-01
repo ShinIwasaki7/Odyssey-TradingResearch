@@ -362,10 +362,11 @@ def verify_refill_directory(
                 f"{name}/{file_name}: sha256 {stat.sha256} differs from the manifest's"
                 f" {item.sha256} (D03 §14.11.1 W5・W6)"
             )
-        if item.rows is not None and stat.newlines - 1 != item.rows:
+        if item.rows is not None and (stat.csv_rows is None or stat.csv_rows - 1 != item.rows):
+            counted = "unreadable as CSV" if stat.csv_rows is None else f"{stat.csv_rows - 1} rows"
             raise RefillStoreInconsistent(
-                f"{name}/{file_name}: {stat.newlines - 1} rows differ from the manifest's"
-                f" {item.rows} (D03 §14.11.1 W5・W6)"
+                f"{name}/{file_name}: {counted} differ from the manifest's {item.rows} rows"
+                " (counted as CSV records after the header. D03 §14.11.1 W5・W6)"
             )
     return manifest
 
@@ -392,6 +393,9 @@ def require_refill_set(
       渡されている（`RefillChainIncomplete`。欠けた補充分を列挙する。自動では引き継がない）。
 
     `input_sources` は入力 snapshot の識別子から、その manifest の `sources` のパスの列。
+    入力 snapshot の manifest が読めないことは渡し漏れではなく入力の構造エラーで、呼び出し側が
+    読む段で止める（D03 v1.17 §14.11）。`RefillChainIncomplete` は、読めた記録から欠けた補充分が
+    分かったときだけに使う。
     """
     by_plan: dict[str, list[str]] = {}
     for manifest in manifests:
@@ -410,9 +414,10 @@ def require_refill_set(
     for manifest in manifests:
         sources = input_sources.get(manifest.snapshot_id)
         if sources is None:
-            raise RefillChainIncomplete(
-                f"the input snapshot {manifest.snapshot_id} of the refill {manifest.refill_id}"
-                " cannot be read, so the refills it contains cannot be checked (D03 §14.11)."
+            # 読めない入力 snapshot は呼び出し側が構造エラーで止める。ここに来るのは渡し忘れ。
+            raise MarketDataValueError(
+                f"the sources of the input snapshot {manifest.snapshot_id} of the refill"
+                f" {manifest.refill_id} were not given; read the manifest first (D03 §14.11)."
                 " Nothing was written"
             )
         for refill_id in refill_ids_in_sources(sources):

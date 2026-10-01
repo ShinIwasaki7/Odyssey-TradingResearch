@@ -1737,8 +1737,15 @@ def load_refills_for_acceptance(
             continue
         try:
             source_manifest = snapshots.read_manifest(manifest.snapshot_id)
-        except FileNotFoundError:
-            continue
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # 読めない manifest は入力の構造エラー。渡し漏れ（`RefillChainIncomplete`）は、読めた
+            # 記録から欠けた補充分が分かったときだけに使う（D03 v1.17 §14.11。PR #59 の仮置き 10
+            # への決定 2026-10-01）。
+            raise MarketDataValueError(
+                f"the manifest of the input snapshot {manifest.snapshot_id} of the refill"
+                f" {manifest.refill_id} cannot be read ({exc}); the input is structurally broken"
+                " (D03 §14.11). Nothing was written"
+            ) from exc
         input_sources[manifest.snapshot_id] = tuple(
             record.path for record in source_manifest.sources
         )

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import csv
+import io
 import json
 import os
 import re
@@ -530,7 +532,13 @@ class FsRefillStore:
         return payload
 
     def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
-        """補充分のファイル（manifest と一時名を除く）の sha256 と改行の数を名前順に返す。"""
+        """補充分のファイル（manifest を除く）の sha256 と CSV の行の数を名前順に返す。
+
+        一時名（`.tmp-` で始まる名前。W2 の途中で止まった残り）は数えずに飛ばさない。完成した
+        補充分に残っていれば食い違い（`RefillStoreInconsistent`。D03 v1.17 §14.11.1 の W5・W6）。
+        行の数は内容を CSV として読んだ記録の数（空行を除く。csv モジュール）。CSV として
+        読めなければ `None`。
+        """
         directory = self._refill_dir(refill_id)
         _refuse_link(directory)
         if not directory.is_dir():
@@ -539,8 +547,14 @@ class FsRefillStore:
             )
         stats: list[RefillFileStat] = []
         for path in sorted(directory.iterdir(), key=lambda item: item.name):
-            if path.name == _REFILL_MANIFEST or path.name.startswith(_TEMP_PREFIX):
+            if path.name == _REFILL_MANIFEST:
                 continue
+            if path.name.startswith(_TEMP_PREFIX):
+                raise RefillStoreInconsistent(
+                    f"{path} is a leftover temporary file in a refill directory; a refill holds"
+                    " only the files its manifest records. Nothing was used; delete it after"
+                    " checking (D03 §14.11.1 W2・W5・W6)"
+                )
             if path.is_symlink() or not path.is_file():
                 raise RefillStoreInconsistent(
                     f"{path} is not a plain file in the refill directory (D03 §14.11.1 W5・W6)"
@@ -548,10 +562,19 @@ class FsRefillStore:
             content = path.read_bytes()
             stats.append(
                 RefillFileStat(
-                    name=path.name, sha256=sha256_hex(content), newlines=content.count(b"\n")
+                    name=path.name, sha256=sha256_hex(content), csv_rows=_csv_rows(content)
                 )
             )
         return tuple(stats)
+
+
+def _csv_rows(content: bytes) -> int | None:
+    """内容を CSV として読んだ記録の数（空行を除く）。読めなければ `None`。"""
+    try:
+        reader = csv.reader(io.StringIO(content.decode("utf-8"), newline=""))
+        return sum(1 for row in reader if row)
+    except (UnicodeDecodeError, csv.Error):
+        return None
 
 
 def _refuse_link(path: Path) -> None:

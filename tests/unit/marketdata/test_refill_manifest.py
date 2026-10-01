@@ -16,6 +16,7 @@ from odyssey_fx.marketdata.application.acceptance import RawFile, merge_refill_b
 from odyssey_fx.marketdata.application.refill_finalize import bars_csv, refill_ids_in_sources
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
+from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.refill import ValidationRecord, journal_entry_from_payload
 from odyssey_fx.marketdata.domain.refill_manifest import (
     RefillFileRecord,
@@ -129,8 +130,16 @@ def test_refilled_bars_join_their_raw_series_in_time_order() -> None:
 def test_a_refilled_bar_overlapping_the_raw_data_fails_as_a_duplicate() -> None:
     original = {series: tuple(bars) for series, bars in raw_bars().items()}
     overlapping = _bar(USDJPY_1H, "2020-11-30T00:00:00Z")
-    with pytest.raises(IntegrityCheckFailed, match="DUPLICATE_TIMESTAMP"):
+    with pytest.raises(IntegrityCheckFailed, match="DUPLICATE_TIMESTAMP") as raised:
         merge_refill_bars(original, [(_raw_file(USDJPY_1H), (overlapping,))])
+    # 文字列だけでなく、系列・時刻・件数を持つ検査結果として残る（D03 v1.17 §14.11）。
+    report = raised.value.report
+    assert report is not None
+    (finding,) = report.results
+    assert finding.kind is CheckKind.DUPLICATE_TIMESTAMP
+    assert finding.series == USDJPY_1H
+    assert str(finding.interval.start) == "2020-11-30T00:00:00Z"
+    assert dict(finding.detail)["rows"] == "2"
     twice = _bar(USDJPY_1H, "2020-11-30T01:00:00Z")
     with pytest.raises(IntegrityCheckFailed, match="DUPLICATE_TIMESTAMP"):
         merge_refill_bars(

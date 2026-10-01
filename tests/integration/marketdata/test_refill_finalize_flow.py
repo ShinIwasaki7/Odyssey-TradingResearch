@@ -43,6 +43,7 @@ from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import (
+    MarketDataValueError,
     RefillAlreadyExists,
     RefillAlreadyFinalized,
     RefillChainIncomplete,
@@ -435,6 +436,40 @@ def test_a_tampered_refill_fails_its_check(tmp_path: Path, case: str) -> None:
         _verified(store, name)
 
 
+def test_a_leftover_temporary_file_is_not_ignored(tmp_path: Path) -> None:
+    """完成した補充分に残った一時名のファイルを黙って飛ばさない（D03 v1.17 §14.11.1）。"""
+    store, plan_id, _ = _fetched(tmp_path)
+    report = _finalize(store, plan_id)
+    name = str(report.refill_id)
+    (tmp_path / "refill" / name / ".tmp-refill_manifest.json-1-x").write_text("{}")
+    with pytest.raises(RefillStoreInconsistent, match="leftover temporary file"):
+        _verified(store, name)
+
+
+def test_the_row_count_is_checked_as_csv_records(tmp_path: Path) -> None:
+    """行数は改行の数ではなく CSV の記録として数え、manifest の記録と比べる（D03 v1.17）。"""
+    store, plan_id, _ = _fetched(tmp_path)
+    report = _finalize(store, plan_id)
+    name = str(report.refill_id)
+    stats = {stat.name: stat for stat in store.list_refill_files(name)}
+    manifest = _verified(store, name)
+    for item in manifest.bar_files:
+        assert stats[item.name].csv_rows == (item.rows or 0) + 1
+    # 引用符の中の改行は 1 つの記録の中にある（改行の数では 3、CSV の記録では 2）。
+    quoted = tmp_path / "refill" / name / "quoted.csv"
+    quoted.write_bytes(b'h\n"a\nb"\n')
+    stat = {item.name: item for item in store.list_refill_files(name)}["quoted.csv"]
+    assert stat.csv_rows == 2
+    quoted.unlink()
+    path = tmp_path / "refill" / name / "refill_manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    bar = next(item for item in payload["files"] if item["rows"] is not None)
+    bar["rows"] += 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RefillStoreInconsistent, match="rows"):
+        _verified(store, name)
+
+
 def test_a_manifest_rewritten_by_hand_fails_the_identity_check(tmp_path: Path) -> None:
     store, plan_id, _ = _fetched(tmp_path)
     report = _finalize(store, plan_id)
@@ -458,7 +493,8 @@ def test_layered_refills_must_be_given_together(tmp_path: Path) -> None:
     assert refill_ids_in_sources(sources) == (earlier,)
     with pytest.raises(RefillChainIncomplete, match=earlier):
         require_refill_set([manifest], {manifest.snapshot_id: sources})
-    # 入力 snapshot が補充分を含まなければ通る。読めなければ確かめられないので止める。
+    # 入力 snapshot が補充分を含まなければ通る。入力 snapshot の記録が無いのは渡し漏れでは
+    # なく入力の構造エラー（D03 v1.17 §14.11）。
     require_refill_set([manifest], {manifest.snapshot_id: sources[:1]})
-    with pytest.raises(RefillChainIncomplete, match="cannot be read"):
+    with pytest.raises(MarketDataValueError, match="were not given"):
         require_refill_set([manifest], {})

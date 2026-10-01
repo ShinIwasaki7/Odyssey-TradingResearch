@@ -453,3 +453,22 @@ def test_accept_refuses_a_refill_outside_its_place_or_with_the_old_datasource(
     assert "sha256" in capsys.readouterr().err
     pending = repo / "data/snapshots/_pending"
     assert not pending.exists() or not any(pending.iterdir())
+
+
+def test_an_unreadable_input_snapshot_is_a_structural_error_not_a_missing_refill(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """入力 snapshot の manifest が読めなければ入力の構造エラー（D03 v1.17 §14.11）。
+
+    渡し漏れ（`RefillChainIncomplete`）は、読めた記録から欠けた補充分が分かったときだけ。
+    """
+    plan_id = _fetch_all(repo, monkeypatch)
+    assert _finalize(repo, plan_id) == 0
+    refill_dir = repo / "data/raw/market/refill" / _refill_id(repo)
+    payload = json.loads((refill_dir / "refill_manifest.json").read_text(encoding="utf-8"))
+    (repo / "data/snapshots" / payload["snapshot_id"] / "manifest.json").write_text("{")
+    capsys.readouterr()
+    assert _accept_with(repo, refill_dir) == 1
+    err = capsys.readouterr().err
+    assert "cannot be read" in err and "structurally broken" in err
+    assert "not all given" not in err

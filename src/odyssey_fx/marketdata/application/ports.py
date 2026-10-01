@@ -182,13 +182,14 @@ class RefillDirectory:
 class RefillFileStat:
     """補充分のディレクトリにあるファイル 1 つの検算の材料（D03 §14.11.1 の W5）。
 
-    `sha256` は内容の sha256、`newlines` は内容の改行の数（足のファイルは見出しの 1 行と
-    足 1 本につき 1 行で、どの行も改行で終わる）。どちらも同じ読込のバイト列から求める。
+    `sha256` は内容の sha256、`csv_rows` は内容を CSV として読んだ記録（行）の数で、空行を
+    数えない（足のファイルは見出しの 1 行と足 1 本につき 1 行。D03 v1.17 §14.11.1 の W5）。
+    CSV として読めなければ `None`。どちらも同じ読込のバイト列から求める。
     """
 
     name: str
     sha256: str
-    newlines: int
+    csv_rows: int | None
 
 
 class RefillStore(Protocol):
@@ -285,9 +286,10 @@ class RefillStore(Protocol):
         ...
 
     def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
-        """補充分のディレクトリにあるファイル（`refill_manifest.json` と一時名を除く）を返す。
+        """補充分のディレクトリにあるファイル（`refill_manifest.json` を除く）を返す。
 
-        名前順。各ファイルの sha256 と改行の数を同じ読込から求める。通常のファイルでない
-        もの（ディレクトリ・リンク）があれば食い違い（`RefillStoreInconsistent`。W6）。
+        名前順。各ファイルの sha256 と CSV の行の数を同じ読込から求める。通常のファイルでない
+        もの（ディレクトリ・リンク）や一時名（`.tmp-`）の残りがあれば食い違い
+        （`RefillStoreInconsistent`。D03 v1.17 §14.11.1 の W5・W6）。
         """
         ...
