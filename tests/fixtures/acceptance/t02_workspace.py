@@ -13,6 +13,11 @@
 解決される（D07 §18.2）ので、設定を写し、`uv.lock` も写す（`--repo-root` に作業場を渡す。
 `uv.lock` の内容ダイジェストは写しても変わらない）。設定は正本（`configs/`）を写すので、
 書き方が変われば本組み立ても追従する。
+
+研究ポリシーの版の登録簿（D09 §10.9）は正本を写さず、**作業場の登録簿をテストの中で作る**
+（写した版 1 の1行だけを載せる）。試験用の版（例: 上限を下げた版 2）を足すテストは、
+`tests.fixtures.evaluation.research_policies.append_registry_entry` で作業場の登録簿へ1行足す
+（D08 §2.3・§2.4）。
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from odyssey_fx.app.cli.main import main
 from odyssey_fx.marketdata.application.snapshot_access import PENDING_DIRECTORY
 from tests.fixtures.acceptance import t02_market
 from tests.fixtures.acceptance.t02_run import raw_bars
+from tests.fixtures.evaluation.research_policies import append_registry_entry
 from tests.fixtures.strategy.strategy_b import HOURLY_SERIES, M15_SERIES
 
 __all__ = [
@@ -124,6 +130,7 @@ def build_workspace(root: Path) -> T02Workspace:
     repo = root / "repo"
     for name in _COPIED:
         _copy(REPO_ROOT / name, repo / name)
+    append_registry_entry(repo, "research_policy", 1)
 
     raw = repo / "data/raw/market"
     raw.mkdir(parents=True)

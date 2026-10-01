@@ -30,6 +30,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     REPRODUCTION_FILE,
 )
 from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
+from tests.fixtures.evaluation.research_policies import append_registry_entry
 
 #: 通すケース（検証戦略 B・遅延シナリオ d1_2s。待機と再開を含む経路）。
 _CASE = "d1_2s"
@@ -352,7 +353,11 @@ def test_an_unreusable_run_directory_is_refused_before_anything_is_written(
 def test_a_policy_violation_does_not_run_and_exits_with_three(
     workspace: T02Workspace, tmp_path: Path
 ) -> None:
-    """複雑性の上限を1つ超えると run せず、結末 `REJECTED_BY_POLICY`・終了コード 3（D07 §20.3）。"""
+    """複雑性の上限を1つ超えると run せず、結末 `REJECTED_BY_POLICY`・終了コード 3（D07 §20.3）。
+
+    版を上げずに中身を変えた研究ポリシーは版の登録簿が拒否する（D09 §10.9）ので、上限を下げた
+    試験用の版 2 を作業場に置き、作業場の登録簿へ載せて指す。
+    """
     repo = tmp_path / "repo"
     for relative in (
         "uv.lock",
@@ -366,13 +371,23 @@ def test_a_policy_violation_does_not_run_and_exits_with_three(
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((workspace.repo / relative).read_bytes())
-    policy = repo / "configs/policies/research/research_policy_v1.yaml"
-    policy.write_text(
-        policy.read_text(encoding="utf-8").replace("instances: 36", "instances: 11"),
+    policies = repo / "configs/policies/research"
+    (policies / "research_policy_v2.yaml").write_text(
+        (policies / "research_policy_v1.yaml")
+        .read_text(encoding="utf-8")
+        .replace("\nversion: 1\n", "\nversion: 2\n")
+        .replace("instances: 36", "instances: 11")
+        + "search_limits:\n  trials: 100\n",
         encoding="utf-8",
     )
+    append_registry_entry(repo, "research_policy", 1)
+    append_registry_entry(repo, "research_policy", 2)
+    experiment = repo / "configs/experiments/strategy_b_t02_d1_2s.yaml"
+    text = experiment.read_text(encoding="utf-8")
+    assert text.count("version: 1}") == 1
+    experiment.write_text(text.replace("version: 1}", "version: 2}"), encoding="utf-8")
     artifacts = tmp_path / "artifacts"
-    argv = _run_argv(workspace, artifacts, repo / "configs/experiments/strategy_b_t02_d1_2s.yaml")
+    argv = _run_argv(workspace, artifacts, experiment)
     argv[argv.index("--repo-root") + 1] = str(repo)
 
     code, output, _ = _invoke(argv)
