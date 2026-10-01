@@ -493,6 +493,22 @@ def test_an_unreadable_input_snapshot_of_a_record_leaves_coverage_unknown(
     assert f"記録の入力 snapshot の補充分の参照を辿れない: {other}" in report
 
 
+def test_an_unreadable_journal_drops_only_its_plan(tmp_path: Path) -> None:
+    """取得記録の読み取りの OS エラーは計画単位で「読めない」とし、ほかの記録は捨てない（R4）。"""
+    scene = _scene(tmp_path, with_b=True)
+    journal = scene.refill_root / "_work" / str(scene.plan_b) / "journal.jsonl"
+    journal.unlink()
+    journal.mkdir()  # 読むと IsADirectoryError（OSError）
+    assert rr.main(scene.args) == 0
+    rows = scene.rows()
+    # 計画 A の補充分は使える。計画 B の記録は落ちる（併記にならない）。
+    assert rows[ROW_02_15M]["states"] == rr.NOT_FETCHED
+    assert rows[ROW_02_15M]["basis_plan_ids"] == scene.plan_a
+    # 網羅性は確かめられないので、記録の無い足は「理由未確定」。
+    assert rows[ROW_04_15M]["states"] == rr.UNDETERMINED
+    assert f"_work/{scene.plan_b}" in scene.report()
+
+
 def test_each_state_has_its_own_count_column(tmp_path: Path) -> None:
     """(v) 複数の状態を含む区間を 1 つの理由として数えない（状態ごとの足の数の列）。"""
     scene = _scene(tmp_path, with_b=True)

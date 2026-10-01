@@ -233,7 +233,7 @@ def survey_refill_store(
             continue
         try:
             verified = load_verified_refill(store, entry.name)
-        except MarketDataError as exc:
+        except (MarketDataError, OSError) as exc:
             problems.append(f"補充分の検算が合わない: {entry.name}（{exc}）")
             continue
         if wanted is None or verified.manifest.snapshot_id in wanted:
@@ -245,6 +245,6 @@ def survey_refill_store(
             if wanted is not None and plan.snapshot_id not in wanted:
                 continue
             plans.append(_plan_record(store, plan_id, plan))
-        except MarketDataError as exc:
+        except (MarketDataError, OSError) as exc:
             problems.append(f"計画・取得記録の検算が合わない: _work/{plan_id}（{exc}）")
     return RefillInventory(refills=tuple(refills), plans=tuple(plans), problems=tuple(problems))
