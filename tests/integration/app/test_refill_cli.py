@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -307,3 +308,148 @@ def test_refill_files_are_written_only_under_the_refill_root(
         != 0
     )
     assert "補充の置き場" in capsys.readouterr().err
+
+
+# --- 書き出しと受入れ（D03 §14.11・§14.12 の出来事10・12、§4 の v1.15）------------------------
+
+
+def _fetch_all(repo: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    snapshot = _approved_snapshot(repo)
+    assert _plan(repo, snapshot) == 0
+    plan_id = _plan_id(repo)
+    source = FakeTickSource({url_of(HOUR_00): [BI5_00H], url_of(HOUR_01): [BI5_01H]})
+    monkeypatch.setattr(composition, "tick_archive_source", lambda: source)
+    refill = str(repo / "data/raw/market/refill")
+    assert (
+        _run(
+            "data", "refill", "fetch", "--plan", plan_id, "--out", refill, "--repo-root", str(repo)
+        )
+        == 0
+    )
+    return plan_id
+
+
+def _finalize(repo: Path, plan_id: str) -> int:
+    configs = repo / "configs"
+    return _run(
+        "data",
+        "refill",
+        "finalize",
+        "--plan",
+        plan_id,
+        "--out",
+        str(repo / "data/raw/market/refill"),
+        "--snapshots",
+        str(repo / "data/snapshots"),
+        "--datasource",
+        str(configs / "datasources/legacy_merged_csv_v1.yaml"),
+        "--timeframes",
+        str(configs / "calendars/timeframes_v1.yaml"),
+        "--repo-root",
+        str(repo),
+    )
+
+
+def _refill_id(repo: Path) -> str:
+    (refill,) = sorted(
+        path.name
+        for path in (repo / "data/raw/market/refill").iterdir()
+        if not path.name.startswith("_")
+    )
+    return refill
+
+
+def _accept_with(repo: Path, *refills: Path, datasource: str = "legacy_merged_csv_v2.yaml") -> int:
+    configs = repo / "configs"
+    extra: list[str] = []
+    for refill in refills:
+        extra.extend(["--refill", str(refill)])
+    return _run(
+        "data",
+        "accept",
+        "--datasource",
+        str(configs / "datasources" / datasource),
+        "--calendar",
+        str(configs / "calendars/fx_ny17_v1.yaml"),
+        "--timeframes",
+        str(configs / "calendars/timeframes_v1.yaml"),
+        "--symbols",
+        str(configs / "symbols"),
+        "--out",
+        str(repo / "data/snapshots"),
+        "--repo-root",
+        str(repo),
+        *extra,
+    )
+
+
+def test_finalize_then_accept_with_the_refill(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_id = _fetch_all(repo, monkeypatch)
+    capsys.readouterr()
+    assert _finalize(repo, plan_id) == 0
+    shown = capsys.readouterr().out
+    refill_id = _refill_id(repo)
+    assert f"補充の識別子（refill_id）: {refill_id}" in shown
+    assert "USDJPY_15m_refill.csv: 4 本" in shown
+    assert "104." not in shown and "103." not in shown  # 価格を出さない
+    # 同じコードでもう一度書き出すと失敗する（存在すれば失敗）。
+    assert _finalize(repo, plan_id) == 1
+    assert "already finalized" in capsys.readouterr().err
+
+    refill_dir = repo / "data/raw/market/refill" / refill_id
+    assert _accept_with(repo, refill_dir) == 0
+    shown = capsys.readouterr().out
+    assert "合わせる補充分: 1 個（検算済み）" in shown
+    snapshots = repo / "data/snapshots"
+    (pending,) = sorted((snapshots / "_pending").iterdir())
+    store = ParquetSnapshotStore(root=snapshots)
+    manifest = store.read_manifest(f"_pending/{pending.name}")
+    paths = sorted(record.path for record in manifest.sources)
+    assert paths == [
+        "data/raw/market/USDJPY_15m_merged.csv",
+        "data/raw/market/USDJPY_1h_merged.csv",
+        f"data/raw/market/refill/{refill_id}/USDJPY_15m_refill.csv",
+        f"data/raw/market/refill/{refill_id}/USDJPY_1h_refill.csv",
+    ]
+    refill_records = [record for record in manifest.sources if "/refill/" in record.path]
+    assert {record.provenance_counts for record in refill_records} == {
+        (("dukascopy_refill", 4),),
+        (("dukascopy_refill", 1),),
+    }
+    # 補充した 01 時台の足の欠落は、もう警告されない。
+    report = store.read_integrity_report(f"_pending/{pending.name}")
+    missing = [
+        result
+        for result in classifiable_warnings((report,))
+        if result.kind.value == "MISSING_EXPECTED_BAR"
+        and result.interval.start.value.hour == 1
+        and result.interval.start.value.day == 30
+    ]
+    assert missing == []
+
+
+def test_accept_refuses_a_refill_outside_its_place_or_with_the_old_datasource(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_id = _fetch_all(repo, monkeypatch)
+    assert _finalize(repo, plan_id) == 0
+    refill_id = _refill_id(repo)
+    refill_dir = repo / "data/raw/market/refill" / refill_id
+    capsys.readouterr()
+    # 列対応の宣言の版 1 は dukascopy_refill を受けない。
+    assert _accept_with(repo, refill_dir, datasource="legacy_merged_csv_v1.yaml") == 1
+    assert "dukascopy_refill" in capsys.readouterr().err
+    # 所定の置き場の外へ写した補充分は受けない。
+    copied = repo / "elsewhere" / refill_id
+    shutil.copytree(refill_dir, copied)
+    assert _accept_with(repo, copied) == 1
+    assert "not directly under the refill root" in capsys.readouterr().err
+    # 改変した補充分は受けない。
+    csv = refill_dir / "USDJPY_1h_refill.csv"
+    csv.write_text(csv.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    assert _accept_with(repo, refill_dir) == 1
+    assert "sha256" in capsys.readouterr().err
+    pending = repo / "data/snapshots/_pending"
+    assert not pending.exists() or not any(pending.iterdir())

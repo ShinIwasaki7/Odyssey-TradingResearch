@@ -39,6 +39,7 @@ __all__ = [
     "RawFileContent",
     "RawRow",
     "RefillDirectory",
+    "RefillFileStat",
     "RefillStore",
     "SnapshotStore",
     "TickArchiveSource",
@@ -177,6 +178,19 @@ class RefillDirectory:
     manifest: Mapping[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RefillFileStat:
+    """補充分のディレクトリにあるファイル 1 つの検算の材料（D03 §14.11.1 の W5）。
+
+    `sha256` は内容の sha256、`newlines` は内容の改行の数（足のファイルは見出しの 1 行と
+    足 1 本につき 1 行で、どの行も改行で終わる）。どちらも同じ読込のバイト列から求める。
+    """
+
+    name: str
+    sha256: str
+    newlines: int
+
+
 class RefillStore(Protocol):
     """補充の置き場の読み書きポート（D01 §4 v2.9、D03 §14.11・§14.11.1）。
 
@@ -247,4 +261,33 @@ class RefillStore(Protocol):
 
     def write_archive(self, hour: HourKey, body: bytes, provenance: ArchiveProvenance) -> str:
         """保管場所に 1 件を置き、置き場からの相対パスを返す（W2。既にあれば食い違い）。"""
+        ...
+
+    # --- 補充分（D03 §14.11・§14.11.1。書き出し `finalize` と受入れ `accept --refill`）---
+
+    def create_refill_dir(self, refill_id: str) -> None:
+        """補充分のディレクトリ `<refill_id>/` を排他的に作る（W2）。
+
+        既にあれば（空・書きかけ・リンクを含め）何も書かずに `RefillAlreadyExists`。
+        """
+        ...
+
+    def write_refill_file(self, refill_id: str, name: str, content: bytes) -> None:
+        """補充分のファイル 1 つを一時名に書いてから排他的に作成する（W2）。
+
+        既にあれば食い違い（`RefillStoreInconsistent`。上書きしない）。完成の印
+        `refill_manifest.json` は呼び出し側が最後に書く（W4）。
+        """
+        ...
+
+    def read_refill_manifest(self, refill_id: str) -> Mapping[str, Any] | None:
+        """補充分の `refill_manifest.json` を JSON として読む。無ければ `None`（書きかけ）。"""
+        ...
+
+    def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
+        """補充分のディレクトリにあるファイル（`refill_manifest.json` と一時名を除く）を返す。
+
+        名前順。各ファイルの sha256 と改行の数を同じ読込から求める。通常のファイルでない
+        もの（ディレクトリ・リンク）があれば食い違い（`RefillStoreInconsistent`。W6）。
+        """
         ...

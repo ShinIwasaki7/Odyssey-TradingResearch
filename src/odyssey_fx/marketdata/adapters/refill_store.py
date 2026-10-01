@@ -34,9 +34,10 @@ from typing import Any, Final
 
 from odyssey_fx.common import canonical
 from odyssey_fx.marketdata.adapters.dukascopy_source import decode_bi5
-from odyssey_fx.marketdata.application.ports import JournalLine, RefillDirectory
+from odyssey_fx.marketdata.application.ports import JournalLine, RefillDirectory, RefillFileStat
 from odyssey_fx.marketdata.domain.errors import (
     MarketDataValueError,
+    RefillAlreadyExists,
     RefillPlanAlreadyExists,
     RefillPlanLocked,
     RefillPlanNotFound,
@@ -471,6 +472,86 @@ class FsRefillStore:
                 " (D03 §14.11.1 W2・W6)"
             )
         return f"{hour.archive_directory}/{provenance.source_digest}/{name}"
+
+    # --- 補充分（D03 §14.11・§14.11.1）--------------------------------------------------
+
+    def _refill_dir(self, refill_id: str) -> Path:
+        require_hex_digest(refill_id, "refill_id")
+        return self._inside(refill_id, create_parents=False)
+
+    def _refill_file(self, refill_id: str, name: str) -> Path:
+        if not name or "/" in name or name in (".", "..") or name.startswith(_TEMP_PREFIX):
+            raise MarketDataValueError(f"invalid refill file name: {name!r}")
+        directory = self._refill_dir(refill_id)
+        _refuse_link(directory)
+        if not directory.is_dir():
+            raise RefillStoreInconsistent(
+                f"{directory} is not a refill directory (D03 §14.11.1 W6)"
+            )
+        return directory / name
+
+    def create_refill_dir(self, refill_id: str) -> None:
+        """補充分のディレクトリを排他的に作る（W2）。既にあれば `RefillAlreadyExists`。"""
+        require_hex_digest(refill_id, "refill_id")
+        self._require_plain_root()
+        self._root.mkdir(parents=True, exist_ok=True)
+        directory = self._refill_dir(refill_id)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            raise RefillAlreadyExists(
+                f"{directory} already exists (complete, incomplete, empty or a link);"
+                " nothing was written (D03 §14.11.1 W2, §14.12)"
+            ) from None
+        _fsync_directory(self._root)
+
+    def write_refill_file(self, refill_id: str, name: str, content: bytes) -> None:
+        """補充分のファイルを置く（W2）。既にあれば食い違い（上書きしない）。"""
+        target = self._refill_file(refill_id, name)
+        if not self._place(target, content):
+            raise RefillStoreInconsistent(
+                f"{target} already exists; a refill is never overwritten (D03 §14.11.1 W2・W6)"
+            )
+
+    def read_refill_manifest(self, refill_id: str) -> Mapping[str, Any] | None:
+        """`refill_manifest.json` を読む。無ければ `None`。"""
+        target = self._refill_file(refill_id, _REFILL_MANIFEST)
+        _refuse_link(target)
+        if not target.exists():
+            return None
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RefillStoreInconsistent(
+                f"{target} cannot be read ({exc}) (D03 §14.11.1 W5・W6)"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RefillStoreInconsistent(f"{target} is not a JSON object (D03 §14.11.1 W5・W6)")
+        return payload
+
+    def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
+        """補充分のファイル（manifest と一時名を除く）の sha256 と改行の数を名前順に返す。"""
+        directory = self._refill_dir(refill_id)
+        _refuse_link(directory)
+        if not directory.is_dir():
+            raise RefillStoreInconsistent(
+                f"{directory} is not a refill directory (D03 §14.11.1 W6)"
+            )
+        stats: list[RefillFileStat] = []
+        for path in sorted(directory.iterdir(), key=lambda item: item.name):
+            if path.name == _REFILL_MANIFEST or path.name.startswith(_TEMP_PREFIX):
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise RefillStoreInconsistent(
+                    f"{path} is not a plain file in the refill directory (D03 §14.11.1 W5・W6)"
+                )
+            content = path.read_bytes()
+            stats.append(
+                RefillFileStat(
+                    name=path.name, sha256=sha256_hex(content), newlines=content.count(b"\n")
+                )
+            )
+        return tuple(stats)
 
 
 def _refuse_link(path: Path) -> None:

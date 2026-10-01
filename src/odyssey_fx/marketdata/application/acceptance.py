@@ -90,6 +90,7 @@ __all__ = [
     "build_pending_snapshot",
     "classify_partitions",
     "finalize",
+    "merge_refill_bars",
     "normalize_rows",
     "out_of_session_exclusions",
     "provisional_id",
@@ -288,6 +289,58 @@ def classify_partitions(
         access_class: tuple(sorted(group, key=lambda bar: bar.bar_start.value))
         for access_class, group in grouped.items()
     }
+
+
+def merge_refill_bars(
+    original: Mapping[SeriesId, tuple[Bar, ...]],
+    refills: Sequence[tuple[RawFile, tuple[Bar, ...]]],
+) -> dict[SeriesId, tuple[Bar, ...]]:
+    """原系列の足に補充した足を合わせて 1 つの原系列にする（D03 §4 の v1.15 の追記・§14.11）。
+
+    - 補充した足のファイルの系列は、受け入れる原ファイルの系列のどれかでなければならない
+      （補充分だけで新しい系列を作らない）。
+    - 補充した足の出所はすべて `dukascopy_refill`（D03 §2 の補充分の事実・§14.6）。
+    - 同じ系列・同じ開始時刻の足が原データや他の補充分と重なれば、重複（`DUPLICATE_TIMESTAMP`、
+      ERROR）として受入れを失敗させる（片方を黙って選ばない。D03 §4・§14.7）。上位足の生成より
+      前に確かめる（生成は重複した足を受けないので、重複を構造検査の誤りとして示すため）。
+
+    合わせた足は時刻順に並べる。
+    """
+    merged: dict[SeriesId, list[Bar]] = {series: list(bars) for series, bars in original.items()}
+    for raw_file, bars in refills:
+        series = raw_file.series
+        if series not in merged:
+            raise MarketDataValueError(
+                f"{raw_file.path}: the refill series {series} is not among the accepted raw"
+                " series; a refill only fills bars of an existing raw series (D03 §14.11)"
+            )
+        for bar in bars:
+            if bar.series != series or bar.provenance.kind is not ProvenanceKind.DUKASCOPY_REFILL:
+                raise MarketDataValueError(
+                    f"{raw_file.path}: a refill file holds only {series} bars from"
+                    f" '{ProvenanceKind.DUKASCOPY_REFILL.value}' (D03 §2, §14.6)"
+                )
+        merged[series].extend(bars)
+    result: dict[SeriesId, tuple[Bar, ...]] = {}
+    duplicates: list[str] = []
+    for series, collected in merged.items():
+        ordered = tuple(sorted(collected, key=lambda bar: bar.bar_start.value))
+        for earlier, later in zip(ordered, ordered[1:], strict=False):
+            if earlier.bar_start == later.bar_start:
+                duplicates.append(
+                    f"{series} {later.bar_start} ({earlier.provenance.source_ref},"
+                    f" {later.provenance.source_ref})"
+                )
+        result[series] = ordered
+    if duplicates:
+        listed = ", ".join(duplicates[:10])
+        raise IntegrityCheckFailed(
+            f"the integrity check reported {len(duplicates)} error(s)"
+            f" ({CheckKind.DUPLICATE_TIMESTAMP.value}={len(duplicates)}: {listed}); a refilled"
+            " bar overlaps a raw bar or another refill. Acceptance fails and no snapshot is"
+            " produced (D03 §4 の 4, §14.7)"
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)

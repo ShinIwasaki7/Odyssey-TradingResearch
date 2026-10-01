@@ -41,6 +41,22 @@ IGNORED_PATHS = [
     "data/snapshots/_pending/p1/manifest.json",
     "data/snapshots/_pending/p1/integrity_report.json",
     "data/snapshots/_pending/p1/USDJPY_1h_bid/RESEARCH_HISTORY/bars.parquet",
+    # 補充分（ADR-0013 2026-10-01 改訂、D03 §14.11）: 補充した足のファイル・tick の保管場所・
+    # 作業ディレクトリ・置き場の直下の迷い込んだファイルは git 管理外。
+    f"data/raw/market/refill/{'a' * 64}/USDJPY_15m_refill.csv",
+    f"data/raw/market/refill/{'a' * 64}/.tmp-refill_manifest.json-1-x",
+    "data/raw/market/refill/_ticks/USDJPY/2020/11/30/00h/lock",
+    f"data/raw/market/refill/_ticks/USDJPY/2020/11/30/00h/{'b' * 64}/{'c' * 64}.json",
+    f"data/raw/market/refill/_work/{'d' * 64}/plan.json",
+    f"data/raw/market/refill/_work/{'d' * 64}/journal.jsonl",
+    "data/raw/market/refill/stray.txt",
+    "data/raw/other/x.csv",
+]
+
+#: 補充分で追跡するファイル（補充の manifest と検証記録。ADR-0013 2026-10-01 改訂）。
+REFILL_TRACKED_PATHS = [
+    f"data/raw/market/refill/{'a' * 64}/refill_manifest.json",
+    f"data/raw/market/refill/{'a' * 64}/validation.json",
 ]
 
 #: snapshot 配下で追跡するファイル（ADR-0013 改訂、ADR-0014）。検査報告2種は
@@ -97,7 +113,7 @@ def test_data_and_run_artifacts_are_ignored(path: str) -> None:
     assert _is_ignored(path), f"{path} は git 管理外でなければならない"
 
 
-@pytest.mark.parametrize("path", TRACKED_PATHS)
+@pytest.mark.parametrize("path", [*TRACKED_PATHS, *REFILL_TRACKED_PATHS])
 def test_snapshot_manifest_reports_and_access_log_are_not_ignored(path: str) -> None:
     """manifest.json・検査報告・access_log.jsonl は再包含される（ADR-0013 改訂、ADR-0014）。"""
     pattern = _matched_pattern(path)
@@ -122,6 +138,7 @@ def test_no_ignored_data_artifact_is_actually_tracked() -> None:
         check=True,
     )
     tracked = [line for line in result.stdout.splitlines() if line]
+    refill_names = {Path(path).name for path in REFILL_TRACKED_PATHS}
     unexpected = [
         path
         for path in tracked
@@ -129,6 +146,12 @@ def test_no_ignored_data_artifact_is_actually_tracked() -> None:
             path.startswith("data/snapshots/")
             and not path.startswith("data/snapshots/_pending/")
             and Path(path).name in TRACKED_NAMES
+        )
+        and not (
+            path.startswith("data/raw/market/refill/")
+            and len(Path(path).parts) == 6
+            and not Path(path).parts[4].startswith("_")
+            and Path(path).name in refill_names
         )
     ]
     assert not unexpected, (
@@ -173,3 +196,31 @@ def test_snapshot_directory_lists_exactly_the_tracked_files(tmp_path: Path) -> N
     assert listed == sorted(TRACKED_PATHS), (
         f"snapshot 配下で追跡されるのは {sorted(TRACKED_NAMES)} だけ。実際: {listed}"
     )
+
+
+def test_refill_directory_lists_exactly_the_manifest_and_validation(tmp_path: Path) -> None:
+    """補充の置き場で追跡されるのは補充分ごとの manifest と検証記録だけ（ADR-0013、D03 §14.11）。
+
+    原データの 20 ファイル・補充した足のファイル・tick の保管場所・作業ディレクトリは追跡しない。
+    実リポジトリには触れず、`.gitignore` を複製した一時リポジトリで git 自身に列挙させる。
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    shutil.copyfile(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")
+    probes = [
+        *REFILL_TRACKED_PATHS,
+        *(path for path in IGNORED_PATHS if path.startswith("data/raw/")),
+        "data/raw/market/USDJPY_15m_merged.csv",
+    ]
+    for rel in probes:
+        probe = tmp_path / rel
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.touch()
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--", "data/raw"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    listed = sorted(line for line in result.stdout.splitlines() if line)
+    assert listed == sorted(REFILL_TRACKED_PATHS), listed

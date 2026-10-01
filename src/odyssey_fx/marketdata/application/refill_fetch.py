@@ -77,6 +77,7 @@ __all__ = [
     "JournalSummary",
     "JournalState",
     "PlanState",
+    "check_finals",
     "classify_status",
     "derive_state",
     "effective_finals",
@@ -665,7 +666,7 @@ class _Fetcher:
         self._report.outcomes[decoded.outcome] += 1
 
 
-def _check_finals(
+def check_finals(
     plan_id: str,
     plan: RefillPlan,
     store: RefillStore,
@@ -767,7 +768,7 @@ def _fetch_locked(
         )
     entries = list(journal.entries)
     # 保管場所の検算（W5）をすべて済ませてから書く（壊れた最後の行の切り詰めも書き込み）。
-    invalidations = _check_finals(plan_id, plan, store, entries, source.now())
+    invalidations = check_finals(plan_id, plan, store, entries, source.now())
     if journal.broken_tail_offset is not None:
         store.truncate_journal(plan_id, journal.broken_tail_offset)
     state_before = derive_state(plan, entries, finalized=False)
@@ -856,7 +857,7 @@ def _restore_finalized(
                 f" refill's record ({recorded.outcome.value}, {recorded.tick_digest})."
                 " Nothing was written (D03 §14.11.1 W5・W6)"
             )
-    invalidations = _check_finals(plan_id, plan, store, entries, source.now())
+    invalidations = check_finals(plan_id, plan, store, entries, source.now())
     invalidated = {item.hour for item in invalidations}
     pending = [hour for hour in plan.hour_keys if hour not in finals or hour in invalidated]
     for hour in pending:

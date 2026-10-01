@@ -5,9 +5,10 @@
 - #7 補充は対象足以外を書かない: 同じ時間ファイルから作れる対象でない足（照合用の時間・
   原データにある足）は照合にだけ使う（D03 §14.6）。
 - #8 識別子の決定論: 同じ入力から同じ `plan_id`（入力の列挙順に依存しない。設定の中身が
-  変われば変わる）（D03 §14.10）。`refill_id` は書き出しの実装（後続）で確かめる。
-- #9 書き出しは「存在すれば失敗」: 作業ディレクトリ・`plan.json`・保管場所の 1 件を上書き
-  しない（D03 §14.11・§14.11.1）。
+  変われば変わる）、同じ計画・同じ取得結果・同じコードから同じ `refill_id`（取得時刻・試行の
+  回数・応答の中身の sha256 には依存しない。コードの版が変われば変わる）（D03 §14.10）。
+- #9 書き出しは「存在すれば失敗」: 作業ディレクトリ・`plan.json`・保管場所の 1 件・補充分の
+  ディレクトリとそのファイルを上書きしない（D03 §14.11・§14.11.1）。
 """
 
 from __future__ import annotations
@@ -18,10 +19,15 @@ import pytest
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.adapters.refill_store import FsRefillStore
+from odyssey_fx.marketdata.application.refill_finalize import build_refill_output
 from odyssey_fx.marketdata.application.refill_plan import RawBarIndex, build_plan, create_plan
 from odyssey_fx.marketdata.application.refill_validation import HourData, validate_refill
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
-from odyssey_fx.marketdata.domain.errors import RefillPlanAlreadyExists, RefillStoreInconsistent
+from odyssey_fx.marketdata.domain.errors import (
+    RefillAlreadyExists,
+    RefillPlanAlreadyExists,
+    RefillStoreInconsistent,
+)
 from odyssey_fx.marketdata.domain.refill import (
     ArchiveProvenance,
     DecodedTicks,
@@ -71,7 +77,9 @@ def _plan(*, reverse: bool = False, interval_seconds: int = 8) -> RefillPlan:
     )
 
 
-def _hour(key: HourKey, ticks: DecodedTicks | None) -> HourData:
+def _hour(
+    key: HourKey, ticks: DecodedTicks | None, *, fetched_at: UtcTime = AT, attempts: int = 1
+) -> HourData:
     settings = provider_ref().settings
     if ticks is None:
         final = FinalResult(
@@ -110,10 +118,10 @@ def _hour(key: HourKey, ticks: DecodedTicks | None) -> HourData:
     )
     provenance = ArchiveProvenance(
         url=settings.url_for(key),
-        fetched_at=AT,
+        fetched_at=fetched_at,
         http_status=200,
-        attempts=1,
-        response_sha256=sha256_hex(b"x"),
+        attempts=attempts,
+        response_sha256=sha256_hex(f"x{attempts}".encode()),
         tick_digest=ticks.tick_digest,
         tick_count=len(ticks.ticks),
         provider_id=settings.id,
@@ -194,6 +202,30 @@ def test_a_changed_setting_gives_another_plan_id() -> None:
     assert _plan().plan_id() != _plan(interval_seconds=20).plan_id()
 
 
+def _refill_id(hours: dict[HourKey, HourData], code: str = "code-v1") -> str:
+    validation = _validate(hours)
+    assert validation.passed
+    return build_refill_output(
+        plan=_plan(),
+        validation=validation,
+        hours=hours,
+        code_version=code,
+        created_at=AT,
+    ).refill_id
+
+
+def test_the_same_plan_results_and_code_give_the_same_refill_id() -> None:
+    """取得時刻・試行の回数・応答の中身の sha256 は `refill_id` に入らない（D03 §14.10）。"""
+    first = {KEY_00: _hour(KEY_00, decoded(BI5_00H)), KEY_01: _hour(KEY_01, decoded(BI5_01H))}
+    later = UtcTime.parse("2026-12-24T09:30:00Z")
+    second = {
+        KEY_01: _hour(KEY_01, decoded(BI5_01H), fetched_at=later, attempts=4),
+        KEY_00: _hour(KEY_00, decoded(BI5_00H), fetched_at=later, attempts=2),
+    }
+    assert _refill_id(first) == _refill_id(second)
+    assert _refill_id(first) != _refill_id(first, code="code-v2")
+
+
 # --- #9 存在すれば失敗 -------------------------------------------------------------------
 
 
@@ -228,3 +260,15 @@ def test_refill_files_are_never_overwritten(tmp_path: Path) -> None:
     with pytest.raises(RefillStoreInconsistent):
         store.write_archive(KEY_00, BI5_00H, provenance)
     assert (tmp_path / "refill" / path).read_bytes() == archived
+
+
+def test_a_refill_directory_and_its_files_are_never_overwritten(tmp_path: Path) -> None:
+    store = FsRefillStore(root=tmp_path / "refill")
+    refill_id = "a" * 64
+    store.create_refill_dir(refill_id)
+    store.write_refill_file(refill_id, "validation.json", b"{}\n")
+    with pytest.raises(RefillAlreadyExists):
+        store.create_refill_dir(refill_id)
+    with pytest.raises(RefillStoreInconsistent):
+        store.write_refill_file(refill_id, "validation.json", b"tampered\n")
+    assert (tmp_path / "refill" / refill_id / "validation.json").read_bytes() == b"{}\n"

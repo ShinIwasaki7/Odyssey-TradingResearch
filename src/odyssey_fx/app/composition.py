@@ -36,6 +36,7 @@ from odyssey_fx.app.config.experiment_v2 import (
     experiment_v2_from_texts,
 )
 from odyssey_fx.app.config.loader import load_yaml_mapping
+from odyssey_fx.app.config.refill import calendar_from_ref
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
@@ -109,12 +110,20 @@ from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
     RawFile,
     build_pending_snapshot,
+    merge_refill_bars,
     normalize_rows,
 )
 from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSION, aggregate
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
 from odyssey_fx.marketdata.application.publication import build_feed, build_publication_log
+from odyssey_fx.marketdata.application.refill_finalize import (
+    REFILL_SOURCE_ROOT,
+    FinalizeReport,
+    finalize_plan,
+    require_refill_set,
+    verify_refill_directory,
+)
 from odyssey_fx.marketdata.application.refill_plan import (
     build_plan,
     derive_target_bars,
@@ -132,7 +141,7 @@ from odyssey_fx.marketdata.domain.access import (
 )
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import MarketDataValueError, RefillStoreInconsistent
 from odyssey_fx.marketdata.domain.integrity import CheckResult
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.refill import (
@@ -142,6 +151,7 @@ from odyssey_fx.marketdata.domain.refill import (
     RefillPlan,
     require_hex_digest,
 )
+from odyssey_fx.marketdata.domain.refill_manifest import RefillFileRecord, RefillManifest
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
@@ -259,6 +269,9 @@ class AcceptanceService:
     calendar: TradingCalendar
     timeframe_defs: Mapping[str, TimeframeDefinition]
     boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES
+    #: 補充した足のファイルの読込（リポジトリの基点から `data/raw/market/refill/…` を読む。
+    #: D03 §14.11）。補充分を渡さない受入れでは使わない。
+    refill_source: RawBarSource | None = None
 
     def timeframe_definition(self, timeframe_id: str) -> TimeframeDefinition:
         """設定から時間足定義を引く。定義の無い時間足は拒否する（D03 §3.2）。
@@ -322,6 +335,60 @@ class AcceptanceService:
         )
         return raw_file, bars
 
+    def read_refill_file(
+        self, manifest: RefillManifest, record: RefillFileRecord
+    ) -> tuple[RawFile, tuple[Bar, ...]]:
+        """補充した足のファイルを**1回読んで**、その登録と正規化した足を作る（D03 §4 の v1.15）。
+
+        系列はファイル名からではなく補充の manifest の記録（`(ファイル名, 銘柄, 時間足)`）から
+        決める。読んだ内容の sha256 と行数が manifest の記録と一致しなければ、何も書かずに
+        食い違いとして止める（D03 §14.11.1 の W5。検算の後に差し替わった場合を含む）。
+        `source` 列の値は列対応の宣言の `allowed_sources` に入っていなければならない（補充分を
+        受け入れるのは `dukascopy_refill` を足した宣言の版 2。D03 §9）。
+        """
+        if self.refill_source is None or record.series is None or record.rows is None:
+            raise MarketDataValueError("refill files are read only by a refill-aware acceptance")
+        path = f"{REFILL_SOURCE_ROOT}/{manifest.refill_id}/{record.name}"
+        content = self.refill_source.read_file(path)
+        if content.sha256 != record.sha256 or len(content.rows) != record.rows:
+            raise RefillStoreInconsistent(
+                f"{path}: sha256 {content.sha256} / {len(content.rows)} rows differ from the refill"
+                f" manifest ({record.sha256} / {record.rows} rows). Nothing was written"
+                " (D03 §14.11.1 W5・W6)"
+            )
+        series = record.series
+        definition = self.timeframe_definition(series.timeframe.id)
+        if definition.ref != series.timeframe:
+            raise MarketDataValueError(
+                f"{path}: the refill records {series.timeframe}, but the timeframe definition is"
+                f" {definition.ref} (D03 §3.2)"
+            )
+        if series.basis is not self.datasource.basis_declaration.value:
+            raise MarketDataValueError(
+                f"{path}: the refill basis {series.basis.value} differs from the declared basis"
+                f" {self.datasource.basis_declaration.value.value} (D03 §2)"
+            )
+        for index, row in enumerate(content.rows):
+            value = row.get(self.datasource.mapping.source_column, "")
+            if value not in self.datasource.allowed_sources:
+                raise MarketDataValueError(
+                    f"{path} row {index}: 出所 {value!r} は宣言に無い"
+                    f"（{sorted(self.datasource.allowed_sources)}）。補充分を受け入れるには"
+                    " `dukascopy_refill` を足した列対応の宣言（legacy_merged_csv_v2.yaml）を使う"
+                    "（D03 §4・§9）"
+                )
+        raw_file = RawFile(
+            path=path,
+            sha256=content.sha256,
+            symbol=series.symbol,
+            timeframe=series.timeframe,
+            declared_basis=series.basis,
+        )
+        bars = normalize_rows(
+            raw_file, content.rows, self.datasource.mapping, definition, self.calendar
+        )
+        return raw_file, bars
+
     def aggregate_all(
         self, bars_by_series: Mapping[SeriesId, tuple[Bar, ...]]
     ) -> tuple[dict[SeriesId, tuple[Bar, ...]], tuple[CheckResult, ...]]:
@@ -363,11 +430,16 @@ class AcceptanceService:
         targets: Sequence[tuple[Symbol, str]],
         *,
         created_at: UtcTime,
+        refills: Sequence[RefillManifest] = (),
     ) -> PendingSnapshot:
         """原ファイルを受け入れて暫定 snapshot を組み立てる（D03 §4 の 1〜8）。
 
         `targets` は `(銘柄, 時間足の id)` の列。読む順は呼び出し側が決めるが、識別子は
         列挙順に依存しない（各列を正規順序へ整列するため、D03 §3.7.1）。
+
+        `refills` は検算を済ませた補充分の manifest（`data accept --refill`。D03 §4 の v1.15・
+        §14.11）。補充した足のファイルも `SourceFile` として登録し、同じ系列の原ファイルの足と
+        合わせて 1 つの原系列にする。渡さなければ従来と同じ受入れである。
 
         実体（partition の Parquet）と検査報告の書き出しは行わない。書く場所は暫定か確定
         かで変わるので、呼び出し側（`app.cli`）が決める。
@@ -380,6 +452,15 @@ class AcceptanceService:
             raw_files.append(raw_file)
             bars_by_file[raw_file.path] = bars
             bars_by_series[raw_file.series] = bars
+        refill_files: list[tuple[RawFile, tuple[Bar, ...]]] = []
+        for manifest in refills:
+            for record in manifest.bar_files:
+                raw_file, bars = self.read_refill_file(manifest, record)
+                refill_files.append((raw_file, bars))
+                raw_files.append(raw_file)
+                bars_by_file[raw_file.path] = bars
+        if refill_files:
+            bars_by_series = merge_refill_bars(bars_by_series, refill_files)
 
         aggregated, findings = self.aggregate_all(bars_by_series)
         return build_pending_snapshot(
@@ -420,6 +501,7 @@ def acceptance_service(
         calendar=calendar,
         timeframe_defs=timeframe_defs,
         boundaries=boundaries,
+        refill_source=raw_bar_source(repo_root, datasource.mapping.time_column),
     )
 
 
@@ -1519,3 +1601,146 @@ def prepare_refill_plan(
         provider=provider,
         refill_filter=refill_filter,
     )
+
+
+class _FinalizeInputs:
+    """書き出し（`finalize`）が計画から読むもの（D03 §14.4・§14.7）。
+
+    計画の入力 snapshot の manifest を読み（識別子がディレクトリ名と一致すること）、対象足の
+    ある銘柄の原データを読む（sha256 と行数を manifest の `sources` と照合する）。カレンダーは
+    計画に記録した正規化内容から組み立て直す。
+    """
+
+    def __init__(
+        self,
+        *,
+        snapshots_root: Path,
+        repo_root: Path,
+        datasource: DataSourceConfig,
+        timeframe_defs: Mapping[str, TimeframeDefinition],
+    ) -> None:
+        self._snapshots_root = snapshots_root
+        self._repo_root = repo_root
+        self._datasource = datasource
+        self._timeframe_defs = timeframe_defs
+
+    def calendar(self, plan: RefillPlan) -> TradingCalendar:
+        return calendar_from_ref(plan.calendar)
+
+    def raw_bars(
+        self, plan: RefillPlan
+    ) -> tuple[tuple[SeriesId, ...], Mapping[SeriesId, Sequence[Bar]]]:
+        manifest = snapshot_store(self._snapshots_root).read_manifest(plan.snapshot_id)
+        if str(manifest.snapshot_id()) != plan.snapshot_id:
+            raise MarketDataValueError(
+                f"the manifest under {plan.snapshot_id} describes the snapshot"
+                f" {manifest.snapshot_id()}; the plan's input snapshot cannot be read (D03 §14.4)"
+            )
+        originals = tuple(
+            sorted(
+                {
+                    SeriesId(
+                        symbol=record.symbol,
+                        timeframe=record.timeframe,
+                        basis=record.declared_basis,
+                    )
+                    for record in manifest.sources
+                },
+                key=str,
+            )
+        )
+        symbols = {target.series.symbol for target in plan.target_bars}
+        bars = load_raw_bars(
+            manifest,
+            raw_bar_source(self._repo_root, self._datasource.mapping.time_column),
+            self._datasource.mapping,
+            self._timeframe_defs,
+            self.calendar(plan),
+            symbols,
+        )
+        return originals, bars
+
+
+def finalize_refill_plan(
+    *,
+    plan_id: str,
+    refill_root: Path,
+    snapshots_root: Path,
+    repo_root: Path,
+    datasource: DataSourceConfig,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+) -> FinalizeReport:
+    """検証して補充分を書き出す（D03 §14.7・§14.11・§14.12 の出来事10・11）。
+
+    規則は `marketdata.application.refill_finalize` にある。ここでは置き場・原データの読込・
+    変換コード版・実時計を結線するだけである。
+    """
+    require_hex_digest(plan_id, "--plan")
+    return finalize_plan(
+        plan_id,
+        store=refill_store(refill_root),
+        inputs=_FinalizeInputs(
+            snapshots_root=snapshots_root,
+            repo_root=repo_root,
+            datasource=datasource,
+            timeframe_defs=timeframe_defs,
+        ),
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        code_version=code_version(),
+        clock=now_utc,
+    )
+
+
+def load_refills_for_acceptance(
+    *, refill_dirs: Sequence[Path], repo_root: Path, snapshots_root: Path
+) -> tuple[RefillManifest, ...]:
+    """受入れに渡された補充分を検算して manifest を返す（D03 §14.11・§14.11.1 の W5）。
+
+    1. 置き場所: 引数のパスをシンボリックリンクを解いて正規化したものが、リポジトリの
+       `data/raw/market/refill/<名前>` と一致すること（所定の場所の外へ写したものを受けない）。
+    2. 補充分の検算: 完成の印、`plan_id`・`refill_id`（計算し直してディレクトリ名と一致）、
+       ファイルの集合と sha256・行数。
+    3. 集合の検査: 同じ計画の補充分を 2 つ以上渡していない。各補充分の入力 snapshot が含む
+       補充分（補充を重ねた前の補充分）をすべて渡している。
+
+    どれかが合わなければ何も書かずに失敗する。
+    """
+    expected_root = (repo_root / REFILL_SOURCE_ROOT).resolve()
+    store = refill_store(repo_root / REFILL_SOURCE_ROOT)
+    manifests: list[RefillManifest] = []
+    seen: set[str] = set()
+    for directory in refill_dirs:
+        resolved = Path(directory).resolve()
+        if resolved.parent != expected_root:
+            raise RefillStoreInconsistent(
+                f"--refill {directory} resolves to {resolved}, which is not directly under the"
+                f" refill root {expected_root}; a refill is read only from its own place"
+                " (D03 §14.11). Nothing was written"
+            )
+        name = resolved.name
+        try:
+            require_hex_digest(name, "--refill directory name")
+        except MarketDataValueError as exc:
+            raise RefillStoreInconsistent(f"--refill {directory}: {exc} (D03 §14.11)") from exc
+        if name in seen:
+            raise MarketDataValueError(f"--refill {name} was given twice")
+        seen.add(name)
+        manifests.append(
+            verify_refill_directory(
+                name, store.read_refill_manifest(name), store.list_refill_files(name)
+            )
+        )
+    snapshots = snapshot_store(snapshots_root)
+    input_sources: dict[str, tuple[str, ...]] = {}
+    for manifest in manifests:
+        if manifest.snapshot_id in input_sources:
+            continue
+        try:
+            source_manifest = snapshots.read_manifest(manifest.snapshot_id)
+        except FileNotFoundError:
+            continue
+        input_sources[manifest.snapshot_id] = tuple(
+            record.path for record in source_manifest.sources
+        )
+    require_refill_set(manifests, input_sources)
+    return tuple(sorted(manifests, key=lambda item: item.refill_id))
