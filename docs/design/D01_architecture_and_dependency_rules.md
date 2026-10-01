@@ -1,7 +1,7 @@
 # D01: アーキテクチャ・依存規則・ディレクトリ構成（確定版）
 
 作成日: 2026-09-18
-改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**、**2026-09-23 v2.6（§10.2 の snapshot ディレクトリ図に、確定 snapshot の検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）を git 管理対象として追記。2026-09-20 の人間の決定3件を 2026-09-23 に main へ追随させて取り込んだもの。ADR-0013 改訂、D03 v1.7。依存規則の変更なし）**、2026-09-25 v2.7（§10.3 の `runs/experiments/` の下のディレクトリ名を、実験の内容のダイジェストではなく人間が付けた名前と版にした。D07 v2.0 §19.1。依存規則の変更なし）、2026-09-30 v2.8（第4節: 閲覧記録のポート `HoldoutAccessLog` の実装者を、`evaluation.adapters.fs_store` から「`marketdata` の閲覧記録の追記・導出と、git の取得・コミット・push を行う adapters を `app` が適合させる」へ改めた。段階5 の設計 D09 v0.1（2026-09-30 承認、PR #52）§16 の9、2026-09-29 の人間の決定 Q11。閲覧記録の規則を `marketdata` の1か所に保つため（D03 §1.2 の担当と揃う）。ポートの所在と依存規則の変更なし）
+改訂: 2026-09-18 v2（レビュー指摘3点の反映、仮置き4件の確定）、2026-09-19 v2.1（F5c 追加）、2026-09-20 v2.2（`common` のモジュール一覧に `canonical.py`・`errors.py` を追記、`configs/datasources/` を追加。依存規則の変更なし）、2026-09-20 v2.3（設定パーサー集約ルール F5c の禁止範囲を `app` 配下全体（`app.config` を除く）へ拡大。ADR-0026）、2026-09-22 v2.4（第4節: 利用側が application より下の層のときのポートの定義場所を明記し、下位足の供給（`IntrabarSeries`）を表に追加。依存規則の変更なし）、**2026-09-23 v2.5（第9節のテスト配置表に統合（`tests/integration/`）と受入（`tests/acceptance/`）の2層を追加。段階2 の実装で必要になって作られた2層が表に無く、テスト配置の正本が実態と食い違っていたため。人間の決定（D08 §14 Q2、選択肢1）により D08 の承認と同じ PR で改訂した。依存規則の変更なし）**、**2026-09-23 v2.6（§10.2 の snapshot ディレクトリ図に、確定 snapshot の検査報告 `integrity_report.json`（確定段階で再実行した場合は暫定報告 `integrity_report_provisional.json` も）を git 管理対象として追記。2026-09-20 の人間の決定3件を 2026-09-23 に main へ追随させて取り込んだもの。ADR-0013 改訂、D03 v1.7。依存規則の変更なし）**、2026-09-25 v2.7（§10.3 の `runs/experiments/` の下のディレクトリ名を、実験の内容のダイジェストではなく人間が付けた名前と版にした。D07 v2.0 §19.1。依存規則の変更なし）、2026-09-30 v2.8（第4節: 閲覧記録のポート `HoldoutAccessLog` の実装者を、`evaluation.adapters.fs_store` から「`marketdata` の閲覧記録の追記・導出と、git の取得・コミット・push を行う adapters を `app` が適合させる」へ改めた。段階5 の設計 D09 v0.1（2026-09-30 承認、PR #52）§16 の9、2026-09-29 の人間の決定 Q11。閲覧記録の規則を `marketdata` の1か所に保つため（D03 §1.2 の担当と揃う）。ポートの所在と依存規則の変更なし）、2026-10-01 v2.9（段階5 の設計 D09 v0.2（2026-10-01 承認、PR #54）§16.2 の7 と市場データ設計 D03 v1.15（2026-10-01 承認、PR #56）§14.20 の1 の反映。第4節: 元データの再取得（補充）のポート `TickArchiveSource`・`RefillStore` を足し（定義は `marketdata.application.ports`、実装は `marketdata.adapters`。tick・区分・補充の manifest・失敗の型は `marketdata.domain`）、`ExperimentStore` の用途に試行台帳を足した（所在と実装者は変えない）。第7.1節・第10.4節: リポジトリの根の `research/trial_ledger.jsonl`（版管理・追記専用の試行台帳）。第10.2節: `data/raw/market/refill/`（補充分の置き場）。依存規則と契約の変更なし）
 状態: **承認（2026-09-19）**。ADR-0016 条件1（段階1開始前に D01〜D03 を確定）のうち D01 は充足。
 上位文書: [全体計画書](fx_research_platform_overall_plan.md) 第3〜4節、[ADR-0001〜0008, 0011〜0013, 0018〜0021, 0026](../decisions/README.md)
 対応段階: 段階−1（骨格）で実装し、以降のすべての設計文書・実装が従う。
@@ -145,10 +145,14 @@ app → evaluation → backtest → strategy → marketdata → common
 | `BacktestRunner` | `evaluation.application.ports` | `backtest.application.run_backtest`（`app` が適合させる） | 単一 run の実行 |
 | `SnapshotCatalog` | `evaluation.application.ports` | `marketdata.application`（`app` が適合させる） | 実験 manifest に固定する snapshot の参照と partition のアクセス分類の取得 |
 | `ResultRepository` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | 結果の読み書き |
-| `ExperimentStore` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | 実験 manifest・探索履歴の保存 |
+| `ExperimentStore` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | 実験 manifest・探索履歴の保存、試行台帳の追記と読込（v2.9。D09 v0.2 §10.10・§16.2 の7。操作は D07 §3） |
+| `TickArchiveSource` | `marketdata.application.ports` | `marketdata.adapters` | 元データの再取得（補充）で、時間ファイル1本を提供元から取得して結果を返す（v2.9。D03 v1.15 §14.16・§14.20 の1） |
+| `RefillStore` | `marketdata.application.ports` | `marketdata.adapters` | 補充の作業ディレクトリ・tick の保管場所・補充分の読み書き（v2.9。同上） |
 | `HoldoutAccessLog` | `evaluation.application.ports` | `marketdata` の閲覧記録の追記・導出と、git の取得・コミット・push を行う adapters（`app` が適合させる。v2.8。D09 v0.1 §16 の9、2026-09-29 の人間の決定 Q11） | holdout 閲覧履歴の記録（操作は D09 の後続版） |
 
 ポート名は D02 以降で変更されうるが、**所在（どのパッケージの application が定義するか）と実装者の層**は本書で確定する。
+
+**元データの再取得（補充）の型の置き場所**（v2.9。D03 v1.15 §14.16・§14.20 の1）: tick の型・時間ファイルの結果の区分・補充の manifest の型・失敗の型は `marketdata.domain` に置く。対象足の導出・集約・検証・識別子の計算・取得の順序と中断・再開の判断・待ち時間の計算は実時計・通信・ファイルを持たない規則として書き（第2.2節の規則2）、通信・待ち・解凍・ファイルの読み書き・取得時刻の実時計は上の2つのポートの実装（`marketdata.adapters`）の側に置く。設定の読込とコマンドは `app.config`・`app.cli` に置く。
 
 **利用側が application より下の層なら、構造は下の層で定義し application が同じ名前で再公開する**（確定。v2.4、2026-09-22 の人間の決定。PR #19）。`PublicationFeed` / `ExecutionSeries` / `IntrabarSeries` / `Calendar` を実際に使うのは `backtest.engine` であり、エンジンは1つ上の `backtest.application` を import できない（第3.3節の層順序）。そこで構造（`Protocol`）を `backtest.engine.loop` に置き、`backtest.application.ports` がそれを再公開する。**表の「定義場所」は引き続きポートの所在の正本**であり、結線するのも `app.composition` のままである（実装者はどちらの名前も import せず、構造的に満たす）。この扱いは D06 §3 にも記載する。
 
@@ -369,6 +373,7 @@ Odyssey-TradingResearch/
 ├── configs/                      # 第10節
 ├── data/                         # 第10節。実体は git 管理外
 ├── runs/                         # 第10節。git 管理外
+├── research/                     # 第10.4節。試行台帳 trial_ledger.jsonl（git 管理。v2.9）
 └── tests/                        # 第9節
 ```
 
@@ -479,6 +484,9 @@ YAML の読込条件（`app.config` が強制する）:
 ```text
 data/
 ├── raw/market/                     # 移管した20個の CSV。上書き禁止。git 管理外
+│   └── refill/                     # 補充分（v2.9。D03 v1.15 §14.11、ADR-0013）。<refill_id>/ の
+│                                   # refill_manifest.json と validation.json は git 管理、補充した足のファイル・
+│                                   # tick の保管場所 _ticks/・作業ディレクトリ _work/ は git 管理外。一度書いたら変えない
 └── snapshots/<snapshot_id>/
     ├── manifest.json               # git 管理。digest・出所・銘柄・価格基準・期間・行数・変換コード版・
     │                               # partition ごとのアクセス分類
@@ -503,6 +511,15 @@ runs/
 git 管理外。形式は B-7（仮置き: Parquet ＋ JSON）。
 
 **実験のディレクトリ名は、人間が付けた実験の名前と版**である（v2.7、D07 v2.0 §19.1）。共通カーネルの `ExperimentId`（D02 §7.1）は内容のダイジェストなので、ディレクトリ名にすると同じ版の中身を書き換えたときに別の場所になり、事前固定の検査が前の記録票を見つけられない。`ExperimentId` は記録票の中に置く。
+
+### 10.4 `research/`（v2.9）
+
+```text
+research/
+└── trial_ledger.jsonl              # git 管理。探索の実験の全実行の開始と結末を追記専用で残す試行台帳（D09 §10.10）
+```
+
+段階5 の設計 D09 v0.2 §10.10（§16.2 の7）による。実験の記録（`runs/experiments/`）は git 管理外で消せるので、同じ検証区間を見た回数を実験をまたいで数えられるよう、台帳は**リポジトリの根の版管理するファイル**に置く。既存の行を書き換えない・消さない・並べ替えない。無ければ最初の追記で作る。読み書きは `ExperimentStore`（第4節）経由で、追記の後のコミットと push は人間が行う。追記・読込の規則の細部は D09 の後続版（D09 §19 の13）。
 
 ## 11. ビルド・CI・品質ゲート（確定）
 
