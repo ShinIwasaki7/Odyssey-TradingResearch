@@ -1,8 +1,8 @@
 """再取得（補充）の設定の読込（D03 §9・§14.5・§14.9・§14.10）。
 
 - 実物の提供元の設定（`configs/datasources/dukascopy_tick_v1.yaml`）が読め、10 銘柄の価格の
-  桁と pip の大きさ（JPY を含む銘柄は 1000・0.01、他は 100000・0.0001）と、通信の試行の初期値
-  （D03 §14.9）を持つ。
+  桁と pip の大きさ（JPY を含む銘柄は 1000・0.01、他は 100000・0.0001）と、全件取得用に見直した
+  通信の値（D03 §14.9・§14.18 の 8。2026-10-02 の人間の決定）を持つ。
 - 設定ファイルの正規化内容のダイジェストはコメントに依存せず、中身が変われば変わる。
 - https 以外の URL・未宣言キー・10 のべきでない桁は拒否する。
 """
@@ -42,7 +42,7 @@ def test_the_provider_settings_load() -> None:
         comm.backoff_max_seconds,
         comm.pause_after_consecutive_failures,
         comm.pause_seconds,
-    ) == (8, 60, 5, 30, 480, 3, 180)
+    ) == (12, 60, 5, 60, 480, 3, 180)
     assert settings.symbol(Symbol("USDJPY")).price_scale == 1000
 
 
@@ -52,7 +52,7 @@ def test_the_content_digest_ignores_comments_but_not_values(tmp_path: Path) -> N
     commented.write_text("# another comment\n" + text, encoding="utf-8")
     changed = tmp_path / "changed.yaml"
     changed.write_text(
-        text.replace("request_interval_seconds: 8", "request_interval_seconds: 12"),
+        text.replace("request_interval_seconds: 12", "request_interval_seconds: 20"),
         encoding="utf-8",
     )
     original = load_refill_provider(PROVIDER).content_digest
