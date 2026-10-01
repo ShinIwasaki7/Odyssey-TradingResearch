@@ -172,6 +172,12 @@ VALIDATION = json.dumps(
 ).encode("utf-8")
 
 
+BAR_FILE = (
+    b",open,high,low,close,volume,source\n"
+    b"2020-06-01 10:00:00+00:00,107.100,107.200,107.000,107.150,0,dukascopy_refill\n"
+)
+
+
 def _refill_manifest() -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "plan_id": PLAN_A,
@@ -186,7 +192,21 @@ def _refill_manifest() -> dict[str, Any]:
                 "tick_digest": None,
             }
         ],
-        "files": [{"name": "validation.json", "sha256": hashlib.sha256(VALIDATION).hexdigest()}],
+        "files": [
+            {
+                "name": "USDJPY_15m_refill.csv",
+                "sha256": hashlib.sha256(BAR_FILE).hexdigest(),
+                "rows": 1,
+                **SERIES,
+            },
+            {
+                "name": "validation.json",
+                "sha256": hashlib.sha256(VALIDATION).hexdigest(),
+                "rows": None,
+                "series": None,
+                "timeframe_version": None,
+            },
+        ],
         "created_at": "2026-10-03T00:00:00Z",
         "series_counts": [{**SERIES, "targets": 3, "built": 1, "not_built": 2}],
         "not_built": [
@@ -218,6 +238,7 @@ def _write(tmp_path: Path, *, approved: bool = True) -> list[str]:
     refill.mkdir(parents=True)
     (refill / "refill_manifest.json").write_text(json.dumps(_refill_manifest()))
     (refill / "validation.json").write_bytes(VALIDATION)
+    (refill / "USDJPY_15m_refill.csv").write_bytes(BAR_FILE)
     # 計画 A の作業ディレクトリ: 一度不合格になり、取り直して（最終結果の行）書き出した。
     work_a = tmp_path / "refill/_work" / PLAN_A
     work_a.mkdir(parents=True)
@@ -479,6 +500,28 @@ def test_anything_unexpected_in_the_store_leaves_coverage_unknown(
     assert rr.main(args) == 0
     rows = _rows(tmp_path / "out/residual_gaps.csv")
     assert rows[("USDJPY", "1h@v1", "2017-01-02T03:00Z")]["states"] == rr.UNDETERMINED
+
+
+@pytest.mark.parametrize("case", ["bar_changed", "bar_missing", "extra", "temporary", "chunk"])
+def test_every_file_of_a_used_refill_is_checked(tmp_path: Path, case: str) -> None:
+    """報告に使う補充分は manifest 以外のすべてのファイルと記録を検算する（W5）。"""
+    args = _write(tmp_path)
+    refill = tmp_path / "refill" / REFILL
+    if case == "bar_changed":
+        (refill / "USDJPY_15m_refill.csv").write_bytes(BAR_FILE + b"\n")
+    elif case == "bar_missing":
+        (refill / "USDJPY_15m_refill.csv").unlink()
+    elif case == "extra":
+        (refill / "notes.txt").write_text("x")
+    elif case == "temporary":
+        (refill / ".tmp-validation.json-1-x").write_text("x")
+    else:
+        path = refill / "refill_manifest.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["unreconciled"][0]["chunk_start"] = "2020-07-01T11:00:00Z"
+        path.write_text(json.dumps(payload))
+    assert rr.main(args) == 1
+    assert not (tmp_path / "out").exists()
 
 
 def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:

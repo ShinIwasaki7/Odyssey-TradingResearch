@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import re
 import sys
@@ -221,7 +222,10 @@ def verified_refill_manifest(refill_root: Path, refill_id: str) -> dict[str, Any
     """補充の manifest を読み、記録から導ける識別子を計算し直して確かめる（D03 §14.11.1 の W5）。
 
     計画の中身から ``plan_id``、時間ファイルの記録と版から ``refill_id`` を計算し直し、記録と
-    ディレクトリ名に一致すること。入力 snapshot の識別子が計画の中身と一致すること。
+    ディレクトリ名に一致すること。入力 snapshot の識別子が計画の中身と一致すること。作らなかった
+    足と未照合の塊の開始が計画の対象足を 1 回ずつ指すこと。ディレクトリのファイル（manifest を
+    除く）の集合が記録と一致し、各ファイルの sha256 と、足のファイルの行数（CSV の記録から見出しの
+    1 行を引いた数）が一致すること。一時名のファイルの残り・ファイルでないものは食い違い。
     """
     path = refill_root / refill_id / "refill_manifest.json"
     manifest = _load_json(path)
@@ -235,24 +239,76 @@ def verified_refill_manifest(refill_root: Path, refill_id: str) -> dict[str, Any
         if manifest["snapshot_id"] != manifest["plan"]["snapshot_id"]:
             raise ReportInputError(f"入力 snapshot の識別子が計画の中身と一致しない: {path}")
         targets = set(_targets(manifest["plan"]))
-        listed = [_bar_key(item) for item in manifest["not_built"]]
-        if len(set(listed)) != len(listed) or not set(listed) <= targets:
-            raise ReportInputError(
-                f"作らなかった足の記録が計画の対象足を 1 回ずつ指していない: {path}"
-            )
+        for label, listed in (
+            ("作らなかった足", [_bar_key(item) for item in manifest["not_built"]]),
+            (
+                "未照合の塊",
+                [
+                    _bar_key({**item, "start": item["chunk_start"]})
+                    for item in manifest["unreconciled"]
+                ],
+            ),
+        ):
+            if len(set(listed)) != len(listed) or not set(listed) <= targets:
+                raise ReportInputError(
+                    f"{label}の記録が計画の対象足を 1 回ずつ指していない: {path}"
+                )
+        _verify_refill_files(refill_root / refill_id, manifest["files"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ReportInputError(f"補充の manifest の形が読めない: {path} ({exc})") from exc
     return manifest
 
 
+def _csv_records(content: bytes) -> int | None:
+    """内容を CSV として読んだ記録の数（空行を除く）。読めなければ ``None``。"""
+    try:
+        reader = csv.reader(io.StringIO(content.decode("utf-8"), newline=""))
+        return sum(1 for row in reader if row)
+    except (UnicodeDecodeError, csv.Error):
+        return None
+
+
+def _verify_refill_files(directory: Path, recorded: list[dict[str, Any]]) -> None:
+    """補充分のファイルの集合・sha256・行数を manifest の記録と照らす（D03 §14.11.1 の W5）。"""
+    present: dict[str, Path] = {}
+    for entry in directory.iterdir():
+        if entry.name == "refill_manifest.json":
+            continue
+        if entry.name.startswith(".tmp-"):
+            raise ReportInputError(f"補充分に一時名のファイルが残っている: {entry}")
+        if entry.is_symlink() or not entry.is_file():
+            raise ReportInputError(f"補充分にファイルでないものがある: {entry}")
+        present[entry.name] = entry
+    names = [str(item["name"]) for item in recorded]
+    if len(set(names)) != len(names) or set(names) != set(present):
+        raise ReportInputError(
+            f"補充分のファイルの集合が manifest の記録と一致しない: {directory}"
+            f"（記録に無い: {sorted(set(present) - set(names))}、"
+            f"無い: {sorted(set(names) - set(present))}）"
+        )
+    for item in recorded:
+        content = present[str(item["name"])].read_bytes()
+        if hashlib.sha256(content).hexdigest() != item["sha256"]:
+            raise ReportInputError(
+                f"sha256 が manifest の記録と一致しない: {directory / item['name']}"
+            )
+        rows = item.get("rows")
+        if rows is not None:
+            records = _csv_records(content)
+            if records is None or records - 1 != rows:
+                raise ReportInputError(
+                    f"行数が manifest の記録と一致しない: {directory / item['name']}"
+                )
+
+
 def load_refill(refill_root: Path, refill_id: str) -> dict[str, Any]:
-    """補充分の manifest と検証記録を読む（W5 の検算と、検証記録の sha256 の照合）。"""
+    """補充分の manifest と検証記録を読む（W5 の検算の後。読んだ検証記録の sha256 も照らす）。"""
     manifest = verified_refill_manifest(refill_root, refill_id)
     path = refill_root / refill_id / "validation.json"
     if not path.is_file():
         raise ReportInputError(f"ファイルが無い: {path}")
     content = path.read_bytes()
-    recorded = [item for item in manifest.get("files", []) if item.get("name") == path.name]
+    recorded = [item for item in manifest["files"] if item.get("name") == path.name]
     if len(recorded) != 1 or recorded[0].get("sha256") != hashlib.sha256(content).hexdigest():
         raise ReportInputError(f"検証記録の sha256 が補充の manifest と一致しない: {path}")
     try:
