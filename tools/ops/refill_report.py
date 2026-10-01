@@ -46,6 +46,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from odyssey_fx.app.composition import snapshot_store
 from odyssey_fx.common import canonical
 from tools.ops import research_history_gaps as rhg
 
@@ -149,13 +150,25 @@ def _load_json(path: Path) -> Any:
 
 
 def load_snapshot(snapshot_root: Path, snapshot_id: str) -> dict[str, Any]:
-    """確定済みの snapshot の manifest を読む（識別子がディレクトリ名と一致すること）。
+    """確定済みの snapshot の manifest を読む（D03 §3.7.1）。
 
-    暫定 snapshot（``_pending/``）は分類が無いので入力にできない（ここでは見つからない）。
+    本体の読込（``snapshot_store().read_manifest``）で形と承認の記録の構造を確かめ、内容から
+    ``snapshot_id`` を計算し直して記録とディレクトリ名に一致することを確かめてから使う（改変
+    された manifest から報告を作らない）。暫定 snapshot（``_pending/``）は分類が無いので入力に
+    できない（ここでは見つからない）。
     """
-    manifest = _load_json(snapshot_root / snapshot_id / "manifest.json")
-    if not isinstance(manifest, dict) or manifest.get("snapshot_id") != snapshot_id:
-        raise ReportInputError(f"snapshot_id が一致しない: {snapshot_root / snapshot_id}")
+    path = snapshot_root / snapshot_id / "manifest.json"
+    if not path.is_file():
+        raise ReportInputError(f"ファイルが無い: {path}")
+    try:
+        verified = snapshot_store(snapshot_root).read_manifest(snapshot_id)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ReportInputError(f"snapshot の manifest を確かめられない: {path} ({exc})") from exc
+    if str(verified.snapshot_id()) != snapshot_id:
+        raise ReportInputError(f"snapshot_id がディレクトリ名と一致しない: {path}")
+    manifest = _load_json(path)
+    if not isinstance(manifest, dict):
+        raise ReportInputError(f"snapshot の manifest が JSON の object ではない: {path}")
     return manifest
 
 

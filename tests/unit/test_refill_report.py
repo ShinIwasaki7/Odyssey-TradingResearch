@@ -16,50 +16,104 @@ from pathlib import Path
 from typing import Any
 
 from odyssey_fx.common import canonical
+from odyssey_fx.common.symbol import Symbol
+from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.classification import (
+    ClassificationOutcome,
+    ResolvedClassification,
+)
+from odyssey_fx.marketdata.domain.integrity import CheckKind
+from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
+from odyssey_fx.marketdata.domain.snapshot import (
+    Approval,
+    PartitionId,
+    PartitionRecord,
+    SeriesManifest,
+    SnapshotManifest,
+)
+from tests.fixtures.synthetic import snapshots as synthetic
 from tools.ops import refill_report as rr
 from tools.ops import research_history_gaps as rhg
 
-OLD = "o" * 64
-NEW = "n" * 64
-APPROVAL = {"approved_by": "human", "approved_at": "2026-10-02T00:00:00Z", "comment": ""}
+WINDOW = Interval(
+    start=UtcTime.parse("2016-01-01T00:00:00Z"), end=UtcTime.parse("2021-01-01T00:00:00Z")
+)
+APPROVAL = Approval(approved_by="human", approved_at=UtcTime.parse("2026-10-02T00:00:00Z"))
 
 
-def _record(symbol: str, tf: str, start: str, end: str) -> dict[str, Any]:
-    return {
-        "series_id": {"symbol": symbol, "timeframe": tf, "basis": "bid"},
-        "interval": {"start": start, "end": end},
-        "kind": "MISSING_EXPECTED_BAR",
-        "outcome": "DATA_GAP",
-    }
+def _sid(symbol: str, tf: str) -> SeriesId:
+    return SeriesId(symbol=Symbol(symbol), timeframe=TimeframeRef.parse(tf), basis=PriceBasis.BID)
 
 
-def _manifest(
-    snapshot_id: str,
-    records: list[dict[str, Any]],
-    sources: list[dict[str, Any]],
-    *,
-    approved: bool = True,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "snapshot_id": snapshot_id,
-        "conversion": {"calendar_id": "fx_ny17", "calendar_version": 2},
-        "partitions": [
-            {
-                "partition_id": {
-                    "access_class": "RESEARCH_HISTORY",
-                    "series": {"symbol": s, "timeframe": tf, "basis": "bid"},
-                },
-                "interval": {"start": "2016-01-01T00:00:00Z", "end": "2021-01-01T00:00:00Z"},
-            }
-            for s in rhg.SYMBOLS
-            for tf in rhg.TIMEFRAMES
+def _record(symbol: str, tf: str, start: str, end: str) -> ResolvedClassification:
+    return ResolvedClassification(
+        kind=CheckKind.MISSING_EXPECTED_BAR,
+        series_id=_sid(symbol, tf),
+        interval=Interval(start=UtcTime.parse(start), end=UtcTime.parse(end)),
+        outcome=ClassificationOutcome.DATA_GAP,
+    )
+
+
+def _snapshot(
+    records: list[ResolvedClassification], refill_paths: list[str], *, approved: bool = True
+) -> SnapshotManifest:
+    """20 系列の研究履歴の partition と分類を持つ manifest（識別子は内容から決まる）。"""
+    partitions = [
+        PartitionRecord(
+            partition_id=PartitionId(series=_sid(s, tf), access_class=AccessClass.RESEARCH_HISTORY),
+            interval=WINDOW,
+            bar_count=1,
+            digest=synthetic.digest_for(f"{s}{tf}"),
+        )
+        for s in rhg.SYMBOLS
+        for tf in rhg.TIMEFRAMES
+    ]
+    return synthetic.manifest(
+        sources=[
+            synthetic.source("data/raw/market/USDJPY_15m_merged.csv", "USDJPY", "15m"),
+            *(synthetic.source(path, "USDJPY", "15m") for path in refill_paths),
         ],
-        "resolved_classifications": records,
-        "sources": sources,
-    }
-    if approved:
-        payload["approval"] = APPROVAL
-    return payload
+        series_records=[
+            SeriesManifest(
+                series_id=record.series_id,
+                covered_interval=WINDOW,
+                bar_count=1,
+                partitions=(record.partition_id,),
+            )
+            for record in partitions
+        ],
+        partitions=partitions,
+        resolved_classifications=records,
+        approval=APPROVAL if approved else None,
+    )
+
+
+# 旧: USDJPY 15m に 06-01 10:00〜10:45（3 本）と 07-01 の 1 本、AUDJPY 1h に 1 本、
+#     USDJPY 1h に休場の候補 2（2017 年元日）の 9 本。
+OLD_RECORDS = [
+    _record("USDJPY", "15m@v1", "2020-06-01T10:00:00Z", "2020-06-01T10:15:00Z"),
+    _record("USDJPY", "15m@v1", "2020-06-01T10:15:00Z", "2020-06-01T10:30:00Z"),
+    _record("USDJPY", "15m@v1", "2020-06-01T10:30:00Z", "2020-06-01T10:45:00Z"),
+    _record("USDJPY", "15m@v1", "2020-07-01T10:00:00Z", "2020-07-01T10:15:00Z"),
+    _record("AUDJPY", "1h@v1", "2020-08-03T10:00:00Z", "2020-08-03T11:00:00Z"),
+] + [
+    _record("USDJPY", "1h@v1", f"2017-01-0{d}T{h:02d}:00:00Z", f"2017-01-0{d2}T{h2:02d}:00:00Z")
+    for d, h, d2, h2 in (
+        (1, 22, 1, 23),
+        (1, 23, 2, 0),
+        *((2, h, 2, h + 1) for h in range(7)),
+    )
+]
+# 新: 06-01 10:00 は補充できた。10:15 は取得できず（計画 A）、10:30 はどの計画にも入って
+#     いない。07-01 は未照合、AUDJPY は不合格の計画。元日は前半だけ補充できた（部分補充）。
+NEW_RECORDS = [OLD_RECORDS[1], OLD_RECORDS[2], OLD_RECORDS[3], OLD_RECORDS[4]] + [
+    _record("USDJPY", "1h@v1", f"2017-01-02T{h:02d}:00:00Z", f"2017-01-02T{h + 1:02d}:00:00Z")
+    for h in range(3, 7)
+]
+OLD = str(_snapshot(OLD_RECORDS, []).snapshot_id())
 
 
 def _target(series: str, start: str, end: str) -> dict[str, Any]:
@@ -149,44 +203,15 @@ def _refill_manifest() -> dict[str, Any]:
 
 
 REFILL = _refill_manifest()["refill_id"]
+REFILL_PATH = f"data/raw/market/refill/{REFILL}/USDJPY_15m_refill.csv"
+NEW = str(_snapshot(NEW_RECORDS, [REFILL_PATH]).snapshot_id())
 
 
 def _write(tmp_path: Path, *, approved: bool = True) -> list[str]:
     snapshots = tmp_path / "snapshots"
-    # 旧: USDJPY 15m に 06-01 10:00〜10:45（3 本）と 07-01 の 1 本、AUDJPY 1h に 1 本、
-    #     USDJPY 1h に休場の候補 2（2017 年元日）の 9 本。
-    old_records = [
-        _record("USDJPY", "15m@v1", "2020-06-01T10:00:00Z", "2020-06-01T10:15:00Z"),
-        _record("USDJPY", "15m@v1", "2020-06-01T10:15:00Z", "2020-06-01T10:30:00Z"),
-        _record("USDJPY", "15m@v1", "2020-06-01T10:30:00Z", "2020-06-01T10:45:00Z"),
-        _record("USDJPY", "15m@v1", "2020-07-01T10:00:00Z", "2020-07-01T10:15:00Z"),
-        _record("AUDJPY", "1h@v1", "2020-08-03T10:00:00Z", "2020-08-03T11:00:00Z"),
-    ] + [
-        _record("USDJPY", "1h@v1", f"2017-01-0{d}T{h:02d}:00:00Z", f"2017-01-0{d2}T{h2:02d}:00:00Z")
-        for d, h, d2, h2 in (
-            (1, 22, 1, 23),
-            (1, 23, 2, 0),
-            *((2, h, 2, h + 1) for h in range(7)),
-        )
-    ]
-    # 新: 06-01 10:00 は補充できた。10:15 は取得できず（計画 A）、10:30 はどの計画にも入って
-    #     いない。07-01 は未照合、AUDJPY は不合格の計画。元日は前半だけ補充できた（部分補充）。
-    new_records = [old_records[1], old_records[2], old_records[3], old_records[4]] + [
-        _record("USDJPY", "1h@v1", f"2017-01-02T{h:02d}:00:00Z", f"2017-01-02T{h + 1:02d}:00:00Z")
-        for h in range(3, 7)
-    ]
-    sources = [
-        {"path": f"data/raw/market/refill/{REFILL}/USDJPY_15m_refill.csv", "symbol": "USDJPY"},
-        {"path": "data/raw/market/USDJPY_15m_merged.csv", "symbol": "USDJPY"},
-    ]
-    for snapshot_id, records, srcs, ok in (
-        (OLD, old_records, [], True),
-        (NEW, new_records, sources, approved),
-    ):
-        (snapshots / snapshot_id).mkdir(parents=True)
-        (snapshots / snapshot_id / "manifest.json").write_text(
-            json.dumps(_manifest(snapshot_id, records, srcs, approved=ok))
-        )
+    store = ParquetSnapshotStore(root=snapshots)
+    store.write_manifest(OLD, _snapshot(OLD_RECORDS, []))
+    store.write_manifest(NEW, _snapshot(NEW_RECORDS, [REFILL_PATH], approved=approved))
     refill = tmp_path / "refill" / REFILL
     refill.mkdir(parents=True)
     (refill / "refill_manifest.json").write_text(json.dumps(_refill_manifest()))
@@ -407,6 +432,17 @@ def test_a_refill_whose_identity_does_not_recompute_is_refused(tmp_path: Path) -
     path = tmp_path / "refill" / REFILL / "refill_manifest.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["code_version"] = "something-else"
+    path.write_text(json.dumps(payload))
+    assert rr.main(args) == 1
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_altered_snapshot_manifest_is_refused(tmp_path: Path) -> None:
+    """snapshot の識別子は内容から計算し直す（D03 §3.7.1）。改変した manifest は使わない。"""
+    args = _write(tmp_path)
+    path = tmp_path / "snapshots" / NEW / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["resolved_classifications"] = payload["resolved_classifications"][1:]
     path.write_text(json.dumps(payload))
     assert rr.main(args) == 1
     assert not (tmp_path / "out").exists()
