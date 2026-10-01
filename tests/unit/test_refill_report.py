@@ -448,6 +448,17 @@ def test_an_altered_snapshot_manifest_is_refused(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
+def test_a_not_built_record_outside_the_plan_is_refused(tmp_path: Path) -> None:
+    """作らなかった足の記録が計画の対象足を指さなければ、その補充分を使わない（D03 §14.11）。"""
+    args = _write(tmp_path)
+    path = tmp_path / "refill" / REFILL / "refill_manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["not_built"][0]["start"] = "2020-06-01T11:00:00Z"  # 識別子に入らない項目だけを変える
+    path.write_text(json.dumps(payload))
+    assert rr.main(args) == 1
+    assert not (tmp_path / "out").exists()
+
+
 def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:
     """出力は「存在すれば失敗」: どちらかが既にあれば、どちらも書かない。"""
     args = _write(tmp_path)

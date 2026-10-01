@@ -649,11 +649,25 @@ class RefillManifest:
         for series, count in counts.items():
             if count.built and series not in written:
                 raise MarketDataValueError(f"{series}: built bars without a bar file")
-        listed_series = [entry.series for entry in self.not_built]
-        listed_series += [entry.series for entry in self.unreconciled]
-        for other in listed_series:
-            if other not in target_series:
-                raise MarketDataValueError(f"{other} is not a target series of the plan")
+        # 作らなかった足と未照合の塊の開始は、計画の対象足を 1 回ずつだけ指す（D03 §14.11 の
+        # 「作らなかった対象足」。系列だけでなく時刻まで照らす。報告が足ごとの理由に使うため）。
+        target_keys = {(bar.series, bar.start) for bar in self.plan.target_bars}
+        for label, keys in (
+            ("not_built", [(entry.series, entry.start) for entry in self.not_built]),
+            ("unreconciled", [(entry.series, entry.chunk_start) for entry in self.unreconciled]),
+        ):
+            seen: set[tuple[SeriesId, UtcTime]] = set()
+            for series, start in keys:
+                if (series, start) not in target_keys:
+                    raise MarketDataValueError(
+                        f"RefillManifest.{label}: {series} {start} is not a target bar of the plan"
+                        " (D03 §14.11)"
+                    )
+                if (series, start) in seen:
+                    raise MarketDataValueError(
+                        f"RefillManifest.{label}: {series} {start} is listed twice (D03 §14.11)"
+                    )
+                seen.add((series, start))
 
     @property
     def bar_files(self) -> tuple[RefillFileRecord, ...]:

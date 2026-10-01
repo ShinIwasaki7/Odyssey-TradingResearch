@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,7 @@ from odyssey_fx.marketdata.domain.refill_manifest import (
     RefillManifest,
     refill_id_of,
 )
+from odyssey_fx.marketdata.domain.refill_validation import NotBuiltBar, NotBuiltReason
 from odyssey_fx.marketdata.domain.series import SeriesId
 from tests.fixtures.refill import (
     BI5_00H,
@@ -468,6 +470,48 @@ def test_the_row_count_is_checked_as_csv_records(tmp_path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RefillStoreInconsistent, match="rows"):
         _verified(store, name)
+
+
+@pytest.mark.parametrize("case", ["outside", "twice"])
+def test_a_not_built_entry_must_name_a_target_bar_once(tmp_path: Path, case: str) -> None:
+    """作らなかった足の記録は計画の対象足を時刻まで照らし、1 回ずつだけ指す（D03 §14.11）。
+
+    件数（`series_counts`）とファイルの行数をそろえても、別の時刻や重ねた記録は通さない。
+    """
+    store, plan_id, _ = _fetched(tmp_path)
+    manifest = _verified(store, str(_finalize(store, plan_id).refill_id))
+    bar_file = max(manifest.bar_files, key=lambda item: item.rows or 0)
+    series = bar_file.series
+    assert series is not None and bar_file.rows is not None
+    target = next(bar for bar in manifest.plan.target_bars if bar.series == series)
+    listed: tuple[NotBuiltBar, ...]
+    if case == "outside":
+        listed = (
+            NotBuiltBar(
+                series=series,
+                start=UtcTime.parse("2020-11-30T05:00:00Z"),
+                reason=NotBuiltReason.NO_TICK_IN_BAR,
+            ),
+        )
+        shift = 1
+    else:
+        listed = tuple(
+            NotBuiltBar(series=series, start=target.start, reason=NotBuiltReason.NO_TICK_IN_BAR)
+            for _ in range(2)
+        )
+        shift = 2
+    counts = tuple(
+        replace(count, built=count.built - shift, not_built=count.not_built + shift)
+        if count.series == series
+        else count
+        for count in manifest.series_counts
+    )
+    files = tuple(
+        replace(item, rows=(item.rows or 0) - shift) if item.name == bar_file.name else item
+        for item in manifest.files
+    )
+    with pytest.raises(MarketDataValueError, match="target bar|listed twice"):
+        replace(manifest, not_built=listed, series_counts=counts, files=files)
 
 
 def test_a_manifest_rewritten_by_hand_fails_the_identity_check(tmp_path: Path) -> None:

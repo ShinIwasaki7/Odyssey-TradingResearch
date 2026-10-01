@@ -232,6 +232,12 @@ def verified_refill_manifest(refill_root: Path, refill_id: str) -> dict[str, Any
             raise ReportInputError(f"refill_id が記録から計算し直した値と一致しない: {path}")
         if manifest["snapshot_id"] != manifest["plan"]["snapshot_id"]:
             raise ReportInputError(f"入力 snapshot の識別子が計画の中身と一致しない: {path}")
+        targets = set(_targets(manifest["plan"]))
+        listed = [_bar_key(item) for item in manifest["not_built"]]
+        if len(set(listed)) != len(listed) or not set(listed) <= targets:
+            raise ReportInputError(
+                f"作らなかった足の記録が計画の対象足を 1 回ずつ指していない: {path}"
+            )
     except (KeyError, TypeError, ValueError) as exc:
         raise ReportInputError(f"補充の manifest の形が読めない: {path} ({exc})") from exc
     return manifest
