@@ -78,6 +78,7 @@ def _write(tmp_path: Path) -> list[str]:
         json.dumps(
             {
                 "refill_id": REFILL,
+                "snapshot_id": OLD,
                 "series_counts": [{**series, "targets": 3, "built": 1, "not_built": 2}],
                 "not_built": [
                     {
@@ -123,13 +124,14 @@ def _write(tmp_path: Path) -> list[str]:
     (work / "plan.json").write_text(
         json.dumps(
             {
+                "snapshot_id": OLD,
                 "target_bars": [
                     {
                         "series": "AUDJPY/1h/bid",
                         "timeframe_version": 1,
                         "start": "2020-08-03T10:00:00Z",
                     }
-                ]
+                ],
             }
         )
     )
@@ -203,3 +205,22 @@ def test_missing_inputs_fail_without_writing(tmp_path: Path) -> None:
     (tmp_path / "refill" / REFILL / "validation.json").unlink()
     assert rr.main(args) == 1
     assert not (tmp_path / "out").exists()
+
+
+def test_a_later_layer_decides_the_reason_regardless_of_the_id_order() -> None:
+    """補充を重ねたら後の段の記録を採る（識別子の並び順に依らない。D03 §14.11 の RF-7）。"""
+    start = "2020-06-01T10:15:00Z"
+    series = {"series": "USDJPY/15m/bid", "timeframe_version": 1}
+
+    def refill(refill_id: str, snapshot_id: str, reason: str) -> dict[str, Any]:
+        not_built = [{**series, "start": start, "reason": reason, "detail": ""}]
+        return {
+            "manifest": {"refill_id": refill_id, "snapshot_id": snapshot_id, "not_built": not_built}
+        }
+
+    first = refill("f" * 64, "s0", "HOUR_NOT_FETCHED")  # 旧 snapshot（補充分 0 個）から
+    second = refill("0" * 64, "s1", "PROVIDER_EMPTY")  # 補充分 1 個を含む snapshot から
+    key = ("USDJPY", "15m@v1", rhg.parse_utc(start))
+    for order in ([first, second], [second, first]):
+        reasons = rr.bar_reasons(order, [], {"s0": 0, "s1": 1})
+        assert reasons[key] == rr.PROVIDER_NO_TICKS

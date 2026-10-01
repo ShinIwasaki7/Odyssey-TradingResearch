@@ -139,27 +139,62 @@ def _tf_key(series: str, version: int) -> tuple[str, str]:
     return symbol, f"{timeframe}@v{version}"
 
 
-def bar_reasons(
-    refills: list[dict[str, Any]], rejected: list[dict[str, Any]]
-) -> dict[tuple[str, str, datetime], str]:
-    """足 1 本ごとの「補充しなかった理由」（補充分の記録と不合格の計画から）。"""
+def _not_built_reasons(records: list[dict[str, Any]]) -> dict[tuple[str, str, datetime], str]:
     reasons: dict[tuple[str, str, datetime], str] = {}
+    for not_built in records:
+        symbol, tf = _tf_key(not_built["series"], not_built["timeframe_version"])
+        reasons[(symbol, tf, rhg.parse_utc(not_built["start"]))] = NOT_BUILT_TO_REASON[
+            not_built["reason"]
+        ]
+    return reasons
+
+
+def bar_reasons(
+    refills: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+    layers: dict[str, int],
+) -> dict[tuple[str, str, datetime], str]:
+    """足 1 本ごとの「補充しなかった理由」（補充分の記録と不合格の計画から）。
+
+    補充を重ねると（D03 §14.11 の RF-7）、同じ足を複数の補充分・計画が記録しうる。そのときは
+    **後の段の記録を採る**。段は入力 snapshot が含む補充分の数（``layers``。入力 snapshot の
+    識別子から）で決め、識別子の並び順には依らない。同じ段では、新しい snapshot に入った補充分の
+    記録を不合格の計画の記録より優先する（補充分の方が後に書き出されたものとして扱う）。
+    """
+    entries: list[tuple[int, int, str, dict[tuple[str, str, datetime], str]]] = []
     for item in rejected:
+        recorded: dict[tuple[str, str, datetime], str] = {}
         for target in item["plan"]["target_bars"]:
             symbol, tf = _tf_key(target["series"], target["timeframe_version"])
-            reasons[(symbol, tf, rhg.parse_utc(target["start"]))] = VALIDATION_REJECTED
-        for not_built in item["validation"]["details"].get("not_built", []):
-            symbol, tf = _tf_key(not_built["series"], not_built["timeframe_version"])
-            reasons[(symbol, tf, rhg.parse_utc(not_built["start"]))] = NOT_BUILT_TO_REASON[
-                not_built["reason"]
-            ]
+            recorded[(symbol, tf, rhg.parse_utc(target["start"]))] = VALIDATION_REJECTED
+        recorded.update(_not_built_reasons(item["validation"]["details"].get("not_built", [])))
+        entries.append((layers[item["plan"]["snapshot_id"]], 0, item["plan_id"], recorded))
     for refill in refills:
-        for not_built in refill["manifest"]["not_built"]:
-            symbol, tf = _tf_key(not_built["series"], not_built["timeframe_version"])
-            reasons[(symbol, tf, rhg.parse_utc(not_built["start"]))] = NOT_BUILT_TO_REASON[
-                not_built["reason"]
-            ]
+        manifest = refill["manifest"]
+        entries.append(
+            (
+                layers[manifest["snapshot_id"]],
+                1,
+                manifest["refill_id"],
+                _not_built_reasons(manifest["not_built"]),
+            )
+        )
+    reasons: dict[tuple[str, str, datetime], str] = {}
+    for _, _, _, recorded in sorted(entries, key=lambda entry: entry[:3]):
+        reasons.update(recorded)
     return reasons
+
+
+def input_layers(
+    snapshot_root: Path, refills: list[dict[str, Any]], rejected: list[dict[str, Any]]
+) -> dict[str, int]:
+    """補充分・計画の入力 snapshot ごとの段（その snapshot が含む補充分の数）。"""
+    ids = {refill["manifest"]["snapshot_id"] for refill in refills}
+    ids |= {item["plan"]["snapshot_id"] for item in rejected}
+    return {
+        snapshot_id: len(refill_ids_of(load_snapshot(snapshot_root, snapshot_id)))
+        for snapshot_id in sorted(ids)
+    }
 
 
 def interval_reason(gap: rhg.GapInterval, reasons: dict[tuple[str, str, datetime], str]) -> str:
@@ -433,7 +468,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     new_merged, new_bounds = rhg.collect_gaps(new_manifest)
     old_merged, old_bounds = rhg.collect_gaps(old_manifest)
-    rows = residual_rows(new_merged, bar_reasons(refills, rejected))
+    try:
+        layers = input_layers(args.snapshot_root, refills, rejected)
+    except (ReportInputError, ValueError, KeyError) as exc:
+        print(f"補充分・計画の入力 snapshot が読めない: {exc}", file=sys.stderr)
+        return 1
+    rows = residual_rows(new_merged, bar_reasons(refills, rejected, layers))
     command = " ".join(
         [
             "uv run python tools/ops/refill_report.py",
