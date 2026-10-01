@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import date, time, timedelta
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
@@ -39,7 +39,7 @@ from odyssey_fx.marketdata.domain.timeframe_def import (
     TimeframeDefinition,
 )
 
-__all__ = ["load_calendar", "load_timeframes"]
+__all__ = ["calendar_from_mapping", "load_calendar", "load_timeframes"]
 
 #: この実装が読む設定ファイルの形式版。未知の版は拒否する（D01 §10.1）。
 CALENDAR_SCHEMA_VERSION = 1
@@ -186,6 +186,17 @@ def load_calendar(path: Path, *, text: str | None = None) -> TradingCalendar:
     休場に重なる営業例外は domain の構築時検証が拒否し、ここで設定の誤りとして報告する。
     """
     payload = load_yaml_mapping(path, text=text)
+    return calendar_from_mapping(payload, path)
+
+
+def calendar_from_mapping(payload: dict[str, Any], path: Path) -> TradingCalendar:
+    """読み込んだカレンダーの設定（YAML の最上位の mapping）から `TradingCalendar` を作る。
+
+    `load_calendar` の本体。補充の書き出しが、取得計画に記録したカレンダーの正規化内容から
+    同じカレンダーを組み立て直すためにも使う（D03 §14.10）。`path` は誤りの説明に使う名前。
+    """
+    if "schema_version" not in payload:
+        raise ConfigError(f"{path}: `schema_version` が無い（D01 §10.1）")
     model = validate(_CalendarModel, payload, path)
     require_schema_version(model.schema_version, CALENDAR_SCHEMA_VERSION, path)
 

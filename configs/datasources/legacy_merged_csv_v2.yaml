@@ -1,0 +1,63 @@
+# 旧基盤から移管した結合済み CSV の列対応、版 2（D03 §4 の 2・§9 の v1.15）
+#
+# 版 1（legacy_merged_csv_v1.yaml）と同じ列対応に、出所の値 `dukascopy_refill`（提供元から
+# 取り直した tick で補充した足。D03 §14.6・§14.18 の 5）を `allowed_sources` に足したもの。
+# 補充分を合わせる受入れ（`odyssey-fx data accept --refill <dir>`。D03 §14.11）はこの版を使う。
+# 版 1 は変えない（承認済みの snapshot の受入れに使った宣言のまま残す）。
+#
+# `root` とファイル名の規則（`filename_pattern`）は**原ファイルだけ**に使う。補充した足の
+# ファイル（data/raw/market/refill/<refill_id>/<SYMBOL>_<15m|1h>_refill.csv）の系列は、ファイル名
+# からではなく補充の manifest（refill_manifest.json）の記録で決める（D03 §4 の v1.15 の追記）。
+#
+# **時刻の規約は宣言する**（上位設計書 §3.2）。値の見た目からタイムゾーンを推測しない。
+# **価格基準は検証済みの事実ではなく人間の宣言**（D03 §2）。補充した足も bid から作る
+# （D03 §14.6）。
+#
+# **補充した足の出来高は 0 を書き、「出来高不明」を意味する**（D03 §14.6・§14.18 の 4）。
+# 戦略の判断と評価で実際の出来高として使わない（D06・D07 の規則）。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+id: legacy_merged_csv
+version: 2
+
+root: data/raw/market
+
+# 原ファイルの名前から銘柄と時間足を取り出す規則（補充した足のファイルには使わない）。
+# 例: USDJPY_1h_merged.csv -> symbol=USDJPY, timeframe=1h
+filename_pattern: "{symbol}_{timeframe}_merged.csv"
+timeframes:
+  - 15m
+  - 1h
+
+time_convention: explicit_offset_utc
+
+# 足の時刻ラベルは足の**開始**（D03 §2）。終了ラベルとして解釈しない。
+time_label: bar_start
+
+columns:
+  # 先頭の無名列に与える名前。
+  time: timestamp
+  open: open
+  high: high
+  low: low
+  close: close
+  volume: volume
+  source: source
+
+# 価格基準の宣言（検証済みの事実ではない）。
+basis_declaration:
+  value: bid
+  verified: false
+
+# source 列に現れてよい値。これ以外の値は受入れで拒否する。
+allowed_sources:
+  - histdata
+  - dukascopy
+  - dukascopy_refill
+
+# 出来高の注記: HistData 由来の volume は 0、補充した足（dukascopy_refill）の volume も 0 で
+# 「出来高不明」を意味する。どちらも真の市場出来高として解釈しない（D03 §2・§14.6）。
+volume_note: histdata_and_refill_rows_report_zero_volume

@@ -39,6 +39,7 @@ __all__ = [
     "RawFileContent",
     "RawRow",
     "RefillDirectory",
+    "RefillFileStat",
     "RefillStore",
     "SnapshotStore",
     "TickArchiveSource",
@@ -177,6 +178,20 @@ class RefillDirectory:
     manifest: Mapping[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RefillFileStat:
+    """補充分のディレクトリにあるファイル 1 つの検算の材料（D03 §14.11.1 の W5）。
+
+    `sha256` は内容の sha256、`csv_rows` は内容を CSV として読んだ記録（行）の数で、空行を
+    数えない（足のファイルは見出しの 1 行と足 1 本につき 1 行。D03 v1.17 §14.11.1 の W5）。
+    CSV として読めなければ `None`。どちらも同じ読込のバイト列から求める。
+    """
+
+    name: str
+    sha256: str
+    csv_rows: int | None
+
+
 class RefillStore(Protocol):
     """補充の置き場の読み書きポート（D01 §4 v2.9、D03 §14.11・§14.11.1）。
 
@@ -186,6 +201,25 @@ class RefillStore(Protocol):
 
     def list_refills(self) -> tuple[RefillDirectory, ...]:
         """置き場の直下の補充分のディレクトリ（`_ticks`・`_work` を除く）を名前順に返す。"""
+        ...
+
+    def list_plans(self) -> tuple[str, ...]:
+        """作業ディレクトリの置き場 `_work/` の直下の計画の識別子（名前順。読み取り専用）。
+
+        名前が 16進 64 文字の、リンクでないディレクトリだけを返す。それ以外のものは
+        `list_unexpected` が返す（報告の網羅性の確認。D03 v1.17 §14.15 の R4）。
+        """
+        ...
+
+    def list_unexpected(self) -> tuple[str, ...]:
+        """置き場の直下と `_work/` の直下にある想定外のものを、置き場からの相対パスで返す。
+
+        想定するのは、置き場の直下の補充分（16進 64 文字の名前）・`_ticks`・`_work`
+        （リンクでないディレクトリ）と、`_work/` の直下の計画（16進 64 文字の名前の、リンクで
+        ないディレクトリ）。それ以外の名前・ファイル・シンボリックリンクを返す（D03 v1.17
+        §14.15 の R4。読み取り専用）。補充分の名前のディレクトリでないものは `list_refills` が
+        書きかけとして返すので、ここには含めない。
+        """
         ...
 
     def work_dir_exists(self, plan_id: str) -> bool:
@@ -247,4 +281,43 @@ class RefillStore(Protocol):
 
     def write_archive(self, hour: HourKey, body: bytes, provenance: ArchiveProvenance) -> str:
         """保管場所に 1 件を置き、置き場からの相対パスを返す（W2。既にあれば食い違い）。"""
+        ...
+
+    # --- 補充分（D03 §14.11・§14.11.1。書き出し `finalize` と受入れ `accept --refill`）---
+
+    def create_refill_dir(self, refill_id: str) -> None:
+        """補充分のディレクトリ `<refill_id>/` を排他的に作る（W2）。
+
+        既にあれば（空・書きかけ・リンクを含め）何も書かずに `RefillAlreadyExists`。
+        """
+        ...
+
+    def write_refill_file(self, refill_id: str, name: str, content: bytes) -> None:
+        """補充分のファイル 1 つを一時名に書いてから排他的に作成する（W2）。
+
+        既にあれば食い違い（`RefillStoreInconsistent`。上書きしない）。完成の印
+        `refill_manifest.json` は呼び出し側が最後に書く（W4）。
+        """
+        ...
+
+    def read_refill_manifest(self, refill_id: str) -> Mapping[str, Any] | None:
+        """補充分の `refill_manifest.json` を JSON として読む。無ければ `None`（書きかけ）。"""
+        ...
+
+    def read_refill_json(self, refill_id: str, name: str) -> tuple[str, Mapping[str, Any]]:
+        """補充分のファイル 1 つを JSON の object として読み、読んだバイト列の sha256 と返す。
+
+        sha256 と内容は同じ読込から求める（検算した後の差し替えを、実際に読んだ内容で照らす
+        ため。D03 §14.11.1 の W5）。無い・リンク・JSON の object として読めなければ食い違い
+        （`RefillStoreInconsistent`）。
+        """
+        ...
+
+    def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
+        """補充分のディレクトリにあるファイル（`refill_manifest.json` を除く）を返す。
+
+        名前順。各ファイルの sha256 と CSV の行の数を同じ読込から求める。通常のファイルでない
+        もの（ディレクトリ・リンク）や一時名（`.tmp-`）の残りがあれば食い違い
+        （`RefillStoreInconsistent`。D03 v1.17 §14.11.1 の W5・W6）。
+        """
         ...

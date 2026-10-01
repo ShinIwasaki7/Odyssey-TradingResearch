@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import csv
+import io
 import json
 import os
 import re
@@ -34,15 +36,17 @@ from typing import Any, Final
 
 from odyssey_fx.common import canonical
 from odyssey_fx.marketdata.adapters.dukascopy_source import decode_bi5
-from odyssey_fx.marketdata.application.ports import JournalLine, RefillDirectory
+from odyssey_fx.marketdata.application.ports import JournalLine, RefillDirectory, RefillFileStat
 from odyssey_fx.marketdata.domain.errors import (
     MarketDataValueError,
+    RefillAlreadyExists,
     RefillPlanAlreadyExists,
     RefillPlanLocked,
     RefillPlanNotFound,
     RefillStoreInconsistent,
 )
 from odyssey_fx.marketdata.domain.refill import (
+    ARCHIVE_DIRECTORY,
     WORK_DIRECTORY,
     ArchiveProvenance,
     ArchiveRead,
@@ -251,6 +255,46 @@ class FsRefillStore:
                 continue
             found.append(RefillDirectory(name=name, plan_id=plan_id, problem="", manifest=payload))
         return tuple(found)
+
+    def list_plans(self) -> tuple[str, ...]:
+        """`_work/` の直下の計画の識別子（16進 64 文字の名前の、リンクでないディレクトリ）。"""
+        work = self._work_root()
+        if work is None:
+            return ()
+        return tuple(
+            path.name
+            for path in sorted(work.iterdir(), key=lambda item: item.name)
+            if _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+        )
+
+    def list_unexpected(self) -> tuple[str, ...]:
+        """置き場の直下と `_work/` の直下の想定外のもの（置き場からの相対パス）。"""
+        self._require_plain_root()
+        if not self._root.exists():
+            return ()
+        found: list[str] = []
+        for path in sorted(self._root.iterdir(), key=lambda item: item.name):
+            if _HEX.fullmatch(path.name):
+                continue  # 補充分の名前（ディレクトリでなければ `list_refills` が返す）
+            plain = path.is_dir() and not path.is_symlink()
+            if path.name in (WORK_DIRECTORY, ARCHIVE_DIRECTORY) and plain:
+                continue
+            found.append(path.name)
+        work = self._work_root()
+        if work is not None:
+            for path in sorted(work.iterdir(), key=lambda item: item.name):
+                if _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink():
+                    continue
+                found.append(f"{WORK_DIRECTORY}/{path.name}")
+        return tuple(found)
+
+    def _work_root(self) -> Path | None:
+        """`_work/`（リンクでないディレクトリ）。無ければ、またはそうでなければ `None`。"""
+        self._require_plain_root()
+        work = self._root / WORK_DIRECTORY
+        if work.is_symlink() or not work.is_dir():
+            return None
+        return work
 
     # --- 作業ディレクトリ --------------------------------------------------------------
 
@@ -471,6 +515,122 @@ class FsRefillStore:
                 " (D03 §14.11.1 W2・W6)"
             )
         return f"{hour.archive_directory}/{provenance.source_digest}/{name}"
+
+    # --- 補充分（D03 §14.11・§14.11.1）--------------------------------------------------
+
+    def _refill_dir(self, refill_id: str) -> Path:
+        require_hex_digest(refill_id, "refill_id")
+        return self._inside(refill_id, create_parents=False)
+
+    def _refill_file(self, refill_id: str, name: str) -> Path:
+        if not name or "/" in name or name in (".", "..") or name.startswith(_TEMP_PREFIX):
+            raise MarketDataValueError(f"invalid refill file name: {name!r}")
+        directory = self._refill_dir(refill_id)
+        _refuse_link(directory)
+        if not directory.is_dir():
+            raise RefillStoreInconsistent(
+                f"{directory} is not a refill directory (D03 §14.11.1 W6)"
+            )
+        return directory / name
+
+    def create_refill_dir(self, refill_id: str) -> None:
+        """補充分のディレクトリを排他的に作る（W2）。既にあれば `RefillAlreadyExists`。"""
+        require_hex_digest(refill_id, "refill_id")
+        self._require_plain_root()
+        self._root.mkdir(parents=True, exist_ok=True)
+        directory = self._refill_dir(refill_id)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            raise RefillAlreadyExists(
+                f"{directory} already exists (complete, incomplete, empty or a link);"
+                " nothing was written (D03 §14.11.1 W2, §14.12)"
+            ) from None
+        _fsync_directory(self._root)
+
+    def write_refill_file(self, refill_id: str, name: str, content: bytes) -> None:
+        """補充分のファイルを置く（W2）。既にあれば食い違い（上書きしない）。"""
+        target = self._refill_file(refill_id, name)
+        if not self._place(target, content):
+            raise RefillStoreInconsistent(
+                f"{target} already exists; a refill is never overwritten (D03 §14.11.1 W2・W6)"
+            )
+
+    def read_refill_manifest(self, refill_id: str) -> Mapping[str, Any] | None:
+        """`refill_manifest.json` を読む。無ければ `None`。"""
+        target = self._refill_file(refill_id, _REFILL_MANIFEST)
+        _refuse_link(target)
+        if not target.exists():
+            return None
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RefillStoreInconsistent(
+                f"{target} cannot be read ({exc}) (D03 §14.11.1 W5・W6)"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RefillStoreInconsistent(f"{target} is not a JSON object (D03 §14.11.1 W5・W6)")
+        return payload
+
+    def read_refill_json(self, refill_id: str, name: str) -> tuple[str, Mapping[str, Any]]:
+        """補充分のファイル 1 つを JSON の object として読み、読んだバイト列の sha256 と返す。"""
+        target = self._refill_file(refill_id, name)
+        _refuse_link(target)
+        try:
+            content = target.read_bytes()
+            payload = json.loads(content.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RefillStoreInconsistent(
+                f"{target} cannot be read ({exc}) (D03 §14.11.1 W5・W6)"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RefillStoreInconsistent(f"{target} is not a JSON object (D03 §14.11.1 W5・W6)")
+        return sha256_hex(content), payload
+
+    def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
+        """補充分のファイル（manifest を除く）の sha256 と CSV の行の数を名前順に返す。
+
+        一時名（`.tmp-` で始まる名前。W2 の途中で止まった残り）は数えずに飛ばさない。完成した
+        補充分に残っていれば食い違い（`RefillStoreInconsistent`。D03 v1.17 §14.11.1 の W5・W6）。
+        行の数は内容を CSV として読んだ記録の数（空行を除く。csv モジュール）。CSV として
+        読めなければ `None`。
+        """
+        directory = self._refill_dir(refill_id)
+        _refuse_link(directory)
+        if not directory.is_dir():
+            raise RefillStoreInconsistent(
+                f"{directory} is not a refill directory (D03 §14.11.1 W6)"
+            )
+        stats: list[RefillFileStat] = []
+        for path in sorted(directory.iterdir(), key=lambda item: item.name):
+            if path.name == _REFILL_MANIFEST:
+                continue
+            if path.name.startswith(_TEMP_PREFIX):
+                raise RefillStoreInconsistent(
+                    f"{path} is a leftover temporary file in a refill directory; a refill holds"
+                    " only the files its manifest records. Nothing was used; delete it after"
+                    " checking (D03 §14.11.1 W2・W5・W6)"
+                )
+            if path.is_symlink() or not path.is_file():
+                raise RefillStoreInconsistent(
+                    f"{path} is not a plain file in the refill directory (D03 §14.11.1 W5・W6)"
+                )
+            content = path.read_bytes()
+            stats.append(
+                RefillFileStat(
+                    name=path.name, sha256=sha256_hex(content), csv_rows=_csv_rows(content)
+                )
+            )
+        return tuple(stats)
+
+
+def _csv_rows(content: bytes) -> int | None:
+    """内容を CSV として読んだ記録の数（空行を除く）。読めなければ `None`。"""
+    try:
+        reader = csv.reader(io.StringIO(content.decode("utf-8"), newline=""))
+        return sum(1 for row in reader if row)
+    except (UnicodeDecodeError, csv.Error):
+        return None
 
 
 def _refuse_link(path: Path) -> None:

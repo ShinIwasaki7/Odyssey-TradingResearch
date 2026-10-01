@@ -4,6 +4,8 @@
   `ProviderRef`（設定の中身と、設定ファイルの正規化内容のダイジェスト）を返す。
 - `load_calendar_ref`: 計画が使うカレンダーの設定ファイルを読み、`TradingCalendar` と
   `CalendarRef`（識別と版と正規化内容のダイジェストと正規化内容）を返す。
+- `calendar_from_ref`: 計画に記録したカレンダーの正規化内容から `TradingCalendar` を組み立て
+  直す（書き出し `finalize` が計画だけから同じカレンダーを使うため。D03 §14.10）。
 
 **設定ファイルの正規化内容のダイジェスト**は、YAML を読んだ mapping（コメント・書式は
 含まない）の正規化エンコード（D02 §9.3）の sha256 である。同じ版のまま中身を変えれば別の
@@ -19,7 +21,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from odyssey_fx.app.config.calendars import load_calendar
+from odyssey_fx.app.config.calendars import calendar_from_mapping, load_calendar
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.app.config.models import StrictModel, require_schema_version, validate
 from odyssey_fx.common.errors import KernelValueError
@@ -36,7 +38,7 @@ from odyssey_fx.marketdata.domain.refill import (
     content_digest_of,
 )
 
-__all__ = ["load_calendar_ref", "load_refill_provider"]
+__all__ = ["calendar_from_ref", "load_calendar_ref", "load_refill_provider"]
 
 #: この実装が読む提供元の設定の形式版。未知の版は拒否する（D01 §10.1）。
 PROVIDER_SCHEMA_VERSION = 1
@@ -132,3 +134,20 @@ def load_calendar_ref(path: Path) -> tuple[TradingCalendar, CalendarRef]:
     except (MarketDataValueError, KernelValueError) as exc:
         raise ConfigError(f"{path}: カレンダーの記録を作れない: {exc}") from exc
     return calendar, reference
+
+
+def calendar_from_ref(reference: CalendarRef) -> TradingCalendar:
+    """計画に記録したカレンダーの正規化内容からカレンダーを組み立て直す（D03 §14.10）。
+
+    読み込んだときと同じ検証（`load_calendar` の本体）を通す。組み立てたカレンダーの識別と
+    版が記録と違えば設定の誤りとして止める。
+    """
+    label = Path(f"<plan calendar {reference.id} v{reference.version}>")
+    content = dict(reference.payload()["content"])
+    calendar = calendar_from_mapping(content, label)
+    if (calendar.id, calendar.version) != (reference.id, reference.version):
+        raise ConfigError(
+            f"{label}: the recorded calendar content describes {calendar.id}"
+            f" v{calendar.version}, not {reference.id} v{reference.version}"
+        )
+    return calendar

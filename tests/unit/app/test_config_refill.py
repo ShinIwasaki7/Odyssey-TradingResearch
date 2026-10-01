@@ -14,9 +14,10 @@ from pathlib import Path
 import pytest
 
 from odyssey_fx.app.config import ConfigError
-from odyssey_fx.app.config.refill import load_calendar_ref, load_refill_provider
+from odyssey_fx.app.config.refill import calendar_from_ref, load_calendar_ref, load_refill_provider
 from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.symbol import Symbol
+from odyssey_fx.marketdata.domain.refill import CalendarRef, content_digest_of
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PROVIDER = REPO_ROOT / "configs/datasources/dukascopy_tick_v1.yaml"
@@ -79,3 +80,22 @@ def test_the_calendar_reference_carries_its_content() -> None:
     calendar, reference = load_calendar_ref(CALENDAR)
     assert (reference.id, reference.version) == (calendar.id, calendar.version) == ("fx_ny17", 2)
     assert reference.content["version"] == 2
+
+
+# --- 計画に記録したカレンダー（D03 §14.10）-----------------------------------------------
+
+
+def test_the_recorded_calendar_rebuilds_the_same_calendar() -> None:
+    calendar, reference = load_calendar_ref(REPO_ROOT / "configs/calendars/fx_ny17_v2.yaml")
+    rebuilt = calendar_from_ref(reference)
+    assert (rebuilt.id, rebuilt.version) == (calendar.id, calendar.version)
+    assert rebuilt == calendar
+
+
+def test_a_recorded_calendar_that_is_not_a_calendar_is_refused() -> None:
+    content = {"id": "fx_ny17", "version": 2, "note": "synthetic"}
+    reference = CalendarRef(
+        id="fx_ny17", version=2, content_digest=content_digest_of(content), content=content
+    )
+    with pytest.raises(ConfigError):
+        calendar_from_ref(reference)

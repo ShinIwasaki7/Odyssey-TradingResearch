@@ -78,6 +78,7 @@ __all__ = [
     "ValidationRecord",
     "journal_entry_from_payload",
     "require_hex_digest",
+    "series_from_record",
     "sha256_hex",
 ]
 
@@ -185,6 +186,32 @@ def _require_keys(payload: Mapping[str, Any], expected: frozenset[str], label: s
         raise MarketDataValueError(
             f"{label} keys {sorted(actual)} do not match the declared keys {sorted(expected)}"
         )
+
+
+def series_from_record(text: object, timeframe_version: object, label: str) -> SeriesId:
+    """記録の系列の文字列（`USDJPY/1h/bid`）と時間足の版から系列を作る。
+
+    系列の文字列は時間足の版を持たないので、版は別の項目（`timeframe_version`）で受ける。
+    正規の形（`str(series)` と同じ文字列）でなければ拒否する。
+    """
+    value = _require_str(text, f"{label}.series")
+    parts = value.split("/")
+    if len(parts) != 3:
+        raise MarketDataValueError(f"{label}.series must look like USDJPY/1h/bid, got {value!r}")
+    try:
+        series = SeriesId(
+            symbol=Symbol(parts[0]),
+            timeframe=TimeframeRef(
+                id=parts[1],
+                version=_require_int(timeframe_version, f"{label}.timeframe_version", minimum=1),
+            ),
+            basis=PriceBasis(parts[2]),
+        )
+    except (KernelValueError, ValueError) as exc:
+        raise MarketDataValueError(f"{label}: {exc}") from exc
+    if str(series) != value:
+        raise MarketDataValueError(f"{label}.series is not in the canonical form: {value!r}")
+    return series
 
 
 # --- 時間ファイル（D03 §14.5）--------------------------------------------------------
@@ -872,29 +899,14 @@ class TargetBar:
         """記録から読む。"""
         mapping = _mapping(payload, label)
         _require_keys(mapping, frozenset({"end", "series", "start", "timeframe_version"}), label)
-        text = _require_str(mapping["series"], f"{label}.series")
-        parts = text.split("/")
-        if len(parts) != 3:
-            raise MarketDataValueError(f"{label}.series must look like USDJPY/1h/bid, got {text!r}")
+        series = series_from_record(mapping["series"], mapping["timeframe_version"], label)
         try:
-            series = SeriesId(
-                symbol=Symbol(parts[0]),
-                timeframe=TimeframeRef(
-                    id=parts[1],
-                    version=_require_int(
-                        mapping["timeframe_version"], f"{label}.timeframe_version", minimum=1
-                    ),
-                ),
-                basis=PriceBasis(parts[2]),
-            )
             interval = Interval(
                 start=_parse_time(mapping["start"], f"{label}.start"),
                 end=_parse_time(mapping["end"], f"{label}.end"),
             )
-        except (KernelValueError, ValueError) as exc:
+        except KernelValueError as exc:
             raise MarketDataValueError(f"{label}: {exc}") from exc
-        if str(series) != text:
-            raise MarketDataValueError(f"{label}.series is not in the canonical form: {text!r}")
         return cls(series=series, interval=interval)
 
 
@@ -1474,11 +1486,18 @@ class ValidationRecord:
 
     取得（`fetch`）は書かない。状態の判定（不合格。D03 §14.12）のために読む。`reasons` は
     不合格の理由（合格なら空）。
+
+    `details` は不合格の行に残す構造的な記録（D03 §14.7）: 照合で合わなかった足と差
+    （`mismatches`）、未照合の塊ごとの `(系列, 塊の開始時刻, 対象足の数)`（`unreconciled`）、
+    作らなかった対象足と理由（`not_built`）。補充分のディレクトリが作られない不合格では、報告
+    （D03 §14.15）がこの行から未照合と作らなかった足を読む。値は JSON の形（文字列・整数・
+    真偽値・null・列・mapping）だけで、読み取り専用に固める。
     """
 
     passed: bool
     reasons: tuple[str, ...]
     at: UtcTime
+    details: Mapping[str, Any] = MappingProxyType({})
 
     KIND: ClassVar[str] = "validation"
 
@@ -1493,11 +1512,17 @@ class ValidationRecord:
                 "ValidationRecord carries reasons exactly when the validation failed"
             )
         _require_time(self.at, "ValidationRecord.at")
+        object.__setattr__(
+            self,
+            "details",
+            _freeze(_mapping(self.details, "ValidationRecord.details"), "ValidationRecord.details"),
+        )
 
     def payload(self) -> Mapping[str, Any]:
         """記録に書く形。"""
         return {
             "at": str(self.at),
+            "details": _thaw(self.details),
             "kind": self.KIND,
             "passed": self.passed,
             "reasons": list(self.reasons),
@@ -1708,7 +1733,7 @@ def journal_entry_from_payload(payload: object) -> JournalEntry:
         _require_keys(mapping, frozenset({"at", "kind"}), label)
         return PauseEnd(at=_parse_time(mapping["at"], f"{label}.at"))
     if kind == ValidationRecord.KIND:
-        _require_keys(mapping, frozenset({"at", "kind", "passed", "reasons"}), label)
+        _require_keys(mapping, frozenset({"at", "details", "kind", "passed", "reasons"}), label)
         return ValidationRecord(
             passed=_require_bool(mapping["passed"], f"{label}.passed"),
             reasons=tuple(
@@ -1716,5 +1741,6 @@ def journal_entry_from_payload(payload: object) -> JournalEntry:
                 for reason in _sequence(mapping["reasons"], f"{label}.reasons")
             ),
             at=_parse_time(mapping["at"], f"{label}.at"),
+            details=_mapping(mapping["details"], f"{label}.details"),
         )
     raise MarketDataValueError(f"unknown journal entry kind {kind!r}")

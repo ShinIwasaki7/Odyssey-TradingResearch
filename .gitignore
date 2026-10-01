@@ -10,7 +10,19 @@
 # 再包含規則の順序に注意: 親ディレクトリ自体を除外すると中身を再包含できないため、
 # `data/snapshots/*/*` の形で「中身」を除外してからファイルを許可する。暫定 snapshot
 # （data/snapshots/_pending/<id>/）は1段深いので、`_pending/<id>` ごと除外されたまま。
-data/raw/
+# 補充分（D03 §14.11、ADR-0013 2026-10-01 改訂）: data/raw/market/refill/<refill_id>/ の
+# refill_manifest.json（補充の manifest）と validation.json（検証記録）だけを追跡する。補充した
+# 足のファイル・tick の保管場所 _ticks/・作業ディレクトリ _work/ は追跡しない。親を除外すると
+# 中身を再包含できないので、data/raw/ の下は「中身」を 1 段ずつ除外してから戻す。
+data/raw/*
+!data/raw/market/
+data/raw/market/*
+!data/raw/market/refill/
+data/raw/market/refill/*
+!data/raw/market/refill/*/
+data/raw/market/refill/*/*
+!data/raw/market/refill/*/refill_manifest.json
+!data/raw/market/refill/*/validation.json
 data/snapshots/*/*
 !data/snapshots/*/manifest.json
 !data/snapshots/*/integrity_report.json

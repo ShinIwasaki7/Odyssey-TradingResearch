@@ -25,9 +25,11 @@ from odyssey_fx.evaluation.domain.metrics import (
 )
 from odyssey_fx.evaluation.domain.status import CheckOutcome, ConsistencyCheckResult
 from odyssey_fx.marketdata.application.refill_fetch import FetchReport
+from odyssey_fx.marketdata.application.refill_finalize import FinalizeReport
 from odyssey_fx.marketdata.domain.classification import CLASSIFIABLE_KINDS
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.refill import RefillPlan
+from odyssey_fx.marketdata.domain.refill_manifest import RefillManifest
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 
 __all__ = [
@@ -38,7 +40,9 @@ __all__ = [
     "merged_warning_spans",
     "metric_lines",
     "partition_lines",
+    "accepted_refill_lines",
     "refill_fetch_lines",
+    "refill_finalize_lines",
     "refill_plan_lines",
     "resolved_lines",
     "series_lines",
@@ -375,4 +379,58 @@ def refill_fetch_lines(report: FetchReport) -> list[str]:
             lines.append(f"  失敗 {failure.value}: {journal.failures[failure]}")
         for status in sorted(journal.statuses):
             lines.append(f"  失敗した応答の HTTP の状態 {status}: {journal.statuses[status]}")
+    return lines
+
+
+def refill_finalize_lines(report: FinalizeReport) -> list[str]:
+    """書き出し 1 回の要約（D03 §14.7・§14.8）。件数だけで、価格と価格の差は出さない。
+
+    前後の足との差の実測値と「要確認」の印は `validation.json` に残す（画面には印の付いた塊の
+    数だけを出す）。
+    """
+    validation = report.validation
+    lines = [
+        f"取得計画: {report.plan_id}",
+        f"状態（書き出しの前）: {report.state_before.value}",
+        f"検証: {'合格' if report.passed else '不合格'}",
+        f"  照合した足: {validation.reconciled_count} 本（一致 {validation.matched_count} 本）",
+        f"  補充した足: {len(validation.built_bars)} 本（出来高は「出来高不明」として 0 を書く）",
+        f"  作らなかった対象足: {len(validation.not_built)} 本",
+    ]
+    reasons: dict[str, int] = {}
+    for item in validation.not_built:
+        reasons[item.reason.value] = reasons.get(item.reason.value, 0) + 1
+    lines.extend(f"    {reason}: {count} 本" for reason, count in sorted(reasons.items()))
+    lines.append(
+        f"  未照合の塊（補充分に書かず、人間の判断を待つ）: {len(validation.unreconciled)}"
+    )
+    review = sum(1 for item in validation.neighbors if item.needs_review)
+    lines.append(f"  前後の足との差で「要確認」の印が付いた比較: {review}（合否に使わない）")
+    lines.append(
+        f"  bid が ask より大きい tick: {validation.bid_above_ask_count} 件（合否に使わない）"
+    )
+    if report.passed and report.manifest is not None:
+        manifest = report.manifest
+        lines.append(f"補充の識別子（refill_id）: {report.refill_id}")
+        for record in manifest.bar_files:
+            lines.append(f"  {record.name}: {record.rows} 本")
+        lines.append(
+            "refill_manifest.json と validation.json は版管理で残す（ADR-0013）。"
+            "補充した足のファイルは版管理に入れない"
+        )
+    else:
+        lines.append("補充分は書き出していない。検証の結果を取得記録（journal.jsonl）に追記した:")
+        lines.extend(f"  - {reason}" for reason in validation.failures)
+    return lines
+
+
+def accepted_refill_lines(refills: Sequence[RefillManifest]) -> list[str]:
+    """受入れに合わせる補充分の要約（D03 §14.11）。件数だけで価格は出さない。"""
+    lines = [f"合わせる補充分: {len(refills)} 個（検算済み）"]
+    for manifest in refills:
+        bars = sum(item.rows or 0 for item in manifest.bar_files)
+        lines.append(
+            f"  {manifest.refill_id}（計画 {manifest.plan_id[:12]}…、入力 snapshot"
+            f" {manifest.snapshot_id[:12]}…、補充した足 {bars} 本）"
+        )
     return lines

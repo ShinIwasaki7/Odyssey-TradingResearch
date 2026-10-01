@@ -13,7 +13,9 @@
 - 原データ（``data/raw/market/<SYMBOL>_<tf>_merged.csv``。git 管理外）があれば、各欠落区間に
   足の開始時刻が入る行の数を数える（0 なら原データにその足が無い）。数える前に、各ファイルの
   sha256 と行数が manifest の ``sources``（受入れ時の原データの記録。D03 §3.7）と一致することを
-  確かめ、1 つでも欠けるか一致しなければ何も書かずに失敗する。
+  確かめ、1 つでも欠けるか一致しなければ何も書かずに失敗する。補充分を含む snapshot（D03
+  §14.11）では、同じ系列の補充した足のファイル（``data/raw/market/refill/<refill_id>/…``）の行も
+  同じ検査の後に数える。
 
 戦略の成績（指標・レポート）は読まない。標準ライブラリだけを使う。
 """
@@ -284,37 +286,62 @@ class RawSourceMismatch(RuntimeError):
     """原 CSV が snapshot の受入れ時の記録（manifest の ``sources``）と一致しない。"""
 
 
-def source_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
-    """manifest の ``sources`` を (銘柄, 時間足) で引けるようにする。"""
-    return {(src["symbol"], src["timeframe"]): src for src in manifest["sources"]}
+#: manifest の ``sources`` の ``path`` が原データの基点からの相対になる接頭辞（D03 §3.7）。
+RAW_ROOT_PREFIX = "data/raw/market/"
+
+
+def source_records(manifest: dict[str, Any]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """manifest の ``sources`` を (銘柄, 時間足) で引けるようにする。
+
+    補充分を含む snapshot では同じ系列に原ファイルと補充した足のファイルが並ぶ（D03 §14.11）。
+    """
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for src in manifest["sources"]:
+        grouped[(src["symbol"], src["timeframe"])].append(src)
+    return dict(grouped)
+
+
+def _source_path(raw_dir: Path, symbol: str, timeframe: str, record: dict[str, Any]) -> Path:
+    path = record.get("path")
+    if isinstance(path, str) and path.startswith(RAW_ROOT_PREFIX):
+        return raw_dir / path[len(RAW_ROOT_PREFIX) :]
+    return raw_dir / f"{symbol}_{RAW_FILE_SUFFIX[timeframe]}_merged.csv"
 
 
 def load_raw_timestamps(
-    raw_dir: Path, symbol: str, timeframe: str, expected: dict[str, Any] | None
+    raw_dir: Path,
+    symbol: str,
+    timeframe: str,
+    expected: dict[str, Any] | list[dict[str, Any]] | None,
 ) -> list[str]:
     """原 CSV の先頭列（足の開始時刻、``YYYY-MM-DD HH:MM:SS+00:00``）を昇順で返す。
 
     ファイルの sha256 と行数（見出しを除く）が manifest の記録と一致しなければ
-    ``RawSourceMismatch`` を送出する。
+    ``RawSourceMismatch`` を送出する。同じ系列の記録が複数（原ファイルと補充した足のファイル）
+    あれば、すべてを検査して合わせる。
     """
-    path = raw_dir / f"{symbol}_{RAW_FILE_SUFFIX[timeframe]}_merged.csv"
-    if expected is None:
+    if not expected:
         raise RawSourceMismatch(f"manifest の sources に記録が無い: {symbol} {timeframe}")
-    if not path.is_file():
-        raise RawSourceMismatch(f"原 CSV が無い: {path}")
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != expected["sha256"]:
-        raise RawSourceMismatch(
-            f"sha256 が manifest と一致しない: {path}（{digest} != {expected['sha256']}）"
-        )
-    reader = csv.reader(data.decode("utf-8").splitlines())
-    next(reader, None)
-    stamps = [row[0] for row in reader if row]
-    if len(stamps) != expected["rows"]:
-        raise RawSourceMismatch(
-            f"行数が manifest と一致しない: {path}（{len(stamps)} != {expected['rows']}）"
-        )
+    records = expected if isinstance(expected, list) else [expected]
+    stamps: list[str] = []
+    for record in records:
+        path = _source_path(raw_dir, symbol, timeframe, record)
+        if not path.is_file():
+            raise RawSourceMismatch(f"原 CSV が無い: {path}")
+        data = path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != record["sha256"]:
+            raise RawSourceMismatch(
+                f"sha256 が manifest と一致しない: {path}（{digest} != {record['sha256']}）"
+            )
+        reader = csv.reader(data.decode("utf-8").splitlines())
+        next(reader, None)
+        rows = [row[0] for row in reader if row]
+        if len(rows) != record["rows"]:
+            raise RawSourceMismatch(
+                f"行数が manifest と一致しない: {path}（{len(rows)} != {record['rows']}）"
+            )
+        stamps.extend(rows)
     stamps.sort()
     return stamps
 
@@ -344,7 +371,7 @@ def build_interval_rows(
     merged: dict[tuple[str, str], list[Interval]],
     overlap_rows: list[dict[str, Any]],
     raw_dir: Path | None,
-    sources: dict[tuple[str, str], dict[str, Any]],
+    sources: dict[tuple[str, str], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     all10: dict[str, list[Interval]] = defaultdict(list)
     for r in overlap_rows:

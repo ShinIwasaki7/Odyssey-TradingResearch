@@ -8,8 +8,10 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 - `odyssey-fx data classify`: 人間の分類を記入し、最終の識別子を計算して
   `data/snapshots/<最終 ID>/` へ確定する。
 - `odyssey-fx data approve`: 確定済み snapshot に承認と価格基準の宣言記録を記入する。
-- `odyssey-fx data refill plan` / `fetch`（D03 §14）: 承認済み snapshot でデータ欠損と分類した
-  足を提供元から取り直すための取得計画を作り、時間ファイルを取得する（書き出しは後続の実装）。
+- `odyssey-fx data refill plan` / `fetch` / `finalize`（D03 §14）: 承認済み snapshot でデータ
+  欠損と分類した足を提供元から取り直すための取得計画を作り、時間ファイルを取得し、検証して
+  補充分 `data/raw/market/refill/<refill_id>/` を書き出す。`data accept --refill <dir>` は原データ
+  と補充分を合わせて暫定 snapshot を作る。
 - `odyssey-fx run`: 実験設定から1回の run を実行し、`runs/<run_id>/` に判断履歴19表・
   run manifest・結果を書く。実験設定は書式 v1 と v2 の両方を受け、`schema_version` で
   分岐する（D07 §18.5、Q12 決定）。
@@ -155,6 +157,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("."),
         help="原データの基点を解決するリポジトリの位置（既定は現在のディレクトリ）",
+    )
+    accept.add_argument(
+        "--refill",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "原データと合わせる補充分のディレクトリ（data/raw/market/refill/<refill_id>。"
+            "0 回以上。D03 §14.11）。指定しなければ従来の受入れ"
+        ),
     )
 
     classify = data.add_parser(
@@ -334,8 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_refill_parsers(data: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """元データの再取得（補充）のコマンド（D03 §10 の v1.15、§14.12）。
 
-    `plan`（計画を作る）と `fetch`（取得する・再開する。`--retry-failed` で取得できなかった
-    時間を取り直す）。書き出し（`finalize`）は後続の実装。
+    `plan`（計画を作る）、`fetch`（取得する・再開する。`--retry-failed` で取得できなかった
+    時間を取り直す）、`finalize`（検証して補充分を書き出す）。
     """
     refill = data.add_parser(
         "refill", help="欠落と分類した足を提供元から取り直して補う（D03 §14）"
@@ -411,6 +423,40 @@ def _add_refill_parsers(data: argparse._SubParsersAction[argparse.ArgumentParser
         help="リポジトリの位置（既定は現在のディレクトリ。補充の置き場の検査に使う）",
     )
 
+    finalize_command = refill.add_parser(
+        "finalize",
+        help="取得を終えた計画を検証し、合格なら補充分を書き出す（D03 §14.7）",
+    )
+    finalize_command.set_defaults(command="refill_finalize")
+    finalize_command.add_argument("--plan", required=True, help="取得計画の識別子（plan_id）")
+    finalize_command.add_argument(
+        "--out", type=Path, required=True, help="補充の置き場（data/raw/market/refill/）"
+    )
+    finalize_command.add_argument(
+        "--snapshots",
+        type=Path,
+        default=Path("data/snapshots"),
+        help="snapshot の基点（既定は data/snapshots。計画の入力 snapshot を読む）",
+    )
+    finalize_command.add_argument(
+        "--datasource",
+        type=Path,
+        default=Path("configs/datasources/legacy_merged_csv_v1.yaml"),
+        help="原データの列対応の宣言（既定は configs/datasources/legacy_merged_csv_v1.yaml）",
+    )
+    finalize_command.add_argument(
+        "--timeframes",
+        type=Path,
+        default=Path("configs/calendars/timeframes_v1.yaml"),
+        help="時間足定義（既定は configs/calendars/timeframes_v1.yaml）",
+    )
+    finalize_command.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="原データのパスを解決するリポジトリの位置（既定は現在のディレクトリ）",
+    )
+
 
 # --- accept -----------------------------------------------------------------
 
@@ -473,8 +519,16 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
     ]
     out.line(f"受入れ対象: {len(targets)} ファイル（{len(symbol_specs)} 銘柄）")
 
+    # 補充分は読む前にすべて検算する（置き場所・識別子・ファイル・同じ計画の重複・重ねた補充分
+    # の渡し漏れ。D03 §14.11・§14.11.1 の W5）。どれかが合わなければ何も書かずに失敗する。
+    refills = composition.load_refills_for_acceptance(
+        refill_dirs=args.refill, repo_root=args.repo_root, snapshots_root=args.out
+    )
+    if refills:
+        out.lines(summary.accepted_refill_lines(refills))
+
     created_at = composition.now_utc()
-    pending = service.accept(targets, created_at=created_at)
+    pending = service.accept(targets, created_at=created_at, refills=refills)
     provisional = str(pending.provisional_id)
     directory = f"{PENDING_DIRECTORY}/{provisional}"
 
@@ -785,6 +839,31 @@ def _run_refill_fetch(args: argparse.Namespace, out: _Writer) -> int:
     )
     out.lines(summary.refill_fetch_lines(report))
     return _EXIT_OK
+
+
+def _run_refill_finalize(args: argparse.Namespace, out: _Writer) -> int:
+    """検証して補充分を書き出す（D03 §14.7・§14.11・§14.12 の出来事10・11）。
+
+    不合格なら何も書き出さず、検証の結果を取得記録に追記して終了コード 1 で終える。
+    """
+    report = composition.finalize_refill_plan(
+        plan_id=args.plan,
+        refill_root=_refill_root(args),
+        snapshots_root=args.snapshots,
+        repo_root=args.repo_root,
+        datasource=load_datasource(args.datasource),
+        timeframe_defs=load_timeframes(args.timeframes),
+    )
+    out.lines(summary.refill_finalize_lines(report))
+    if report.passed:
+        out.line("")
+        out.line(
+            "受入れは `odyssey-fx data accept ... --datasource"
+            " configs/datasources/legacy_merged_csv_v2.yaml --refill"
+            f" {args.out / str(report.refill_id)}` で行う（原データと補充分を合わせる）"
+        )
+        return _EXIT_OK
+    return _EXIT_FAILED
 
 
 def _with_declaration_record(
@@ -1194,6 +1273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "approve": _run_approve,
         "refill_plan": _run_refill_plan,
         "refill_fetch": _run_refill_fetch,
+        "refill_finalize": _run_refill_finalize,
         "run": _run_run,
         "evaluate": _run_evaluate,
         "experiment_run": _run_experiment_run,
