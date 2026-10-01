@@ -769,7 +769,8 @@ def _run_refill_plan(args: argparse.Namespace, out: _Writer) -> int:
     out.line("")
     out.line(
         "取得は `odyssey-fx data refill fetch --plan "
-        f"{plan_id} --out {args.out}` で行う（中断しても同じコマンドで再開できる）"
+        f"{plan_id} --out {args.out} --repo-root {args.repo_root}` で行う"
+        "（中断しても同じコマンドで再開できる）"
     )
     return _EXIT_OK
 

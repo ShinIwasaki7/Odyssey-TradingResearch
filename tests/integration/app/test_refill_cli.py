@@ -178,6 +178,8 @@ def test_plan_then_fetch_through_the_commands(
     shown = capsys.readouterr().out
     assert f"取得計画の識別子（plan_id）: {plan_id}" in shown
     assert "対象足: 5 本" in shown
+    # 案内する fetch のコマンドは --repo-root 付きで、そのまま実行して通る。
+    assert f"--repo-root {repo}`" in shown
     assert "照合用の時間 1" in shown
     plan = json.loads(
         (repo / f"data/raw/market/refill/_work/{plan_id}/plan.json").read_text(encoding="utf-8")
