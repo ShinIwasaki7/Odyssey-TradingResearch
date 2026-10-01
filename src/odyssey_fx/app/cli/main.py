@@ -404,6 +404,12 @@ def _add_refill_parsers(data: argparse._SubParsersAction[argparse.ArgumentParser
     fetch.add_argument(
         "--out", type=Path, required=True, help="補充の置き場（data/raw/market/refill/）"
     )
+    fetch.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="リポジトリの位置（既定は現在のディレクトリ。補充の置き場の検査に使う）",
+    )
 
 
 # --- accept -----------------------------------------------------------------
@@ -720,8 +726,29 @@ def _refill_filter(args: argparse.Namespace) -> RefillFilter:
         raise ConfigError(f"絞り込みの指定が読めない: {exc}") from exc
 
 
+#: 補充の置き場（リポジトリからの相対。D03 §14.11）。
+_REFILL_ROOT = Path("data/raw/market/refill")
+
+
+def _refill_root(args: argparse.Namespace) -> Path:
+    """`--out` が所定の補充の置き場 `<repo-root>/data/raw/market/refill` であることを確かめる。
+
+    snapshot の下や任意の場所に補充のファイルを書かない（D03 §14.2 の原則2・§14.11）。
+    リンクを解いた絶対パスで比べ、違えば何も書かずに設定の誤りとして止める。
+    """
+    expected = (args.repo_root / _REFILL_ROOT).resolve()
+    given = args.out.resolve()
+    if given != expected:
+        raise ConfigError(
+            f"--out は補充の置き場 {expected} でなければならない（指定: {given}。"
+            "D03 §14.11）。何も書いていない"
+        )
+    return Path(args.out)
+
+
 def _run_refill_plan(args: argparse.Namespace, out: _Writer) -> int:
     """取得計画を作る（D03 §14.4・§14.10・§14.12 の出来事1）。"""
+    refill_root = _refill_root(args)
     datasource = load_datasource(args.datasource)
     timeframe_defs = load_timeframes(args.timeframes)
     calendar, calendar_ref = load_calendar_ref(args.calendar)
@@ -737,7 +764,7 @@ def _run_refill_plan(args: argparse.Namespace, out: _Writer) -> int:
         provider=provider,
         refill_filter=_refill_filter(args),
     )
-    plan_id = create_plan(plan, composition.refill_store(args.out))
+    plan_id = create_plan(plan, composition.refill_store(refill_root))
     out.lines(summary.refill_plan_lines(plan, plan_id))
     out.line("")
     out.line(
@@ -751,7 +778,7 @@ def _run_refill_fetch(args: argparse.Namespace, out: _Writer) -> int:
     """取得する・再開する（D03 §14.9・§14.12 の出来事2・9）。"""
     report = fetch_plan(
         args.plan,
-        store=composition.refill_store(args.out),
+        store=composition.refill_store(_refill_root(args)),
         source=composition.tick_archive_source(),
         retry_failed=args.retry_failed,
     )

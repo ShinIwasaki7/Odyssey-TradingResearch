@@ -187,7 +187,12 @@ def test_plan_then_fetch_through_the_commands(
     source = FakeTickSource({url_of(HOUR_00): [BI5_00H], url_of(HOUR_01): [BI5_01H]})
     monkeypatch.setattr(composition, "tick_archive_source", lambda: source)
     refill = str(repo / "data/raw/market/refill")
-    assert _run("data", "refill", "fetch", "--plan", plan_id, "--out", refill) == 0
+    assert (
+        _run(
+            "data", "refill", "fetch", "--plan", plan_id, "--out", refill, "--repo-root", str(repo)
+        )
+        == 0
+    )
     shown = capsys.readouterr().out
     assert "PLANNED → FETCH_DONE" in shown
     assert "最終結果 FETCHED: 2" in shown
@@ -197,7 +202,12 @@ def test_plan_then_fetch_through_the_commands(
     assert "全体の暦上の経過時間:" in shown
     assert "所要" not in shown
     # 再実行は取り直さない（偽の取得元は応答を使い切っている）。
-    assert _run("data", "refill", "fetch", "--plan", plan_id, "--out", refill) == 0
+    assert (
+        _run(
+            "data", "refill", "fetch", "--plan", plan_id, "--out", refill, "--repo-root", str(repo)
+        )
+        == 0
+    )
     assert "取得済みとして飛ばした時間ファイル: 2" in capsys.readouterr().out
 
 
@@ -242,5 +252,56 @@ def test_fetching_an_unknown_plan_fails_cleanly(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     refill = str(repo / "data/raw/market/refill")
-    assert _run("data", "refill", "fetch", "--plan", "a" * 64, "--out", refill) == 1
+    assert (
+        _run(
+            "data", "refill", "fetch", "--plan", "a" * 64, "--out", refill, "--repo-root", str(repo)
+        )
+        == 1
+    )
     assert "no refill plan" in capsys.readouterr().err
+
+
+def test_refill_files_are_written_only_under_the_refill_root(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--out` が所定の補充の置き場でなければ何も書かずに止める（D03 §14.2・§14.11）。"""
+    snapshot = _approved_snapshot(repo)
+    elsewhere = repo / "data/snapshots" / snapshot
+    before = sorted(str(path) for path in elsewhere.rglob("*"))
+    capsys.readouterr()
+    configs = repo / "configs"
+    code = _run(
+        "data",
+        "refill",
+        "plan",
+        "--snapshot",
+        snapshot,
+        "--calendar",
+        str(configs / "calendars/fx_ny17_v2.yaml"),
+        "--provider",
+        str(configs / "datasources/dukascopy_tick_v1.yaml"),
+        "--out",
+        str(elsewhere),
+        "--snapshots",
+        str(repo / "data/snapshots"),
+        "--repo-root",
+        str(repo),
+    )
+    assert code != 0
+    assert "補充の置き場" in capsys.readouterr().err
+    assert sorted(str(path) for path in elsewhere.rglob("*")) == before
+    assert (
+        _run(
+            "data",
+            "refill",
+            "fetch",
+            "--plan",
+            "a" * 64,
+            "--out",
+            str(elsewhere),
+            "--repo-root",
+            str(repo),
+        )
+        != 0
+    )
+    assert "補充の置き場" in capsys.readouterr().err
