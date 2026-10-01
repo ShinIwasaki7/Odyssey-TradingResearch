@@ -20,11 +20,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Final
 
 from odyssey_fx.common import canonical
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.money import decimal_from_str
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.refill import (
     REFILL_TIMEFRAME_IDS,
@@ -39,6 +41,10 @@ from odyssey_fx.marketdata.domain.refill import (
     series_from_record,
 )
 from odyssey_fx.marketdata.domain.refill_validation import (
+    HourlyConsistency,
+    NeighborCheck,
+    NeighborSide,
+    NeighborStatus,
     NotBuiltBar,
     NotBuiltReason,
     UnreconciledChunk,
@@ -54,6 +60,7 @@ __all__ = [
     "HourRecord",
     "RefillFileRecord",
     "RefillManifest",
+    "RefillValidationRecord",
     "SeriesCount",
     "bar_file_name",
     "not_built_from_payload",
@@ -759,4 +766,155 @@ class RefillManifest:
                 )
             ),
             created_at=_time(mapping["created_at"], f"{label}.created_at"),
+        )
+
+
+# --- 検証記録（D03 §14.7「記録するもの」・§14.11。報告 §14.15 の 2 が読む）------------------
+
+_VALIDATION_KEYS: Final = frozenset(
+    {
+        "bid_above_ask_tick_count",
+        "format",
+        "hourly_consistency",
+        "matched_count",
+        "neighbors",
+        "out_of_range_tick_count",
+        "passed",
+        "plan_id",
+        "reconciled_count",
+        "refill_id",
+        "unreconciled",
+    }
+)
+_NEIGHBOR_KEYS: Final = frozenset(
+    {
+        "chunk_end",
+        "chunk_start",
+        "crosses_closure",
+        "difference",
+        "difference_pips",
+        "needs_review",
+        "neighbor_start",
+        "series",
+        "side",
+        "status",
+        "target_count",
+        "timeframe_version",
+    }
+)
+
+
+def _optional_decimal(value: object, label: str) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return decimal_from_str(_str(value, label))
+    except KernelValueError as exc:
+        raise MarketDataValueError(f"{label}: {exc}") from exc
+
+
+def _neighbor_from_payload(payload: object, label: str) -> NeighborCheck:
+    mapping = _mapping(payload, label)
+    _keys(mapping, _NEIGHBOR_KEYS, label)
+    try:
+        chunk = Interval(
+            start=_time(mapping["chunk_start"], f"{label}.chunk_start"),
+            end=_time(mapping["chunk_end"], f"{label}.chunk_end"),
+        )
+        side = NeighborSide(mapping["side"])
+        status = NeighborStatus(mapping["status"])
+    except (KernelValueError, ValueError) as exc:
+        raise MarketDataValueError(f"{label}: {exc}") from exc
+    crosses = mapping["crosses_closure"]
+    return NeighborCheck(
+        series=series_from_record(mapping["series"], mapping["timeframe_version"], label),
+        chunk=chunk,
+        target_count=_int(mapping["target_count"], f"{label}.target_count", minimum=1),
+        side=side,
+        status=status,
+        neighbor_start=_optional_time(mapping["neighbor_start"], f"{label}.neighbor_start"),
+        crosses_closure=None if crosses is None else _bool(crosses, f"{label}.crosses_closure"),
+        difference=_optional_decimal(mapping["difference"], f"{label}.difference"),
+        difference_pips=_optional_decimal(mapping["difference_pips"], f"{label}.difference_pips"),
+        needs_review=_bool(mapping["needs_review"], f"{label}.needs_review"),
+    )
+
+
+def _hourly_from_payload(payload: object, label: str) -> HourlyConsistency:
+    mapping = _mapping(payload, label)
+    _keys(mapping, frozenset({"consistent", "hour"}), label)
+    return HourlyConsistency(
+        hour=HourKey.from_payload(mapping["hour"], f"{label}.hour"),
+        consistent=_bool(mapping["consistent"], f"{label}.consistent"),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RefillValidationRecord:
+    """合格した補充分の検証記録 `validation.json` を読んだもの（D03 §14.7・§14.11）。
+
+    書き手は `refill_finalize.validation_payload`。読むのは報告（D03 §14.15 の 2「検証 5 点の
+    結果の要約」）。形（鍵の集合・型・語彙）が書き手の形と違えば `MarketDataValueError`
+    （読み手は補充分の食い違い `RefillStoreInconsistent` にする。D03 §14.11.1 の W5・W6）。
+    """
+
+    refill_id: str
+    plan_id: str
+    reconciled_count: int
+    matched_count: int
+    out_of_range_tick_count: int
+    bid_above_ask_tick_count: int
+    neighbors: tuple[NeighborCheck, ...]
+    hourly_consistency: tuple[HourlyConsistency, ...]
+    unreconciled: tuple[UnreconciledChunk, ...]
+
+    def __post_init__(self) -> None:
+        require_hex_digest(self.refill_id, "RefillValidationRecord.refill_id")
+        require_hex_digest(self.plan_id, "RefillValidationRecord.plan_id")
+        _int(self.reconciled_count, "RefillValidationRecord.reconciled_count", minimum=0)
+        _int(self.matched_count, "RefillValidationRecord.matched_count", minimum=0)
+        if self.matched_count > self.reconciled_count:
+            raise MarketDataValueError("RefillValidationRecord: more matched than reconciled")
+        _int(self.out_of_range_tick_count, "RefillValidationRecord.out_of_range", minimum=0)
+        _int(self.bid_above_ask_tick_count, "RefillValidationRecord.bid_above_ask", minimum=0)
+
+    @classmethod
+    def from_payload(cls, payload: object) -> RefillValidationRecord:
+        """`validation.json` の内容から読む。形が違えば `MarketDataValueError`。"""
+        label = REFILL_VALIDATION_FILE
+        mapping = _mapping(payload, label)
+        _keys(mapping, _VALIDATION_KEYS, label)
+        if mapping["format"] != REFILL_VALIDATION_FORMAT:
+            raise MarketDataValueError(
+                f"{label}.format must be {REFILL_VALIDATION_FORMAT!r}, got {mapping['format']!r}"
+            )
+        if mapping["passed"] is not True:
+            raise MarketDataValueError(f"{label}.passed must be true (only a passed refill has it)")
+
+        def items(key: str) -> list[tuple[str, Any]]:
+            return [
+                (f"{label}.{key}[{index}]", item)
+                for index, item in enumerate(_sequence(mapping[key], f"{label}.{key}"))
+            ]
+
+        return cls(
+            refill_id=require_hex_digest(mapping["refill_id"], f"{label}.refill_id"),
+            plan_id=require_hex_digest(mapping["plan_id"], f"{label}.plan_id"),
+            reconciled_count=_int(
+                mapping["reconciled_count"], f"{label}.reconciled_count", minimum=0
+            ),
+            matched_count=_int(mapping["matched_count"], f"{label}.matched_count", minimum=0),
+            out_of_range_tick_count=_int(
+                mapping["out_of_range_tick_count"], f"{label}.out_of_range_tick_count", minimum=0
+            ),
+            bid_above_ask_tick_count=_int(
+                mapping["bid_above_ask_tick_count"], f"{label}.bid_above_ask_tick_count", minimum=0
+            ),
+            neighbors=tuple(_neighbor_from_payload(item, at) for at, item in items("neighbors")),
+            hourly_consistency=tuple(
+                _hourly_from_payload(item, at) for at, item in items("hourly_consistency")
+            ),
+            unreconciled=tuple(
+                unreconciled_from_payload(item, at) for at, item in items("unreconciled")
+            ),
         )

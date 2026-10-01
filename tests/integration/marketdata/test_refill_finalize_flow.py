@@ -39,6 +39,10 @@ from odyssey_fx.marketdata.application.refill_finalize import (
     require_refill_set,
     verify_refill_directory,
 )
+from odyssey_fx.marketdata.application.refill_inventory import (
+    load_verified_refill,
+    survey_refill_store,
+)
 from odyssey_fx.marketdata.application.refill_plan import build_plan, create_plan
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.marketdata.domain.bar import Bar
@@ -542,3 +546,45 @@ def test_layered_refills_must_be_given_together(tmp_path: Path) -> None:
     require_refill_set([manifest], {manifest.snapshot_id: sources[:1]})
     with pytest.raises(MarketDataValueError, match="were not given"):
         require_refill_set([manifest], {})
+
+
+# --- 読み取り専用の調査（報告が使う。D03 v1.17 §14.15 の R4）-------------------------------
+
+
+def test_a_written_refill_is_read_back_with_its_validation_record(tmp_path: Path) -> None:
+    store, plan_id, _ = _fetched(tmp_path)
+    report = _finalize(store, plan_id)
+    verified = load_verified_refill(store, str(report.refill_id))
+    assert verified.manifest == report.manifest
+    assert verified.validation.plan_id == plan_id
+    assert verified.validation.reconciled_count == report.validation.reconciled_count
+    assert verified.validation.neighbors == report.validation.neighbors
+
+
+def test_a_validation_record_whose_content_changed_is_refused(tmp_path: Path) -> None:
+    store, plan_id, _ = _fetched(tmp_path)
+    refill_id = str(_finalize(store, plan_id).refill_id)
+    path = tmp_path / "refill" / refill_id / "validation.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["matched_count"] = 0
+    path.write_text(json.dumps(payload))
+    with pytest.raises(RefillStoreInconsistent):
+        load_verified_refill(store, refill_id)
+
+
+def test_the_survey_collects_plans_and_refills_and_lists_what_it_cannot_read(
+    tmp_path: Path,
+) -> None:
+    store, plan_id, plan = _fetched(tmp_path)
+    refill_id = str(_finalize(store, plan_id).refill_id)
+    survey = survey_refill_store(store, {plan.snapshot_id})
+    assert survey.complete
+    assert [item.manifest.refill_id for item in survey.refills] == [refill_id]
+    assert [(item.plan_id, item.state) for item in survey.plans] == [(plan_id, PlanState.FINALIZED)]
+    assert survey_refill_store(store, {"0" * 64}).refills == ()
+    (tmp_path / "refill" / "notes.txt").write_text("x")
+    (tmp_path / "refill" / "_work" / "stray").mkdir()
+    unknown = survey_refill_store(store, {plan.snapshot_id})
+    assert not unknown.complete
+    assert any("notes.txt" in problem for problem in unknown.problems)
+    assert any("_work/stray" in problem for problem in unknown.problems)

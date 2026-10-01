@@ -20,35 +20,52 @@
   「対象だが計画・試行されていない」とせず「理由未確定」とする。
 - **件数の表示**: 理由ごとに件数の列を分け、複数の理由を含む区間を 1 つの理由として数えない。
 
+**入力の検算は本体の関数だけで行う**（2026-10-01 の人間の決定。報告の側で読み方を書き直さ
+ない）: snapshot の manifest は ``snapshot_store(...).read_manifest``（内容から識別子を計算し
+直す）、補充分・計画・取得記録は ``marketdata.application.refill_inventory``（書き出しと受入れが
+使う ``verify_refill_directory``・``require_plan_matches``・``read_journal``・
+``finalized_refills``・``derive_state`` を呼ぶ）。本スクリプトに残すのは、検算済みの型からの
+集計と表示だけ。
+
 読むもの（戦略の成績は読まない。D03 §14.2 の 7）: snapshot の ``manifest.json``、補充分の
 ``refill_manifest.json`` と ``validation.json``、作業ディレクトリの ``plan.json`` と
-``journal.jsonl``。使う前に記録から導ける識別子とダイジェストを計算し直す（D03 §14.11.1 の
-W3・W5。``plan_id``・``refill_id``・``validation.json`` の sha256・取得記録の行のダイジェスト）。
+``journal.jsonl``。
 
 出力（報告と CSV）は「存在すれば失敗」: 出力先にどちらかが既にあれば、どちらも書かずに止める。
 
 実行はリポジトリの根で ``uv run python -m tools.ops.refill_report …``（``tools`` パッケージとして
-import するため、ファイルのパスを直接渡す形では動かない）。識別子とダイジェストの計算には
-本体の正規化エンコード（``odyssey_fx.common.canonical``）を使う。
+import するため、ファイルのパスを直接渡す形では動かない）。
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
-import io
-import json
-import re
+import shlex
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from odyssey_fx.app.composition import snapshot_store
-from odyssey_fx.common import canonical
+from odyssey_fx.app.composition import refill_store, snapshot_manifest_payload, snapshot_store
+from odyssey_fx.common.time import UtcTime
+from odyssey_fx.marketdata.application.ports import RefillStore
+from odyssey_fx.marketdata.application.refill_fetch import PlanState
+from odyssey_fx.marketdata.application.refill_finalize import refill_ids_in_sources
+from odyssey_fx.marketdata.application.refill_inventory import (
+    RefillInventory,
+    Rejection,
+    VerifiedRefill,
+    load_verified_refill,
+    survey_refill_store,
+)
+from odyssey_fx.marketdata.domain.errors import MarketDataError
+from odyssey_fx.marketdata.domain.refill import RefillPlan
+from odyssey_fx.marketdata.domain.refill_validation import NotBuiltBar, NotBuiltReason
+from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
 from tools.ops import research_history_gaps as rhg
 
 # --- 語彙 ----------------------------------------------------------------------------
@@ -94,16 +111,13 @@ RESULT_TO_STATE: dict[str, str] = {
     IN_PROGRESS: UNDETERMINED,
 }
 
-#: 補充の manifest の「作らなかった理由」から結果への対応（D03 §14.8 の表）。
-NOT_BUILT_TO_RESULT: dict[str, str] = {
-    "HOUR_NOT_FETCHED": NOT_FETCHED,
-    "PROVIDER_EMPTY": PROVIDER_NO_TICKS,
-    "NO_TICK_IN_BAR": PROVIDER_NO_TICKS,
-    "UNRECONCILED": UNRECONCILED,
+#: 作らなかった理由（本体の語彙。D03 §14.8 の表）から結果への対応。
+NOT_BUILT_TO_RESULT: dict[NotBuiltReason, str] = {
+    NotBuiltReason.HOUR_NOT_FETCHED: NOT_FETCHED,
+    NotBuiltReason.PROVIDER_EMPTY: PROVIDER_NO_TICKS,
+    NotBuiltReason.NO_TICK_IN_BAR: PROVIDER_NO_TICKS,
+    NotBuiltReason.UNRECONCILED: UNRECONCILED,
 }
-
-#: 取得記録で「不合格」の状態を終わらせる行（D03 §14.12 の「不合格」の定義）。
-_REOPENING_KINDS = frozenset({"final", "invalidate", "retry_mark"})
 
 #: 休場の候補（保留。D03 §3.4.2 の候補 1・2・9。RF-11・RF-12・RF-19）。
 HOLIDAY_CANDIDATES: tuple[str, ...] = ("1", "2", "9")
@@ -128,204 +142,66 @@ RESIDUAL_FIELDS: tuple[str, ...] = (
 #: 時間足の足の長さ（残存欠落の区間を足 1 本ずつにほどくため）。
 BAR_LENGTH: dict[str, timedelta] = {"15m@v1": timedelta(minutes=15), "1h@v1": timedelta(hours=1)}
 
-REFILL_PREFIX = "data/raw/market/refill/"
-_HEX64 = re.compile(r"[0-9a-f]{64}")
-#: 補充の置き場の直下で、補充分ではないが置いてよいもの（tick の保管場所と作業ディレクトリ）。
-_SPECIAL_DIRS = frozenset({"_ticks", "_work"})
-
 BarKey = tuple[str, str, datetime]
 
 
 class ReportInputError(RuntimeError):
-    """報告の入力（manifest・補充分）が読めない・食い違う。"""
+    """報告の入力（snapshot・補充分）が読めない・食い違う。"""
 
 
-# --- 読み込み ------------------------------------------------------------------------
+# --- 読み込み（本体の検算を呼ぶだけ）----------------------------------------------------
 
 
-def _load_json(path: Path) -> Any:
-    if not path.is_file():
-        raise ReportInputError(f"ファイルが無い: {path}")
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ReportInputError(f"読めない: {path} ({exc})") from exc
+@dataclass(frozen=True)
+class Snapshot:
+    """本体の読込で識別子を計算し直して確かめた snapshot の manifest と、その集計用の形。"""
+
+    snapshot_id: str
+    manifest: SnapshotManifest
+    payload: dict[str, Any]
+
+    @property
+    def refill_ids(self) -> tuple[str, ...]:
+        """``sources`` が指す補充分の識別子（本体の ``refill_ids_in_sources``）。"""
+        return refill_ids_in_sources([source.path for source in self.manifest.sources])
 
 
-def load_snapshot(snapshot_root: Path, snapshot_id: str) -> dict[str, Any]:
-    """確定済みの snapshot の manifest を読む（D03 §3.7.1）。
+def load_snapshot(snapshot_root: Path, snapshot_id: str) -> Snapshot:
+    """確定済みの snapshot の manifest を本体の読込で読む（D03 §3.7.1、§14.15 の R1）。
 
-    本体の読込（``snapshot_store().read_manifest``）で形と承認の記録の構造を確かめ、内容から
-    ``snapshot_id`` を計算し直して記録とディレクトリ名に一致することを確かめてから使う（改変
-    された manifest から報告を作らない）。暫定 snapshot（``_pending/``）は分類が無いので入力に
-    できない（ここでは見つからない）。
+    ``snapshot_store(...).read_manifest`` が形・承認の記録の構造を確かめ、内容から識別子を計算
+    し直して記録と照らす。その識別子がディレクトリ名と一致することを確かめてから使う（改変
+    された manifest から報告を作らない）。暫定 snapshot（``_pending/``）は入力にできない。
     """
-    path = snapshot_root / snapshot_id / "manifest.json"
-    if not path.is_file():
-        raise ReportInputError(f"ファイルが無い: {path}")
     try:
-        verified = snapshot_store(snapshot_root).read_manifest(snapshot_id)
+        manifest = snapshot_store(snapshot_root).read_manifest(snapshot_id)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ReportInputError(f"snapshot の manifest を確かめられない: {path} ({exc})") from exc
-    if str(verified.snapshot_id()) != snapshot_id:
-        raise ReportInputError(f"snapshot_id がディレクトリ名と一致しない: {path}")
-    manifest = _load_json(path)
-    if not isinstance(manifest, dict):
-        raise ReportInputError(f"snapshot の manifest が JSON の object ではない: {path}")
-    return manifest
-
-
-def is_approved(manifest: dict[str, Any]) -> bool:
-    """承認済みか（manifest の ``approval`` が記入されている。D03 §3.7.1 の 3）。"""
-    approval = manifest.get("approval")
-    return isinstance(approval, dict) and bool(approval.get("approved_by"))
-
-
-def refill_ids_of(manifest: dict[str, Any]) -> list[str]:
-    """snapshot の ``sources`` が指す補充分の識別子（整列・重複なし）。"""
-    found = {
-        src["path"][len(REFILL_PREFIX) :].split("/", 1)[0]
-        for src in manifest["sources"]
-        if isinstance(src.get("path"), str) and src["path"].startswith(REFILL_PREFIX)
-    }
-    return sorted(found)
-
-
-def _digest(payload: Any) -> str:
-    return canonical.digest(payload).hex
-
-
-def refill_id_from(manifest: dict[str, Any]) -> str:
-    """補充の manifest の記録から ``refill_id`` を計算し直す（D03 §14.10）。"""
-    hours = sorted(
-        manifest["hours"], key=lambda item: (item["hour"]["symbol"], item["hour"]["start"])
-    )
-    return _digest(
-        {
-            "aggregation_rule_version": manifest["aggregation_rule_version"],
-            "code_version": manifest["code_version"],
-            "hours": [
-                {
-                    "outcome": item["outcome"],
-                    "start": item["hour"]["start"],
-                    "symbol": item["hour"]["symbol"],
-                    "tick_digest": item["tick_digest"] or "",
-                }
-                for item in hours
-            ],
-            "plan_id": manifest["plan_id"],
-        }
-    )
-
-
-def verified_refill_manifest(refill_root: Path, refill_id: str) -> dict[str, Any]:
-    """補充の manifest を読み、記録から導ける識別子を計算し直して確かめる（D03 §14.11.1 の W5）。
-
-    計画の中身から ``plan_id``、時間ファイルの記録と版から ``refill_id`` を計算し直し、記録と
-    ディレクトリ名に一致すること。入力 snapshot の識別子が計画の中身と一致すること。作らなかった
-    足と未照合の塊の開始が計画の対象足を 1 回ずつ指すこと。ディレクトリのファイル（manifest を
-    除く）の集合が記録と一致し、各ファイルの sha256 と、足のファイルの行数（CSV の記録から見出しの
-    1 行を引いた数）が一致すること。一時名のファイルの残り・ファイルでないものは食い違い。
-    """
-    path = refill_root / refill_id / "refill_manifest.json"
-    manifest = _load_json(path)
-    try:
-        if not isinstance(manifest, dict) or manifest.get("refill_id") != refill_id:
-            raise ReportInputError(f"refill_id がディレクトリ名と一致しない: {path}")
-        if _digest(manifest["plan"]) != manifest["plan_id"]:
-            raise ReportInputError(f"plan_id が計画の中身と一致しない: {path}")
-        if refill_id_from(manifest) != refill_id:
-            raise ReportInputError(f"refill_id が記録から計算し直した値と一致しない: {path}")
-        if manifest["snapshot_id"] != manifest["plan"]["snapshot_id"]:
-            raise ReportInputError(f"入力 snapshot の識別子が計画の中身と一致しない: {path}")
-        targets = set(_targets(manifest["plan"]))
-        for label, listed in (
-            ("作らなかった足", [_bar_key(item) for item in manifest["not_built"]]),
-            (
-                "未照合の塊",
-                [
-                    _bar_key({**item, "start": item["chunk_start"]})
-                    for item in manifest["unreconciled"]
-                ],
-            ),
-        ):
-            if len(set(listed)) != len(listed) or not set(listed) <= targets:
-                raise ReportInputError(
-                    f"{label}の記録が計画の対象足を 1 回ずつ指していない: {path}"
-                )
-        _verify_refill_files(refill_root / refill_id, manifest["files"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ReportInputError(f"補充の manifest の形が読めない: {path} ({exc})") from exc
-    return manifest
-
-
-def _csv_records(content: bytes) -> int | None:
-    """内容を CSV として読んだ記録の数（空行を除く）。読めなければ ``None``。"""
-    try:
-        reader = csv.reader(io.StringIO(content.decode("utf-8"), newline=""))
-        return sum(1 for row in reader if row)
-    except (UnicodeDecodeError, csv.Error):
-        return None
-
-
-def _verify_refill_files(directory: Path, recorded: list[dict[str, Any]]) -> None:
-    """補充分のファイルの集合・sha256・行数を manifest の記録と照らす（D03 §14.11.1 の W5）。"""
-    present: dict[str, Path] = {}
-    for entry in directory.iterdir():
-        if entry.name == "refill_manifest.json":
-            continue
-        if entry.name.startswith(".tmp-"):
-            raise ReportInputError(f"補充分に一時名のファイルが残っている: {entry}")
-        if entry.is_symlink() or not entry.is_file():
-            raise ReportInputError(f"補充分にファイルでないものがある: {entry}")
-        present[entry.name] = entry
-    names = [str(item["name"]) for item in recorded]
-    if len(set(names)) != len(names) or set(names) != set(present):
         raise ReportInputError(
-            f"補充分のファイルの集合が manifest の記録と一致しない: {directory}"
-            f"（記録に無い: {sorted(set(present) - set(names))}、"
-            f"無い: {sorted(set(names) - set(present))}）"
+            f"snapshot の manifest を確かめられない: {snapshot_root / snapshot_id} ({exc})"
+        ) from exc
+    if str(manifest.snapshot_id()) != snapshot_id:
+        raise ReportInputError(
+            f"snapshot_id がディレクトリ名と一致しない: {snapshot_root / snapshot_id}"
         )
-    for item in recorded:
-        content = present[str(item["name"])].read_bytes()
-        if hashlib.sha256(content).hexdigest() != item["sha256"]:
-            raise ReportInputError(
-                f"sha256 が manifest の記録と一致しない: {directory / item['name']}"
-            )
-        rows = item.get("rows")
-        if rows is not None:
-            records = _csv_records(content)
-            if records is None or records - 1 != rows:
-                raise ReportInputError(
-                    f"行数が manifest の記録と一致しない: {directory / item['name']}"
-                )
+    return Snapshot(snapshot_id, manifest, dict(snapshot_manifest_payload(manifest)))
 
 
-def load_refill(refill_root: Path, refill_id: str) -> dict[str, Any]:
-    """補充分の manifest と検証記録を読む（W5 の検算の後。読んだ検証記録の sha256 も照らす）。"""
-    manifest = verified_refill_manifest(refill_root, refill_id)
-    path = refill_root / refill_id / "validation.json"
-    if not path.is_file():
-        raise ReportInputError(f"ファイルが無い: {path}")
-    content = path.read_bytes()
-    recorded = [item for item in manifest["files"] if item.get("name") == path.name]
-    if len(recorded) != 1 or recorded[0].get("sha256") != hashlib.sha256(content).hexdigest():
-        raise ReportInputError(f"検証記録の sha256 が補充の manifest と一致しない: {path}")
+def load_refill(store: RefillStore, refill_id: str) -> VerifiedRefill:
+    """補充分を本体の W5 の検算（``load_verified_refill``）を済ませて読む。"""
     try:
-        validation = json.loads(content.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ReportInputError(f"読めない: {path} ({exc})") from exc
-    return {"manifest": manifest, "validation": validation}
+        return load_verified_refill(store, refill_id)
+    except MarketDataError as exc:
+        raise ReportInputError(f"補充分の検算が合わない: {refill_id} ({exc})") from exc
 
 
 def snapshot_chain(
-    snapshot_root: Path, refill_root: Path, snapshot_id: str
+    snapshot_root: Path, store: RefillStore, snapshot_id: str
 ) -> dict[str, frozenset[str]]:
     """対象 snapshot とその前の snapshot ごとに、含む補充分を重ねた補充まで辿った集合。
 
     snapshot S の集合は、S の ``sources`` が指す補充分と、その補充分の入力 snapshot の集合の
-    和。前後関係（D03 §14.15）の判定に使う。読めない snapshot・補充分があれば止める（前後関係
-    を確かめられないため）。
+    和。前後関係（D03 §14.15 の R3）の判定に使う。読めない snapshot・補充分があれば止める
+    （前後関係を確かめられないため）。
     """
     closures: dict[str, frozenset[str]] = {}
     visiting: set[str] = set()
@@ -337,10 +213,9 @@ def snapshot_chain(
             raise ReportInputError(f"snapshot と補充分の参照が循環している: {current}")
         visiting.add(current)
         found: set[str] = set()
-        for refill_id in refill_ids_of(load_snapshot(snapshot_root, current)):
+        for refill_id in load_snapshot(snapshot_root, current).refill_ids:
             found.add(refill_id)
-            manifest = verified_refill_manifest(refill_root, refill_id)
-            found |= closure(str(manifest["snapshot_id"]))
+            found |= closure(load_refill(store, refill_id).manifest.snapshot_id)
         visiting.discard(current)
         closures[current] = frozenset(found)
         return closures[current]
@@ -349,7 +224,7 @@ def snapshot_chain(
     return closures
 
 
-# --- 記録の自動収集 --------------------------------------------------------------------
+# --- 記録（検算済みの型から作る）--------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -368,8 +243,7 @@ class Record:
     recorded_at: str
     is_state: bool
     results: dict[BarKey, str]
-    reasons: tuple[str, ...] = ()
-    details: dict[str, Any] = field(default_factory=dict)
+    rejection: Rejection | None = None
 
 
 @dataclass
@@ -386,200 +260,88 @@ class Collection:
         return not self.problems
 
 
-def _tf_key(series: str, version: int) -> tuple[str, str]:
-    symbol, timeframe, _ = series.split("/")
-    return symbol, f"{timeframe}@v{version}"
+def _bar_key(series: SeriesId, start: UtcTime) -> BarKey:
+    return str(series.symbol), str(series.timeframe), start.value
 
 
-def _bar_key(item: dict[str, Any]) -> BarKey:
-    symbol, tf = _tf_key(item["series"], item["timeframe_version"])
-    return symbol, tf, rhg.parse_utc(item["start"])
+def _targets(plan: RefillPlan) -> list[BarKey]:
+    return [_bar_key(bar.series, bar.start) for bar in plan.target_bars]
 
 
-def _targets(plan: dict[str, Any]) -> list[BarKey]:
-    return [_bar_key(target) for target in plan["target_bars"]]
+def _not_built(items: tuple[NotBuiltBar, ...]) -> dict[BarKey, str]:
+    return {_bar_key(item.series, item.start): NOT_BUILT_TO_RESULT[item.reason] for item in items}
 
 
-def _not_built(records: list[dict[str, Any]]) -> dict[BarKey, str]:
-    return {_bar_key(item): NOT_BUILT_TO_RESULT[item["reason"]] for item in records}
-
-
-def _read_journal(path: Path) -> tuple[list[dict[str, Any]], str | None]:
-    """取得記録の行（``entry``）を読み、行ごとのダイジェストを検算する（D03 §14.11.1 の W3）。
-
-    最後の行だけが不完全（改行で終わらない・JSON として読めない・ダイジェストが合わない）なら
-    書き込みの途中で止まった行として除く。最後の行以外が壊れていれば読めない取得記録とする。
-    """
-    if not path.is_file():
-        return [], None
-    try:
-        content = path.read_bytes()
-    except OSError as exc:
-        return [], f"取得記録が読めない: {path} ({exc})"
-    segments = content.split(b"\n")
-    terminated = segments[-1] == b""
-    lines = segments[:-1] if terminated else segments
-    entries: list[dict[str, Any]] = []
-    for number, line in enumerate(lines, start=1):
-        last = number == len(lines)
-        try:
-            if last and not terminated:
-                raise ValueError("not terminated by a newline")
-            record = json.loads(line.decode("utf-8"))
-            if not isinstance(record, dict) or set(record) != {"digest", "entry"}:
-                raise ValueError("not a {digest, entry} record")
-            entry = record["entry"]
-            if not isinstance(entry, dict):
-                raise ValueError("the entry is not an object")
-            if hashlib.sha256(canonical.encode(entry)).hexdigest() != record["digest"]:
-                raise ValueError("the digest does not match the entry")
-        except (ValueError, UnicodeDecodeError) as exc:
-            if last:
-                continue
-            return [], f"取得記録の {number} 行目が読めない（{exc}）: {path}"
-        entries.append(entry)
-    return entries, None
-
-
-def collect_records(
-    refill_root: Path,
-    chain: dict[str, frozenset[str]],
-    in_snapshot: frozenset[str],
-) -> Collection:
-    """対象 snapshot とその前の snapshot を入力にした計画・補充分の記録をすべて集める。
-
-    ``chain`` の鍵（対象 snapshot と前の snapshot）を入力にした計画が対象。置き場の中に読めない
-    もの（書きかけの補充分、読めない計画・取得記録、置き場に無いはずの名前のディレクトリ）が
-    あれば ``problems`` に残す（そのものが対象の計画かどうか分からないので、網羅性を確かめられ
-    ない）。
-    """
-    problems: list[str] = []
+def records_from(inventory: RefillInventory, in_snapshot: frozenset[str]) -> Collection:
+    """本体が集めて検算した補充分と計画（``survey_refill_store``）から記録を作る。"""
     records: list[Record] = []
-    if not refill_root.is_dir():
-        return Collection(records, [f"補充の置き場が無い: {refill_root}"])
-
     plans_with_refill: set[str] = set()
-    refill_count = 0
-    for directory in sorted(refill_root.iterdir(), key=lambda item: item.name):
-        name = directory.name
-        plain_dir = directory.is_dir() and not directory.is_symlink()
-        if name in _SPECIAL_DIRS and plain_dir:
-            continue
-        if not plain_dir or not _HEX64.fullmatch(name):
-            problems.append(
-                f"補充の置き場に想定外のもの（補充分・_ticks・_work 以外の名前、ファイル、リンク）:"
-                f" {directory}"
-            )
-            continue
-        manifest_path = directory / "refill_manifest.json"
-        if not manifest_path.is_file():
-            problems.append(f"書きかけの補充分（refill_manifest.json が無い）: {directory}")
-            continue
-        try:
-            manifest = verified_refill_manifest(refill_root, name)
-            snapshot_id = str(manifest["snapshot_id"])
-            if snapshot_id not in chain:
-                continue
-            plan_id = str(manifest["plan_id"])
-            not_built = _not_built(manifest["not_built"])
-            targets = _targets(manifest["plan"])
-        except (ReportInputError, KeyError, TypeError, ValueError) as exc:
-            problems.append(f"補充分が読めない: {directory} ({exc})")
-            continue
-        built = BUILT if name in in_snapshot else BUILT_NOT_IN_SNAPSHOT
+    for refill in inventory.refills:
+        manifest = refill.manifest
+        built = BUILT if manifest.refill_id in in_snapshot else BUILT_NOT_IN_SNAPSHOT
+        not_built = _not_built(manifest.not_built)
         records.append(
             Record(
-                plan_id=plan_id,
-                input_snapshot=snapshot_id,
-                source=f"refill:{name}",
-                refill_id=name,
-                recorded_at=str(manifest.get("created_at", "")),
+                plan_id=manifest.plan_id,
+                input_snapshot=manifest.snapshot_id,
+                source=f"refill:{manifest.refill_id}",
+                refill_id=manifest.refill_id,
+                recorded_at=str(manifest.created_at),
                 is_state=True,
-                results={bar: not_built.get(bar, built) for bar in targets},
+                results={bar: not_built.get(bar, built) for bar in _targets(manifest.plan)},
             )
         )
-        plans_with_refill.add(plan_id)
-        refill_count += 1
-
-    plan_count = 0
-    work_root = refill_root / "_work"
-    work_dirs = sorted(work_root.iterdir(), key=lambda p: p.name) if work_root.is_dir() else []
-    if work_root.is_symlink() or (work_root.exists() and not work_root.is_dir()):
-        problems.append(f"作業ディレクトリの置き場がディレクトリではない: {work_root}")
-        work_dirs = []
-    for work in work_dirs:
-        if work.is_symlink() or not work.is_dir() or not _HEX64.fullmatch(work.name):
-            problems.append(
-                f"作業ディレクトリの置き場に想定外のもの（計画以外の名前、ファイル、リンク）:"
-                f" {work}"
-            )
-            continue
-        try:
-            plan = _load_json(work / "plan.json")
-            if _digest(plan) != work.name:
-                raise ReportInputError("plan_id が計画の中身から計算し直した値と一致しない")
-            snapshot_id = str(plan["snapshot_id"])
-            if snapshot_id not in chain:
-                continue
-            targets = _targets(plan)
-        except (ReportInputError, KeyError, TypeError, ValueError) as exc:
-            problems.append(f"計画が読めない: {work} ({exc})")
-            continue
-        entries, problem = _read_journal(work / "journal.jsonl")
-        if problem is not None:
-            problems.append(problem)
-            continue
-        plan_count += 1
-        plan_id = work.name
-        validations = [
-            (number, entry)
-            for number, entry in enumerate(entries, start=1)
-            if entry.get("kind") == "validation"
-        ]
-        last_validation = validations[-1][0] if validations else 0
-        rejected_now = (
-            plan_id not in plans_with_refill
-            and bool(validations)
-            and validations[-1][1].get("passed") is False
-            and not any(
-                entry.get("kind") in _REOPENING_KINDS for entry in entries[last_validation:]
-            )
-        )
-        for number, entry in validations:
-            if entry.get("passed") is not False:
-                continue
-            details = entry.get("details") or {}
-            try:
-                not_built = _not_built(details.get("not_built", []))
-            except (KeyError, TypeError, ValueError) as exc:
-                problems.append(f"取得記録の {number} 行目が読めない: {work} ({exc})")
-                continue
+        plans_with_refill.add(manifest.plan_id)
+    for plan in inventory.plans:
+        targets = _targets(plan.plan)
+        rejected_now = plan.state is PlanState.REJECTED and plan.plan_id not in plans_with_refill
+        for rejection in plan.rejections:
+            not_built = _not_built(rejection.not_built)
             records.append(
                 Record(
-                    plan_id=plan_id,
-                    input_snapshot=snapshot_id,
-                    source=f"journal:{number}",
+                    plan_id=plan.plan_id,
+                    input_snapshot=plan.plan.snapshot_id,
+                    source=f"journal:{rejection.line}",
                     refill_id=None,
-                    recorded_at=str(entry.get("at", "")),
-                    is_state=rejected_now and number == last_validation,
+                    recorded_at=str(rejection.record.at),
+                    is_state=rejected_now and rejection is plan.rejections[-1],
                     results={bar: not_built.get(bar, VALIDATION_REJECTED) for bar in targets},
-                    reasons=tuple(str(reason) for reason in entry.get("reasons", [])),
-                    details=dict(details),
+                    rejection=rejection,
                 )
             )
-        if plan_id not in plans_with_refill and not rejected_now:
+        if plan.plan_id not in plans_with_refill and not rejected_now:
             records.append(
                 Record(
-                    plan_id=plan_id,
-                    input_snapshot=snapshot_id,
+                    plan_id=plan.plan_id,
+                    input_snapshot=plan.plan.snapshot_id,
                     source="plan",
                     refill_id=None,
-                    recorded_at=str(entries[-1].get("at", "")) if entries else "",
+                    recorded_at="" if plan.last_at is None else str(plan.last_at),
                     is_state=True,
                     results=dict.fromkeys(targets, IN_PROGRESS),
                 )
             )
-    return Collection(records, problems, plan_count=plan_count, refill_count=refill_count)
+    return Collection(
+        records,
+        list(inventory.problems),
+        plan_count=len(inventory.plans),
+        refill_count=len(inventory.refills),
+    )
+
+
+def collect_records(
+    store: RefillStore, chain: dict[str, frozenset[str]], in_snapshot: frozenset[str]
+) -> Collection:
+    """対象 snapshot とその前の snapshot を入力にした計画・補充分の記録をすべて集める。
+
+    集めて検算するのは本体（``survey_refill_store``）。置き場そのものが読めなければ、網羅性を
+    確かめられないとする。
+    """
+    try:
+        inventory = survey_refill_store(store, chain)
+    except (MarketDataError, OSError) as exc:
+        return Collection([], [f"補充の置き場が読めない: {exc}"])
+    return records_from(inventory, in_snapshot)
 
 
 # --- 足ごとの状態 ----------------------------------------------------------------------
@@ -770,6 +532,8 @@ def _windows(
     bounds: dict[tuple[str, str], rhg.Interval],
 ) -> tuple[list[rhg.Interval], list[rhg.Interval]]:
     """20 系列すべてと USDJPY 15 分足の、欠落の無い連続区間（長い順）。"""
+    if not bounds:
+        return [], []
     lo_all = max(lo for lo, _ in bounds.values())
     hi_all = min(hi for _, hi in bounds.values())
     union = rhg.merge_adjacent([g for gaps in merged.values() for g in gaps])
@@ -797,49 +561,46 @@ def _hours(gaps: list[rhg.Interval]) -> float:
 def render_report(
     *,
     old_id: str,
-    new_id: str,
-    new_manifest: dict[str, Any],
-    approved: bool,
+    new: Snapshot,
     candidates_id: str,
     old_merged: dict[tuple[str, str], list[rhg.Interval]],
     old_bounds: dict[tuple[str, str], rhg.Interval],
     new_merged: dict[tuple[str, str], list[rhg.Interval]],
     new_bounds: dict[tuple[str, str], rhg.Interval],
-    refills: list[dict[str, Any]],
+    refills: list[VerifiedRefill],
     collection: Collection,
     rows: list[dict[str, Any]],
     command: str,
 ) -> str:
     """報告の本文（Markdown。D03 §14.15 の 1〜5）。価格は書かない（前後の差は pip だけ）。"""
-    conversion = new_manifest.get("conversion", {})
-    calendar_id = conversion.get("calendar_id")
-    calendar_version = conversion.get("calendar_version")
-    refill_ids = ", ".join(f"`{item['manifest']['refill_id']}`" for item in refills) or "なし"
-    rejected = [r for r in collection.records if r.is_state and r.source.startswith("journal:")]
+    manifest = new.manifest
+    approval = manifest.approval
+    refill_ids = ", ".join(f"`{item.manifest.refill_id}`" for item in refills) or "なし"
+    rejected = [r for r in collection.records if r.is_state and r.rejection is not None]
     rejected_ids = ", ".join(f"`{r.plan_id}`" for r in rejected) or "なし"
     title = "# 補充の後の残存欠落と実行可能な連続期間（報告の材料）"
-    lines: list[str] = [f"# 【下書き】{title[2:]}" if not approved else title, ""]
-    if not approved:
+    lines: list[str] = [f"# 【下書き】{title[2:]}" if approval is None else title, ""]
+    if approval is None:
         lines += [
             "**下書き**: 新 snapshot は承認されていない。正式な残存欠落の報告の入力は、分類と確定を"
             "済ませ承認された新 snapshot に限る（D03 §14.15）。承認の後に作り直すこと。",
             "",
         ]
     lines += ["## 1. 入力と出力の識別", ""]
-    approval = new_manifest.get("approval") or {}
     lines += [
         "| 項目 | 値 |",
         "|---|---|",
         f"| 旧 snapshot | `{old_id}` |",
-        f"| 新 snapshot | `{new_id}` |",
+        f"| 新 snapshot | `{new.snapshot_id}` |",
         "| 新 snapshot の承認 | "
         + (
-            f"承認済み（{approval.get('approved_by')}、{approval.get('approved_at')}）"
-            if approved
+            f"承認済み（{approval.approved_by}、{approval.approved_at}）"
+            if approval is not None
             else "未承認（この出力は下書き）"
         )
         + " |",
-        f"| カレンダー | `{calendar_id}` 版 {calendar_version} |",
+        f"| カレンダー | `{manifest.conversion.calendar_id}` 版"
+        f" {manifest.conversion.calendar_version} |",
         f"| 補充の識別子（新 snapshot に入っているもの） | {refill_ids} |",
         f"| 不合格のままの計画（自動収集） | {rejected_ids} |",
         f"| 休場の候補区間を定めた snapshot | `{candidates_id}` |",
@@ -872,47 +633,48 @@ def render_report(
         "|---|---|---|---|---|",
     ]
     for refill in refills:
-        manifest = refill["manifest"]
-        by_reason: dict[str, Counter[str]] = defaultdict(Counter)
-        for item in manifest["not_built"]:
-            by_reason[item["series"]][item["reason"]] += 1
-        for count in manifest["series_counts"]:
+        by_reason: dict[SeriesId, Counter[str]] = defaultdict(Counter)
+        for item in refill.manifest.not_built:
+            by_reason[item.series][item.reason.value] += 1
+        for count in refill.manifest.series_counts:
             detail = ", ".join(
-                f"{reason} {number}"
-                for reason, number in sorted(by_reason[count["series"]].items())
+                f"{reason} {number}" for reason, number in sorted(by_reason[count.series].items())
             )
             lines.append(
-                f"| {count['series']} | {count['targets']} | {count['built']} |"
-                f" {count['not_built']} | {detail or '—'} |"
+                f"| {count.series} | {count.targets} | {count.built} |"
+                f" {count.not_built} | {detail or '—'} |"
             )
     lines.append("")
-    unreconciled = [item for refill in refills for item in refill["manifest"]["unreconciled"]] + [
-        item for rej in rejected for item in rej.details.get("unreconciled", [])
+    unreconciled = [item for refill in refills for item in refill.manifest.unreconciled] + [
+        item for rej in rejected if rej.rejection is not None for item in rej.rejection.unreconciled
     ]
     lines.append(f"未照合の塊（補充分に書かず、人間の判断を待つ）: {len(unreconciled)}")
     lines += [
-        f"- {item['series']} {item['chunk_start']}（対象足 {item['target_count']} 本）"
+        f"- {item.series} {item.chunk_start}（対象足 {item.target_count} 本）"
         for item in unreconciled
     ]
     lines.append("")
     for refill in refills:
-        validation = refill["validation"]
-        review = [item for item in validation["neighbors"] if item["needs_review"]]
-        short = refill["manifest"]["refill_id"][:12]
+        validation = refill.validation
+        review = [item for item in validation.neighbors if item.needs_review]
+        short = refill.manifest.refill_id[:12]
         lines.append(
-            f"検証（`{short}…`）: 照合 {validation['reconciled_count']} 本・"
-            f"一致 {validation['matched_count']} 本、"
-            f"範囲外の tick {validation['out_of_range_tick_count']} 件、"
-            f"bid が ask より大きい tick {validation['bid_above_ask_tick_count']} 件"
+            f"検証（`{short}…`）: 照合 {validation.reconciled_count} 本・"
+            f"一致 {validation.matched_count} 本、"
+            f"範囲外の tick {validation.out_of_range_tick_count} 件、"
+            f"bid が ask より大きい tick {validation.bid_above_ask_tick_count} 件"
             f"（合否に使わない）、「要確認」の印 {len(review)} 件"
         )
         lines += [
-            f"- 要確認: {item['series']} {item['chunk_start']} {item['side']}"
-            f" 差 {item['difference_pips']} pip"
+            f"- 要確認: {item.series} {item.chunk.start} {item.side.value}"
+            f" 差 {item.difference_pips} pip"
             for item in review
         ]
     for rej in rejected:
-        lines.append(f"不合格の計画 `{rej.plan_id[:12]}…`: " + "; ".join(rej.reasons))
+        assert rej.rejection is not None
+        lines.append(
+            f"不合格の計画 `{rej.plan_id[:12]}…`: " + "; ".join(rej.rejection.record.reasons)
+        )
     lines.append("")
 
     lines += ["## 3. 残存欠落", ""]
@@ -927,10 +689,10 @@ def render_report(
     for symbol in rhg.SYMBOLS:
         for tf in rhg.TIMEFRAMES:
             old = old_merged.get((symbol, tf), [])
-            new = new_merged.get((symbol, tf), [])
+            new_gaps = new_merged.get((symbol, tf), [])
             lines.append(
                 f"| {symbol} {tf} | {len(old)} / {_hours(old):.2f}h |"
-                f" {len(new)} / {_hours(new):.2f}h |"
+                f" {len(new_gaps)} / {_hours(new_gaps):.2f}h |"
             )
     total_old = [g for gaps in old_merged.values() for g in gaps]
     total_new = [g for gaps in new_merged.values() for g in gaps]
@@ -1031,6 +793,31 @@ def write_outputs(
         handle.write(report)
 
 
+def reproduction_command(args: argparse.Namespace) -> str:
+    """再現のコマンド（引数はシェル向けに引用する。空白や記号を含むパスでもそのまま動く）。"""
+    return shlex.join(
+        [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "tools.ops.refill_report",
+            "--snapshot-root",
+            str(args.snapshot_root),
+            "--snapshot-id",
+            args.snapshot_id,
+            "--previous-snapshot-id",
+            args.previous_snapshot_id,
+            "--candidates-snapshot-id",
+            args.candidates_snapshot_id,
+            "--refill-root",
+            str(args.refill_root),
+            "--out",
+            str(args.out),
+        ]
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--snapshot-root", type=Path, default=Path("data/snapshots"))
@@ -1049,38 +836,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="報告と CSV の出力先ディレクトリ")
     args = parser.parse_args(argv)
 
+    store = refill_store(args.refill_root)
     try:
-        new_manifest = load_snapshot(args.snapshot_root, args.snapshot_id)
-        old_manifest = load_snapshot(args.snapshot_root, args.previous_snapshot_id)
-        candidates_manifest = load_snapshot(args.snapshot_root, args.candidates_snapshot_id)
-        in_snapshot = refill_ids_of(new_manifest)
-        refills = [load_refill(args.refill_root, rid) for rid in in_snapshot]
-        chain = snapshot_chain(args.snapshot_root, args.refill_root, args.snapshot_id)
-    except (ReportInputError, ValueError, KeyError, TypeError) as exc:
+        new = load_snapshot(args.snapshot_root, args.snapshot_id)
+        old = load_snapshot(args.snapshot_root, args.previous_snapshot_id)
+        candidates_snapshot = load_snapshot(args.snapshot_root, args.candidates_snapshot_id)
+        refills = [load_refill(store, refill_id) for refill_id in new.refill_ids]
+        chain = snapshot_chain(args.snapshot_root, store, args.snapshot_id)
+    except ReportInputError as exc:
         print(f"報告の入力が読めない: {exc}", file=sys.stderr)
         return 1
-    collection = collect_records(args.refill_root, chain, frozenset(in_snapshot))
-    new_merged, new_bounds = rhg.collect_gaps(new_manifest)
-    old_merged, old_bounds = rhg.collect_gaps(old_manifest)
-    candidates = candidate_intervals(rhg.collect_gaps(candidates_manifest)[0])
+    collection = collect_records(store, chain, frozenset(new.refill_ids))
+    new_merged, new_bounds = rhg.collect_gaps(new.payload)
+    old_merged, old_bounds = rhg.collect_gaps(old.payload)
+    candidates = candidate_intervals(rhg.collect_gaps(candidates_snapshot.payload)[0])
     rows = residual_rows(new_merged, collection, chain, candidates)
-    approved = is_approved(new_manifest)
-    command = " ".join(
-        [
-            "uv run python -m tools.ops.refill_report",
-            f"--snapshot-root {args.snapshot_root}",
-            f"--snapshot-id {args.snapshot_id}",
-            f"--previous-snapshot-id {args.previous_snapshot_id}",
-            f"--candidates-snapshot-id {args.candidates_snapshot_id}",
-            f"--refill-root {args.refill_root}",
-            f"--out {args.out}",
-        ]
-    )
     report = render_report(
         old_id=args.previous_snapshot_id,
-        new_id=args.snapshot_id,
-        new_manifest=new_manifest,
-        approved=approved,
+        new=new,
         candidates_id=args.candidates_snapshot_id,
         old_merged=old_merged,
         old_bounds=old_bounds,
@@ -1089,9 +862,9 @@ def main(argv: list[str] | None = None) -> int:
         refills=refills,
         collection=collection,
         rows=rows,
-        command=command,
+        command=reproduction_command(args),
     )
-    suffix = "" if approved else "_draft"
+    suffix = "" if new.manifest.is_approved else "_draft"
     csv_path = args.out / f"residual_gaps{suffix}.csv"
     report_path = args.out / f"refill_report{suffix}.md"
     existing = [path for path in (csv_path, report_path) if path.exists() or path.is_symlink()]

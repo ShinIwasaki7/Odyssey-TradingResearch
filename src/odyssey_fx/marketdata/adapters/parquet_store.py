@@ -77,7 +77,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
     SourceFile,
 )
 
-__all__ = ["MANIFEST_SCHEMA_VERSION", "ParquetSnapshotStore"]
+__all__ = ["MANIFEST_SCHEMA_VERSION", "ParquetSnapshotStore", "manifest_payload"]
 
 #: `manifest.json` の形式版。読み込み時に未知の版を拒否する。
 #:
@@ -244,6 +244,14 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             "comment": manifest.approval.comment,
         }
     return payload
+
+
+def manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
+    """検算済みの manifest を `manifest.json` と同じ JSON 互換の形にする（読み取りの集計用）。
+
+    `read_manifest` が識別子を計算し直して確かめた型から作るので、ファイルを読み直さない。
+    """
+    return _manifest_payload(manifest)
 
 
 def _digest_payload(digest: ContentDigest) -> Mapping[str, str]:

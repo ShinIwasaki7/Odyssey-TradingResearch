@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import odyssey_fx
 from odyssey_fx.app.config import ConfigError, DataSourceConfig
@@ -104,7 +105,7 @@ from odyssey_fx.evaluation.domain.research_policy import (
 )
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
 from odyssey_fx.marketdata.adapters.dukascopy_source import DukascopyTickSource
-from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore, manifest_payload
 from odyssey_fx.marketdata.adapters.refill_store import FsRefillStore
 from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
@@ -234,6 +235,15 @@ def raw_bar_source(raw_root: Path, time_column: str) -> CsvRawBarSource:
 def snapshot_store(snapshots_root: Path) -> ParquetSnapshotStore:
     """snapshot の保存・読込を組み立てる（D03 §8）。"""
     return ParquetSnapshotStore(root=snapshots_root)
+
+
+def snapshot_manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
+    """検算済みの snapshot の manifest を `manifest.json` と同じ形にする（D03 §3.7.1）。
+
+    報告（`tools/ops/refill_report.py`）が集計に使う。`snapshot_store(...).read_manifest` が
+    識別子を計算し直して確かめた型から作るので、ファイルを別に読み直さない。
+    """
+    return manifest_payload(manifest)
 
 
 def build_conversion_record(calendar: TradingCalendar, time_convention: str) -> ConversionRecord:

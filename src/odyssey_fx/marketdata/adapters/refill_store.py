@@ -46,6 +46,7 @@ from odyssey_fx.marketdata.domain.errors import (
     RefillStoreInconsistent,
 )
 from odyssey_fx.marketdata.domain.refill import (
+    ARCHIVE_DIRECTORY,
     WORK_DIRECTORY,
     ArchiveProvenance,
     ArchiveRead,
@@ -254,6 +255,46 @@ class FsRefillStore:
                 continue
             found.append(RefillDirectory(name=name, plan_id=plan_id, problem="", manifest=payload))
         return tuple(found)
+
+    def list_plans(self) -> tuple[str, ...]:
+        """`_work/` の直下の計画の識別子（16進 64 文字の名前の、リンクでないディレクトリ）。"""
+        work = self._work_root()
+        if work is None:
+            return ()
+        return tuple(
+            path.name
+            for path in sorted(work.iterdir(), key=lambda item: item.name)
+            if _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+        )
+
+    def list_unexpected(self) -> tuple[str, ...]:
+        """置き場の直下と `_work/` の直下の想定外のもの（置き場からの相対パス）。"""
+        self._require_plain_root()
+        if not self._root.exists():
+            return ()
+        found: list[str] = []
+        for path in sorted(self._root.iterdir(), key=lambda item: item.name):
+            if _HEX.fullmatch(path.name):
+                continue  # 補充分の名前（ディレクトリでなければ `list_refills` が返す）
+            plain = path.is_dir() and not path.is_symlink()
+            if path.name in (WORK_DIRECTORY, ARCHIVE_DIRECTORY) and plain:
+                continue
+            found.append(path.name)
+        work = self._work_root()
+        if work is not None:
+            for path in sorted(work.iterdir(), key=lambda item: item.name):
+                if _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink():
+                    continue
+                found.append(f"{WORK_DIRECTORY}/{path.name}")
+        return tuple(found)
+
+    def _work_root(self) -> Path | None:
+        """`_work/`（リンクでないディレクトリ）。無ければ、またはそうでなければ `None`。"""
+        self._require_plain_root()
+        work = self._root / WORK_DIRECTORY
+        if work.is_symlink() or not work.is_dir():
+            return None
+        return work
 
     # --- 作業ディレクトリ --------------------------------------------------------------
 
@@ -530,6 +571,21 @@ class FsRefillStore:
         if not isinstance(payload, dict):
             raise RefillStoreInconsistent(f"{target} is not a JSON object (D03 §14.11.1 W5・W6)")
         return payload
+
+    def read_refill_json(self, refill_id: str, name: str) -> tuple[str, Mapping[str, Any]]:
+        """補充分のファイル 1 つを JSON の object として読み、読んだバイト列の sha256 と返す。"""
+        target = self._refill_file(refill_id, name)
+        _refuse_link(target)
+        try:
+            content = target.read_bytes()
+            payload = json.loads(content.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RefillStoreInconsistent(
+                f"{target} cannot be read ({exc}) (D03 §14.11.1 W5・W6)"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RefillStoreInconsistent(f"{target} is not a JSON object (D03 §14.11.1 W5・W6)")
+        return sha256_hex(content), payload
 
     def list_refill_files(self, refill_id: str) -> tuple[RefillFileStat, ...]:
         """補充分のファイル（manifest を除く）の sha256 と CSV の行の数を名前順に返す。
