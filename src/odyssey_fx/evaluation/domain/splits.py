@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
+from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.time import Interval, UtcTime
@@ -45,6 +46,11 @@ __all__ = [
     "folds_for_policy",
     "generate_folds",
 ]
+
+
+#: fold の生成で数える単位（マイクロ秒）と、1秒あたりのその数。
+_MICROSECOND: Final = timedelta(microseconds=1)
+_PER_SECOND: Final = 1_000_000
 
 
 class SplitStandardViolation(EvaluationError):
@@ -127,13 +133,14 @@ def check_fold_invariants(folds: tuple[Fold, ...], purge_seconds: int) -> None:
     if not isinstance(folds, tuple) or not all(isinstance(fold, Fold) for fold in folds):
         raise KernelValueError("check_fold_invariants requires a tuple of Fold")
     _require_int(purge_seconds, "purge_seconds", minimum=0)
-    purge = timedelta(seconds=purge_seconds)
     for position, fold in enumerate(folds):
         if fold.fold_index != position:
             raise KernelValueError(
                 f"fold indices must run 0, 1, 2, … in order, got {fold.fold_index} at {position}"
             )
-        if not fold.train.end + purge <= fold.validation.start:
+        # 整数（マイクロ秒）で比べる（purge が大きくても `timedelta` の桁あふれを起こさない）。
+        gap = (fold.validation.start - fold.train.end) // _MICROSECOND
+        if not gap >= purge_seconds * _PER_SECOND:
             raise KernelValueError(
                 f"fold {fold.fold_index}: train.end + purge must be <= validation.start, got"
                 f" {fold.train.end} + {purge_seconds}s and {fold.validation.start}"
@@ -163,34 +170,43 @@ def generate_folds(standard: SplitStandard) -> tuple[Fold, ...]:
     """
     if not isinstance(standard, SplitStandard):
         raise KernelValueError("generate_folds requires a SplitStandard")
+    # 評価範囲の始まり R0 からのマイクロ秒（整数）で数える。長さがどれほど大きくても桁あふれ
+    # せず、採った fold の区間だけを時刻に直す（採った区間は必ず評価範囲の中にある）。
     start = standard.range.start
-    end = standard.range.end
-    train_length = timedelta(seconds=standard.train_seconds)
-    validation_length = timedelta(seconds=standard.validation_seconds)
-    purge = timedelta(seconds=standard.purge_seconds)
+    span = (standard.range.end - start) // _MICROSECOND
+    train_length = standard.train_seconds * _PER_SECOND
+    validation_length = standard.validation_seconds * _PER_SECOND
+    purge = standard.purge_seconds * _PER_SECOND
+
+    def at(offset: int) -> UtcTime:
+        return start + timedelta(microseconds=offset)
 
     taken: list[tuple[Interval, Interval]] = []
     step = 0
     while True:
-        validation_end = end - validation_length * step
-        validation_start = end - validation_length * (step + 1)
+        # 手順1: 検証区間 [R1 − (j+1)·V, R1 − j·V)。
+        validation_end = span - validation_length * step
+        validation_start = span - validation_length * (step + 1)
+        # 手順2: 選定区間の終わり = 検証区間の始まり − P。始まりは ROLLING なら終わり − T、
+        # EXPANDING なら R0。
         train_end = validation_start - purge
+        train_start = train_end - train_length if standard.window is SplitWindow.ROLLING else 0
+        # 手順3: ROLLING は始まりが R0 以上、EXPANDING は長さが T 以上なら採る。
         if standard.window is SplitWindow.ROLLING:
-            train_start = train_end - train_length
-            accepted = start <= train_start
+            accepted = train_start >= 0
         else:
-            train_start = start
-            accepted = train_end - start >= train_length
+            accepted = train_end - train_start >= train_length
         if not accepted:
             break
         taken.append(
             (
-                Interval(start=train_start, end=train_end),
-                Interval(start=validation_start, end=validation_end),
+                Interval(start=at(train_start), end=at(train_end)),
+                Interval(start=at(validation_start), end=at(validation_end)),
             )
         )
         step += 1
 
+    # 手順4: 古い順に並べ、fold_index を 0 から振る。
     folds = tuple(
         Fold(fold_index=index, train=train, validation=validation)
         for index, (train, validation) in enumerate(reversed(taken))

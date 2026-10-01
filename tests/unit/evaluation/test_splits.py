@@ -98,6 +98,30 @@ def test_a_range_too_short_for_one_fold_generates_none() -> None:
     assert generate_folds(_standard(days=5, train=4, validation=2)) == ()
 
 
+def test_huge_lengths_generate_no_folds_without_overflowing() -> None:
+    """どれほど大きい長さでも桁あふれせず、fold は0個（その違反は検査7 として報告される）。"""
+    huge = 10**15
+    for values in (
+        {"train_seconds": huge},
+        {"validation_seconds": huge},
+        {"purge_seconds": huge},
+    ):
+        standard = SplitStandard(
+            **{
+                "range": Interval(start=R0, end=_at(10)),
+                "train_seconds": 4 * DAY,
+                "validation_seconds": 2 * DAY,
+                "window": SplitWindow.EXPANDING,
+                "purge_seconds": 0,
+                "min_folds": 1,
+                **values,
+            }  # type: ignore[arg-type]
+        )
+        assert generate_folds(standard) == ()
+        with pytest.raises(SplitStandardViolation, match="検査7"):
+            folds_for_policy(standard, research_until=_at(100))
+
+
 def test_the_same_standard_always_generates_the_same_folds() -> None:
     """同じ規則からは常に同じ fold（D09 §6.1。入力は `SplitStandard` だけの純粋関数）。"""
     assert generate_folds(_standard()) == generate_folds(_standard())
