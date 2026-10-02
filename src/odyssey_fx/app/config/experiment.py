@@ -75,11 +75,13 @@ from odyssey_fx.strategy.declarations.opportunity import OpportunityValiditySpec
 __all__ = [
     "NO_DELAY_REF",
     "ExperimentConfig",
+    "RunBody",
     "RunBodyModel",
     "load_experiment",
     "parse_series",
     "policy_ref_of",
     "resolve_run_body",
+    "run_interval_of",
 ]
 
 #: この実装が読む実験設定の形式版（D01 §10.1）。
@@ -130,10 +132,12 @@ class RunBodyModel(StrictModel):
 
     書式ごとのモデルはこれを継承してキーを足す。共通のキーを1か所で宣言するので、v1 と
     v2 で同じキーの受理範囲がずれない。
+
+    `run_interval` だけは書式ごとのモデルが宣言する。書式 v1 と単一実行の書式 v2 では必須、
+    探索の書式 v2 では書けば拒否する（区間は fold が持つ。D09 §5.5 の6、D07 §18.2 v2.7）。
     """
 
     snapshot: str
-    run_interval: _IntervalModel
     execution_series: str
     resolution_hierarchy: list[str]
     account: _AccountModel
@@ -157,6 +161,7 @@ class _ExperimentModel(RunBodyModel):
     schema_version: int
     id: str
     version: int
+    run_interval: _IntervalModel
     strategy: _StrategyModel
 
 
@@ -206,6 +211,63 @@ class ExperimentConfig:
         if ref is None:  # pragma: no cover - 5種はすべて構築時に作る
             raise ConfigError(f"ポリシーの版参照 {kind!r} が実験設定から作られていない")
         return ref
+
+
+@dataclass(frozen=True, slots=True)
+class RunBody:
+    """実行の本体のうち run 区間を除いたもの（D06 §3、D09 §6.2）。
+
+    `ExperimentConfig` から `run_interval` だけを除いた値である。単一実行の実験は書いた
+    run 区間を足して `ExperimentConfig` にする（`with_run_interval`）。探索の実験は単一の
+    run 区間を持たない: 評価範囲は研究ポリシーの期間分割の標準規則にあり、各単位の実行区間は
+    fold の選定区間・検証区間である（D09 §6.2、§17.7.2 の6）。両者を同じ `run_interval` の型に
+    載せないために、この型を分けている。
+    """
+
+    experiment_id: str
+    version: int
+    snapshot_ref: SnapshotRef
+    execution_series: SeriesId
+    account: AccountSpec
+    risk_policy: RiskPolicy
+    execution_policy: ExecutionPolicy
+    cost_model: CostModel
+    conversion_policy: ConversionPolicy
+    strategy: StrategyDefinition
+    seed: int
+    policy_refs: Mapping[str, PolicyRef]
+    delay_scenario: DelayScenario | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "policy_refs", MappingProxyType(dict(self.policy_refs)))
+        if self.delay_scenario is not None and not isinstance(self.delay_scenario, DelayScenario):
+            raise ConfigError("RunBody.delay_scenario must be a DelayScenario or None")
+
+    def policy_ref(self, kind: str) -> PolicyRef:
+        """種別で版参照を引く（`risk` / `execution` / `cost` / `conversion` / `delay`）。"""
+        ref = self.policy_refs.get(kind)
+        if ref is None:  # pragma: no cover - 5種はすべて構築時に作る
+            raise ConfigError(f"ポリシーの版参照 {kind!r} が実験設定から作られていない")
+        return ref
+
+    def with_run_interval(self, run_interval: Interval) -> ExperimentConfig:
+        """単一実行の実験設定にする（書いた run 区間を足す）。"""
+        return ExperimentConfig(
+            experiment_id=self.experiment_id,
+            version=self.version,
+            snapshot_ref=self.snapshot_ref,
+            run_interval=run_interval,
+            execution_series=self.execution_series,
+            account=self.account,
+            risk_policy=self.risk_policy,
+            execution_policy=self.execution_policy,
+            cost_model=self.cost_model,
+            conversion_policy=self.conversion_policy,
+            strategy=self.strategy,
+            seed=self.seed,
+            policy_refs=self.policy_refs,
+            delay_scenario=self.delay_scenario,
+        )
 
 
 def policy_ref_of(kind: str, declaration: object) -> PolicyRef:
@@ -344,6 +406,14 @@ def _strategy_of(
         raise ConfigError(f"戦略の宣言を読めない: {exc}") from exc
 
 
+def run_interval_of(start: str, end: str, path: Path) -> Interval:
+    """`run_interval: {start, end}` を区間へ読む（D06 §3）。"""
+    try:
+        return Interval(start=UtcTime.parse(start), end=UtcTime.parse(end))
+    except KernelValueError as exc:
+        raise ConfigError(f"{path}: run 区間を読めない: {exc}") from exc
+
+
 def resolve_run_body(
     model: RunBodyModel,
     payload: Mapping[str, Any],
@@ -355,20 +425,15 @@ def resolve_run_body(
     strategy: StrategyDefinition,
     delay_scenario: DelayScenario | None,
     delay_ref: PolicyRef,
-) -> ExperimentConfig:
+) -> RunBody:
     """書式 v1・v2 に共通する「実行の本体」を解決済みの値へ変換する（D06 §3、D07 §18.2）。
 
     `payload` は検証前の YAML の mapping で、ポリシーの版参照（宣言のダイジェスト）の材料に
     する。書式が違っても同じキーには同じ宣言が書かれるので、版参照も同じになる。
+    run 区間は含めない（`RunBody`）。書式 v1 と単一実行の書式 v2 は呼び出し側が `run_interval_of`
+    で読んだ区間を `RunBody.with_run_interval` で足す。探索の実験は単一の run 区間を持たない
+    （D09 §6.2）。
     """
-    try:
-        run_interval = Interval(
-            start=UtcTime.parse(model.run_interval.start),
-            end=UtcTime.parse(model.run_interval.end),
-        )
-    except KernelValueError as exc:
-        raise ConfigError(f"{path}: run 区間を読めない: {exc}") from exc
-
     execution_series = parse_series(model.execution_series, timeframe_defs)
     if not model.resolution_hierarchy:
         raise ConfigError(f"{path}: `resolution_hierarchy` は1件以上書くこと（ADR-0030）")
@@ -392,11 +457,10 @@ def resolve_run_body(
             f"{path}: `snapshot` は承認済み snapshot の識別子（16進64文字）を書くこと: {exc}"
         ) from exc
 
-    return ExperimentConfig(
+    return RunBody(
         experiment_id=experiment_id,
         version=version,
         snapshot_ref=snapshot_ref,
-        run_interval=run_interval,
         execution_series=execution_series,
         account=account,
         risk_policy=risk_policy,
@@ -436,7 +500,7 @@ def load_experiment(
     model = validate(_ExperimentModel, payload, path)
     require_schema_version(model.schema_version, _SCHEMA_VERSION, path)
     strategy = _strategy_of(model.strategy, registry, timeframe_defs)
-    return resolve_run_body(
+    body = resolve_run_body(
         model,
         payload,
         path,
@@ -448,4 +512,7 @@ def load_experiment(
         # 版参照だけを manifest へ残し、実現公開時刻は通常の公開予定を使う。
         delay_scenario=None,
         delay_ref=NO_DELAY_REF,
+    )
+    return body.with_run_interval(
+        run_interval_of(model.run_interval.start, model.run_interval.end, path)
     )

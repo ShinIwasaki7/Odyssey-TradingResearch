@@ -36,7 +36,7 @@ from odyssey_fx.backtest.trace.manifest import RunManifest
 from odyssey_fx.backtest.trace.recorder import column_names
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import decimal_from_str, kernel_context
-from odyssey_fx.common.refs import ContentDigest
+from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest, ContentDigest
 from odyssey_fx.evaluation.adapters.fs_store import (
     EXPERIMENT_OUTCOME_FILE,
     REPORT_FILE,
@@ -609,6 +609,11 @@ def _optional_hex(value: ContentDigest | None) -> str:
     return "なし" if value is None else _code(value.hex)
 
 
+def _ref_hex(ref: ConfigDigest | CompiledStrategyRef | None) -> str:
+    """単数の識別の16進表示。探索の実験の記録票は単数の値を持たない（D09 §10.2）。"""
+    return "（試行ごと）" if ref is None else _code(ref.digest.hex)
+
+
 def _identity_lines(inputs: _Inputs) -> list[str]:
     """設定と入力の特定（D07 §22.1 の順6）。"""
     manifest = inputs.manifest
@@ -630,9 +635,9 @@ def _identity_lines(inputs: _Inputs) -> list[str]:
         + "、".join(f"{name} {count} 件" for name, count in sorted(access.items()))
         + "）",
         f"- 設定のダイジェスト（ConfigDigest。記録票の予測値）:"
-        f" {_code(manifest.expected_config_digest.digest.hex)}",
+        f" {_ref_hex(manifest.expected_config_digest)}",
         f"- 戦略定義のハッシュ: {_code(manifest.strategy_ref.digest.hex)}",
-        f"- コンパイル結果のハッシュ: {_code(manifest.compiled_ref.digest.hex)}",
+        f"- コンパイル結果のハッシュ: {_ref_hex(manifest.compiled_ref)}",
     ]
     if outcome is None:
         lines.append("- 実行の識別子（run_id）: 結末記録が無いので不明")

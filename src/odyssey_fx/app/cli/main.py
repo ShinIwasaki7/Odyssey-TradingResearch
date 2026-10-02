@@ -937,6 +937,11 @@ def _load_run_configs(
             registry=INITIAL_CATALOG,
             metric_set_versions=frozenset({METRIC_SET_VERSION}),
         )
+        if loaded.search is not None:
+            raise ConfigError(
+                f"{args.experiment}: 探索の実験（search_plan / split が NONE でない）は `run` では"
+                " 実行できない。fold ごとの run は探索の実験の経路が組み立てる（D09 §6.2・§11.4）"
+            )
         environment = loaded.environment
         return (
             environment.calendar,
@@ -1282,6 +1287,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     try:
         return handlers[args.command](args, out)
+    except composition.SearchRunUnsupported as exc:
+        # 有効な探索の設定であり、設定の誤り（終了コード 2）とは呼ばない。何も書かずに止めた
+        # ことを示し、表に無い失敗として終了コード 1 で終える（D09 §17.7.2 の1、D07 §21.3）。
+        sys.stderr.write(f"{exc}\n")
+        return _EXIT_FAILED
     except (ConfigError, KernelValueError, FileNotFoundError, ValueError) as exc:
         sys.stderr.write(f"失敗: {exc}\n")
         if isinstance(exc, ConfigError) and args.group == "experiment":

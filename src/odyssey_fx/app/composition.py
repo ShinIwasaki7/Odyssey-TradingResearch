@@ -30,10 +30,11 @@ from typing import Any
 
 import odyssey_fx
 from odyssey_fx.app.config import ConfigError, DataSourceConfig
-from odyssey_fx.app.config.experiment import ExperimentConfig
+from odyssey_fx.app.config.experiment import ExperimentConfig, RunBody
 from odyssey_fx.app.config.experiment_v2 import (
     TEXT_ROLES,
     ExperimentV2,
+    SearchSetting,
     experiment_v2_from_texts,
 )
 from odyssey_fx.app.config.loader import load_yaml_mapping
@@ -83,6 +84,8 @@ from odyssey_fx.evaluation.application.ports import ResultReadFailure
 from odyssey_fx.evaluation.application.run_experiment import (
     ExperimentRefusal,
     PreparedExperiment,
+    PreparedSearch,
+    PreparedTrial,
     ReproductionReport,
     ReproductionVerdict,
     RunExperiment,
@@ -97,11 +100,23 @@ from odyssey_fx.evaluation.domain.experiment import (
     require_experiment_name,
 )
 from odyssey_fx.evaluation.domain.research_policy import (
+    ComplexityMeasures,
     InstanceProfile,
     check_complexity,
     check_hypothesis,
     check_research_history_only,
+    check_trial_count,
     measure_complexity,
+    search_complexity,
+)
+from odyssey_fx.evaluation.domain.search import (
+    ParameterAssignment,
+    TrialPhase,
+    TrialPlan,
+    TrialUnitKey,
+    compile_rejections_of,
+    enumerate_assignments,
+    trial_units,
 )
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
 from odyssey_fx.marketdata.adapters.dukascopy_source import DukascopyTickSource
@@ -163,8 +178,15 @@ from odyssey_fx.marketdata.domain.snapshot import (
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.catalog.registry import ComponentRegistry, ContractKey
-from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, CompileSucceeded
+from odyssey_fx.strategy.compiler.compiled import (
+    CompiledStrategy,
+    CompileFailed,
+    CompileSucceeded,
+)
 from odyssey_fx.strategy.compiler.validate import compile_strategy
+from odyssey_fx.strategy.declarations.definition import StrategyDefinition
+from odyssey_fx.strategy.declarations.digest import strategy_ref_for
+from odyssey_fx.strategy.declarations.specs import ParameterValue
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 
 __all__ = [
@@ -173,6 +195,7 @@ __all__ = [
     "ExperimentRunOutcome",
     "ReproductionOutcome",
     "RunOutcome",
+    "SearchRunUnsupported",
     "SnapshotInputs",
     "acceptance_service",
     "build_conversion_record",
@@ -1063,6 +1086,28 @@ def evaluate_saved_run(
 # --- 実験の経路（D07 §19〜§21）-------------------------------------------------
 
 
+class SearchRunUnsupported(Exception):
+    """有効な探索の実験だが、この段階では実行未対応であること（D09 §17.7.2 の1）。
+
+    設定の誤り（`ConfigError`）ではない。設定は読込の検査をすべて通っている。CLI は何も
+    書かずに「この段階では実行未対応」と示し、表に無い失敗として終了コード 1 で終える
+    （D07 §21.3 の v2.4 の段落）。
+
+    **解除の条件（実装 PR 4 の完了条件）**: 探索の実行の経路（fold ごとの run・開始記録・試行
+    記録・選定記録・集約表・結末記録・退避。D09 §10.7）と試行台帳への追記（D09 §10.10）、探索の
+    記録票の保存と再読込（D09 §17.7.2 の9）がそろったら、この例外と送出箇所を取り除く。
+    """
+
+
+#: 探索の実験を実行する経路がまだ無いことの説明（D09 §17.7.2 の1。実装 PR 4 で解除する）。
+SEARCH_RUN_UNSUPPORTED = (
+    "この段階では実行未対応: 探索の実験（search_plan / split が NONE でない）の設定は有効だが、"
+    "探索の実行と記録（fold ごとの run・選定記録・試行台帳・探索の記録票の保存）は実装 PR 4 で"
+    "有効にする（D09 §10.7・§14・§17.7.2 の1）。何も書いていない。設定の読込・試行の列挙・"
+    "試行ごとのコンパイルまでは実装済み"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _SnapshotManifestCatalog:
     """`SnapshotCatalog`（`evaluation.application.ports`）を snapshot の manifest で満たす。
@@ -1240,7 +1285,13 @@ def run_experiment(
 
     記録票を組み立て（事前検査を含む）、`RunExperiment` に渡す。記録票の保存・run・評価・
     事後検査の順序と拒否の判断は `RunExperiment` が持つ（ここは結線だけ）。
+
+    受けるのは単一実行の実験だけである。探索の実験の実行（D09 §10.7）は後続の実装 PR が足し、
+    それまでは準備（`prepare_search`）までしか作らない。
     """
+    if loaded.search is not None:
+        # 書き込みより前に止める（記録票も結末記録も成果物も書かない。D09 §17.7.2 の1）。
+        raise SearchRunUnsupported(SEARCH_RUN_UNSUPPORTED)
     environment = loaded.environment
     plan = _plan_run(
         experiment=loaded.experiment,
@@ -1289,6 +1340,281 @@ def run_experiment(
         directory=store.directory,
         expected_run_id=plan.run_id,
         report=report,
+    )
+
+
+# --- 探索の実験の準備（D09 §5・§6.2・§10.2・§10.7。実装 PR 2）----------------------------
+
+
+def trial_strategy(
+    strategy: StrategyDefinition, assignment: ParameterAssignment
+) -> StrategyDefinition:
+    """割当の値で戦略ファイルのパラメータを置き換えた戦略宣言（D09 §5.1）。
+
+    軸に挙げたパラメータだけを試行の値で置き換え、軸に無いパラメータは戦略ファイルの値のまま
+    （書かれていなければ契約の既定値のまま）にする。置き換えた宣言をコンパイルすると、割当を
+    含む解決済み設定の識別 `CompiledStrategyRef` が得られる（D02 §9.2、D05 §5.5）。
+    """
+    overrides: dict[str, dict[str, ParameterValue]] = {}
+    for instance_id, parameter, value in assignment.values:
+        overrides.setdefault(instance_id, {})[parameter] = value
+    known = {instance.instance_id for instance in strategy.components}
+    unknown = sorted(set(overrides) - known)
+    if unknown:
+        raise KernelValueError(f"the assignment names instances {unknown} absent from the strategy")
+    return replace(
+        strategy,
+        components=tuple(
+            replace(instance, parameters={**instance.parameters, **overrides[instance.instance_id]})
+            if instance.instance_id in overrides
+            else instance
+            for instance in strategy.components
+        ),
+    )
+
+
+def _unit_run_config(
+    experiment: RunBody, compiled: CompiledStrategy, interval: Interval
+) -> RunConfig:
+    """単位の `RunConfig`（D09 §6.2）。単位どうしで違うのは `compiled_ref` と区間だけ。
+
+    `interval` は単位の実行区間（fold の選定区間か検証区間）で、評価範囲ではない。
+    """
+    return RunConfig(
+        run_interval=interval,
+        snapshot_ref=experiment.snapshot_ref,
+        compiled_ref=compiled.compiled_ref,
+        account=experiment.account,
+        risk_policy_ref=experiment.policy_ref("risk"),
+        execution_policy_ref=experiment.policy_ref("execution"),
+        cost_model_ref=experiment.policy_ref("cost"),
+        conversion_policy_ref=experiment.policy_ref("conversion"),
+        delay_scenario_ref=experiment.policy_ref("delay"),
+        execution_series=experiment.execution_series,
+        seed=experiment.seed,
+    )
+
+
+def _distinct(items: Sequence[str]) -> tuple[str, ...]:
+    """順序を保って重複を除く（試行ごとに同じ原因が出る計測不能の原因をまとめる）。"""
+    return tuple(dict.fromkeys(items))
+
+
+def build_search_manifest(
+    loaded: ExperimentV2,
+    inputs: SnapshotInputs,
+    trials: Sequence[PreparedTrial],
+    measures: Sequence[ComplexityMeasures],
+    unmeasured_causes: Sequence[str],
+    environment: tuple[CodeDigest, LockDigest, EnvDigest, str, bool],
+) -> ExperimentManifest:
+    """探索の実験の記録票を組み立てる（D09 §10.2）。事前検査 P1・P2・P6・P7 もここで行う。
+
+    - P2 は全単位の許可集合の和（探索の全単位は同じ snapshot の同じ許可集合を読む）。
+    - P6 はコンパイルが通った全試行の計測値の最大（`search_complexity`）。1件も通らなければ
+      計測できなかった（`UNREADABLE`）。
+    - P7 は列挙した試行の数（コンパイル拒否の試行を含む）と研究ポリシーの試行数の上限。
+    """
+    search = loaded.search
+    if search is None:
+        raise KernelValueError("build_search_manifest requires a search experiment")
+    experiment = loaded.body
+    try:
+        require_experiment_name(experiment.experiment_id)
+    except KernelValueError as exc:
+        raise ConfigError(f"実験設定の `id` を保存先の名前に使えない: {exc}") from exc
+    policy = loaded.policy
+    if policy.trial_limit is None:  # pragma: no cover - 版 3 以上は試行数の上限を持つ
+        raise ConfigError("探索の実験は試行数の上限を持つ研究ポリシーの版しか指せない（D09 §10.9）")
+    catalog = _SnapshotManifestCatalog(inputs.snapshot.manifest)
+    access = catalog.access_classes(experiment.snapshot_ref, inputs.allowed_partitions)
+    allowed = {str(partition): access_class for partition, access_class in access.items()}
+    complexity = search_complexity(measures)
+    causes = list(unmeasured_causes)
+    if not measures:
+        causes.append("no trial compiled, so there is nothing to measure (D09 §10.2)")
+    pre_run_checks = (
+        check_hypothesis(loaded.hypothesis),
+        check_research_history_only(allowed),
+        check_complexity(complexity, policy.limits, unmeasured_causes=_distinct(causes)),
+        check_trial_count(len(trials), policy.trial_limit),
+    )
+    code, lock, env, commit, dirty = environment
+    draft = ExperimentManifest(
+        experiment_id=ExperimentId(digest("draft")),
+        experiment_name=experiment.experiment_id,
+        experiment_version=experiment.version,
+        schema_version=EXPERIMENT_SCHEMA_VERSION,
+        hypothesis=loaded.hypothesis,
+        research_policy_ref=PolicyRef(
+            policy_kind="research",
+            policy_id=policy.policy_id,
+            version=policy.version,
+            digest=policy.digest,
+        ),
+        metric_set_version=loaded.metric_set_version,
+        search_plan=search.plan,
+        split=search.split,
+        resolved_files=_resolved_files(loaded, (experiment.execution_series.symbol,)),
+        strategy_ref=strategy_ref_for(experiment.strategy),
+        compiled_ref=None,
+        expected_config_digest=None,
+        snapshot_id=experiment.snapshot_ref.snapshot_id,
+        allowed_partitions=allowed,
+        complexity=complexity,
+        complexity_limits=policy.limits,
+        pre_run_checks=pre_run_checks,
+        code_digest=code,
+        lock_digest=lock,
+        env_digest=env,
+        git_commit=commit,
+        git_dirty=dirty,
+        evaluation_standard=search.standard,
+        final_holdout=search.final_holdout,
+        trials=tuple(trial.plan for trial in trials),
+    )
+    return replace(draft, experiment_id=experiment_id_of(draft, loaded.values))
+
+
+def _prepare_trial(
+    *,
+    index: int,
+    assignment: ParameterAssignment,
+    search: SearchSetting,
+    experiment: RunBody,
+    timeframes: Mapping[TimeframeRef, TimeframeDefinition],
+    registry: ComponentRegistry,
+    refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]],
+    environment: tuple[CodeDigest, LockDigest, EnvDigest],
+) -> PreparedTrial:
+    """試行1つをコンパイルし、全単位の `RunConfig`・予測 `ConfigDigest`・予測 `RunId` を作る。
+
+    コンパイルが拒否した割当は試行の失敗（`FAILED`）として拒否の区分を残し、run を作らない
+    （D09 §5.2・§10.2）。設定の誤りとして止めない（探索空間の中の「実行できない点」）。
+    """
+    definition = trial_strategy(experiment.strategy, assignment)
+    outcome = compile_strategy(definition, registry, timeframes)
+    if isinstance(outcome, CompileFailed):
+        plan = TrialPlan(
+            trial_index=index,
+            assignment=assignment,
+            compiled_ref=None,
+            compile_rejections=compile_rejections_of(outcome.errors),
+            expected_config_digests=(),
+        )
+        return PreparedTrial(plan=plan, compiled=None, run_configs=(), expected_run_ids=())
+    if not isinstance(outcome, CompileSucceeded):  # pragma: no cover - 区分は2つだけ
+        raise KernelValueError("compile_strategy returned an unexpected value")
+    compiled = outcome.compiled
+    symbol_spec_ref, calendar_ref, timeframe_refs = refs
+    code, lock, env = environment
+    folds = search.split.folds
+    configs: list[tuple[TrialUnitKey, RunConfig]] = []
+    digests: list[tuple[TrialUnitKey, ConfigDigest]] = []
+    run_ids: list[tuple[TrialUnitKey, RunId]] = []
+    for unit in trial_units(len(folds), index):
+        fold = folds[unit.fold_index]
+        interval = fold.train if unit.phase is TrialPhase.TRAIN else fold.validation
+        config = _unit_run_config(experiment, compiled, interval)
+        config_digest = config_digest_of(
+            config,
+            symbol_spec_ref=symbol_spec_ref,
+            calendar_ref=calendar_ref,
+            timeframe_def_refs=timeframe_refs,
+        )
+        configs.append((unit, config))
+        digests.append((unit, config_digest))
+        run_ids.append((unit, run_id_of(config_digest, code, lock, env)))
+    plan = TrialPlan(
+        trial_index=index,
+        assignment=assignment,
+        compiled_ref=compiled.compiled_ref,
+        compile_rejections=(),
+        expected_config_digests=tuple(digests),
+    )
+    return PreparedTrial(
+        plan=plan, compiled=compiled, run_configs=tuple(configs), expected_run_ids=tuple(run_ids)
+    )
+
+
+def prepare_search(
+    *,
+    loaded: ExperimentV2,
+    snapshots_root: Path,
+    repo_root: Path,
+    registry: ComponentRegistry = INITIAL_CATALOG,
+) -> PreparedSearch:
+    """探索の実験の1回分の入力を組み立てる（D09 §4.1 の手順1・2、§10.2・§10.7）。
+
+    snapshot を開き、試行を列挙し（`enumerate_assignments`）、試行ごとにコンパイルし、コンパイルが
+    通った試行は全 fold の選定区間と検証区間の単位の `RunConfig`・予測 `ConfigDigest`・予測
+    `RunId` を作る。記録票（事前検査 P1・P2・P6・P7 を含む）を組み立てて `PreparedSearch` に
+    束ねる。**run はしない**（探索の実行は後続の実装 PR）。`registry` はコンパイルと複雑性の計測の
+    両方に使う部品の登録（読込に使ったものと同じものを渡す）。
+    """
+    search = loaded.search
+    if search is None:
+        raise ConfigError("prepare_search は探索の実験（search_plan が NONE でない）だけを受ける")
+    experiment = loaded.body
+    environment = loaded.environment
+    inputs = open_snapshot_inputs(
+        snapshots_root=snapshots_root,
+        snapshot_id=str(experiment.snapshot_ref.snapshot_id),
+        calendar=environment.calendar,
+        timeframe_defs=environment.timeframe_defs,
+    )
+    symbol = experiment.execution_series.symbol
+    spec = environment.symbol_specs.get(symbol)
+    if spec is None:
+        raise MarketDataValueError(
+            f"the configuration has no symbol specification for {symbol} (D02 §5.2)"
+        )
+    if inputs.schedules.get(experiment.execution_series) is None:
+        raise MarketDataValueError(
+            f"the snapshot does not carry the execution series {experiment.execution_series}"
+            " (D03 §6.3)"
+        )
+    refs = (
+        symbol_spec_ref_of(spec),
+        calendar_ref_of(environment.calendar),
+        tuple(sorted((d.ref for d in environment.timeframe_defs.values()), key=str)),
+    )
+    code = code_digest()
+    lock = lock_digest(repo_root)
+    env = env_digest()
+    commit, dirty = git_state(repo_root)
+    timeframes = {definition.ref: definition for definition in environment.timeframe_defs.values()}
+    trials: list[PreparedTrial] = []
+    measures: list[ComplexityMeasures] = []
+    causes: list[str] = []
+    for index, assignment in enumerate(enumerate_assignments(search.plan)):
+        trial = _prepare_trial(
+            index=index,
+            assignment=assignment,
+            search=search,
+            experiment=experiment,
+            timeframes=timeframes,
+            registry=registry,
+            refs=refs,
+            environment=(code, lock, env),
+        )
+        trials.append(trial)
+        if trial.compiled is not None:
+            profiles, unmeasured, trial_causes = complexity_profiles(trial.compiled, registry)
+            measures.append(measure_complexity(profiles, unmeasured_outputs=unmeasured))
+            causes.extend(trial_causes)
+    manifest = build_search_manifest(
+        loaded, inputs, trials, measures, causes, (code, lock, env, commit, dirty)
+    )
+    return PreparedSearch(
+        manifest=manifest,
+        trials=tuple(trials),
+        calendar=environment.calendar,
+        code_digest=code,
+        lock_digest=lock,
+        env_digest=env,
+        git_commit=commit,
+        git_dirty=dirty,
     )
 
 
