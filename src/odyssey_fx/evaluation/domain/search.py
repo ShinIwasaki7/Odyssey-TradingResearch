@@ -844,8 +844,12 @@ class _UnitEvaluation:
     `run_evaluation_id` は D07 §9.2 の評価の識別子のダイジェスト（`RunEvaluationId.digest`）で
     ある。`RunEvaluationId` は `evaluation.application` にあり domain から参照できない
     （D01 §3 の層の規則。結末記録の `ExperimentOutcome.run_evaluation_id` と同じ扱い）。
+
+    `fold_index` は単位がどの fold のものかを表す。選定と判定は、渡された fold の番号と
+    単位の `fold_index` が一致することを確かめ、別の fold の結果を混ぜられないようにする。
     """
 
+    fold_index: int
     trial_index: int
     status: TrialStatus
     run_status: RunStatus | None
@@ -855,6 +859,7 @@ class _UnitEvaluation:
     metrics: tuple[MetricRecord, ...]
 
     def __post_init__(self) -> None:
+        _require_index(self.fold_index, "unit fold_index")
         _require_index(self.trial_index, "unit trial_index")
         if not isinstance(self.status, TrialStatus):
             raise KernelValueError("unit status must be a TrialStatus")
@@ -884,6 +889,12 @@ class _UnitEvaluation:
             if self.evaluation_status is not EvaluationStatus.COMPLETED and self.metrics:
                 raise KernelValueError(
                     "評価が COMPLETED でない単位は指標の行を持たない（D07 §10.1）"
+                )
+            if self.evaluation_status is EvaluationStatus.COMPLETED and set(ids) != set(MetricId):
+                missing = [item.value for item in MetricId if item not in set(ids)]
+                raise KernelValueError(
+                    f"unit {self.trial_index} の評価は COMPLETED なのに指標の行が欠けている:"
+                    f" {missing}（D07 §8.1。値なしも行として残す）"
                 )
         elif (
             self.run_status is not None
@@ -1300,6 +1311,20 @@ class FoldEvidence:
             raise KernelValueError("選んだ試行のある fold は検証区間の単位の結果を持つ（D09 §7.7）")
         elif self.validation.trial_index != selected:
             raise KernelValueError("検証区間の単位は選んだ試行のもの（D09 §7.7）")
+        units: tuple[_UnitEvaluation, ...] = (
+            *self.train_units,
+            *(() if self.validation is None else (self.validation,)),
+        )
+        if any(item.fold_index != self.fold.fold_index for item in units):
+            raise KernelValueError(
+                f"FoldEvidence: fold {self.fold.fold_index} に別の fold の単位の結果がある"
+            )
+
+    @property
+    def unit_statuses(self) -> tuple[TrialStatus, ...]:
+        """この fold の全単位の状態（選定区間の全試行と、選んだ試行の検証区間。D09 §10.4）。"""
+        validation = () if self.validation is None else (self.validation.status,)
+        return (*(item.status for item in self.train_units), *validation)
 
 
 # --- 内部の小道具 -------------------------------------------------------------
@@ -1428,6 +1453,12 @@ def select_trial(
         raise KernelValueError(
             "select_trial は選定区間の単位の結果（TrainUnitEvaluation）だけを受け取る"
             "（D09 §7.2。選定は train 内で閉じる）"
+        )
+    foreign = sorted({item.fold_index for item in items if item.fold_index != fold_index})
+    if foreign:
+        raise KernelValueError(
+            f"select_trial: fold {fold_index} の選定に別の fold {foreign} の結果が渡された"
+            "（D09 §7.2。選定はその fold の選定区間の結果だけを入力にする）"
         )
     ordered = sorted(items, key=lambda item: item.trial_index)
     indices = [item.trial_index for item in ordered]
@@ -1715,7 +1746,6 @@ def _judge_fold(
 def build_search_outcome(
     standard: EvaluationStandard,
     folds: Sequence[FoldEvidence],
-    trial_statuses: Iterable[TrialStatus],
     ledger_execution: int,
 ) -> SearchOutcome:
     """全 fold が終端した後に、頻度区分・fold の判定・実験の判定を決める（D09 §7.3・§7.8）。
@@ -1731,7 +1761,8 @@ def build_search_outcome(
        **用途を見るのはここだけ**（Q33 決定）。
 
     各 fold の選定記録は、渡された選定区間の結果から `select_trial` で作り直した値と一致する
-    ことを確かめる（一致しなければ構造エラー）。`trial_statuses` は全単位の状態（D09 §10.4）、
+    ことを確かめる（一致しなければ構造エラー）。試行の状態の件数は、渡された全 fold の単位
+    （選定区間の全試行と選んだ試行の検証区間）の状態から数える（D09 §10.4・§10.6）。
     `ledger_execution` は試行台帳の実行番号で、呼び出し側が渡す（採番は D09 の後続版。§19 の13）。
     """
     if not isinstance(standard, EvaluationStandard):
@@ -1796,7 +1827,7 @@ def build_search_outcome(
         frequency=frequency,
         condition_results=tuple(conditions),
         shortfalls=tuple(sorted(shortfalls, key=lambda item: item.key)),
-        trial_counts=count_trial_statuses(trial_statuses),
+        trial_counts=count_trial_statuses(s for item in evidence for s in item.unit_statuses),
         ledger_execution=ledger_execution,
         purpose=standard.purpose,
     )

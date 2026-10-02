@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from decimal import Decimal
@@ -102,6 +103,7 @@ def _unit_fields(
 ) -> dict[str, object]:
     if status is not TrialStatus.COMPLETED:
         return {
+            "fold_index": 0,
             "trial_index": trial_index,
             "status": status,
             "run_status": None,
@@ -111,6 +113,7 @@ def _unit_fields(
             "metrics": (),
         }
     return {
+        "fold_index": 0,
         "trial_index": trial_index,
         "status": status,
         "run_status": run_status,
@@ -245,9 +248,19 @@ def evidence(
     validation: ValidationUnitEvaluation | None,
 ) -> FoldEvidence:
     """選定区間の結果から選定記録を作り、fold の判定の入力にまとめる。"""
+    trains = in_fold(train_units, fold.fold_index)
     return FoldEvidence(
         fold=fold,
-        selection=select_trial(fold.fold_index, rule.selection, train_units),
-        train_units=tuple(train_units),
-        validation=validation,
+        selection=select_trial(fold.fold_index, rule.selection, trains),
+        train_units=trains,
+        validation=None
+        if validation is None
+        else dataclasses.replace(validation, fold_index=fold.fold_index),
     )
+
+
+def in_fold(
+    units: Sequence[TrainUnitEvaluation], fold_index: int
+) -> tuple[TrainUnitEvaluation, ...]:
+    """選定区間の単位の結果を fold `fold_index` のものとして付け直す（既定は fold 0）。"""
+    return tuple(dataclasses.replace(unit, fold_index=fold_index) for unit in units)

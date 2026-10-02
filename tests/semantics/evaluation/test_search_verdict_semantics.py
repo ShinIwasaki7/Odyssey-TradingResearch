@@ -60,6 +60,7 @@ from odyssey_fx.evaluation.domain.splits import Fold
 from tests.fixtures.evaluation.search_units import (
     Override,
     evidence,
+    in_fold,
     make_fold,
     standard,
     train_unit,
@@ -79,14 +80,15 @@ def _outcome(rule: EvaluationStandard, folds_spec: Sequence[FoldSpec]) -> Search
     items: list[FoldEvidence] = []
     for index, (trains, validation) in enumerate(folds_spec):
         fold = make_fold(index)
-        selection = select_trial(index, rule.selection, trains)
+        bound = in_fold(trains, index)
+        selection = select_trial(index, rule.selection, bound)
         unit = (
             None
             if selection.selected_trial_index is None
             else validation_unit(selection.selected_trial_index, validation)
         )
         items.append(evidence(rule, fold, trains, unit))
-    return build_search_outcome(rule, items, [TrialStatus.COMPLETED], ledger_execution=1)
+    return build_search_outcome(rule, items, ledger_execution=1)
 
 
 # --- #1 -------------------------------------------------------------------------

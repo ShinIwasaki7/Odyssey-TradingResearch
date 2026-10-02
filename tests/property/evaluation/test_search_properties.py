@@ -27,6 +27,7 @@ from odyssey_fx.evaluation.domain.search import (
 )
 from tests.fixtures.evaluation.search_units import (
     evidence,
+    in_fold,
     make_fold,
     standard,
     train_unit,
@@ -112,17 +113,15 @@ def test_search_outcome_is_deterministic_and_independent_of_fold_order(
     rule = standard()
     items = []
     for index, trains in enumerate(folds):
-        selection = select_trial(index, rule.selection, trains)
+        bound = in_fold(trains, index)
+        selection = select_trial(index, rule.selection, bound)
         unit = (
             None
             if selection.selected_trial_index is None
             else validation_unit(selection.selected_trial_index, {TC: validation_trades[index]})
         )
         items.append(evidence(rule, make_fold(index), trains, unit))
-    statuses = [unit.status for trains in folds for unit in trains]
-    first = build_search_outcome(rule, items, statuses, ledger_execution=1)
-    again = build_search_outcome(rule, items, statuses, ledger_execution=1)
-    reordered = build_search_outcome(
-        rule, data.draw(st.permutations(items)), statuses, ledger_execution=1
-    )
+    first = build_search_outcome(rule, items, ledger_execution=1)
+    again = build_search_outcome(rule, items, ledger_execution=1)
+    reordered = build_search_outcome(rule, data.draw(st.permutations(items)), ledger_execution=1)
     assert first == again == reordered

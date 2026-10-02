@@ -52,6 +52,7 @@ from tests.fixtures.evaluation.search_units import (
     Override,
     digest_for,
     evidence,
+    in_fold,
     make_fold,
     standard,
     train_unit,
@@ -75,13 +76,14 @@ def _outcome(
 ) -> SearchOutcome:
     items: list[FoldEvidence] = []
     for index, (trains, metrics) in enumerate(folds_spec):
-        selection = select_trial(index, rule.selection, trains)
+        bound = in_fold(trains, index)
+        selection = select_trial(index, rule.selection, bound)
         unit = None
         if selection.selected_trial_index is not None:
             extra = dict((validation_kwargs or {}).get(index, {}))
             unit = validation_unit(selection.selected_trial_index, metrics, **extra)  # type: ignore[arg-type]
         items.append(evidence(rule, make_fold(index), trains, unit))
-    return build_search_outcome(rule, items, [TrialStatus.COMPLETED], ledger_execution=1)
+    return build_search_outcome(rule, items, ledger_execution=1)
 
 
 # --- 試行の状態 ---------------------------------------------------------------------
@@ -108,6 +110,7 @@ def test_count_trial_statuses_lists_every_state_in_declaration_order() -> None:
 def test_unit_not_completed_cannot_carry_results() -> None:
     with pytest.raises(KernelValueError, match="試行済みでない"):
         TrainUnitEvaluation(
+            fold_index=0,
             trial_index=0,
             status=TrialStatus.ABORTED,
             run_status=RunStatus.COMPLETED,
@@ -123,6 +126,7 @@ def test_unit_with_rejected_evaluation_has_no_metric_rows() -> None:
     assert unit.metrics == ()
     with pytest.raises(KernelValueError, match="COMPLETED でない"):
         TrainUnitEvaluation(
+            fold_index=0,
             trial_index=0,
             status=TrialStatus.COMPLETED,
             run_status=RunStatus.FAILED_CAPABILITY,
@@ -136,6 +140,7 @@ def test_unit_with_rejected_evaluation_has_no_metric_rows() -> None:
 def test_unit_never_carries_aborted_evaluation() -> None:
     with pytest.raises(KernelValueError, match="ABORTED"):
         TrainUnitEvaluation(
+            fold_index=0,
             trial_index=0,
             status=TrialStatus.COMPLETED,
             run_status=RunStatus.COMPLETED,
@@ -207,7 +212,7 @@ def test_selection_applies_eligibility_then_maximizes_and_records_all_trials() -
         train_unit(2, status=TrialStatus.FAILED),
         train_unit(3, {NRR: Decimal("0.1"), DD: Decimal("0.1")}),
     ]
-    selection = select_trial(4, rule.selection, units)
+    selection = select_trial(4, rule.selection, in_fold(units, 4))
     assert selection.fold_index == 4
     assert selection.selected_trial_index == 1
     assert selection.selected_value == Decimal("0.2")
@@ -268,8 +273,8 @@ def test_frequency_sums_only_folds_with_a_selected_trial() -> None:
     folds = [make_fold(0), make_fold(1), make_fold(2)]
     selections = [
         select_trial(0, rule.selection, [train_unit(0, {TC: 30})]),
-        select_trial(1, rule.selection, [train_unit(0, status=TrialStatus.FAILED)]),
-        select_trial(2, rule.selection, [train_unit(0, {TC: 10})]),
+        select_trial(1, rule.selection, in_fold([train_unit(0, status=TrialStatus.FAILED)], 1)),
+        select_trial(2, rule.selection, in_fold([train_unit(0, {TC: 10})], 2)),
     ]
     assessment = assess_frequency(selections, folds, rule.sufficiency)
     assert assessment == FrequencyAssessment("MID", 40, 2 * 365 * 86_400)
@@ -499,14 +504,14 @@ def test_build_rejects_a_selection_record_that_does_not_match_the_train_results(
         fold=make_fold(0), selection=forged, train_units=trains, validation=validation_unit(0)
     )
     with pytest.raises(KernelValueError, match="作り直した値と違う"):
-        build_search_outcome(rule, [item], [], ledger_execution=1)
+        build_search_outcome(rule, [item], ledger_execution=1)
 
 
 def test_build_requires_consecutive_folds_from_zero() -> None:
     rule = standard()
     item = evidence(rule, make_fold(1), [train_unit(0)], validation_unit(0))
     with pytest.raises(KernelValueError, match="連番"):
-        build_search_outcome(rule, [item], [], ledger_execution=1)
+        build_search_outcome(rule, [item], ledger_execution=1)
 
 
 def test_fold_evidence_requires_the_validation_unit_of_the_selected_trial() -> None:
@@ -520,9 +525,7 @@ def test_fold_evidence_requires_the_validation_unit_of_the_selected_trial() -> N
 def test_outcome_carries_trial_counts_ledger_execution_and_purpose() -> None:
     rule = standard(purpose=StandardPurpose.MECHANISM_CHECK)
     item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
-    outcome = build_search_outcome(
-        rule, [item], [TrialStatus.COMPLETED, TrialStatus.COMPLETED], ledger_execution=7
-    )
+    outcome = build_search_outcome(rule, [item], ledger_execution=7)
     assert outcome.trial_counts[1] == (TrialStatus.COMPLETED, 2)
     assert outcome.ledger_execution == 7
     assert outcome.purpose is StandardPurpose.MECHANISM_CHECK
@@ -531,7 +534,7 @@ def test_outcome_carries_trial_counts_ledger_execution_and_purpose() -> None:
 def test_search_outcome_rejects_meets_standard_under_mechanism_check() -> None:
     rule = standard()
     item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
-    outcome = build_search_outcome(rule, [item], [], ledger_execution=1)
+    outcome = build_search_outcome(rule, [item], ledger_execution=1)
     assert outcome.verdict is SearchVerdict.MEETS_STANDARD
     with pytest.raises(KernelValueError, match="MEETS_STANDARD"):
         SearchOutcome(
@@ -610,3 +613,61 @@ def test_longest_idle_rejects_a_holding_that_ends_before_it_starts() -> None:
     interval = Interval(start=_at(0), end=_at(100))
     with pytest.raises(KernelValueError, match="ends before"):
         longest_idle_period(interval, [(_at(10), _at(5))])
+
+
+# --- fold の取り違え・指標の行の欠け・試行の状態の件数（Codex 第1巡の指摘） ----------------
+
+
+def test_selection_rejects_results_of_another_fold() -> None:
+    with pytest.raises(KernelValueError, match="別の fold"):
+        select_trial(0, standard().selection, in_fold([train_unit(0)], 1))
+
+
+def test_fold_evidence_rejects_a_validation_unit_of_another_fold() -> None:
+    rule = standard()
+    trains = in_fold([train_unit(0)], 1)
+    with pytest.raises(KernelValueError, match="別の fold"):
+        FoldEvidence(
+            fold=make_fold(1),
+            selection=select_trial(1, rule.selection, trains),
+            train_units=trains,
+            validation=validation_unit(0),  # fold 0 の単位
+        )
+
+
+def test_completed_evaluation_must_carry_every_metric_row() -> None:
+    rows = tuple(item for item in train_unit(0).metrics if item.metric_id is not MetricId.WIN_RATE)
+    with pytest.raises(KernelValueError, match="WIN_RATE"):
+        TrainUnitEvaluation(
+            fold_index=0,
+            trial_index=0,
+            status=TrialStatus.COMPLETED,
+            run_status=RunStatus.COMPLETED,
+            run_evaluation_id=digest_for(1),
+            evaluation_status=EvaluationStatus.COMPLETED,
+            post_run_checks_passed=True,
+            metrics=rows,
+        )
+
+
+def test_trial_counts_are_derived_from_the_fold_units() -> None:
+    outcome = _outcome(
+        standard(),
+        [
+            (
+                [
+                    train_unit(0, {TC: 30}),
+                    train_unit(1, status=TrialStatus.FAILED),
+                    train_unit(2, status=TrialStatus.ABORTED),
+                ],
+                {TC: 30},
+            ),
+            ([train_unit(0, status=TrialStatus.NOT_STARTED)], None),
+        ],
+    )
+    assert outcome.trial_counts == (
+        (TrialStatus.NOT_STARTED, 1),
+        (TrialStatus.COMPLETED, 2),  # fold 0 の選定区間と検証区間
+        (TrialStatus.FAILED, 1),
+        (TrialStatus.ABORTED, 1),
+    )
