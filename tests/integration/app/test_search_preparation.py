@@ -43,6 +43,7 @@ from odyssey_fx.evaluation.domain.search import TrialPhase, TrialUnitKey
 from odyssey_fx.evaluation.domain.status import CheckOutcome
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+from odyssey_fx.strategy.catalog.registry import ComponentRegistry
 from odyssey_fx.strategy.declarations.specs import IntValue
 from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
 from tests.fixtures.evaluation.search_experiments import (
@@ -204,6 +205,25 @@ def test_a_search_where_no_trial_compiles_cannot_measure_its_complexity(
     checks = {item.check: item for item in manifest.pre_run_checks}
     assert checks[PolicyCheck.COMPLEXITY_WITHIN_LIMITS].outcome is CheckOutcome.UNREADABLE
     assert manifest.complexity.instances is None
+
+
+def test_the_trials_compile_against_the_given_registry(workspace: T02Workspace) -> None:
+    """試行のコンパイルは渡した部品の登録を使う（読込・複雑性の計測と同じ登録。D09 §5.2）。
+
+    部品が1つも無い登録を渡せば、全試行が契約の未登録としてコンパイル拒否になる。
+    """
+    prepared = composition.prepare_search(
+        loaded=_load(workspace, write_search_experiment(workspace.repo, "registry.yaml")),
+        snapshots_root=workspace.repo / "data/snapshots",
+        repo_root=workspace.repo,
+        registry=ComponentRegistry(registrations={}),
+    )
+    assert all(not trial.compiled for trial in prepared.manifest.trials)
+    assert all(
+        "REFERENCE_NOT_FOUND" in item
+        for trial in prepared.manifest.trials
+        for item in trial.compile_rejections
+    )
 
 
 class _NoRunner:

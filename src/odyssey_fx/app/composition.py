@@ -1463,6 +1463,7 @@ def _prepare_trial(
     search: SearchSetting,
     experiment: ExperimentConfig,
     timeframes: Mapping[TimeframeRef, TimeframeDefinition],
+    registry: ComponentRegistry,
     refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]],
     environment: tuple[CodeDigest, LockDigest, EnvDigest],
 ) -> PreparedTrial:
@@ -1472,7 +1473,7 @@ def _prepare_trial(
     （D09 §5.2・§10.2）。設定の誤りとして止めない（探索空間の中の「実行できない点」）。
     """
     definition = trial_strategy(experiment.strategy, assignment)
-    outcome = compile_strategy(definition, INITIAL_CATALOG, timeframes)
+    outcome = compile_strategy(definition, registry, timeframes)
     if isinstance(outcome, CompileFailed):
         plan = TrialPlan(
             trial_index=index,
@@ -1528,7 +1529,8 @@ def prepare_search(
     snapshot を開き、試行を列挙し（`enumerate_assignments`）、試行ごとにコンパイルし、コンパイルが
     通った試行は全 fold の選定区間と検証区間の単位の `RunConfig`・予測 `ConfigDigest`・予測
     `RunId` を作る。記録票（事前検査 P1・P2・P6・P7 を含む）を組み立てて `PreparedSearch` に
-    束ねる。**run はしない**（探索の実行は後続の実装 PR）。
+    束ねる。**run はしない**（探索の実行は後続の実装 PR）。`registry` はコンパイルと複雑性の計測の
+    両方に使う部品の登録（読込に使ったものと同じものを渡す）。
     """
     search = loaded.search
     if search is None:
@@ -1572,6 +1574,7 @@ def prepare_search(
             search=search,
             experiment=experiment,
             timeframes=timeframes,
+            registry=registry,
             refs=refs,
             environment=(code, lock, env),
         )
