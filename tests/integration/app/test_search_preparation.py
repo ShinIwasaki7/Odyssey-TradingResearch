@@ -13,7 +13,8 @@
 - 事前検査は P1・P2・P6・P7（P6 はコンパイルが通った試行の最大、P7 は列挙した試行の数）。
 - 記録票の保存の前に、全単位の既存の run 成果物を確かめる（選ばれるかどうかによらず検証区間の
   単位も。D09 §10.5 の注記）。
-- `experiment run` は探索の実験をまだ受けない（終了コード 2。何も書かない）。
+- `experiment run` は探索の実験を「この段階では実行未対応」として何も書かずに止める（設定の誤り
+  ではない。表に無い失敗として終了コード 1。D09 §17.7.2 の1）。
 """
 
 from __future__ import annotations
@@ -273,7 +274,8 @@ def _invoke(argv: list[str]) -> tuple[int, str]:
 def test_experiment_run_does_not_accept_a_search_experiment_yet(
     workspace: T02Workspace, tmp_path: Path
 ) -> None:
-    """探索の実行は後続の実装 PR で有効にする。それまでは設定の誤りとして終了コード 2（仮置き）。"""
+    """探索の実行は実装 PR 4 で有効にする。それまでは設定の誤りと呼ばず「この段階では実行未対応」
+    と示し、何も書かずに終了コード 1 で止める（D09 §17.7.2 の1、D07 §21.3 の表に無い失敗）。"""
     code, output = _invoke(
         [
             "experiment",
@@ -288,8 +290,9 @@ def test_experiment_run_does_not_accept_a_search_experiment_yet(
             str(workspace.repo),
         ]
     )
-    assert code == 2, output
-    assert "探索の実験" in output
+    assert code == 1, output
+    assert "この段階では実行未対応" in output
+    assert "失敗:" not in output
     assert not (tmp_path / "out").exists()
 
 

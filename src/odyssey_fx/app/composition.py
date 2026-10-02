@@ -30,7 +30,7 @@ from typing import Any
 
 import odyssey_fx
 from odyssey_fx.app.config import ConfigError, DataSourceConfig
-from odyssey_fx.app.config.experiment import ExperimentConfig
+from odyssey_fx.app.config.experiment import ExperimentConfig, RunBody
 from odyssey_fx.app.config.experiment_v2 import (
     TEXT_ROLES,
     ExperimentV2,
@@ -195,6 +195,7 @@ __all__ = [
     "ExperimentRunOutcome",
     "ReproductionOutcome",
     "RunOutcome",
+    "SearchRunUnsupported",
     "SnapshotInputs",
     "acceptance_service",
     "build_conversion_record",
@@ -1084,11 +1085,26 @@ def evaluate_saved_run(
 
 # --- 実験の経路（D07 §19〜§21）-------------------------------------------------
 
-#: 探索の実験を実行する経路がまだ無いことの説明（実装 PR 2 の仮置き。PR 4 で有効にする）。
-SEARCH_NOT_RUNNABLE = (
-    "探索の実験（search_plan / split が NONE でない）の実行はまだ実装されていない。探索の実行と"
-    "記録（fold ごとの run・選定記録・試行台帳）は後続の実装 PR で有効にする（D09 §10.7・§14）。"
-    "設定の読込・試行の列挙・試行ごとのコンパイルまでは実装済み"
+
+class SearchRunUnsupported(Exception):
+    """有効な探索の実験だが、この段階では実行未対応であること（D09 §17.7.2 の1）。
+
+    設定の誤り（`ConfigError`）ではない。設定は読込の検査をすべて通っている。CLI は何も
+    書かずに「この段階では実行未対応」と示し、表に無い失敗として終了コード 1 で終える
+    （D07 §21.3 の v2.4 の段落）。
+
+    **解除の条件（実装 PR 4 の完了条件）**: 探索の実行の経路（fold ごとの run・開始記録・試行
+    記録・選定記録・集約表・結末記録・退避。D09 §10.7）と試行台帳への追記（D09 §10.10）、探索の
+    記録票の保存と再読込（D09 §17.7.2 の9）がそろったら、この例外と送出箇所を取り除く。
+    """
+
+
+#: 探索の実験を実行する経路がまだ無いことの説明（D09 §17.7.2 の1。実装 PR 4 で解除する）。
+SEARCH_RUN_UNSUPPORTED = (
+    "この段階では実行未対応: 探索の実験（search_plan / split が NONE でない）の設定は有効だが、"
+    "探索の実行と記録（fold ごとの run・選定記録・試行台帳・探索の記録票の保存）は実装 PR 4 で"
+    "有効にする（D09 §10.7・§14・§17.7.2 の1）。何も書いていない。設定の読込・試行の列挙・"
+    "試行ごとのコンパイルまでは実装済み"
 )
 
 
@@ -1274,7 +1290,8 @@ def run_experiment(
     それまでは準備（`prepare_search`）までしか作らない。
     """
     if loaded.search is not None:
-        raise ConfigError(SEARCH_NOT_RUNNABLE)
+        # 書き込みより前に止める（記録票も結末記録も成果物も書かない。D09 §17.7.2 の1）。
+        raise SearchRunUnsupported(SEARCH_RUN_UNSUPPORTED)
     environment = loaded.environment
     plan = _plan_run(
         experiment=loaded.experiment,
@@ -1357,9 +1374,12 @@ def trial_strategy(
 
 
 def _unit_run_config(
-    experiment: ExperimentConfig, compiled: CompiledStrategy, interval: Interval
+    experiment: RunBody, compiled: CompiledStrategy, interval: Interval
 ) -> RunConfig:
-    """単位の `RunConfig`（D09 §6.2）。単位どうしで違うのは `compiled_ref` と区間だけ。"""
+    """単位の `RunConfig`（D09 §6.2）。単位どうしで違うのは `compiled_ref` と区間だけ。
+
+    `interval` は単位の実行区間（fold の選定区間か検証区間）で、評価範囲ではない。
+    """
     return RunConfig(
         run_interval=interval,
         snapshot_ref=experiment.snapshot_ref,
@@ -1398,7 +1418,7 @@ def build_search_manifest(
     search = loaded.search
     if search is None:
         raise KernelValueError("build_search_manifest requires a search experiment")
-    experiment = loaded.experiment
+    experiment = loaded.body
     try:
         require_experiment_name(experiment.experiment_id)
     except KernelValueError as exc:
@@ -1461,7 +1481,7 @@ def _prepare_trial(
     index: int,
     assignment: ParameterAssignment,
     search: SearchSetting,
-    experiment: ExperimentConfig,
+    experiment: RunBody,
     timeframes: Mapping[TimeframeRef, TimeframeDefinition],
     registry: ComponentRegistry,
     refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]],
@@ -1535,7 +1555,7 @@ def prepare_search(
     search = loaded.search
     if search is None:
         raise ConfigError("prepare_search は探索の実験（search_plan が NONE でない）だけを受ける")
-    experiment = loaded.experiment
+    experiment = loaded.body
     environment = loaded.environment
     inputs = open_snapshot_inputs(
         snapshots_root=snapshots_root,

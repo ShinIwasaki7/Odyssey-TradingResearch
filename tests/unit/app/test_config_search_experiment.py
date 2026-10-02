@@ -23,6 +23,7 @@ from odyssey_fx.strategy.declarations.specs import IntValue
 from tests.fixtures.evaluation.search_experiments import (
     BASE_EXPERIMENT,
     DEFAULT_AXES,
+    TWO_FOLD_SPLIT,
     install_policy_v3,
     write_search_experiment,
 )
@@ -103,8 +104,10 @@ def test_a_search_experiment_loads_its_plan_folds_and_standard(tmp_path: Path) -
     ]
     assert search.final_holdout is None
     assert search.standard == loaded.policy.evaluation_standard
-    # 探索の実験の run 区間は評価範囲を仮に持つ（単位ごとの区間は合成が fold から決める）。
-    assert loaded.experiment.run_interval == search.standard.split.range
+    # 探索の実験は単一の run 区間を持たない（評価範囲と各単位の実行区間を分ける。D09 §17.7.2 の6）。
+    assert loaded.run_interval is None
+    with pytest.raises(ConfigError, match="単一の run 区間を持たない"):
+        _ = loaded.experiment
 
 
 def test_the_axes_are_ordered_by_instance_and_parameter(tmp_path: Path) -> None:
@@ -282,3 +285,54 @@ def test_a_single_run_experiment_needs_its_run_interval(tmp_path: Path) -> None:
         "",
     )
     assert "run_interval" in _refused(path, root)
+
+
+# --- 遅延規則の「どの足にも当たらない」検査を当てる範囲（D09 §17.7.2 の6）------------------
+
+#: 選定区間を 3 日にした 2 fold（fold 0 = 選定 [1,4) 日・検証 [4,8) 日、fold 1 = 選定 [5,8) 日・
+#: 検証 [8,12) 日）。評価範囲の最初の 1 日 [0,1) はどの単位の実行区間にも入らない。
+_SHORT_TRAIN_SPLIT = TWO_FOLD_SPLIT.replace('train_length: "4d"', 'train_length: "3d"')
+
+
+def _with_delay(path: Path, bar_start: str, delay: str) -> Path:
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            "delay_scenario:\n"
+            '  id: "unit_interval_check"\n'
+            "  version: 1\n"
+            "  rules:\n"
+            '    - {kind: "INJECTED_BAR_DELAY", series: "USDJPY/1d_ny17/bid",'
+            f' bar_start: "{bar_start}", delay: "{delay}"}}\n'
+        )
+    return path
+
+
+def test_the_delay_rule_check_uses_the_unit_intervals_not_the_range(tmp_path: Path) -> None:
+    """遅らせた公開が評価範囲の始まりに届いても、どの単位の実行区間にも届かなければ拒否する。
+
+    2015-01-01T22:00Z 始まりの日足は 01-02T22:00Z に公開される。48 時間遅らせると評価範囲の
+    始まり（01-04T22:00Z）ちょうどに届くが、単位の実行区間はどれも 01-05T22:00Z 以降に始まる。
+    """
+    root = _workspace(tmp_path)
+    install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
+    path = _with_delay(
+        write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "48h"
+    )
+    message = _refused(path, root)
+    assert "見え方が変わらない" in message
+    assert "2015-01-05T22:00:00" in message
+
+
+def test_a_delay_rule_reaching_one_unit_interval_is_accepted(tmp_path: Path) -> None:
+    """どれか1つの単位の実行区間で見え方が変われば受け付ける。
+
+    72 時間遅らせると fold 0 の選定区間の始まり（01-05T22:00Z）ちょうどに届く。
+    """
+    root = _workspace(tmp_path)
+    install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
+    path = _with_delay(
+        write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "72h"
+    )
+    loaded = _load(path, root)
+    assert loaded.search is not None
+    assert [fold.train.start for fold in loaded.search.split.folds] == [_day(1), _day(5)]

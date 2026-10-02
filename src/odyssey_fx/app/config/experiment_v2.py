@@ -35,14 +35,16 @@
 パラメータを戦略ファイルと部品の契約から引いて値を `ParameterValue` に読み（D04 §7）、研究
 ポリシー（版 3 以上。評価基準の群を持つ版だけ。D09 §5.5 の10）の期間分割の標準規則から fold を
 生成し（`SplitSpec`）、`final_holdout` に検査4 を当てる。読込結果は `ExperimentV2.search`
-（`SearchSetting`）に入る。探索の実験の `experiment.run_interval` は**評価範囲**を仮に持つ
-（単位ごとに fold の選定区間・検証区間へ置き換えるのは合成。遅延規則の「どの足にも当たらない」
-検査は評価範囲に当てる）。
+（`SearchSetting`）に入る。探索の実験は**単一の run 区間を持たない**（`ExperimentV2.run_interval`
+は `None`、実行の本体は区間を含まない `RunBody`）。評価範囲は研究ポリシーの期間分割の標準規則に
+あり、各単位の実行区間は fold の選定区間・検証区間で、合成が単位ごとに `RunConfig` に入れる。
+遅延規則の「どの足にも当たらない」検査は、各単位の実行区間に当てる（どれか1つの区間で見え方が
+変われば受け付ける。D09 §6.2・§17.7.2 の6）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -54,6 +56,7 @@ from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
 from odyssey_fx.app.config.experiment import (
     NO_DELAY_REF,
     ExperimentConfig,
+    RunBody,
     RunBodyModel,
     resolve_run_body,
     run_interval_of,
@@ -276,8 +279,9 @@ class ExperimentEnvironment:
 class ExperimentV2:
     """書式 v2 の実験設定の読込結果（D07 §18）。
 
-    `experiment` は書式 v1 と同じ解決済みの値（`ConfigDigest` の材料）であり、残りの項目は
-    `ConfigDigest` に入らない（D07 §18.2）。
+    `body` は書式 v1 と同じ解決済みの値のうち run 区間を除いたもの、`run_interval` は単一実行の
+    実験に書いた run 区間で、2つを合わせた `experiment` が `ConfigDigest` の材料である。残りの
+    項目は `ConfigDigest` に入らない（D07 §18.2）。
 
     実験の記録票（D07 §19.2）の材料も持つ。`policy` は読んだ研究ポリシー、`values` は実験
     設定の YAML を読み込んだ値（記録票の識別の入力 2 の元）、`texts` は役割名
@@ -286,11 +290,14 @@ class ExperimentV2:
     銘柄のものだけで、その選択は合成が行う）。
 
     `search` は探索の実験（`search_plan` / `split` が `NONE` でない）でだけ値を持つ（D09 §5・
-    §6.1）。そのとき `search_plan` / `split` の文字列は `GRID` / `STANDARD` で、`experiment` の
-    `run_interval` は評価範囲である（単位ごとの区間は合成が fold から決める）。
+    §6.1）。そのとき `search_plan` / `split` の文字列は `GRID` / `STANDARD` で、`run_interval` は
+    `None` である。探索の実験は単一の run 区間を持たない（評価範囲は `search.standard.split.range`、
+    各単位の実行区間は `search.split` の fold の区間。D09 §6.2）ので、`experiment` を引けば
+    `ConfigError` になる。探索の経路は `body` を使う。
     """
 
-    experiment: ExperimentConfig
+    body: RunBody
+    run_interval: Interval | None
     hypothesis: str
     research_policy: ResearchPolicyRef
     strategy_path: Path | None
@@ -308,6 +315,24 @@ class ExperimentV2:
         object.__setattr__(self, "values", _frozen(self.values))
         object.__setattr__(self, "texts", MappingProxyType(dict(self.texts)))
         object.__setattr__(self, "symbol_texts", MappingProxyType(dict(self.symbol_texts)))
+        if (self.run_interval is None) == (self.search is None):
+            raise ConfigError(
+                "ExperimentV2 は単一実行なら run_interval だけを、探索なら search だけを持つ"
+                "（D09 §6.2）"
+            )
+
+    @property
+    def experiment(self) -> ExperimentConfig:
+        """単一実行の実験の解決済みの値（`ConfigDigest` の材料。D06 §3）。
+
+        探索の実験は単一の run 区間を持たないので拒否する（D09 §6.2・§17.7.2 の6）。
+        """
+        if self.run_interval is None:
+            raise ConfigError(
+                "探索の実験は単一の run 区間を持たない。評価範囲は研究ポリシーの期間分割の"
+                "標準規則、各単位の実行区間は fold の区間である（D09 §6.2）"
+            )
+        return self.body.with_run_interval(self.run_interval)
 
 
 # --- 読込 -------------------------------------------------------------------
@@ -419,7 +444,7 @@ def _delay_scenario_of(
         raise ConfigError(f"{path}: 遅延シナリオを読めない: {exc}") from exc
 
 
-def _series_the_run_reads(experiment: ExperimentConfig) -> frozenset[SeriesId]:
+def _series_the_run_reads(experiment: RunBody) -> frozenset[SeriesId]:
     """run が読む系列: 戦略が入力・起動条件で読む系列、執行系列、解像度階層の各段。"""
     found: set[SeriesId] = {
         experiment.execution_series,
@@ -440,7 +465,8 @@ def _series_the_run_reads(experiment: ExperimentConfig) -> frozenset[SeriesId]:
 
 def _reject_rules_hitting_nothing(
     scenario: DelayScenario,
-    experiment: ExperimentConfig,
+    experiment: RunBody,
+    run_intervals: Sequence[Interval],
     calendar: TradingCalendar,
     timeframe_defs: Mapping[str, TimeframeDefinition],
     path: Path,
@@ -460,6 +486,11 @@ def _reject_rules_hitting_nothing(
       終わりより後の足と、遅らせた公開時刻が run 区間の始まりより前の足（PR #48 の Codex
       第2巡・第5巡）。
     - **他の規則に完全に覆われる規則**（`_reject_dominated_rules`。PR #48 の Codex 第5巡）。
+
+    `run_intervals` は規則を当てる run 区間である。単一実行の実験は書いた run 区間1つ、探索の
+    実験は各単位の実行区間（全 fold の選定区間と検証区間）で、**どれか1つの区間で見え方が
+    変われば受け付け、どの区間でも変わらなければ拒否する**（評価範囲そのものには当てない。
+    D09 §6.2・§17.7.2 の6）。
 
     snapshot に足が実在するかは読込では分からない（snapshot を開かない）。
     """
@@ -489,16 +520,19 @@ def _reject_rules_hitting_nothing(
             # 判断に届くので受け付ける。D03 §7.1）。(b) 遅らせた公開時刻が run 区間の始まり
             # **より前**の足は、遅延の有無にかかわらず run の最初の判断から見えている（始まり
             # ちょうどへ移る遅延は、始まりの公開の出来事を生むので受け付ける）。
-            run_interval = experiment.run_interval
             scheduled = SeriesSchedule(
                 series=rule.series, timeframe_def=definition, calendar=calendar
             ).scheduled_at(interval.end)
-            if scheduled > run_interval.end or scheduled + rule.delay < run_interval.start:
+            if all(
+                scheduled > run_interval.end or scheduled + rule.delay < run_interval.start
+                for run_interval in run_intervals
+            ):
+                shown = "、".join(f"{item.start}〜{item.end}" for item in run_intervals)
                 raise ConfigError(
                     f"{path}: {label} の足（{rule.series} の {rule.bar_start} 始まり）は、遅延の"
-                    f"有無にかかわらず run 区間（{run_interval.start}〜{run_interval.end}）の中で"
-                    "の見え方が変わらない（公開が run の終わりより後、または遅らせても run の"
-                    "始まりより前）。当てても何も変わらないのに、遅延ありの run として記録される"
+                    f"有無にかかわらず run 区間（{shown}）の中での見え方が変わらない（公開が run"
+                    " の終わりより後、または遅らせても run の始まりより前）。当てても何も変わら"
+                    "ないのに、遅延ありの run として記録される"
                 )
     _reject_dominated_rules(scenario, path)
 
@@ -844,13 +878,19 @@ def _assemble(
         )
 
     search: SearchSetting | None = None
+    run_interval: Interval | None = None
     if isinstance(model.search_plan, str):
         if model.run_interval is None:  # pragma: no cover - `_check_search_keys` が拒否済み
             raise ConfigError(f"{path}: 単一実行の実験には `run_interval` を書くこと")
         run_interval = run_interval_of(model.run_interval.start, model.run_interval.end, path)
+        run_intervals: tuple[Interval, ...] = (run_interval,)
     else:
         search = _search_setting_of(model, strategy, registry, policy, path)
-        run_interval = search.standard.split.range
+        # 探索の実験の run 区間は各単位の実行区間（fold の選定区間・検証区間）だけである。
+        # 評価範囲（`search.standard.split.range`）は run 区間として使わない（D09 §6.2）。
+        folds = search.split.folds
+        units = (interval for fold in folds for interval in (fold.train, fold.validation))
+        run_intervals = tuple(dict.fromkeys(units))
 
     if model.delay_scenario is None:
         delay_scenario = None
@@ -859,24 +899,24 @@ def _assemble(
         delay_scenario = _delay_scenario_of(model.delay_scenario, timeframe_defs, path)
         delay_ref = _delay_ref_of(delay_scenario, path)
 
-    experiment = resolve_run_body(
+    body = resolve_run_body(
         model,
         payload,
         path,
         timeframe_defs,
         experiment_id=model.id,
         version=model.version,
-        run_interval=run_interval,
         strategy=strategy,
         delay_scenario=delay_scenario,
         delay_ref=delay_ref,
     )
     if delay_scenario is not None:
         _reject_rules_hitting_nothing(
-            delay_scenario, experiment, environment.calendar, timeframe_defs, path
+            delay_scenario, body, run_intervals, environment.calendar, timeframe_defs, path
         )
     return ExperimentV2(
-        experiment=experiment,
+        body=body,
+        run_interval=run_interval,
         hypothesis=model.hypothesis,
         research_policy=ResearchPolicyRef(
             policy_id=model.research_policy.id, version=model.research_policy.version
