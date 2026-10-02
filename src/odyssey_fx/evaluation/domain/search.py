@@ -1364,7 +1364,7 @@ def _median(values: Sequence[Decimal]) -> Decimal:
     if len(ordered) % 2 == 1:
         return ordered[middle]
     with localcontext(kernel_context()):
-        return (ordered[middle - 1] + ordered[middle]) / Decimal(2)
+        return (ordered[middle - 1] + ordered[middle]) / decimal_from_int(2)
 
 
 def _whole_seconds(interval: Interval) -> int:
