@@ -35,12 +35,14 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.evaluation.domain.metrics import MetricId, MetricUnavailableReason
 from odyssey_fx.evaluation.domain.search import (
     CandidateStatus,
+    Comparator,
     ConditionOutcome,
     EvaluationStandard,
     FoldEvidence,
     FoldSelection,
     FoldVerdict,
     FrequencyClass,
+    MetricCondition,
     SearchOutcome,
     SearchVerdict,
     SelectionDirection,
@@ -323,3 +325,23 @@ def test_17_steps_one_to_three_do_not_depend_on_the_purpose(
     assert as_standard.verdict is as_mechanism.verdict
     assert as_standard.fold_verdicts == as_mechanism.fold_verdicts
     assert as_standard.shortfalls == as_mechanism.shortfalls
+
+
+@pytest.mark.parametrize("purpose", list(StandardPurpose))
+@pytest.mark.parametrize(
+    "others",
+    [[], [_INCOMPLETE], [_SHORT], [_INCOMPLETE, _SHORT, _GOOD]],
+)
+def test_14_fold_without_eligible_trial_makes_the_search_below_standard_first(
+    purpose: StandardPurpose, others: list[FoldSpec]
+) -> None:
+    # 足切り「純収益率 0 以上」を通る試行が無い fold は、判定できない fold・証拠不足の fold が
+    # あっても、実験の判定を「満たさない」にする（手順1。用途によらない）。
+    rule = standard(
+        purpose=purpose,
+        eligibility=(MetricCondition(NRR, Comparator.GE, Decimal("0")),),
+    )
+    no_eligible: FoldSpec = ([train_unit(0, {NRR: Decimal("-0.2")})], None)
+    outcome = _outcome(rule, [no_eligible, *others])
+    assert outcome.fold_verdicts[0] == (0, FoldVerdict.NO_ELIGIBLE_TRIAL)
+    assert outcome.verdict is SearchVerdict.BELOW_STANDARD
