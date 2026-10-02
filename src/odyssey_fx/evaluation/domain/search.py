@@ -15,8 +15,20 @@
 - E4（`FrequencyClass`・`SufficiencyRule`）: 頻度区分は1つ以上、名前が一意で
   `[A-Z][A-Z0-9_]*`、下限が厳密に降順、最後の下限が 0、要件の整数が 0 以上。
 
-選定・判定・頻度区分の関数（D09 §7.2〜§7.5・§7.8）は後続の実装 PR が足す。閾値は `Decimal` で
-持つ（D09 §7.1。`float` を使わない。ADR-0012）。
+閾値は `Decimal` で持つ（D09 §7.1。`float` を使わない。ADR-0012）。
+
+**選定・判定・頻度区分の純粋関数**（D09 §7.2〜§7.5・§7.8・§10.4。段階5 実装 PR 3）:
+
+- 試行の状態の導出（`derive_trial_status`・`count_trial_statuses`。§10.4）。
+- 候補の区分と選定（`candidate_status`・`select_trial`。§7.2・§7.4）。入力は選定区間の単位の
+  結果（`TrainUnitEvaluation`）だけで、検証区間の結果（`ValidationUnitEvaluation`）は型として
+  渡せない（段階5 の完了条件1「選定が train 内で閉じる」）。
+- 頻度区分（`assess_frequency`。§7.8。Q15 決定）。入力は選定記録と fold の区間だけ。
+- fold の判定と実験の判定（`build_search_outcome`。§7.3 の手順。Q16・Q33 決定）。
+- 表示用の導出値（`longest_idle_period`。§11.5 の最長の無取引期間。指標ではない）。
+
+どれも実時計・乱数・ファイルを読まず、同じ入力から同じ出力を返す（D01 §2.2）。D07 の指標を
+計算し直さない（D07 §14）。
 
 **探索計画と試行の列挙**（D09 §5.1・§5.2・§6.2・§10.2。実装 PR 2）: 探索計画 `SearchPlan` は
 格子（`GRID`）だけを持ち（Q6 決定）、軸 `ParameterAxis` を `(instance_id, parameter)` の昇順に
@@ -31,17 +43,33 @@ from __future__ import annotations
 
 import itertools
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from datetime import timedelta
+from decimal import Decimal, localcontext
 from enum import Enum
 from typing import Final
 
+from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.canonical import encode
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest
-from odyssey_fx.evaluation.domain.metrics import METRIC_KINDS, MetricId, MetricKind
-from odyssey_fx.evaluation.domain.splits import SplitStandard
+from odyssey_fx.common.money import decimal_from_int, kernel_context
+from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest, ContentDigest
+from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.evaluation.domain.metrics import (
+    METRIC_KINDS,
+    AmountValue,
+    CountValue,
+    MetricId,
+    MetricKind,
+    MetricRecord,
+    MetricUnavailableReason,
+    MetricValue,
+    RatioValue,
+    Unavailable,
+)
+from odyssey_fx.evaluation.domain.splits import Fold, SplitStandard
+from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.strategy.compiler.compiled import CompileError
 from odyssey_fx.strategy.declarations.specs import (
     BoolValue,
@@ -52,29 +80,55 @@ from odyssey_fx.strategy.declarations.specs import (
 )
 
 __all__ = [
+    "OBSERVATION_SHORTFALL_REASONS",
     "REFERENCE_METRICS",
+    "SECONDS_PER_365_DAYS",
     "SELECTABLE_METRIC_KINDS",
     "AggregateCondition",
+    "CandidateStatus",
     "Comparator",
+    "ConditionOutcome",
+    "ConditionResult",
+    "ConditionScope",
     "EvaluationStandard",
+    "FoldEvidence",
+    "FoldSelection",
     "FoldStatistic",
+    "FoldVerdict",
+    "FrequencyAssessment",
     "FrequencyClass",
     "MetricCondition",
     "ParameterAssignment",
     "ParameterAxis",
+    "SearchOutcome",
     "SearchPlan",
     "SearchPlanKind",
+    "SearchVerdict",
     "SelectionDirection",
     "SelectionRule",
     "StandardPurpose",
     "SufficiencyRule",
+    "SufficiencyShortfall",
+    "SufficiencyShortfallKind",
+    "TrainUnitEvaluation",
     "TrialPhase",
     "TrialPlan",
+    "TrialStatus",
     "TrialUnitKey",
     "ValidationRule",
+    "ValidationUnitEvaluation",
+    "assess_frequency",
+    "build_search_outcome",
+    "candidate_status",
     "compile_rejections_of",
+    "count_trial_statuses",
+    "derive_trial_status",
     "enumerate_assignments",
+    "frequency_class_of",
     "is_selectable_metric",
+    "longest_idle_period",
+    "select_trial",
+    "trades_per_365d",
     "trial_units",
 ]
 
@@ -138,6 +192,21 @@ def _require_count(value: object, label: str) -> None:
         raise KernelValueError(f"{label} must be an int, got {value!r}")
     if value < 0:
         raise KernelValueError(f"{label} must be >= 0, got {value} (D09 §7.8 の検査 E4)")
+
+
+def _require_ledger_execution(value: object) -> None:
+    """試行台帳の実行番号の検査（2026-10-02 の人間の決定。D09 §17.7.3 の6）。
+
+    実行番号は同じ実験の開始の行の数 + 1 で、1 以上の整数（D09 v0.3 §10.12.3 の採番）。
+    未採番を 0 などの番号の値で表さない。採番の前には `SearchOutcome` を組み立てない。
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise KernelValueError(f"SearchOutcome.ledger_execution must be an int, got {value!r}")
+    if value < 1:
+        raise KernelValueError(
+            "SearchOutcome.ledger_execution は 1 以上の実行番号（未採番を番号で表さない。"
+            f"D09 §17.7.3 の6）: {value}"
+        )
 
 
 class StandardPurpose(Enum):
@@ -697,3 +766,1162 @@ class TrialPlan:
             if key == unit:
                 return value
         raise KernelValueError(f"the trial {self.trial_index} has no unit {unit}")
+
+
+# ---------------------------------------------------------------------------
+# 選定・判定・頻度区分・試行の状態の導出（D09 §7.2〜§7.5・§7.8・§10.4。段階5 実装 PR 3）
+# ---------------------------------------------------------------------------
+
+#: 365 日の秒数（D09 §7.8 の頻度 `r` の換算）。
+SECONDS_PER_365_DAYS: Final = 31_536_000
+
+#: 観測が足りないことによる値なしの理由（D09 §7.3 の値なしの理由の分け方）。証拠の不足に数える。
+OBSERVATION_SHORTFALL_REASONS: Final[frozenset[MetricUnavailableReason]] = frozenset(
+    {
+        MetricUnavailableReason.NO_TRADES,
+        MetricUnavailableReason.NO_OBSERVATIONS,
+        MetricUnavailableReason.UNDEFINED_DENOMINATOR,
+    }
+)
+
+_ONE_SECOND: Final = timedelta(seconds=1)
+
+
+class TrialStatus(Enum):
+    """試行の実行単位の状態（D09 §10.4）。宣言順が `SearchOutcome.trial_counts` の並び。"""
+
+    #: 未試行（開始記録も試行記録も無い）。
+    NOT_STARTED = "NOT_STARTED"
+    #: 試行済み（試行記録がある）。
+    COMPLETED = "COMPLETED"
+    #: 失敗（記録票の `compile_rejections` が空でない試行の全単位）。
+    FAILED = "FAILED"
+    #: 中断（開始記録はあるが試行記録が無い）。
+    ABORTED = "ABORTED"
+
+
+def derive_trial_status(*, compile_rejected: bool, started: bool, recorded: bool) -> TrialStatus:
+    """単位の状態を記録から導く（D09 §10.4 の表。上の行から順に最初に当てはまるもの）。
+
+    `compile_rejected` は記録票の `TrialPlan.compile_rejections` が空でないこと、`started` は
+    開始記録があること、`recorded` は試行記録があること。コンパイル拒否の試行は `RunConfig`
+    を組み立てられない（D09 §5.2）ので開始記録も試行記録も持たず、持てば構造エラー。
+    """
+    for name, value in (
+        ("compile_rejected", compile_rejected),
+        ("started", started),
+        ("recorded", recorded),
+    ):
+        if not isinstance(value, bool):
+            raise KernelValueError(f"derive_trial_status.{name} must be a bool")
+    if compile_rejected:
+        if started or recorded:
+            raise KernelValueError(
+                "コンパイル拒否の試行の単位に開始記録か試行記録がある（D09 §10.4。"
+                "コンパイル拒否の試行は run を始めない）"
+            )
+        return TrialStatus.FAILED
+    if recorded:
+        return TrialStatus.COMPLETED
+    if started:
+        return TrialStatus.ABORTED
+    return TrialStatus.NOT_STARTED
+
+
+def count_trial_statuses(statuses: Iterable[TrialStatus]) -> tuple[tuple[TrialStatus, int], ...]:
+    """単位の状態の件数を `TrialStatus` の宣言順に、0 件も含めて数える（D09 §3）。"""
+    items = tuple(statuses)
+    if not all(isinstance(item, TrialStatus) for item in items):
+        raise KernelValueError("count_trial_statuses requires TrialStatus values")
+    return tuple((status, sum(1 for item in items if item is status)) for status in TrialStatus)
+
+
+class CandidateStatus(Enum):
+    """選定の入力での試行の区分（D09 §7.4）。上から順に最初に当てはまるもの。"""
+
+    CANDIDATE = "CANDIDATE"
+    EXCLUDED_TRIAL_FAILED = "EXCLUDED_TRIAL_FAILED"
+    EXCLUDED_NOT_COMPLETED = "EXCLUDED_NOT_COMPLETED"
+    EXCLUDED_POST_RUN_CHECK = "EXCLUDED_POST_RUN_CHECK"
+    EXCLUDED_METRIC_UNAVAILABLE = "EXCLUDED_METRIC_UNAVAILABLE"
+    EXCLUDED_INELIGIBLE = "EXCLUDED_INELIGIBLE"
+
+
+@dataclass(frozen=True, slots=True)
+class _UnitEvaluation:
+    """試行の実行単位1つの、実行と評価の結果（選定と判定の入力。D09 §7.2〜§7.4）。
+
+    `status` は単位の状態（D09 §10.4）。試行済み（`COMPLETED`）の単位だけが run と評価の
+    項目を持ち、それ以外は `None`・`False`・空の指標を持つ。`post_run_checks_passed` は単位の
+    事後検査（P4・P5。D09 §10.8）がすべて合格したか。`metrics` は評価の `METRICS` 表の行
+    （D07 §8.1）で、評価が `COMPLETED` のときだけ行を持つ（`REJECTED` / `FAILED` は0行）。
+
+    `run_evaluation_id` は D07 §9.2 の評価の識別子のダイジェスト（`RunEvaluationId.digest`）で
+    ある。`RunEvaluationId` は `evaluation.application` にあり domain から参照できない
+    （D01 §3 の層の規則。結末記録の `ExperimentOutcome.run_evaluation_id` と同じ扱い）。
+
+    `fold_index` は単位がどの fold のものかを表す。選定と判定は、渡された fold の番号と
+    単位の `fold_index` が一致することを確かめ、別の fold の結果を混ぜられないようにする。
+    """
+
+    fold_index: int
+    trial_index: int
+    status: TrialStatus
+    run_status: RunStatus | None
+    run_evaluation_id: ContentDigest | None
+    evaluation_status: EvaluationStatus | None
+    post_run_checks_passed: bool
+    metrics: tuple[MetricRecord, ...]
+
+    def __post_init__(self) -> None:
+        _require_index(self.fold_index, "unit fold_index")
+        _require_index(self.trial_index, "unit trial_index")
+        if not isinstance(self.status, TrialStatus):
+            raise KernelValueError("unit status must be a TrialStatus")
+        if not isinstance(self.post_run_checks_passed, bool):
+            raise KernelValueError("unit post_run_checks_passed must be a bool")
+        if not isinstance(self.metrics, tuple) or not all(
+            isinstance(item, MetricRecord) for item in self.metrics
+        ):
+            raise KernelValueError("unit metrics must be a tuple of MetricRecord")
+        ids = [item.metric_id for item in self.metrics]
+        if len(set(ids)) != len(ids):
+            raise KernelValueError(
+                f"unit {self.trial_index} の指標の行が重複している（D07 §8.1 の主キー）"
+            )
+        if self.status is TrialStatus.COMPLETED:
+            if not isinstance(self.run_status, RunStatus):
+                raise KernelValueError("a COMPLETED unit must carry its RunStatus")
+            if not isinstance(self.run_evaluation_id, ContentDigest):
+                raise KernelValueError("a COMPLETED unit must carry its run evaluation digest")
+            if not isinstance(self.evaluation_status, EvaluationStatus):
+                raise KernelValueError("a COMPLETED unit must carry its EvaluationStatus")
+            if self.evaluation_status is EvaluationStatus.ABORTED:
+                raise KernelValueError(
+                    "評価の状態 ABORTED は試行記録に現れない（D09 §10.4。評価 manifest は"
+                    " COMPLETED / REJECTED / FAILED のどれか）"
+                )
+            if self.evaluation_status is not EvaluationStatus.COMPLETED and self.metrics:
+                raise KernelValueError(
+                    "評価が COMPLETED でない単位は指標の行を持たない（D07 §10.1）"
+                )
+            if self.evaluation_status is EvaluationStatus.COMPLETED and set(ids) != set(MetricId):
+                missing = [item.value for item in MetricId if item not in set(ids)]
+                raise KernelValueError(
+                    f"unit {self.trial_index} の評価は COMPLETED なのに指標の行が欠けている:"
+                    f" {missing}（D07 §8.1。値なしも行として残す）"
+                )
+        elif (
+            self.run_status is not None
+            or self.run_evaluation_id is not None
+            or self.evaluation_status is not None
+            or self.metrics
+            or self.post_run_checks_passed
+        ):
+            raise KernelValueError(
+                f"試行済みでない単位（{self.status.value}）は run と評価の結果を持たない"
+                "（D09 §10.4）"
+            )
+
+    @property
+    def has_valid_result(self) -> bool:
+        """試行済み・run が正常完走・評価が `COMPLETED`・事後検査に合格（D09 §7.3 の用語）。"""
+        return (
+            self.status is TrialStatus.COMPLETED
+            and self.run_status is RunStatus.COMPLETED
+            and self.evaluation_status is EvaluationStatus.COMPLETED
+            and self.post_run_checks_passed
+        )
+
+    def value_of(self, metric: MetricId) -> MetricValue:
+        """指標の値（評価が `COMPLETED` の単位は全指標の行を持つ。無ければ構造エラー）。"""
+        for item in self.metrics:
+            if item.metric_id is metric:
+                return item.value
+        raise KernelValueError(
+            f"unit {self.trial_index} の評価に指標 {metric.value} の行が無い（D07 §8.1）"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TrainUnitEvaluation(_UnitEvaluation):
+    """選定区間の単位の結果。**選定の関数はこの型だけを受け取る**（D09 §7.2。完了条件1）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationUnitEvaluation(_UnitEvaluation):
+    """検証区間の単位の結果。選定と頻度区分の関数には渡せない（D09 §7.2・§7.8）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class FoldSelection:
+    """fold の選定記録（D09 §3・§7.2・§7.5・§7.8）。
+
+    `inputs` は `(trial_index, 選定区間の評価の識別子のダイジェスト, 候補の区分)` を
+    `trial_index` の昇順に全試行（評価の識別子が無い単位は `None`）。
+    """
+
+    fold_index: int
+    selected_trial_index: int | None
+    selected_value: Decimal | None
+    selected_train_trade_count: int | None
+    inputs: tuple[tuple[int, ContentDigest | None, CandidateStatus], ...]
+
+    def __post_init__(self) -> None:
+        _require_index(self.fold_index, "FoldSelection.fold_index")
+        selected = (
+            self.selected_trial_index,
+            self.selected_value,
+            self.selected_train_trade_count,
+        )
+        if any(item is None for item in selected) and not all(item is None for item in selected):
+            raise KernelValueError(
+                "FoldSelection: 選んだ試行・値・取引件数は、そろって値を持つかそろって None"
+            )
+        if not isinstance(self.inputs, tuple):
+            raise KernelValueError("FoldSelection.inputs must be a tuple")
+        indices: list[int] = []
+        for entry in self.inputs:
+            if (
+                not isinstance(entry, tuple)
+                or len(entry) != 3
+                or isinstance(entry[0], bool)
+                or not isinstance(entry[0], int)
+                or not (entry[1] is None or isinstance(entry[1], ContentDigest))
+                or not isinstance(entry[2], CandidateStatus)
+            ):
+                raise KernelValueError(
+                    "FoldSelection.inputs must be (trial_index, ContentDigest | None,"
+                    " CandidateStatus) triples"
+                )
+            indices.append(entry[0])
+        if indices != sorted(set(indices)):
+            raise KernelValueError("FoldSelection.inputs は trial_index の昇順で重複なし（D09 §3）")
+        if self.selected_trial_index is not None:
+            _require_index(self.selected_trial_index, "FoldSelection.selected_trial_index")
+            _require_decimal(self.selected_value, "FoldSelection.selected_value")
+            _require_count(
+                self.selected_train_trade_count, "FoldSelection.selected_train_trade_count"
+            )
+            status_of = {entry[0]: entry[2] for entry in self.inputs}
+            if status_of.get(self.selected_trial_index) is not CandidateStatus.CANDIDATE:
+                raise KernelValueError(
+                    "FoldSelection: 選んだ試行は inputs の中で候補（CANDIDATE）でなければならない"
+                )
+        elif any(entry[2] is CandidateStatus.CANDIDATE for entry in self.inputs):
+            raise KernelValueError(
+                "FoldSelection: 候補（CANDIDATE）があるのに選んだ試行が無い（D09 §7.2）"
+            )
+
+
+class ConditionScope(Enum):
+    """条件の当て先（D09 §7.3。v0.2）。"""
+
+    FOLD_FLOOR = "FOLD_FLOOR"
+    AGGREGATE = "AGGREGATE"
+
+
+class ConditionOutcome(Enum):
+    """条件1件の結果（D09 §7.3。v0.2）。"""
+
+    MET = "MET"
+    NOT_MET = "NOT_MET"
+    #: 観測が足りないことによる値なしで比べられない（理由は `unavailable_reason`）。
+    UNCOMPUTABLE = "UNCOMPUTABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionResult:
+    """条件1件の結果（D09 §3・§7.3。v0.2）。"""
+
+    scope: ConditionScope
+    fold_index: int | None
+    metric: MetricId
+    statistic: FoldStatistic | None
+    comparator: Comparator
+    threshold: Decimal
+    observed: Decimal | None
+    outcome: ConditionOutcome
+    unavailable_reason: MetricUnavailableReason | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, ConditionScope):
+            raise KernelValueError("ConditionResult.scope must be a ConditionScope")
+        if self.scope is ConditionScope.FOLD_FLOOR:
+            _require_index(self.fold_index, "ConditionResult.fold_index")
+            if self.statistic is not None:
+                raise KernelValueError("a FOLD_FLOOR ConditionResult has no statistic")
+        else:
+            if self.fold_index is not None:
+                raise KernelValueError("an AGGREGATE ConditionResult has no fold_index")
+            if not isinstance(self.statistic, FoldStatistic):
+                raise KernelValueError("an AGGREGATE ConditionResult needs a FoldStatistic")
+        if not isinstance(self.metric, MetricId):
+            raise KernelValueError("ConditionResult.metric must be a MetricId")
+        if not isinstance(self.comparator, Comparator):
+            raise KernelValueError("ConditionResult.comparator must be a Comparator")
+        _require_decimal(self.threshold, "ConditionResult.threshold")
+        if not isinstance(self.outcome, ConditionOutcome):
+            raise KernelValueError("ConditionResult.outcome must be a ConditionOutcome")
+        if self.outcome is ConditionOutcome.UNCOMPUTABLE:
+            if self.observed is not None:
+                raise KernelValueError("an UNCOMPUTABLE ConditionResult has no observed value")
+            if self.unavailable_reason not in OBSERVATION_SHORTFALL_REASONS:
+                raise KernelValueError(
+                    "an UNCOMPUTABLE ConditionResult carries an observation-shortfall reason"
+                    " (D09 §7.3)"
+                )
+        else:
+            _require_decimal(self.observed, "ConditionResult.observed")
+            if self.unavailable_reason is not None:
+                raise KernelValueError("a MET / NOT_MET ConditionResult has no unavailable_reason")
+            assert self.observed is not None  # noqa: S101  直前で確かめた
+            met = _compare(self.observed, self.comparator, self.threshold)
+            if met is not (self.outcome is ConditionOutcome.MET):
+                raise KernelValueError(
+                    f"ConditionResult.outcome {self.outcome.value} contradicts"
+                    f" {self.observed} {self.comparator.value} {self.threshold}"
+                )
+
+
+class SufficiencyShortfallKind(Enum):
+    """証拠不足の理由の種類（D09 §3・§7.8。v0.2）。"""
+
+    FOLD_TRADES_BELOW = "FOLD_TRADES_BELOW"
+    #: 取引が少ない fold で最低条件を割ったが、観測不足のため判定できない（Q16 決定）。
+    FLOOR_NOT_MET_TRADES_BELOW = "FLOOR_NOT_MET_TRADES_BELOW"
+    TOTAL_TRADES_BELOW = "TOTAL_TRADES_BELOW"
+    METRIC_UNCOMPUTABLE = "METRIC_UNCOMPUTABLE"
+    NO_CANDIDATE_METRIC_UNAVAILABLE = "NO_CANDIDATE_METRIC_UNAVAILABLE"
+
+
+_TRADE_SHORTFALLS: Final = frozenset(
+    {
+        SufficiencyShortfallKind.FOLD_TRADES_BELOW,
+        SufficiencyShortfallKind.FLOOR_NOT_MET_TRADES_BELOW,
+        SufficiencyShortfallKind.TOTAL_TRADES_BELOW,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SufficiencyShortfall:
+    """証拠不足の理由1件（D09 §3・§7.8。v0.2）。
+
+    主キーは `(kind, fold_index, trial_index, metric, reason)`（D09 §12）。件数の不足は
+    `required` と `observed` を、指標の値なしは `metric` と `reason` を持つ。
+    """
+
+    kind: SufficiencyShortfallKind
+    fold_index: int | None
+    trial_index: int | None
+    metric: MetricId | None
+    reason: MetricUnavailableReason | None
+    required: int | None
+    observed: int | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SufficiencyShortfallKind):
+            raise KernelValueError("SufficiencyShortfall.kind must be a SufficiencyShortfallKind")
+        if self.kind is SufficiencyShortfallKind.TOTAL_TRADES_BELOW:
+            if self.fold_index is not None or self.trial_index is not None:
+                raise KernelValueError("TOTAL_TRADES_BELOW has no fold_index / trial_index")
+        else:
+            _require_index(self.fold_index, "SufficiencyShortfall.fold_index")
+            _require_index(self.trial_index, "SufficiencyShortfall.trial_index")
+        if self.kind in _TRADE_SHORTFALLS:
+            if self.metric is not None or self.reason is not None:
+                raise KernelValueError(f"{self.kind.value} has no metric / reason")
+            _require_count(self.required, "SufficiencyShortfall.required")
+            _require_count(self.observed, "SufficiencyShortfall.observed")
+            assert self.required is not None and self.observed is not None  # noqa: S101
+            if not self.observed < self.required:
+                raise KernelValueError(
+                    f"{self.kind.value}: observed {self.observed} is not below the requirement"
+                    f" {self.required}"
+                )
+        else:
+            if not isinstance(self.metric, MetricId):
+                raise KernelValueError(f"{self.kind.value} needs a MetricId")
+            if self.reason not in OBSERVATION_SHORTFALL_REASONS:
+                raise KernelValueError(
+                    f"{self.kind.value} needs an observation-shortfall reason (D09 §7.3)"
+                )
+            if self.required is not None or self.observed is not None:
+                raise KernelValueError(f"{self.kind.value} has no required / observed count")
+
+    @property
+    def key(self) -> tuple[int, int, int, int, int]:
+        """主キーの整列鍵（D09 §12）。列挙は宣言順、`None` は先頭。"""
+        return (
+            _ordinal(self.kind),
+            -1 if self.fold_index is None else self.fold_index,
+            -1 if self.trial_index is None else self.trial_index,
+            -1 if self.metric is None else _ordinal(self.metric),
+            -1 if self.reason is None else _ordinal(self.reason),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FrequencyAssessment:
+    """頻度区分の結果（D09 §3・§7.8。v0.2）。"""
+
+    class_name: str
+    train_trade_count: int
+    train_seconds: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.class_name, str) or not _CLASS_NAME.fullmatch(self.class_name):
+            raise KernelValueError("FrequencyAssessment.class_name must be a frequency class name")
+        _require_count(self.train_trade_count, "FrequencyAssessment.train_trade_count")
+        _require_count(self.train_seconds, "FrequencyAssessment.train_seconds")
+        if self.train_seconds == 0:
+            raise KernelValueError("FrequencyAssessment.train_seconds must be > 0")
+
+    @property
+    def trades_per_365d(self) -> Decimal:
+        """365 日あたりの取引頻度 `r`（D09 §7.8。カーネル精度で1回割る）。"""
+        return trades_per_365d(self.train_trade_count, self.train_seconds)
+
+
+class FoldVerdict(Enum):
+    """fold の判定（D09 §3・§7.3。v0.2）。"""
+
+    FLOORS_MET = "FLOORS_MET"
+    FLOOR_BREACHED = "FLOOR_BREACHED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    NO_ELIGIBLE_TRIAL = "NO_ELIGIBLE_TRIAL"
+    INCOMPLETE = "INCOMPLETE"
+
+
+class SearchVerdict(Enum):
+    """実験の判定（D09 §0.2・§3・§7.3。v0.2）。「合格」と呼ばない。"""
+
+    #: 共通基準を満たす（用途が `STANDARD` のときだけ）。
+    MEETS_STANDARD = "MEETS_STANDARD"
+    #: 共通基準を満たさない。
+    BELOW_STANDARD = "BELOW_STANDARD"
+    #: 証拠不足。
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    #: 判定できない。
+    INCOMPLETE = "INCOMPLETE"
+    #: 機構の確認で条件をすべて満たした（用途が `MECHANISM_CHECK` のときだけ。Q33 決定）。
+    MET_IN_MECHANISM_CHECK = "MET_IN_MECHANISM_CHECK"
+
+
+@dataclass(frozen=True, slots=True)
+class SearchOutcome:
+    """結末記録の探索の項目（D09 §3・§10.6。v0.2）。"""
+
+    selections: tuple[FoldSelection, ...]
+    fold_verdicts: tuple[tuple[int, FoldVerdict], ...]
+    verdict: SearchVerdict
+    frequency: FrequencyAssessment | None
+    condition_results: tuple[ConditionResult, ...]
+    shortfalls: tuple[SufficiencyShortfall, ...]
+    trial_counts: tuple[tuple[TrialStatus, int], ...]
+    ledger_execution: int
+    purpose: StandardPurpose
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.selections, tuple) or not all(
+            isinstance(item, FoldSelection) for item in self.selections
+        ):
+            raise KernelValueError("SearchOutcome.selections must be a tuple of FoldSelection")
+        fold_indices = [item.fold_index for item in self.selections]
+        if not fold_indices or fold_indices != list(range(len(fold_indices))):
+            raise KernelValueError("SearchOutcome.selections は fold_index 0 からの連番")
+        if not isinstance(self.fold_verdicts, tuple) or not all(
+            isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[1], FoldVerdict)
+            for entry in self.fold_verdicts
+        ):
+            raise KernelValueError("SearchOutcome.fold_verdicts must be (int, FoldVerdict) pairs")
+        if [entry[0] for entry in self.fold_verdicts] != fold_indices:
+            raise KernelValueError("SearchOutcome.fold_verdicts は selections と同じ fold の順")
+        if not isinstance(self.verdict, SearchVerdict):
+            raise KernelValueError("SearchOutcome.verdict must be a SearchVerdict")
+        if not isinstance(self.purpose, StandardPurpose):
+            raise KernelValueError("SearchOutcome.purpose must be a StandardPurpose")
+        if (
+            self.verdict is SearchVerdict.MEETS_STANDARD
+            and self.purpose is not StandardPurpose.STANDARD
+        ):
+            raise KernelValueError(
+                "MEETS_STANDARD は用途が STANDARD の評価基準でだけ出る（D09 §7.3 の手順4。Q33）"
+            )
+        if (
+            self.verdict is SearchVerdict.MET_IN_MECHANISM_CHECK
+            and self.purpose is not StandardPurpose.MECHANISM_CHECK
+        ):
+            raise KernelValueError(
+                "MET_IN_MECHANISM_CHECK は用途が MECHANISM_CHECK の評価基準でだけ出る（Q33）"
+            )
+        has_selected = any(item.selected_trial_index is not None for item in self.selections)
+        if self.frequency is None:
+            if has_selected:
+                raise KernelValueError(
+                    "SearchOutcome.frequency は選んだ試行のある fold があれば値を持つ（D09 §3）"
+                )
+        elif not isinstance(self.frequency, FrequencyAssessment) or not has_selected:
+            raise KernelValueError(
+                "SearchOutcome.frequency は選んだ試行のある fold が無ければ None（D09 §3）"
+            )
+        if not isinstance(self.condition_results, tuple) or not all(
+            isinstance(item, ConditionResult) for item in self.condition_results
+        ):
+            raise KernelValueError("SearchOutcome.condition_results must be ConditionResult")
+        if not isinstance(self.shortfalls, tuple) or not all(
+            isinstance(item, SufficiencyShortfall) for item in self.shortfalls
+        ):
+            raise KernelValueError("SearchOutcome.shortfalls must be SufficiencyShortfall")
+        keys = [item.key for item in self.shortfalls]
+        if keys != sorted(set(keys)):
+            raise KernelValueError(
+                "SearchOutcome.shortfalls は主キー (kind, fold_index, trial_index, metric,"
+                " reason) の昇順で重複なし（D09 §12）"
+            )
+        if not isinstance(self.trial_counts, tuple) or not all(
+            isinstance(entry, tuple) and len(entry) == 2 for entry in self.trial_counts
+        ):
+            raise KernelValueError("SearchOutcome.trial_counts must be (TrialStatus, int) pairs")
+        if [entry[0] for entry in self.trial_counts] != list(TrialStatus):
+            raise KernelValueError(
+                "SearchOutcome.trial_counts は TrialStatus の宣言順に全状態（0件も出す。D09 §3）"
+            )
+        for entry in self.trial_counts:
+            _require_count(entry[1], "SearchOutcome.trial_counts")
+        _require_ledger_execution(self.ledger_execution)
+
+
+@dataclass(frozen=True, slots=True)
+class FoldEvidence:
+    """fold 1つの判定の入力（D09 §7.3）。全 fold が終端した後に組み立てる。
+
+    `selection` は保存済みの選定記録、`train_units` はその fold の選定区間の全試行の結果
+    （候補なしの fold の証拠不足の理由に、観測不足の指標と理由を出すために使う）、
+    `validation` は選んだ試行の検証区間の単位の結果（候補なしの fold は `None`）。
+    """
+
+    fold: Fold
+    selection: FoldSelection
+    train_units: tuple[TrainUnitEvaluation, ...]
+    validation: ValidationUnitEvaluation | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.fold, Fold):
+            raise KernelValueError("FoldEvidence.fold must be a Fold")
+        if not isinstance(self.selection, FoldSelection):
+            raise KernelValueError("FoldEvidence.selection must be a FoldSelection")
+        if self.selection.fold_index != self.fold.fold_index:
+            raise KernelValueError("FoldEvidence: 選定記録と fold の番号が違う")
+        if not isinstance(self.train_units, tuple) or not all(
+            isinstance(item, TrainUnitEvaluation) for item in self.train_units
+        ):
+            raise KernelValueError("FoldEvidence.train_units must be TrainUnitEvaluation")
+        selected = self.selection.selected_trial_index
+        if selected is None:
+            if self.validation is not None:
+                raise KernelValueError("候補なしの fold は検証区間の単位を持たない（D09 §10.4）")
+        elif not isinstance(self.validation, ValidationUnitEvaluation):
+            raise KernelValueError("選んだ試行のある fold は検証区間の単位の結果を持つ（D09 §7.7）")
+        elif self.validation.trial_index != selected:
+            raise KernelValueError("検証区間の単位は選んだ試行のもの（D09 §7.7）")
+        units: tuple[_UnitEvaluation, ...] = (
+            *self.train_units,
+            *(() if self.validation is None else (self.validation,)),
+        )
+        if any(item.fold_index != self.fold.fold_index for item in units):
+            raise KernelValueError(
+                f"FoldEvidence: fold {self.fold.fold_index} に別の fold の単位の結果がある"
+            )
+
+    @property
+    def unit_statuses(self) -> tuple[TrialStatus, ...]:
+        """この fold の全単位の状態（選定区間の全試行と、選んだ試行の検証区間。D09 §10.4）。"""
+        validation = () if self.validation is None else (self.validation.status,)
+        return (*(item.status for item in self.train_units), *validation)
+
+
+# --- 内部の小道具 -------------------------------------------------------------
+
+
+def _ordinal(member: Enum) -> int:
+    return list(type(member)).index(member)
+
+
+def _compare(observed: Decimal, comparator: Comparator, threshold: Decimal) -> bool:
+    """`observed comparator threshold` が成り立つか（D09 §7.2・§7.3。`Decimal` で比べる）。"""
+    if comparator is Comparator.GE:
+        return observed >= threshold
+    if comparator is Comparator.GT:
+        return observed > threshold
+    if comparator is Comparator.LE:
+        return observed <= threshold
+    return observed < threshold
+
+
+def _numeric(value: MetricValue) -> Decimal | None:
+    """比較に使う数値（D09 §7.1）。比率はその値、金額は金額の数値。値なしは `None`。"""
+    if isinstance(value, RatioValue):
+        return value.ratio
+    if isinstance(value, AmountValue):
+        return value.amount.amount
+    if isinstance(value, Unavailable):
+        return None
+    # E1 で比率か金額の指標しか条件と選定に書けないので、ここには来ない。
+    raise KernelValueError(f"the metric kind {value.kind.value} cannot be compared (D09 §7.1)")
+
+
+def _trade_count(unit: _UnitEvaluation) -> int:
+    value = unit.value_of(MetricId.TRADE_COUNT)
+    if not isinstance(value, CountValue):
+        raise KernelValueError(f"unit {unit.trial_index} の TRADE_COUNT が件数でない（D07 §5.2）")
+    return value.count
+
+
+def _unavailable_reason(value: MetricValue) -> MetricUnavailableReason | None:
+    return value.reason if isinstance(value, Unavailable) else None
+
+
+def _selection_metrics(rule: SelectionRule) -> tuple[MetricId, ...]:
+    """選定の `metric` と足切りの指標（書いた順。重複なし）。"""
+    return tuple(dict.fromkeys((rule.metric, *(item.metric for item in rule.eligibility))))
+
+
+def _judged_metrics(rule: ValidationRule) -> tuple[MetricId, ...]:
+    """判定に使う指標（最低条件と集約条件に現れる指標。書いた順。重複なし。D09 §7.3）。"""
+    return tuple(
+        dict.fromkeys(
+            (*(item.metric for item in rule.fold_floors), *(item.metric for item in rule.aggregate))
+        )
+    )
+
+
+def _median(values: Sequence[Decimal]) -> Decimal:
+    """中央値（D09 §7.3 の `MEDIAN`）。偶数個なら中央の2つの平均をカーネル精度で1回割る。"""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    with localcontext(kernel_context()):
+        return (ordered[middle - 1] + ordered[middle]) / decimal_from_int(2)
+
+
+def _whole_seconds(interval: Interval) -> int:
+    seconds, remainder = divmod(interval.duration, _ONE_SECOND)
+    if remainder:
+        raise KernelValueError(
+            f"fold の区間 {interval} の長さが秒の整数でない（D09 §6.1。長さは秒数で持つ）"
+        )
+    return int(seconds)
+
+
+# --- 選定（D09 §7.2・§7.4） -----------------------------------------------------
+
+
+def candidate_status(rule: SelectionRule, unit: TrainUnitEvaluation) -> CandidateStatus:
+    """選定の入力での試行の区分（D09 §7.4 の表。足切りの前の区分）。
+
+    足切り（`eligibility`）で外れる `EXCLUDED_INELIGIBLE` はここでは出さず、`select_trial` が
+    `CANDIDATE` の試行に足切りを当てて決める（D09 §7.2 の手順2）。
+    """
+    if not isinstance(rule, SelectionRule):
+        raise KernelValueError("candidate_status requires a SelectionRule")
+    if not isinstance(unit, TrainUnitEvaluation):
+        raise KernelValueError("candidate_status requires a TrainUnitEvaluation (D09 §7.2)")
+    if unit.status is TrialStatus.FAILED:
+        return CandidateStatus.EXCLUDED_TRIAL_FAILED
+    if (
+        unit.status is not TrialStatus.COMPLETED
+        or unit.run_status is not RunStatus.COMPLETED
+        or unit.evaluation_status is not EvaluationStatus.COMPLETED
+    ):
+        return CandidateStatus.EXCLUDED_NOT_COMPLETED
+    reasons = [_unavailable_reason(unit.value_of(metric)) for metric in _selection_metrics(rule)]
+    if MetricUnavailableReason.INPUT_NOT_AVAILABLE in reasons:
+        return CandidateStatus.EXCLUDED_NOT_COMPLETED
+    if not unit.post_run_checks_passed:
+        return CandidateStatus.EXCLUDED_POST_RUN_CHECK
+    if any(reason is not None for reason in reasons):
+        return CandidateStatus.EXCLUDED_METRIC_UNAVAILABLE
+    return CandidateStatus.CANDIDATE
+
+
+def select_trial(
+    fold_index: int, rule: SelectionRule, units: Sequence[TrainUnitEvaluation]
+) -> FoldSelection:
+    """fold の選定（D09 §7.2）。入力はその fold の**選定区間の単位の結果だけ**である。
+
+    1. 全試行を候補の区分に分ける（D09 §7.4）。
+    2. 候補のうち足切りの条件をすべて満たすものだけを残す（満たさないものは
+       `EXCLUDED_INELIGIBLE`）。
+    3. 残った候補の `metric` の値が最大（`MAXIMIZE`）か最小（`MINIMIZE`）のものを選ぶ。
+    4. 同点（`Decimal` として等しい）は `trial_index` の最も小さいものを選ぶ。
+
+    入力の並び順によらず同じ結果になる（`trial_index` の昇順に並べ直してから当てる）。
+    """
+    _require_index(fold_index, "select_trial.fold_index")
+    if not isinstance(rule, SelectionRule):
+        raise KernelValueError("select_trial requires a SelectionRule")
+    items = tuple(units)
+    if not all(isinstance(item, TrainUnitEvaluation) for item in items):
+        raise KernelValueError(
+            "select_trial は選定区間の単位の結果（TrainUnitEvaluation）だけを受け取る"
+            "（D09 §7.2。選定は train 内で閉じる）"
+        )
+    foreign = sorted({item.fold_index for item in items if item.fold_index != fold_index})
+    if foreign:
+        raise KernelValueError(
+            f"select_trial: fold {fold_index} の選定に別の fold {foreign} の結果が渡された"
+            "（D09 §7.2。選定はその fold の選定区間の結果だけを入力にする）"
+        )
+    ordered = sorted(items, key=lambda item: item.trial_index)
+    indices = [item.trial_index for item in ordered]
+    if len(set(indices)) != len(indices):
+        raise KernelValueError(f"select_trial: trial_index が重複している: {indices}")
+
+    statuses: dict[int, CandidateStatus] = {}
+    best: tuple[Decimal, TrainUnitEvaluation] | None = None
+    for unit in ordered:
+        status = candidate_status(rule, unit)
+        if status is CandidateStatus.CANDIDATE:
+            if not all(
+                _compare(_present(unit, item.metric), item.comparator, item.threshold)
+                for item in rule.eligibility
+            ):
+                status = CandidateStatus.EXCLUDED_INELIGIBLE
+            else:
+                value = _present(unit, rule.metric)
+                better = (
+                    best is None
+                    or (rule.direction is SelectionDirection.MAXIMIZE and value > best[0])
+                    or (rule.direction is SelectionDirection.MINIMIZE and value < best[0])
+                )
+                if better:
+                    # 昇順に見ているので、同点は先に見た（番号の小さい）試行が残る。
+                    best = (value, unit)
+        statuses[unit.trial_index] = status
+
+    inputs = tuple(
+        (unit.trial_index, unit.run_evaluation_id, statuses[unit.trial_index]) for unit in ordered
+    )
+    if best is None:
+        return FoldSelection(
+            fold_index=fold_index,
+            selected_trial_index=None,
+            selected_value=None,
+            selected_train_trade_count=None,
+            inputs=inputs,
+        )
+    value, chosen = best
+    return FoldSelection(
+        fold_index=fold_index,
+        selected_trial_index=chosen.trial_index,
+        selected_value=value,
+        selected_train_trade_count=_trade_count(chosen),
+        inputs=inputs,
+    )
+
+
+def _present(unit: _UnitEvaluation, metric: MetricId) -> Decimal:
+    """候補の試行の指標の数値（候補は選定の指標と足切りの指標に値なしを持たない）。"""
+    value = _numeric(unit.value_of(metric))
+    if value is None:
+        raise KernelValueError(f"unit {unit.trial_index} の {metric.value} が値なし")
+    return value
+
+
+# --- 頻度区分（D09 §7.8） ---------------------------------------------------------
+
+
+def trades_per_365d(train_trade_count: int, train_seconds: int) -> Decimal:
+    """365 日あたりの取引頻度 `r = (件数 × 31536000) ÷ 秒数`（D09 §7.8。カーネル精度で1回割る）。"""
+    _require_count(train_trade_count, "train_trade_count")
+    _require_count(train_seconds, "train_seconds")
+    if train_seconds == 0:
+        raise KernelValueError("train_seconds must be > 0")
+    with localcontext(kernel_context()):
+        return decimal_from_int(train_trade_count * SECONDS_PER_365_DAYS) / decimal_from_int(
+            train_seconds
+        )
+
+
+def assess_frequency(
+    selections: Sequence[FoldSelection], folds: Sequence[Fold], rule: SufficiencyRule
+) -> FrequencyAssessment | None:
+    """頻度区分を選定記録と fold の区間だけから決める（D09 §7.8。Q15 決定）。
+
+    選んだ試行のある fold について、選定区間の取引件数と選定区間の長さを合計し、頻度 `r` が
+    `r >= min_train_trades_per_365d` を満たす最初の区分にする。選んだ試行のある fold が
+    1つも無ければ `None`。**検証区間の結果は型として受け取らない**。
+    """
+    if not isinstance(rule, SufficiencyRule):
+        raise KernelValueError("assess_frequency requires a SufficiencyRule")
+    chosen = tuple(selections)
+    if not all(isinstance(item, FoldSelection) for item in chosen):
+        raise KernelValueError(
+            "assess_frequency は選定記録（FoldSelection）だけを受け取る（D09 §7.8）"
+        )
+    fold_by_index: dict[int, Fold] = {}
+    for fold in folds:
+        if not isinstance(fold, Fold):
+            raise KernelValueError("assess_frequency requires Fold values")
+        if fold.fold_index in fold_by_index:
+            raise KernelValueError(f"assess_frequency: fold {fold.fold_index} が重複している")
+        fold_by_index[fold.fold_index] = fold
+    chosen_indices = [item.fold_index for item in chosen]
+    if len(set(chosen_indices)) != len(chosen_indices) or set(chosen_indices) != set(fold_by_index):
+        raise KernelValueError("assess_frequency: 選定記録と fold の番号の集合が違う")
+    trade_count = 0
+    seconds = 0
+    for selection in chosen:
+        if selection.selected_train_trade_count is None:
+            continue
+        trade_count += selection.selected_train_trade_count
+        seconds += _whole_seconds(fold_by_index[selection.fold_index].train)
+    if seconds == 0:
+        return None
+    rate = trades_per_365d(trade_count, seconds)
+    for item in rule.classes:
+        if rate >= item.min_train_trades_per_365d:
+            return FrequencyAssessment(
+                class_name=item.name, train_trade_count=trade_count, train_seconds=seconds
+            )
+    # 最後の区分の下限は 0（検査 E4）なので、ここには来ない。
+    raise KernelValueError("no frequency class matched; the last lower bound must be 0")
+
+
+def frequency_class_of(assessment: FrequencyAssessment, rule: SufficiencyRule) -> FrequencyClass:
+    """頻度区分の結果から、その区分の証拠の要件を引く（D09 §7.8）。"""
+    for item in rule.classes:
+        if item.name == assessment.class_name:
+            return item
+    raise KernelValueError(f"the frequency class {assessment.class_name} is not in the rule")
+
+
+# --- 判定（D09 §7.3） -------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _FoldJudgement:
+    verdict: FoldVerdict
+    conditions: tuple[ConditionResult, ...]
+    shortfalls: tuple[SufficiencyShortfall, ...]
+    #: 検証結果のある fold の検証区間の取引件数（手順1・2 で決まった fold は `None`）。
+    validation_trades: int | None
+
+
+def _floor_results(
+    fold_index: int, rule: ValidationRule, unit: ValidationUnitEvaluation
+) -> tuple[ConditionResult, ...]:
+    results: list[ConditionResult] = []
+    for condition in rule.fold_floors:
+        value = unit.value_of(condition.metric)
+        observed = _numeric(value)
+        if observed is None:
+            outcome = ConditionOutcome.UNCOMPUTABLE
+        elif _compare(observed, condition.comparator, condition.threshold):
+            outcome = ConditionOutcome.MET
+        else:
+            outcome = ConditionOutcome.NOT_MET
+        results.append(
+            ConditionResult(
+                scope=ConditionScope.FOLD_FLOOR,
+                fold_index=fold_index,
+                metric=condition.metric,
+                statistic=None,
+                comparator=condition.comparator,
+                threshold=condition.threshold,
+                observed=observed,
+                outcome=outcome,
+                unavailable_reason=_unavailable_reason(value),
+            )
+        )
+    return tuple(results)
+
+
+def _uncomputable_shortfalls(
+    fold_index: int, rule: ValidationRule, unit: ValidationUnitEvaluation
+) -> tuple[SufficiencyShortfall, ...]:
+    """判定に使う指標のうち観測不足で値なしのもの（指標と理由ごとに1件。D09 §7.3 の手順3・5）。"""
+    found: list[SufficiencyShortfall] = []
+    for metric in _judged_metrics(rule):
+        reason = _unavailable_reason(unit.value_of(metric))
+        if reason in OBSERVATION_SHORTFALL_REASONS:
+            found.append(
+                SufficiencyShortfall(
+                    kind=SufficiencyShortfallKind.METRIC_UNCOMPUTABLE,
+                    fold_index=fold_index,
+                    trial_index=unit.trial_index,
+                    metric=metric,
+                    reason=reason,
+                    required=None,
+                    observed=None,
+                )
+            )
+    return tuple(found)
+
+
+def _no_candidate_shortfalls(
+    evidence: FoldEvidence, rule: SelectionRule
+) -> tuple[SufficiencyShortfall, ...]:
+    """候補なしの fold で観測不足により除外された試行ごと・指標ごと・理由ごとに1件（D09 §7.8）。"""
+    status_of = {entry[0]: entry[2] for entry in evidence.selection.inputs}
+    found: list[SufficiencyShortfall] = []
+    for unit in sorted(evidence.train_units, key=lambda item: item.trial_index):
+        if status_of[unit.trial_index] is not CandidateStatus.EXCLUDED_METRIC_UNAVAILABLE:
+            continue
+        for metric in _selection_metrics(rule):
+            reason = _unavailable_reason(unit.value_of(metric))
+            if reason in OBSERVATION_SHORTFALL_REASONS:
+                found.append(
+                    SufficiencyShortfall(
+                        kind=SufficiencyShortfallKind.NO_CANDIDATE_METRIC_UNAVAILABLE,
+                        fold_index=evidence.fold.fold_index,
+                        trial_index=unit.trial_index,
+                        metric=metric,
+                        reason=reason,
+                        required=None,
+                        observed=None,
+                    )
+                )
+    return tuple(found)
+
+
+def _judge_fold(
+    evidence: FoldEvidence,
+    standard: EvaluationStandard,
+    requirement: FrequencyClass | None,
+) -> _FoldJudgement:
+    """fold の判定（D09 §7.3 の fold の判定の手順1〜6。最初に当てはまるもの）。"""
+    fold_index = evidence.fold.fold_index
+    selection = evidence.selection
+    rule = standard.validation
+    # 手順1: 候補なし。
+    if selection.selected_trial_index is None:
+        statuses = {entry[2] for entry in selection.inputs}
+        if statuses & {
+            CandidateStatus.EXCLUDED_NOT_COMPLETED,
+            CandidateStatus.EXCLUDED_POST_RUN_CHECK,
+        }:
+            return _FoldJudgement(FoldVerdict.INCOMPLETE, (), (), None)
+        if CandidateStatus.EXCLUDED_METRIC_UNAVAILABLE in statuses:
+            return _FoldJudgement(
+                FoldVerdict.INSUFFICIENT_EVIDENCE,
+                (),
+                _no_candidate_shortfalls(evidence, standard.selection),
+                None,
+            )
+        if CandidateStatus.EXCLUDED_INELIGIBLE in statuses:
+            return _FoldJudgement(FoldVerdict.NO_ELIGIBLE_TRIAL, (), (), None)
+        return _FoldJudgement(FoldVerdict.INCOMPLETE, (), (), None)
+    # 手順2: 検証結果のある fold でない、または判定に使う指標が入力の無いことによる値なし。
+    unit = evidence.validation
+    if unit is None:  # FoldEvidence が保証する
+        raise KernelValueError("a fold with a selected trial needs its validation unit")
+    if not unit.has_valid_result or any(
+        _unavailable_reason(unit.value_of(metric)) is MetricUnavailableReason.INPUT_NOT_AVAILABLE
+        for metric in _judged_metrics(rule)
+    ):
+        return _FoldJudgement(FoldVerdict.INCOMPLETE, (), (), None)
+    if requirement is None:
+        raise KernelValueError("選んだ試行のある fold があるのに頻度区分が無い（D09 §7.8）")
+    floors = _floor_results(fold_index, rule, unit)
+    trades = _trade_count(unit)
+    uncomputable = _uncomputable_shortfalls(fold_index, rule, unit)
+    breached = any(item.outcome is ConditionOutcome.NOT_MET for item in floors)
+    # 手順3: 取引が少ない fold（Q16 決定。最低条件を割っても証拠不足。結果は NOT_MET のまま残す）。
+    if trades < requirement.min_validation_trades_per_fold:
+        shortfall = SufficiencyShortfall(
+            kind=(
+                SufficiencyShortfallKind.FLOOR_NOT_MET_TRADES_BELOW
+                if breached
+                else SufficiencyShortfallKind.FOLD_TRADES_BELOW
+            ),
+            fold_index=fold_index,
+            trial_index=unit.trial_index,
+            metric=None,
+            reason=None,
+            required=requirement.min_validation_trades_per_fold,
+            observed=trades,
+        )
+        return _FoldJudgement(
+            FoldVerdict.INSUFFICIENT_EVIDENCE, floors, (shortfall, *uncomputable), trades
+        )
+    # 手順4: 最低条件を割った（取引件数が要件以上の fold だけがここに来る）。
+    if breached:
+        return _FoldJudgement(FoldVerdict.FLOOR_BREACHED, floors, (), trades)
+    # 手順5: 判定に使う指標が観測不足で値なし。
+    if uncomputable:
+        return _FoldJudgement(FoldVerdict.INSUFFICIENT_EVIDENCE, floors, uncomputable, trades)
+    # 手順6。
+    return _FoldJudgement(FoldVerdict.FLOORS_MET, floors, (), trades)
+
+
+def build_search_outcome(
+    standard: EvaluationStandard,
+    folds: Sequence[FoldEvidence],
+    ledger_execution: int,
+) -> SearchOutcome:
+    """全 fold が終端した後に、頻度区分・fold の判定・実験の判定を決める（D09 §7.3・§7.8）。
+
+    実験の判定は次の順で最初に当てはまるもの（D09 §7.3）:
+
+    1. `FLOOR_BREACHED` か `NO_ELIGIBLE_TRIAL` の fold がある: `BELOW_STANDARD`。
+    2. `INCOMPLETE` の fold がある: `INCOMPLETE`。
+    3. `INSUFFICIENT_EVIDENCE` の fold がある、または検証結果のある fold の検証区間の取引件数の
+       合計が `min_validation_trades_total` 未満: `INSUFFICIENT_EVIDENCE`。
+    4. 集約条件を当てる。1つでも `NOT_MET` なら `BELOW_STANDARD`。すべて `MET` なら、用途が
+       `STANDARD` なら `MEETS_STANDARD`、`MECHANISM_CHECK` なら `MET_IN_MECHANISM_CHECK`。
+       **用途を見るのはここだけ**（Q33 決定）。
+
+    各 fold の選定記録は、渡された選定区間の結果から `select_trial` で作り直した値と一致する
+    ことを確かめる（一致しなければ構造エラー）。試行の状態の件数は、渡された全 fold の単位
+    （選定区間の全試行と選んだ試行の検証区間）の状態から数える（D09 §10.4・§10.6）。
+    `ledger_execution` は試行台帳の実行番号（1 以上）で、呼び出し側が採番してから渡す。未採番を
+    番号の値で表さない。台帳への束縛は PR 4（D09 §17.7.3 の6）。
+    """
+    if not isinstance(standard, EvaluationStandard):
+        raise KernelValueError("build_search_outcome requires an EvaluationStandard")
+    items = tuple(folds)
+    if not all(isinstance(item, FoldEvidence) for item in items):
+        raise KernelValueError("build_search_outcome requires FoldEvidence values")
+    evidence = tuple(sorted(items, key=lambda item: item.fold.fold_index))
+    if not evidence or [item.fold.fold_index for item in evidence] != list(range(len(evidence))):
+        raise KernelValueError("build_search_outcome: fold は 0 からの連番で1つ以上")
+    for item in evidence:
+        recomputed = select_trial(item.fold.fold_index, standard.selection, item.train_units)
+        if recomputed != item.selection:
+            raise KernelValueError(
+                f"fold {item.fold.fold_index} の選定記録が、選定区間の結果から作り直した値と違う"
+                "（D09 §7.2・§7.5）"
+            )
+    selections = tuple(item.selection for item in evidence)
+    frequency = assess_frequency(
+        selections, tuple(item.fold for item in evidence), standard.sufficiency
+    )
+    requirement = None if frequency is None else frequency_class_of(frequency, standard.sufficiency)
+    judgements = [_judge_fold(item, standard, requirement) for item in evidence]
+    verdicts = [item.verdict for item in judgements]
+    conditions: list[ConditionResult] = [c for item in judgements for c in item.conditions]
+    shortfalls: list[SufficiencyShortfall] = [s for item in judgements for s in item.shortfalls]
+
+    verdict: SearchVerdict
+    if FoldVerdict.FLOOR_BREACHED in verdicts or FoldVerdict.NO_ELIGIBLE_TRIAL in verdicts:
+        verdict = SearchVerdict.BELOW_STANDARD
+    elif FoldVerdict.INCOMPLETE in verdicts:
+        verdict = SearchVerdict.INCOMPLETE
+    else:
+        total_short = False
+        if requirement is not None:
+            total = sum(item.validation_trades or 0 for item in judgements)
+            if total < requirement.min_validation_trades_total:
+                total_short = True
+                shortfalls.append(
+                    SufficiencyShortfall(
+                        kind=SufficiencyShortfallKind.TOTAL_TRADES_BELOW,
+                        fold_index=None,
+                        trial_index=None,
+                        metric=None,
+                        reason=None,
+                        required=requirement.min_validation_trades_total,
+                        observed=total,
+                    )
+                )
+        if FoldVerdict.INSUFFICIENT_EVIDENCE in verdicts or total_short:
+            verdict = SearchVerdict.INSUFFICIENT_EVIDENCE
+        else:
+            verdict = _aggregate_verdict(standard, evidence, conditions)
+
+    return SearchOutcome(
+        selections=selections,
+        fold_verdicts=tuple(
+            (item.fold.fold_index, judgement.verdict)
+            for item, judgement in zip(evidence, judgements, strict=True)
+        ),
+        verdict=verdict,
+        frequency=frequency,
+        condition_results=tuple(conditions),
+        shortfalls=tuple(sorted(shortfalls, key=lambda item: item.key)),
+        trial_counts=count_trial_statuses(s for item in evidence for s in item.unit_statuses),
+        ledger_execution=ledger_execution,
+        purpose=standard.purpose,
+    )
+
+
+def _aggregate_verdict(
+    standard: EvaluationStandard,
+    evidence: Sequence[FoldEvidence],
+    conditions: list[ConditionResult],
+) -> SearchVerdict:
+    """実験の判定の手順4（D09 §7.3）。この時点で全 fold が `FLOORS_MET`。"""
+    all_met = True
+    for condition in standard.validation.aggregate:
+        values: list[Decimal] = []
+        for item in evidence:
+            if item.validation is None:  # 全 fold が FLOORS_MET なので来ない
+                raise KernelValueError("every fold must have a validation unit at step 4")
+            values.append(_present(item.validation, condition.metric))
+        median = _median(values)
+        met = _compare(median, condition.comparator, condition.threshold)
+        all_met = all_met and met
+        conditions.append(
+            ConditionResult(
+                scope=ConditionScope.AGGREGATE,
+                fold_index=None,
+                metric=condition.metric,
+                statistic=condition.statistic,
+                comparator=condition.comparator,
+                threshold=condition.threshold,
+                observed=median,
+                outcome=ConditionOutcome.MET if met else ConditionOutcome.NOT_MET,
+                unavailable_reason=None,
+            )
+        )
+    if not all_met:
+        return SearchVerdict.BELOW_STANDARD
+    # 用途を見るのはこの1か所だけ（D09 §7.3 の手順4。Q33 決定）。
+    if standard.purpose is StandardPurpose.STANDARD:
+        return SearchVerdict.MEETS_STANDARD
+    return SearchVerdict.MET_IN_MECHANISM_CHECK
+
+
+# --- 表示用の導出値（D09 §11.5 の順3。指標ではない） ---------------------------------
+
+
+def longest_idle_period(
+    interval: Interval, holdings: Sequence[tuple[UtcTime, UtcTime | None]]
+) -> timedelta:
+    """最長の無取引期間（建玉を1つも持っていなかった最長の連続期間。D09 §11.5 の注記）。
+
+    `interval` の中の**保有区間の和集合の補集合**のうち最長の区間の長さ。保有区間は
+    `(始まり, 終わり)` で、未決済の建玉は終わりを `None` として区間の終わりまでとする。
+    区間の外にはみ出す部分は切り落とし、区間と重ならない保有は計算から除く。建玉が0件なら区間の長さそのもの。判定に使わない
+    表示のための導出値であり、D07 の指標を作り直さない。
+    """
+    if not isinstance(interval, Interval):
+        raise KernelValueError("longest_idle_period requires an Interval")
+    spans: list[tuple[UtcTime, UtcTime]] = []
+    for entry in holdings:
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            raise KernelValueError("holdings must be (start, end | None) pairs")
+        start, end = entry
+        if not isinstance(start, UtcTime) or not (end is None or isinstance(end, UtcTime)):
+            raise KernelValueError("holdings must be (UtcTime, UtcTime | None) pairs")
+        if end is not None and end < start:
+            raise KernelValueError(f"a holding ends before it starts: [{start}, {end})")
+        # 区間と重ならない保有（区間の終わり以後に始まる未決済の建玉を含む）は計算から除く
+        # （2026-10-02 の人間の決定。D09 §17.7.3 の9）。
+        stop = interval.end if end is None else end
+        clipped_start = max(start, interval.start)
+        clipped_stop = min(stop, interval.end)
+        if clipped_start < clipped_stop:
+            spans.append((clipped_start, clipped_stop))
+    spans.sort(key=lambda span: (span[0], span[1]))
+    longest = timedelta(0)
+    cursor = interval.start
+    for start, stop in spans:
+        if start > cursor:
+            longest = max(longest, start - cursor)
+        cursor = max(cursor, stop)
+    return max(longest, interval.end - cursor)
