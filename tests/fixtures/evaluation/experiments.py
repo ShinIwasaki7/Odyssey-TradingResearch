@@ -236,6 +236,34 @@ class _Store:
         self.log.append("write_outcome")
         self.outcomes.append(outcome)
 
+    # 探索の記録と試行台帳（D09 §10.3・§10.12）。単一実行の実験の偽物では使わない。
+
+    def write_trial_start(self, record: object) -> None:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def write_trial_run(self, record: object) -> None:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def write_selection(self, selection: object) -> None:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def write_aggregate_tables(  # pragma: no cover - 使わない
+        self, manifest: object, selections: object, records: object
+    ) -> None:
+        raise NotImplementedError
+
+    def write_ledger_binding(self, binding: object) -> None:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def read_trial_ledger(self) -> Any:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def append_trial_ledger(self, line: object) -> Any:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def read_ledger_bindings(self, out_base: str) -> Any:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
 
 @dataclass
 class _Runner:

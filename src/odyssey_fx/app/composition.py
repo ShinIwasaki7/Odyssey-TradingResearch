@@ -19,6 +19,7 @@ snapshot になる（D03 §3.7.1）。
 from __future__ import annotations
 
 import platform
+import secrets
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -89,6 +90,7 @@ from odyssey_fx.evaluation.application.run_experiment import (
     ReproductionReport,
     ReproductionVerdict,
     RunExperiment,
+    TrialLedgerStop,
     judge_reproduction,
 )
 from odyssey_fx.evaluation.domain.experiment import (
@@ -110,6 +112,7 @@ from odyssey_fx.evaluation.domain.research_policy import (
     search_complexity,
 )
 from odyssey_fx.evaluation.domain.search import (
+    ComparisonBasis,
     ParameterAssignment,
     TrialPhase,
     TrialPlan,
@@ -195,8 +198,8 @@ __all__ = [
     "ExperimentRunOutcome",
     "ReproductionOutcome",
     "RunOutcome",
-    "SearchRunUnsupported",
     "SnapshotInputs",
+    "TrialLedgerStop",
     "acceptance_service",
     "build_conversion_record",
     "build_experiment_manifest",
@@ -1086,28 +1089,6 @@ def evaluate_saved_run(
 # --- 実験の経路（D07 §19〜§21）-------------------------------------------------
 
 
-class SearchRunUnsupported(Exception):
-    """有効な探索の実験だが、この段階では実行未対応であること（D09 §17.7.2 の1）。
-
-    設定の誤り（`ConfigError`）ではない。設定は読込の検査をすべて通っている。CLI は何も
-    書かずに「この段階では実行未対応」と示し、表に無い失敗として終了コード 1 で終える
-    （D07 §21.3 の v2.4 の段落）。
-
-    **解除の条件（実装 PR 4 の完了条件）**: 探索の実行の経路（fold ごとの run・開始記録・試行
-    記録・選定記録・集約表・結末記録・退避。D09 §10.7）と試行台帳への追記（D09 §10.10）、探索の
-    記録票の保存と再読込（D09 §17.7.2 の9）がそろったら、この例外と送出箇所を取り除く。
-    """
-
-
-#: 探索の実験を実行する経路がまだ無いことの説明（D09 §17.7.2 の1。実装 PR 4 で解除する）。
-SEARCH_RUN_UNSUPPORTED = (
-    "この段階では実行未対応: 探索の実験（search_plan / split が NONE でない）の設定は有効だが、"
-    "探索の実行と記録（fold ごとの run・選定記録・試行台帳・探索の記録票の保存）は実装 PR 4 で"
-    "有効にする（D09 §10.7・§14・§17.7.2 の1）。何も書いていない。設定の読込・試行の列挙・"
-    "試行ごとのコンパイルまでは実装済み"
-)
-
-
 @dataclass(frozen=True, slots=True)
 class _SnapshotManifestCatalog:
     """`SnapshotCatalog`（`evaluation.application.ports`）を snapshot の manifest で満たす。
@@ -1208,13 +1189,14 @@ class ExperimentRunOutcome:
     """`experiment run` の成果（CLI が表示と終了コードに使う）。
 
     `report` は書いたレポート（`report.md`）の置き場。結末記録を書かずに拒否した場合
-    （`ExperimentRefusal`）は何も書かないので `None`（D07 §19.4）。
+    （`ExperimentRefusal`）は何も書かないので `None`（D07 §19.4）。探索の実験は単数の予測
+    `RunId` を持たない（`expected_run_id` は `None`。D09 §10.6）。
     """
 
     manifest: ExperimentManifest
     result: ExperimentOutcome | ExperimentRefusal
     directory: Path
-    expected_run_id: RunId
+    expected_run_id: RunId | None
     report: Path | None = None
 
 
@@ -1286,12 +1268,16 @@ def run_experiment(
     記録票を組み立て（事前検査を含む）、`RunExperiment` に渡す。記録票の保存・run・評価・
     事後検査の順序と拒否の判断は `RunExperiment` が持つ（ここは結線だけ）。
 
-    受けるのは単一実行の実験だけである。探索の実験の実行（D09 §10.7）は後続の実装 PR が足し、
-    それまでは準備（`prepare_search`）までしか作らない。
+    探索の実験（`search_plan` / `split` が `NONE` でない）は `run_search_experiment` へ渡す
+    （D09 §4.1・§10.7）。
     """
     if loaded.search is not None:
-        # 書き込みより前に止める（記録票も結末記録も成果物も書かない。D09 §17.7.2 の1）。
-        raise SearchRunUnsupported(SEARCH_RUN_UNSUPPORTED)
+        return run_search_experiment(
+            loaded=loaded,
+            snapshots_root=snapshots_root,
+            artifacts_root=artifacts_root,
+            repo_root=repo_root,
+        )
     environment = loaded.environment
     plan = _plan_run(
         experiment=loaded.experiment,
@@ -1537,6 +1523,16 @@ def _prepare_trial(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _SearchParts:
+    """探索の実験の準備の結果と、単位の run の結線に使う材料（snapshot は1回だけ開く）。"""
+
+    prepared: PreparedSearch
+    inputs: SnapshotInputs
+    spec: SymbolSpec
+    refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]]
+
+
 def prepare_search(
     *,
     loaded: ExperimentV2,
@@ -1549,9 +1545,21 @@ def prepare_search(
     snapshot を開き、試行を列挙し（`enumerate_assignments`）、試行ごとにコンパイルし、コンパイルが
     通った試行は全 fold の選定区間と検証区間の単位の `RunConfig`・予測 `ConfigDigest`・予測
     `RunId` を作る。記録票（事前検査 P1・P2・P6・P7 を含む）を組み立てて `PreparedSearch` に
-    束ねる。**run はしない**（探索の実行は後続の実装 PR）。`registry` はコンパイルと複雑性の計測の
-    両方に使う部品の登録（読込に使ったものと同じものを渡す）。
+    束ねる。**run はしない**。`registry` はコンパイルと複雑性の計測の両方に使う部品の登録
+    （読込に使ったものと同じものを渡す）。
     """
+    return _prepare_search(
+        loaded=loaded, snapshots_root=snapshots_root, repo_root=repo_root, registry=registry
+    ).prepared
+
+
+def _prepare_search(
+    *,
+    loaded: ExperimentV2,
+    snapshots_root: Path,
+    repo_root: Path,
+    registry: ComponentRegistry,
+) -> _SearchParts:
     search = loaded.search
     if search is None:
         raise ConfigError("prepare_search は探索の実験（search_plan が NONE でない）だけを受ける")
@@ -1606,7 +1614,7 @@ def prepare_search(
     manifest = build_search_manifest(
         loaded, inputs, trials, measures, causes, (code, lock, env, commit, dirty)
     )
-    return PreparedSearch(
+    prepared = PreparedSearch(
         manifest=manifest,
         trials=tuple(trials),
         calendar=environment.calendar,
@@ -1615,6 +1623,172 @@ def prepare_search(
         env_digest=env,
         git_commit=commit,
         git_dirty=dirty,
+    )
+    return _SearchParts(prepared=prepared, inputs=inputs, spec=spec, refs=refs)
+
+
+def comparison_basis(
+    prepared: PreparedSearch, refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]]
+) -> ComparisonBasis | None:
+    """比較の前提を組み立てる（D09 §3・§10.10）。
+
+    単位の `RunConfig`（run manifest の「入力」と「ポリシー」の群の材料。D06 §9.3）から
+    `compiled_ref` と `run_interval` を除いた全項目に、銘柄仕様・カレンダー・時間足定義の参照、
+    記録票の研究ポリシーの版参照・指標集合の版・戦略ファイルの戦略の識別、**この実行**の環境の
+    ダイジェストを足す。単位ごとに違うのは `compiled_ref` と `run_interval` だけ（D09 §6.2）なので、
+    最初の単位の `RunConfig` から作る。コンパイルが通った試行が無ければ `None`（その実験は事前
+    検査 P6 で止まり、台帳に書かない）。
+    """
+    configs = [config for trial in prepared.trials for _, config in trial.run_configs]
+    if not configs:
+        return None
+    config = configs[0]
+    symbol_spec_ref, calendar_ref, timeframe_refs = refs
+    manifest = prepared.manifest
+    return ComparisonBasis(
+        research_policy_ref=manifest.research_policy_ref,
+        metric_set_version=manifest.metric_set_version,
+        snapshot_ref=config.snapshot_ref,
+        strategy_ref=manifest.strategy_ref,
+        execution_series=config.execution_series,
+        seed=config.seed,
+        account=config.account,
+        risk_policy_ref=config.risk_policy_ref,
+        execution_policy_ref=config.execution_policy_ref,
+        cost_model_ref=config.cost_model_ref,
+        conversion_policy_ref=config.conversion_policy_ref,
+        delay_scenario_ref=config.delay_scenario_ref,
+        symbol_spec_ref=symbol_spec_ref,
+        calendar_ref=calendar_ref,
+        timeframe_def_refs=timeframe_refs,
+        code_digest=prepared.code_digest,
+        lock_digest=prepared.lock_digest,
+        env_digest=prepared.env_digest,
+    )
+
+
+@dataclass(slots=True)
+class _SearchRunner:
+    """探索の単位の run を行う `BacktestRunner`（`evaluation.application.ports`）。
+
+    記録票に固定した単位の `RunConfig` だけを run する（D07 §19.4、D09 §10.2）。単位の区間は
+    `RunConfig.run_interval`（fold の選定区間か検証区間）で、それ以外は全単位で同じ（D09 §6.2）。
+    置換の指示を持たない（常に「存在すれば失敗」で書く。D07 §19.6 の手順4）。
+    """
+
+    loaded: ExperimentV2
+    parts: _SearchParts
+    artifacts_root: Path
+    publication_log: PublicationLog
+    planned: dict[RunConfig, CompiledStrategy]
+
+    def run(self, config: RunConfig, compiled: CompiledStrategy) -> BacktestResult:
+        expected = self.planned.get(config)
+        if expected is None or expected.compiled_ref != compiled.compiled_ref:
+            raise KernelValueError(
+                "the runner only runs the unit configurations fixed in the manifest (D09 §10.2)"
+            )
+        prepared = self.parts.prepared
+        symbol_spec_ref, calendar_ref, timeframe_refs = self.parts.refs
+        config_digest = config_digest_of(
+            config,
+            symbol_spec_ref=symbol_spec_ref,
+            calendar_ref=calendar_ref,
+            timeframe_def_refs=timeframe_refs,
+        )
+        plan = _RunPlan(
+            experiment=self.loaded.body.with_run_interval(config.run_interval),
+            calendar=prepared.calendar,
+            inputs=self.parts.inputs,
+            spec=self.parts.spec,
+            compiled=compiled,
+            config=config,
+            config_digest=config_digest,
+            symbol_spec_ref=symbol_spec_ref,
+            calendar_ref=calendar_ref,
+            timeframe_refs=timeframe_refs,
+            code=prepared.code_digest,
+            lock=prepared.lock_digest,
+            environment=prepared.env_digest,
+            run_id=run_id_of(
+                config_digest, prepared.code_digest, prepared.lock_digest, prepared.env_digest
+            ),
+            git_commit=prepared.git_commit,
+            git_dirty=prepared.git_dirty,
+            publication_log=self.publication_log,
+        )
+        return _run_use_case(plan, self.artifacts_root, replace=False).run(config, compiled)
+
+
+def run_search_experiment(
+    *,
+    loaded: ExperimentV2,
+    snapshots_root: Path,
+    artifacts_root: Path,
+    repo_root: Path,
+) -> ExperimentRunOutcome:
+    """探索の実験の1回の実行（D09 §4.1・§10.7・§10.12、`experiment run`）。
+
+    合成は結線だけを行う: 準備（試行の列挙・コンパイル・記録票）、比較の前提、実行ごとの乱数
+    （`execution_nonce`。128 ビット。D09 §10.12.1 の W3）、試行台帳を置くリポジトリの根、成果物の
+    基点と走らせている版のディレクトリ（逆照合 L11 に使う）を `RunExperiment.execute_search` へ
+    渡す。台帳が読めない・追記が断られたときは `TrialLedgerStop`（終了コード 1）が上がる。
+
+    **探索の実験のレポート（`report.md`）は書かない**: 探索の節の書式（D09 §11.5）は段階5 の実装
+    PR 5 で作る。結末記録と台帳の結末の行まで書いた終端した実行で、レポートだけが無い状態
+    （D09 §10.7 の終端の書き込みの (3) の後・(4) の前）になる。
+    """
+    parts = _prepare_search(
+        loaded=loaded,
+        snapshots_root=snapshots_root,
+        repo_root=repo_root,
+        registry=INITIAL_CATALOG,
+    )
+    prepared = parts.prepared
+    manifest = prepared.manifest
+    store = FileSystemExperimentStore(
+        root=artifacts_root,
+        experiment_name=manifest.experiment_name,
+        experiment_version=manifest.experiment_version,
+        identity_of=recompute_experiment_id,
+        repo_root=repo_root,
+    )
+    search = loaded.search
+    if search is None:  # pragma: no cover - 呼び出し側が探索の実験だけを渡す
+        raise KernelValueError("run_search_experiment requires a search experiment")
+    runner = _SearchRunner(
+        loaded=loaded,
+        parts=parts,
+        artifacts_root=artifacts_root,
+        publication_log=_publication_log(
+            parts.inputs, loaded.body.with_run_interval(search.standard.split.range)
+        ),
+        planned={
+            config: trial.compiled
+            for trial in prepared.trials
+            if trial.compiled is not None
+            for _, config in trial.run_configs
+        },
+    )
+    use_case = RunExperiment(
+        store=store,
+        runner=runner,
+        repository=FileSystemResultRepository(root=artifacts_root),
+        evaluator=EvaluateRun(evaluation_code_digest=prepared.code_digest),
+    )
+    result = use_case.execute_search(
+        prepared,
+        basis=comparison_basis(prepared, parts.refs),
+        execution_nonce=secrets.token_hex(16),
+        out_base=str(artifacts_root),
+        running=store.directory.relative_to(artifacts_root).as_posix(),
+    )
+    return ExperimentRunOutcome(
+        manifest=manifest,
+        result=result,
+        directory=store.directory,
+        expected_run_id=None,
+        report=None,
     )
 
 
@@ -1662,6 +1836,13 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
         raise ConfigError(
             f"{experiment_dir} の結末記録は実験 {outcome.experiment_id} のもので、記録票の"
             f" {manifest.experiment_id} と一致しない"
+        )
+    if manifest.is_search:
+        # 探索の節の書式（D09 §11.5）・`--repo-root`・台帳の照合（R1〜R7）は段階5 の実装 PR 5 で
+        # 作る。単一実行の書式で探索の実験のレポートを作らない（引数・読込の誤り。終了コード 2）。
+        raise ConfigError(
+            f"{experiment_dir} は探索の実験の版のディレクトリである。探索の実験のレポートは段階5 の"
+            "実装 PR 5 で作る（D09 §11.5。この段階では未対応）"
         )
     if (directory.parent.name, directory.name) != (
         manifest.experiment_name,

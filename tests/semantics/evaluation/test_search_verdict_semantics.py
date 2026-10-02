@@ -19,7 +19,7 @@
 - #17 の判定の部分（`test_17_*`）: 用途が `MECHANISM_CHECK` なら、`STANDARD` で `MEETS_STANDARD`
   になる入力が `MET_IN_MECHANISM_CHECK` になり、手順1〜3 の値は用途によらず同じ。
 
-#4・#6〜#8・#15 は探索の実行と記録（後続の実装 PR）で足す。
+#4・#6〜#8・#15 は探索の実行と記録の統合テスト `tests/integration/app/test_search_run.py`。
 """
 
 from __future__ import annotations

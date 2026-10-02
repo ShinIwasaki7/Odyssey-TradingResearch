@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from odyssey_fx.common.canonical import digest
@@ -20,7 +23,12 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import ExperimentId
 from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.evaluation.adapters.fs_store import experiment_manifest_payload
+from odyssey_fx.evaluation.adapters.fs_store import (
+    FileSystemExperimentStore,
+    experiment_manifest_from_payload,
+    experiment_manifest_payload,
+)
+from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.experiment import (
     ExperimentManifest,
     experiment_id_of,
@@ -32,8 +40,10 @@ from odyssey_fx.evaluation.domain.research_policy import (
     check_trial_count,
 )
 from odyssey_fx.evaluation.domain.search import (
+    CandidateStatus,
     Comparator,
     EvaluationStandard,
+    FoldSelection,
     FrequencyClass,
     MetricCondition,
     ParameterAxis,
@@ -300,7 +310,86 @@ def test_a_single_run_manifest_refuses_search_items() -> None:
         replace(make_manifest(), search_plan="GRID")
 
 
-def test_saving_a_search_manifest_is_not_available_yet() -> None:
-    """探索の記録票の保存は探索の実行の PR で足す。項目を黙って落とした記録票を書かない。"""
-    with pytest.raises(KernelValueError, match="search experiment"):
-        experiment_manifest_payload(_search_manifest())
+def _holdout() -> FinalHoldoutSpec:
+    return FinalHoldoutSpec(
+        interval=Interval(
+            start=UtcTime.parse("2015-02-01T00:00:00Z"),
+            end=UtcTime.parse("2015-03-01T00:00:00Z"),
+        ),
+        purpose="最終検証の試験",
+    )
+
+
+@pytest.mark.parametrize("final_holdout", [None, "holdout"])
+def test_a_search_manifest_is_saved_and_read_back_unchanged(final_holdout: str | None) -> None:
+    """探索の記録票の保存と再読込（D09 §17.7.2 の9。実装 PR 4 の完了条件）。
+
+    探索の項目（探索計画・分割・評価基準・最終検証・全試行）を落とさず保存し、読み戻した記録票は
+    元と等しく、識別子を再計算しても同じになる（保存時の検査 P3 が同じ版の再実行を通す）。
+    """
+    manifest = (
+        _search_manifest() if final_holdout is None else _search_manifest(final_holdout=_holdout())
+    )
+    payload = json.loads(json.dumps(experiment_manifest_payload(manifest)))
+    assert {"evaluation_standard", "final_holdout", "trials"} <= set(payload)
+    restored = experiment_manifest_from_payload(payload)
+    assert restored == manifest
+    assert experiment_id_of(restored, _SEARCH_VALUES) == manifest.experiment_id
+
+
+def test_a_search_manifest_with_a_respelled_value_is_not_read_back() -> None:
+    """保存した正規化形と違う表し方の値（例: 十進数の別の書き方）は読み戻さない（識別子が
+    再計算で同じ値になることを保証するため）。"""
+    payload = json.loads(json.dumps(experiment_manifest_payload(_search_manifest())))
+    floors = payload["evaluation_standard"]["validation"]["fold_floors"]
+    floors[0]["threshold"] = "0.20"
+    with pytest.raises(KernelValueError, match="canonical form"):
+        experiment_manifest_from_payload(payload)
+
+
+def test_the_aggregate_tables_keep_their_columns_and_types_with_no_rows(tmp_path: Path) -> None:
+    """集約表は 0 行でも列とその型を残して両方を書く（D09 §11.2、AGENTS.md）。
+
+    全試行がコンパイル拒否の実験（選定区間の単位は失敗の行だけ、指標の行は 0 件）で確かめる。
+    """
+    trials = _trials()
+    failed = replace(
+        trials[0],
+        compiled_ref=None,
+        compile_rejections=trials[1].compile_rejections,
+        expected_config_digests=(),
+    )
+    manifest = _search_manifest(trials=(failed, trials[1]))
+    selections = tuple(
+        FoldSelection(
+            fold_index=fold,
+            selected_trial_index=None,
+            selected_value=None,
+            selected_train_trade_count=None,
+            inputs=(
+                (0, None, CandidateStatus.EXCLUDED_TRIAL_FAILED),
+                (1, None, CandidateStatus.EXCLUDED_TRIAL_FAILED),
+            ),
+        )
+        for fold in (0, 1)
+    )
+    store = FileSystemExperimentStore(
+        root=tmp_path,
+        experiment_name=manifest.experiment_name,
+        experiment_version=manifest.experiment_version,
+        identity_of=lambda item: item.experiment_id,
+    )
+    store.write_aggregate_tables(manifest, selections, ())
+    search = store.directory / "search"
+    units = pl.read_parquet(search / "trial_units.parquet")
+    assert units.height == 4
+    assert set(units.get_column("status").to_list()) == {"FAILED"}
+    assert units.schema["fold_index"] == pl.Int64()
+    assert units.schema["selected"] == pl.Boolean()
+    assert units.get_column("run_id").null_count() == 4
+    metrics = pl.read_parquet(search / "trial_metrics.parquet")
+    assert metrics.height == 0
+    assert metrics.columns[:4] == ["fold_index", "phase", "trial_index", "metric_id"]
+    assert metrics.schema["fold_index"] == pl.Int64()
+    with pytest.raises(ArtifactAlreadyExists):
+        store.write_aggregate_tables(manifest, selections, ())

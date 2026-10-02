@@ -24,6 +24,14 @@ from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.refs import ContentDigest, SnapshotRef
 from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
 from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
+from odyssey_fx.evaluation.domain.search import (
+    FoldSelection,
+    TrialLedgerBinding,
+    TrialLedgerDefect,
+    TrialLedgerLine,
+    TrialRunRecord,
+    TrialStartRecord,
+)
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.snapshot import PartitionId
@@ -47,6 +55,10 @@ __all__ = [
     "StoredEvaluation",
     "TableReadResult",
     "TraceColumnSpec",
+    "TrialLedgerAppendRefused",
+    "TrialLedgerContents",
+    "TrialLedgerReadFailure",
+    "TrialLedgerRefusal",
 ]
 
 
@@ -290,11 +302,97 @@ class ManifestSaveResult(Enum):
     CONFLICT = "CONFLICT"
 
 
+@dataclass(frozen=True, slots=True)
+class TrialLedgerContents:
+    """試行台帳を読んだ結果（D09 §3・§10.12.6）。
+
+    `lines` は改行で終わった完全な行を書かれた順に型へ直したもの、`torn_tail` は末尾に書きかけの
+    行（最後の改行より後の、改行で終わらない断片）があったか。書きかけは `lines` に入れない。
+    """
+
+    lines: tuple[TrialLedgerLine, ...]
+    torn_tail: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lines, tuple) or not all(
+            isinstance(line, TrialLedgerLine) for line in self.lines
+        ):
+            raise KernelValueError("TrialLedgerContents.lines must be a tuple of TrialLedgerLine")
+        if not isinstance(self.torn_tail, bool):
+            raise KernelValueError("TrialLedgerContents.torn_tail must be a bool")
+
+
+@dataclass(frozen=True, slots=True)
+class TrialLedgerReadFailure:
+    """試行台帳を読めなかったこと（D09 §3・§10.12.2）。
+
+    `kind` は当たった検査の種類、`line_number` は最初に見つけた食い違いの行（1 始まり。ファイルを
+    開けないとき・成果物からの逆照合 L11 のときは `None`）、`detail` は理由（D07 §3 の
+    `ManifestReadFailure` と同じ考え方の文字列）。
+    """
+
+    kind: TrialLedgerDefect
+    line_number: int | None
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, TrialLedgerDefect):
+            raise KernelValueError("TrialLedgerReadFailure.kind must be a TrialLedgerDefect")
+        if self.line_number is not None and (
+            isinstance(self.line_number, bool)
+            or not isinstance(self.line_number, int)
+            or self.line_number < 1
+        ):
+            raise KernelValueError("TrialLedgerReadFailure.line_number must be an int >= 1")
+        if not isinstance(self.detail, str) or not self.detail:
+            raise KernelValueError("TrialLedgerReadFailure.detail must be a non-empty str")
+
+
+class TrialLedgerRefusal(Enum):
+    """台帳への追記を断った理由（D09 §3・§10.12.1）。"""
+
+    #: ロックを作れない（追記中の書き手がいる、または止まった書き手のロックが残っている）。
+    LOCKED = "LOCKED"
+    #: 読んだ後に台帳の末尾が変わった（新しい行の `prev` が末尾と合わない）。
+    TAIL_CHANGED = "TAIL_CHANGED"
+    #: 台帳が読めない。
+    READ_FAILED = "READ_FAILED"
+    #: 書き込みか同期に失敗した（行が完全に残っていれば、次の読込で有効な行になる）。
+    WRITE_FAILED = "WRITE_FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class TrialLedgerAppendRefused:
+    """台帳への追記を断ったこと（D09 §3・§10.12.1）。`read_failure` は `READ_FAILED` のときだけ。"""
+
+    kind: TrialLedgerRefusal
+    read_failure: TrialLedgerReadFailure | None
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, TrialLedgerRefusal):
+            raise KernelValueError("TrialLedgerAppendRefused.kind must be a TrialLedgerRefusal")
+        if (self.kind is TrialLedgerRefusal.READ_FAILED) != isinstance(
+            self.read_failure, TrialLedgerReadFailure
+        ):
+            raise KernelValueError(
+                "TrialLedgerAppendRefused.read_failure is set exactly when the kind is READ_FAILED"
+            )
+        if not isinstance(self.detail, str) or not self.detail:
+            raise KernelValueError("TrialLedgerAppendRefused.detail must be a non-empty str")
+
+
 @runtime_checkable
 class ExperimentStore(Protocol):
     """実験の記録票と結末記録の保存（D01 §4、D07 §19.3）。実装は `evaluation.adapters.fs_store`。
 
     1つの実装は1つの実験の版のディレクトリ（`runs/experiments/<name>/v<version>/`）を扱う。
+
+    **探索の実験の記録**（D09 §10.3・§10.10・§10.12・§11.1。段階5 実装 PR 4）: 開始記録・試行記録・
+    選定記録・集約表・実行番号の束縛の記録を版のディレクトリの `search/` に書き（どれも既にあれば
+    何も書かずに失敗する。R4）、試行台帳（`<リポジトリの根>/research/trial_ledger.jsonl`）を読み、
+    1行ずつ追記する。同じ版の再実行の退避（「退避中」の印を含む。D09 §11.3）は、探索の記録票の
+    `save_manifest` が保存の直後に行う。
     """
 
     def save_manifest(self, manifest: ExperimentManifest) -> ManifestSaveResult:
@@ -313,6 +411,56 @@ class ExperimentStore(Protocol):
 
     def write_outcome(self, outcome: ExperimentOutcome) -> None:
         """結末記録 `experiment_outcome.json` を書く（D07 §19.3）。"""
+        ...
+
+    def write_trial_start(self, record: TrialStartRecord) -> None:
+        """単位の開始記録 `search/units/f<k>_<局面>_t<i>.start.json` を書く（D09 §10.3）。"""
+        ...
+
+    def write_trial_run(self, record: TrialRunRecord) -> None:
+        """単位の試行記録 `search/units/f<k>_<局面>_t<i>.json` を書く（D09 §10.3）。"""
+        ...
+
+    def write_selection(self, selection: FoldSelection) -> None:
+        """fold の選定記録 `search/selection_f<k>.json` を書く（D09 §7.5）。"""
+        ...
+
+    def write_aggregate_tables(
+        self,
+        manifest: ExperimentManifest,
+        selections: tuple[FoldSelection, ...],
+        records: tuple[TrialRunRecord, ...],
+    ) -> None:
+        """集約表2つを書く（D09 §11.2）。
+
+        記録票（割当・コンパイル結果）・選定記録（候補の区分・選んだ試行）・試行記録（run と評価の
+        項目）から行を作り、指標の行は各単位の評価の `METRICS` 表をそのまま写す。0 行でも列と型を
+        残す。
+        """
+        ...
+
+    def write_ledger_binding(self, binding: TrialLedgerBinding) -> None:
+        """実行番号の束縛の記録 `search/ledger_execution.json` を書く（D09 §10.12.3 の2）。"""
+        ...
+
+    def read_trial_ledger(self) -> TrialLedgerContents | TrialLedgerReadFailure:
+        """試行台帳を読む（D09 §10.12.1 の操作の形）。読込の検査に当たれば読めない理由を返す。"""
+        ...
+
+    def append_trial_ledger(
+        self, line: TrialLedgerLine
+    ) -> TrialLedgerLine | TrialLedgerAppendRefused:
+        """1行の包みを、ロックと末尾の照合の下で台帳へ追記する（D09 §10.12.1 の操作の形）。"""
+        ...
+
+    def read_ledger_bindings(
+        self, out_base: str
+    ) -> tuple[tuple[str, TrialLedgerBinding | TrialLedgerReadFailure], ...]:
+        """成果物の基点の下の各実験の版の、束縛の記録がある最も新しい世代の束縛の記録を集める。
+
+        パス（基点からの相対パス）の辞書順に `(パス, 中身か読めない理由)` を返す（D09 §10.12.1・
+        §10.12.2 の L11。Q38・Q39）。
+        """
         ...
 
 

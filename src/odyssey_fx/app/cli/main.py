@@ -1157,7 +1157,11 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
     out.line(f"仮説: {manifest.hypothesis}")
     out.line(f"記録票の識別子（experiment_id）: {manifest.experiment_id}")
     out.line(f"実験の版のディレクトリ: {outcome.directory}")
-    out.line(f"予測した実行の識別子（run_id）: {outcome.expected_run_id}")
+    if outcome.expected_run_id is not None:
+        out.line(f"予測した実行の識別子（run_id）: {outcome.expected_run_id}")
+    else:
+        folds = getattr(manifest.split, "folds", ())
+        out.line(f"探索: 試行 {len(manifest.trials)} 件 × fold {len(folds)} 個（D09 §4.1）")
     out.line("事前検査:")
     out.lines(_check_lines(manifest.pre_run_checks))
     result = outcome.result
@@ -1193,10 +1197,21 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
             ]
         )
         out.line(f"別プロセスで再現するには `{command}` を実行すること")
+    search = result.search
+    if search is not None:
+        out.line(f"判定: {search.verdict.value}（評価基準の用途: {search.purpose.value}）")
+        out.line(f"試行台帳の実行番号: {search.ledger_execution}")
+        if result.failed_checks:
+            out.line("事後検査に合格しなかった単位がある（どの単位かは試行記録にある。D09 §10.8）")
     if result.status is ExperimentStatus.REJECTED_BY_POLICY:
         out.line("研究ポリシーの事前検査に合格しなかったので run していない（D07 §20.3）")
     if outcome.report is not None:
         out.line(f"レポート: {outcome.report}")
+    elif search is not None:
+        out.line(
+            "レポート: 探索の実験のレポートは段階5 の実装 PR 5 で作る（この段階では書かない）。"
+            "結末記録と試行台帳の結末の行は書き終えている"
+        )
     return _EXPERIMENT_EXIT[result.status]
 
 
@@ -1287,10 +1302,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     try:
         return handlers[args.command](args, out)
-    except composition.SearchRunUnsupported as exc:
-        # 有効な探索の設定であり、設定の誤り（終了コード 2）とは呼ばない。何も書かずに止めた
-        # ことを示し、表に無い失敗として終了コード 1 で終える（D09 §17.7.2 の1、D07 §21.3）。
-        sys.stderr.write(f"{exc}\n")
+    except composition.TrialLedgerStop as exc:
+        # 試行台帳が読めない・追記が断られた・照合が合わない（表に無い失敗。終了コード 1。
+        # D09 §10.12・§11.4、D07 §21.3 の v2.10 の段落）。
+        sys.stderr.write(f"失敗: {exc}\n")
         return _EXIT_FAILED
     except (ConfigError, KernelValueError, FileNotFoundError, ValueError) as exc:
         sys.stderr.write(f"失敗: {exc}\n")
