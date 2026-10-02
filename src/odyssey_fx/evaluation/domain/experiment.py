@@ -12,6 +12,13 @@
 （`experiment_id_of`）。**パスと環境の群と予測した `RunId` は入れない**。パスを入れると同じ
 内容を別の場所に置いただけで別の実験になり、環境の群を入れるとコードを1行直しただけで同じ
 版が「別の内容」になって検査 P3 が事前固定の違反と誤判定する。
+
+**探索の実験**（`search_plan` / `split` が `NONE` でない。D09 §10.2、D07 §19.2 v2.9）の記録票は、
+`search_plan` / `split` に解決済みの `SearchPlan` / `SplitSpec` を持ち、`evaluation_standard`・
+`final_holdout`・`trials`（全試行の `TrialPlan`）を足す。単数の `compiled_ref` /
+`expected_config_digest` は `None`（試行ごとの値は `trials` にある）。事前検査は P1・P2・P6 に
+試行数の検査 P7 を足した4件。**単一実行の実験の識別の入力は変えない**（足した項目はキーごと
+省く）ので、段階4 で保存した実験を同じ版で再実行しても `experiment_id` は変わらない。
 """
 
 from __future__ import annotations
@@ -43,6 +50,19 @@ from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityMeasures,
     PolicyCheck,
     PolicyCheckResult,
+)
+from odyssey_fx.evaluation.domain.search import (
+    EvaluationStandard,
+    SearchPlan,
+    SearchPlanKind,
+    TrialPlan,
+    trial_units,
+)
+from odyssey_fx.evaluation.domain.splits import (
+    FinalHoldoutSpec,
+    SplitKind,
+    SplitSpec,
+    split_spec_of,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.domain.access import AccessClass
@@ -164,6 +184,11 @@ PRE_RUN_CHECKS: Final = frozenset(
         PolicyCheck.COMPLEXITY_WITHIN_LIMITS,
     }
 )
+#: 探索の実験の記録票が持つ事前検査（D09 §10.2・§10.8。P1・P2・P6 と試行数の検査 P7）。
+SEARCH_PRE_RUN_CHECKS: Final = PRE_RUN_CHECKS | {PolicyCheck.TRIAL_COUNT_WITHIN_LIMIT}
+
+#: 単一実行の実験の `search_plan` / `split` の値（D07 §18.2。段階4 の書き方のまま）。
+SINGLE_RUN_MARK: Final = "NONE"
 #: 結末記録が持つ検査（D07 §19.3 の `outcome_checks`）。事前検査で止まった場合は P3 だけ、
 #: それ以外は P3・P4・P5 の全件。
 _REJECTED_OUTCOME_CHECKS: Final = frozenset({PolicyCheck.PREREGISTRATION_UNCHANGED})
@@ -204,8 +229,14 @@ class ExperimentManifest:
 
     `allowed_partitions` は許可 partition（`PartitionId` の文字列）からアクセス分類への
     対応。`complexity` は計測値、`complexity_limits` は研究ポリシーの上限である。
-    `pre_run_checks` は事前の段階（`PRE_RUN`）の検査 P1・P2・P6 の全件。保存時の検査 P3 は
-    入れない（識別子と比べる検査なので、入れると循環する。D07 §19.2）。
+    `pre_run_checks` は事前の段階（`PRE_RUN`）の検査 P1・P2・P6 の全件（探索の実験では P7 も）。
+    保存時の検査 P3 は入れない（識別子と比べる検査なので、入れると循環する。D07 §19.2）。
+
+    単一実行の実験では `search_plan` / `split` は文字列 `NONE`、`compiled_ref` /
+    `expected_config_digest` は値を持ち、探索の項目（`evaluation_standard` / `final_holdout` /
+    `trials`）は `None` か空。探索の実験では `search_plan` / `split` が解決済みの
+    `SearchPlan` / `SplitSpec`、単数の `compiled_ref` / `expected_config_digest` は `None`、
+    `evaluation_standard` と `trials` は値を持つ（D09 §10.2）。
     """
 
     experiment_id: ExperimentId
@@ -215,12 +246,12 @@ class ExperimentManifest:
     hypothesis: str
     research_policy_ref: PolicyRef
     metric_set_version: int
-    search_plan: str
-    split: str
+    search_plan: str | SearchPlan
+    split: str | SplitSpec
     resolved_files: tuple[ResolvedFile, ...]
     strategy_ref: StrategyRef
-    compiled_ref: CompiledStrategyRef
-    expected_config_digest: ConfigDigest
+    compiled_ref: CompiledStrategyRef | None
+    expected_config_digest: ConfigDigest | None
     snapshot_id: SnapshotId
     allowed_partitions: Mapping[str, AccessClass]
     complexity: ComplexityMeasures
@@ -231,6 +262,9 @@ class ExperimentManifest:
     env_digest: EnvDigest
     git_commit: str
     git_dirty: bool
+    evaluation_standard: EvaluationStandard | None = None
+    final_holdout: FinalHoldoutSpec | None = None
+    trials: tuple[TrialPlan, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.experiment_id, ExperimentId):
@@ -245,8 +279,6 @@ class ExperimentManifest:
         for label, expected in (
             ("research_policy_ref", PolicyRef),
             ("strategy_ref", StrategyRef),
-            ("compiled_ref", CompiledStrategyRef),
-            ("expected_config_digest", ConfigDigest),
             ("snapshot_id", SnapshotId),
             ("complexity", ComplexityMeasures),
             ("complexity_limits", ComplexityLimits),
@@ -256,9 +288,12 @@ class ExperimentManifest:
         ):
             if not isinstance(getattr(self, label), expected):
                 raise KernelValueError(f"ExperimentManifest.{label} must be a {expected.__name__}")
-        for label in ("search_plan", "split", "git_commit"):
-            if not isinstance(getattr(self, label), str):
-                raise KernelValueError(f"ExperimentManifest.{label} must be a str")
+        if not isinstance(self.git_commit, str):
+            raise KernelValueError("ExperimentManifest.git_commit must be a str")
+        if self.is_search:
+            self._check_search()
+        else:
+            self._check_single_run()
         if not isinstance(self.git_dirty, bool):
             raise KernelValueError("ExperimentManifest.git_dirty must be a bool")
         if not isinstance(self.resolved_files, tuple) or not all(
@@ -289,7 +324,81 @@ class ExperimentManifest:
             "allowed_partitions",
             MappingProxyType(dict(sorted(self.allowed_partitions.items()))),
         )
-        _require_checks(self.pre_run_checks, PRE_RUN_CHECKS, "ExperimentManifest.pre_run_checks")
+        _require_checks(
+            self.pre_run_checks,
+            SEARCH_PRE_RUN_CHECKS if self.is_search else PRE_RUN_CHECKS,
+            "ExperimentManifest.pre_run_checks",
+        )
+
+    @property
+    def is_search(self) -> bool:
+        """探索の実験の記録票か（`search_plan` が解決済みの `SearchPlan`。D09 §10.2）。"""
+        return isinstance(self.search_plan, SearchPlan)
+
+    def _check_single_run(self) -> None:
+        """単一実行の実験の記録票（D07 §19.2 の段階4 の形）。"""
+        if self.search_plan != SINGLE_RUN_MARK or self.split != SINGLE_RUN_MARK:
+            raise KernelValueError(
+                "a single-run manifest has search_plan and split NONE (D07 §18.2・§19.2)"
+            )
+        if not isinstance(self.compiled_ref, CompiledStrategyRef):
+            raise KernelValueError("ExperimentManifest.compiled_ref must be a CompiledStrategyRef")
+        if not isinstance(self.expected_config_digest, ConfigDigest):
+            raise KernelValueError(
+                "ExperimentManifest.expected_config_digest must be a ConfigDigest"
+            )
+        if self.evaluation_standard is not None or self.final_holdout is not None or self.trials:
+            raise KernelValueError(
+                "a single-run manifest carries no evaluation standard, final holdout or trials"
+                " (D09 §10.2・§5.5 の11)"
+            )
+
+    def _check_search(self) -> None:
+        """探索の実験の記録票（D09 §10.2）。"""
+        plan = self.search_plan
+        split = self.split
+        if not isinstance(plan, SearchPlan) or plan.kind is not SearchPlanKind.GRID:
+            raise KernelValueError("a search manifest holds a GRID SearchPlan (D09 §5.1)")
+        if not isinstance(split, SplitSpec) or split.kind is not SplitKind.STANDARD:
+            raise KernelValueError("a search manifest holds a STANDARD SplitSpec (D09 §5.5 の4)")
+        if self.compiled_ref is not None or self.expected_config_digest is not None:
+            raise KernelValueError(
+                "a search manifest leaves the single compiled_ref / expected_config_digest None"
+                " (the per-trial values are in trials. D09 §10.2)"
+            )
+        if not isinstance(self.evaluation_standard, EvaluationStandard):
+            raise KernelValueError(
+                "a search manifest carries the EvaluationStandard of research policy v3+"
+                " (D09 §10.2・§5.5 の10)"
+            )
+        if split != split_spec_of(self.evaluation_standard.split):
+            raise KernelValueError(
+                "the folds of a search manifest are the ones generated from the split standard"
+                " of its evaluation standard (D09 §6.1)"
+            )
+        if self.final_holdout is not None and not isinstance(self.final_holdout, FinalHoldoutSpec):
+            raise KernelValueError("ExperimentManifest.final_holdout must be a FinalHoldoutSpec")
+        trials = self.trials
+        if not isinstance(trials, tuple) or not all(isinstance(t, TrialPlan) for t in trials):
+            raise KernelValueError("ExperimentManifest.trials must be a tuple of TrialPlan")
+        if [trial.trial_index for trial in trials] != list(range(plan.trial_count)):
+            raise KernelValueError(
+                f"a search manifest lists every enumerated trial in order: expected"
+                f" {plan.trial_count} trials indexed from 0 (D09 §10.2)"
+            )
+        axes = [axis.key for axis in plan.axes]
+        for trial in trials:
+            if [(item[0], item[1]) for item in trial.assignment.values] != axes:
+                raise KernelValueError(
+                    f"the trial {trial.trial_index} does not assign exactly the search axes"
+                )
+            if trial.compiled and tuple(
+                unit for unit, _ in trial.expected_config_digests
+            ) != trial_units(len(split.folds), trial.trial_index):
+                raise KernelValueError(
+                    f"the compiled trial {trial.trial_index} must carry the expected config digest"
+                    " of every train and validation unit of every fold (D09 §10.2)"
+                )
 
     def file(self, role: str) -> ResolvedFile:
         """役割名で解決済みのファイルを引く。"""
@@ -305,6 +414,10 @@ class ExperimentManifest:
         )
 
 
+#: 探索の実験で識別の入力 2 から取り除くキー（解決済みの形だけで入力 4 に入れる。D09 §10.2）。
+_SEARCH_VALUE_KEYS: Final = ("search_plan", "split", "final_holdout")
+
+
 def experiment_id_of(
     manifest: ExperimentManifest, experiment_values: Mapping[str, Any]
 ) -> ExperimentId:
@@ -316,13 +429,19 @@ def experiment_id_of(
 
     `manifest.experiment_id` そのもの・環境の群（コード・lock・環境のダイジェストと git の
     状態）・パス・予測した `RunId` は入れない（同節）。
+
+    探索の実験では、入力 2 から `search_plan` / `split` / `final_holdout` のキーごと取り除き、
+    入力 4 に解決済みの `SearchPlan` / `SplitSpec` / `FinalHoldoutSpec` / `EvaluationStandard` と
+    `trials` を入れる（D09 §10.2、D07 §19.2 v2.9）。単一実行の実験ではこれらの項目をキーごと
+    省き、段階4 と同じ入力のままにする。
     """
     if not isinstance(experiment_values, Mapping):
         raise KernelValueError("experiment_id_of requires the experiment config values")
+    removed = _SEARCH_VALUE_KEYS if manifest.is_search else ()
     values = {
         key: value
         for key, value in experiment_values.items()
-        if key not in ("strategy", "environment")
+        if key not in ("strategy", "environment", *removed)
     }
     payload = {
         "experiment_name": manifest.experiment_name,
@@ -346,6 +465,10 @@ def experiment_id_of(
         "complexity_limits": manifest.complexity_limits,
         "pre_run_checks": list(manifest.pre_run_checks),
     }
+    if manifest.is_search:
+        payload["evaluation_standard"] = manifest.evaluation_standard
+        payload["final_holdout"] = manifest.final_holdout
+        payload["trials"] = list(manifest.trials)
     return ExperimentId(digest(payload))
 
 

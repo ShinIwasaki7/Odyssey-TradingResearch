@@ -1415,7 +1415,20 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     """記録票を JSON へ落とす（D07 §19.2 の表の項目すべて。ADR-0027）。
 
     **実行時刻を入れない**（D07 §19.2）。本文（`resolved_files` の `text`）はそのまま入れる。
+
+    書けるのは単一実行の実験の記録票だけである。探索の実験の記録票（D09 §10.2）の保存は、探索の
+    実行と記録を足す後続の実装 PR が足す（それまで `experiment run` は探索の実験を受けない）。
+    探索の項目を黙って落とした記録票を書かないよう、ここで構造エラーにする。
     """
+    if manifest.is_search:
+        raise KernelValueError(
+            "saving the manifest of a search experiment is not implemented yet; the search"
+            " records are added with the search execution path (D09 §10.2・§11.1)"
+        )
+    compiled_ref = manifest.compiled_ref
+    expected_config_digest = manifest.expected_config_digest
+    if compiled_ref is None or expected_config_digest is None:  # pragma: no cover
+        raise KernelValueError("a single-run manifest carries compiled_ref and its config digest")
     policy = manifest.research_policy_ref
     strategy = manifest.strategy_ref
     return {
@@ -1441,8 +1454,8 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
             "version": strategy.version,
             "digest": strategy.digest.hex,
         },
-        "compiled_ref": manifest.compiled_ref.digest.hex,
-        "expected_config_digest": manifest.expected_config_digest.digest.hex,
+        "compiled_ref": compiled_ref.digest.hex,
+        "expected_config_digest": expected_config_digest.digest.hex,
         "snapshot_id": manifest.snapshot_id.hex,
         "allowed_partitions": [
             {"partition": partition, "access_class": access.value}

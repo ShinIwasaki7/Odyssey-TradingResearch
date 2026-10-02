@@ -15,21 +15,41 @@
 - E4（`FrequencyClass`・`SufficiencyRule`）: 頻度区分は1つ以上、名前が一意で
   `[A-Z][A-Z0-9_]*`、下限が厳密に降順、最後の下限が 0、要件の整数が 0 以上。
 
-選定・判定・頻度区分の関数（D09 §7.2〜§7.5・§7.8）は後続の実装 PR が足す（本モジュールは
-型だけ）。閾値は `Decimal` で持つ（D09 §7.1。`float` を使わない。ADR-0012）。
+選定・判定・頻度区分の関数（D09 §7.2〜§7.5・§7.8）は後続の実装 PR が足す。閾値は `Decimal` で
+持つ（D09 §7.1。`float` を使わない。ADR-0012）。
+
+**探索計画と試行の列挙**（D09 §5.1・§5.2・§6.2・§10.2。実装 PR 2）: 探索計画 `SearchPlan` は
+格子（`GRID`）だけを持ち（Q6 決定）、軸 `ParameterAxis` を `(instance_id, parameter)` の昇順に
+並べ、各軸の値は書いた順のまま、**後ろの軸ほど速く変わる**直積の順に試行を列挙する
+（`enumerate_assignments`。先頭が `trial_index = 0`）。試行は割当 `ParameterAssignment` 1つで、
+fold × 局面（選定区間 `TRAIN` / 検証区間 `VALIDATION`）ごとに実行単位 `TrialUnitKey` を持つ。
+記録票には試行ごとの `TrialPlan`（割当、コンパイル結果の識別かコンパイル拒否、単位ごとの予測
+`ConfigDigest`）を全試行ぶん入れる。
 """
 
 from __future__ import annotations
 
+import itertools
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
 from typing import Final
 
+from odyssey_fx.common.canonical import encode
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest
 from odyssey_fx.evaluation.domain.metrics import METRIC_KINDS, MetricId, MetricKind
 from odyssey_fx.evaluation.domain.splits import SplitStandard
+from odyssey_fx.strategy.compiler.compiled import CompileError
+from odyssey_fx.strategy.declarations.specs import (
+    BoolValue,
+    FloatValue,
+    IntValue,
+    ParameterValue,
+    StrValue,
+)
 
 __all__ = [
     "REFERENCE_METRICS",
@@ -40,12 +60,22 @@ __all__ = [
     "FoldStatistic",
     "FrequencyClass",
     "MetricCondition",
+    "ParameterAssignment",
+    "ParameterAxis",
+    "SearchPlan",
+    "SearchPlanKind",
     "SelectionDirection",
     "SelectionRule",
     "StandardPurpose",
     "SufficiencyRule",
+    "TrialPhase",
+    "TrialPlan",
+    "TrialUnitKey",
     "ValidationRule",
+    "compile_rejections_of",
+    "enumerate_assignments",
     "is_selectable_metric",
+    "trial_units",
 ]
 
 #: 参考値（D07 §5.3・§22.2 の #7・#8・#11・#13・#14）。採否の判断に使わない（D09 §7.1）。
@@ -334,3 +364,336 @@ class EvaluationStandard:
             raise KernelValueError("EvaluationStandard.validation must be a ValidationRule")
         if not isinstance(self.sufficiency, SufficiencyRule):
             raise KernelValueError("EvaluationStandard.sufficiency must be a SufficiencyRule")
+
+
+# --- 探索計画と試行の列挙（D09 §5.1・§5.2・§6.2・§10.2。実装 PR 2）-------------------
+
+
+def _require_name(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise KernelValueError(f"{label} must be a non-empty str")
+    return value
+
+
+def _require_index(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise KernelValueError(f"{label} must be an int, got {value!r}")
+    if value < 0:
+        raise KernelValueError(f"{label} must be >= 0, got {value}")
+    return value
+
+
+def _is_parameter_value(value: object) -> bool:
+    return isinstance(value, (BoolValue, IntValue, FloatValue, StrValue))
+
+
+class SearchPlanKind(Enum):
+    """探索計画の語彙（D09 §3・§5.1。段階5 は格子だけ。2026-09-29 の人間の決定 Q6）。"""
+
+    #: 探索しない（単一実行の実験）。
+    NONE = "NONE"
+    #: 全軸の値の直積をすべて試す。
+    GRID = "GRID"
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterAxis:
+    """探索の軸1本（D09 §3・§5.1）。
+
+    戦略ファイルの使用箇所 `instance_id` のパラメータ `parameter` について、試す値を**書いた順**に
+    並べる。値は D04 §7 の `ParameterValue` で、空の列・同じ値の2回（正規化エンコードで比べる。
+    D02 §9.3）・区分の混在は拒否する（D09 §5.5 の2）。値の型が部品の契約の `value_type` と合うか
+    は、契約を引ける読込（`app.config`）が確かめる。
+    """
+
+    instance_id: str
+    parameter: str
+    values: tuple[ParameterValue, ...]
+
+    def __post_init__(self) -> None:
+        _require_name(self.instance_id, "ParameterAxis.instance_id")
+        _require_name(self.parameter, "ParameterAxis.parameter")
+        if not isinstance(self.values, tuple) or not all(
+            _is_parameter_value(value) for value in self.values
+        ):
+            raise KernelValueError("ParameterAxis.values must be a tuple of ParameterValue")
+        label = f"{self.instance_id}.{self.parameter}"
+        if not self.values:
+            raise KernelValueError(f"軸 {label} の値の列が空である（D09 §5.5 の2）")
+        if len({type(value) for value in self.values}) != 1:
+            raise KernelValueError(f"軸 {label} の値の型が混在している（D09 §5.5 の2）")
+        encoded = [encode(value) for value in self.values]
+        if len(set(encoded)) != len(encoded):
+            raise KernelValueError(f"軸 {label} に同じ値が2回ある（D09 §5.5 の2）")
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """軸の鍵 `(instance_id, parameter)`（並べる順と重複の判定に使う）。"""
+        return (self.instance_id, self.parameter)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchPlan:
+    """探索計画（D09 §3・§5.1）。
+
+    軸は `(instance_id, parameter)` の文字列の昇順に並べ直して持つ（列挙の順序の規則。D09 §5.2）。
+    各軸の値の書き順はそのまま残す（番号と同点の解き方を決める事前固定の一部）。`max_trials` は
+    実験が自分で書く探索空間の大きさの上限で、列挙した試行の数がこれを超えれば構造エラー
+    （読込が設定の誤りとして示す。D09 §5.5 の3）。下回るのは許す。
+    """
+
+    kind: SearchPlanKind
+    axes: tuple[ParameterAxis, ...]
+    max_trials: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SearchPlanKind):
+            raise KernelValueError("SearchPlan.kind must be a SearchPlanKind")
+        if not isinstance(self.axes, tuple) or not all(
+            isinstance(axis, ParameterAxis) for axis in self.axes
+        ):
+            raise KernelValueError("SearchPlan.axes must be a tuple of ParameterAxis")
+        if isinstance(self.max_trials, bool) or not isinstance(self.max_trials, int):
+            raise KernelValueError("max_trials は整数で書くこと（D09 §5.5 の3）")
+        if self.max_trials < 1:
+            raise KernelValueError(
+                f"max_trials は正の整数で書くこと（{self.max_trials}。D09 §5.5 の3）"
+            )
+        if self.kind is SearchPlanKind.GRID and not self.axes:
+            raise KernelValueError("GRID の探索計画の axes が空である（D09 §5.5 の1）")
+        if self.kind is SearchPlanKind.NONE and self.axes:
+            raise KernelValueError("NONE の探索計画に axes がある（D09 §5.5 の1）")
+        keys = [axis.key for axis in self.axes]
+        if len(set(keys)) != len(keys):
+            duplicated = sorted({key for key in keys if keys.count(key) > 1})
+            raise KernelValueError(
+                f"同じ使用箇所とパラメータの軸が2つある: {duplicated}（D09 §5.5 の2）"
+            )
+        object.__setattr__(self, "axes", tuple(sorted(self.axes, key=lambda axis: axis.key)))
+        if self.trial_count > self.max_trials:
+            raise KernelValueError(
+                f"列挙した試行の数 {self.trial_count} が max_trials {self.max_trials} を超える。"
+                "超えた分を切り捨てて一部だけ試すことはしない（D09 §5.1・§5.5 の3）"
+            )
+
+    @property
+    def trial_count(self) -> int:
+        """列挙する試行の数（全軸の値の数の積。軸が無ければ 1）。"""
+        count = 1
+        for axis in self.axes:
+            count *= len(axis.values)
+        return count
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterAssignment:
+    """試行1つのパラメータ割当（D09 §3・§5.2）。
+
+    `values` は `(instance_id, parameter, 値)` を `(instance_id, parameter)` の昇順に並べたもの
+    （構築時に並べ直す）。同じ鍵の2回は拒否する。
+    """
+
+    values: tuple[tuple[str, str, ParameterValue], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.values, tuple):
+            raise KernelValueError("ParameterAssignment.values must be a tuple")
+        for item in self.values:
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 3
+                or not isinstance(item[0], str)
+                or not item[0]
+                or not isinstance(item[1], str)
+                or not item[1]
+                or not _is_parameter_value(item[2])
+            ):
+                raise KernelValueError(
+                    "ParameterAssignment.values holds (instance_id, parameter, ParameterValue)"
+                )
+        keys = [(item[0], item[1]) for item in self.values]
+        if len(set(keys)) != len(keys):
+            raise KernelValueError("ParameterAssignment assigns the same parameter twice")
+        object.__setattr__(
+            self, "values", tuple(sorted(self.values, key=lambda item: (item[0], item[1])))
+        )
+
+
+def enumerate_assignments(plan: SearchPlan) -> tuple[ParameterAssignment, ...]:
+    """探索計画から試行の割当を列挙する（D09 §5.2）。
+
+    軸は `(instance_id, parameter)` の昇順（`SearchPlan` が並べ済み）、各軸の値は書いた順のまま、
+    **後ろの軸ほど速く変わる**直積の順に並べる。戻り値の位置がそのまま `trial_index`（先頭が 0）。
+    同じ計画からは常に同じ列が出る（乱数を使わない。D09 §5.4）。
+    """
+    if not isinstance(plan, SearchPlan):
+        raise KernelValueError("enumerate_assignments requires a SearchPlan")
+    if plan.kind is not SearchPlanKind.GRID:
+        raise KernelValueError("only a GRID search plan enumerates trials (D09 §5.3)")
+    return tuple(
+        ParameterAssignment(
+            values=tuple(
+                (axis.instance_id, axis.parameter, value)
+                for axis, value in zip(plan.axes, combination, strict=True)
+            )
+        )
+        for combination in itertools.product(*(axis.values for axis in plan.axes))
+    )
+
+
+class TrialPhase(Enum):
+    """単位の局面（D09 §3・§6.2）。宣言順が実行の順（選定区間 → 検証区間。D09 §5.4）。"""
+
+    TRAIN = "TRAIN"
+    VALIDATION = "VALIDATION"
+
+
+#: 局面の実行の順（D09 §5.4）。
+_PHASE_ORDER: Final = {phase: index for index, phase in enumerate(TrialPhase)}
+
+
+@dataclass(frozen=True, slots=True)
+class TrialUnitKey:
+    """試行の実行単位の鍵 `(fold_index, phase, trial_index)`（D09 §3・§6.2）。"""
+
+    fold_index: int
+    phase: TrialPhase
+    trial_index: int
+
+    def __post_init__(self) -> None:
+        _require_index(self.fold_index, "TrialUnitKey.fold_index")
+        if not isinstance(self.phase, TrialPhase):
+            raise KernelValueError("TrialUnitKey.phase must be a TrialPhase")
+        _require_index(self.trial_index, "TrialUnitKey.trial_index")
+
+    @property
+    def order(self) -> tuple[int, int, int]:
+        """実行の順の鍵（fold の昇順 → 局面 → 試行番号の昇順。D09 §5.4）。"""
+        return (self.fold_index, _PHASE_ORDER[self.phase], self.trial_index)
+
+
+def trial_units(fold_count: int, trial_index: int) -> tuple[TrialUnitKey, ...]:
+    """1つの試行が記録票に予測ダイジェストを持つ単位（D09 §10.2・§10.5 の注記）。
+
+    コンパイルが通った試行は、全 fold の選定区間の単位と、**選ばれるかどうかによらず**全 fold の
+    検証区間の単位を持つ。fold の昇順、局面は選定区間 → 検証区間の順に並べる。
+    """
+    _require_index(fold_count, "fold_count")
+    _require_index(trial_index, "trial_index")
+    return tuple(
+        TrialUnitKey(fold_index=fold, phase=phase, trial_index=trial_index)
+        for fold in range(fold_count)
+        for phase in TrialPhase
+    )
+
+
+def _rejection_sort_key(error: CompileError) -> tuple[bool, str, str, str, str]:
+    """`(location, check_id)` の昇順の鍵。location は使用箇所 → フィールド経路の順に比べ、
+    使用箇所を持たない拒否（戦略全体の宣言の拒否）を先に置く。"""
+    location = error.location
+    return (
+        location.instance_id is not None,
+        location.instance_id or "",
+        location.field_path,
+        error.check_id,
+        error.rejection.value,
+    )
+
+
+def compile_rejections_of(errors: Sequence[CompileError]) -> tuple[str, ...]:
+    """コンパイル拒否を記録票の `TrialPlan.compile_rejections` の形にする（D09 §3・§5.2）。
+
+    1件ごとに `check_id`・拒否の区分（`CompileRejection`）・`location`（使用箇所とフィールド経路）
+    の3つを正規化エンコードした文字列にし、`(location, check_id)` の昇順に並べる（D02 §9.3）。
+    拒否の文言（`message`）は入れない（文言の書き換えで記録票の識別子が変わらないようにする）。
+    """
+    if not all(isinstance(error, CompileError) for error in errors):
+        raise KernelValueError("compile_rejections_of requires CompileError values")
+    return tuple(
+        encode(
+            {
+                "check_id": error.check_id,
+                "rejection": error.rejection.value,
+                "location": {
+                    "instance_id": error.location.instance_id,
+                    "field_path": error.location.field_path,
+                },
+            }
+        ).decode("utf-8")
+        for error in sorted(errors, key=_rejection_sort_key)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TrialPlan:
+    """試行1つの事前固定の内容（D09 §3・§5.2・§10.2）。
+
+    - コンパイルが通った試行: `compiled_ref` を持ち、`compile_rejections` は空、
+      `expected_config_digests` は全単位（`trial_units`）の予測 `ConfigDigest`。
+    - コンパイルが拒否した試行（`FAILED`）: `compiled_ref = None`、`compile_rejections` は空でない、
+      `expected_config_digests` は空（`RunConfig` を組み立てられないため）。
+
+    `expected_config_digests` は単位の実行の順（`TrialUnitKey.order`）に並べ直して持つ。
+    """
+
+    trial_index: int
+    assignment: ParameterAssignment
+    compiled_ref: CompiledStrategyRef | None
+    compile_rejections: tuple[str, ...]
+    expected_config_digests: tuple[tuple[TrialUnitKey, ConfigDigest], ...]
+
+    def __post_init__(self) -> None:
+        _require_index(self.trial_index, "TrialPlan.trial_index")
+        if not isinstance(self.assignment, ParameterAssignment):
+            raise KernelValueError("TrialPlan.assignment must be a ParameterAssignment")
+        if self.compiled_ref is not None and not isinstance(self.compiled_ref, CompiledStrategyRef):
+            raise KernelValueError("TrialPlan.compiled_ref must be a CompiledStrategyRef or None")
+        if not isinstance(self.compile_rejections, tuple) or not all(
+            isinstance(item, str) and item for item in self.compile_rejections
+        ):
+            raise KernelValueError("TrialPlan.compile_rejections must be a tuple of str")
+        if not isinstance(self.expected_config_digests, tuple) or not all(
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], TrialUnitKey)
+            and isinstance(item[1], ConfigDigest)
+            for item in self.expected_config_digests
+        ):
+            raise KernelValueError(
+                "TrialPlan.expected_config_digests must hold (TrialUnitKey, ConfigDigest) pairs"
+            )
+        if (self.compiled_ref is None) == (not self.compile_rejections):
+            raise KernelValueError(
+                "a trial either compiles (compiled_ref) or is rejected (compile_rejections),"
+                " not both and not neither (D09 §5.2)"
+            )
+        if self.compiled_ref is None and self.expected_config_digests:
+            raise KernelValueError(
+                "a trial rejected by the compiler has no expected config digests (D09 §10.2)"
+            )
+        if self.compiled_ref is not None and not self.expected_config_digests:
+            raise KernelValueError(
+                "a compiled trial carries the expected config digest of every unit (D09 §10.2)"
+            )
+        units = [unit for unit, _ in self.expected_config_digests]
+        if any(unit.trial_index != self.trial_index for unit in units):
+            raise KernelValueError("TrialPlan.expected_config_digests holds another trial's units")
+        if len(set(units)) != len(units):
+            raise KernelValueError("TrialPlan.expected_config_digests holds a unit twice")
+        object.__setattr__(
+            self,
+            "expected_config_digests",
+            tuple(sorted(self.expected_config_digests, key=lambda item: item[0].order)),
+        )
+
+    @property
+    def compiled(self) -> bool:
+        """コンパイルが通った試行か（拒否された試行は `FAILED`。D09 §10.4）。"""
+        return self.compiled_ref is not None
+
+    def expected_config_digest(self, unit: TrialUnitKey) -> ConfigDigest:
+        """単位の予測 `ConfigDigest`。無い単位は構造エラー。"""
+        for key, value in self.expected_config_digests:
+            if key == unit:
+                return value
+        raise KernelValueError(f"the trial {self.trial_index} has no unit {unit}")

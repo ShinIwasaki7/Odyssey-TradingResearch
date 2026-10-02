@@ -937,6 +937,11 @@ def _load_run_configs(
             registry=INITIAL_CATALOG,
             metric_set_versions=frozenset({METRIC_SET_VERSION}),
         )
+        if loaded.search is not None:
+            raise ConfigError(
+                f"{args.experiment}: 探索の実験（search_plan / split が NONE でない）は `run` では"
+                " 実行できない。fold ごとの run は探索の実験の経路が組み立てる（D09 §6.2・§11.4）"
+            )
         environment = loaded.environment
         return (
             environment.calendar,

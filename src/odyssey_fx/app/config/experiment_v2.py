@@ -10,21 +10,34 @@
 | `environment` | 取引カレンダー・時間足定義・銘柄仕様の3つのパス（必須） |
 | `delay_scenario` | 遅延シナリオ（任意。**書かないことだけが遅延なし**） |
 | `evaluation` | 指標集合の版 `{metric_set_version}`（必須） |
-| `search_plan` / `split` | 段階4 で書けるのは `NONE` だけ（必須） |
+| `search_plan` / `split` | `NONE`（単一実行）か、`{kind: GRID, max_trials, axes}` と `STANDARD` |
+| `final_holdout` | 探索の実験では必須（`NONE` か `{interval, purpose}`）、単一実行では拒否 |
+
+`search_plan` / `split` / `final_holdout` の語彙と拒否の正本は D09 §5・§6.1・§5.5 である。
 
 **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。読込時に実体を読む。
 
-**`id` / `version` / `hypothesis` / `research_policy` / `evaluation` / `search_plan` / `split`
-は `ConfigDigest` に入らない**（D07 §18.2）。これらは `ExperimentConfig` に載せず、本モジュールの
-読込結果 `ExperimentV2` の側に置く。実行の本体は書式 v1 と同じ関数（`resolve_run_body`）で
-解決するので、同じ実行条件を書けば v1 と同じ `ConfigDigest` になる（D07 §18.5）。
+**`id` / `version` / `hypothesis` / `research_policy` / `evaluation` / `search_plan` / `split` /
+`final_holdout` は `ConfigDigest` に入らない**（D07 §18.2）。これらは `ExperimentConfig` に
+載せず、本モジュールの読込結果 `ExperimentV2` の側に置く。実行の本体は書式 v1 と同じ関数
+（`resolve_run_body`）で解決するので、同じ実行条件を書けば v1 と同じ `ConfigDigest` になる
+（D07 §18.5）。
 
 **読込時に拒否するもの**（D07 §18.6）: 未宣言キー・型不一致・`schema_version` が 1・2 以外、
-空の仮説、`NONE` 以外の探索計画・分割、空の遅延規則・確率的遅延・負の遅延、無い・読めない
-パス、この実装の持たない指標集合の版、`selection` / `acceptance` のキー（評価基準は研究
-ポリシーの版で決まる。D07 §18.2 v2.9、D09 §5.5 の7・§7.6）、研究ポリシーの版の登録簿に無い版・
-登録簿と中身や用途が食い違う版（D09 §10.9。Q8・Q33 決定）。研究ポリシーの検査（D07 §20）と
-実行前のデータ能力検査（D06 §10.5）は読込では行わない。
+空の仮説、探索計画・分割の誤り（D09 §5.5 の1〜7・10・11）、空の遅延規則・確率的遅延・負の
+遅延、無い・読めないパス、この実装の持たない指標集合の版、`selection` / `acceptance` のキー
+（評価基準は研究ポリシーの版で決まる。D07 §18.2 v2.9、D09 §5.5 の7・§7.6）、研究ポリシーの
+版の登録簿に無い版・登録簿と中身や用途が食い違う版（D09 §10.9。Q8・Q33 決定）。研究ポリシーの
+検査（D07 §20）と実行前のデータ能力検査（D06 §10.5）は読込では行わない。
+
+**探索の実験**（D09 §5・§6.1。実装 PR 2）: `search_plan: {kind: GRID, max_trials, axes}` と
+`split: STANDARD` と `final_holdout` を書き、`run_interval` は書かない。読込は軸の使用箇所と
+パラメータを戦略ファイルと部品の契約から引いて値を `ParameterValue` に読み（D04 §7）、研究
+ポリシー（版 3 以上。評価基準の群を持つ版だけ。D09 §5.5 の10）の期間分割の標準規則から fold を
+生成し（`SplitSpec`）、`final_holdout` に検査4 を当てる。読込結果は `ExperimentV2.search`
+（`SearchSetting`）に入る。探索の実験の `experiment.run_interval` は**評価範囲**を仮に持つ
+（単位ごとに fold の選定区間・検証区間へ置き換えるのは合成。遅延規則の「どの足にも当たらない」
+検査は評価範囲に当てる）。
 """
 
 from __future__ import annotations
@@ -43,6 +56,7 @@ from odyssey_fx.app.config.experiment import (
     ExperimentConfig,
     RunBodyModel,
     resolve_run_body,
+    run_interval_of,
 )
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.app.config.models import StrictModel, require_schema_version, validate
@@ -54,14 +68,27 @@ from odyssey_fx.app.config.research_policy import (
     verify_registered,
 )
 from odyssey_fx.app.config.strategy_file import load_strategy_file
-from odyssey_fx.app.config.strategy_parts import parse_series
+from odyssey_fx.app.config.strategy_parts import parameter_value_of, parse_series
 from odyssey_fx.app.config.symbols import load_symbol_spec, symbol_spec_files
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.refs import PolicyRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.research_policy import ResearchPolicy
+from odyssey_fx.evaluation.domain.search import (
+    EvaluationStandard,
+    ParameterAxis,
+    SearchPlan,
+    SearchPlanKind,
+)
+from odyssey_fx.evaluation.domain.splits import (
+    FinalHoldoutSpec,
+    SplitKind,
+    SplitSpec,
+    check_final_holdout,
+    split_spec_of,
+)
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.schedule import (
     DelayRule,
@@ -73,12 +100,14 @@ from odyssey_fx.marketdata.domain.schedule import (
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
-from odyssey_fx.strategy.catalog.registry import ComponentRegistry
+from odyssey_fx.strategy.catalog.registry import ComponentRegistry, ContractKey
+from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.declarations.duration import format_duration, parse_duration
 from odyssey_fx.strategy.declarations.evaluation import OnBarClose
 from odyssey_fx.strategy.declarations.refs import MarketDataRef
 
 __all__ = [
+    "FINAL_HOLDOUT_NONE",
     "SEARCH_PLAN_NONE",
     "SPLIT_NONE",
     "SUPPORTED_SCHEMA_VERSIONS",
@@ -86,6 +115,7 @@ __all__ = [
     "ExperimentEnvironment",
     "ExperimentV2",
     "ResearchPolicyRef",
+    "SearchSetting",
     "experiment_schema_version",
     "experiment_v2_from_texts",
     "load_experiment_v2",
@@ -102,6 +132,9 @@ _SCHEMA_VERSION = 2
 SEARCH_PLAN_NONE: Final = "NONE"
 SPLIT_NONE: Final = "NONE"
 
+#: 最終検証を使わない探索の実験の `final_holdout`（D09 §6.1・§5.5 の11。省略は拒否）。
+FINAL_HOLDOUT_NONE: Final = "NONE"
+
 #: 書けば読込で拒否するキー（D07 §18.2 v2.9、D09 v0.2 §5.5 の7）。旧 Q3（実験ごとに選定規則と
 #: 判定の条件を書く）の撤回により、評価基準は研究ポリシーの版が持つ。
 _WITHDRAWN_STANDARD_KEYS: Final = ("selection", "acceptance")
@@ -111,6 +144,28 @@ _SEEDED_RANDOM_DELAY: Final = "SEEDED_RANDOM_DELAY"
 
 
 # --- 設定ファイルの形（Pydantic）--------------------------------------------
+
+
+class _IntervalModel(StrictModel):
+    start: str
+    end: str
+
+
+class _AxisModel(StrictModel):
+    instance: str
+    parameter: str
+    values: list[bool | int | float | str]
+
+
+class _SearchPlanModel(StrictModel):
+    kind: str
+    max_trials: int
+    axes: list[_AxisModel]
+
+
+class _FinalHoldoutModel(StrictModel):
+    interval: _IntervalModel
+    purpose: str
 
 
 class _ResearchPolicyRefModel(StrictModel):
@@ -158,8 +213,10 @@ class _ExperimentV2Model(RunBodyModel):
     strategy: str
     environment: _EnvironmentModel
     evaluation: _EvaluationModel
-    search_plan: str
+    search_plan: str | _SearchPlanModel
     split: str
+    run_interval: _IntervalModel | None = None
+    final_holdout: str | _FinalHoldoutModel | None = None
     delay_scenario: _DelayScenarioModel | None = None
 
 
@@ -176,6 +233,22 @@ class ResearchPolicyRef:
 
     policy_id: str
     version: int
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSetting:
+    """探索の実験の読込結果（D09 §5・§6.1・§10.2）。
+
+    - `plan`: 解決済みの探索計画（軸は `(instance_id, parameter)` の昇順、値は書いた順）。
+    - `split`: 研究ポリシーの期間分割の標準規則から生成した全 fold（`SplitSpec`）。
+    - `final_holdout`: 最終検証の区間と目的。実験設定に `NONE` と書いたら `None`。
+    - `standard`: 研究ポリシーの評価基準の群（版 3 以上）。
+    """
+
+    plan: SearchPlan
+    split: SplitSpec
+    final_holdout: FinalHoldoutSpec | None
+    standard: EvaluationStandard
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +284,10 @@ class ExperimentV2:
     （`experiment` / `strategy` / `research_policy` / `calendar` / `timeframes`）から本文への
     対応、`symbol_texts` は読んだ銘柄仕様の本文である（記録票に入れるのは実行と換算に使う
     銘柄のものだけで、その選択は合成が行う）。
+
+    `search` は探索の実験（`search_plan` / `split` が `NONE` でない）でだけ値を持つ（D09 §5・
+    §6.1）。そのとき `search_plan` / `split` の文字列は `GRID` / `STANDARD` で、`experiment` の
+    `run_interval` は評価範囲である（単位ごとの区間は合成が fold から決める）。
     """
 
     experiment: ExperimentConfig
@@ -225,6 +302,7 @@ class ExperimentV2:
     values: Mapping[str, Any]
     texts: Mapping[str, str]
     symbol_texts: Mapping[Symbol, str]
+    search: SearchSetting | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", _frozen(self.values))
@@ -557,15 +635,7 @@ def _validated(
 
     if not model.hypothesis.strip():
         raise ConfigError(f"{path}: `hypothesis` が空である。検証したい仮説を書くこと（D07 §18.2）")
-    for key, value, allowed in (
-        ("search_plan", model.search_plan, SEARCH_PLAN_NONE),
-        ("split", model.split, SPLIT_NONE),
-    ):
-        if value != allowed:
-            raise ConfigError(
-                f"{path}: `{key}` が {value!r} だが、書式 v2 の段階4 の範囲で書けるのは"
-                f" {allowed!r} だけである。探索計画と分割の語彙は段階5 で足す（D07 §18.2）"
-            )
+    _check_search_keys(model, payload, path)
     metric_set_version = model.evaluation.metric_set_version
     if metric_set_version not in metric_set_versions:
         raise ConfigError(
@@ -573,6 +643,152 @@ def _validated(
             f" この実装が持つのは {sorted(metric_set_versions)} である（D07 §18.6）"
         )
     return model
+
+
+def _check_search_keys(model: _ExperimentV2Model, payload: Mapping[str, Any], path: Path) -> None:
+    """探索計画・分割・最終検証・run 区間のキーの組み合わせ（D09 §5.5 の1・4〜6・11）。
+
+    戦略と研究ポリシーを読まずに分かる拒否だけをここで当てる。軸と値の検査（§5.5 の2・3）、
+    研究ポリシーの版（§5.5 の10）、`final_holdout` の区間（§6.1 の検査4）は `_search_setting_of`。
+    """
+    plan = model.search_plan
+    if isinstance(plan, str) and plan != SEARCH_PLAN_NONE:
+        raise ConfigError(
+            f"{path}: `search_plan` が {plan!r} である。単一実行は `NONE`、探索は"
+            " `{kind: GRID, max_trials, axes}` の形で書くこと（D09 §5.1・§5.5 の1）"
+        )
+    if not isinstance(plan, str) and plan.kind != SearchPlanKind.GRID.value:
+        raise ConfigError(
+            f"{path}: `search_plan.kind` が {plan.kind!r} である。段階5 の探索は格子"
+            f" `{SearchPlanKind.GRID.value}` だけ（D09 §5.3・§5.5 の1。Q6 決定）"
+        )
+    if model.split not in (SplitKind.NONE.value, SplitKind.STANDARD.value):
+        raise ConfigError(
+            f"{path}: `split` が {model.split!r} である。書けるのは `NONE` か `STANDARD` だけで、"
+            "fold の区間・長さ・purge は研究ポリシーの評価基準が決める（D09 §5.5 の5・§6.1）"
+        )
+    searching = not isinstance(plan, str)
+    if searching != (model.split != SPLIT_NONE):
+        raise ConfigError(
+            f"{path}: `search_plan` と `split` の片方だけが `NONE` である。探索だけ・分割だけの"
+            "実験は作らない（探索せずに分割するなら、1値の軸1本で書く。D09 §5.5 の4）"
+        )
+    if searching:
+        if model.run_interval is not None:
+            raise ConfigError(
+                f"{path}: 探索の実験に `run_interval` は書けない。区間は研究ポリシーの標準規則から"
+                "生成した fold が持つ（D09 §5.5 の6・§6.1）"
+            )
+        holdout = payload.get("final_holdout")
+        if "final_holdout" not in payload or holdout is None:
+            raise ConfigError(
+                f"{path}: 探索の実験には `final_holdout` を書くこと。使わないなら `NONE` と書く"
+                "（暗黙の既定値を置かない。D09 §5.5 の11・§6.1）"
+            )
+        if isinstance(model.final_holdout, str) and model.final_holdout != FINAL_HOLDOUT_NONE:
+            raise ConfigError(
+                f"{path}: `final_holdout` が {model.final_holdout!r} である。`NONE` か"
+                " `{interval: {start, end}, purpose}` の形で書くこと（D09 §6.1）"
+            )
+        return
+    if "final_holdout" in payload:
+        raise ConfigError(
+            f"{path}: 単一実行の実験（`search_plan: NONE`）に `final_holdout` は書けない"
+            "（D09 §5.5 の11）"
+        )
+    if model.run_interval is None:
+        raise ConfigError(f"{path}: 単一実行の実験には `run_interval` を書くこと（D07 §18.2）")
+
+
+def _search_plan_of(
+    model: _SearchPlanModel,
+    strategy: StrategyDefinition,
+    registry: ComponentRegistry,
+    path: Path,
+) -> SearchPlan:
+    """探索計画を読む（D09 §5.1・§5.5 の1〜3）。
+
+    軸の `(instance, parameter)` は戦略ファイルの使用箇所と、その部品の契約のパラメータから
+    引く（戦略ファイルにパラメータの値が書かれていなくても、契約にあれば軸にできる）。値は契約の
+    `ParameterSpec.value_type` に従って `ParameterValue` に読む（戦略ファイルの `parameters` と
+    同じ規則。D04 §7）。無い使用箇所・無いパラメータ・型の合わない値は読込で拒否する（1つの
+    誤記で全試行がコンパイル拒否として記録され、探索の結果に見えることを防ぐ。D09 §5.2）。
+    """
+    instances = {instance.instance_id: instance for instance in strategy.components}
+    axes: list[ParameterAxis] = []
+    for index, axis in enumerate(model.axes):
+        label = f"search_plan.axes[{index}]"
+        instance = instances.get(axis.instance)
+        if instance is None:
+            raise ConfigError(
+                f"{path}: {label} の使用箇所 {axis.instance!r} は戦略に無い（D09 §5.5 の2）"
+            )
+        contract_ref = instance.contract_ref
+        registration = registry.get(ContractKey(contract_ref.component_id, contract_ref.version))
+        if registration is None:
+            raise ConfigError(
+                f"{path}: {label} の使用箇所 {axis.instance!r} の部品"
+                f" {contract_ref.component_id} v{contract_ref.version} が登録されていない"
+                "（パラメータの型を引けない。D09 §5.5 の2）"
+            )
+        spec = registration.contract.parameters.get(axis.parameter)
+        if spec is None:
+            raise ConfigError(
+                f"{path}: {label} のパラメータ {axis.parameter!r} は使用箇所 {axis.instance!r} の"
+                f"部品 {contract_ref.component_id} v{contract_ref.version} の契約に無い"
+                "（D09 §5.5 の2）"
+            )
+        try:
+            values = tuple(
+                parameter_value_of(axis.parameter, spec.value_type.value, value)
+                for value in axis.values
+            )
+            axes.append(
+                ParameterAxis(instance_id=axis.instance, parameter=axis.parameter, values=values)
+            )
+        except (ConfigError, KernelValueError) as exc:
+            raise ConfigError(f"{path}: {label} を読めない: {exc}") from exc
+    try:
+        return SearchPlan(kind=SearchPlanKind.GRID, axes=tuple(axes), max_trials=model.max_trials)
+    except KernelValueError as exc:
+        raise ConfigError(f"{path}: `search_plan` を読めない: {exc}") from exc
+
+
+def _search_setting_of(
+    model: _ExperimentV2Model,
+    strategy: StrategyDefinition,
+    registry: ComponentRegistry,
+    policy: ResearchPolicy,
+    path: Path,
+) -> SearchSetting:
+    """探索の実験の探索計画・分割・最終検証を読む（D09 §5・§6.1・§5.5 の2・3・10）。"""
+    plan_model = model.search_plan
+    if isinstance(plan_model, str):  # pragma: no cover - 呼び出し側が探索の実験だけを渡す
+        raise ConfigError(f"{path}: 探索の実験ではない")
+    standard = policy.evaluation_standard
+    if standard is None:
+        raise ConfigError(
+            f"{path}: 探索の実験は評価基準の群を持つ研究ポリシーの版（版 3 以上）しか指せない。"
+            f" {policy.policy_id} v{policy.version} は評価基準を持たない"
+            "（版 1・2 を指して評価基準を避ける経路を作らない。D09 §5.5 の10・§10.9）"
+        )
+    plan = _search_plan_of(plan_model, strategy, registry, path)
+    split = split_spec_of(standard.split)
+    holdout: FinalHoldoutSpec | None = None
+    if isinstance(model.final_holdout, _FinalHoldoutModel):
+        written = model.final_holdout
+        try:
+            holdout = FinalHoldoutSpec(
+                interval=Interval(
+                    start=UtcTime.parse(written.interval.start),
+                    end=UtcTime.parse(written.interval.end),
+                ),
+                purpose=written.purpose,
+            )
+            check_final_holdout(holdout, standard.split)
+        except KernelValueError as exc:
+            raise ConfigError(f"{path}: `final_holdout` を読めない: {exc}") from exc
+    return SearchSetting(plan=plan, split=split, final_holdout=holdout, standard=standard)
 
 
 def _assemble(
@@ -627,6 +843,15 @@ def _assemble(
             registry_path=policy_registry_path,
         )
 
+    search: SearchSetting | None = None
+    if isinstance(model.search_plan, str):
+        if model.run_interval is None:  # pragma: no cover - `_check_search_keys` が拒否済み
+            raise ConfigError(f"{path}: 単一実行の実験には `run_interval` を書くこと")
+        run_interval = run_interval_of(model.run_interval.start, model.run_interval.end, path)
+    else:
+        search = _search_setting_of(model, strategy, registry, policy, path)
+        run_interval = search.standard.split.range
+
     if model.delay_scenario is None:
         delay_scenario = None
         delay_ref = NO_DELAY_REF
@@ -641,6 +866,7 @@ def _assemble(
         timeframe_defs,
         experiment_id=model.id,
         version=model.version,
+        run_interval=run_interval,
         strategy=strategy,
         delay_scenario=delay_scenario,
         delay_ref=delay_ref,
@@ -658,13 +884,16 @@ def _assemble(
         strategy_path=strategy_path,
         environment=environment,
         metric_set_version=model.evaluation.metric_set_version,
-        search_plan=model.search_plan,
+        search_plan=(
+            model.search_plan if isinstance(model.search_plan, str) else model.search_plan.kind
+        ),
         split=model.split,
         policy=policy,
         values=payload,
         texts=texts,
         # ファイル名（拡張子を除く）と銘柄の一致は `load_symbol_spec` が強制している。
         symbol_texts={symbol: symbol_texts[str(symbol)][1] for symbol in specs},
+        search=search,
     )
 
 

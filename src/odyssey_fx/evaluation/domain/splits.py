@@ -24,6 +24,12 @@ purge を書かないので、同じ研究ポリシーの版を指す探索の�
   渡す（D03 §3.8 の期間境界。domain は境界の値を決め打たない）。
 
 長さはすべて秒数の整数で持つ（D09 §6.1。暦月・取引日では数えない）。
+
+**実験設定の分割**（D09 §6.1・§10.2。実装 PR 2）: 実験設定は `split: NONE` か `split: STANDARD`
+だけを書く（`SplitKind`）。`STANDARD` の実験の記録票には、研究ポリシーの標準規則から生成した
+全 fold の区間と purge を `SplitSpec` として展開して入れる。最終検証の区間と目的
+（`FinalHoldoutSpec`）は実験設定のトップレベルに書き、`check_final_holdout` が検査4（区間の開始
+が評価範囲の終わり＋purge 以上）を当てる。
 """
 
 from __future__ import annotations
@@ -38,13 +44,18 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.errors import EvaluationError
 
 __all__ = [
+    "FinalHoldoutSpec",
     "Fold",
+    "SplitKind",
+    "SplitSpec",
     "SplitStandard",
     "SplitStandardViolation",
     "SplitWindow",
+    "check_final_holdout",
     "check_fold_invariants",
     "folds_for_policy",
     "generate_folds",
+    "split_spec_of",
 ]
 
 
@@ -58,6 +69,15 @@ class SplitStandardViolation(EvaluationError):
 
     研究ポリシーのファイルの誤りであり、読込側（`app.config`）が設定の誤りに言い換える。
     """
+
+
+class SplitKind(Enum):
+    """実験設定の `split` の語彙（D09 §6.1・§3。v0.2 で `STANDARD` に置き換えた）。"""
+
+    #: 分割しない（単一実行の実験）。
+    NONE = "NONE"
+    #: 研究ポリシーの期間分割の標準規則から fold を生成する。
+    STANDARD = "STANDARD"
 
 
 class SplitWindow(Enum):
@@ -238,3 +258,80 @@ def folds_for_policy(standard: SplitStandard, *, research_until: UtcTime) -> tup
             " 届かない（D09 §6.1 の検査7）"
         )
     return folds
+
+
+@dataclass(frozen=True, slots=True)
+class SplitSpec:
+    """記録票の分割（D09 §3・§6.1・§10.2）。
+
+    `folds` は研究ポリシーの標準規則から生成した全 fold（`fold_index` の昇順）、`purge_seconds`
+    はその規則の purge。`STANDARD` は fold を1つ以上持ち、生成の不変条件（検査2・3）を満たす。
+    `NONE` は fold を持たない（記録票では単一実行の実験の `split` は文字列 `NONE` のまま残し、
+    この型は探索の実験でだけ使う）。
+    """
+
+    kind: SplitKind
+    folds: tuple[Fold, ...]
+    purge_seconds: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SplitKind):
+            raise KernelValueError("SplitSpec.kind must be a SplitKind")
+        if not isinstance(self.folds, tuple) or not all(
+            isinstance(fold, Fold) for fold in self.folds
+        ):
+            raise KernelValueError("SplitSpec.folds must be a tuple of Fold")
+        _require_int(self.purge_seconds, "SplitSpec.purge_seconds", minimum=0)
+        if self.kind is SplitKind.NONE:
+            if self.folds or self.purge_seconds:
+                raise KernelValueError("SplitSpec of kind NONE carries no folds and no purge")
+            return
+        if not self.folds:
+            raise KernelValueError("SplitSpec of kind STANDARD needs at least one fold (D09 §6.1)")
+        check_fold_invariants(self.folds, self.purge_seconds)
+
+
+def split_spec_of(standard: SplitStandard) -> SplitSpec:
+    """研究ポリシーの標準規則から記録票の `SplitSpec` を作る（D09 §6.1・§10.2）。
+
+    同じ標準規則からは常に同じ `SplitSpec` が出る（fold の生成が純粋関数のため）。研究ポリシーを
+    読むときの検査6・7 は読込が当て済みであることを前提にし、fold が作れない規則は構造エラー。
+    """
+    folds = generate_folds(standard)
+    return SplitSpec(kind=SplitKind.STANDARD, folds=folds, purge_seconds=standard.purge_seconds)
+
+
+@dataclass(frozen=True, slots=True)
+class FinalHoldoutSpec:
+    """最終検証の区間と目的（D09 §3・§6.1・§9.2。v0.2 で実験設定のトップレベルに置いた）。
+
+    区間は `Interval`（空でない）、目的は空白だけでない文字列（D09 §6.1 の検査4 の一部）。
+    評価範囲との関係（検査4 の残り）は `check_final_holdout` が当てる。
+    """
+
+    interval: Interval
+    purpose: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.interval, Interval):
+            raise KernelValueError("FinalHoldoutSpec.interval must be an Interval")
+        if not isinstance(self.purpose, str) or not self.purpose.strip():
+            raise KernelValueError("FinalHoldoutSpec.purpose must not be blank (D09 §6.1 の検査4)")
+
+
+def check_final_holdout(holdout: FinalHoldoutSpec, standard: SplitStandard) -> None:
+    """検査4（D09 §6.1）: 最終検証の区間の開始が、評価範囲の終わり＋purge 以上。
+
+    評価範囲の終わりは最後の fold の検証区間の終わりと同じ（生成の手順1）。違反は
+    `SplitStandardViolation`（実験設定の誤りとして読込側が言い換える）。区間が封印期間に入るか
+    どうかは partition のアクセス分類で決まるので、ここでは見ない（後続版の最終検証の手順）。
+    """
+    if not isinstance(holdout, FinalHoldoutSpec) or not isinstance(standard, SplitStandard):
+        raise KernelValueError("check_final_holdout requires FinalHoldoutSpec and SplitStandard")
+    gap = (holdout.interval.start - standard.range.end) // _MICROSECOND
+    if gap < standard.purge_seconds * _PER_SECOND:
+        raise SplitStandardViolation(
+            f"final_holdout の区間の開始 {holdout.interval.start} が、評価範囲の終わり"
+            f" {standard.range.end} ＋ purge {standard.purge_seconds}s より前である"
+            "（D09 §6.1 の検査4）"
+        )

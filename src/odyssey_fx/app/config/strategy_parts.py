@@ -63,6 +63,7 @@ __all__ = [
     "component_of",
     "concurrency_of",
     "output_ref_of",
+    "parameter_value_of",
     "parse_series",
     "required_output_ref",
 ]
@@ -160,6 +161,19 @@ def _parameter_of(name: str, model: ParameterModel) -> ParameterValue:
     if not isinstance(value, str):
         raise ConfigError(f"{label}: STR には文字列を書くこと（{value!r}）")
     return StrValue(value)
+
+
+def parameter_value_of(
+    name: str, value_type: Literal["BOOL", "INT", "FLOAT", "STR"], value: object
+) -> ParameterValue:
+    """型名と YAML の値からパラメータ値1件を作る（戦略ファイルの `parameters` と同じ規則）。
+
+    探索の軸の値（D09 §5.1）を戦略ファイルの値と同じ規則で読むために使う。型が合わなければ
+    `ConfigError`。
+    """
+    if isinstance(value, (bool, int, float, str)):
+        return _parameter_of(name, ParameterModel(type=value_type, value=value))
+    raise ConfigError(f"parameters[{name!r}]: {value_type} の値として読めない（{value!r}）")
 
 
 def _source_of(text: str, timeframe_defs: Mapping[str, TimeframeDefinition]) -> InputSourceRef:

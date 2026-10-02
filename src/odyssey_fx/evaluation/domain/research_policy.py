@@ -65,6 +65,7 @@ __all__ = [
     "current_standard_version",
     "failed_checks",
     "measure_complexity",
+    "search_complexity",
 ]
 
 #: 判断を出す使用箇所と数える出力のデータ型（D07 §20.4、D04 §5）。
@@ -369,6 +370,23 @@ def measure_complexity(
         parameters=sum(profile.parameter_count for profile in profiles),
         decision_outputs=decision_outputs,
     )
+
+
+def search_complexity(measures: Sequence[ComplexityMeasures]) -> ComplexityMeasures:
+    """探索の実験の複雑性（D09 §10.2 の `complexity` の行）。
+
+    `measures` は**コンパイルが通った全試行**の計測値。計測値4件は試行の最大値とする。通った
+    試行が1件も無ければ4件とも `None`（計測の材料が無い。P6 は `UNREADABLE` になり、実験は
+    `REJECTED_BY_POLICY` で run しない。D07 §20.3）。どれかの試行で計測できなかった値
+    （`None`）があれば、その値も `None` にする（計測できなかった値を他の試行の値で埋めない）。
+    """
+    if not all(isinstance(item, ComplexityMeasures) for item in measures):
+        raise KernelValueError("search_complexity requires ComplexityMeasures values")
+    values: dict[str, int | None] = {}
+    for name in _MEASURE_NAMES:
+        observed = [getattr(item, name) for item in measures]
+        values[name] = None if not observed or None in observed else max(observed)
+    return ComplexityMeasures(**values)
 
 
 def _measures_payload(measures: ComplexityMeasures) -> dict[str, int | None]:

@@ -80,6 +80,7 @@ __all__ = [
     "parse_series",
     "policy_ref_of",
     "resolve_run_body",
+    "run_interval_of",
 ]
 
 #: この実装が読む実験設定の形式版（D01 §10.1）。
@@ -130,10 +131,12 @@ class RunBodyModel(StrictModel):
 
     書式ごとのモデルはこれを継承してキーを足す。共通のキーを1か所で宣言するので、v1 と
     v2 で同じキーの受理範囲がずれない。
+
+    `run_interval` だけは書式ごとのモデルが宣言する。書式 v1 と単一実行の書式 v2 では必須、
+    探索の書式 v2 では書けば拒否する（区間は fold が持つ。D09 §5.5 の6、D07 §18.2 v2.7）。
     """
 
     snapshot: str
-    run_interval: _IntervalModel
     execution_series: str
     resolution_hierarchy: list[str]
     account: _AccountModel
@@ -157,6 +160,7 @@ class _ExperimentModel(RunBodyModel):
     schema_version: int
     id: str
     version: int
+    run_interval: _IntervalModel
     strategy: _StrategyModel
 
 
@@ -344,6 +348,14 @@ def _strategy_of(
         raise ConfigError(f"戦略の宣言を読めない: {exc}") from exc
 
 
+def run_interval_of(start: str, end: str, path: Path) -> Interval:
+    """`run_interval: {start, end}` を区間へ読む（D06 §3）。"""
+    try:
+        return Interval(start=UtcTime.parse(start), end=UtcTime.parse(end))
+    except KernelValueError as exc:
+        raise ConfigError(f"{path}: run 区間を読めない: {exc}") from exc
+
+
 def resolve_run_body(
     model: RunBodyModel,
     payload: Mapping[str, Any],
@@ -352,6 +364,7 @@ def resolve_run_body(
     *,
     experiment_id: str,
     version: int,
+    run_interval: Interval,
     strategy: StrategyDefinition,
     delay_scenario: DelayScenario | None,
     delay_ref: PolicyRef,
@@ -360,15 +373,9 @@ def resolve_run_body(
 
     `payload` は検証前の YAML の mapping で、ポリシーの版参照（宣言のダイジェスト）の材料に
     する。書式が違っても同じキーには同じ宣言が書かれるので、版参照も同じになる。
+    `run_interval` は呼び出し側が読んだ run 区間（書式 v1 と単一実行の書式 v2 は
+    `run_interval_of` で読んだもの）。
     """
-    try:
-        run_interval = Interval(
-            start=UtcTime.parse(model.run_interval.start),
-            end=UtcTime.parse(model.run_interval.end),
-        )
-    except KernelValueError as exc:
-        raise ConfigError(f"{path}: run 区間を読めない: {exc}") from exc
-
     execution_series = parse_series(model.execution_series, timeframe_defs)
     if not model.resolution_hierarchy:
         raise ConfigError(f"{path}: `resolution_hierarchy` は1件以上書くこと（ADR-0030）")
@@ -443,6 +450,7 @@ def load_experiment(
         timeframe_defs,
         experiment_id=model.id,
         version=model.version,
+        run_interval=run_interval_of(model.run_interval.start, model.run_interval.end, path),
         strategy=strategy,
         # 遅延シナリオは書式 v1 では「遅延なし」の1件だけである（D03 §7、D06 §9.3）。
         # 版参照だけを manifest へ残し、実現公開時刻は通常の公開予定を使う。
