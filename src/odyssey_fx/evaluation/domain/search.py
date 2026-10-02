@@ -194,6 +194,21 @@ def _require_count(value: object, label: str) -> None:
         raise KernelValueError(f"{label} must be >= 0, got {value} (D09 §7.8 の検査 E4)")
 
 
+def _require_ledger_execution(value: object) -> None:
+    """試行台帳の実行番号の検査（2026-10-02 の人間の決定。D09 §17.7.3 の6）。
+
+    実行番号は同じ実験の開始の行の数 + 1 で、1 以上の整数（D09 v0.3 §10.12.3 の採番）。
+    未採番を 0 などの番号の値で表さない。採番の前には `SearchOutcome` を組み立てない。
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise KernelValueError(f"SearchOutcome.ledger_execution must be an int, got {value!r}")
+    if value < 1:
+        raise KernelValueError(
+            "SearchOutcome.ledger_execution は 1 以上の実行番号（未採番を番号で表さない。"
+            f"D09 §17.7.3 の6）: {value}"
+        )
+
+
 class StandardPurpose(Enum):
     """評価基準の用途（D09 §7.11・§10.9。2026-09-30 の人間の決定 Q33）。"""
 
@@ -1275,7 +1290,7 @@ class SearchOutcome:
             )
         for entry in self.trial_counts:
             _require_count(entry[1], "SearchOutcome.trial_counts")
-        _require_count(self.ledger_execution, "SearchOutcome.ledger_execution")
+        _require_ledger_execution(self.ledger_execution)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1763,7 +1778,8 @@ def build_search_outcome(
     各 fold の選定記録は、渡された選定区間の結果から `select_trial` で作り直した値と一致する
     ことを確かめる（一致しなければ構造エラー）。試行の状態の件数は、渡された全 fold の単位
     （選定区間の全試行と選んだ試行の検証区間）の状態から数える（D09 §10.4・§10.6）。
-    `ledger_execution` は試行台帳の実行番号で、呼び出し側が渡す（採番は D09 の後続版。§19 の13）。
+    `ledger_execution` は試行台帳の実行番号（1 以上）で、呼び出し側が採番してから渡す。未採番を
+    番号の値で表さない。台帳への束縛は PR 4（D09 §17.7.3 の6）。
     """
     if not isinstance(standard, EvaluationStandard):
         raise KernelValueError("build_search_outcome requires an EvaluationStandard")
@@ -1880,7 +1896,7 @@ def longest_idle_period(
 
     `interval` の中の**保有区間の和集合の補集合**のうち最長の区間の長さ。保有区間は
     `(始まり, 終わり)` で、未決済の建玉は終わりを `None` として区間の終わりまでとする。
-    区間の外にはみ出す部分は切り落とす。建玉が0件なら区間の長さそのもの。判定に使わない
+    区間の外にはみ出す部分は切り落とし、区間と重ならない保有は計算から除く。建玉が0件なら区間の長さそのもの。判定に使わない
     表示のための導出値であり、D07 の指標を作り直さない。
     """
     if not isinstance(interval, Interval):
@@ -1892,9 +1908,11 @@ def longest_idle_period(
         start, end = entry
         if not isinstance(start, UtcTime) or not (end is None or isinstance(end, UtcTime)):
             raise KernelValueError("holdings must be (UtcTime, UtcTime | None) pairs")
+        if end is not None and end < start:
+            raise KernelValueError(f"a holding ends before it starts: [{start}, {end})")
+        # 区間と重ならない保有（区間の終わり以後に始まる未決済の建玉を含む）は計算から除く
+        # （2026-10-02 の人間の決定。D09 §17.7.3 の9）。
         stop = interval.end if end is None else end
-        if stop < start:
-            raise KernelValueError(f"a holding ends before it starts: [{start}, {stop})")
         clipped_start = max(start, interval.start)
         clipped_stop = min(stop, interval.end)
         if clipped_start < clipped_stop:

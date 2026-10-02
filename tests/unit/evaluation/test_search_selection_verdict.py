@@ -531,6 +531,15 @@ def test_outcome_carries_trial_counts_ledger_execution_and_purpose() -> None:
     assert outcome.purpose is StandardPurpose.MECHANISM_CHECK
 
 
+@pytest.mark.parametrize("execution", [0, -1, True])
+def test_ledger_execution_must_be_an_assigned_number_from_one(execution: object) -> None:
+    # 未採番を 0 などの番号の値で表さない（D09 v0.3 §10.12.3 の採番。D09 §17.7.3 の6）。
+    rule = standard()
+    item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
+    with pytest.raises(KernelValueError, match="ledger_execution"):
+        build_search_outcome(rule, [item], ledger_execution=execution)  # type: ignore[arg-type]
+
+
 def test_search_outcome_rejects_meets_standard_under_mechanism_check() -> None:
     rule = standard()
     item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
@@ -607,6 +616,14 @@ def test_longest_idle_clips_holdings_and_runs_open_positions_to_the_end() -> Non
     interval = Interval(start=_at(0), end=_at(100))
     holdings = [(_at(-5), _at(5)), (_at(60), None)]
     assert longest_idle_period(interval, holdings) == timedelta(hours=55)  # 5〜60
+
+
+def test_longest_idle_excludes_holdings_not_overlapping_the_interval() -> None:
+    # 区間の終わり以後に始まる未決済の建玉・区間の前に終わる保有は計算から除く（D09 §17.7.3 の9）。
+    interval = Interval(start=_at(0), end=_at(100))
+    holdings = [(_at(-20), _at(-10)), (_at(30), _at(40)), (_at(100), None), (_at(120), None)]
+    assert longest_idle_period(interval, holdings) == timedelta(hours=60)  # 40〜100
+    assert longest_idle_period(interval, [(_at(150), None)]) == timedelta(hours=100)
 
 
 def test_longest_idle_rejects_a_holding_that_ends_before_it_starts() -> None:
