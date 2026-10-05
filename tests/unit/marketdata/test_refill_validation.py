@@ -415,3 +415,23 @@ def test_a_reference_hour_the_raw_data_does_not_need_is_rejected() -> None:
             raw=RawBarIndex.build(with_bar, INITIAL_ACCESS_BOUNDARIES),
             calendar=REFILL_CALENDAR,
         )
+
+
+def test_a_reconciliation_bar_without_ticks_still_fails() -> None:
+    """照合用の足を tick から作れない（区間に tick が無い）ときは、出所が histdata でも配信元の
+    値の差に当てず不合格にする（v1.19 より前と同じ。PR #69 の仮置き 2）。"""
+    without_00_15 = DecodedTicks(
+        tick_digest="9" * 64,
+        ticks=tuple(
+            tick
+            for tick in decoded(BI5_00H).ticks
+            if not 15 * 60 * 1000 <= tick.offset_ms < 30 * 60 * 1000
+        ),
+    )
+    result = _validate(
+        {KEY_00: _fetched(KEY_00, without_00_15), KEY_01: _fetched(KEY_01, decoded(BI5_01H))}
+    )
+    kinds = {item.mismatch for item in result.reconciled if not item.matched}
+    assert MismatchKind.NOT_BUILT in kinds
+    assert not result.passed
+    assert result.source_differences == ()

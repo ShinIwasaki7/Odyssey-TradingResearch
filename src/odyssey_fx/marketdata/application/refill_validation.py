@@ -152,12 +152,17 @@ def _ohlc_differences(
 
 
 def _mismatch_kind(made: Bar | None, raw_bar: Bar, raw: RawBarIndex, exponent: int) -> MismatchKind:
-    """丸めた後も一致しない照合用の足の区分（D03 §14.7 の v1.19「不一致の分け方」）。"""
-    if made is not None:
-        for probe in _TIME_SHIFT_PROBES:
-            neighbor = raw.research_bar(raw_bar.series, raw_bar.bar_start + probe)
-            if neighbor is not None and not _ohlc_differences(made, neighbor, exponent)[0]:
-                return MismatchKind.TIME_SHIFT
+    """丸めた後も一致しない照合用の足の区分（D03 §14.7 の v1.19「不一致の分け方」）。
+
+    tick から作れなかった照合用の足（区間に tick が無い）は比べる値が無いので (i)〜(iii) に当てず、
+    `NOT_BUILT` として不合格にする（v1.19 より前と同じ扱い。PR #69 の仮置き 2）。
+    """
+    if made is None:
+        return MismatchKind.NOT_BUILT
+    for probe in _TIME_SHIFT_PROBES:
+        neighbor = raw.research_bar(raw_bar.series, raw_bar.bar_start + probe)
+        if neighbor is not None and not _ohlc_differences(made, neighbor, exponent)[0]:
+            return MismatchKind.TIME_SHIFT
     kind = raw_bar.provenance.kind
     if kind in (ProvenanceKind.DUKASCOPY, ProvenanceKind.DUKASCOPY_REFILL):
         return MismatchKind.PROVIDER_CORRECTION
@@ -388,7 +393,7 @@ def validate_refill(
     mismatches = [
         record
         for record in reconciled
-        if record.mismatch in (MismatchKind.TIME_SHIFT, MismatchKind.PROVIDER_CORRECTION)
+        if record.mismatch is not None and record.mismatch is not MismatchKind.SOURCE_DIFFERENCE
     ]
     if mismatches:
         listed = ", ".join(
@@ -397,7 +402,8 @@ def validate_refill(
         )
         failures.append(
             f"{len(mismatches)} reconciliation bar(s) differ from the raw data after rounding to"
-            f" the price scale and are a suspected time shift or provider correction ({listed});"
+            f" the price scale and are a suspected time shift or provider correction, or could not"
+            f" be built from the ticks ({listed});"
             " no tolerance is applied (D03 §14.7 の 1・2 v1.19, §14.18 の 6)"
         )
 

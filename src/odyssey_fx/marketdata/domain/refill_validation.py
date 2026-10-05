@@ -68,6 +68,9 @@ class MismatchKind(Enum):
     #: (iii) 配信元の値の差: (i) に当たらず、原データの足の出所が提供元と別の配信元（`histdata`）。
     #: 不合格にせず、その足を照合に使った塊の対象足を補充しない。
     SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
+    #: 照合用の足を tick から作れなかった（区間に tick が無い）。丸めて比べる値が無いので
+    #: (i)〜(iii) のどれにも当たらず、v1.19 より前と同じく不合格にする（PR #69 の仮置き 2）。
+    NOT_BUILT = "NOT_BUILT"
 
 
 @dataclass(frozen=True, slots=True)

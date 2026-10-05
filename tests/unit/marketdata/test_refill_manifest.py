@@ -166,11 +166,16 @@ def test_a_refill_only_fills_raw_series_with_refilled_bars() -> None:
 def test_refills_written_before_v1_19_are_still_read() -> None:
     """形式 v1（配信元の値の差の記録を持たない。代表例の試行の補充分）もそのまま読む。"""
     root = Path(__file__).resolve().parents[3] / "data/raw/market/refill"
-    directories = sorted(path for path in root.iterdir() if not path.name.startswith("_"))
-    assert directories
+    directories = [
+        path
+        for path in sorted(root.iterdir())
+        if not path.name.startswith("_")
+        and json.loads((path / "refill_manifest.json").read_text())["format"]
+        == "refill_manifest_v1"
+    ]
+    assert directories  # 代表例の試行（2026-10-01）の補充分
     for directory in directories:
         manifest_payload = json.loads((directory / "refill_manifest.json").read_text())
-        assert manifest_payload["format"] == "refill_manifest_v1"
         manifest = RefillManifest.from_payload(manifest_payload)
         assert manifest.source_differences == ()
         validation = RefillValidationRecord.from_payload(
