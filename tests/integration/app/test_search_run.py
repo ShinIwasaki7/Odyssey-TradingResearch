@@ -46,6 +46,7 @@ import pytest
 from odyssey_fx.app import composition
 from odyssey_fx.app.cli.main import main
 from odyssey_fx.common.canonical import digest, encode
+from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.evaluation.adapters.fs_store import (
@@ -499,6 +500,174 @@ def test_24_the_finished_line_is_not_written_when_the_started_line_is_gone(
     assert "FINISHED" in output
     assert read_experiment_outcome(_version(out, "reverted")) is not None
     assert _ledger(workspace) == ()
+
+
+# --- 途中停止の位置と回復（D09 §10.12.4 の c・e・f、#23・#27・#28）--------------------------
+
+
+def _executions(workspace: T02Workspace) -> list[tuple[int, TrialLedgerEvent]]:
+    return [(line.entry.execution, line.entry.event) for line in _ledger(workspace)]
+
+
+def test_23_c_a_binding_that_cannot_be_written_stops_before_any_run_and_counts_the_execution(
+    workspace: T02Workspace, tmp_path: Path, full: _Full, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """位置 c: 開始の行の後、束縛の記録を書けずに止まる。run は1つも始まらず（開始記録なし）、
+    終了コード 1。開始の行は数えられたままで、同じ版の再実行は実行番号 2 になる。"""
+
+    class _NoBinding(FileSystemExperimentStore):
+        def write_ledger_binding(self, binding: Any) -> None:
+            raise KernelValueError("the binding record could not be written")
+
+    out = _seeded(full, tmp_path)
+    experiment = _experiment(workspace, "stop_c")
+    with monkeypatch.context() as patch:
+        patch.setattr(composition, "FileSystemExperimentStore", _NoBinding)
+        code, output = _run(workspace, out, experiment)
+    assert code == 1, output
+    directory = _version(out, "stop_c")
+    starts, runs = read_unit_records(directory)
+    assert starts == {} and runs == {}
+    assert read_experiment_outcome(directory) is None
+    assert _executions(workspace) == [(1, TrialLedgerEvent.STARTED)]
+
+    code, output = _run(workspace, out, experiment)
+    assert code == 0, output
+    assert _executions(workspace) == [
+        (1, TrialLedgerEvent.STARTED),
+        (2, TrialLedgerEvent.STARTED),
+        (2, TrialLedgerEvent.FINISHED),
+    ]
+
+
+def test_23_e_a_stop_after_the_outcome_is_recounted_by_a_rerun(
+    workspace: T02Workspace, tmp_path: Path, full: _Full, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """位置 e: 結末記録の後・結末の行の前で止まる。結末の行は後から足さず、同じ版の再実行が
+    実行番号 + 1 の開始と結末の行をそろえる。"""
+
+    class _StopAfterOutcome(FileSystemExperimentStore):
+        def write_outcome(self, outcome: Any) -> None:
+            super().write_outcome(outcome)
+            raise RuntimeError("the process stopped after the outcome")
+
+    out = _seeded(full, tmp_path)
+    experiment = _experiment(workspace, "stop_e")
+    with monkeypatch.context() as patch:
+        patch.setattr(composition, "FileSystemExperimentStore", _StopAfterOutcome)
+        with pytest.raises(RuntimeError, match="after the outcome"):
+            _run(workspace, out, experiment)
+    assert read_experiment_outcome(_version(out, "stop_e")) is not None
+    assert _executions(workspace) == [(1, TrialLedgerEvent.STARTED)]
+
+    code, output = _run(workspace, out, experiment)
+    assert code == 0, output
+    assert (_version(out, "stop_e") / "experiment_outcome.1.json").is_file()
+    assert _executions(workspace) == [
+        (1, TrialLedgerEvent.STARTED),
+        (2, TrialLedgerEvent.STARTED),
+        (2, TrialLedgerEvent.FINISHED),
+    ]
+
+
+def test_23_f_a_torn_finished_line_is_cut_and_a_rerun_counts_the_next_execution(
+    workspace: T02Workspace,
+    tmp_path: Path,
+    full: _Full,
+    empty_ledger: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """位置 f: 結末の行の書きかけで止まる。次の読込は書きかけを無視し、次の追記がそれを切り詰める。
+    同じ版の再実行は実行番号 2 の開始と結末の行をそろえる（1 の結末の行は足されない）。"""
+
+    class _TornFinish(FileSystemExperimentStore):
+        def append_trial_ledger(self, line: Any) -> Any:
+            if line.entry.event is TrialLedgerEvent.FINISHED:
+                with empty_ledger.open("ab") as stream:
+                    stream.write(b'{"entry": {"event": "FINI')
+                raise RuntimeError("the process stopped while appending the finished line")
+            return super().append_trial_ledger(line)
+
+    out = _seeded(full, tmp_path)
+    experiment = _experiment(workspace, "stop_f")
+    with monkeypatch.context() as patch:
+        patch.setattr(composition, "FileSystemExperimentStore", _TornFinish)
+        with pytest.raises(RuntimeError, match="finished line"):
+            _run(workspace, out, experiment)
+    contents = read_trial_ledger_file(empty_ledger)
+    assert isinstance(contents, TrialLedgerContents) and contents.torn_tail
+    assert _executions(workspace) == [(1, TrialLedgerEvent.STARTED)]
+
+    code, output = _run(workspace, out, experiment)
+    assert code == 0, output
+    assert _executions(workspace) == [
+        (1, TrialLedgerEvent.STARTED),
+        (2, TrialLedgerEvent.STARTED),
+        (2, TrialLedgerEvent.FINISHED),
+    ]
+    assert empty_ledger.read_bytes().endswith(b"\n")
+
+
+def test_27_a_running_execution_finishes_while_another_version_waits_for_a_recount(
+    workspace: T02Workspace,
+    tmp_path: Path,
+    full: _Full,
+    empty_ledger: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#27: 数え直し待ちの版が実行の途中で現れても、すでに始まった実行の結末の行の追記は通る
+    （逆照合 L11 は採番の読込にだけ掛かる）。その後、ほかの版は止まる。"""
+    out = _seeded(full, tmp_path)
+    assert _run(workspace, out, _experiment(workspace, "late_a"))[0] == 0
+    aside = tmp_path / "aside"
+    shutil.move(_version(out, "late_a"), aside)
+    empty_ledger.write_bytes(b"")
+
+    class _PendingAppears(FileSystemExperimentStore):
+        def write_ledger_binding(self, binding: Any) -> None:
+            super().write_ledger_binding(binding)
+            if not _version(out, "late_a").exists():
+                shutil.move(aside, _version(out, "late_a"))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(composition, "FileSystemExperimentStore", _PendingAppears)
+        code, output = _run(workspace, out, _experiment(workspace, "late_c"))
+    assert code == 0, output
+    assert [(line.entry.experiment_name, line.entry.event) for line in _ledger(workspace)] == [
+        ("late_c", TrialLedgerEvent.STARTED),
+        ("late_c", TrialLedgerEvent.FINISHED),
+    ]
+    code, output = _run(workspace, out, _experiment(workspace, "late_b"))
+    assert code == 1 and "UNMATCHED_BINDING" in output, output
+
+
+def test_28_a_rerun_stopped_after_the_retreat_by_an_exception_stays_pending(
+    workspace: T02Workspace,
+    tmp_path: Path,
+    full: _Full,
+    empty_ledger: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#28: 数え直し待ちの版の再実行が、退避の後・開始の行の前に例外で止まっても、その版は数え
+    直し待ちのまま（退避されただけでは解けない）。ロックで止まる場合は上の L11 のテスト。"""
+    out = _seeded(full, tmp_path)
+    a = _experiment(workspace, "crash_a")
+    assert _run(workspace, out, a)[0] == 0
+    empty_ledger.write_bytes(b"")
+
+    class _CrashBeforeStart(FileSystemExperimentStore):
+        def append_trial_ledger(self, line: Any) -> Any:
+            raise RuntimeError("the process stopped before the started line")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(composition, "FileSystemExperimentStore", _CrashBeforeStart)
+        with pytest.raises(RuntimeError, match="before the started line"):
+            _run(workspace, out, a)
+    assert (_version(out, "crash_a") / "search.1" / "ledger_execution.json").is_file()
+    assert _ledger(workspace) == ()
+    code, output = _run(workspace, out, _experiment(workspace, "crash_b"))
+    assert code == 1 and "UNMATCHED_BINDING" in output, output
+    assert _run(workspace, out, a)[0] == 0
 
 
 # --- 読込の誤り（Q37）-----------------------------------------------------------------
