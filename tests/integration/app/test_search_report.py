@@ -525,8 +525,20 @@ def _registry_other_digest(path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _registry_other_purpose(path: Path) -> None:
+    """版 3 の要素の用途だけを書き換える（ダイジェストは据え置き。D09 §10.9 の照合 (5)）。"""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    changed = [
+        line.replace("MECHANISM_CHECK", "STANDARD") if "version: 3," in line else line
+        for line in lines
+    ]
+    assert changed != lines
+    path.write_text("\n".join(changed) + "\n", encoding="utf-8")
+
+
 _REGISTRY_DAMAGE = {
     "missing": _registry_missing,
+    "other_purpose": _registry_other_purpose,
     "broken": _registry_broken,
     "no_element": _registry_without_version,
     "other_digest": _registry_other_digest,

@@ -1853,6 +1853,16 @@ def search_registry(repo_root: Path, manifest: ExperimentManifest) -> tuple[Regi
             f" {entry.digest.hex} が記録票の {policy.digest.hex} と違う。レポートを書かない"
             "（D09 §11.4。Q37 決定）"
         )
+    standard = manifest.evaluation_standard
+    if standard is not None and entry.purpose is not standard.purpose:
+        # 読込の照合 (5) と同じ食い違い（要素の用途の誤り）。用途は「現行／旧版／機構確認用」の
+        # 表示に効くので、登録簿なしに出さないのと同じく止める（D09 §10.9 の (5)・§11.4。Q37）。
+        registered = None if entry.purpose is None else entry.purpose.value
+        raise ConfigError(
+            f"研究ポリシーの版の登録簿の {policy.policy_id} 版 {policy.version} の用途"
+            f" {registered} が記録票の評価基準の用途 {standard.purpose.value} と違う。レポートを"
+            "書かない（D09 §10.9 の照合 (5)・§11.4。Q37 決定）"
+        )
     return entries
 
 
