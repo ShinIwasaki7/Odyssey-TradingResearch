@@ -45,14 +45,17 @@ from odyssey_fx.app.config import ConfigError
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.evaluation.adapters.fs_store import (
     TRIAL_LEDGER_LOCK_PATH,
+    FileSystemResultRepository,
     experiment_outcome_payload,
     read_experiment_outcome,
     read_selections,
+    read_unit_records,
 )
 from odyssey_fx.evaluation.adapters.search_report import SEARCH_REPORT_HEADINGS
 from odyssey_fx.evaluation.application import run_experiment
+from odyssey_fx.evaluation.application.manifest import RunEvaluationId
 from odyssey_fx.evaluation.domain import research_policy
-from odyssey_fx.evaluation.domain.metrics import MetricId
+from odyssey_fx.evaluation.domain.metrics import CountValue, MetricId
 from odyssey_fx.evaluation.domain.search import (
     Comparator,
     ConditionOutcome,
@@ -60,6 +63,8 @@ from odyssey_fx.evaluation.domain.search import (
     ConditionScope,
     SufficiencyShortfall,
     SufficiencyShortfallKind,
+    TrialPhase,
+    TrialUnitKey,
 )
 from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
 from tests.fixtures.evaluation.research_policies import (
@@ -441,7 +446,8 @@ def test_25_an_interrupted_run_shows_unit_and_fold_states_without_a_verdict(
 ) -> None:
     """fold 0 は検証済み、fold 1 は選定区間の試行 0 の開始記録だけ（中断）で残りは未試行。"""
     repo = _repo_copy(workspace, tmp_path, base.ledger)
-    directory = _version(_copy_base(base, tmp_path), "base")
+    out = _copy_base(base, tmp_path)
+    directory = _version(out, "base")
     for name in ("experiment_outcome.json", "report.md"):
         (directory / name).unlink()
     search = directory / "search"
@@ -461,7 +467,21 @@ def test_25_an_interrupted_run_shows_unit_and_fold_states_without_a_verdict(
     assert "中断（`ABORTED`）" in states and "未試行（`NOT_STARTED`）" in states
     assert "検証済み" in states and "証拠の要件は未確定（頻度区分が決まっていない）" in states
     selected = read_selections(directory)[0].selected_trial_index
+    assert selected is not None
     assert f"| f0_VALIDATION_t{selected} |" in states
+    # 検証区間の取引件数は、検証区間の試行記録が指す評価の TRADE_COUNT の写し（Q36 決定）。
+    record = read_unit_records(directory)[1][
+        TrialUnitKey(fold_index=0, phase=TrialPhase.VALIDATION, trial_index=selected)
+    ]
+    metrics = FileSystemResultRepository(root=out).read_evaluation_metrics(
+        record.run_id, RunEvaluationId(record.run_evaluation_id)
+    )
+    assert isinstance(metrics, tuple)
+    count = next(item.value for item in metrics if item.metric_id is MetricId.TRADE_COUNT)
+    assert isinstance(count, CountValue)
+    fold_rows = [line for line in states.splitlines() if line.startswith("| 0 |")]
+    assert len(fold_rows) == 1, fold_rows
+    assert fold_rows[0].split("|")[7].strip() == str(count.count), fold_rows[0]
     assert "MAX_DRAWDOWN_MTM_RATE LE 0.2: " in states
     assert "頻度区分: " not in text
     # 選定記録の無い fold 1（中断）を、指標の計算可否の節で候補なしと取り違えない。
