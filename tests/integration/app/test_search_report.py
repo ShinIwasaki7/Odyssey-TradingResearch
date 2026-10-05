@@ -8,7 +8,9 @@ D09 §11.5（9 見出しの書式）・§10.4（途中で止まった実行）�
 確かめること（D08 §7.4 の行の番号を括弧に書いた）:
 
 - `experiment run` は最後にレポートを書き、9 つの見出しが同じ順に出る。1行目は用途で、機構の
-  確認の版のレポートには「共通基準を満たす」の語が出ない（#17 の後半）。
+  確認の版のレポートには「共通基準を満たす」の語が出ない（#17 の後半）。事前検査で止めた・事後
+  検査に合格でない実験は1行目にその旨、2行目に用途（D09 §17.7.5 の3）。期間は単位を明示した
+  表記、台帳の節の判定は日本語名とコード（§17.7.5 の7）。
 - 同じ成果物からは同じバイト列（別の場所へ写しても同じ。時刻・絶対パスを入れない）。
 - 照合の R1〜R7 の各状況の表示と終了コード（#22 の読む側）。R2・R4 は読込の誤り（終了コード 2）。
 - 途中で止まった実行: 各単位の状態（中断・未試行・試行済み）と各 fold の状態を出し、検証済みの
@@ -17,7 +19,7 @@ D09 §11.5（9 見出しの書式）・§10.4（途中で止まった実行）�
 - 取引が少ない fold で最低条件を割った事実が判定の欄に出る（#16 の後半）。
 - 研究ポリシーの版の登録簿が無い・壊れている・版の要素が無い・ダイジェストが違うと、
   `experiment report` は終了コード 2 でレポートを書かない。`experiment run` の最後に読めなければ
-  結末記録と台帳の行はそのままで終了コード 1（#26）。
+  結末記録と台帳の行はそのままで終了コード 1（#26）。レポートの書き込みの失敗も同じ（§17.7.5 の8）。
 - 「退避中」の印がある版は終了コード 2。`experiment reproduce` は探索の実験を終了コード 2 で拒否。
 
 最後まで通す実行は1回だけ行い（`base`）、ほかのテストはその成果物を写した基点で走らせる
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
@@ -85,6 +88,7 @@ AXES = (
 )
 _REGISTRY = Path("configs/policies/research/registry.yaml")
 _LEDGER = Path("research/trial_ledger.jsonl")
+_MECHANISM_PURPOSE = "用途: 機構の確認（共通基準の判定ではない。最終検証に進めない）"
 
 
 @pytest.fixture(scope="module")
@@ -241,6 +245,17 @@ def test_17_the_report_has_the_nine_headings_and_starts_with_the_purpose(base: _
     assert "合格" not in "".join(_sections(text)) and "採用" not in text
 
 
+def test_periods_and_ledger_verdicts_are_shown_for_people(base: _Base) -> None:
+    """期間は単位を明示した表記（小数の日ではない）、台帳の節の判定は日本語名とコード
+    （D09 §11.5 の表の下の注記・順8。§17.7.5 の7）。"""
+    text = base.report
+    folds = _section(text, 3)
+    assert "観測期間（日）" not in folds and "| 観測期間 |" in folds
+    assert re.search(r"\| \d+日(\d+時間)?(\d+分)? \|", folds), folds
+    assert not re.search(r"\d+\.\d+ 日", text)
+    assert re.search(r"この番号の結末の行: あり（判定 [^（`]+（`[A-Z_]+`））", _section(text, 8))
+
+
 def test_the_same_artifacts_give_the_same_bytes_anywhere(
     workspace: T02Workspace, base: _Base, tmp_path: Path
 ) -> None:
@@ -297,7 +312,9 @@ def test_r1_a_search_rejected_by_the_pre_run_checks_reports_that_nothing_was_sea
     text = (_version(tmp_path, "rejected") / "report.md").read_text(encoding="utf-8")
     assert _sections(text) == list(SEARCH_REPORT_HEADINGS)
     verdict = _section(text, 1)
-    assert "探索は行っていない（事前検査で止めた）" in verdict
+    # 1行目に拒否の旨、2行目に用途（D09 §11.5 の順1。§17.7.5 の3）
+    assert verdict.splitlines()[2] == "**探索は行っていない（事前検査で止めた）**"
+    assert verdict.splitlines()[4] == _MECHANISM_PURPOSE
     assert "trial_count_within_limit" in verdict
     assert "事前検査で止めたので台帳に書いていない" in _section(text, 8)
     assert "探索を行っていない" in _section(text, 3)
@@ -628,6 +645,36 @@ def test_26_the_run_ends_with_exit_code_1_when_the_registry_cannot_be_read_at_th
     assert events == ["STARTED", "FINISHED"]
 
 
+def test_the_run_ends_with_exit_code_1_when_the_report_cannot_be_written_at_the_end(
+    workspace: T02Workspace, base: _Base, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """登録簿に限らず、レポートの書き込みの失敗でも、結末記録と台帳の行は取り消さずに原因を
+    表示して終了コード 1（D09 §11.4。§17.7.5 の8）。直した後は `experiment report` で作る。"""
+
+    def unwritable(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError("the disk refused the report")
+
+    monkeypatch.setattr(composition, "write_search_report", unwritable)
+    out = _seeded(base, tmp_path)
+    code, output = _run(workspace, out, "late_write")
+    assert code == 1, output
+    assert "実験の結末: COMPLETED" in output
+    assert "PermissionError: the disk refused the report" in output
+    assert "experiment report" in output
+    directory = _version(out, "late_write")
+    assert read_experiment_outcome(directory) is not None
+    assert not (directory / "report.md").exists()
+    events = [
+        json.loads(line)["entry"]["event"]
+        for line in (workspace.repo / _LEDGER).read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == ["STARTED", "FINISHED"]
+    monkeypatch.undo()
+    code, output = _report(directory, workspace.repo)
+    assert code == 0, output
+    assert (directory / "report.md").exists()
+
+
 def test_a_retreat_marker_stops_the_report_with_exit_code_2(
     workspace: T02Workspace, base: _Base, tmp_path: Path
 ) -> None:
@@ -657,7 +704,9 @@ def test_a_unit_failing_a_post_run_check_is_listed_first(
     assert code == 4, output
     text = (_version(out, "postrun") / "report.md").read_text(encoding="utf-8")
     verdict = _section(text, 1)
-    assert "記録の検査（事後検査）に合格でない単位がある" in verdict
+    # 1行目に不合格の旨、2行目に用途（D09 §11.5 の順1。§17.7.5 の3）
+    assert verdict.splitlines()[2] == "**記録の検査（事後検査）に合格でない単位がある**"
+    assert verdict.splitlines()[4] == _MECHANISM_PURPOSE
     assert "| f0_TRAIN_t0 | evaluation_rule_matches | FAILED |" in verdict
 
 

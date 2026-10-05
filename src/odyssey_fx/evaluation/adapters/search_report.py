@@ -28,7 +28,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Final
 
@@ -38,7 +38,7 @@ from odyssey_fx.backtest.domain.account import AccountSpec
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.money import decimal_from_int, decimal_from_str, kernel_context
+from odyssey_fx.common.money import decimal_from_str, kernel_context
 from odyssey_fx.common.refs import (
     CodeDigest,
     EnvDigest,
@@ -254,13 +254,29 @@ def _fixed(value: Decimal) -> str:
 
 
 def _days(duration: timedelta) -> str:
-    """長さを日で（小数第6位まで）。"""
+    """期間を単位を明示した表記で（例: `12日3時間15分`。D09 §11.5 の表の下の注記）。
+
+    値が 0 の単位は省き、全部 0 なら `0秒`。秒未満があれば秒を小数で出す。表示だけの変換で、
+    保存値は変えない（2026-10-05 の人間の決定。D09 §17.7.5 の7）。
+    """
     micro = (duration.days * _SECONDS_PER_DAY + duration.seconds) * 1_000_000 + (
         duration.microseconds
     )
-    with localcontext(kernel_context()):
-        value = decimal_from_int(micro) / decimal_from_int(_SECONDS_PER_DAY * 1_000_000)
-    return f"{_fixed(value)} 日"
+    sign = "-" if micro < 0 else ""
+    whole, fraction = divmod(abs(micro), 1_000_000)
+    days, rest = divmod(whole, _SECONDS_PER_DAY)
+    hours, rest = divmod(rest, 3_600)
+    minutes, seconds = divmod(rest, 60)
+    parts = [
+        f"{amount}{unit}"
+        for amount, unit in ((days, "日"), (hours, "時間"), (minutes, "分"))
+        if amount
+    ]
+    if fraction:
+        parts.append(f"{seconds}.{fraction:06d}".rstrip("0") + "秒")
+    elif seconds:
+        parts.append(f"{seconds}秒")
+    return sign + ("".join(parts) or "0秒")
 
 
 def _value_text(value: MetricValue) -> str:
@@ -298,6 +314,13 @@ def _verdict_text(verdict: SearchVerdict, purpose: StandardPurpose) -> str:
     """判定の表示（D09 §11.5 の順1。機構の確認では「機構の確認: 」を前に付ける）。"""
     prefix = "機構の確認: " if purpose is StandardPurpose.MECHANISM_CHECK else ""
     return f"{prefix}{_VERDICT_NAMES[verdict]}（{_code(verdict.value)}）"
+
+
+def _ledger_verdict_text(verdict: SearchVerdict | None) -> str:
+    """台帳の節と台帳の一覧の判定（日本語名とコード。D09 §11.4・§11.5 の順8。§17.7.5 の7）。"""
+    if verdict is None:
+        return "結末の行なし"
+    return f"{_VERDICT_NAMES[verdict]}（{_code(verdict.value)}）"
 
 
 def _fold_verdict_text(verdict: FoldVerdict, floor_breached_with_few_trades: bool) -> str:
@@ -702,10 +725,20 @@ def _final_validation_line(inputs: _Inputs) -> str:
 def _verdict_lines(inputs: _Inputs) -> list[str]:
     manifest = inputs.manifest
     policy = manifest.research_policy_ref
-    lines = [_PURPOSE_LINES[inputs.purpose], ""]
     outcome = inputs.outcome
+    post_run_failed = (
+        outcome is not None and outcome.status is ExperimentStatus.FAILED_POST_RUN_CHECK
+    )
+    # 1行目は用途。ただし拒否・不合格の実験は1行目にその旨、2行目に用途（D09 §11.5 の順1・
+    # §10.6 の「先頭に出す」。2026-10-05 の人間の決定。§17.7.5 の3）。
+    lines: list[str] = []
     if inputs.rejected and outcome is not None:
-        lines.append("**探索は行っていない（事前検査で止めた）**。合格でない事前検査:")
+        lines.extend(["**探索は行っていない（事前検査で止めた）**", ""])
+    elif post_run_failed:
+        lines.extend(["**記録の検査（事後検査）に合格でない単位がある**", ""])
+    lines.extend([_PURPOSE_LINES[inputs.purpose], ""])
+    if inputs.rejected and outcome is not None:
+        lines.append("合格でない事前検査:")
         lines.append("")
         lines.extend(
             _table(
@@ -718,8 +751,8 @@ def _verdict_lines(inputs: _Inputs) -> list[str]:
             )
         )
         lines.append("")
-    if outcome is not None and outcome.status is ExperimentStatus.FAILED_POST_RUN_CHECK:
-        lines.append("**記録の検査（事後検査）に合格でない単位がある**:")
+    if post_run_failed:
+        lines.append("合格でない記録の検査（単位ごと）:")
         lines.append("")
         rows = [
             [unit_name(unit), item.check.value, item.outcome.value, item.expected, item.observed]
@@ -783,14 +816,21 @@ def _capability_lines(inputs: _Inputs, record: TrialRunRecord) -> list[str]:
     if isinstance(read, ManifestReadFailure):
         return [f"- {label}: run manifest を読めない（{_scrub(read.detail, inputs.roots)}）"]
     interval = read.config.run_interval
+    # その run を止めた能力検査の対象系列（執行系列と解像度階層の各段。D06 §10.5 の手順2）に
+    # 限り、その中では run 区間と重なる欠落を全件出す。無関係な系列の欠落は停止の原因として
+    # 出さない（2026-10-05 の人間の決定。D09 §11.5 の順2・§17.7.5 の6）。
+    checked = {read.config.execution_series, *read.resolution_hierarchy.levels}
     gaps = [
         result
         for result in read.capability_report.integrity.results
-        if result.kind is CheckKind.MISSING_EXPECTED_BAR and result.interval.overlaps(interval)
+        if result.kind is CheckKind.MISSING_EXPECTED_BAR
+        and result.series in checked
+        and result.interval.overlaps(interval)
     ]
     lines = [
-        f"- {label}: 実行前の能力検査で止まった。run 区間 {interval} と重なった欠落の区間"
-        f" {len(gaps)} 件:"
+        f"- {label}: 実行前の能力検査で止まった。能力検査の対象系列"
+        f"（{'、'.join(sorted(str(series) for series in checked))}）の、run 区間 {interval} と"
+        f"重なった欠落の区間 {len(gaps)} 件:"
     ]
     lines.extend(f"  - {result.series}: {result.interval}" for result in gaps)
     return lines
@@ -991,7 +1031,7 @@ def _fold_lines(inputs: _Inputs) -> list[str]:
         "選んだ試行（割当）",
         "fold の判定",
         "検証区間の取引件数",
-        "観測期間（日）",
+        "観測期間",
         "取引しなかった期間（最長）",
         "完了取引の保有割合（EXPOSURE_RATE）",
         "損益（NET_PROFIT）",
@@ -1300,7 +1340,9 @@ def _ledger_lines(inputs: _Inputs) -> list[str]:
     if closing is None or closing.entry.verdict is None:
         lines.append("- この番号の結末の行: なし（結末の行なし）")
     else:
-        lines.append(f"- この番号の結末の行: あり（判定 {_code(closing.entry.verdict.value)}）")
+        lines.append(
+            f"- この番号の結末の行: あり（判定 {_ledger_verdict_text(closing.entry.verdict)}）"
+        )
     counts = count_prior_executions(contents.lines, view.started)
     lines.append(
         f"- (a) この実行より前に同じ検証区間を見た実行: {counts.overlapping_executions} 件、"
@@ -1329,7 +1371,7 @@ def _ledger_lines(inputs: _Inputs) -> list[str]:
                         f" 版 {item.research_policy_ref.version}",
                         item.purpose.value,
                         item.search_plan_digest.hex,
-                        "結末の行なし" if item.verdict is None else item.verdict.value,
+                        _ledger_verdict_text(item.verdict),
                     ]
                     for item in counts.same_strategy
                 ],
@@ -1561,8 +1603,8 @@ def _render(inputs: _Inputs) -> str:
             "",
             "保存済みの成果物だけから作った表示である（記録票・結末記録・探索の記録・評価と run の"
             "成果物と、試行台帳・研究ポリシーの版の登録簿。D09 §11.5、D07 §22）。正本はそれらの"
-            "成果物であり、このファイルは結果のダイジェストに入らない。比率は小数第6位まで表示する"
-            "（保存値は丸めていない）。",
+            "成果物であり、このファイルは結果のダイジェストに入らない。比率は小数第6位まで、期間は"
+            "日・時間・分・秒の単位を明示して表示する（保存値は丸めていない）。",
         ]
     ]
     for heading, body in zip(SEARCH_REPORT_HEADINGS, bodies, strict=True):
@@ -1751,7 +1793,7 @@ def ledger_listing(
             if closing is None or closing.entry.verdict is None:
                 verdict, frequency = "結末の行なし", "結末の行なし"
             else:
-                verdict = closing.entry.verdict.value
+                verdict = _ledger_verdict_text(closing.entry.verdict)
                 frequency = closing.entry.frequency_class or "なし"
             cells = [
                 ("*" if reference[name] != value else "") + value

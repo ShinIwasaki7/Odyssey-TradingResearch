@@ -45,7 +45,7 @@ from odyssey_fx.app.config.research_policy import (
     research_policy_path,
     research_policy_registry_path,
 )
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.adapters.fs_store import (
     EXPERIMENT_OUTCOME_FILE,
     LEDGER_BINDING_FILE,
@@ -78,6 +78,7 @@ from odyssey_fx.evaluation.domain.status import CheckOutcome
 from odyssey_fx.marketdata.domain.access import AccessClass
 from tests.fixtures.acceptance.t02_workspace import (
     LAST_VALIDATION,
+    SEALED_BOUNDARIES,
     T02Workspace,
     accept_variant,
     build_sealed_workspace,
@@ -544,6 +545,43 @@ def test_3c_the_sealed_partitions_never_enter_the_allowed_set(
     allowed = completed.manifest.allowed_partitions
     assert len(allowed) == classes.count(AccessClass.RESEARCH_HISTORY.value)
     assert all(AccessClass.LEGACY_HOLDOUT.value not in key for key in allowed)
+
+
+def test_3c_the_sealed_interval_overlaps_no_other_interval(
+    workspace: T02Workspace, completed: _Run
+) -> None:
+    """封印区間は研究履歴の partition の区間とも実験の fold の区間とも重ならない（D08 §9.5 の
+    封印期間のテストの例外。人工データの期間境界はテストの中の具体値。D09 §17.7.5 の2）。"""
+    snapshot = json.loads(
+        (workspace.repo / "data/snapshots" / workspace.snapshot_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    def span(item: dict[str, Any]) -> Interval:
+        return Interval(
+            start=UtcTime.parse(item["interval"]["start"]),
+            end=UtcTime.parse(item["interval"]["end"]),
+        )
+
+    sealed = [
+        span(item)
+        for item in snapshot["partitions"]
+        if item["partition_id"]["access_class"] == AccessClass.LEGACY_HOLDOUT.value
+    ]
+    others = [
+        span(item)
+        for item in snapshot["partitions"]
+        if item["partition_id"]["access_class"] != AccessClass.LEGACY_HOLDOUT.value
+    ]
+    split = completed.manifest.split
+    assert split is not None and not isinstance(split, str)
+    folds = [interval for fold in split.folds for interval in (fold.train, fold.validation)]
+    assert sealed and others and folds
+    for interval in sealed:
+        assert SEALED_BOUNDARIES.research_until.value <= interval.start.value
+        assert interval.end.value <= SEALED_BOUNDARIES.holdout_until.value
+        assert not any(interval.overlaps(other) for other in (*others, *folds))
 
 
 # --- レポートと台帳の表示（D09 §11.5・§10.10）---------------------------------------

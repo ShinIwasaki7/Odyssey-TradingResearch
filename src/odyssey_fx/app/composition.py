@@ -1206,9 +1206,10 @@ class ExperimentRunOutcome:
     （`ExperimentRefusal`）は何も書かないので `None`（D07 §19.4）。探索の実験は単数の予測
     `RunId` を持たない（`expected_run_id` は `None`。D09 §10.6）。
 
-    `report_error` は、探索の実験で結末記録と台帳の行を書き終えた後にレポートを作れなかった理由
-    （研究ポリシーの版の登録簿が読めないなど。D09 §11.4 の Q37）。CLI は成果を表示した後に
-    理由を出し、終了コード 1 で終える（レポートは `experiment report` で作り直せる）。
+    `report_error` は、探索の実験で結末記録と台帳の行を書き終えた後にレポートを作れなかった原因
+    （登録簿が読めない・入力が読めない・書き込みに失敗したなど。D09 §11.4。§17.7.5 の8）。
+    CLI は成果を表示した後に原因を出し、終了コード 1 で終える（結末記録と台帳の行は取り消さず、
+    レポートは `experiment report` で作り直す）。
     """
 
     manifest: ExperimentManifest
@@ -1755,9 +1756,10 @@ def run_search_experiment(
 
     結末記録を書いた実行（`REJECTED_BY_POLICY` を含む）は、最後に探索の実験のレポート
     （`report.md`。D09 §11.5）を書く（D09 §10.7 の終端の書き込みの (4)）。拒否
-    （`ExperimentRefusal`）では書かない。研究ポリシーの版の登録簿が読めないなどでレポートを
-    作れなければ、結末記録と台帳の行はそのままでレポートを書かず、理由を `report_error` に
-    入れて返す（CLI が終了コード 1 にする。D09 §11.4 の Q37）。
+    （`ExperimentRefusal`）では書かない。レポートを作れなければ（研究ポリシーの版の登録簿が
+    読めない（Q37）に限らず、入力の読込の失敗と書き込みの失敗の全般）、結末記録と台帳の行は
+    そのままでレポートを書かず、原因を `report_error` に入れて返す（CLI が終了コード 1 にする。
+    D09 §11.4。§17.7.5 の8）。
     """
     parts = _prepare_search(
         loaded=loaded,
@@ -1813,8 +1815,10 @@ def run_search_experiment(
                 store.directory, artifacts_root, repo_root=repo_root, registry=registry
             )
             report = store.directory / REPORT_FILE
-        except (ConfigError, KernelValueError) as exc:
-            report_error = str(exc)
+        except (ConfigError, KernelValueError, OSError, ValueError) as exc:
+            # 読込に限らず書き込みの失敗も同じ扱い。結末記録と台帳の行は取り消さず、原因を
+            # 返して CLI が終了コード 1 にする（D09 §11.4。2026-10-05 の人間の決定。§17.7.5 の8）。
+            report_error = f"{type(exc).__name__}: {exc}"
     return ExperimentRunOutcome(
         manifest=manifest,
         result=result,

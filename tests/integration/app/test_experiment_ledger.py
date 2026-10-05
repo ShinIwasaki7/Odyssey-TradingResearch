@@ -6,8 +6,9 @@
 確かめること:
 
 - 一覧は研究ポリシーの `(id, 版)` ごとのまとまり（版の昇順）で、見出しに「現行／旧版／機構確認用」
-  を出す。1行が1実行で、結末の行が無ければ「結末の行なし」。まとまりの最初の行と比較の前提が
-  違うセルの先頭に `*` を付ける。`--strategy` で絞れる。末尾の書きかけは1行添える。空の台帳は
+  を出す。1行が1実行で、判定は日本語名とコード（D09 §17.7.5 の7）、結末の行が無ければ
+  「結末の行なし」。まとまりの最初の行と比較の前提が違うセルの先頭に `*` を付ける。
+  `--strategy` で絞れる。末尾の書きかけは1行添える。空の台帳は
   「台帳に行が無い」。終了コード 0。
 - 台帳が読めない（L0〜L10）・逆照合 L11 に当たる・登録簿のファイル自体が読めないと終了コード 2。
   記録票の版参照の照合はしない（登録簿に無い版の行があっても 0）。
@@ -96,7 +97,7 @@ def test_the_listing_groups_by_policy_version_and_marks_differing_basis_cells(
     header = next(line for line in text.splitlines() if line.startswith("| 実験 |"))
     names = [cell.strip() for cell in header.strip("|").split("|")]
     seed = names.index("seed")
-    assert row_a[names.index("判定")] == "BELOW_STANDARD"
+    assert row_a[names.index("判定")] == "共通基準を満たさない（`BELOW_STANDARD`）"
     assert row_b[names.index("判定")] == "結末の行なし"
     assert (row_a[seed], row_b[seed]) == ("0", "*7")
     assert all(not cell.startswith("*") for cell in row_b[: names.index("research_policy_ref")])
