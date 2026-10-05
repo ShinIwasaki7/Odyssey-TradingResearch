@@ -47,6 +47,7 @@ from odyssey_fx.evaluation.domain.experiment import (
     ResolvedFile,
     experiment_id_of,
 )
+from odyssey_fx.evaluation.domain.metrics import MetricRecord
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
     ComplexityMeasures,
@@ -167,6 +168,7 @@ class _Repository:
     runs: dict[str, BacktestResult] = field(default_factory=dict)
     placeholders: set[str] = field(default_factory=set)
     evaluations: dict[str, StoredEvaluation | EvaluationReadFailure] = field(default_factory=dict)
+    evaluation_metrics: dict[str, tuple[MetricRecord, ...]] = field(default_factory=dict)
     manifest_failure: str | None = None
 
     def read_manifest(self, run_id: RunId) -> RunManifest | ManifestReadFailure:
@@ -191,6 +193,7 @@ class _Repository:
             status=manifest.status,
             result_digest=manifest.result_digest,
         )
+        self.evaluation_metrics[str(manifest.run_evaluation_id)] = report.metrics
 
     def read_result(self, run_id: RunId) -> BacktestResult | ResultReadFailure:
         result = self.runs.get(str(run_id))
@@ -205,6 +208,14 @@ class _Repository:
         self, run_id: RunId, run_evaluation_id: RunEvaluationId
     ) -> StoredEvaluation | EvaluationReadFailure | None:
         return self.evaluations.get(str(run_evaluation_id))
+
+    def read_evaluation_metrics(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> tuple[MetricRecord, ...] | EvaluationReadFailure:
+        metrics = self.evaluation_metrics.get(str(run_evaluation_id))
+        if metrics is None:
+            return EvaluationReadFailure(run_id=run_id, detail="METRICS.parquet does not exist")
+        return metrics
 
 
 @dataclass

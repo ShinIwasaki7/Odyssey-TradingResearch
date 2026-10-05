@@ -22,7 +22,7 @@ import socket
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -54,7 +54,7 @@ from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, Run
 from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import AccountId, ExperimentId, RunId, SnapshotId
-from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
+from odyssey_fx.common.money import CurrencyCode, Money, PriceOffset, decimal_from_str
 from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import (
     CodeDigest,
@@ -99,12 +99,21 @@ from odyssey_fx.evaluation.domain.experiment import (
     require_experiment_name,
 )
 from odyssey_fx.evaluation.domain.metrics import (
+    AmountValue,
     CategoryCount,
+    CountValue,
+    DurationValue,
     FillDiagnostic,
+    MetricCaveat,
     MetricId,
+    MetricKind,
     MetricRecord,
     MetricUnavailableReason,
+    MetricValue,
+    PriceOffsetValue,
+    RatioValue,
     TradeRecord,
+    Unavailable,
 )
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
@@ -1196,6 +1205,60 @@ class FileSystemResultRepository:
                 run_id=run_id, detail=f"{type(exc).__name__}: {exc.strerror} ({path})"
             )
         except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
+            )
+
+    def read_evaluation_metrics(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> tuple[MetricRecord, ...] | EvaluationReadFailure:
+        """保存済みの評価の `METRICS` 表を読む（D07 v2.11 §3・§19.6、D09 §17.7.4 の2）。
+
+        行を保存された順（`MetricId` の宣言順）の `MetricRecord` として返す。0行の表は空の組。
+        保存先か表が無い・読めない・`MetricRecord` の形で読めない・同じ保存先の評価 manifest の
+        識別子が引数と合わないときは `EvaluationReadFailure` を返す。**評価をやり直して補わない**。
+        """
+        directory = evaluation_directory(self.root, run_id, run_evaluation_id)
+        path = directory / f"{EvaluationTable.METRICS.value}.parquet"
+        try:
+            if directory.is_symlink() or not directory.is_dir():
+                raise KernelValueError(
+                    "the evaluation directory is missing or not a plain directory"
+                )
+            stored = self.read_evaluation(run_id, run_evaluation_id)
+            if stored is None or isinstance(stored, EvaluationReadFailure):
+                detail = "missing" if stored is None else stored.detail
+                raise KernelValueError(f"the evaluation manifest cannot be read: {detail}")
+            if stored.run_id != run_id or stored.run_evaluation_id != run_evaluation_id:
+                raise KernelValueError(
+                    f"the evaluation manifest records {stored.run_evaluation_id} of the run"
+                    f" {stored.run_id}, not {run_evaluation_id} of {run_id}"
+                )
+            if path.is_symlink() or not path.is_file():
+                raise KernelValueError(f"{path.name} is missing or not a plain file")
+            frame = pl.read_parquet(path)
+            expected = column_names(MetricRecord)
+            if tuple(frame.columns) != expected:
+                raise KernelValueError(
+                    f"the columns {list(frame.columns)} are not the METRICS columns"
+                    f" {list(expected)}"
+                )
+            records = tuple(_metric_record_of(row) for row in frame.iter_rows(named=True))
+            order = [_METRIC_ORDER[record.metric_id.value] for record in records]
+            if order != sorted(set(order)):
+                raise KernelValueError(
+                    "the metric rows are not in the MetricId declaration order without repeats"
+                )
+            return records
+        except OSError as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{type(exc).__name__}: {exc.strerror} ({path})"
+            )
+        except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
+            )
+        except pl.exceptions.PolarsError as exc:
             return EvaluationReadFailure(
                 run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
             )
@@ -2835,6 +2898,78 @@ def _write_new_parquet(path: Path, frame: pl.DataFrame) -> None:
 
 
 _METRIC_ORDER: Mapping[str, int] = {metric.value: index for index, metric in enumerate(MetricId)}
+
+
+#: `METRICS` 表の値の列（区分ごとに1列。D06 §9.1 の規則2 で値の無い列は `None`）。
+_METRIC_VALUE_COLUMNS: Mapping[MetricKind, str] = {
+    MetricKind.AMOUNT: "value_amount_amount",
+    MetricKind.RATIO: "value_ratio",
+    MetricKind.COUNT: "value_count",
+    MetricKind.DURATION: "value_duration",
+    MetricKind.PRICE_OFFSET: "value_offset",
+}
+
+
+def _metric_record_of(row: Mapping[str, object]) -> MetricRecord:
+    """`METRICS` 表の1行を `MetricRecord` へ戻す（D07 §8.1・§8.2 の平坦化の逆）。
+
+    区分に合わない列に値がある・値の列と値なしの理由が両方ある（または両方無い）行は、
+    読み替えずに拒否する。
+    """
+    metric = MetricId(_str_of(row["metric_id"], "metric_id"))
+    kind = MetricKind(_str_of(row["value_kind"], "value_kind"))
+    reason = row["value_reason"]
+    present = {
+        column: row[column]
+        for column in (*_METRIC_VALUE_COLUMNS.values(), "value_amount_currency")
+        if row[column] is not None
+    }
+    value: MetricValue
+    if reason is not None:
+        if present:
+            raise KernelValueError(
+                f"{metric.value}: an unavailable value has value columns {present}"
+            )
+        value = Unavailable(
+            kind=kind, reason=MetricUnavailableReason(_str_of(reason, "value_reason"))
+        )
+    else:
+        allowed = {_METRIC_VALUE_COLUMNS[kind]}
+        if kind is MetricKind.AMOUNT:
+            allowed.add("value_amount_currency")
+        if set(present) != allowed:
+            raise KernelValueError(
+                f"{metric.value}: a {kind.value} value must fill exactly {sorted(allowed)},"
+                f" got {sorted(present)}"
+            )
+        column = _METRIC_VALUE_COLUMNS[kind]
+        if kind is MetricKind.AMOUNT:
+            value = AmountValue(
+                amount=Money(
+                    _decimal_of(row[column], column),
+                    CurrencyCode(_str_of(row["value_amount_currency"], "value_amount_currency")),
+                )
+            )
+        elif kind is MetricKind.RATIO:
+            value = RatioValue(ratio=_decimal_of(row[column], column))
+        elif kind is MetricKind.COUNT:
+            value = CountValue(count=_int_of(row[column], column))
+        elif kind is MetricKind.DURATION:
+            seconds = _decimal_of(row[column], column)
+            value = DurationValue(duration=timedelta(microseconds=int(seconds * 1_000_000)))
+        else:
+            value = PriceOffsetValue(offset=PriceOffset(_decimal_of(row[column], column)))
+    return MetricRecord(
+        metric_id=metric,
+        value=value,
+        caveats=tuple(
+            MetricCaveat(_str_of(item, "caveats")) for item in _list_of(row["caveats"], "caveats")
+        ),
+        observation_count=_int_of(row["observation_count"], "observation_count"),
+        inputs=tuple(
+            TraceTable(_str_of(item, "inputs")) for item in _list_of(row["inputs"], "inputs")
+        ),
+    )
 
 
 def trial_units_rows(

@@ -19,6 +19,9 @@ T02 の人工データを受け入れて承認した作業場（`tests/fixtures/
 - 候補なしの fold の後も次の fold を実行する（#6）。事後検査が合格でない単位は候補から外れ、
   実験は `FAILED_POST_RUN_CHECK`（#7）。`experiment run` は封印期間の許可判定を呼ばない（#8）。
 - 結末の行の前に自分の開始の行が台帳から消えていれば、結末の行を書かずに終了コード 1（#24）。
+- 保存済みの評価の再利用（D09 §17.7.4 の2・3、§13 の22）: 指標は保存済みの `METRICS` 表から読み、
+  評価をやり直さない。読めなければ記録票の保存の前に拒否（終了コード 5）、実行中に読めなく
+  なれば中断（終了コード 1）。
 
 最後まで通す実行は1回だけ行って複数のテストで確かめる（`full`）。ほかのテストは、その実行が
 作った run と評価の成果物（`runs/<run_id>/`）を成果物の基点へ写してから走らせる（同じ設定の
@@ -28,6 +31,7 @@ T02 の人工データを受け入れて承認した作業場（`tests/fixtures/
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import sys
 from collections.abc import Iterator
@@ -42,9 +46,12 @@ import pytest
 from odyssey_fx.app import composition
 from odyssey_fx.app.cli.main import main
 from odyssey_fx.common.canonical import digest, encode
+from odyssey_fx.common.ids import RunId
+from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.evaluation.adapters.fs_store import (
     TRIAL_LEDGER_LOCK_PATH,
     FileSystemExperimentStore,
+    FileSystemResultRepository,
     read_experiment_manifest,
     read_experiment_outcome,
     read_ledger_binding,
@@ -54,7 +61,9 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     unit_name,
 )
 from odyssey_fx.evaluation.application import run_experiment
-from odyssey_fx.evaluation.application.ports import TrialLedgerContents
+from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun
+from odyssey_fx.evaluation.application.manifest import RunEvaluationId
+from odyssey_fx.evaluation.application.ports import EvaluationReadFailure, TrialLedgerContents
 from odyssey_fx.evaluation.domain import research_policy
 from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
 from odyssey_fx.evaluation.domain.research_policy import PolicyCheck
@@ -602,3 +611,135 @@ def test_experiment_report_does_not_write_a_single_run_report_for_a_search(full:
     assert code == 2, stdout.getvalue() + stderr.getvalue()
     assert "探索の実験" in stderr.getvalue()
     assert not (directory / "report.md").exists()
+
+
+# --- 保存済みの評価の再利用（D07 v2.11 §3・§19.6、D09 §17.7.4 の2・3、§13 の22）---------------
+
+
+def _metrics_files(out: Path) -> list[Path]:
+    return sorted((out / "runs").glob("*/eval/*/METRICS.parquet"))
+
+
+def test_22_a_reused_evaluation_reads_the_stored_metrics_without_re_evaluating(
+    workspace: T02Workspace, tmp_path: Path, full: _Full, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """別の実行で保存した評価を再利用する単位は、指標を保存済みの `METRICS` 表から読み、評価を
+    やり直さない。選定と判定には読んだ値が渡り、何も無い基点で通した実行と同じ記録になる。"""
+    out = _seeded(full, tmp_path)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a reused evaluation must not be evaluated again (D09 §17.7.4)")
+
+    monkeypatch.setattr(EvaluateRun, "evaluate", refuse)
+    code, output = _run(workspace, out, _experiment(workspace, "reused"))
+    assert code == 0, output
+    directory = _version(out, "reused")
+    _, runs = read_unit_records(directory)
+    assert all(record.run_reused for record in runs.values())
+    original = _version(full.out, "full")
+    assert read_selections(directory) == read_selections(original)
+    # 集約表は `run_reused`（この実行では全単位が再利用）だけが違う。
+    for name in ("trial_units.parquet", "trial_metrics.parquet"):
+        new, old = (
+            pl.read_parquet(base / "search" / name).drop("run_reused", strict=False)
+            for base in (directory, original)
+        )
+        assert new.equals(old), name
+    outcome, expected = read_experiment_outcome(directory), read_experiment_outcome(original)
+    assert outcome is not None and outcome.search is not None
+    assert expected is not None and expected.search is not None
+    assert outcome.search.verdict is expected.search.verdict
+
+
+def _drop(path: Path) -> None:
+    path.unlink()
+
+
+def _garble(path: Path) -> None:
+    path.write_bytes(b"not a parquet file")
+
+
+def _swap_columns(path: Path) -> None:
+    frame = pl.read_parquet(path)
+    frame.select(list(reversed(frame.columns))).write_parquet(path)
+
+
+def _reverse_rows(path: Path) -> None:
+    pl.read_parquet(path).reverse().write_parquet(path)
+
+
+_UNREADABLE_METRICS = {
+    "missing": _drop,
+    "garbled": _garble,
+    "columns": _swap_columns,
+    "order": _reverse_rows,
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNREADABLE_METRICS))
+def test_an_unreadable_stored_metrics_table_refuses_the_search_before_anything_is_written(
+    workspace: T02Workspace, tmp_path: Path, full: _Full, case: str
+) -> None:
+    """D09 §17.7.4 の3（選択肢 A）: 記録票の保存の前に確かめ、実験全体を拒否する（終了コード 5。
+    記録票・台帳の行を書かない）。再評価で補わない。"""
+    out = _seeded(full, tmp_path)
+    target = _metrics_files(out)[0]
+    _UNREADABLE_METRICS[case](target)
+    code, output = _run(workspace, out, _experiment(workspace, f"metrics-{case}"))
+    assert code == 5, output
+    assert "cannot be read" in output
+    assert not _version(out, f"metrics-{case}").exists()
+    assert _ledger(workspace) == ()
+    if case != "missing":
+        assert target.is_file()
+
+
+def test_the_evaluation_manifest_must_name_the_metrics_it_holds(
+    full: _Full, tmp_path: Path
+) -> None:
+    """識別子が合わない評価 manifest の下の表は読まない（`EvaluationReadFailure`）。"""
+    out = _seeded(full, tmp_path)
+    target = _metrics_files(out)[0]
+    evaluation_dir = target.parent
+    run_id = RunId(ContentDigest.sha256(evaluation_dir.parent.parent.name))
+    evaluation_id = RunEvaluationId(ContentDigest.sha256(evaluation_dir.name))
+    repository = FileSystemResultRepository(root=out)
+    read = repository.read_evaluation_metrics(run_id, evaluation_id)
+    assert isinstance(read, tuple) and read
+    payload = json.loads((evaluation_dir / "evaluation.json").read_text(encoding="utf-8"))
+    other = next(p for p in _metrics_files(out) if p.parent != evaluation_dir).parent.name
+    payload["run_evaluation_id"] = other
+    (evaluation_dir / "evaluation.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert isinstance(
+        repository.read_evaluation_metrics(run_id, evaluation_id), EvaluationReadFailure
+    )
+
+
+def test_metrics_that_become_unreadable_during_the_search_interrupt_it(
+    workspace: T02Workspace, tmp_path: Path, full: _Full, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """確認の後に実行中に読めなくなった場合は中断する（終了コード 1）。開始記録と台帳の開始の行
+    だけが残り、結末記録も試行記録も無い（D09 §17.7.4 の3、§10.12.4 の d）。"""
+    out = _seeded(full, tmp_path)
+    started_ledger: list[bool] = []
+    original_append = FileSystemExperimentStore.append_trial_ledger
+    original_read = FileSystemResultRepository.read_evaluation_metrics
+
+    def append(self: FileSystemExperimentStore, line: Any) -> Any:
+        started_ledger.append(True)
+        return original_append(self, line)
+
+    def read(self: FileSystemResultRepository, run_id: Any, evaluation_id: Any) -> Any:
+        if started_ledger:
+            return EvaluationReadFailure(run_id=run_id, detail="the table vanished")
+        return original_read(self, run_id, evaluation_id)
+
+    monkeypatch.setattr(FileSystemExperimentStore, "append_trial_ledger", append)
+    monkeypatch.setattr(FileSystemResultRepository, "read_evaluation_metrics", read)
+    code, output = _run(workspace, out, _experiment(workspace, "vanished"))
+    assert code == 1, output
+    directory = _version(out, "vanished")
+    assert read_experiment_outcome(directory) is None
+    starts, runs = read_unit_records(directory)
+    assert list(starts) == [_unit(0, TrialPhase.TRAIN, 0)] and runs == {}
+    assert [line.entry.event for line in _ledger(workspace)] == [TrialLedgerEvent.STARTED]

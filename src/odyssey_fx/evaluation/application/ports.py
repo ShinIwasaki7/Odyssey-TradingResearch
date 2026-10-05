@@ -24,6 +24,7 @@ from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.refs import ContentDigest, SnapshotRef
 from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
 from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
+from odyssey_fx.evaluation.domain.metrics import MetricRecord
 from odyssey_fx.evaluation.domain.search import (
     FoldSelection,
     TrialLedgerBinding,
@@ -287,6 +288,17 @@ class ResultRepository(Protocol):
         読む先は `runs/<run_id>/eval/<run_evaluation_id>/evaluation.json`。
 
         保存先が無ければ `None`、あるが読めなければ `EvaluationReadFailure`。
+        """
+        ...
+
+    def read_evaluation_metrics(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> tuple[MetricRecord, ...] | EvaluationReadFailure:
+        """保存済みの評価の `METRICS` 表を読む（D07 v2.11 §3・§19.6）。
+
+        行を `MetricId` の宣言順の `MetricRecord` として返す（0行の表は空の組）。保存先か表が
+        無い・読めない・`MetricRecord` の形で読めない・評価 manifest の識別子が引数と合わない
+        ときは `EvaluationReadFailure` を返す。**評価をやり直して補わない**。
         """
         ...
 

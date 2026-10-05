@@ -324,6 +324,9 @@ class _Reuse:
 
     result: BacktestResult
     evaluation: StoredEvaluation | None
+    #: 再利用する評価の指標（探索の単位だけが読む。D07 v2.11 §19.6、D09 §17.7.4 の2）。
+    #: 単一実行の経路と、評価が無い（これから評価する）ときは `None`。
+    metrics: tuple[MetricRecord, ...] | None = None
 
 
 class TrialLedgerStop(Exception):
@@ -745,7 +748,7 @@ class RunExperiment:
         )
         version = manifest.metric_set_version
         checked = self._inspect_existing(
-            expected_run_id, expected_digest, version, prepared.calendar
+            expected_run_id, expected_digest, version, prepared.calendar, read_metrics=True
         )
         if isinstance(checked, str):
             # 保存の前に全単位を確かめた（D09 §10.5 の注記）。ここで衝突するのは、その後に別の
@@ -765,9 +768,7 @@ class RunExperiment:
             if not isinstance(result, BacktestResult):
                 raise KernelValueError("BacktestRunner.run must return a BacktestResult")
             reused = False
-        evaluated = self._evaluate_unit(
-            prepared, result, None if checked is None else checked.evaluation, cache
-        )
+        evaluated = self._evaluate_unit(prepared, result, checked, cache)
         read = self._repository.read_manifest(result.run_id)
         post = (
             check_run_matches(
@@ -801,45 +802,54 @@ class RunExperiment:
         self,
         prepared: PreparedSearch,
         result: BacktestResult,
-        stored: StoredEvaluation | None,
+        reuse: _Reuse | None,
         cache: dict[RunId, _Evaluated],
     ) -> _Evaluated:
         """評価する（D07 §19.6 の手順2: 保存済みの評価があれば書かずに使い回す）。
 
-        保存済みの評価を使い回すときも、選定と判定に要る指標の値は評価の関数で求め直し、識別子と
-        結果のダイジェストが保存済みの評価と一致することを確かめる（評価は決定論的。D07 §9）。
-        同じ実行の中で同じ `RunId` を持つ単位（D09 §6.2）は、最初の単位の評価を使う。
+        保存済みの評価を使い回すときは、選定と判定に要る指標の値を保存済みの `METRICS` 表から
+        読む（D07 v2.11 §19.6、D09 §17.7.4 の2）。**評価をやり直さない**。指標は単位を始めた
+        ときの確認（`_inspect_existing`）で読んである。同じ実行の中で同じ `RunId` を持つ単位
+        （D09 §6.2）は、最初の単位の評価を使う。
         """
+        stored = None if reuse is None else reuse.evaluation
         cached = cache.get(result.run_id)
-        if cached is not None and (
-            stored is None
-            or (
-                stored.run_evaluation_id == cached.run_evaluation_id
-                and stored.result_digest == cached.result_digest
-            )
-        ):
+        if cached is not None:
+            if stored is not None and (
+                stored.run_evaluation_id != cached.run_evaluation_id
+                or stored.result_digest != cached.result_digest
+            ):
+                raise KernelValueError(
+                    f"the stored evaluation {stored.run_evaluation_id} of runs/{result.run_id}/"
+                    " is not the evaluation an earlier unit of this execution used (D09 §6.2)"
+                )
             return cached
-        report = self._evaluator.evaluate(
-            result, self._repository, prepared.manifest.metric_set_version, prepared.calendar
-        )
-        if stored is None:
-            self._repository.write_evaluation(report, report.rows)
-        elif (
-            report.manifest.run_evaluation_id != stored.run_evaluation_id
-            or report.manifest.result_digest != stored.result_digest
-            or report.status is not stored.status
-        ):
-            raise KernelValueError(
-                f"the stored evaluation {stored.run_evaluation_id} of runs/{result.run_id}/ does"
-                " not match the evaluation recomputed from the same trace (D07 §9・§19.6)"
+        if stored is not None:
+            metrics = None if reuse is None else reuse.metrics
+            if metrics is None:
+                raise KernelValueError(
+                    f"the metrics of the stored evaluation {stored.run_evaluation_id} were not"
+                    " read before reusing it (D07 §19.6, D09 §17.7.4)"
+                )
+            evaluated = _Evaluated(
+                run_evaluation_id=stored.run_evaluation_id,
+                status=stored.status,
+                result_digest=stored.result_digest,
+                metric_set_version=stored.metric_set_version,
+                metrics=metrics,
             )
-        evaluated = _Evaluated(
-            run_evaluation_id=report.manifest.run_evaluation_id,
-            status=report.status,
-            result_digest=report.manifest.result_digest,
-            metric_set_version=report.manifest.metric_set_version,
-            metrics=report.metrics,
-        )
+        else:
+            report = self._evaluator.evaluate(
+                result, self._repository, prepared.manifest.metric_set_version, prepared.calendar
+            )
+            self._repository.write_evaluation(report, report.rows)
+            evaluated = _Evaluated(
+                run_evaluation_id=report.manifest.run_evaluation_id,
+                status=report.status,
+                result_digest=report.manifest.result_digest,
+                metric_set_version=report.manifest.metric_set_version,
+                metrics=report.metrics,
+            )
         cache[result.run_id] = evaluated
         return evaluated
 
@@ -910,7 +920,7 @@ class RunExperiment:
                     continue
                 seen.add(run_id)
                 checked = self._inspect_existing(
-                    run_id, expected_digest, version, prepared.calendar
+                    run_id, expected_digest, version, prepared.calendar, read_metrics=True
                 )
                 if isinstance(checked, str):
                     return ExperimentRefusal(
@@ -932,10 +942,15 @@ class RunExperiment:
         expected_digest: ConfigDigest,
         metric_set_version: int,
         calendar: TradingCalendar,
+        *,
+        read_metrics: bool = False,
     ) -> _Reuse | str | None:
         """D07 §19.6 の手順1〜3・5 を1つの予測 `RunId` に当てる（読むだけ）。
 
         無ければ `None`、再利用できれば再利用の内容、できなければ理由の文字列。
+        `read_metrics` なら（探索の単位。D09 §10.5）、再利用する評価の指標の表も
+        `read_evaluation_metrics` で読み、読めなければ再利用できない理由にする（再評価で補わない。
+        D07 v2.11 §19.6、D09 §17.7.4 の2・3）。
         """
         if not self._repository.run_exists(run_id):
             return None
@@ -973,7 +988,21 @@ class RunExperiment:
                 f"its evaluation directory {evaluation_id} holds the evaluation"
                 f" {stored.run_evaluation_id} of the run {stored.run_id}"
             )
-        return _Reuse(result=result, evaluation=stored)
+        metrics: tuple[MetricRecord, ...] | None = None
+        if read_metrics and stored is not None:
+            read = self._repository.read_evaluation_metrics(run_id, evaluation_id)
+            if isinstance(read, EvaluationReadFailure):
+                return (
+                    f"the metrics of its evaluation {evaluation_id} cannot be read: {read.detail}"
+                )
+            if not isinstance(read, tuple) or not all(
+                isinstance(item, MetricRecord) for item in read
+            ):
+                raise KernelValueError(
+                    "ResultRepository.read_evaluation_metrics returned an unexpected value"
+                )
+            metrics = read
+        return _Reuse(result=result, evaluation=stored, metrics=metrics)
 
     @staticmethod
     def _conflict(prepared: PreparedExperiment, reason: str) -> ExperimentRefusal:
