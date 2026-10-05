@@ -236,7 +236,7 @@
 | `basis_declaration` | 価格基準の宣言のうち識別に関わる部分（`value: BID`、`verified: false`）。検証済み事実ではない |
 | `declaration_record` | 宣言の記録（`declared_by`、`declared_at`）。`snapshot_id` の計算対象外。同じ宣言内容なら誰がいつ宣言しても同じ `snapshot_id` になる |
 | `sources` | `SourceFile(path, sha256, rows, symbol, timeframe, declared_basis, provenance_counts)` の列 |
-| `conversion` | 変換コード版、時刻規約（`explicit_offset_utc`）、集約規則の版、カレンダー版 |
+| `conversion` | 変換コード版、時刻規約（`explicit_offset_utc`）、集約規則の版、カレンダー版。列対応の宣言に時刻ラベルの補正規則があれば、当てた規則の宣言の内容（規則の識別と版・補正量・対象の系列・対象の週）、系列ごとの動かした足の本数、補正の後の再検査の結果（v1.19。第4節の v1.19 の追記）。補正規則の無い宣言（版 1・版 2）では持たない |
 | `series` | `SeriesManifest(series_id, covered_interval, bar_count, partitions)` の列 |
 | `partitions` | `PartitionRecord(partition_id, series_id, access_class, interval, bar_count, digest)` |
 | `integrity_report_ref` | 最終の検査報告（`integrity_report.json`）のダイジェスト |
