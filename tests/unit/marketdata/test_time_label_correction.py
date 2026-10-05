@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -310,8 +310,20 @@ def test_a_conversion_without_a_rule_keeps_the_five_identity_items() -> None:
         "code_version",
         "time_convention",
     }
+
     # 補正の記録を持たない dataclass の 5 項目と同じ符号化（既存の snapshot の識別子は変わらない）。
-    assert canonical.encode(payload) == canonical.encode(dict(payload))
+    @dataclass(frozen=True)
+    class _FiveFieldConversion:
+        """v1.19 より前の `ConversionRecord`（補正の記録の項目を持たない）と同じ形。"""
+
+        code_version: str
+        time_convention: str
+        aggregation_rule_version: str
+        calendar_id: str
+        calendar_version: int
+
+    legacy = _FiveFieldConversion("c", "explicit_offset_utc", "a", "fx_ny17", 2)
+    assert canonical.encode(payload) == canonical.encode(legacy)
 
 
 # --- 列の正規順序と重複の拒否（D03 §3.7.1 の v1.19）------------------------------------
