@@ -117,7 +117,7 @@ def _write_snapshot(
                     "sha256": hashlib.sha256(accepted.encode()).hexdigest(),
                 }
             )
-    manifest = {
+    manifest: dict[str, Any] = {
         "snapshot_id": snapshot_id,
         "partitions": partitions,
         "resolved_classifications": records,
