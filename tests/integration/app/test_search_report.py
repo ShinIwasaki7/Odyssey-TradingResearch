@@ -381,6 +381,30 @@ def test_r6_a_ledger_without_the_started_line_reports_without_the_counts(
     assert "照合できないので出せない" in _section(text, 7)
 
 
+def test_r6_a_started_line_with_another_digest_reports_without_the_counts(
+    workspace: T02Workspace, base: _Base, tmp_path: Path
+) -> None:
+    """R6 の2つ目の状況: 開始の行はあるが、digest が束縛の記録の started_line_digest と違う。"""
+    repo = _repo_copy(workspace, tmp_path, base.ledger)
+    directory = _version(_copy_base(base, tmp_path), "base")
+    path = directory / "search" / "ledger_execution.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    recorded = payload["started_line_digest"]
+    if isinstance(recorded, dict):
+        assert recorded["hex"] != "0" * 64
+        recorded["hex"] = "0" * 64
+    else:
+        assert recorded != "0" * 64
+        payload["started_line_digest"] = "0" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    code, output = _report(directory, repo)
+    assert code == 0, output
+    text = (directory / "report.md").read_text(encoding="utf-8")
+    assert "台帳のこの実行の開始の行が成果物の記録と違う" in _section(text, 8)
+    assert "- (a)" not in _section(text, 8) and "- (b)" not in _section(text, 8)
+    assert "照合できないので出せない" in _section(text, 7)
+
+
 def test_r7_and_15_the_counts_see_only_the_lines_before_the_started_line(
     workspace: T02Workspace, base: _Base, tmp_path: Path
 ) -> None:
