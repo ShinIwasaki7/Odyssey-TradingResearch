@@ -169,17 +169,32 @@ def test_5_trial_status_is_derived_into_four_states(
 # --- #11 ------------------------------------------------------------------------
 
 
-def test_11_floor_breach_with_enough_trades_is_below_standard_regardless_of_others() -> None:
+_FLOOR_GOOD: dict[MetricId, Override] = {NRR: Decimal("0.9"), DD: Decimal("0.01"), TC: 50}
+#: 他の fold の3つの形（D09 §7.3 の実験の判定の手順1 は他の fold の値と中央値によらない）。
+_OTHERS: dict[str, dict[MetricId, Override]] = {
+    # 最低条件を満たし、中央値の条件も満たす値。
+    "good": _FLOOR_GOOD,
+    # 最低条件は満たすが、純収益率が負で中央値の条件（> 0）を満たさない値。
+    "bad_median": {NRR: Decimal("-0.5"), DD: Decimal("0.01"), TC: 50},
+    # 取引が少なく証拠不足になる値（fold ごとの要件 5 件未満）。
+    "insufficient": {NRR: Decimal("0.9"), DD: Decimal("0.01"), TC: 2},
+}
+
+
+@pytest.mark.parametrize("others", sorted(_OTHERS))
+def test_11_floor_breach_with_enough_trades_is_below_standard_regardless_of_others(
+    others: str,
+) -> None:
     rule = standard()
-    good: dict[MetricId, Override] = {NRR: Decimal("0.9"), DD: Decimal("0.01"), TC: 50}
+    other = _OTHERS[others]
     outcome = _outcome(
         rule,
         [
-            ([train_unit(0)], {**good, DD: Decimal("0.6")}),  # 取引 50 件で最低条件を割る
-            ([train_unit(0)], good),
-            ([train_unit(0)], good),
-            ([train_unit(0)], good),
-            ([train_unit(0)], good),
+            ([train_unit(0)], {**_FLOOR_GOOD, DD: Decimal("0.6")}),  # 取引 50 件で最低条件を割る
+            ([train_unit(0)], other),
+            ([train_unit(0)], other),
+            ([train_unit(0)], other),
+            ([train_unit(0)], other),
         ],
     )
     assert outcome.fold_verdicts[0] == (0, FoldVerdict.FLOOR_BREACHED)

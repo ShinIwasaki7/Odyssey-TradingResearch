@@ -118,9 +118,11 @@ __all__ = [
     "FoldVerdict",
     "FrequencyAssessment",
     "FrequencyClass",
+    "LedgerCounts",
     "MetricCondition",
     "ParameterAssignment",
     "ParameterAxis",
+    "PriorExecution",
     "SearchOutcome",
     "SearchPlan",
     "SearchPlanKind",
@@ -150,17 +152,21 @@ __all__ = [
     "build_search_outcome",
     "candidate_status",
     "compile_rejections_of",
+    "count_prior_executions",
     "count_trial_statuses",
     "derive_trial_status",
     "enumerate_assignments",
     "finished_entry",
+    "finished_line_of",
     "frequency_class_of",
     "has_finished_line",
+    "interim_floor_results",
     "is_selectable_metric",
     "last_digest",
     "ledger_defect",
     "ledger_line_digest",
     "longest_idle_period",
+    "median_of",
     "next_execution",
     "select_trial",
     "started_line_of",
@@ -1434,6 +1440,20 @@ def _judged_metrics(rule: ValidationRule) -> tuple[MetricId, ...]:
     )
 
 
+def median_of(values: Sequence[Decimal]) -> Decimal:
+    """中央値（D09 §7.3 の `MEDIAN`）。偶数個なら中央の2つの平均をカーネル精度で1回割る。
+
+    判定の集約条件と、レポートの頑健性の表（D09 §8。fold 間のばらつきの中央値）が同じ規則を
+    使う。値が無ければ構造エラー（値なしの扱いは呼び出し側が決める）。
+    """
+    items = tuple(values)
+    if not items:
+        raise KernelValueError("median_of requires at least one value")
+    if not all(isinstance(item, Decimal) for item in items):
+        raise KernelValueError("median_of requires Decimal values")
+    return _median(items)
+
+
 def _median(values: Sequence[Decimal]) -> Decimal:
     """中央値（D09 §7.3 の `MEDIAN`）。偶数個なら中央の2つの平均をカーネル精度で1回割る。"""
     ordered = sorted(values)
@@ -1674,6 +1694,40 @@ def _floor_results(
                 unavailable_reason=_unavailable_reason(value),
             )
         )
+    return tuple(results)
+
+
+def interim_floor_results(
+    fold_index: int, rule: ValidationRule, unit: ValidationUnitEvaluation
+) -> tuple[tuple[MetricCondition, ConditionResult | MetricUnavailableReason], ...]:
+    """途中で止まった実行の検証済みの fold の最低条件の結果（D09 §10.4。Q36 決定）。
+
+    判定（`build_search_outcome`）と同じ比べ方で、最低条件を書いた順に1件ずつ返す。値があれば
+    `MET` / `NOT_MET`、観測が足りないことによる値なしなら `UNCOMPUTABLE` の `ConditionResult`。
+    **入力が無いことによる値なし（`INPUT_NOT_AVAILABLE`）は比べず、その理由をそのまま返す**
+    （`ConditionResult` は観測不足の理由だけを持つ。判定ではその fold は「判定できない」になる
+    が、途中で止まった実行は fold の判定を出さない）。fold の判定・証拠の要件は当てない。
+    評価が `COMPLETED` でない単位（指標の行が無い）は構造エラー（呼び出し側が表示を分ける）。
+    """
+    _require_index(fold_index, "interim_floor_results.fold_index")
+    if not isinstance(rule, ValidationRule):
+        raise KernelValueError("interim_floor_results requires a ValidationRule")
+    if not isinstance(unit, ValidationUnitEvaluation):
+        raise KernelValueError("interim_floor_results requires a ValidationUnitEvaluation")
+    if unit.fold_index != fold_index:
+        raise KernelValueError("interim_floor_results: the unit belongs to another fold")
+    if unit.evaluation_status is not EvaluationStatus.COMPLETED:
+        raise KernelValueError(
+            "interim_floor_results requires a unit whose evaluation is COMPLETED (D07 §10.1)"
+        )
+    results: list[tuple[MetricCondition, ConditionResult | MetricUnavailableReason]] = []
+    for condition in rule.fold_floors:
+        reason = _unavailable_reason(unit.value_of(condition.metric))
+        if reason is MetricUnavailableReason.INPUT_NOT_AVAILABLE:
+            results.append((condition, reason))
+            continue
+        single = ValidationRule(fold_floors=(condition,), aggregate=())
+        results.append((condition, _floor_results(fold_index, single, unit)[0]))
     return tuple(results)
 
 
@@ -2468,6 +2522,111 @@ def has_finished_line(
         and line.entry.experiment_id == experiment_id
         and line.entry.execution == execution
         for line in lines
+    )
+
+
+def finished_line_of(
+    lines: Sequence[TrialLedgerLine], experiment_id: ExperimentId, execution: int
+) -> TrialLedgerLine | None:
+    """`(experiment_id, execution)` の結末の行（無ければ `None`。D09 §10.12.3 の R7）。"""
+    for line in lines:
+        entry = line.entry
+        if (
+            entry.event is TrialLedgerEvent.FINISHED
+            and entry.experiment_id == experiment_id
+            and entry.execution == execution
+        ):
+            return line
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class PriorExecution:
+    """同じ戦略の先行の実行1件（D09 §10.10 の数え方 (b)）。
+
+    `verdict` は、この実行の開始の行より前にある同じ番号の結末の行の判定（無ければ `None`）。
+    """
+
+    experiment_name: str
+    experiment_version: int
+    execution: int
+    research_policy_ref: PolicyRef
+    purpose: StandardPurpose
+    search_plan_digest: ContentDigest
+    verdict: SearchVerdict | None
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerCounts:
+    """レポートの台帳の節の数え方（D09 §10.10 の (a)(b)）。
+
+    `overlapping_executions` と `overlapping_trials` は (a)（同じ検証区間を見た先行の実行の数と
+    試行の数の合計。用途によらない）、`same_strategy` は (b)（同じ `strategy_id` の先行の実行。
+    台帳の順）。
+    """
+
+    overlapping_executions: int
+    overlapping_trials: int
+    same_strategy: tuple[PriorExecution, ...]
+
+
+def count_prior_executions(
+    lines: Sequence[TrialLedgerLine], started: TrialLedgerLine
+) -> LedgerCounts:
+    """ある実行の開始の行より前の完全な行だけで数え方 (a)(b) を数える。
+
+    D09 §10.10・§10.12.3 の R7。
+
+    `started` は台帳の中のこの実行の開始の行（`lines` の要素として現れなければ構造エラー）。
+    後から台帳が伸びても、数える範囲（開始の行より前）は変わらない（D07 §22.1 の決定論）。
+
+    - (a) 先行の開始の行のうち、`validation_intervals` のどれかがこの実行の検証区間のどれかと
+      重なる行の数と、それらの `trial_count` の合計。戦略・実験の名前・用途によらない。
+    - (b) 先行の開始の行のうち `strategy_id` が同じものを台帳の順に。判定は、開始の行より前に
+      ある同じ番号の結末の行から写す（無ければ `None`）。
+    """
+    if not isinstance(started, TrialLedgerLine) or started.entry.event is not (
+        TrialLedgerEvent.STARTED
+    ):
+        raise KernelValueError("count_prior_executions requires the STARTED line of an execution")
+    position = next(
+        (index for index, line in enumerate(lines) if line.digest == started.digest), None
+    )
+    if position is None:
+        raise KernelValueError("count_prior_executions: the STARTED line is not in the ledger")
+    prior = tuple(lines[:position])
+    mine = started.entry
+    overlapping = 0
+    trials = 0
+    same: list[PriorExecution] = []
+    for line in prior:
+        entry = line.entry
+        if entry.event is not TrialLedgerEvent.STARTED:
+            continue
+        if any(
+            theirs.overlaps(ours)
+            for theirs in entry.validation_intervals
+            for ours in mine.validation_intervals
+        ):
+            overlapping += 1
+            trials += entry.trial_count
+        if entry.strategy_id == mine.strategy_id:
+            closing = finished_line_of(prior, entry.experiment_id, entry.execution)
+            same.append(
+                PriorExecution(
+                    experiment_name=entry.experiment_name,
+                    experiment_version=entry.experiment_version,
+                    execution=entry.execution,
+                    research_policy_ref=entry.basis.research_policy_ref,
+                    purpose=entry.purpose,
+                    search_plan_digest=entry.search_plan_digest,
+                    verdict=None if closing is None else closing.entry.verdict,
+                )
+            )
+    return LedgerCounts(
+        overlapping_executions=overlapping,
+        overlapping_trials=trials,
+        same_strategy=tuple(same),
     )
 
 

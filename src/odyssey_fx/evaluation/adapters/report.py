@@ -66,6 +66,7 @@ __all__ = [
     "ReportWrite",
     "build_report",
     "write_report",
+    "write_report_text",
 ]
 
 #: 参考値の指標（D07 §5.2 の表で「参考値」とした5件。§5.3・§5.4）。残りは採用指標。
@@ -748,13 +749,21 @@ def write_report(experiment_dir: Path, artifacts_root: Path) -> ReportWrite:
     `report.<n>.md` へ退避してから書く（旧い記録は消さない。R4 の書き込み規則）。
     """
     directory = ensure_experiment_directory(Path(artifacts_root), Path(experiment_dir))
-    text = build_report(directory, artifacts_root)
-    path = directory / REPORT_FILE
+    return write_report_text(directory, build_report(directory, artifacts_root))
+
+
+def write_report_text(directory: Path, text: str) -> ReportWrite:
+    """作ったレポートの本文を `report.md` に書く（D07 §22.1 の書き込み規則。探索の実験も同じ）。
+
+    既存の `report.md` が無ければ書く。あり、内容が同じなら何もしない。違えば
+    `report.<n>.md` へ退避してから書く（旧い記録は消さない。R4 の書き込み規則）。
+    """
+    path = Path(directory) / REPORT_FILE
     result = ReportWrite.CREATED
     if path.exists() or path.is_symlink():
         if not path.is_symlink() and path.is_file() and path.read_text(encoding="utf-8") == text:
             return ReportWrite.UNCHANGED
-        keep_previous_report(directory)
+        keep_previous_report(Path(directory))
         result = ReportWrite.REPLACED
     try:
         write_new_file(path, text)

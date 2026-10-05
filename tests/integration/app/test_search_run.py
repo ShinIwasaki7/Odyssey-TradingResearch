@@ -302,8 +302,9 @@ def test_a_full_search_records_every_unit_selection_table_outcome_and_two_ledger
     assert (binding.execution, binding.started_line_digest) == (1, lines[0].digest)
     assert lines[0].entry.search_plan_digest == digest(manifest.search_plan)
     assert lines[0].entry.trial_count == 4
-    assert "探索の実験のレポートは段階5 の実装 PR 5 で作る" in full.output
-    assert not (directory / "report.md").exists()
+    # 終端の書き込みの (4): 探索の実験のレポートを最後に書く（D09 §10.7。段階5 実装 PR 5）。
+    assert (directory / "report.md").is_file()
+    assert "レポート: " in full.output
 
 
 def test_4_22_the_records_are_written_in_the_designed_order(full: _Full) -> None:
@@ -770,16 +771,18 @@ def test_24_the_finished_line_copies_the_started_line(full: _Full) -> None:
     assert closing.prev == opening.digest
 
 
-def test_experiment_report_does_not_write_a_single_run_report_for_a_search(full: _Full) -> None:
-    """探索の実験のレポート（D09 §11.5）は段階5 の実装 PR 5 で作る。それまで `experiment report` は
-    単一実行の書式で探索の実験のレポートを作らず、引数・読込の誤り（終了コード 2）で止める。"""
+def test_experiment_report_of_a_search_requires_the_repo_root(full: _Full) -> None:
+    """探索の実験の版のディレクトリを渡すときは `--repo-root` が必須（D09 §11.4。無ければ引数の
+    誤り＝終了コード 2）。既存のレポートには触れない。"""
     directory = _version(full.out, "full")
+    before = (directory / "report.md").read_bytes()
     stdout, stderr = io.StringIO(), io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
         code = main(["experiment", "report", "--experiment-dir", str(directory)])
     assert code == 2, stdout.getvalue() + stderr.getvalue()
-    assert "探索の実験" in stderr.getvalue()
-    assert not (directory / "report.md").exists()
+    assert "--repo-root" in stderr.getvalue()
+    assert (directory / "report.md").read_bytes() == before
+    assert not (directory / "report.1.md").exists()
 
 
 # --- 保存済みの評価の再利用（D07 v2.11 §3・§19.6、D09 §17.7.4 の2・3、§13 の22）---------------
