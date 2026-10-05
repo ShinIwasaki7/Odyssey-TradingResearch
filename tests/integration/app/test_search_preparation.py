@@ -3,7 +3,7 @@
 段階5 の実装 PR 2 の統合テスト（D09 §14 の分割案 A の PR 2）。T02 の人工データを受け入れて
 承認した作業場（`tests/fixtures/acceptance/t02_workspace.py`）に、試験用の研究ポリシー版 3
 （2 fold。テスト用であり研究ポリシーではない）と探索の実験設定（検証戦略 B の2軸 × 2値）を
-作り、合成の `prepare_search` を通す。**run はしない**（探索の実行は後続の実装 PR）。
+作り、合成の `prepare_search` を通す。**run はしない**。
 
 確かめること:
 
@@ -13,8 +13,8 @@
 - 事前検査は P1・P2・P6・P7（P6 はコンパイルが通った試行の最大、P7 は列挙した試行の数）。
 - 記録票の保存の前に、全単位の既存の run 成果物を確かめる（選ばれるかどうかによらず検証区間の
   単位も。D09 §10.5 の注記）。
-- `experiment run` は探索の実験を「この段階では実行未対応」として何も書かずに止める（設定の誤り
-  ではない。表に無い失敗として終了コード 1。D09 §17.7.2 の1）。
+
+探索の実行（`experiment run`）の統合テストは `test_search_run.py`（実装 PR 4）。
 """
 
 from __future__ import annotations
@@ -269,31 +269,6 @@ def _invoke(argv: list[str]) -> tuple[int, str]:
     with redirect_stdout(out), redirect_stderr(err):
         code = main(argv)
     return code, out.getvalue() + err.getvalue()
-
-
-def test_experiment_run_does_not_accept_a_search_experiment_yet(
-    workspace: T02Workspace, tmp_path: Path
-) -> None:
-    """探索の実行は実装 PR 4 で有効にする。それまでは設定の誤りと呼ばず「この段階では実行未対応」
-    と示し、何も書かずに終了コード 1 で止める（D09 §17.7.2 の1、D07 §21.3 の表に無い失敗）。"""
-    code, output = _invoke(
-        [
-            "experiment",
-            "run",
-            "--experiment",
-            str(write_search_experiment(workspace.repo, "cli.yaml")),
-            "--snapshots",
-            str(workspace.repo / "data/snapshots"),
-            "--out",
-            str(tmp_path / "out"),
-            "--repo-root",
-            str(workspace.repo),
-        ]
-    )
-    assert code == 1, output
-    assert "この段階では実行未対応" in output
-    assert "失敗:" not in output
-    assert not (tmp_path / "out").exists()
 
 
 def test_the_run_command_refuses_a_search_experiment(

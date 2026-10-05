@@ -32,6 +32,9 @@ runs/
 # 実行記録の文書（D07 §23.3 の `docs/runs/stage4_realdata_run.md`）は追跡する。上の `runs/` は
 # どの階層の `runs/` にも当たるので、文書の置き場だけを戻す。
 !docs/runs/
+# 試行台帳の追記のロック（D01 §10.4 v2.10、D09 v0.3 §10.12.1）。追記の1回ごとに作って消すもので
+# 版管理しない。台帳そのもの（research/trial_ledger.jsonl）は追跡する（空のファイルで置く）。
+research/trial_ledger.lock
 
 # --- Python -----------------------------------------------------------------
 __pycache__/

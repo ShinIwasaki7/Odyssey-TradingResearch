@@ -46,6 +46,7 @@ from odyssey_fx.evaluation.application.ports import (
     TableReadResult,
     TraceColumnSpec,
 )
+from odyssey_fx.evaluation.domain.metrics import MetricRecord
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from tests.fixtures.synthetic import market
@@ -511,6 +512,11 @@ class FakeRepository:
         self, run_id: RunId, run_evaluation_id: RunEvaluationId
     ) -> StoredEvaluation | EvaluationReadFailure | None:
         return None
+
+    def read_evaluation_metrics(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> tuple[MetricRecord, ...] | EvaluationReadFailure:
+        return EvaluationReadFailure(run_id=run_id, detail="the fake repository keeps no metrics")
 
 
 def repository_for(

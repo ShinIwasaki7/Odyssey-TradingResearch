@@ -18,9 +18,12 @@ import json
 import os
 import re
 import shutil
+import socket
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +51,10 @@ from odyssey_fx.backtest.trace.recorder import (
     table_columns,
 )
 from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, RunStatus
+from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import AccountId, ExperimentId, RunId, SnapshotId
-from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
+from odyssey_fx.common.money import CurrencyCode, Money, PriceOffset, decimal_from_str
 from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import (
     CodeDigest,
@@ -81,6 +85,10 @@ from odyssey_fx.evaluation.application.ports import (
     StoredEvaluation,
     TableReadResult,
     TraceColumnSpec,
+    TrialLedgerAppendRefused,
+    TrialLedgerContents,
+    TrialLedgerReadFailure,
+    TrialLedgerRefusal,
 )
 from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.experiment import (
@@ -91,10 +99,21 @@ from odyssey_fx.evaluation.domain.experiment import (
     require_experiment_name,
 )
 from odyssey_fx.evaluation.domain.metrics import (
+    AmountValue,
     CategoryCount,
+    CountValue,
+    DurationValue,
     FillDiagnostic,
+    MetricCaveat,
+    MetricId,
+    MetricKind,
     MetricRecord,
+    MetricUnavailableReason,
+    MetricValue,
+    PriceOffsetValue,
+    RatioValue,
     TradeRecord,
+    Unavailable,
 )
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
@@ -102,6 +121,57 @@ from odyssey_fx.evaluation.domain.research_policy import (
     PolicyCheck,
     PolicyCheckResult,
     PolicyCheckStage,
+)
+from odyssey_fx.evaluation.domain.search import (
+    AggregateCondition,
+    CandidateStatus,
+    Comparator,
+    ComparisonBasis,
+    ConditionOutcome,
+    ConditionResult,
+    ConditionScope,
+    EvaluationStandard,
+    FoldSelection,
+    FoldStatistic,
+    FoldVerdict,
+    FrequencyAssessment,
+    FrequencyClass,
+    MetricCondition,
+    ParameterAssignment,
+    ParameterAxis,
+    SearchOutcome,
+    SearchPlan,
+    SearchPlanKind,
+    SearchVerdict,
+    SelectionDirection,
+    SelectionRule,
+    StandardPurpose,
+    SufficiencyRule,
+    SufficiencyShortfall,
+    SufficiencyShortfallKind,
+    TrialLedgerBinding,
+    TrialLedgerDefect,
+    TrialLedgerEntry,
+    TrialLedgerEvent,
+    TrialLedgerLine,
+    TrialPhase,
+    TrialPlan,
+    TrialRunRecord,
+    TrialStartRecord,
+    TrialStatus,
+    TrialUnitKey,
+    ValidationRule,
+    last_digest,
+    ledger_defect,
+    ledger_line_digest,
+)
+from odyssey_fx.evaluation.domain.splits import (
+    FinalHoldoutSpec,
+    Fold,
+    SplitKind,
+    SplitSpec,
+    SplitStandard,
+    SplitWindow,
 )
 from odyssey_fx.evaluation.domain.status import (
     CheckOutcome,
@@ -117,12 +187,28 @@ from odyssey_fx.marketdata.domain.integrity import (
     Severity,
 )
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
+from odyssey_fx.strategy.declarations.specs import (
+    BoolValue,
+    FloatValue,
+    IntValue,
+    ParameterValue,
+    StrValue,
+)
 
 __all__ = [
     "EXPERIMENT_MANIFEST_FILE",
     "EXPERIMENT_OUTCOME_FILE",
+    "LEDGER_BINDING_FILE",
     "REPORT_FILE",
     "REPRODUCTION_FILE",
+    "RETREAT_MARKER_FILE",
+    "SEARCH_DIRECTORY",
+    "TRIAL_LEDGER_LOCK_PATH",
+    "TRIAL_LEDGER_PATH",
+    "TRIAL_METRICS_TABLE",
+    "TRIAL_UNITS_TABLE",
+    "UNITS_DIRECTORY",
+    "UNIT_NAME",
     "FileSystemExperimentStore",
     "FileSystemResultRepository",
     "FileSystemResultWriter",
@@ -135,12 +221,21 @@ __all__ = [
     "experiment_manifest_payload",
     "experiment_outcome_from_payload",
     "experiment_outcome_payload",
+    "append_trial_ledger_file",
     "keep_previous_records",
     "keep_previous_report",
+    "keep_previous_search_records",
+    "ledger_entry_of",
+    "ledger_line_bytes",
     "manifest_from_payload",
     "next_kept_number",
     "read_experiment_manifest",
     "read_experiment_outcome",
+    "read_ledger_binding",
+    "read_ledger_binding_records",
+    "read_selections",
+    "read_trial_ledger_file",
+    "read_unit_records",
     "replaced_manifest_name",
     "reproduction_path",
     "reproduction_payload",
@@ -150,6 +245,10 @@ __all__ = [
     "reserve_run_directory",
     "result_from_payload",
     "run_directory",
+    "search_directory",
+    "trial_units_rows",
+    "unit_name",
+    "unit_of_name",
     "write_new_file",
     "write_reproduction",
 ]
@@ -1110,6 +1209,60 @@ class FileSystemResultRepository:
                 run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
             )
 
+    def read_evaluation_metrics(
+        self, run_id: RunId, run_evaluation_id: RunEvaluationId
+    ) -> tuple[MetricRecord, ...] | EvaluationReadFailure:
+        """保存済みの評価の `METRICS` 表を読む（D07 v2.11 §3・§19.6、D09 §17.7.4 の2）。
+
+        行を保存された順（`MetricId` の宣言順）の `MetricRecord` として返す。0行の表は空の組。
+        保存先か表が無い・読めない・`MetricRecord` の形で読めない・同じ保存先の評価 manifest の
+        識別子が引数と合わないときは `EvaluationReadFailure` を返す。**評価をやり直して補わない**。
+        """
+        directory = evaluation_directory(self.root, run_id, run_evaluation_id)
+        path = directory / f"{EvaluationTable.METRICS.value}.parquet"
+        try:
+            if directory.is_symlink() or not directory.is_dir():
+                raise KernelValueError(
+                    "the evaluation directory is missing or not a plain directory"
+                )
+            stored = self.read_evaluation(run_id, run_evaluation_id)
+            if stored is None or isinstance(stored, EvaluationReadFailure):
+                detail = "missing" if stored is None else stored.detail
+                raise KernelValueError(f"the evaluation manifest cannot be read: {detail}")
+            if stored.run_id != run_id or stored.run_evaluation_id != run_evaluation_id:
+                raise KernelValueError(
+                    f"the evaluation manifest records {stored.run_evaluation_id} of the run"
+                    f" {stored.run_id}, not {run_evaluation_id} of {run_id}"
+                )
+            if path.is_symlink() or not path.is_file():
+                raise KernelValueError(f"{path.name} is missing or not a plain file")
+            frame = pl.read_parquet(path)
+            expected = column_names(MetricRecord)
+            if tuple(frame.columns) != expected:
+                raise KernelValueError(
+                    f"the columns {list(frame.columns)} are not the METRICS columns"
+                    f" {list(expected)}"
+                )
+            records = tuple(_metric_record_of(row) for row in frame.iter_rows(named=True))
+            order = [_METRIC_ORDER[record.metric_id.value] for record in records]
+            if order != sorted(set(order)):
+                raise KernelValueError(
+                    "the metric rows are not in the MetricId declaration order without repeats"
+                )
+            return records
+        except OSError as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{type(exc).__name__}: {exc.strerror} ({path})"
+            )
+        except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
+            )
+        except pl.exceptions.PolarsError as exc:
+            return EvaluationReadFailure(
+                run_id=run_id, detail=f"{path}: {type(exc).__name__}: {exc}"
+            )
+
     def read_table(
         self, run_id: RunId, table: TraceTable, columns: tuple[TraceColumnSpec, ...]
     ) -> TableReadResult:
@@ -1245,7 +1398,10 @@ _KEPT_REPORT = re.compile(r"report\.([1-9][0-9]*)\.md")
 
 
 def next_kept_number(directory: Path) -> int:
-    """次に退避する記録の連番（退避済みの結末記録とレポートの番号の最大 + 1）。
+    """次に退避する記録の連番（退避済みの結末記録・レポート・探索の記録の番号の最大 + 1）。
+
+    探索の記録 `search.<n>/` の番号も数える（D09 §11.3。途中で止まった実行は探索の記録だけを
+    残すので、数えないと同じ番号へ退避しようとして衝突する）。
 
     結末記録とレポートは同じ実行のものを同じ番号で退避する（D07 §22.1「結末記録と同じ連番」）。
     片方だけを退避するとき（`experiment report` がレポートだけを書き直すとき）も同じ連番から
@@ -1254,7 +1410,11 @@ def next_kept_number(directory: Path) -> int:
     kept = [
         int(match.group(1))
         for entry in Path(directory).iterdir()
-        if (match := _KEPT_OUTCOME.fullmatch(entry.name) or _KEPT_REPORT.fullmatch(entry.name))
+        if (
+            match := _KEPT_OUTCOME.fullmatch(entry.name)
+            or _KEPT_REPORT.fullmatch(entry.name)
+            or _KEPT_SEARCH.fullmatch(entry.name)
+        )
     ]
     return max(kept, default=0) + 1
 
@@ -1416,22 +1576,19 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
 
     **実行時刻を入れない**（D07 §19.2）。本文（`resolved_files` の `text`）はそのまま入れる。
 
-    書けるのは単一実行の実験の記録票だけである。探索の実験の記録票（D09 §10.2）の保存は、探索の
-    実行と記録を足す後続の実装 PR が足す（それまで `experiment run` は探索の実験を受けない）。
-    探索の項目を黙って落とした記録票を書かないよう、ここで構造エラーにする。
+    **探索の実験の記録票**（D09 §10.2）は、`search_plan` / `split` を解決済みの形のまま正規化形
+    （D02 §9.3）の JSON の値で持ち、`evaluation_standard`・`final_holdout`・`trials` を足す。単数の
+    `compiled_ref` / `expected_config_digest` は `null`。単一実行の実験の記録票の形は変えない。
     """
-    if manifest.is_search:
-        raise KernelValueError(
-            "saving the manifest of a search experiment is not implemented yet; the search"
-            " records are added with the search execution path (D09 §10.2・§11.1)"
-        )
     compiled_ref = manifest.compiled_ref
     expected_config_digest = manifest.expected_config_digest
-    if compiled_ref is None or expected_config_digest is None:  # pragma: no cover
-        raise KernelValueError("a single-run manifest carries compiled_ref and its config digest")
+    if not manifest.is_search and (compiled_ref is None or expected_config_digest is None):
+        raise KernelValueError(  # pragma: no cover - 記録票の構築時に検査済み
+            "a single-run manifest carries compiled_ref and its config digest"
+        )
     policy = manifest.research_policy_ref
     strategy = manifest.strategy_ref
-    return {
+    payload = {
         "schema_version": manifest.schema_version,
         "experiment_id": manifest.experiment_id.hex,
         "experiment_name": manifest.experiment_name,
@@ -1443,8 +1600,10 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
             "digest": policy.digest.hex,
         },
         "metric_set_version": manifest.metric_set_version,
-        "search_plan": manifest.search_plan,
-        "split": manifest.split,
+        "search_plan": _canonical_json(manifest.search_plan)
+        if manifest.is_search
+        else manifest.search_plan,
+        "split": _canonical_json(manifest.split) if manifest.is_search else manifest.split,
         "resolved_files": [
             {"role": item.role, "sha256": item.sha256, "text": item.text}
             for item in sorted(manifest.resolved_files, key=lambda item: item.role)
@@ -1454,8 +1613,10 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
             "version": strategy.version,
             "digest": strategy.digest.hex,
         },
-        "compiled_ref": compiled_ref.digest.hex,
-        "expected_config_digest": expected_config_digest.digest.hex,
+        "compiled_ref": None if compiled_ref is None else compiled_ref.digest.hex,
+        "expected_config_digest": None
+        if expected_config_digest is None
+        else expected_config_digest.digest.hex,
         "snapshot_id": manifest.snapshot_id.hex,
         "allowed_partitions": [
             {"partition": partition, "access_class": access.value}
@@ -1472,12 +1633,31 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
         "git_commit": manifest.git_commit,
         "git_dirty": manifest.git_dirty,
     }
+    if manifest.is_search:
+        payload.update(_search_manifest_items(manifest))
+    return payload
 
 
 def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentManifest:
-    """保存した記録票を読み戻す。項目の欠け・型の違いは例外（`KeyError` など）になる。"""
+    """保存した記録票を読み戻す。項目の欠け・型の違いは例外（`KeyError` など）になる。
+
+    `search_plan` が JSON のオブジェクトなら探索の実験の記録票（D09 §10.2）として読む。
+    """
     policy = payload["research_policy_ref"]
     strategy = payload["strategy_ref"]
+    if isinstance(payload["search_plan"], Mapping):
+        search = _search_manifest_values(payload)
+    else:
+        search = {
+            "search_plan": payload["search_plan"],
+            "split": payload["split"],
+            "compiled_ref": CompiledStrategyRef(
+                _digest_of(payload["compiled_ref"], "compiled_ref")
+            ),
+            "expected_config_digest": ConfigDigest(
+                _digest_of(payload["expected_config_digest"], "expected_config_digest")
+            ),
+        }
     return ExperimentManifest(
         experiment_id=ExperimentId(_digest_of(payload["experiment_id"], "experiment_id")),
         experiment_name=payload["experiment_name"],
@@ -1491,8 +1671,6 @@ def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentMa
             digest=_digest_of(policy["digest"], "research_policy_ref.digest"),
         ),
         metric_set_version=payload["metric_set_version"],
-        search_plan=payload["search_plan"],
-        split=payload["split"],
         resolved_files=tuple(
             ResolvedFile(role=item["role"], text=item["text"], sha256=item["sha256"])
             for item in payload["resolved_files"]
@@ -1501,10 +1679,6 @@ def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentMa
             strategy_id=strategy["id"],
             version=strategy["version"],
             digest=_digest_of(strategy["digest"], "strategy_ref.digest"),
-        ),
-        compiled_ref=CompiledStrategyRef(_digest_of(payload["compiled_ref"], "compiled_ref")),
-        expected_config_digest=ConfigDigest(
-            _digest_of(payload["expected_config_digest"], "expected_config_digest")
         ),
         snapshot_id=SnapshotId(_digest_of(payload["snapshot_id"], "snapshot_id")),
         allowed_partitions={
@@ -1521,6 +1695,7 @@ def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentMa
         env_digest=EnvDigest(_digest_of(payload["env_digest"], "env_digest")),
         git_commit=payload["git_commit"],
         git_dirty=payload["git_dirty"],
+        **search,
     )
 
 
@@ -1529,11 +1704,18 @@ def _optional_hex(value: ContentDigest | None) -> str | None:
 
 
 def experiment_outcome_payload(outcome: ExperimentOutcome) -> dict[str, Any]:
-    """結末記録を JSON へ落とす（D07 §19.3 の表の項目すべて）。"""
-    return {
+    """結末記録を JSON へ落とす（D07 §19.3 の表の項目すべて）。
+
+    探索の実験の結末記録（D09 §10.6）は `expected_run_id` が `null` で、`search` に
+    `SearchOutcome` の正規化形（D02 §9.3）の JSON の値（`REJECTED_BY_POLICY` なら `null`）を持つ。
+    単一実行の実験の結末記録の形は変えない（`search` のキーを持たない）。
+    """
+    payload: dict[str, Any] = {
         "experiment_id": outcome.experiment_id.hex,
         "status": outcome.status.value,
-        "expected_run_id": outcome.expected_run_id.hex,
+        "expected_run_id": _optional_hex(
+            None if outcome.expected_run_id is None else outcome.expected_run_id.digest
+        ),
         "code_digest": outcome.code_digest.digest.hex,
         "lock_digest": outcome.lock_digest.digest.hex,
         "env_digest": outcome.env_digest.digest.hex,
@@ -1550,6 +1732,9 @@ def experiment_outcome_payload(outcome: ExperimentOutcome) -> dict[str, Any]:
         "outcome_checks": [_policy_check_payload(item) for item in outcome.outcome_checks],
         "failed_checks": [check.value for check in outcome.failed_checks],
     }
+    if outcome.is_search:
+        payload["search"] = _canonical_json(outcome.search)
+    return payload
 
 
 def _optional_digest(value: object, label: str) -> ContentDigest | None:
@@ -1561,10 +1746,14 @@ def experiment_outcome_from_payload(payload: Mapping[str, Any]) -> ExperimentOut
     run_id = _optional_digest(payload["run_id"], "run_id")
     run_status = payload["run_status"]
     evaluation_status = payload["evaluation_status"]
+    expected = _optional_digest(payload["expected_run_id"], "expected_run_id")
+    search = payload.get("search")
+    if expected is None and "search" not in payload:
+        raise KernelValueError("a search outcome (expected_run_id null) carries the search item")
     return ExperimentOutcome(
         experiment_id=ExperimentId(_digest_of(payload["experiment_id"], "experiment_id")),
         status=ExperimentStatus(payload["status"]),
-        expected_run_id=RunId(_digest_of(payload["expected_run_id"], "expected_run_id")),
+        expected_run_id=None if expected is None else RunId(expected),
         code_digest=CodeDigest(_digest_of(payload["code_digest"], "code_digest")),
         lock_digest=LockDigest(_digest_of(payload["lock_digest"], "lock_digest")),
         env_digest=EnvDigest(_digest_of(payload["env_digest"], "env_digest")),
@@ -1580,6 +1769,7 @@ def experiment_outcome_from_payload(payload: Mapping[str, Any]) -> ExperimentOut
         result_digest=_optional_digest(payload["result_digest"], "result_digest"),
         outcome_checks=tuple(_policy_check_of(item) for item in payload["outcome_checks"]),
         failed_checks=tuple(PolicyCheck(name) for name in payload["failed_checks"]),
+        search=None if search is None else _exact(search, _search_outcome_of, "search"),
     )
 
 
@@ -1639,6 +1829,9 @@ class FileSystemExperimentStore:
     #: 記録票の中身から識別子を再計算する関数（D07 §19.2 の「識別の入力」。合成が渡す）。
     #: 計算できなければ `ValueError` 系を送出する（その記録票は読めないものと同じに扱う）。
     identity_of: Callable[[ExperimentManifest], ExperimentId]
+    #: 試行台帳を置くリポジトリの根（`<根>/research/trial_ledger.jsonl`。D09 §10.10）。探索の
+    #: 実験だけが使う（単一実行の実験は台帳に書かない）。
+    repo_root: Path | None = None
 
     @property
     def directory(self) -> Path:
@@ -1678,7 +1871,11 @@ class FileSystemExperimentStore:
                 # 確かめた後に別の実行が書いた。書いたものと比べ直す。
                 result = self._compare_existing(path, manifest) or ManifestSaveResult.CONFLICT
         if result is not ManifestSaveResult.CONFLICT:
-            self._keep_previous_outcome(directory)
+            if manifest.is_search:
+                # 探索の実験は「退避中」の印の回復と、探索の記録を含む退避（D09 §11.3 の Q13）。
+                keep_previous_search_records(directory)
+            else:
+                self._keep_previous_outcome(directory)
         return result
 
     def _compare_existing(
@@ -1741,6 +1938,1465 @@ class FileSystemExperimentStore:
                 f"{directory / EXPERIMENT_OUTCOME_FILE} already exists; outcomes are never"
                 " overwritten (D07 §19.3, R4)"
             ) from None
+
+    # --- 探索の記録（D09 §10.3・§11.1・§11.2）------------------------------------------
+
+    def _search_path(self, *parts: str) -> Path:
+        """`search/` の下の書き先。途中の要素はリンクでない実ディレクトリとして用意する（R4）。"""
+        path = search_directory(self.directory).joinpath(*parts)
+        _ensure_plain_directory(Path(self.root) / "runs", path.parent)
+        return path
+
+    def write_trial_start(self, record: TrialStartRecord) -> None:
+        """開始記録を書く（D09 §10.3。既にあれば何も書かずに失敗する。R4）。"""
+        path = self._search_path(UNITS_DIRECTORY, unit_name(record.unit) + _START_SUFFIX)
+        _write_new_json(path, _canonical_json(record), "a start record")
+
+    def write_trial_run(self, record: TrialRunRecord) -> None:
+        """試行記録を書く（D09 §10.3。既にあれば何も書かずに失敗する。R4）。"""
+        path = self._search_path(UNITS_DIRECTORY, unit_name(record.unit) + _RUN_SUFFIX)
+        _write_new_json(path, _canonical_json(record), "a trial record")
+
+    def write_selection(self, selection: FoldSelection) -> None:
+        """選定記録を書く（D09 §7.5。同じ実行の中で書き換えない。既にあれば失敗する。R4）。"""
+        path = self._search_path(f"selection_f{selection.fold_index}.json")
+        _write_new_json(path, _canonical_json(selection), "a selection record")
+
+    def write_ledger_binding(self, binding: TrialLedgerBinding) -> None:
+        """束縛の記録を書く（D09 §10.12.3 の2。W2: 一時名から排他的に作成する）。"""
+        path = self._search_path(LEDGER_BINDING_FILE)
+        _write_new_json(path, _canonical_json(binding), "the ledger binding")
+
+    def write_aggregate_tables(
+        self,
+        manifest: ExperimentManifest,
+        selections: tuple[FoldSelection, ...],
+        records: tuple[TrialRunRecord, ...],
+        metrics: Mapping[TrialUnitKey, tuple[MetricRecord, ...]],
+    ) -> None:
+        """集約表2つを書く（D09 §11.2）。0 行でも列と型を残し、指標の値は計算し直さない。
+
+        指標の行は、選定・判定に使った値（`metrics`）を写す。評価の成果物をここで読まない
+        （読み出しは `read_evaluation_metrics` の1経路。D07 v2.11 §3、D09 §17.7.4 の4）。
+        """
+        self._require_own(manifest)
+        if set(metrics) != {record.unit for record in records} or len(metrics) != len(records):
+            raise KernelValueError(
+                "the metrics given for trial_metrics must cover exactly the units of the trial"
+                " records (D09 §11.2)"
+            )
+        rows = trial_units_rows(manifest, selections, records)
+        units = pl.DataFrame(
+            {name: [row[name] for row in rows] for name in _TRIAL_UNITS_SCHEMA},
+            schema=dict(_TRIAL_UNITS_SCHEMA),
+        )
+        schema = _metrics_schema()
+        metric_rows: list[dict[str, object]] = []
+        for record in sorted(records, key=lambda item: item.unit.order):
+            unit = record.unit
+            for metric in metrics[unit]:
+                if not isinstance(metric, MetricRecord):
+                    raise KernelValueError("trial_metrics rows must be MetricRecord values")
+                metric_rows.append(
+                    {
+                        "fold_index": unit.fold_index,
+                        "phase": unit.phase.value,
+                        "trial_index": unit.trial_index,
+                        **flatten_row(metric),
+                    }
+                )
+        table = pl.DataFrame(
+            {name: [row[name] for row in metric_rows] for name in schema},
+            schema=schema,
+        )
+        order = [_METRIC_ORDER[value] for value in table.get_column("metric_id").to_list()]
+        table = (
+            table.with_columns(pl.Series("_order", order, dtype=pl.Int64()))
+            .sort(["fold_index", "phase", "trial_index", "_order"])
+            .drop("_order")
+        )
+        if table.select(["fold_index", "phase", "trial_index", "metric_id"]).is_duplicated().any():
+            raise KernelValueError("trial_metrics has a duplicated primary key (D09 §11.2)")
+        _write_new_parquet(self._search_path(TRIAL_UNITS_TABLE), units)
+        _write_new_parquet(self._search_path(TRIAL_METRICS_TABLE), table)
+
+    # --- 試行台帳（D09 §10.10・§10.12）-------------------------------------------------
+
+    def _ledger_root(self) -> Path:
+        if self.repo_root is None:
+            raise KernelValueError(
+                "the trial ledger lives under the repository root; this store was built without"
+                " one (D09 §10.10)"
+            )
+        return Path(self.repo_root)
+
+    def read_trial_ledger(self) -> TrialLedgerContents | TrialLedgerReadFailure:
+        """試行台帳を読む（D09 §10.12.1・§10.12.2。ロックは取らない）。"""
+        return read_trial_ledger_file(self._ledger_root() / TRIAL_LEDGER_PATH)
+
+    def append_trial_ledger(
+        self, line: TrialLedgerLine
+    ) -> TrialLedgerLine | TrialLedgerAppendRefused:
+        """1行を台帳へ追記する（D09 §10.12.1 の操作の形）。"""
+        return append_trial_ledger_file(self._ledger_root(), line)
+
+    def read_ledger_bindings(
+        self, out_base: str
+    ) -> tuple[tuple[str, TrialLedgerBinding | TrialLedgerReadFailure], ...]:
+        """各実験の版の束縛の記録がある最も新しい世代の束縛の記録（D09 §10.12.2 の L11）。"""
+        return read_ledger_binding_records(Path(out_base))
+
+
+# --- 探索の実験の記録（D09 §10.2・§10.3・§10.6・§11.1〜§11.3。段階5 実装 PR 4）-----------------
+
+#: 探索の記録のディレクトリ（D09 §11.1）と、その中の名前。
+SEARCH_DIRECTORY = "search"
+UNITS_DIRECTORY = "units"
+LEDGER_BINDING_FILE = "ledger_execution.json"
+TRIAL_UNITS_TABLE = "trial_units.parquet"
+TRIAL_METRICS_TABLE = "trial_metrics.parquet"
+#: 「退避中」の印（D09 §11.3 の Q13。退避の途中にだけある）。
+RETREAT_MARKER_FILE = "retreat_in_progress.json"
+
+#: 単位の記録のファイル名の鍵の部分（D09 §11.1。先頭のゼロを許さない。照合は `fullmatch`）。
+UNIT_NAME = re.compile(r"f(0|[1-9][0-9]*)_(TRAIN|VALIDATION)_t(0|[1-9][0-9]*)")
+_SELECTION_NAME = re.compile(r"selection_f(0|[1-9][0-9]*)\.json")
+_KEPT_SEARCH = re.compile(r"search\.([1-9][0-9]*)")
+_START_SUFFIX = ".start.json"
+_RUN_SUFFIX = ".json"
+
+
+def unit_name(unit: TrialUnitKey) -> str:
+    """単位の鍵からファイル名の鍵の部分を作る（`f<k>_<局面>_t<i>`。D09 §11.1）。"""
+    return f"f{unit.fold_index}_{unit.phase.value}_t{unit.trial_index}"
+
+
+def unit_of_name(name: str) -> TrialUnitKey:
+    """ファイル名の鍵の部分から単位の鍵を読む。正規表現に完全一致しなければ構造エラー。"""
+    match = UNIT_NAME.fullmatch(name)
+    if match is None:
+        raise KernelValueError(
+            f"{name!r} is not a unit record name f<k>_<TRAIN|VALIDATION>_t<i> (D09 §11.1)"
+        )
+    return TrialUnitKey(
+        fold_index=int(match.group(1)),
+        phase=TrialPhase(match.group(2)),
+        trial_index=int(match.group(3)),
+    )
+
+
+def _canonical_json(value: object) -> Any:
+    """正規化エンコード（D02 §9.3）した JSON の値（保存はこの形で行い、読み戻しで照合する）。"""
+    return json.loads(encode(value))
+
+
+def _keys(payload: object, names: Sequence[str], label: str) -> Mapping[str, Any]:
+    """キーの集合がちょうど `names` の JSON オブジェクトであることを確かめる。"""
+    if not isinstance(payload, Mapping):
+        raise KernelValueError(f"{label} must be a JSON object")
+    if set(payload) != set(names):
+        raise KernelValueError(
+            f"{label} must have exactly the keys {sorted(names)}, got {sorted(payload)}"
+        )
+    return payload
+
+
+def _int_of(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise KernelValueError(f"{label} must be an int, got {value!r}")
+    return value
+
+
+def _str_of(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise KernelValueError(f"{label} must be a str, got {value!r}")
+    return value
+
+
+def _decimal_of(value: object, label: str) -> Decimal:
+    return decimal_from_str(_str_of(value, label))
+
+
+def _list_of(value: object, label: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise KernelValueError(f"{label} must be a JSON array")
+    return value
+
+
+def _cdigest_of(payload: object, label: str) -> ContentDigest:
+    item = _keys(payload, ("algorithm", "hex"), label)
+    return ContentDigest(
+        algorithm=_str_of(item["algorithm"], label), hex=_str_of(item["hex"], label)
+    )
+
+
+def _wrapped_digest(payload: object, label: str) -> ContentDigest:
+    """`{"digest": {...}}`（`CompiledStrategyRef` / `ConfigDigest` / `CodeDigest` の正規化形）。"""
+    return _cdigest_of(_keys(payload, ("digest",), label)["digest"], label)
+
+
+def _hex_id(value: object, label: str) -> ContentDigest:
+    """ID 型の正規化形（16進 64 文字。D02 §9.3: ID 型は `__str__`）。"""
+    return ContentDigest.sha256(_str_of(value, label))
+
+
+def _interval_c(payload: object, label: str) -> Interval:
+    item = _keys(payload, ("start", "end"), label)
+    return Interval(
+        start=UtcTime.parse(_str_of(item["start"], label)),
+        end=UtcTime.parse(_str_of(item["end"], label)),
+    )
+
+
+def _parameter_value_of(payload: object, label: str) -> ParameterValue:
+    item = _keys(payload, ("kind", "value"), label)
+    kind = item["kind"]
+    value = item["value"]
+    if kind == "INT":
+        return IntValue(_int_of(value, label))
+    if kind == "BOOL":
+        if not isinstance(value, bool):
+            raise KernelValueError(f"{label} must hold a bool")
+        return BoolValue(value)
+    if kind == "STR":
+        return StrValue(_str_of(value, label))
+    if kind == "FLOAT":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise KernelValueError(f"{label} must hold a number")
+        return FloatValue(float(value))
+    raise KernelValueError(f"{label} has an unknown parameter value kind {kind!r}")
+
+
+def _unit_key_of(payload: object, label: str) -> TrialUnitKey:
+    item = _keys(payload, ("fold_index", "phase", "trial_index"), label)
+    return TrialUnitKey(
+        fold_index=_int_of(item["fold_index"], label),
+        phase=TrialPhase(item["phase"]),
+        trial_index=_int_of(item["trial_index"], label),
+    )
+
+
+def _search_plan_of(payload: object) -> SearchPlan:
+    item = _keys(payload, ("kind", "axes", "max_trials"), "search_plan")
+    return SearchPlan(
+        kind=SearchPlanKind(item["kind"]),
+        axes=tuple(
+            ParameterAxis(
+                instance_id=_str_of(axis["instance_id"], "axis.instance_id"),
+                parameter=_str_of(axis["parameter"], "axis.parameter"),
+                values=tuple(
+                    _parameter_value_of(value, "axis.values")
+                    for value in _list_of(axis["values"], "axis.values")
+                ),
+            )
+            for axis in (
+                _keys(entry, ("instance_id", "parameter", "values"), "search_plan.axes")
+                for entry in _list_of(item["axes"], "search_plan.axes")
+            )
+        ),
+        max_trials=_int_of(item["max_trials"], "search_plan.max_trials"),
+    )
+
+
+def _fold_of(payload: object) -> Fold:
+    item = _keys(payload, ("fold_index", "train", "validation"), "fold")
+    return Fold(
+        fold_index=_int_of(item["fold_index"], "fold.fold_index"),
+        train=_interval_c(item["train"], "fold.train"),
+        validation=_interval_c(item["validation"], "fold.validation"),
+    )
+
+
+def _split_spec_of(payload: object) -> SplitSpec:
+    item = _keys(payload, ("kind", "folds", "purge_seconds"), "split")
+    return SplitSpec(
+        kind=SplitKind(item["kind"]),
+        folds=tuple(_fold_of(entry) for entry in _list_of(item["folds"], "split.folds")),
+        purge_seconds=_int_of(item["purge_seconds"], "split.purge_seconds"),
+    )
+
+
+def _metric_condition_of(payload: object) -> MetricCondition:
+    item = _keys(payload, ("metric", "comparator", "threshold"), "condition")
+    return MetricCondition(
+        metric=MetricId(item["metric"]),
+        comparator=Comparator(item["comparator"]),
+        threshold=_decimal_of(item["threshold"], "condition.threshold"),
+    )
+
+
+def _evaluation_standard_of(payload: object) -> EvaluationStandard:
+    item = _keys(
+        payload,
+        ("purpose", "split", "selection", "validation", "sufficiency"),
+        "evaluation_standard",
+    )
+    split = _keys(
+        item["split"],
+        (
+            "range",
+            "train_seconds",
+            "validation_seconds",
+            "window",
+            "purge_seconds",
+            "min_folds",
+        ),
+        "evaluation_standard.split",
+    )
+    selection = _keys(
+        item["selection"], ("metric", "direction", "eligibility"), "evaluation_standard.selection"
+    )
+    validation = _keys(
+        item["validation"], ("fold_floors", "aggregate"), "evaluation_standard.validation"
+    )
+    sufficiency = _keys(item["sufficiency"], ("classes",), "evaluation_standard.sufficiency")
+    return EvaluationStandard(
+        purpose=StandardPurpose(item["purpose"]),
+        split=SplitStandard(
+            range=_interval_c(split["range"], "split.range"),
+            train_seconds=_int_of(split["train_seconds"], "split.train_seconds"),
+            validation_seconds=_int_of(split["validation_seconds"], "split.validation_seconds"),
+            window=SplitWindow(split["window"]),
+            purge_seconds=_int_of(split["purge_seconds"], "split.purge_seconds"),
+            min_folds=_int_of(split["min_folds"], "split.min_folds"),
+        ),
+        selection=SelectionRule(
+            metric=MetricId(selection["metric"]),
+            direction=SelectionDirection(selection["direction"]),
+            eligibility=tuple(
+                _metric_condition_of(entry)
+                for entry in _list_of(selection["eligibility"], "eligibility")
+            ),
+        ),
+        validation=ValidationRule(
+            fold_floors=tuple(
+                _metric_condition_of(entry)
+                for entry in _list_of(validation["fold_floors"], "fold_floors")
+            ),
+            aggregate=tuple(
+                AggregateCondition(
+                    metric=MetricId(entry["metric"]),
+                    statistic=FoldStatistic(entry["statistic"]),
+                    comparator=Comparator(entry["comparator"]),
+                    threshold=_decimal_of(entry["threshold"], "aggregate.threshold"),
+                )
+                for entry in (
+                    _keys(raw, ("metric", "statistic", "comparator", "threshold"), "aggregate")
+                    for raw in _list_of(validation["aggregate"], "aggregate")
+                )
+            ),
+        ),
+        sufficiency=SufficiencyRule(
+            classes=tuple(
+                FrequencyClass(
+                    name=_str_of(entry["name"], "class.name"),
+                    min_train_trades_per_365d=_decimal_of(
+                        entry["min_train_trades_per_365d"], "class.min_train_trades_per_365d"
+                    ),
+                    min_validation_trades_per_fold=_int_of(
+                        entry["min_validation_trades_per_fold"],
+                        "class.min_validation_trades_per_fold",
+                    ),
+                    min_validation_trades_total=_int_of(
+                        entry["min_validation_trades_total"], "class.min_validation_trades_total"
+                    ),
+                )
+                for entry in (
+                    _keys(
+                        raw,
+                        (
+                            "name",
+                            "min_train_trades_per_365d",
+                            "min_validation_trades_per_fold",
+                            "min_validation_trades_total",
+                        ),
+                        "sufficiency.classes",
+                    )
+                    for raw in _list_of(sufficiency["classes"], "sufficiency.classes")
+                )
+            )
+        ),
+    )
+
+
+def _final_holdout_of(payload: object) -> FinalHoldoutSpec | None:
+    if payload is None:
+        return None
+    item = _keys(payload, ("interval", "purpose"), "final_holdout")
+    return FinalHoldoutSpec(
+        interval=_interval_c(item["interval"], "final_holdout.interval"),
+        purpose=_str_of(item["purpose"], "final_holdout.purpose"),
+    )
+
+
+def _trial_plan_of(payload: object) -> TrialPlan:
+    item = _keys(
+        payload,
+        (
+            "trial_index",
+            "assignment",
+            "compiled_ref",
+            "compile_rejections",
+            "expected_config_digests",
+        ),
+        "trial",
+    )
+    assignment = _keys(item["assignment"], ("values",), "trial.assignment")
+    values: list[tuple[str, str, ParameterValue]] = []
+    for entry in _list_of(assignment["values"], "trial.assignment.values"):
+        triple = _list_of(entry, "trial.assignment.values")
+        if len(triple) != 3:
+            raise KernelValueError("an assignment value is (instance_id, parameter, value)")
+        values.append(
+            (
+                _str_of(triple[0], "instance_id"),
+                _str_of(triple[1], "parameter"),
+                _parameter_value_of(triple[2], "assignment value"),
+            )
+        )
+    digests: list[tuple[TrialUnitKey, ConfigDigest]] = []
+    for entry in _list_of(item["expected_config_digests"], "trial.expected_config_digests"):
+        pair = _list_of(entry, "trial.expected_config_digests")
+        if len(pair) != 2:
+            raise KernelValueError("an expected config digest is (unit, digest)")
+        digests.append(
+            (
+                _unit_key_of(pair[0], "expected_config_digests.unit"),
+                ConfigDigest(_wrapped_digest(pair[1], "expected_config_digests.digest")),
+            )
+        )
+    compiled = item["compiled_ref"]
+    return TrialPlan(
+        trial_index=_int_of(item["trial_index"], "trial.trial_index"),
+        assignment=ParameterAssignment(values=tuple(values)),
+        compiled_ref=None
+        if compiled is None
+        else CompiledStrategyRef(_wrapped_digest(compiled, "trial.compiled_ref")),
+        compile_rejections=tuple(
+            _str_of(text, "compile_rejections")
+            for text in _list_of(item["compile_rejections"], "trial.compile_rejections")
+        ),
+        expected_config_digests=tuple(digests),
+    )
+
+
+def _exact[ValueT](raw: object, decoder: Callable[[Any], ValueT], label: str) -> ValueT:
+    """正規化形の値を型へ直し、型から作り直した正規化形が元と一致することを確かめる。
+
+    表し方の違う値（例: 同じ十進数の別の書き方）を同じ値として通さない。保存した記録票から
+    識別子を再計算したときに同じ値になることの保証でもある（D07 §19.2）。
+    """
+    typed = decoder(raw)
+    if encode(typed) != encode(raw):
+        raise KernelValueError(f"{label} is not in the canonical form it was saved in")
+    return typed
+
+
+def _fold_selection_of(payload: object) -> FoldSelection:
+    item = _keys(
+        payload,
+        (
+            "fold_index",
+            "selected_trial_index",
+            "selected_value",
+            "selected_train_trade_count",
+            "inputs",
+        ),
+        "selection",
+    )
+    inputs: list[tuple[int, ContentDigest | None, CandidateStatus]] = []
+    for entry in _list_of(item["inputs"], "selection.inputs"):
+        triple = _list_of(entry, "selection.inputs")
+        if len(triple) != 3:
+            raise KernelValueError("a selection input is (trial_index, digest, status)")
+        inputs.append(
+            (
+                _int_of(triple[0], "selection.inputs.trial_index"),
+                None if triple[1] is None else _cdigest_of(triple[1], "selection.inputs.digest"),
+                CandidateStatus(triple[2]),
+            )
+        )
+    value = item["selected_value"]
+    trial = item["selected_trial_index"]
+    count = item["selected_train_trade_count"]
+    return FoldSelection(
+        fold_index=_int_of(item["fold_index"], "selection.fold_index"),
+        selected_trial_index=None if trial is None else _int_of(trial, "selected_trial_index"),
+        selected_value=None if value is None else _decimal_of(value, "selected_value"),
+        selected_train_trade_count=None if count is None else _int_of(count, "trade count"),
+        inputs=tuple(inputs),
+    )
+
+
+def _condition_result_of(payload: object) -> ConditionResult:
+    item = _keys(
+        payload,
+        (
+            "scope",
+            "fold_index",
+            "metric",
+            "statistic",
+            "comparator",
+            "threshold",
+            "observed",
+            "outcome",
+            "unavailable_reason",
+        ),
+        "condition_result",
+    )
+    fold = item["fold_index"]
+    statistic = item["statistic"]
+    observed = item["observed"]
+    reason = item["unavailable_reason"]
+    return ConditionResult(
+        scope=ConditionScope(item["scope"]),
+        fold_index=None if fold is None else _int_of(fold, "condition_result.fold_index"),
+        metric=MetricId(item["metric"]),
+        statistic=None if statistic is None else FoldStatistic(statistic),
+        comparator=Comparator(item["comparator"]),
+        threshold=_decimal_of(item["threshold"], "condition_result.threshold"),
+        observed=None if observed is None else _decimal_of(observed, "condition_result.observed"),
+        outcome=ConditionOutcome(item["outcome"]),
+        unavailable_reason=None if reason is None else MetricUnavailableReason(reason),
+    )
+
+
+def _shortfall_of(payload: object) -> SufficiencyShortfall:
+    item = _keys(
+        payload,
+        ("kind", "fold_index", "trial_index", "metric", "reason", "required", "observed"),
+        "shortfall",
+    )
+
+    def optional_int(key: str) -> int | None:
+        value = item[key]
+        return None if value is None else _int_of(value, f"shortfall.{key}")
+
+    return SufficiencyShortfall(
+        kind=SufficiencyShortfallKind(item["kind"]),
+        fold_index=optional_int("fold_index"),
+        trial_index=optional_int("trial_index"),
+        metric=None if item["metric"] is None else MetricId(item["metric"]),
+        reason=None if item["reason"] is None else MetricUnavailableReason(item["reason"]),
+        required=optional_int("required"),
+        observed=optional_int("observed"),
+    )
+
+
+def _search_outcome_of(payload: object) -> SearchOutcome:
+    item = _keys(
+        payload,
+        (
+            "selections",
+            "fold_verdicts",
+            "verdict",
+            "frequency",
+            "condition_results",
+            "shortfalls",
+            "trial_counts",
+            "ledger_execution",
+            "purpose",
+        ),
+        "search",
+    )
+    verdicts: list[tuple[int, FoldVerdict]] = []
+    for entry in _list_of(item["fold_verdicts"], "search.fold_verdicts"):
+        pair = _list_of(entry, "search.fold_verdicts")
+        if len(pair) != 2:
+            raise KernelValueError("a fold verdict is (fold_index, verdict)")
+        verdicts.append((_int_of(pair[0], "fold_verdicts.fold_index"), FoldVerdict(pair[1])))
+    counts: list[tuple[TrialStatus, int]] = []
+    for entry in _list_of(item["trial_counts"], "search.trial_counts"):
+        pair = _list_of(entry, "search.trial_counts")
+        if len(pair) != 2:
+            raise KernelValueError("a trial count is (status, count)")
+        counts.append((TrialStatus(pair[0]), _int_of(pair[1], "trial_counts.count")))
+    frequency = item["frequency"]
+    if frequency is not None:
+        found = _keys(frequency, ("class_name", "train_trade_count", "train_seconds"), "frequency")
+        assessment: FrequencyAssessment | None = FrequencyAssessment(
+            class_name=_str_of(found["class_name"], "frequency.class_name"),
+            train_trade_count=_int_of(found["train_trade_count"], "frequency.train_trade_count"),
+            train_seconds=_int_of(found["train_seconds"], "frequency.train_seconds"),
+        )
+    else:
+        assessment = None
+    return SearchOutcome(
+        selections=tuple(
+            _fold_selection_of(entry) for entry in _list_of(item["selections"], "selections")
+        ),
+        fold_verdicts=tuple(verdicts),
+        verdict=SearchVerdict(item["verdict"]),
+        frequency=assessment,
+        condition_results=tuple(
+            _condition_result_of(entry)
+            for entry in _list_of(item["condition_results"], "condition_results")
+        ),
+        shortfalls=tuple(
+            _shortfall_of(entry) for entry in _list_of(item["shortfalls"], "shortfalls")
+        ),
+        trial_counts=tuple(counts),
+        ledger_execution=_int_of(item["ledger_execution"], "search.ledger_execution"),
+        purpose=StandardPurpose(item["purpose"]),
+    )
+
+
+def _policy_check_c(payload: object) -> PolicyCheckResult:
+    item = _keys(payload, ("check", "stage", "outcome", "expected", "observed"), "check")
+    return _policy_check_of(item)
+
+
+def _start_record_of(payload: object) -> TrialStartRecord:
+    item = _keys(payload, ("experiment_id", "unit", "expected_run_id"), "start record")
+    return TrialStartRecord(
+        experiment_id=ExperimentId(_hex_id(item["experiment_id"], "experiment_id")),
+        unit=_unit_key_of(item["unit"], "start record.unit"),
+        expected_run_id=RunId(_hex_id(item["expected_run_id"], "expected_run_id")),
+    )
+
+
+def _run_record_of(payload: object) -> TrialRunRecord:
+    item = _keys(
+        payload,
+        (
+            "experiment_id",
+            "unit",
+            "status",
+            "expected_run_id",
+            "run_id",
+            "run_status",
+            "run_reused",
+            "run_evaluation_id",
+            "evaluation_status",
+            "result_digest",
+            "outcome_checks",
+        ),
+        "trial record",
+    )
+    reused = item["run_reused"]
+    if not isinstance(reused, bool):
+        raise KernelValueError("trial record.run_reused must be a bool")
+    return TrialRunRecord(
+        experiment_id=ExperimentId(_hex_id(item["experiment_id"], "experiment_id")),
+        unit=_unit_key_of(item["unit"], "trial record.unit"),
+        status=TrialStatus(item["status"]),
+        expected_run_id=RunId(_hex_id(item["expected_run_id"], "expected_run_id")),
+        run_id=RunId(_hex_id(item["run_id"], "run_id")),
+        run_status=RunStatus(item["run_status"]),
+        run_reused=reused,
+        run_evaluation_id=_cdigest_of(item["run_evaluation_id"], "run_evaluation_id"),
+        evaluation_status=EvaluationStatus(item["evaluation_status"]),
+        result_digest=_cdigest_of(item["result_digest"], "result_digest"),
+        outcome_checks=tuple(
+            _policy_check_c(entry) for entry in _list_of(item["outcome_checks"], "outcome_checks")
+        ),
+    )
+
+
+def _binding_of(payload: object) -> TrialLedgerBinding:
+    item = _keys(
+        payload,
+        ("schema_version", "experiment_id", "execution", "started_line_digest"),
+        "ledger binding",
+    )
+    return TrialLedgerBinding(
+        schema_version=_int_of(item["schema_version"], "ledger binding.schema_version"),
+        experiment_id=ExperimentId(_hex_id(item["experiment_id"], "experiment_id")),
+        execution=_int_of(item["execution"], "ledger binding.execution"),
+        started_line_digest=_cdigest_of(item["started_line_digest"], "started_line_digest"),
+    )
+
+
+def _policy_ref_c(payload: object, label: str) -> PolicyRef:
+    item = _keys(payload, ("policy_kind", "policy_id", "version", "digest"), label)
+    return PolicyRef(
+        policy_kind=_str_of(item["policy_kind"], label),
+        policy_id=_str_of(item["policy_id"], label),
+        version=_int_of(item["version"], label),
+        digest=_cdigest_of(item["digest"], label),
+    )
+
+
+def _basis_of(payload: object) -> ComparisonBasis:
+    item = _keys(
+        payload,
+        (
+            "research_policy_ref",
+            "metric_set_version",
+            "snapshot_ref",
+            "strategy_ref",
+            "execution_series",
+            "seed",
+            "account",
+            "risk_policy_ref",
+            "execution_policy_ref",
+            "cost_model_ref",
+            "conversion_policy_ref",
+            "delay_scenario_ref",
+            "symbol_spec_ref",
+            "calendar_ref",
+            "timeframe_def_refs",
+            "code_digest",
+            "lock_digest",
+            "env_digest",
+        ),
+        "basis",
+    )
+    timeframe_refs = tuple(
+        TimeframeRef.parse(_str_of(text, "basis.timeframe_def_refs"))
+        for text in _list_of(item["timeframe_def_refs"], "basis.timeframe_def_refs")
+    )
+    strategy = _keys(item["strategy_ref"], ("strategy_id", "version", "digest"), "strategy_ref")
+    account = _keys(item["account"], ("account_id", "currency", "initial_balance"), "account")
+    balance = _keys(account["initial_balance"], ("amount", "currency"), "initial_balance")
+    symbol_spec = _keys(item["symbol_spec_ref"], ("symbol", "version", "digest"), "symbol_spec")
+    snapshot = _keys(item["snapshot_ref"], ("snapshot_id",), "snapshot_ref")
+    return ComparisonBasis(
+        research_policy_ref=_policy_ref_c(item["research_policy_ref"], "research_policy_ref"),
+        metric_set_version=_int_of(item["metric_set_version"], "basis.metric_set_version"),
+        snapshot_ref=SnapshotRef(snapshot_id=SnapshotId(_hex_id(snapshot["snapshot_id"], "id"))),
+        strategy_ref=StrategyRef(
+            strategy_id=_str_of(strategy["strategy_id"], "strategy_ref.strategy_id"),
+            version=_int_of(strategy["version"], "strategy_ref.version"),
+            digest=_cdigest_of(strategy["digest"], "strategy_ref.digest"),
+        ),
+        execution_series=_series_of(
+            _str_of(item["execution_series"], "basis.execution_series"),
+            {ref.id: ref for ref in timeframe_refs},
+        ),
+        seed=_int_of(item["seed"], "basis.seed"),
+        account=AccountSpec(
+            account_id=AccountId(_str_of(account["account_id"], "account.account_id")),
+            currency=CurrencyCode(_str_of(account["currency"], "account.currency")),
+            initial_balance=Money(
+                _decimal_of(balance["amount"], "initial_balance.amount"),
+                CurrencyCode(_str_of(balance["currency"], "initial_balance.currency")),
+            ),
+        ),
+        risk_policy_ref=_policy_ref_c(item["risk_policy_ref"], "risk_policy_ref"),
+        execution_policy_ref=_policy_ref_c(item["execution_policy_ref"], "execution_policy_ref"),
+        cost_model_ref=_policy_ref_c(item["cost_model_ref"], "cost_model_ref"),
+        conversion_policy_ref=_policy_ref_c(item["conversion_policy_ref"], "conversion_policy_ref"),
+        delay_scenario_ref=_policy_ref_c(item["delay_scenario_ref"], "delay_scenario_ref"),
+        symbol_spec_ref=SymbolSpecRef(
+            symbol=Symbol(_str_of(symbol_spec["symbol"], "symbol_spec_ref.symbol")),
+            version=_int_of(symbol_spec["version"], "symbol_spec_ref.version"),
+            digest=_cdigest_of(symbol_spec["digest"], "symbol_spec_ref.digest"),
+        ),
+        calendar_ref=_str_of(item["calendar_ref"], "basis.calendar_ref"),
+        timeframe_def_refs=timeframe_refs,
+        code_digest=CodeDigest(_wrapped_digest(item["code_digest"], "basis.code_digest")),
+        lock_digest=LockDigest(_wrapped_digest(item["lock_digest"], "basis.lock_digest")),
+        env_digest=EnvDigest(_wrapped_digest(item["env_digest"], "basis.env_digest")),
+    )
+
+
+def ledger_entry_of(payload: object) -> TrialLedgerEntry:
+    """台帳の行の `entry`（正規化形の JSON の値）を型に直す（D09 §10.12.2 の L4）。
+
+    未知のキー・欠けたキー・型の不一致・語彙外の値・`schema_version` が 1 でないものは
+    `KernelValueError`（`ValueError` 系）。行の種類ごとの形と判定と用途の組は見ない（L5・L10）。
+    """
+    item = _keys(payload, tuple(TrialLedgerEntry.__dataclass_fields__), "ledger entry")
+    status = item["status"]
+    verdict = item["verdict"]
+    frequency_class = item["frequency_class"]
+    return TrialLedgerEntry(
+        schema_version=_int_of(item["schema_version"], "entry.schema_version"),
+        event=TrialLedgerEvent(item["event"]),
+        experiment_id=ExperimentId(_hex_id(item["experiment_id"], "entry.experiment_id")),
+        execution=_int_of(item["execution"], "entry.execution"),
+        execution_nonce=_str_of(item["execution_nonce"], "entry.execution_nonce"),
+        experiment_name=_str_of(item["experiment_name"], "entry.experiment_name"),
+        experiment_version=_int_of(item["experiment_version"], "entry.experiment_version"),
+        strategy_id=_str_of(item["strategy_id"], "entry.strategy_id"),
+        basis=_basis_of(item["basis"]),
+        trial_count=_int_of(item["trial_count"], "entry.trial_count"),
+        search_plan_digest=_cdigest_of(item["search_plan_digest"], "entry.search_plan_digest"),
+        validation_intervals=tuple(
+            _interval_c(entry, "entry.validation_intervals")
+            for entry in _list_of(item["validation_intervals"], "entry.validation_intervals")
+        ),
+        final_holdout=_final_holdout_of(item["final_holdout"]),
+        purpose=StandardPurpose(item["purpose"]),
+        status=None if status is None else ExperimentStatus(status),
+        verdict=None if verdict is None else SearchVerdict(verdict),
+        frequency_class=None
+        if frequency_class is None
+        else _str_of(frequency_class, "entry.frequency_class"),
+    )
+
+
+def search_directory(directory: Path) -> Path:
+    """実験の版のディレクトリの探索の記録の置き場 `search/`（D09 §11.1）。"""
+    return Path(directory) / SEARCH_DIRECTORY
+
+
+def _search_manifest_items(manifest: ExperimentManifest) -> dict[str, Any]:
+    """探索の記録票に足す項目（D09 §10.2）を正規化形の JSON の値にする。"""
+    return {
+        "evaluation_standard": _canonical_json(manifest.evaluation_standard),
+        "final_holdout": _canonical_json(manifest.final_holdout),
+        "trials": [_canonical_json(trial) for trial in manifest.trials],
+    }
+
+
+def _search_manifest_values(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """探索の記録票の項目を型へ戻す（保存した正規化形と一致することも確かめる）。"""
+    return {
+        "search_plan": _exact(payload["search_plan"], _search_plan_of, "search_plan"),
+        "split": _exact(payload["split"], _split_spec_of, "split"),
+        "evaluation_standard": _exact(
+            payload["evaluation_standard"], _evaluation_standard_of, "evaluation_standard"
+        ),
+        "final_holdout": _exact(payload["final_holdout"], _final_holdout_of, "final_holdout"),
+        "trials": tuple(
+            _exact(item, _trial_plan_of, "trials") for item in _list_of(payload["trials"], "trials")
+        ),
+        "compiled_ref": None,
+        "expected_config_digest": None,
+    }
+
+
+def _write_new_json(path: Path, payload: Any, label: str) -> None:
+    """JSON を新しく書く（既にあれば何も書かずに `ArtifactAlreadyExists`。R4）。"""
+    try:
+        write_new_file(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    except FileExistsError:
+        raise ArtifactAlreadyExists(
+            f"{path} already exists; {label} is never overwritten, and nothing was written"
+            " (D09 §11.1, R4)"
+        ) from None
+
+
+def _read_json_value(path: Path, label: str) -> Any:
+    if path.is_symlink() or not path.is_file():
+        raise KernelValueError(f"{path} is not a readable {label} file")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise KernelValueError(f"{path} cannot be read as JSON: {exc}") from exc
+
+
+def _read_record[ValueT](path: Path, decoder: Callable[[Any], ValueT], label: str) -> ValueT:
+    payload = _read_json_value(path, label)
+    try:
+        return _exact(payload, decoder, label)
+    except _READ_ERRORS as exc:
+        raise KernelValueError(
+            f"{path} is not a valid {label}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def read_unit_records(
+    directory: Path,
+) -> tuple[dict[TrialUnitKey, TrialStartRecord], dict[TrialUnitKey, TrialRunRecord]]:
+    """実験の版のディレクトリの開始記録と試行記録を読む（D09 §10.3・§11.1）。
+
+    `search/units/` の名前は正規表現 `f<k>_<TRAIN|VALIDATION>_t<i>` に完全一致する鍵に
+    `.start.json` か `.json` を付けたものだけを読み、それ以外は構造エラーとする。ファイル名の鍵と
+    中身の単位の鍵が違うものも構造エラー。`search/units/` が無ければ両方とも空。
+    """
+    units = search_directory(directory) / UNITS_DIRECTORY
+    starts: dict[TrialUnitKey, TrialStartRecord] = {}
+    runs: dict[TrialUnitKey, TrialRunRecord] = {}
+    if not (units.exists() or units.is_symlink()):
+        return starts, runs
+    if units.is_symlink() or not units.is_dir():
+        raise KernelValueError(f"{units} is not a plain directory (D09 §11.1)")
+    for path in sorted(units.iterdir()):
+        name = path.name
+        if name.endswith(_START_SUFFIX):
+            unit = unit_of_name(name.removesuffix(_START_SUFFIX))
+            start = _read_record(path, _start_record_of, "start record")
+            if start.unit != unit:
+                raise KernelValueError(f"{path} holds the start record of {start.unit}")
+            starts[unit] = start
+        elif name.endswith(_RUN_SUFFIX):
+            unit = unit_of_name(name.removesuffix(_RUN_SUFFIX))
+            record = _read_record(path, _run_record_of, "trial record")
+            if record.unit != unit:
+                raise KernelValueError(f"{path} holds the trial record of {record.unit}")
+            runs[unit] = record
+        else:
+            raise KernelValueError(f"{path} is not a unit record file (D09 §11.1)")
+    return starts, runs
+
+
+def read_selections(directory: Path) -> dict[int, FoldSelection]:
+    """実験の版のディレクトリの選定記録を fold の番号で読む（D09 §7.5・§11.1）。"""
+    search = search_directory(directory)
+    found: dict[int, FoldSelection] = {}
+    if not search.is_dir() or search.is_symlink():
+        return found
+    for path in sorted(search.iterdir()):
+        match = _SELECTION_NAME.fullmatch(path.name)
+        if match is None:
+            continue
+        selection = _read_record(path, _fold_selection_of, "selection record")
+        if selection.fold_index != int(match.group(1)):
+            raise KernelValueError(f"{path} holds the selection of fold {selection.fold_index}")
+        found[selection.fold_index] = selection
+    return found
+
+
+def read_ledger_binding(directory: Path) -> TrialLedgerBinding | None:
+    """今の世代の束縛の記録 `search/ledger_execution.json` を読む（無ければ `None`）。"""
+    path = search_directory(directory) / LEDGER_BINDING_FILE
+    if not (path.exists() or path.is_symlink()):
+        return None
+    return _read_record(path, _binding_of, "ledger binding")
+
+
+# --- 集約表（D09 §11.2）------------------------------------------------------------
+
+#: `trial_units` の列と型（D09 §11.2。宣言に従い、推論しない。十進数は無い）。
+_TRIAL_UNITS_SCHEMA: Mapping[str, pl.DataType] = {
+    "fold_index": pl.Int64(),
+    "phase": pl.String(),
+    "trial_index": pl.Int64(),
+    "assignment": pl.String(),
+    "compiled_ref": pl.String(),
+    "status": pl.String(),
+    "run_id": pl.String(),
+    "run_status": pl.String(),
+    "run_reused": pl.Boolean(),
+    "run_evaluation_id": pl.String(),
+    "evaluation_status": pl.String(),
+    "candidate_status": pl.String(),
+    "selected": pl.Boolean(),
+}
+
+#: `trial_metrics` の鍵の列（指標の列は評価の `METRICS` 表の列をそのまま写す。D07 §8.1）。
+_TRIAL_METRICS_KEYS: Mapping[str, pl.DataType] = {
+    "fold_index": pl.Int64(),
+    "phase": pl.String(),
+    "trial_index": pl.Int64(),
+}
+
+
+def _metrics_schema() -> dict[str, pl.DataType]:
+    kinds = column_kinds(MetricRecord)
+    return {
+        **_TRIAL_METRICS_KEYS,
+        **{name: _dtype_of(kinds.get(name, "string")) for name in column_names(MetricRecord)},
+    }
+
+
+def _write_new_parquet(path: Path, frame: pl.DataFrame) -> None:
+    """Parquet を新しく書く（一時ファイル＋上書きしない改名。既にあれば失敗。R4）。"""
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(handle)
+    try:
+        frame.write_parquet(temporary)
+        with open(temporary, "rb") as stream:
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise ArtifactAlreadyExists(
+                f"{path} already exists; aggregate tables are never overwritten, and nothing was"
+                " written (D09 §11.2, R4)"
+            ) from None
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+_METRIC_ORDER: Mapping[str, int] = {metric.value: index for index, metric in enumerate(MetricId)}
+
+
+#: `METRICS` 表の値の列（区分ごとに1列。D06 §9.1 の規則2 で値の無い列は `None`）。
+_METRIC_VALUE_COLUMNS: Mapping[MetricKind, str] = {
+    MetricKind.AMOUNT: "value_amount_amount",
+    MetricKind.RATIO: "value_ratio",
+    MetricKind.COUNT: "value_count",
+    MetricKind.DURATION: "value_duration",
+    MetricKind.PRICE_OFFSET: "value_offset",
+}
+
+
+def _metric_record_of(row: Mapping[str, object]) -> MetricRecord:
+    """`METRICS` 表の1行を `MetricRecord` へ戻す（D07 §8.1・§8.2 の平坦化の逆）。
+
+    区分に合わない列に値がある・値の列と値なしの理由が両方ある（または両方無い）行は、
+    読み替えずに拒否する。
+    """
+    metric = MetricId(_str_of(row["metric_id"], "metric_id"))
+    kind = MetricKind(_str_of(row["value_kind"], "value_kind"))
+    reason = row["value_reason"]
+    present = {
+        column: row[column]
+        for column in (*_METRIC_VALUE_COLUMNS.values(), "value_amount_currency")
+        if row[column] is not None
+    }
+    value: MetricValue
+    if reason is not None:
+        if present:
+            raise KernelValueError(
+                f"{metric.value}: an unavailable value has value columns {present}"
+            )
+        value = Unavailable(
+            kind=kind, reason=MetricUnavailableReason(_str_of(reason, "value_reason"))
+        )
+    else:
+        allowed = {_METRIC_VALUE_COLUMNS[kind]}
+        if kind is MetricKind.AMOUNT:
+            allowed.add("value_amount_currency")
+        if set(present) != allowed:
+            raise KernelValueError(
+                f"{metric.value}: a {kind.value} value must fill exactly {sorted(allowed)},"
+                f" got {sorted(present)}"
+            )
+        column = _METRIC_VALUE_COLUMNS[kind]
+        if kind is MetricKind.AMOUNT:
+            value = AmountValue(
+                amount=Money(
+                    _decimal_of(row[column], column),
+                    CurrencyCode(_str_of(row["value_amount_currency"], "value_amount_currency")),
+                )
+            )
+        elif kind is MetricKind.RATIO:
+            value = RatioValue(ratio=_decimal_of(row[column], column))
+        elif kind is MetricKind.COUNT:
+            value = CountValue(count=_int_of(row[column], column))
+        elif kind is MetricKind.DURATION:
+            seconds = _decimal_of(row[column], column)
+            value = DurationValue(duration=timedelta(microseconds=int(seconds * 1_000_000)))
+        else:
+            value = PriceOffsetValue(offset=PriceOffset(_decimal_of(row[column], column)))
+    return MetricRecord(
+        metric_id=metric,
+        value=value,
+        caveats=tuple(
+            MetricCaveat(_str_of(item, "caveats")) for item in _list_of(row["caveats"], "caveats")
+        ),
+        observation_count=_int_of(row["observation_count"], "observation_count"),
+        inputs=tuple(
+            TraceTable(_str_of(item, "inputs")) for item in _list_of(row["inputs"], "inputs")
+        ),
+    )
+
+
+def trial_units_rows(
+    manifest: ExperimentManifest,
+    selections: Sequence[FoldSelection],
+    records: Sequence[TrialRunRecord],
+) -> list[dict[str, object]]:
+    """`trial_units` の行（D09 §11.2）。失敗の試行は選定区間の fold ごとに1行、検証区間は選んだ
+    試行の分だけ。主キー `(fold_index, phase, trial_index)` の順。重複は構造エラー。"""
+    by_unit = {record.unit: record for record in records}
+    if len(by_unit) != len(records):
+        raise KernelValueError("two trial records share a unit (D09 §11.2: 主キーの重複)")
+    plans = {trial.trial_index: trial for trial in manifest.trials}
+    rows: list[dict[str, object]] = []
+    for selection in sorted(selections, key=lambda item: item.fold_index):
+        status_of = {entry[0]: entry[2] for entry in selection.inputs}
+        units = [
+            TrialUnitKey(fold_index=selection.fold_index, phase=TrialPhase.TRAIN, trial_index=index)
+            for index in sorted(plans)
+        ]
+        if selection.selected_trial_index is not None:
+            units.append(
+                TrialUnitKey(
+                    fold_index=selection.fold_index,
+                    phase=TrialPhase.VALIDATION,
+                    trial_index=selection.selected_trial_index,
+                )
+            )
+        for unit in units:
+            plan = plans[unit.trial_index]
+            record = by_unit.get(unit)
+            if plan.compiled and record is None:
+                raise KernelValueError(
+                    f"the unit {unit_name(unit)} has no trial record; the aggregate tables are"
+                    " written only when the search has finished (D09 §11.2)"
+                )
+            rows.append(
+                {
+                    "fold_index": unit.fold_index,
+                    "phase": unit.phase.value,
+                    "trial_index": unit.trial_index,
+                    "assignment": encode(plan.assignment).decode("utf-8"),
+                    "compiled_ref": None
+                    if plan.compiled_ref is None
+                    else plan.compiled_ref.digest.hex,
+                    "status": (
+                        TrialStatus.COMPLETED if record is not None else TrialStatus.FAILED
+                    ).value,
+                    "run_id": None if record is None else record.run_id.hex,
+                    "run_status": None if record is None else record.run_status.value,
+                    "run_reused": None if record is None else record.run_reused,
+                    "run_evaluation_id": None if record is None else record.run_evaluation_id.hex,
+                    "evaluation_status": None if record is None else record.evaluation_status.value,
+                    "candidate_status": status_of[unit.trial_index].value
+                    if unit.phase is TrialPhase.TRAIN
+                    else None,
+                    "selected": unit.trial_index == selection.selected_trial_index,
+                }
+            )
+    leftover = set(by_unit) - {
+        TrialUnitKey(
+            fold_index=row["fold_index"],  # type: ignore[arg-type]
+            phase=TrialPhase(row["phase"]),
+            trial_index=row["trial_index"],  # type: ignore[arg-type]
+        )
+        for row in rows
+    }
+    if leftover:
+        raise KernelValueError(
+            f"trial records {sorted(unit_name(unit) for unit in leftover)} belong to no unit of"
+            " the selections (D09 §10.4)"
+        )
+    return rows
+
+
+# --- 試行台帳（D09 §10.10・§10.12）----------------------------------------------------
+
+#: 台帳とロックの置き場（リポジトリの根からの相対パス。D01 §10.4、D09 §10.10・§10.12.1）。
+TRIAL_LEDGER_PATH = Path("research") / "trial_ledger.jsonl"
+TRIAL_LEDGER_LOCK_PATH = Path("research") / "trial_ledger.lock"
+
+
+def ledger_line_bytes(line: TrialLedgerLine) -> bytes:
+    """台帳の1行の符号化（D09 §10.12.6）: `{digest, entry, prev}` の正規化エンコード＋改行1つ。"""
+    return (
+        encode(
+            {
+                "digest": line.digest.hex,
+                "entry": line.entry,
+                "prev": None if line.prev is None else line.prev.hex,
+            }
+        )
+        + b"\n"
+    )
+
+
+def _line_failure(
+    kind: TrialLedgerDefect, number: int | None, detail: str
+) -> TrialLedgerReadFailure:
+    return TrialLedgerReadFailure(kind=kind, line_number=number, detail=detail)
+
+
+def _raw_line(data: bytes) -> tuple[Mapping[str, Any], ContentDigest, ContentDigest | None] | str:
+    """改行で終わる1行に L2 を当てる。合格なら `(包み, digest, prev)`、不合格なら理由。"""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return f"the line is not UTF-8 JSON: {exc}"
+    if not isinstance(payload, dict) or set(payload) != {"digest", "entry", "prev"}:
+        return "the line is not an object with exactly digest / entry / prev"
+    try:
+        if encode(payload) != data:
+            return "the line is not in the canonical encoding (D09 §10.12.6)"
+        recorded = ContentDigest.sha256(_str_of(payload["digest"], "digest"))
+        prev = payload["prev"]
+        previous = None if prev is None else ContentDigest.sha256(_str_of(prev, "prev"))
+        computed = digest({"entry": payload["entry"], "prev": prev})
+    except _READ_ERRORS as exc:
+        return f"the line cannot be checked: {type(exc).__name__}: {exc}"
+    if computed != recorded:
+        return f"digest {recorded.hex} does not match {{entry, prev}} ({computed.hex})"
+    return payload, recorded, previous
+
+
+def read_trial_ledger_file(path: Path) -> TrialLedgerContents | TrialLedgerReadFailure:
+    """台帳のファイルを読み、読込の検査 L0〜L10 を当てる（D09 §10.12.2）。
+
+    ファイルの先頭から行の順に当て、最初に当たった食い違いを1件返す。最後の改行より後の、改行で
+    終わらない断片は書きかけ（L1）として行に入れず `torn_tail = true` にする（失敗にしない）。
+    """
+    if not (path.exists() or path.is_symlink()):
+        return _line_failure(
+            TrialLedgerDefect.FILE_MISSING,
+            None,
+            f"{TRIAL_LEDGER_PATH} does not exist; it is placed (empty) under version control and"
+            " is never created by an append. Restore it from the history (D09 §10.12.2 の L0)",
+        )
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return _line_failure(
+            TrialLedgerDefect.FILE_UNREADABLE,
+            None,
+            f"{TRIAL_LEDGER_PATH} cannot be read: {type(exc).__name__}: {exc.strerror}",
+        )
+    parts = data.split(b"\n")
+    complete, fragment = parts[:-1], parts[-1]
+    lines: list[TrialLedgerLine] = []
+    stopped: TrialLedgerReadFailure | None = None
+    previous: ContentDigest | None = None
+    for number, raw in enumerate(complete, start=1):
+        checked = _raw_line(raw)
+        if isinstance(checked, str):
+            stopped = _line_failure(TrialLedgerDefect.LINE_CORRUPT, number, checked)
+            break
+        payload, recorded, prev = checked
+        try:
+            entry = _exact(payload["entry"], ledger_entry_of, "the ledger entry")
+            line = TrialLedgerLine(entry=entry, prev=prev, digest=recorded)
+        except _READ_ERRORS as exc:
+            if prev != previous:
+                # 同じ行では検査の番号の順に当てる（L3 は L4 より先）。
+                stopped = _line_failure(
+                    TrialLedgerDefect.CHAIN_BROKEN,
+                    number,
+                    "prev does not equal the digest of the line before",
+                )
+            else:
+                stopped = _line_failure(
+                    TrialLedgerDefect.ENTRY_INVALID, number, f"{type(exc).__name__}: {exc}"
+                )
+            break
+        lines.append(line)
+        previous = recorded
+    found = ledger_defect(lines)
+    if found is not None:
+        kind, number, detail = found
+        return _line_failure(kind, number, detail)
+    if stopped is not None:
+        return stopped
+    return TrialLedgerContents(lines=tuple(lines), torn_tail=bool(fragment))
+
+
+def _lock_text() -> str:
+    """ロックの中身（人間が読むためのもの。ツールはこれを見て判断しない。D09 §10.12.1 の W1）。"""
+    return (
+        json.dumps(
+            {
+                "created_at": datetime.now(UTC).isoformat(),
+                "host": socket.gethostname(),
+                "pid": os.getpid(),
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+
+
+def _append_bytes(path: Path, keep: int, data: bytes) -> None:
+    """末尾の書きかけを切り詰め（`keep` バイトまで戻す）、行全体を1回で書いて同期する。
+
+    書き込みか同期に失敗すれば `OSError`（呼び出し側が `WRITE_FAILED` にする）。
+    """
+    descriptor = os.open(path, os.O_WRONLY)
+    try:
+        os.ftruncate(descriptor, keep)
+        os.lseek(descriptor, 0, os.SEEK_END)
+        written = os.write(descriptor, data)
+        if written != len(data):
+            raise OSError(f"only {written} of {len(data)} bytes were written")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def append_trial_ledger_file(
+    root: Path, line: TrialLedgerLine
+) -> TrialLedgerLine | TrialLedgerAppendRefused:
+    """1行を台帳へ追記する（D09 §10.12.1 の操作の形の (1)〜(6)）。
+
+    (1) 台帳が無ければロックも作らずに `READ_FAILED`。あればロックを排他的に作る（できなければ
+    `LOCKED`）。(2) ロックの下で読み直して検査し、(3) 最後の完全な行の `digest` と `line.prev` を
+    照合し（違えば `TAIL_CHANGED`）、(4) 末尾の書きかけを切り詰め、(5) 行を1回で書いて同期し、
+    (6) ロックを消す。断るとき（(1) を除く）もロックを消してから返す。
+    """
+    if line.digest != ledger_line_digest(line.entry, line.prev):
+        raise KernelValueError("the line digest does not match {entry, prev} (D09 §10.12.1)")
+    path = Path(root) / TRIAL_LEDGER_PATH
+    lock = Path(root) / TRIAL_LEDGER_LOCK_PATH
+    if not (path.exists() or path.is_symlink()):
+        failure = read_trial_ledger_file(path)
+        assert isinstance(failure, TrialLedgerReadFailure)  # noqa: S101  無いので必ず読めない
+        return TrialLedgerAppendRefused(
+            kind=TrialLedgerRefusal.READ_FAILED, read_failure=failure, detail=failure.detail
+        )
+    try:
+        write_new_file(lock, _lock_text())
+    except FileExistsError:
+        return TrialLedgerAppendRefused(
+            kind=TrialLedgerRefusal.LOCKED,
+            read_failure=None,
+            detail=(
+                f"{TRIAL_LEDGER_LOCK_PATH} exists: another append is running, or a stopped"
+                " writer left it. It is never removed automatically; make sure no writer is"
+                " running, then delete it (D09 §10.12.1 の W1)"
+            ),
+        )
+    try:
+        contents = read_trial_ledger_file(path)
+        if isinstance(contents, TrialLedgerReadFailure):
+            return TrialLedgerAppendRefused(
+                kind=TrialLedgerRefusal.READ_FAILED, read_failure=contents, detail=contents.detail
+            )
+        tail = last_digest(contents.lines)
+        if tail != line.prev:
+            return TrialLedgerAppendRefused(
+                kind=TrialLedgerRefusal.TAIL_CHANGED,
+                read_failure=None,
+                detail=(
+                    "the last line of the ledger changed after it was read (its digest is"
+                    f" {None if tail is None else tail.hex}); nothing was written"
+                ),
+            )
+        keep = len(path.read_bytes())
+        if contents.torn_tail:
+            keep = path.read_bytes().rfind(b"\n") + 1
+        try:
+            _append_bytes(path, keep, ledger_line_bytes(line))
+        except OSError as exc:
+            return TrialLedgerAppendRefused(
+                kind=TrialLedgerRefusal.WRITE_FAILED,
+                read_failure=None,
+                detail=(
+                    f"writing or syncing the line failed: {exc}. If the line was written in full"
+                    " it is a valid line on the next read (D09 §10.12.1 の W3)"
+                ),
+            )
+        return line
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _latest_binding_file(version: Path) -> Path | None:
+    """束縛の記録がある最も新しい世代の束縛の記録（D09 §10.12.2 の L11。Q39）。"""
+    current = version / SEARCH_DIRECTORY / LEDGER_BINDING_FILE
+    if current.exists() or current.is_symlink():
+        return current
+    kept: list[tuple[int, Path]] = []
+    for entry in version.iterdir():
+        match = _KEPT_SEARCH.fullmatch(entry.name)
+        if match is None:
+            continue
+        candidate = entry / LEDGER_BINDING_FILE
+        if candidate.exists() or candidate.is_symlink():
+            kept.append((int(match.group(1)), candidate))
+    return max(kept)[1] if kept else None
+
+
+def read_ledger_binding_records(
+    out_base: Path,
+) -> tuple[tuple[str, TrialLedgerBinding | TrialLedgerReadFailure], ...]:
+    """成果物の基点の下の各実験の版の、束縛の記録がある最も新しい世代の束縛の記録を集める。
+
+    `<基点>/runs/experiments/*/v*/` の各版について1つずつ、基点からの相対パス（POSIX の区切り）の
+    辞書順に `(パス, 中身か読めない理由)` で返す（D09 §10.12.1・§10.12.2 の L11。Q38・Q39）。
+    """
+    base = Path(out_base)
+    experiments = base / "runs" / "experiments"
+    found: list[tuple[str, TrialLedgerBinding | TrialLedgerReadFailure]] = []
+    if not experiments.is_dir():
+        return ()
+    for name in sorted(experiments.iterdir()):
+        if not name.is_dir():
+            continue
+        for version in sorted(name.iterdir()):
+            if not version.is_dir() or not re.fullmatch(r"v[1-9][0-9]*", version.name):
+                continue
+            path = _latest_binding_file(version)
+            if path is None:
+                continue
+            relative = path.relative_to(base).as_posix()
+            try:
+                found.append((relative, _read_record(path, _binding_of, "ledger binding")))
+            except KernelValueError as exc:
+                found.append(
+                    (
+                        relative,
+                        _line_failure(
+                            TrialLedgerDefect.UNMATCHED_BINDING,
+                            None,
+                            f"{relative} cannot be read: {exc}",
+                        ),
+                    )
+                )
+    return tuple(sorted(found, key=lambda item: item[0]))
+
+
+# --- 同じ版の再実行の退避（D09 §11.3 の Q13）--------------------------------------------
+
+
+def _move_directory(current: Path, target: Path) -> None:
+    """`current` を `target` へ移す。移し先が既にあれば何もせずに失敗する（R4）。"""
+    if current.is_symlink() or not current.is_dir():
+        raise ArtifactAlreadyExists(
+            f"{current} is not a plain directory; it was left as is and nothing ran (D09 §11.3)"
+        )
+    if target.exists() or target.is_symlink():
+        raise ArtifactAlreadyExists(
+            f"{target} already exists; kept records are never overwritten (D09 §11.3, R4)"
+        )
+    current.rename(target)
+
+
+def _retreat_pairs(directory: Path, number: int) -> tuple[tuple[Path, Path], ...]:
+    return (
+        (directory / EXPERIMENT_OUTCOME_FILE, directory / f"experiment_outcome.{number}.json"),
+        (directory / REPORT_FILE, directory / f"report.{number}.md"),
+        (directory / SEARCH_DIRECTORY, directory / f"search.{number}"),
+    )
+
+
+def _move_generation(directory: Path, number: int) -> None:
+    for current, target in _retreat_pairs(directory, number):
+        if not _present(current):
+            continue
+        if current.name == SEARCH_DIRECTORY:
+            _move_directory(current, target)
+        else:
+            _keep_file(current, target)
+
+
+def _read_marker(marker: Path) -> int:
+    payload = _read_json_value(marker, "retreat marker")
+    try:
+        item = _keys(payload, ("schema_version", "n"), "retreat marker")
+        if _int_of(item["schema_version"], "schema_version") != 1:
+            raise KernelValueError("the retreat marker must have schema_version 1")
+        number = _int_of(item["n"], "n")
+    except _READ_ERRORS as exc:
+        raise KernelValueError(
+            f"{marker} cannot be read ({exc}); nothing was moved and it is kept. Inspect the"
+            " directory by hand (D09 §11.3 の5)"
+        ) from exc
+    if number < 1:
+        raise KernelValueError(f"{marker} has n {number}; nothing was moved (D09 §11.3 の5)")
+    return number
+
+
+def keep_previous_search_records(directory: Path) -> None:
+    """探索の実験の同じ版の再実行の退避（D09 §11.3 の Q13 の1〜5）。記録票の保存の直後に呼ぶ。
+
+    「退避中」の印があれば印の `n` で前回の退避を回復し（元の場所にあるものだけを移す。元の場所と
+    退避先の両方にあれば何も動かさず印も残して止める）、印を消す。そのうえで旧い結末記録・
+    レポート・探索の記録があれば、連番 `n` を決めて印を書き、3つを移してから印を消す。
+    """
+    directory = Path(directory)
+    marker = directory / RETREAT_MARKER_FILE
+    if _present(marker):
+        number = _read_marker(marker)
+        both = [
+            current.name
+            for current, target in _retreat_pairs(directory, number)
+            if _present(current) and _present(target)
+        ]
+        if both:
+            raise ArtifactAlreadyExists(
+                f"recovering the retreat {number} found {both} both in place and kept; nothing was"
+                f" moved and {RETREAT_MARKER_FILE} is kept. Compare them, delete the unneeded"
+                " side, and re-run without deleting the marker (D09 §11.3 の5)"
+            )
+        _move_generation(directory, number)
+        marker.unlink()
+    present = [current for current, _ in _retreat_pairs(directory, 0) if _present(current)]
+    if not present:
+        return
+    number = next_kept_number(directory)
+    try:
+        write_new_file(marker, json.dumps({"schema_version": 1, "n": number}) + "\n")
+    except FileExistsError:  # pragma: no cover - 直前に無いことを確かめた
+        raise ArtifactAlreadyExists(f"{marker} appeared while retreating (D09 §11.3)") from None
+    _move_generation(directory, number)
+    marker.unlink()
 
 
 # --- 別プロセスでの再現の報告（D07 §21.2）------------------------------------------

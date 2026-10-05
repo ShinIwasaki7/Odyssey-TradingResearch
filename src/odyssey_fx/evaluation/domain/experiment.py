@@ -53,6 +53,7 @@ from odyssey_fx.evaluation.domain.research_policy import (
 )
 from odyssey_fx.evaluation.domain.search import (
     EvaluationStandard,
+    SearchOutcome,
     SearchPlan,
     SearchPlanKind,
     TrialPlan,
@@ -481,11 +482,17 @@ class ExperimentOutcome:
     行われた場合だけ値を持つ。`outcome_checks` は保存時の検査 P3 と事後の検査 P4・P5 の全件
     （事前検査で止まった場合は P3 だけ）。`failed_checks` は `COMPLETED` でないときに合格で
     なかった研究ポリシーの検査（宣言順）で、`COMPLETED` なら空。
+
+    **探索の実験の結末記録**（D09 §10.6、D07 §19.3 v2.7）は `expected_run_id` が `None` で、単数の
+    run・評価の項目も終端の状態によらず `None`（単位ごとの値は試行記録と集約表にある）。
+    `outcome_checks` は保存時の検査 P3 の1件だけ（P4・P5 は単位ごとに試行記録に置く）。`search`
+    は `REJECTED_BY_POLICY` なら `None`、それ以外は `SearchOutcome`。`FAILED_POST_RUN_CHECK` の
+    `failed_checks` には、どれか1つの単位で合格でなかった P4・P5 が検査名で入る。
     """
 
     experiment_id: ExperimentId
     status: ExperimentStatus
-    expected_run_id: RunId
+    expected_run_id: RunId | None
     code_digest: CodeDigest
     lock_digest: LockDigest
     env_digest: EnvDigest
@@ -499,14 +506,15 @@ class ExperimentOutcome:
     result_digest: ContentDigest | None
     outcome_checks: tuple[PolicyCheckResult, ...]
     failed_checks: tuple[PolicyCheck, ...]
+    search: SearchOutcome | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.experiment_id, ExperimentId):
             raise KernelValueError("ExperimentOutcome.experiment_id must be an ExperimentId")
         if not isinstance(self.status, ExperimentStatus):
             raise KernelValueError("ExperimentOutcome.status must be an ExperimentStatus")
-        if not isinstance(self.expected_run_id, RunId):
-            raise KernelValueError("ExperimentOutcome.expected_run_id must be a RunId")
+        if self.expected_run_id is not None and not isinstance(self.expected_run_id, RunId):
+            raise KernelValueError("ExperimentOutcome.expected_run_id must be a RunId or None")
         for label, expected in (
             ("code_digest", CodeDigest),
             ("lock_digest", LockDigest),
@@ -531,10 +539,16 @@ class ExperimentOutcome:
             raise KernelValueError("an evaluation needs a run (D07 §19.4)")
         if not isinstance(self.status, ExperimentStatus):  # pragma: no cover - 上で検査済み
             raise KernelValueError("ExperimentOutcome.status must be an ExperimentStatus")
+        if self.is_search:
+            self._check_search()
+        elif self.search is not None:
+            raise KernelValueError(
+                "a single-run outcome has no search part (D07 §19.3: search は探索の実験だけ)"
+            )
         _require_checks(
             self.outcome_checks,
             _REJECTED_OUTCOME_CHECKS
-            if self.status is ExperimentStatus.REJECTED_BY_POLICY
+            if self.status is ExperimentStatus.REJECTED_BY_POLICY or self.is_search
             else _RUN_OUTCOME_CHECKS,
             "ExperimentOutcome.outcome_checks",
         )
@@ -550,10 +564,46 @@ class ExperimentOutcome:
         if self.status is ExperimentStatus.REJECTED_BY_POLICY and self.run_id is not None:
             raise KernelValueError("an experiment rejected by the policy does not run (D07 §19.4)")
         if (
-            self.status is not ExperimentStatus.REJECTED_BY_POLICY
+            not self.is_search
+            and self.status is not ExperimentStatus.REJECTED_BY_POLICY
             and self.run_evaluation_id is None
         ):
             raise KernelValueError(
                 "an experiment that passed the pre-run checks has a run and an evaluation"
                 " (D07 §19.4)"
+            )
+
+    @property
+    def is_search(self) -> bool:
+        """探索の実験の結末記録か（単数の予測 `RunId` を持たない。D09 §10.6）。"""
+        return self.expected_run_id is None
+
+    def _check_search(self) -> None:
+        """探索の実験の結末記録の形（D09 §10.6 の表、D07 §19.3 v2.7）。"""
+        single = (
+            self.run_id,
+            self.run_status,
+            self.run_reused,
+            self.run_evaluation_id,
+            self.evaluation_status,
+            self.result_digest,
+        )
+        if any(item is not None for item in single):
+            raise KernelValueError(
+                "a search outcome leaves the single run / evaluation items None; the per-unit"
+                " values are in the trial records (D09 §10.6)"
+            )
+        if self.status is ExperimentStatus.REJECTED_BY_POLICY:
+            if self.search is not None:
+                raise KernelValueError(
+                    "a search rejected by the pre-run checks has no search part (D09 §10.6)"
+                )
+        elif not isinstance(self.search, SearchOutcome):
+            raise KernelValueError("a search that ran carries its SearchOutcome (D09 §10.6)")
+        if self.status is ExperimentStatus.FAILED_POST_RUN_CHECK and not set(
+            self.failed_checks
+        ) <= {PolicyCheck.RUN_MATCHES_PREREGISTRATION, PolicyCheck.EVALUATION_RULE_MATCHES}:
+            raise KernelValueError(
+                "the failed checks of a search that failed a post-run check are the unit checks"
+                " P4・P5 (D09 §10.6)"
             )

@@ -24,7 +24,12 @@
 保存する前に、記録票が予測ダイジェストを持つ**すべての単位**（コンパイルが通った全試行の
 選定区間と検証区間の単位。選ばれるかどうかによらない）の予測 `RunId` について既存の成果物を
 確かめる（`check_search_artifacts`。読むだけ。D09 §10.5 の注記・§10.7 の「検査済み」の行）。
-探索の実行（fold のループと記録）は後続の実装 PR が足す。
+
+**探索の実験の実行**（D09 §4.1・§10.7 の表・§10.12。実装 PR 4。`execute_search`）: 記録票の保存
+（同じ版の再実行の退避を含む）→ 試行台帳の開始の行（採番と成果物からの逆照合 L11）→ 束縛の記録 →
+fold ごとに選定区間の単位 → 選定記録 → 検証区間の単位 → 全 fold の後に判定 → 集約表 → 結末記録 →
+台帳の結末の行、の順に進める。**台帳に開始の行を書くまで、どの run も始めない**。台帳が読めない・
+追記が断られた・照合が合わないときは `TrialLedgerStop` を送出する（表に無い失敗。終了コード 1）。
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from enum import Enum
 from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.trace.manifest import RunManifest
 from odyssey_fx.backtest.trace.result import BacktestResult
+from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import ExperimentId, RunId
 from odyssey_fx.common.refs import CodeDigest, ConfigDigest, ContentDigest, EnvDigest, LockDigest
@@ -49,13 +55,18 @@ from odyssey_fx.evaluation.application.ports import (
     ResultReadFailure,
     ResultRepository,
     StoredEvaluation,
+    TrialLedgerAppendRefused,
+    TrialLedgerContents,
+    TrialLedgerReadFailure,
 )
 from odyssey_fx.evaluation.domain.experiment import (
     ExperimentManifest,
     ExperimentOutcome,
     ExperimentStatus,
 )
+from odyssey_fx.evaluation.domain.metrics import MetricRecord
 from odyssey_fx.evaluation.domain.research_policy import (
+    PolicyCheck,
     PolicyCheckResult,
     all_passed,
     check_evaluation_rule,
@@ -63,7 +74,35 @@ from odyssey_fx.evaluation.domain.research_policy import (
     check_run_matches,
     failed_checks,
 )
-from odyssey_fx.evaluation.domain.search import TrialPlan, TrialUnitKey
+from odyssey_fx.evaluation.domain.search import (
+    TRIAL_LEDGER_SCHEMA_VERSION,
+    ComparisonBasis,
+    FoldEvidence,
+    FoldSelection,
+    SearchOutcome,
+    TrainUnitEvaluation,
+    TrialLedgerBinding,
+    TrialLedgerEntry,
+    TrialLedgerEvent,
+    TrialLedgerLine,
+    TrialPhase,
+    TrialPlan,
+    TrialRunRecord,
+    TrialStartRecord,
+    TrialStatus,
+    TrialUnitKey,
+    ValidationUnitEvaluation,
+    binding_mismatch,
+    build_search_outcome,
+    finished_entry,
+    has_finished_line,
+    last_digest,
+    next_execution,
+    select_trial,
+    started_line_of,
+    unmatched_binding,
+)
+from odyssey_fx.evaluation.domain.splits import SplitSpec
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
@@ -77,6 +116,7 @@ __all__ = [
     "ReproductionReport",
     "ReproductionVerdict",
     "RunExperiment",
+    "TrialLedgerStop",
     "judge_reproduction",
 ]
 
@@ -284,6 +324,37 @@ class _Reuse:
 
     result: BacktestResult
     evaluation: StoredEvaluation | None
+    #: 再利用する評価の指標（探索の単位だけが読む。D07 v2.11 §19.6、D09 §17.7.4 の2）。
+    #: 単一実行の経路と、評価が無い（これから評価する）ときは `None`。
+    metrics: tuple[MetricRecord, ...] | None = None
+
+
+class TrialLedgerStop(Exception):
+    """試行台帳が読めない・追記が断られた・照合が合わないので、探索の実行を止めたこと。
+
+    D07 §21.3 の表に無い失敗（終了コード 1）。開始の行の前なら run は1つも始まっておらず、
+    結末の行の前なら結末記録まで書いた終端した実行である（D09 §10.12.4 の a〜c・e）。どちらも
+    台帳の行を後から足す経路は作らない。
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class _UnitResult:
+    """単位1つの実行の結果（試行記録と、選定・判定に渡す評価の指標）。"""
+
+    record: TrialRunRecord
+    metrics: tuple[MetricRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _Evaluated:
+    """1つの run の評価（同じ実行の中で同じ `RunId` を持つ単位が使い回す）。"""
+
+    run_evaluation_id: RunEvaluationId
+    status: EvaluationStatus
+    result_digest: ContentDigest
+    metric_set_version: int
+    metrics: tuple[MetricRecord, ...]
 
 
 class RunExperiment:
@@ -397,6 +468,431 @@ class RunExperiment:
         self._store.write_outcome(outcome)
         return outcome
 
+    # --- 探索の実験（D09 §4.1・§10.7・§10.12。実装 PR 4）-------------------------
+
+    def execute_search(
+        self,
+        prepared: PreparedSearch,
+        *,
+        basis: ComparisonBasis | None,
+        execution_nonce: str,
+        out_base: str,
+        running: str,
+    ) -> ExperimentOutcome | ExperimentRefusal:
+        """探索の実験の1回の実行を進める（D09 §10.7 の状態×出来事表）。
+
+        - `basis`: この実行の比較の前提（合成が組み立てる。事前検査が全件合格なら必ず渡す）。
+        - `execution_nonce`: 実行ごとの乱数の文字列（`app` が作る。D09 §10.12.1 の W3）。
+        - `out_base` / `running`: 成果物の基点と、走らせている実験の版のディレクトリの基点からの
+          パス（成果物からの逆照合 L11 と数え直し待ちの判定に使う。D09 §10.12.2）。
+
+        台帳が読めない・追記が断られた・照合が合わないときは `TrialLedgerStop`（終了コード 1）。
+        """
+        if not isinstance(prepared, PreparedSearch):
+            raise KernelValueError("execute_search requires a PreparedSearch")
+        manifest = prepared.manifest
+        pre_passed = all_passed(manifest.pre_run_checks)
+
+        # 検査済み: 事前検査が全件合格なら、保存の前に全単位の既存の run 成果物を確かめる。
+        if pre_passed:
+            refusal = self.check_search_artifacts(prepared)
+            if refusal is not None:
+                return refusal
+
+        # 保存を試みる（同じ版の再実行の退避と「退避中」の印の回復は保存が行う。D09 §11.3）。
+        saved = self._store.save_manifest(manifest)
+        if saved is ManifestSaveResult.CONFLICT:
+            return ExperimentRefusal(
+                kind=RefusalKind.MANIFEST_CONFLICT,
+                experiment_id=manifest.experiment_id,
+                detail=(
+                    f"the experiment {manifest.experiment_name} v{manifest.experiment_version}"
+                    " already has a manifest with different content (or an unreadable one);"
+                    " it was not overwritten and nothing ran. Raise `version` to record a new"
+                    " version (preregistration_unchanged, D07 §19.4・§20.3)"
+                ),
+            )
+        if not isinstance(saved, ManifestSaveResult):
+            raise KernelValueError("ExperimentStore.save_manifest must return a ManifestSaveResult")
+        preregistration = check_preregistration(
+            manifest.experiment_id.hex,
+            None if saved is ManifestSaveResult.CREATED else manifest.experiment_id.hex,
+        )
+        if not pre_passed:
+            # 台帳には何も書かない（run をせず、どの区間も見ていない。D09 §10.10）。
+            outcome = self._search_outcome(
+                prepared,
+                status=ExperimentStatus.REJECTED_BY_POLICY,
+                preregistration=preregistration,
+                failed=failed_checks(manifest.pre_run_checks),
+                search=None,
+            )
+            self._store.write_outcome(outcome)
+            return outcome
+        if not isinstance(basis, ComparisonBasis):
+            raise KernelValueError("a search that passed the pre-run checks needs its basis")
+
+        started, binding = self._start_ledger(prepared, basis, execution_nonce, out_base, running)
+
+        # 探索中: fold を番号の昇順に進める（D09 §5.4・§6.6）。
+        evidence, selections, records, metrics = self._run_folds(prepared)
+        standard = manifest.evaluation_standard
+        if standard is None:  # pragma: no cover - 探索の記録票は評価基準を持つ
+            raise KernelValueError("a search manifest carries its evaluation standard")
+        search = build_search_outcome(standard, evidence, binding.execution)
+        failed = failed_checks([check for record in records for check in record.outcome_checks])
+        status = ExperimentStatus.FAILED_POST_RUN_CHECK if failed else ExperimentStatus.COMPLETED
+
+        # 終端の書き込み: (1) 集約表 → (2) 結末記録 → (3) 台帳の結末の行（D09 §10.7）。
+        # 指標は選定・判定に使った値をそのまま渡す（読み出しは `read_evaluation_metrics` だけ。
+        # D07 v2.11 §3、D09 §17.7.4 の4）。
+        self._store.write_aggregate_tables(manifest, selections, records, metrics)
+        outcome = self._search_outcome(
+            prepared,
+            status=status,
+            preregistration=preregistration,
+            failed=failed,
+            search=search,
+        )
+        self._store.write_outcome(outcome)
+        self._finish_ledger(started, binding, outcome)
+        return outcome
+
+    def _read_ledger(self, purpose: str) -> TrialLedgerContents:
+        contents = self._store.read_trial_ledger()
+        if isinstance(contents, TrialLedgerReadFailure):
+            line = "" if contents.line_number is None else f" at line {contents.line_number}"
+            raise TrialLedgerStop(
+                f"the trial ledger cannot be read ({contents.kind.value}{line}: {contents.detail});"
+                f" {purpose} (D09 §10.12.2・§10.12.4)"
+            )
+        if not isinstance(contents, TrialLedgerContents):
+            raise KernelValueError("ExperimentStore.read_trial_ledger returned an unexpected value")
+        return contents
+
+    def _append(self, line: TrialLedgerLine, purpose: str) -> None:
+        appended = self._store.append_trial_ledger(line)
+        if isinstance(appended, TrialLedgerAppendRefused):
+            raise TrialLedgerStop(
+                f"the trial ledger refused the line ({appended.kind.value}: {appended.detail});"
+                f" {purpose} (D09 §10.12.1・§10.12.4)"
+            )
+        if appended != line:
+            raise KernelValueError("ExperimentStore.append_trial_ledger returned another line")
+
+    def _start_ledger(
+        self,
+        prepared: PreparedSearch,
+        basis: ComparisonBasis,
+        execution_nonce: str,
+        out_base: str,
+        running: str,
+    ) -> tuple[TrialLedgerEntry, TrialLedgerBinding]:
+        """台帳に開始の行を足し、束縛の記録を書く（D09 §10.12.3 の1・2）。どの run よりも前。"""
+        manifest = prepared.manifest
+        stopped = "nothing ran (no run started; the manifest is kept)"
+        contents = self._read_ledger(stopped)
+        bindings = tuple(
+            (path, record.detail if isinstance(record, TrialLedgerReadFailure) else record)
+            for path, record in self._store.read_ledger_bindings(out_base)
+        )
+        pending = unmatched_binding(contents.lines, bindings, running)
+        if pending is not None:
+            path, reason = pending
+            raise TrialLedgerStop(
+                f"the trial ledger cannot be read (UNMATCHED_BINDING: {path}: {reason}). That"
+                " experiment version waits to be counted again; re-run it with the same version"
+                f" first; {stopped} (D09 §10.12.2 の L11・数え直し待ち。Q38・Q39)"
+            )
+        split = manifest.split
+        standard = manifest.evaluation_standard
+        if not isinstance(split, SplitSpec) or standard is None:  # pragma: no cover
+            raise KernelValueError("a search manifest carries its split and evaluation standard")
+        entry = TrialLedgerEntry(
+            schema_version=TRIAL_LEDGER_SCHEMA_VERSION,
+            event=TrialLedgerEvent.STARTED,
+            experiment_id=manifest.experiment_id,
+            execution=next_execution(contents.lines, manifest.experiment_id),
+            execution_nonce=execution_nonce,
+            experiment_name=manifest.experiment_name,
+            experiment_version=manifest.experiment_version,
+            strategy_id=manifest.strategy_ref.strategy_id,
+            basis=basis,
+            trial_count=len(manifest.trials),
+            search_plan_digest=digest(manifest.search_plan),
+            validation_intervals=tuple(fold.validation for fold in split.folds),
+            final_holdout=manifest.final_holdout,
+            purpose=standard.purpose,
+            status=None,
+            verdict=None,
+            frequency_class=None,
+        )
+        line = TrialLedgerLine.of(entry, last_digest(contents.lines))
+        self._append(line, stopped)
+        binding = TrialLedgerBinding(
+            schema_version=1,
+            experiment_id=manifest.experiment_id,
+            execution=entry.execution,
+            started_line_digest=line.digest,
+        )
+        self._store.write_ledger_binding(binding)
+        return entry, binding
+
+    def _finish_ledger(
+        self, started: TrialLedgerEntry, binding: TrialLedgerBinding, outcome: ExperimentOutcome
+    ) -> None:
+        """結末の行を足す（D09 §10.12.3 の3）。照合が合わなければ書かずに止める。"""
+        search = outcome.search
+        if search is None:  # pragma: no cover - 探索が終端した実行は判定を持つ
+            raise KernelValueError("a finished search carries its SearchOutcome")
+        stopped = (
+            "the outcome is written but the ledger has no FINISHED line for this execution;"
+            " it is never added later (re-run the same version to record a new execution)"
+        )
+        contents = self._read_ledger(stopped)
+        mismatch = binding_mismatch(contents.lines, binding)
+        if mismatch is not None:
+            raise TrialLedgerStop(f"{mismatch}; {stopped} (D09 §10.12.3 の3)")
+        if has_finished_line(contents.lines, binding.experiment_id, binding.execution):
+            raise TrialLedgerStop(
+                f"the ledger already has a FINISHED line of ({binding.experiment_id},"
+                f" {binding.execution}); {stopped} (D09 §10.12.3 の3)"
+            )
+        opening = started_line_of(contents.lines, binding.experiment_id, binding.execution)
+        if opening is None or opening.entry != started:  # pragma: no cover - 上の照合で済み
+            raise TrialLedgerStop(f"the STARTED line changed; {stopped}")
+        entry = finished_entry(
+            started,
+            status=outcome.status,
+            verdict=search.verdict,
+            frequency_class=None if search.frequency is None else search.frequency.class_name,
+        )
+        self._append(TrialLedgerLine.of(entry, last_digest(contents.lines)), stopped)
+
+    def _run_folds(
+        self, prepared: PreparedSearch
+    ) -> tuple[
+        tuple[FoldEvidence, ...],
+        tuple[FoldSelection, ...],
+        tuple[TrialRunRecord, ...],
+        dict[TrialUnitKey, tuple[MetricRecord, ...]],
+    ]:
+        """fold ごとに選定区間の全単位 → 選定記録 → 検証区間の単位（D09 §4.1 の4・§6.6）。"""
+        manifest = prepared.manifest
+        split = manifest.split
+        standard = manifest.evaluation_standard
+        if not isinstance(split, SplitSpec) or standard is None:  # pragma: no cover
+            raise KernelValueError("a search manifest carries its split and evaluation standard")
+        cache: dict[RunId, _Evaluated] = {}
+        evidence: list[FoldEvidence] = []
+        selections: list[FoldSelection] = []
+        records: list[TrialRunRecord] = []
+        metrics: dict[TrialUnitKey, tuple[MetricRecord, ...]] = {}
+        for fold in split.folds:
+            train_units: list[TrainUnitEvaluation] = []
+            for trial in prepared.trials:
+                index = trial.plan.trial_index
+                if not trial.plan.compiled:
+                    # 失敗（コンパイル拒否）の単位は run を作らず開始記録も書かない（D09 §10.5）。
+                    train_units.append(
+                        TrainUnitEvaluation(
+                            fold_index=fold.fold_index,
+                            trial_index=index,
+                            status=TrialStatus.FAILED,
+                            run_status=None,
+                            run_evaluation_id=None,
+                            evaluation_status=None,
+                            post_run_checks_passed=False,
+                            metrics=(),
+                        )
+                    )
+                    continue
+                unit = TrialUnitKey(
+                    fold_index=fold.fold_index, phase=TrialPhase.TRAIN, trial_index=index
+                )
+                done = self._run_unit(prepared, trial, unit, cache)
+                records.append(done.record)
+                metrics[unit] = done.metrics
+                train_units.append(_train_unit(done))
+            # 選定区間の結果だけから選び、検証区間の単位より前に選定記録を保存する（D09 §7.5）。
+            selection = select_trial(fold.fold_index, standard.selection, train_units)
+            self._store.write_selection(selection)
+            selections.append(selection)
+            validation: ValidationUnitEvaluation | None = None
+            if selection.selected_trial_index is not None:
+                chosen = prepared.trials[selection.selected_trial_index]
+                unit = TrialUnitKey(
+                    fold_index=fold.fold_index,
+                    phase=TrialPhase.VALIDATION,
+                    trial_index=chosen.plan.trial_index,
+                )
+                done = self._run_unit(prepared, chosen, unit, cache)
+                records.append(done.record)
+                metrics[unit] = done.metrics
+                validation = _validation_unit(done)
+            evidence.append(
+                FoldEvidence(
+                    fold=fold,
+                    selection=selection,
+                    train_units=tuple(train_units),
+                    validation=validation,
+                )
+            )
+        return tuple(evidence), tuple(selections), tuple(records), metrics
+
+    def _run_unit(
+        self,
+        prepared: PreparedSearch,
+        trial: PreparedTrial,
+        unit: TrialUnitKey,
+        cache: dict[RunId, _Evaluated],
+    ) -> _UnitResult:
+        """単位1つ: 開始記録 → run（か再利用）→ 評価（か再利用）→ P4・P5 → 試行記録（§10.5）。"""
+        manifest = prepared.manifest
+        expected_run_id = trial.expected_run_id(unit)
+        expected_digest = trial.plan.expected_config_digest(unit)
+        self._store.write_trial_start(
+            TrialStartRecord(
+                experiment_id=manifest.experiment_id, unit=unit, expected_run_id=expected_run_id
+            )
+        )
+        version = manifest.metric_set_version
+        checked = self._inspect_existing(
+            expected_run_id, expected_digest, version, prepared.calendar, read_metrics=True
+        )
+        if isinstance(checked, str):
+            # 保存の前に全単位を確かめた（D09 §10.5 の注記）。ここで衝突するのは、その後に別の
+            # 書き手が成果物を置いた場合だけで、構造エラーとして止める（中断）。
+            raise KernelValueError(
+                f"runs/{expected_run_id}/ (fold {unit.fold_index} {unit.phase.value} trial"
+                f" {unit.trial_index}) cannot be reused any more: {checked} (D09 §10.5)"
+            )
+        if checked is not None:
+            result = checked.result
+            reused = True
+        else:
+            compiled = trial.compiled
+            if compiled is None:  # pragma: no cover - コンパイル拒否の試行は単位を持たない
+                raise KernelValueError("a trial rejected by the compiler has no unit to run")
+            result = self._runner.run(trial.run_config(unit), compiled)
+            if not isinstance(result, BacktestResult):
+                raise KernelValueError("BacktestRunner.run must return a BacktestResult")
+            reused = False
+        evaluated = self._evaluate_unit(prepared, result, checked, cache)
+        read = self._repository.read_manifest(result.run_id)
+        post = (
+            check_run_matches(
+                expected_config_digest_hex=expected_digest.digest.hex,
+                expected_run_id_hex=expected_run_id.hex,
+                observed_config_digest_hex=(
+                    read.config_digest.digest.hex if isinstance(read, RunManifest) else None
+                ),
+                observed_run_id_hex=result.run_id.hex,
+                manifest_detail=None if isinstance(read, RunManifest) else read.detail,
+            ),
+            check_evaluation_rule(version, evaluated.metric_set_version),
+        )
+        record = TrialRunRecord(
+            experiment_id=manifest.experiment_id,
+            unit=unit,
+            status=TrialStatus.COMPLETED,
+            expected_run_id=expected_run_id,
+            run_id=result.run_id,
+            run_status=result.status,
+            run_reused=reused,
+            run_evaluation_id=evaluated.run_evaluation_id.digest,
+            evaluation_status=evaluated.status,
+            result_digest=evaluated.result_digest,
+            outcome_checks=post,
+        )
+        self._store.write_trial_run(record)
+        return _UnitResult(record=record, metrics=evaluated.metrics)
+
+    def _evaluate_unit(
+        self,
+        prepared: PreparedSearch,
+        result: BacktestResult,
+        reuse: _Reuse | None,
+        cache: dict[RunId, _Evaluated],
+    ) -> _Evaluated:
+        """評価する（D07 §19.6 の手順2: 保存済みの評価があれば書かずに使い回す）。
+
+        保存済みの評価を使い回すときは、選定と判定に要る指標の値を保存済みの `METRICS` 表から
+        読む（D07 v2.11 §19.6、D09 §17.7.4 の2）。**評価をやり直さない**。指標は単位を始めた
+        ときの確認（`_inspect_existing`）で読んである。同じ実行の中で同じ `RunId` を持つ単位
+        （D09 §6.2）は、最初の単位の評価を使う。
+        """
+        stored = None if reuse is None else reuse.evaluation
+        cached = cache.get(result.run_id)
+        if cached is not None:
+            if stored is not None and (
+                stored.run_evaluation_id != cached.run_evaluation_id
+                or stored.result_digest != cached.result_digest
+            ):
+                raise KernelValueError(
+                    f"the stored evaluation {stored.run_evaluation_id} of runs/{result.run_id}/"
+                    " is not the evaluation an earlier unit of this execution used (D09 §6.2)"
+                )
+            return cached
+        if stored is not None:
+            metrics = None if reuse is None else reuse.metrics
+            if metrics is None:
+                raise KernelValueError(
+                    f"the metrics of the stored evaluation {stored.run_evaluation_id} were not"
+                    " read before reusing it (D07 §19.6, D09 §17.7.4)"
+                )
+            evaluated = _Evaluated(
+                run_evaluation_id=stored.run_evaluation_id,
+                status=stored.status,
+                result_digest=stored.result_digest,
+                metric_set_version=stored.metric_set_version,
+                metrics=metrics,
+            )
+        else:
+            report = self._evaluator.evaluate(
+                result, self._repository, prepared.manifest.metric_set_version, prepared.calendar
+            )
+            self._repository.write_evaluation(report, report.rows)
+            evaluated = _Evaluated(
+                run_evaluation_id=report.manifest.run_evaluation_id,
+                status=report.status,
+                result_digest=report.manifest.result_digest,
+                metric_set_version=report.manifest.metric_set_version,
+                metrics=report.metrics,
+            )
+        cache[result.run_id] = evaluated
+        return evaluated
+
+    @staticmethod
+    def _search_outcome(
+        prepared: PreparedSearch,
+        *,
+        status: ExperimentStatus,
+        preregistration: PolicyCheckResult,
+        failed: tuple[PolicyCheck, ...],
+        search: SearchOutcome | None,
+    ) -> ExperimentOutcome:
+        """探索の実験の結末記録（D09 §10.6 の表）。単数の run・評価の項目は `None`。"""
+        return ExperimentOutcome(
+            experiment_id=prepared.manifest.experiment_id,
+            status=status,
+            expected_run_id=None,
+            code_digest=prepared.code_digest,
+            lock_digest=prepared.lock_digest,
+            env_digest=prepared.env_digest,
+            git_commit=prepared.git_commit,
+            git_dirty=prepared.git_dirty,
+            run_id=None,
+            run_status=None,
+            run_reused=None,
+            run_evaluation_id=None,
+            evaluation_status=None,
+            result_digest=None,
+            outcome_checks=(preregistration,),
+            failed_checks=() if status is ExperimentStatus.COMPLETED else failed,
+            search=search,
+        )
+
     # --- 既存の成果物（D07 §19.6）---------------------------------------------
 
     def _check_existing(self, prepared: PreparedExperiment) -> _Reuse | ExperimentRefusal | None:
@@ -434,7 +930,7 @@ class RunExperiment:
                     continue
                 seen.add(run_id)
                 checked = self._inspect_existing(
-                    run_id, expected_digest, version, prepared.calendar
+                    run_id, expected_digest, version, prepared.calendar, read_metrics=True
                 )
                 if isinstance(checked, str):
                     return ExperimentRefusal(
@@ -456,10 +952,15 @@ class RunExperiment:
         expected_digest: ConfigDigest,
         metric_set_version: int,
         calendar: TradingCalendar,
+        *,
+        read_metrics: bool = False,
     ) -> _Reuse | str | None:
         """D07 §19.6 の手順1〜3・5 を1つの予測 `RunId` に当てる（読むだけ）。
 
         無ければ `None`、再利用できれば再利用の内容、できなければ理由の文字列。
+        `read_metrics` なら（探索の単位。D09 §10.5）、再利用する評価の指標の表も
+        `read_evaluation_metrics` で読み、読めなければ再利用できない理由にする（再評価で補わない。
+        D07 v2.11 §19.6、D09 §17.7.4 の2・3）。
         """
         if not self._repository.run_exists(run_id):
             return None
@@ -497,7 +998,21 @@ class RunExperiment:
                 f"its evaluation directory {evaluation_id} holds the evaluation"
                 f" {stored.run_evaluation_id} of the run {stored.run_id}"
             )
-        return _Reuse(result=result, evaluation=stored)
+        metrics: tuple[MetricRecord, ...] | None = None
+        if read_metrics and stored is not None:
+            read = self._repository.read_evaluation_metrics(run_id, evaluation_id)
+            if isinstance(read, EvaluationReadFailure):
+                return (
+                    f"the metrics of its evaluation {evaluation_id} cannot be read: {read.detail}"
+                )
+            if not isinstance(read, tuple) or not all(
+                isinstance(item, MetricRecord) for item in read
+            ):
+                raise KernelValueError(
+                    "ResultRepository.read_evaluation_metrics returned an unexpected value"
+                )
+            metrics = read
+        return _Reuse(result=result, evaluation=stored, metrics=metrics)
 
     @staticmethod
     def _conflict(prepared: PreparedExperiment, reason: str) -> ExperimentRefusal:
@@ -577,6 +1092,33 @@ class RunExperiment:
             outcome_checks=checks,
             failed_checks=() if status is ExperimentStatus.COMPLETED else failed_checks(failed),
         )
+
+
+def _unit_fields(done: _UnitResult) -> dict[str, object]:
+    """試行記録と評価の指標から、選定・判定の関数の入力の項目を作る（D09 §7.2〜§7.4）。
+
+    事後検査の真偽値は試行記録の P4・P5 の記録から導く（失敗した検査の詳細は試行記録に残る。
+    D09 §10.8・§17.7.3 の3）。評価が `COMPLETED` でない単位は指標の行を持たない（D07 §10.1）。
+    """
+    record = done.record
+    return {
+        "fold_index": record.unit.fold_index,
+        "trial_index": record.unit.trial_index,
+        "status": record.status,
+        "run_status": record.run_status,
+        "run_evaluation_id": record.run_evaluation_id,
+        "evaluation_status": record.evaluation_status,
+        "post_run_checks_passed": record.post_run_checks_passed,
+        "metrics": done.metrics if record.evaluation_status is EvaluationStatus.COMPLETED else (),
+    }
+
+
+def _train_unit(done: _UnitResult) -> TrainUnitEvaluation:
+    return TrainUnitEvaluation(**_unit_fields(done))  # type: ignore[arg-type]
+
+
+def _validation_unit(done: _UnitResult) -> ValidationUnitEvaluation:
+    return ValidationUnitEvaluation(**_unit_fields(done))  # type: ignore[arg-type]
 
 
 # --- 別プロセスでの再現（D07 §21）----------------------------------------------

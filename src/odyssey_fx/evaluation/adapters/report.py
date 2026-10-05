@@ -644,7 +644,10 @@ def _identity_lines(inputs: _Inputs) -> list[str]:
     else:
         lines.extend(
             [
-                f"- 予測した実行の識別子（expected_run_id）: {_code(outcome.expected_run_id.hex)}",
+                "- 予測した実行の識別子（expected_run_id）: "
+                + _optional_hex(
+                    None if outcome.expected_run_id is None else outcome.expected_run_id.digest
+                ),
                 "- 実行の識別子（run_id）: "
                 + ("run していない" if outcome.run_id is None else _code(outcome.run_id.hex)),
                 f"- 評価の識別子（run_evaluation_id）: {_optional_hex(outcome.run_evaluation_id)}",

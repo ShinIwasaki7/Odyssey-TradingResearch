@@ -51,6 +51,8 @@ IGNORED_PATHS = [
     f"data/raw/market/refill/_work/{'d' * 64}/journal.jsonl",
     "data/raw/market/refill/stray.txt",
     "data/raw/other/x.csv",
+    # 試行台帳の追記のロック（D01 §10.4 v2.10、D09 v0.3 §10.12.1）。版管理しない。
+    "research/trial_ledger.lock",
 ]
 
 #: 補充分で追跡するファイル（補充の manifest と検証記録。ADR-0013 2026-10-01 改訂）。
@@ -121,6 +123,16 @@ def test_snapshot_manifest_reports_and_access_log_are_not_ignored(path: str) -> 
         f"{path} は追跡できなければならない（最終一致規則: {pattern!r}）。"
         "`data/snapshots/*/*` の後ろに `!` の再包含規則があるか確認すること"
     )
+
+
+def test_the_trial_ledger_is_tracked_and_placed_empty() -> None:
+    """試行台帳は版管理するファイルで、空のファイルで置く（D01 §10.4、D09 §10.12.1 の W2）。
+
+    無ければ読込が `FILE_MISSING` で止まる（追記では作らない）ので、リポジトリに置いてあること
+    自体を確かめる。ロック（`research/trial_ledger.lock`）だけが git 管理外である。
+    """
+    assert not _is_ignored("research/trial_ledger.jsonl")
+    assert (REPO_ROOT / "research" / "trial_ledger.jsonl").is_file()
 
 
 def test_no_ignored_data_artifact_is_actually_tracked() -> None:

@@ -44,18 +44,32 @@ from __future__ import annotations
 import itertools
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal, localcontext
 from enum import Enum
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
+from odyssey_fx.backtest.domain.account import AccountSpec
 from odyssey_fx.backtest.trace.result import RunStatus
-from odyssey_fx.common.canonical import encode
+from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.ids import ExperimentId, RunId
 from odyssey_fx.common.money import decimal_from_int, kernel_context
-from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest, ContentDigest
+from odyssey_fx.common.refs import (
+    CodeDigest,
+    CompiledStrategyRef,
+    ConfigDigest,
+    ContentDigest,
+    EnvDigest,
+    LockDigest,
+    PolicyRef,
+    SnapshotRef,
+    StrategyRef,
+)
+from odyssey_fx.common.symbol import SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.domain.metrics import (
     METRIC_KINDS,
     AmountValue,
@@ -68,8 +82,9 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     Unavailable,
 )
-from odyssey_fx.evaluation.domain.splits import Fold, SplitStandard
+from odyssey_fx.evaluation.domain.splits import FinalHoldoutSpec, Fold, SplitStandard
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.compiler.compiled import CompileError
 from odyssey_fx.strategy.declarations.specs import (
     BoolValue,
@@ -79,13 +94,19 @@ from odyssey_fx.strategy.declarations.specs import (
     StrValue,
 )
 
+if TYPE_CHECKING:  # pragma: no cover - 型検査のためだけの参照（実行時は循環を避けて使う時点で引く）
+    from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+    from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
+
 __all__ = [
     "OBSERVATION_SHORTFALL_REASONS",
     "REFERENCE_METRICS",
     "SECONDS_PER_365_DAYS",
     "SELECTABLE_METRIC_KINDS",
+    "TRIAL_LEDGER_SCHEMA_VERSION",
     "AggregateCondition",
     "CandidateStatus",
+    "ComparisonBasis",
     "Comparator",
     "ConditionOutcome",
     "ConditionResult",
@@ -111,25 +132,41 @@ __all__ = [
     "SufficiencyShortfall",
     "SufficiencyShortfallKind",
     "TrainUnitEvaluation",
+    "TrialLedgerBinding",
+    "TrialLedgerDefect",
+    "TrialLedgerEntry",
+    "TrialLedgerEvent",
+    "TrialLedgerLine",
     "TrialPhase",
     "TrialPlan",
+    "TrialRunRecord",
+    "TrialStartRecord",
     "TrialStatus",
     "TrialUnitKey",
     "ValidationRule",
     "ValidationUnitEvaluation",
     "assess_frequency",
+    "binding_mismatch",
     "build_search_outcome",
     "candidate_status",
     "compile_rejections_of",
     "count_trial_statuses",
     "derive_trial_status",
     "enumerate_assignments",
+    "finished_entry",
     "frequency_class_of",
+    "has_finished_line",
     "is_selectable_metric",
+    "last_digest",
+    "ledger_defect",
+    "ledger_line_digest",
     "longest_idle_period",
+    "next_execution",
     "select_trial",
+    "started_line_of",
     "trades_per_365d",
     "trial_units",
+    "unmatched_binding",
 ]
 
 #: 参考値（D07 §5.3・§22.2 の #7・#8・#11・#13・#14）。採否の判断に使わない（D09 §7.1）。
@@ -1925,3 +1962,564 @@ def longest_idle_period(
             longest = max(longest, start - cursor)
         cursor = max(cursor, stop)
     return max(longest, interval.end - cursor)
+
+
+# ---------------------------------------------------------------------------
+# 試行記録・比較の前提・試行台帳（D09 §3・§10.3・§10.10・§10.12。段階5 実装 PR 4）
+# ---------------------------------------------------------------------------
+
+
+def _policy_result_type() -> type:
+    """`PolicyCheckResult`（`domain.research_policy` は本モジュールを import するので、循環を
+    避けて使う時点で引く）。"""
+    from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
+
+    return PolicyCheckResult
+
+
+#: 単位の事後検査（D09 §10.8: P4・P5 を単位ごと）の検査名（`PolicyCheck` の値）。
+_UNIT_POST_RUN_CHECKS: Final = ("run_matches_preregistration", "evaluation_rule_matches")
+
+
+@dataclass(frozen=True, slots=True)
+class TrialStartRecord:
+    """単位の開始記録（D09 §3・§10.3）。単位の run を始める直前（再利用の読み出しの前も）に書く。"""
+
+    experiment_id: ExperimentId
+    unit: TrialUnitKey
+    expected_run_id: RunId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.experiment_id, ExperimentId):
+            raise KernelValueError("TrialStartRecord.experiment_id must be an ExperimentId")
+        if not isinstance(self.unit, TrialUnitKey):
+            raise KernelValueError("TrialStartRecord.unit must be a TrialUnitKey")
+        if not isinstance(self.expected_run_id, RunId):
+            raise KernelValueError("TrialStartRecord.expected_run_id must be a RunId")
+
+
+@dataclass(frozen=True, slots=True)
+class TrialRunRecord:
+    """単位の試行記録（D09 §3・§10.3）。run と評価の後、事後検査 P4・P5 を当ててから書く。
+
+    `status` は常に `COMPLETED`（試行済み）で、run と評価の成否は `run_status` /
+    `evaluation_status` が表す。`run_evaluation_id` は評価の識別子のダイジェスト
+    （`RunEvaluationId.digest`。`domain` から `application` の型を参照しないため。D09 §17.7.3 の2
+    と同じ持ち方で、元の評価識別子と同じ値を指す）。`outcome_checks` は P4・P5 の2件で、合格でない
+    検査も詳細（期待値と観測値）ごと残す（D09 §10.8・§17.7.3 の3）。
+    """
+
+    experiment_id: ExperimentId
+    unit: TrialUnitKey
+    status: TrialStatus
+    expected_run_id: RunId
+    run_id: RunId
+    run_status: RunStatus
+    run_reused: bool
+    run_evaluation_id: ContentDigest
+    evaluation_status: EvaluationStatus
+    result_digest: ContentDigest
+    outcome_checks: tuple[PolicyCheckResult, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.experiment_id, ExperimentId):
+            raise KernelValueError("TrialRunRecord.experiment_id must be an ExperimentId")
+        if not isinstance(self.unit, TrialUnitKey):
+            raise KernelValueError("TrialRunRecord.unit must be a TrialUnitKey")
+        if self.status is not TrialStatus.COMPLETED:
+            raise KernelValueError("TrialRunRecord.status は COMPLETED だけを書く（D09 §10.3）")
+        for label, expected in (
+            ("expected_run_id", RunId),
+            ("run_id", RunId),
+            ("run_status", RunStatus),
+            ("run_evaluation_id", ContentDigest),
+            ("evaluation_status", EvaluationStatus),
+            ("result_digest", ContentDigest),
+        ):
+            if not isinstance(getattr(self, label), expected):
+                raise KernelValueError(f"TrialRunRecord.{label} must be a {expected.__name__}")
+        if not isinstance(self.run_reused, bool):
+            raise KernelValueError("TrialRunRecord.run_reused must be a bool")
+        if self.evaluation_status is EvaluationStatus.ABORTED:
+            raise KernelValueError("評価の状態 ABORTED は試行記録に書かない（D09 §10.4）")
+        result_type = _policy_result_type()
+        checks = self.outcome_checks
+        if not isinstance(checks, tuple) or not all(isinstance(c, result_type) for c in checks):
+            raise KernelValueError("TrialRunRecord.outcome_checks must be PolicyCheckResult")
+        if tuple(item.check.value for item in checks) != _UNIT_POST_RUN_CHECKS:
+            raise KernelValueError(
+                "TrialRunRecord.outcome_checks は単位の事後検査 P4・P5 の2件をこの順に持つ"
+                "（D09 §10.8）"
+            )
+
+    @property
+    def post_run_checks_passed(self) -> bool:
+        """単位の事後検査 P4・P5 がすべて合格か（選定・判定の関数へ渡す真偽値。D09 §10.8）。"""
+        return all(item.passed for item in self.outcome_checks)
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonBasis:
+    """比較の前提（D09 §3・§10.10・§11.5）。
+
+    run manifest（D06 §9.3）の「入力」と「ポリシー」の群から、単位ごとに違う `compiled_ref` と
+    `run_interval` を除いた全項目に、実験の側の値（研究ポリシーの版参照・指標集合の版・戦略
+    ファイルの戦略の識別）と**この実行**の環境のダイジェストを足したもの。合成が組み立てる。
+    """
+
+    research_policy_ref: PolicyRef
+    metric_set_version: int
+    snapshot_ref: SnapshotRef
+    strategy_ref: StrategyRef
+    execution_series: SeriesId
+    seed: int
+    account: AccountSpec
+    risk_policy_ref: PolicyRef
+    execution_policy_ref: PolicyRef
+    cost_model_ref: PolicyRef
+    conversion_policy_ref: PolicyRef
+    delay_scenario_ref: PolicyRef
+    symbol_spec_ref: SymbolSpecRef
+    calendar_ref: str
+    timeframe_def_refs: tuple[TimeframeRef, ...]
+    code_digest: CodeDigest
+    lock_digest: LockDigest
+    env_digest: EnvDigest
+
+    def __post_init__(self) -> None:
+        for label, expected in (
+            ("research_policy_ref", PolicyRef),
+            ("snapshot_ref", SnapshotRef),
+            ("strategy_ref", StrategyRef),
+            ("execution_series", SeriesId),
+            ("account", AccountSpec),
+            ("risk_policy_ref", PolicyRef),
+            ("execution_policy_ref", PolicyRef),
+            ("cost_model_ref", PolicyRef),
+            ("conversion_policy_ref", PolicyRef),
+            ("delay_scenario_ref", PolicyRef),
+            ("symbol_spec_ref", SymbolSpecRef),
+            ("code_digest", CodeDigest),
+            ("lock_digest", LockDigest),
+            ("env_digest", EnvDigest),
+        ):
+            if not isinstance(getattr(self, label), expected):
+                raise KernelValueError(f"ComparisonBasis.{label} must be a {expected.__name__}")
+        for label in ("metric_set_version", "seed"):
+            value = getattr(self, label)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise KernelValueError(f"ComparisonBasis.{label} must be an int")
+        if not isinstance(self.calendar_ref, str) or not self.calendar_ref:
+            raise KernelValueError("ComparisonBasis.calendar_ref must be a non-empty str")
+        if not isinstance(self.timeframe_def_refs, tuple) or not all(
+            isinstance(item, TimeframeRef) for item in self.timeframe_def_refs
+        ):
+            raise KernelValueError("ComparisonBasis.timeframe_def_refs must be TimeframeRef")
+
+
+class TrialLedgerEvent(Enum):
+    """試行台帳の行の種類（D09 §3・§10.10）。"""
+
+    STARTED = "STARTED"
+    FINISHED = "FINISHED"
+
+
+#: 台帳の行の形式版（D09 §10.12.6。v0.3 で 1）。
+TRIAL_LEDGER_SCHEMA_VERSION: Final = 1
+
+#: 実行ごとの乱数（16進で 32 文字以上＝128 ビット以上。D09 §10.12.1 の W3）。
+_NONCE: Final = re.compile(r"[0-9a-f]{32,}")
+
+
+@dataclass(frozen=True, slots=True)
+class TrialLedgerEntry:
+    """試行台帳の1行（D09 §3・§10.10）。
+
+    構築時に検査するのは**項目ごとの型だけ**である。行の種類ごとの形（L5）・判定と用途の組
+    （L10）は読込の検査が台帳の行の列に当てる（`ledger_defect`）。構築で拒否すると、それらの
+    食い違いが「型に合わない（L4）」として報告され、種類が分からなくなる（D09 §10.12.2）。
+    """
+
+    schema_version: int
+    event: TrialLedgerEvent
+    experiment_id: ExperimentId
+    execution: int
+    execution_nonce: str
+    experiment_name: str
+    experiment_version: int
+    strategy_id: str
+    basis: ComparisonBasis
+    trial_count: int
+    search_plan_digest: ContentDigest
+    validation_intervals: tuple[Interval, ...]
+    final_holdout: FinalHoldoutSpec | None
+    purpose: StandardPurpose
+    status: ExperimentStatus | None
+    verdict: SearchVerdict | None
+    frequency_class: str | None
+
+    def __post_init__(self) -> None:
+        from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+
+        if (
+            isinstance(self.schema_version, bool)
+            or self.schema_version != TRIAL_LEDGER_SCHEMA_VERSION
+        ):
+            raise KernelValueError(
+                f"TrialLedgerEntry.schema_version must be {TRIAL_LEDGER_SCHEMA_VERSION}"
+            )
+        if not isinstance(self.event, TrialLedgerEvent):
+            raise KernelValueError("TrialLedgerEntry.event must be a TrialLedgerEvent")
+        if not isinstance(self.experiment_id, ExperimentId):
+            raise KernelValueError("TrialLedgerEntry.experiment_id must be an ExperimentId")
+        for label in ("execution", "experiment_version", "trial_count"):
+            value = getattr(self, label)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise KernelValueError(f"TrialLedgerEntry.{label} must be an int >= 1")
+        if not isinstance(self.execution_nonce, str) or not _NONCE.fullmatch(self.execution_nonce):
+            raise KernelValueError(
+                "TrialLedgerEntry.execution_nonce must be at least 32 lowercase hex characters"
+                " (128 bits. D09 §10.12.1 の W3)"
+            )
+        _require_name(self.experiment_name, "TrialLedgerEntry.experiment_name")
+        _require_name(self.strategy_id, "TrialLedgerEntry.strategy_id")
+        if not isinstance(self.basis, ComparisonBasis):
+            raise KernelValueError("TrialLedgerEntry.basis must be a ComparisonBasis")
+        if not isinstance(self.search_plan_digest, ContentDigest):
+            raise KernelValueError("TrialLedgerEntry.search_plan_digest must be a ContentDigest")
+        if (
+            not isinstance(self.validation_intervals, tuple)
+            or not self.validation_intervals
+            or not all(isinstance(item, Interval) for item in self.validation_intervals)
+        ):
+            raise KernelValueError(
+                "TrialLedgerEntry.validation_intervals must be a non-empty tuple of Interval"
+            )
+        if self.final_holdout is not None and not isinstance(self.final_holdout, FinalHoldoutSpec):
+            raise KernelValueError("TrialLedgerEntry.final_holdout must be a FinalHoldoutSpec")
+        if not isinstance(self.purpose, StandardPurpose):
+            raise KernelValueError("TrialLedgerEntry.purpose must be a StandardPurpose")
+        if self.status is not None and not isinstance(self.status, ExperimentStatus):
+            raise KernelValueError("TrialLedgerEntry.status must be an ExperimentStatus or None")
+        if self.verdict is not None and not isinstance(self.verdict, SearchVerdict):
+            raise KernelValueError("TrialLedgerEntry.verdict must be a SearchVerdict or None")
+        if self.frequency_class is not None and (
+            not isinstance(self.frequency_class, str)
+            or not _CLASS_NAME.fullmatch(self.frequency_class)
+        ):
+            raise KernelValueError("TrialLedgerEntry.frequency_class must be a class name or None")
+
+    @property
+    def key(self) -> tuple[ExperimentId, int, TrialLedgerEvent]:
+        """台帳の行の主キー `(experiment_id, execution, event)`（D09 §10.10。L6）。"""
+        return (self.experiment_id, self.execution, self.event)
+
+
+def ledger_line_digest(entry: TrialLedgerEntry, prev: ContentDigest | None) -> ContentDigest:
+    """台帳の行のダイジェスト `digest({entry, prev})`（D09 §10.12.6。`digest` 自身は入れない）。
+
+    `prev` は直前の行のダイジェストの16進文字列（最初の行は `null`）として入れる。
+    """
+    return digest({"entry": entry, "prev": None if prev is None else prev.hex})
+
+
+@dataclass(frozen=True, slots=True)
+class TrialLedgerLine:
+    """台帳のファイルの1行（D09 §3・§10.12.1・§10.12.6）: 台帳の行・直前の行のダイジェスト・この行の
+    ダイジェスト。`digest` は `{entry, prev}` から計算し直した値と一致しなければならない。"""
+
+    entry: TrialLedgerEntry
+    prev: ContentDigest | None
+    digest: ContentDigest
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry, TrialLedgerEntry):
+            raise KernelValueError("TrialLedgerLine.entry must be a TrialLedgerEntry")
+        if self.prev is not None and not isinstance(self.prev, ContentDigest):
+            raise KernelValueError("TrialLedgerLine.prev must be a ContentDigest or None")
+        if not isinstance(self.digest, ContentDigest):
+            raise KernelValueError("TrialLedgerLine.digest must be a ContentDigest")
+        if self.digest != ledger_line_digest(self.entry, self.prev):
+            raise KernelValueError(
+                "TrialLedgerLine.digest は {entry, prev} から計算し直した値と一致しなければならない"
+                "（D09 §10.12.6）"
+            )
+
+    @classmethod
+    def of(cls, entry: TrialLedgerEntry, prev: ContentDigest | None) -> TrialLedgerLine:
+        """行の包みを組み立てる（ダイジェストはここで計算する）。"""
+        return cls(entry=entry, prev=prev, digest=ledger_line_digest(entry, prev))
+
+
+@dataclass(frozen=True, slots=True)
+class TrialLedgerBinding:
+    """実行番号を成果物へ束縛する記録 `search/ledger_execution.json`（D09 §3・§10.12.3）。"""
+
+    schema_version: int
+    experiment_id: ExperimentId
+    execution: int
+    started_line_digest: ContentDigest
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or self.schema_version != 1:
+            raise KernelValueError("TrialLedgerBinding.schema_version must be 1")
+        if not isinstance(self.experiment_id, ExperimentId):
+            raise KernelValueError("TrialLedgerBinding.experiment_id must be an ExperimentId")
+        if isinstance(self.execution, bool) or not isinstance(self.execution, int):
+            raise KernelValueError("TrialLedgerBinding.execution must be an int")
+        if self.execution < 1:
+            raise KernelValueError("TrialLedgerBinding.execution must be >= 1")
+        if not isinstance(self.started_line_digest, ContentDigest):
+            raise KernelValueError("TrialLedgerBinding.started_line_digest must be a ContentDigest")
+
+
+class TrialLedgerDefect(Enum):
+    """読込で台帳を読めないとする理由（D09 §3・§10.12.2 の L0・L2〜L11）。"""
+
+    FILE_MISSING = "FILE_MISSING"
+    FILE_UNREADABLE = "FILE_UNREADABLE"
+    LINE_CORRUPT = "LINE_CORRUPT"
+    CHAIN_BROKEN = "CHAIN_BROKEN"
+    ENTRY_INVALID = "ENTRY_INVALID"
+    EVENT_SHAPE = "EVENT_SHAPE"
+    DUPLICATE_KEY = "DUPLICATE_KEY"
+    EXECUTION_GAP = "EXECUTION_GAP"
+    ORPHAN_FINISHED = "ORPHAN_FINISHED"
+    INVARIANT_MISMATCH = "INVARIANT_MISMATCH"
+    VERDICT_PURPOSE = "VERDICT_PURPOSE"
+    UNMATCHED_BINDING = "UNMATCHED_BINDING"
+
+
+#: 結末の行の不変項目から外す項目（D09 §10.12.2 の L9）。
+_VARIANT_FIELDS: Final = frozenset({"event", "status", "verdict", "frequency_class"})
+
+
+def _invariants(entry: TrialLedgerEntry) -> dict[str, object]:
+    return {
+        name: getattr(entry, name)
+        for name in TrialLedgerEntry.__dataclass_fields__
+        if name not in _VARIANT_FIELDS
+    }
+
+
+def _shape_defect(entry: TrialLedgerEntry) -> str | None:
+    """L5: 行の種類ごとの形。合っていれば `None`、違えば理由。"""
+    from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+
+    if entry.event is TrialLedgerEvent.STARTED:
+        if (
+            entry.status is not None
+            or entry.verdict is not None
+            or entry.frequency_class is not None
+        ):
+            return "a STARTED line has status / verdict / frequency_class all null"
+        return None
+    if entry.status not in (ExperimentStatus.COMPLETED, ExperimentStatus.FAILED_POST_RUN_CHECK):
+        return "a FINISHED line has the status COMPLETED or FAILED_POST_RUN_CHECK"
+    if entry.verdict is None:
+        return "a FINISHED line has a verdict"
+    return None
+
+
+def _verdict_purpose_defect(entry: TrialLedgerEntry) -> str | None:
+    """L10: 判定と用途の組が実験の判定の手順4 で作れる組か（D09 §7.3。Q33）。"""
+    if (
+        entry.verdict is SearchVerdict.MEETS_STANDARD
+        and entry.purpose is not StandardPurpose.STANDARD
+    ):
+        return "MEETS_STANDARD is made only when the purpose is STANDARD"
+    if (
+        entry.verdict is SearchVerdict.MET_IN_MECHANISM_CHECK
+        and entry.purpose is not StandardPurpose.MECHANISM_CHECK
+    ):
+        return "MET_IN_MECHANISM_CHECK is made only when the purpose is MECHANISM_CHECK"
+    return None
+
+
+def ledger_defect(
+    lines: Sequence[TrialLedgerLine],
+) -> tuple[TrialLedgerDefect, int, str] | None:
+    """台帳の行の列に読込の検査 L3・L5〜L10 を当てる（D09 §10.12.2）。
+
+    ファイルの先頭から行の順に当て、同じ行では検査の番号の順に当て、最初に当たった食い違いを
+    `(種類, 行番号（1 始まり）, 理由)` で返す。食い違いが無ければ `None`。L1・L2・L4（バイト列
+    から行を取り出す検査）は読込（アダプタ）が先に当て、型に直せた行だけをここへ渡す。
+    """
+    started: dict[tuple[ExperimentId, int], TrialLedgerEntry] = {}
+    executions: dict[ExperimentId, int] = {}
+    keys: set[tuple[ExperimentId, int, TrialLedgerEvent]] = set()
+    previous: ContentDigest | None = None
+    for number, line in enumerate(lines, start=1):
+        if not isinstance(line, TrialLedgerLine):
+            raise KernelValueError("ledger_defect requires TrialLedgerLine values")
+        entry = line.entry
+        if line.prev != previous:
+            expected = "null" if previous is None else previous.hex
+            observed = "null" if line.prev is None else line.prev.hex
+            return (
+                TrialLedgerDefect.CHAIN_BROKEN,
+                number,
+                f"prev {observed} does not equal the digest of the line before ({expected})",
+            )
+        previous = line.digest
+        shape = _shape_defect(entry)
+        if shape is not None:
+            return (TrialLedgerDefect.EVENT_SHAPE, number, shape)
+        if entry.key in keys:
+            return (
+                TrialLedgerDefect.DUPLICATE_KEY,
+                number,
+                f"(experiment_id, execution, event) = ({entry.experiment_id}, {entry.execution},"
+                f" {entry.event.value}) appears twice",
+            )
+        keys.add(entry.key)
+        pair = (entry.experiment_id, entry.execution)
+        if entry.event is TrialLedgerEvent.STARTED:
+            expected_execution = executions.get(entry.experiment_id, 0) + 1
+            if entry.execution != expected_execution:
+                return (
+                    TrialLedgerDefect.EXECUTION_GAP,
+                    number,
+                    f"the STARTED line of {entry.experiment_id} has the execution"
+                    f" {entry.execution}, expected {expected_execution}",
+                )
+            executions[entry.experiment_id] = entry.execution
+            started[pair] = entry
+            continue
+        opening = started.get(pair)
+        if opening is None:
+            return (
+                TrialLedgerDefect.ORPHAN_FINISHED,
+                number,
+                f"no STARTED line of ({entry.experiment_id}, {entry.execution}) comes before",
+            )
+        mine, theirs = _invariants(entry), _invariants(opening)
+        if mine != theirs:
+            differing = sorted(name for name, value in mine.items() if value != theirs[name])
+            return (
+                TrialLedgerDefect.INVARIANT_MISMATCH,
+                number,
+                f"the FINISHED line differs from its STARTED line in {differing}",
+            )
+        mismatch = _verdict_purpose_defect(entry)
+        if mismatch is not None:
+            return (TrialLedgerDefect.VERDICT_PURPOSE, number, mismatch)
+    return None
+
+
+def next_execution(lines: Sequence[TrialLedgerLine], experiment_id: ExperimentId) -> int:
+    """実行番号の採番: 同じ `experiment_id` の開始の行の数 + 1（D09 §10.12.3 の1）。"""
+    if not isinstance(experiment_id, ExperimentId):
+        raise KernelValueError("next_execution requires an ExperimentId")
+    return 1 + sum(
+        1
+        for line in lines
+        if line.entry.experiment_id == experiment_id
+        and line.entry.event is TrialLedgerEvent.STARTED
+    )
+
+
+def last_digest(lines: Sequence[TrialLedgerLine]) -> ContentDigest | None:
+    """最後の完全な行のダイジェスト（行が無ければ `None`）。新しい行の `prev` に入れる。"""
+    return lines[-1].digest if lines else None
+
+
+def finished_entry(
+    started: TrialLedgerEntry,
+    *,
+    status: ExperimentStatus,
+    verdict: SearchVerdict,
+    frequency_class: str | None,
+) -> TrialLedgerEntry:
+    """結末の行: 開始の行の項目を写し、`status` / `verdict` / `frequency_class` だけを結末記録の
+    値にする（D09 §10.12.3 の3。L9 に当たる行を作らない）。"""
+    if not isinstance(started, TrialLedgerEntry) or started.event is not TrialLedgerEvent.STARTED:
+        raise KernelValueError("finished_entry requires the STARTED entry of the execution")
+    return replace(
+        started,
+        event=TrialLedgerEvent.FINISHED,
+        status=status,
+        verdict=verdict,
+        frequency_class=frequency_class,
+    )
+
+
+def started_line_of(
+    lines: Sequence[TrialLedgerLine], experiment_id: ExperimentId, execution: int
+) -> TrialLedgerLine | None:
+    """`(experiment_id, execution)` の開始の行（無ければ `None`）。"""
+    for line in lines:
+        entry = line.entry
+        if (
+            entry.event is TrialLedgerEvent.STARTED
+            and entry.experiment_id == experiment_id
+            and entry.execution == execution
+        ):
+            return line
+    return None
+
+
+def has_finished_line(
+    lines: Sequence[TrialLedgerLine], experiment_id: ExperimentId, execution: int
+) -> bool:
+    """同じ番号の結末の行がもうあるか（D09 §10.12.3 の3 の (b)）。"""
+    return any(
+        line.entry.event is TrialLedgerEvent.FINISHED
+        and line.entry.experiment_id == experiment_id
+        and line.entry.execution == execution
+        for line in lines
+    )
+
+
+def binding_mismatch(lines: Sequence[TrialLedgerLine], binding: TrialLedgerBinding) -> str | None:
+    """束縛の記録の開始の行が台帳にあり、その `digest` が `started_line_digest` と一致するか。
+
+    一致すれば `None`、しなければ理由（D09 §10.12.2 の L11・§10.12.3 の3 の (a)）。
+    """
+    if not isinstance(binding, TrialLedgerBinding):
+        raise KernelValueError("binding_mismatch requires a TrialLedgerBinding")
+    line = started_line_of(lines, binding.experiment_id, binding.execution)
+    if line is None:
+        return f"the ledger has no STARTED line of ({binding.experiment_id}, {binding.execution})"
+    if line.digest != binding.started_line_digest:
+        return (
+            f"the STARTED line of ({binding.experiment_id}, {binding.execution}) has the digest"
+            f" {line.digest.hex}, not {binding.started_line_digest.hex}"
+        )
+    return None
+
+
+def unmatched_binding(
+    lines: Sequence[TrialLedgerLine],
+    bindings: Sequence[tuple[str, TrialLedgerBinding | str]],
+    running: str | None,
+) -> tuple[str, str] | None:
+    """成果物からの逆照合 L11 と数え直し待ちの判定（D09 §10.12.2。Q38・Q39 決定）。
+
+    `bindings` は各実験の版の「束縛の記録がある最も新しい世代」の束縛の記録を
+    `(パス, 中身か読めない理由)` で並べたもの（`ExperimentStore.read_ledger_bindings`）。パスは
+    実験の版のディレクトリのパスから始まる。`running` は走らせている実験の版のディレクトリの
+    パス（`experiment run` の採番の読込のとき。`experiment ledger` では `None`）。
+
+    台帳と合わない記録（読めない記録を含む）がある版を**数え直し待ち**と呼ぶ。数え直し待ちが
+    無ければ `None`。走らせている版自身が数え直し待ちなら、ほかの版が数え直し待ちでも `None`
+    （その版の再実行だけを通す）。それ以外は、パスの辞書順で最初の数え直し待ちを
+    `(パス, 理由)` で返す。
+    """
+    pending: list[tuple[str, str]] = []
+    for path, record in sorted(bindings, key=lambda item: item[0]):
+        if isinstance(record, TrialLedgerBinding):
+            reason = binding_mismatch(lines, record)
+        elif isinstance(record, str):
+            reason = f"the binding record cannot be read: {record}"
+        else:
+            raise KernelValueError("unmatched_binding requires TrialLedgerBinding or a reason")
+        if reason is not None:
+            pending.append((path, reason))
+    if not pending:
+        return None
+    if running is not None:
+        prefix = running.rstrip("/") + "/"
+        if any(path.startswith(prefix) for path, _ in pending):
+            return None
+    return pending[0]
