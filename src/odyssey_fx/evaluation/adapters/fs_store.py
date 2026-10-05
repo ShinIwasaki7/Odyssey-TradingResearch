@@ -23,7 +23,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,13 @@ from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, Run
 from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import AccountId, ExperimentId, RunId, SnapshotId
-from odyssey_fx.common.money import CurrencyCode, Money, PriceOffset, decimal_from_str
+from odyssey_fx.common.money import (
+    CurrencyCode,
+    Money,
+    PriceOffset,
+    decimal_from_str,
+    kernel_context,
+)
 from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import (
     CodeDigest,
@@ -235,6 +241,7 @@ __all__ = [
     "read_ledger_binding_records",
     "read_selections",
     "read_trial_ledger_file",
+    "read_trial_metrics",
     "read_unit_records",
     "replaced_manifest_name",
     "reproduction_path",
@@ -2961,7 +2968,11 @@ def _metric_record_of(row: Mapping[str, object]) -> MetricRecord:
             value = CountValue(count=_int_of(row[column], column))
         elif kind is MetricKind.DURATION:
             seconds = _decimal_of(row[column], column)
-            value = DurationValue(duration=timedelta(microseconds=int(seconds * 1_000_000)))
+            # 換算はカーネルの十進数設定の下で行う（プロセス全体の十進数設定に依存しない。
+            # ADR-0012、D02。段階5 実装 PR 4 の残件）。
+            with localcontext(kernel_context()):
+                microseconds = int(seconds * 1_000_000)
+            value = DurationValue(duration=timedelta(microseconds=microseconds))
         else:
             value = PriceOffsetValue(offset=PriceOffset(_decimal_of(row[column], column)))
     return MetricRecord(
@@ -2975,6 +2986,56 @@ def _metric_record_of(row: Mapping[str, object]) -> MetricRecord:
             TraceTable(_str_of(item, "inputs")) for item in _list_of(row["inputs"], "inputs")
         ),
     )
+
+
+def read_trial_metrics(directory: Path) -> dict[TrialUnitKey, tuple[MetricRecord, ...]]:
+    """完了した実行の集約表 `search/trial_metrics.parquet` を単位ごとの指標の行として読む。
+
+    D09 §11.2。
+
+    行は保存の順（主キーの順）のまま単位ごとにまとめ、`MetricRecord` へ戻す（`_metric_record_of`。
+    値を計算し直さない）。表が無い・リンク・列が足りない・行が読めない・主キーが重複するときは
+    `KernelValueError`（レポートは「読めない」と表示する）。
+    """
+    path = search_directory(directory) / TRIAL_METRICS_TABLE
+    if path.is_symlink() or not path.is_file():
+        raise KernelValueError(f"{SEARCH_DIRECTORY}/{TRIAL_METRICS_TABLE} is missing or not a file")
+    try:
+        frame = pl.read_parquet(path)
+    except (OSError, pl.exceptions.PolarsError) as exc:
+        raise KernelValueError(
+            f"{SEARCH_DIRECTORY}/{TRIAL_METRICS_TABLE} cannot be read: {type(exc).__name__}"
+        ) from exc
+    expected = tuple(_metrics_schema())
+    if tuple(frame.columns) != expected:
+        raise KernelValueError(
+            f"{SEARCH_DIRECTORY}/{TRIAL_METRICS_TABLE} has the columns {list(frame.columns)},"
+            f" not {list(expected)}"
+        )
+    found: dict[TrialUnitKey, list[MetricRecord]] = {}
+    seen: set[tuple[TrialUnitKey, str]] = set()
+    for row in frame.iter_rows(named=True):
+        try:
+            unit = TrialUnitKey(
+                fold_index=_int_of(row["fold_index"], "fold_index"),
+                phase=TrialPhase(_str_of(row["phase"], "phase")),
+                trial_index=_int_of(row["trial_index"], "trial_index"),
+            )
+            record = _metric_record_of(row)
+        except _READ_ERRORS as exc:
+            raise KernelValueError(
+                f"{SEARCH_DIRECTORY}/{TRIAL_METRICS_TABLE} has a row that cannot be read:"
+                f" {type(exc).__name__}: {exc}"
+            ) from exc
+        key = (unit, record.metric_id.value)
+        if key in seen:
+            raise KernelValueError(
+                f"{SEARCH_DIRECTORY}/{TRIAL_METRICS_TABLE} repeats the primary key {key}"
+                " (D09 §11.2)"
+            )
+        seen.add(key)
+        found.setdefault(unit, []).append(record)
+    return {unit: tuple(records) for unit, records in found.items()}
 
 
 def trial_units_rows(

@@ -40,6 +40,10 @@ from odyssey_fx.app.config.experiment_v2 import (
 )
 from odyssey_fx.app.config.loader import load_yaml_mapping
 from odyssey_fx.app.config.refill import calendar_from_ref
+from odyssey_fx.app.config.research_policy import (
+    load_research_policy_registry,
+    research_policy_registry_path,
+)
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
@@ -63,6 +67,8 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.adapters.fs_store import (
     REPORT_FILE,
+    RETREAT_MARKER_FILE,
+    TRIAL_LEDGER_PATH,
     FileSystemExperimentStore,
     FileSystemResultRepository,
     FileSystemResultWriter,
@@ -70,6 +76,8 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     evaluation_directory,
     read_experiment_manifest,
     read_experiment_outcome,
+    read_ledger_binding_records,
+    read_trial_ledger_file,
     reproduction_path,
     reproduction_payload,
     require_absent,
@@ -79,9 +87,10 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     write_reproduction,
 )
 from odyssey_fx.evaluation.adapters.report import ReportWrite, write_report
+from odyssey_fx.evaluation.adapters.search_report import ledger_listing, write_search_report
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
-from odyssey_fx.evaluation.application.ports import ResultReadFailure
+from odyssey_fx.evaluation.application.ports import ResultReadFailure, TrialLedgerReadFailure
 from odyssey_fx.evaluation.application.run_experiment import (
     ExperimentRefusal,
     PreparedExperiment,
@@ -93,6 +102,7 @@ from odyssey_fx.evaluation.application.run_experiment import (
     TrialLedgerStop,
     judge_reproduction,
 )
+from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.experiment import (
     EXPERIMENT_SCHEMA_VERSION,
     ExperimentManifest,
@@ -104,6 +114,7 @@ from odyssey_fx.evaluation.domain.experiment import (
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityMeasures,
     InstanceProfile,
+    RegistryEntry,
     check_complexity,
     check_hypothesis,
     check_research_history_only,
@@ -120,6 +131,7 @@ from odyssey_fx.evaluation.domain.search import (
     compile_rejections_of,
     enumerate_assignments,
     trial_units,
+    unmatched_binding,
 )
 from odyssey_fx.marketdata.adapters.csv_source import CsvRawBarSource
 from odyssey_fx.marketdata.adapters.dukascopy_source import DukascopyTickSource
@@ -211,12 +223,14 @@ __all__ = [
     "env_digest",
     "evaluate_saved_run",
     "execute_run",
+    "experiment_ledger",
     "git_state",
     "lock_digest",
     "now_utc",
     "open_snapshot_inputs",
     "raw_bar_source",
     "recompute_experiment_id",
+    "report_experiment",
     "reproduce_experiment",
     "run_experiment",
     "snapshot_store",
@@ -1191,6 +1205,10 @@ class ExperimentRunOutcome:
     `report` は書いたレポート（`report.md`）の置き場。結末記録を書かずに拒否した場合
     （`ExperimentRefusal`）は何も書かないので `None`（D07 §19.4）。探索の実験は単数の予測
     `RunId` を持たない（`expected_run_id` は `None`。D09 §10.6）。
+
+    `report_error` は、探索の実験で結末記録と台帳の行を書き終えた後にレポートを作れなかった理由
+    （研究ポリシーの版の登録簿が読めないなど。D09 §11.4 の Q37）。CLI は成果を表示した後に
+    理由を出し、終了コード 1 で終える（レポートは `experiment report` で作り直せる）。
     """
 
     manifest: ExperimentManifest
@@ -1198,6 +1216,7 @@ class ExperimentRunOutcome:
     directory: Path
     expected_run_id: RunId | None
     report: Path | None = None
+    report_error: str | None = None
 
 
 def build_experiment_manifest(
@@ -1734,9 +1753,11 @@ def run_search_experiment(
     基点と走らせている版のディレクトリ（逆照合 L11 に使う）を `RunExperiment.execute_search` へ
     渡す。台帳が読めない・追記が断られたときは `TrialLedgerStop`（終了コード 1）が上がる。
 
-    **探索の実験のレポート（`report.md`）は書かない**: 探索の節の書式（D09 §11.5）は段階5 の実装
-    PR 5 で作る。結末記録と台帳の結末の行まで書いた終端した実行で、レポートだけが無い状態
-    （D09 §10.7 の終端の書き込みの (3) の後・(4) の前）になる。
+    結末記録を書いた実行（`REJECTED_BY_POLICY` を含む）は、最後に探索の実験のレポート
+    （`report.md`。D09 §11.5）を書く（D09 §10.7 の終端の書き込みの (4)）。拒否
+    （`ExperimentRefusal`）では書かない。研究ポリシーの版の登録簿が読めないなどでレポートを
+    作れなければ、結末記録と台帳の行はそのままでレポートを書かず、理由を `report_error` に
+    入れて返す（CLI が終了コード 1 にする。D09 §11.4 の Q37）。
     """
     parts = _prepare_search(
         loaded=loaded,
@@ -1783,13 +1804,56 @@ def run_search_experiment(
         out_base=str(artifacts_root),
         running=store.directory.relative_to(artifacts_root).as_posix(),
     )
+    report: Path | None = None
+    report_error: str | None = None
+    if isinstance(result, ExperimentOutcome):
+        try:
+            registry = search_registry(repo_root, manifest)
+            write_search_report(
+                store.directory, artifacts_root, repo_root=repo_root, registry=registry
+            )
+            report = store.directory / REPORT_FILE
+        except (ConfigError, KernelValueError) as exc:
+            report_error = str(exc)
     return ExperimentRunOutcome(
         manifest=manifest,
         result=result,
         directory=store.directory,
         expected_run_id=None,
-        report=None,
+        report=report,
+        report_error=report_error,
     )
+
+
+def search_registry(repo_root: Path, manifest: ExperimentManifest) -> tuple[RegistryEntry, ...]:
+    """探索の実験のレポートに使う研究ポリシーの版の登録簿を読み、記録票の版参照と照合する。
+
+    D09 §11.4 の Q37: 登録簿が読めない（無い・形式の誤り・主キーの重複・要素の用途の誤り）、
+    または記録票の `research_policy_ref` の `(id, version)` の要素が無い・ダイジェストが違うときは
+    `ConfigError`（`experiment report` は終了コード 2、`experiment run` の最後は終了コード 1）。
+    """
+    entries = load_research_policy_registry(research_policy_registry_path(Path(repo_root)))
+    policy = manifest.research_policy_ref
+    entry = next(
+        (
+            item
+            for item in entries
+            if (item.policy_id, item.version) == (policy.policy_id, policy.version)
+        ),
+        None,
+    )
+    if entry is None:
+        raise ConfigError(
+            f"研究ポリシーの版の登録簿に、記録票の研究ポリシー {policy.policy_id} 版"
+            f" {policy.version} の要素が無い。レポートを書かない（D09 §11.4。Q37 決定）"
+        )
+    if entry.digest != policy.digest:
+        raise ConfigError(
+            f"研究ポリシーの版の登録簿の {policy.policy_id} 版 {policy.version} のダイジェスト"
+            f" {entry.digest.hex} が記録票の {policy.digest.hex} と違う。レポートを書かない"
+            "（D09 §11.4。Q37 決定）"
+        )
+    return entries
 
 
 @dataclass(frozen=True, slots=True)
@@ -1800,12 +1864,20 @@ class ExperimentReportOutcome:
     written: ReportWrite
 
 
-def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
+def report_experiment(
+    *, experiment_dir: Path, repo_root: Path | None = None
+) -> ExperimentReportOutcome:
     """保存済みの成果物だけからレポートを作り直す（D07 §22.1、`experiment report`）。
 
     run と評価の成果物は、実験の版のディレクトリ `<根>/runs/experiments/<名前>/v<版>` と同じ
     根の `runs/` から読む。引数・読込の誤り（版のディレクトリの形でない、記録票が無い・読めない、
     結末記録があるのに読めない、名前と版がディレクトリと合わない）は `ConfigError`（終了コード 2）。
+
+    探索の実験（D09 §11.4・§11.5）は `repo_root`（`--repo-root`）が必須で、試行台帳と研究
+    ポリシーの版の登録簿をそこから読む。順序は、経路の検査 → 記録票・結末記録 → `--repo-root` →
+    「退避中」の印（あれば読込の誤り。D09 §11.3 の6）→ 登録簿（Q37）→ 束縛の照合 R2・R4 →
+    作って書く。どれかで止まればレポートを書かず、既存のレポートの退避もしない。単一実行の
+    実験の経路は変えない（`repo_root` は使わない）。
     """
     # **リンクを解決する前の経路で形と要素を確かめる**（PR #48 の Codex 第2系列の第1巡）。
     # `resolve()` するとリンクの存在が消え、`runs/` より下の `experiments`・名前・版が
@@ -1837,13 +1909,6 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
             f"{experiment_dir} の結末記録は実験 {outcome.experiment_id} のもので、記録票の"
             f" {manifest.experiment_id} と一致しない"
         )
-    if manifest.is_search:
-        # 探索の節の書式（D09 §11.5）・`--repo-root`・台帳の照合（R1〜R7）は段階5 の実装 PR 5 で
-        # 作る。単一実行の書式で探索の実験のレポートを作らない（引数・読込の誤り。終了コード 2）。
-        raise ConfigError(
-            f"{experiment_dir} は探索の実験の版のディレクトリである。探索の実験のレポートは段階5 の"
-            "実装 PR 5 で作る（D09 §11.5。この段階では未対応）"
-        )
     if (directory.parent.name, directory.name) != (
         manifest.experiment_name,
         f"v{manifest.experiment_version}",
@@ -1853,8 +1918,60 @@ def report_experiment(*, experiment_dir: Path) -> ExperimentReportOutcome:
             f" {manifest.experiment_version} のもので、ディレクトリの名前と版に合わない"
             "（D07 §19.1）"
         )
-    written = write_report(directory, root)
+    if not manifest.is_search:
+        written = write_report(directory, root)
+        return ExperimentReportOutcome(path=directory / REPORT_FILE, written=written)
+    if repo_root is None:
+        raise ConfigError(
+            f"{experiment_dir} は探索の実験の版のディレクトリである。試行台帳と研究ポリシーの版の"
+            "登録簿を読むリポジトリの根を `--repo-root` で指す（D09 §11.4）"
+        )
+    marker = directory / RETREAT_MARKER_FILE
+    if marker.exists() or marker.is_symlink():
+        raise ConfigError(
+            f"{experiment_dir}: 退避の途中で止まった。同じ版を `experiment run` で再実行すると"
+            "回復する（D09 §11.3 の6。レポートは作らない）"
+        )
+    registry = search_registry(repo_root, manifest)
+    try:
+        written = write_search_report(directory, root, repo_root=repo_root, registry=registry)
+    except ArtifactAlreadyExists:
+        raise
+    except KernelValueError as exc:
+        # 束縛の照合の R2・R4（同じ世代の記録が食い違う）と、探索の記録が読めない構造の誤りは
+        # 読込の誤り（終了コード 2。D09 §10.12.3）。レポートは書いていない。
+        raise ConfigError(f"{experiment_dir} の探索の記録を一世代として読めない: {exc}") from exc
     return ExperimentReportOutcome(path=directory / REPORT_FILE, written=written)
+
+
+def experiment_ledger(*, repo_root: Path, out_base: Path, strategy: str | None) -> list[str]:
+    """試行台帳を研究ポリシーの版ごとにまとめた一覧の行（D09 §11.4、`experiment ledger`）。
+
+    台帳を読み（読めなければ `ConfigError`。終了コード 2）、成果物の基点 `out_base` の下の束縛の
+    記録と逆照合 L11 を当て（数え直し待ちの版があれば `ConfigError`）、研究ポリシーの版の登録簿の
+    ファイル自体を読む（読めなければ `ConfigError`。記録票の版参照の照合はしない）。ファイルは
+    書かない。
+    """
+    contents = read_trial_ledger_file(Path(repo_root) / TRIAL_LEDGER_PATH)
+    if isinstance(contents, TrialLedgerReadFailure):
+        line = "" if contents.line_number is None else f"・行 {contents.line_number}"
+        raise ConfigError(
+            f"試行台帳が読めない（{contents.kind.value}{line}: {contents.detail}。D09 §10.12.2）"
+        )
+    bindings = tuple(
+        (path, record.detail if isinstance(record, TrialLedgerReadFailure) else record)
+        for path, record in read_ledger_binding_records(Path(out_base))
+    )
+    pending = unmatched_binding(contents.lines, bindings, None)
+    if pending is not None:
+        path, reason = pending
+        raise ConfigError(
+            f"試行台帳が読めない（UNMATCHED_BINDING: {path}: {reason}）。その実験の版は数え直し"
+            "待ちである。同じ版を `experiment run` で再実行して数え直す（D09 §10.12.2 の L11。"
+            "Q38・Q39）"
+        )
+    registry = load_research_policy_registry(research_policy_registry_path(Path(repo_root)))
+    return ledger_listing(contents, registry, strategy=strategy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1915,6 +2032,12 @@ def reproduce_experiment(
         outcome = read_experiment_outcome(experiment_dir)
     except KernelValueError as exc:
         raise ConfigError(f"記録票か結末記録を読めない: {exc}") from exc
+    if manifest.is_search:
+        # 結末記録の有無によらず拒否する（reproduction.json を書かない。D07 §21.3、D09 §11.4）。
+        raise ConfigError(
+            f"{experiment_dir} は探索の実験の版のディレクトリである。探索の実験の別プロセスでの"
+            "再現は段階5 の対象外（D09 §15）"
+        )
     if outcome is None:
         raise ConfigError(
             f"{experiment_dir} に結末記録が無い。途中で止まった実験には再現する結果が無い"

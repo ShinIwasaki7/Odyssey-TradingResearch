@@ -23,7 +23,10 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 - `odyssey-fx experiment reproduce`（段階4）: 記録票と結末記録だけから別の基点で run と評価を
   やり直し、判定を `reproduction.json` に書く（D07 §21）。
 - `odyssey-fx experiment report`（段階4）: 保存済みの成果物だけから実験の人間向けレポート
-  `report.md` を作り直す（D07 §22）。`experiment run` も最後に同じレポートを書く。
+  `report.md` を作り直す（D07 §22）。`experiment run` も最後に同じレポートを書く。探索の実験は
+  D09 §11.5 の書式で、`--repo-root` の試行台帳と研究ポリシーの版の登録簿も読む（段階5）。
+- `odyssey-fx experiment ledger`（段階5）: 試行台帳を研究ポリシーの版ごとにまとめた一覧を
+  標準出力に出す（D09 §11.4。ファイルは書かない）。
 
 **実行と評価を別のコマンドに分ける**（D07 §4.1）。評価は run を実行し直さず、保存された
 判断履歴と manifest だけを読む。同じ run を別の指標集合の版で評価し直しても、`runs/` の
@@ -314,6 +317,35 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="実験の版のディレクトリ（runs/experiments/<名前>/v<版>/）",
     )
+    report_command.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help=(
+            "試行台帳と研究ポリシーの版の登録簿を読むリポジトリの根（探索の実験では必須。"
+            "単一実行の実験では使わない。D09 §11.4）"
+        ),
+    )
+    ledger_command = experiment.add_parser(
+        "ledger",
+        help="試行台帳を研究ポリシーの版ごとにまとめた一覧を出す（ファイルは書かない。D09 §11.4）",
+    )
+    ledger_command.set_defaults(command="experiment_ledger")
+    ledger_command.add_argument(
+        "--repo-root",
+        type=Path,
+        required=True,
+        help="試行台帳（research/trial_ledger.jsonl）と研究ポリシーの版の登録簿を読むリポジトリの根",
+    )
+    ledger_command.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help=(
+            "束縛の記録を集める成果物の基点（`experiment run` の --out と同じ指し方。D09 §10.12.2）"
+        ),
+    )
+    ledger_command.add_argument("--strategy", default=None, help="1つの戦略（strategy_id）に絞る")
     reproduce = experiment.add_parser(
         "reproduce",
         help="記録票と結末記録だけから run と評価をやり直し、結果が一致するかを判定する（D07 §21）",
@@ -1207,11 +1239,15 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
         out.line("研究ポリシーの事前検査に合格しなかったので run していない（D07 §20.3）")
     if outcome.report is not None:
         out.line(f"レポート: {outcome.report}")
-    elif search is not None:
-        out.line(
-            "レポート: 探索の実験のレポートは段階5 の実装 PR 5 で作る（この段階では書かない）。"
-            "結末記録と試行台帳の結末の行は書き終えている"
+    if outcome.report_error is not None:
+        # 結末記録と台帳の行は書き終えた終端した実行で、レポートだけが無い（D09 §10.7 の (3) の
+        # 後・(4) の前と同じ。§11.4 の Q37）。成果を表示した後に理由を出し、終了コード 1。
+        sys.stderr.write(
+            f"失敗: レポートを書けなかった（結末記録と試行台帳の行は書き終えている）: "
+            f"{outcome.report_error}。原因を直してから `odyssey-fx experiment report"
+            " --experiment-dir <実験の版のディレクトリ> --repo-root <リポジトリの根>` で作る\n"
         )
+        return _EXIT_FAILED
     return _EXPERIMENT_EXIT[result.status]
 
 
@@ -1225,9 +1261,21 @@ _REPORT_WRITE_TEXT: dict[ReportWrite, str] = {
 
 def _run_experiment_report(args: argparse.Namespace, out: _Writer) -> int:
     """保存済みの成果物だけからレポートを作り直す（D07 §22.1、§21.3 の `experiment report`）。"""
-    outcome = composition.report_experiment(experiment_dir=args.experiment_dir)
+    outcome = composition.report_experiment(
+        experiment_dir=args.experiment_dir, repo_root=args.repo_root
+    )
     out.line(_REPORT_WRITE_TEXT[outcome.written])
     out.line(f"レポート: {outcome.path}")
+    return _EXIT_OK
+
+
+def _run_experiment_ledger(args: argparse.Namespace, out: _Writer) -> int:
+    """試行台帳を研究ポリシーの版ごとにまとめた一覧を出す（D09 §11.4 の `experiment ledger`）。"""
+    out.lines(
+        composition.experiment_ledger(
+            repo_root=args.repo_root, out_base=args.out, strategy=args.strategy
+        )
+    )
     return _EXIT_OK
 
 
@@ -1299,6 +1347,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "experiment_run": _run_experiment_run,
         "experiment_reproduce": _run_experiment_reproduce,
         "experiment_report": _run_experiment_report,
+        "experiment_ledger": _run_experiment_ledger,
     }
     try:
         return handlers[args.command](args, out)

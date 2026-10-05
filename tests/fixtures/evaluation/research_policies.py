@@ -20,6 +20,7 @@ from odyssey_fx.app.config.research_policy import (
     research_policy_path,
     research_policy_registry_path,
 )
+from odyssey_fx.common.time import UtcTime
 
 __all__ = [
     "DEFAULT_STANDARD_LINES",
@@ -112,17 +113,25 @@ def append_registry_entry(
     *,
     purpose: str | None = None,
     digest_hex: str | None = None,
+    research_until: UtcTime | None = None,
 ) -> str:
     """作業場の登録簿に1行足し、足した行を返す（無ければ作る。D09 §10.9）。
 
     ダイジェストは作業場の研究ポリシーファイルから計算する（`digest_hex` で上書きできる）。
     `purpose` を省くと、評価基準の群を持つ版ではファイルの用途を写し、版 1・2 では書かない。
+    `research_until` は計算のためにファイルを読むときの研究履歴の期間境界（省くと読込の既定）。
+    評価範囲が既定の境界を超える版（読込が拒否する版。D09 §6.1 の検査6）を登録簿に載せるときに
+    渡す（ダイジェストの入力に境界は入らない）。
     """
     registry = research_policy_registry_path(repo)
     registry.parent.mkdir(parents=True, exist_ok=True)
-    policy = load_research_policy(
-        research_policy_path(repo, policy_id, version), policy_id=policy_id, version=version
-    )
+    path = research_policy_path(repo, policy_id, version)
+    if research_until is None:
+        policy = load_research_policy(path, policy_id=policy_id, version=version)
+    else:
+        policy = load_research_policy(
+            path, policy_id=policy_id, version=version, research_until=research_until
+        )
     digest = digest_hex or policy.digest.hex
     if purpose is None and policy.evaluation_standard is not None:
         purpose = policy.evaluation_standard.purpose.value
