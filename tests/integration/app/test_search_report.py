@@ -440,6 +440,10 @@ def test_25_an_interrupted_run_shows_unit_and_fold_states_without_a_verdict(
     assert f"| f0_VALIDATION_t{selected} |" in states
     assert "MAX_DRAWDOWN_MTM_RATE LE 0.2: " in states
     assert "頻度区分: " not in text
+    # 選定記録の無い fold 1（中断）を、指標の計算可否の節で候補なしと取り違えない。
+    availability = _section(text, 4)
+    assert "- fold 1: 候補なし" not in availability
+    assert "- fold 1: 検証区間の単位が終わっていない" in availability
     assert "未確定（途中で止まった）" in _section(text, 6)
     assert "頑健性の表は出さない" in _section(text, 9)
     assert "- この番号の結末の行: あり" in _section(text, 8)

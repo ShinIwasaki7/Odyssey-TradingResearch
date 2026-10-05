@@ -408,8 +408,16 @@ def test_2c_a_report_on_a_stopped_execution_tells_aborted_not_started_and_comple
     )
     assert process.returncode == 0, process.stdout + process.stderr
     report = (directory / REPORT_FILE).read_text(encoding="utf-8")
-    for status in (TrialStatus.ABORTED, TrialStatus.NOT_STARTED, TrialStatus.COMPLETED):
-        assert status.value in report, status
+    # 各単位の状態の表の行（`| 単位 | 割当 | 状態 | 評価の状態 |`）で、単位ごとに区別して出る。
+    expected = {
+        "f0_TRAIN_t0": TrialStatus.COMPLETED,
+        "f0_TRAIN_t1": TrialStatus.ABORTED,
+        "f1_TRAIN_t0": TrialStatus.NOT_STARTED,
+    }
+    for name, status in expected.items():
+        rows = [line for line in report.splitlines() if line.startswith(f"| {name} |")]
+        assert len(rows) == 1, (name, rows)
+        assert f"`{status.value}`" in rows[0].split("|")[3], (name, rows[0])
 
 
 def test_2d_a_completed_execution_has_one_started_and_one_finished_ledger_line(

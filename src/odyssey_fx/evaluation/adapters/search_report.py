@@ -1137,12 +1137,19 @@ def _availability_lines(inputs: _Inputs) -> list[str]:
     rows = []
     for fold in inputs.folds:
         index = fold.fold_index
+        if inputs.stopped:
+            # 途中で止まった実行は fold の状態（D09 §6.6）で分ける。選定記録の無い fold（未着手・
+            # 中断）を候補なしの終端と取り違えない。
+            state = _fold_state(inputs, index)
+            if state == "候補なし":
+                lines.append(f"- fold {index}: 候補なし（検証区間の単位が無い）")
+                continue
+            if state != "検証済み":
+                lines.append(f"- fold {index}: 検証区間の単位が終わっていない（{_STOPPED}）")
+                continue
         unit = _selected_unit(inputs, index)
         if unit is None:
             lines.append(f"- fold {index}: 候補なし（検証区間の単位が無い）")
-            continue
-        if inputs.stopped and _fold_state(inputs, index) != "検証済み":
-            lines.append(f"- fold {index}: 検証区間の単位が終わっていない（{_STOPPED}）")
             continue
         for metric in metrics:
             value = _metric(inputs, unit, metric)
