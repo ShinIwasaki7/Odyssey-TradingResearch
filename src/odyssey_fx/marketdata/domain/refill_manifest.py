@@ -577,6 +577,49 @@ def source_difference_from_payload(payload: object, label: str) -> SourceDiffere
     )
 
 
+_SOURCE_DIFFERENCE_BAR_KEYS: Final = frozenset(
+    {"built", "differences", "hour", "kind", "series", "start", "timeframe_version"}
+)
+_OHLC_NAMES: Final = frozenset({"open", "high", "low", "close"})
+
+
+def _source_difference_bar_from_payload(
+    payload: object, label: str
+) -> tuple[SeriesId, UtcTime, tuple[tuple[str, Decimal], ...]]:
+    """`validation.json` の配信元の値の差に当たる不一致の足 1 本の記録を検査して読む（D03 §14.7）。
+
+    書き手は `refill_finalize._mismatch_entry`。区分は配信元の値の差だけで、tick から作った足
+    （`built` が真）の丸めた後の差（四本値の名前と 0 でない差）を 1 つ以上持つ。
+    """
+    mapping = _mapping(payload, label)
+    _keys(mapping, _SOURCE_DIFFERENCE_BAR_KEYS, label)
+    series = series_from_record(mapping["series"], mapping["timeframe_version"], label)
+    start = _time(mapping["start"], f"{label}.start")
+    hour = _str(mapping["hour"], f"{label}.hour")
+    expected_hour = (
+        f"{series.symbol}@{UtcTime(start.value.replace(minute=0, second=0, microsecond=0))}"
+    )
+    if hour != expected_hour:
+        raise MarketDataValueError(f"{label}.hour must be {expected_hour!r}, got {hour!r}")
+    if mapping["kind"] != "SOURCE_DIFFERENCE":
+        raise MarketDataValueError(f"{label}.kind must be 'SOURCE_DIFFERENCE'")
+    if _bool(mapping["built"], f"{label}.built") is not True:
+        raise MarketDataValueError(f"{label}.built must be true for a source difference")
+    differences: list[tuple[str, Decimal]] = []
+    for index, entry in enumerate(_sequence(mapping["differences"], f"{label}.differences")):
+        at = f"{label}.differences[{index}]"
+        pair = _sequence(entry, at)
+        if len(pair) != 2 or pair[0] not in _OHLC_NAMES:
+            raise MarketDataValueError(f"{at} must be [open|high|low|close, difference]")
+        value = _optional_decimal(pair[1], f"{at}[1]")
+        if value is None or value == 0:
+            raise MarketDataValueError(f"{at}[1] must be a non-zero difference")
+        differences.append((str(pair[0]), value))
+    if not differences:
+        raise MarketDataValueError(f"{label}.differences must not be empty")
+    return series, start, tuple(differences)
+
+
 _EVIDENCE_KEYS: Final = frozenset(
     {
         "chunk_start",
@@ -1009,7 +1052,12 @@ class RefillValidationRecord:
                 f" {_REFILL_VALIDATION_FORMAT_V1!r}), got {mapping['format']!r}"
             )
         if not legacy:
-            _sequence(mapping["source_difference_bars"], f"{label}.source_difference_bars")
+            for index, item in enumerate(
+                _sequence(mapping["source_difference_bars"], f"{label}.source_difference_bars")
+            ):
+                _source_difference_bar_from_payload(
+                    item, f"{label}.source_difference_bars[{index}]"
+                )
         if mapping["passed"] is not True:
             raise MarketDataValueError(f"{label}.passed must be true (only a passed refill has it)")
 

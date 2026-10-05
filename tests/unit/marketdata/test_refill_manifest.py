@@ -182,3 +182,52 @@ def test_refills_written_before_v1_19_are_still_read() -> None:
             json.loads((directory / "validation.json").read_text())
         )
         assert (validation.rounding_matched_count, validation.source_differences) == (None, ())
+
+
+def _v2_validation_payload() -> dict[str, object]:
+    """形式 v2 の最小の `validation.json`（配信元の値の差の足 1 本）。"""
+    return {
+        "bid_above_ask_tick_count": 0,
+        "format": "refill_validation_v2",
+        "hourly_consistency": [],
+        "matched_count": 0,
+        "neighbors": [],
+        "out_of_range_tick_count": 0,
+        "passed": True,
+        "plan_id": "a" * 64,
+        "reconciled_count": 1,
+        "refill_id": "b" * 64,
+        "rounding_matched_count": 0,
+        "source_difference_bars": [
+            {
+                "built": True,
+                "differences": [["close", "0.002"]],
+                "hour": "USDJPY@2020-11-30T00:00:00Z",
+                "kind": "SOURCE_DIFFERENCE",
+                "series": "USDJPY/15m/bid",
+                "start": "2020-11-30T00:15:00Z",
+                "timeframe_version": 1,
+            }
+        ],
+        "source_differences": [],
+        "unreconciled": [],
+    }
+
+
+def test_a_v2_validation_record_checks_each_source_difference_bar() -> None:
+    RefillValidationRecord.from_payload(_v2_validation_payload())
+    cases: tuple[dict[str, object] | None, ...] = (
+        None,
+        {"kind": "TIME_SHIFT"},
+        {"differences": []},
+        {"differences": [["volume", "1"]]},
+        {"built": False},
+        {"hour": "USDJPY@2020-11-30T01:00:00Z"},
+    )
+    for broken in cases:
+        payload = _v2_validation_payload()
+        bars = payload["source_difference_bars"]
+        assert isinstance(bars, list)
+        payload["source_difference_bars"] = [None if broken is None else {**bars[0], **broken}]
+        with pytest.raises(MarketDataValueError):
+            RefillValidationRecord.from_payload(payload)
