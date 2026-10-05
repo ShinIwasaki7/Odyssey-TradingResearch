@@ -39,7 +39,7 @@ from odyssey_fx.marketdata.application.refill_fetch import fetch_plan
 from odyssey_fx.marketdata.application.refill_finalize import finalize_plan
 from odyssey_fx.marketdata.application.refill_plan import build_plan, create_plan
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES, AccessClass
-from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.classification import (
     ClassificationOutcome,
@@ -56,6 +56,10 @@ from odyssey_fx.marketdata.domain.snapshot import (
     SeriesManifest,
     SnapshotManifest,
     SourceFile,
+)
+from odyssey_fx.marketdata.domain.time_label_correction import (
+    TimeLabelCorrectionRecord,
+    TimeLabelCorrectionRule,
 )
 from tests.fixtures.refill import (
     BI5_00H,
@@ -208,13 +212,23 @@ def _raw() -> dict[SeriesId, tuple[Bar, ...]]:
     return raw_bars(drop_hours=(HOUR_01, HOUR_02))
 
 
-def _raw_with_changed_reference() -> dict[SeriesId, tuple[Bar, ...]]:
-    """照合の 00 時の 15分足 1 本の終値を変えた原データ（検証が不合格になる）。"""
+def _raw_with_changed_reference(
+    kind: ProvenanceKind = ProvenanceKind.DUKASCOPY,
+) -> dict[SeriesId, tuple[Bar, ...]]:
+    """照合の 00 時の 15分足 1 本の終値を変えた原データ。
+
+    出所が提供元と同じ配信元（`dukascopy`）なら提供元の訂正の疑いで検証が不合格になり、`histdata`
+    なら配信元の値の差でその塊を作らない（D03 §14.7 の v1.19）。
+    """
     bars = _raw()
     changed = []
     for bar in bars[USDJPY_15M]:
         if bar.bar_start == HOUR_00:
-            bar = replace(bar, close=Price(decimal_from_str("104.050")))
+            bar = replace(
+                bar,
+                close=Price(decimal_from_str("104.050")),
+                provenance=Provenance(kind=kind, source_ref=bar.provenance.source_ref),
+            )
         changed.append(bar)
     return {**bars, USDJPY_15M: tuple(changed)}
 
@@ -294,6 +308,8 @@ def _scene(
     with_open: bool = False,
     with_other: bool = False,
     approved: bool = True,
+    b_kind: ProvenanceKind = ProvenanceKind.DUKASCOPY,
+    new_rule: TimeLabelCorrectionRule | None = None,
 ) -> Scene:
     """計画 A（と B）を本体で計画・取得・書き出しし、新 snapshot を書く。"""
     store = FsRefillStore(root=root / "refill")
@@ -311,7 +327,7 @@ def _scene(
             store,
             _plan(9),
             {url_of(HOUR_00): [BI5_00H], url_of(HOUR_01): [BI5_01H], url_of(HOUR_02): [BI5_01H]},
-            _Inputs(_raw_with_changed_reference()),
+            _Inputs(_raw_with_changed_reference(b_kind)),
         )
         assert refill_b is None
     manifest = RefillManifest.from_payload(
@@ -338,6 +354,16 @@ def _scene(
         [*SOURCES, *refill_sources],
         approved=approved,
     )
+    if new_rule is not None:
+        new_manifest = replace(
+            new_manifest,
+            conversion=replace(
+                new_manifest.conversion,
+                time_label_correction=TimeLabelCorrectionRecord(
+                    rule=new_rule, shifted_bar_counts=()
+                ),
+            ),
+        )
     new = str(new_manifest.snapshot_id())
     snapshots = ParquetSnapshotStore(root=root / "snapshots")
     snapshots.write_manifest(OLD, OLD_MANIFEST)
@@ -370,7 +396,8 @@ def _scene(
     plan_c = None
     if with_other:
         # 計画 X: 新 snapshot の祖先でない snapshot（04 時の 15分足の欠落だけを持つ）を入力に
-        # した、04 時の足の計画。照合の時間の原データは人工の値なので、検証で不合格になる。
+        # した、04 時の足の計画。照合の時間の原データは人工の値（histdata）なので、配信元の値の差で
+        # 塊を作らず不合格になる。
         other = _other_snapshot()
         snapshots.write_manifest(str(other.snapshot_id()), other)
         hours = (HOUR_03, HOUR_04, HOUR_04 + timedelta(hours=1))
@@ -383,7 +410,7 @@ def _scene(
         assert refill_x is None
     if with_later:
         # 計画 C: A の補充分を含む新 snapshot を入力にした、02 時の足の計画（補充を重ねる）。
-        # 照合の時間の原データは人工の値なので、検証で不合格になる。
+        # 照合の時間の原データは人工の値（histdata）なので、配信元の値の差で塊を作らず不合格になる。
         later_raw = raw_bars(drop_hours=(HOUR_02,))
         plan_c, refill_c = _run(
             store,
@@ -431,6 +458,81 @@ def test_records_that_cannot_be_ordered_are_shown_side_by_side(tmp_path: Path) -
     assert "計画 2 件・補充分 1 件" in report
 
 
+def test_a_source_difference_is_its_own_state_with_its_reason(tmp_path: Path) -> None:
+    """v1.19: 配信元の値の差（照合用の足の原データが histdata で、時刻ズレでも表現誤差でもない差）の
+    塊は補充せず、状態「配信元の値の差」と、理由（不一致の足の数・差の最大）を示す。"""
+    scene = _scene(tmp_path, with_b=True, b_kind=ProvenanceKind.HISTDATA)
+    assert rr.main(scene.args) == 0
+    row = scene.rows()[ROW_02_15M]
+    assert row["states"] == f"{rr.NOT_FETCHED}|{rr.SOURCE_DIFFERENCE}"
+    assert row[f"bars_{rr.SOURCE_DIFFERENCE}"] == "4"
+    report = scene.report()
+    assert "配信元の値の差の塊" in report
+    assert "（対象足 8 本。理由: 不一致の足 1 本、差の最大 0.009（0.9 pip））" in report
+    assert "配信元の値の差（`SOURCE_DIFFERENCE`）" in report
+
+
+# --- 補正の前の入力の記録（D03 §14.15 の v1.19、人間の決定 DST-4〜DST-6）---------------------
+
+#: 2020-11-30 の週（補正の前のラベル）を対象にした人工の補正規則。計画 A の対象足（01・02 時）を
+#: 含む。読み替えだけを確かめるので、週が暦から導けることは問わない。
+_RULE_2020 = TimeLabelCorrectionRule(
+    rule_id="histdata_us_only_dst_weeks",
+    rule_version=1,
+    shift=timedelta(hours=1),
+    series=("USDJPY/15m/bid", "USDJPY/1h/bid"),
+    weeks=(
+        Interval(
+            start=UtcTime.parse("2020-11-29T21:00:00Z"),
+            end=UtcTime.parse("2020-12-04T21:00:00Z"),
+        ),
+    ),
+    daylight_zone="America/New_York",
+    standard_zone="Europe/London",
+)
+
+
+def test_records_of_a_plan_on_an_uncorrected_snapshot_are_relabelled_and_marked(
+    tmp_path: Path,
+) -> None:
+    """DST-4: 補正なしの snapshot を入力にした計画 A の足の鍵を +1 時間に読み替え、印を付ける。"""
+    scene = _scene(tmp_path, new_rule=_RULE_2020)
+    root = tmp_path / "snapshots"
+    store = FsRefillStore(root=scene.refill_root)
+    chain = rr.snapshot_chain(root, store, scene.new)
+    collection = rr.collect_records(root, store, chain, frozenset(), _RULE_2020)
+    assert collection.complete, collection.problems
+    (record,) = collection.records
+    assert record.pre_correction
+    starts = sorted({key[2] for key in record.results})
+    # 補正の前のラベル 01:00〜02:45 → 02:00〜03:45。
+    assert str(UtcTime(starts[0])) == "2020-11-30T02:00:00Z"
+    assert str(UtcTime(starts[-1])) == "2020-11-30T03:45:00Z"
+    # 新 snapshot と同じ補正規則の入力（または両方なし）は読み替えない。
+    same = rr.collect_records(root, store, chain, frozenset(), None)
+    assert not same.records[0].pre_correction
+    assert sorted({key[2] for key in same.records[0].results})[0] == HOUR_01.value
+
+
+def test_the_history_marks_a_relabelled_record(tmp_path: Path) -> None:
+    scene = _scene(tmp_path, new_rule=_RULE_2020)
+    store = FsRefillStore(root=scene.refill_root)
+    root = tmp_path / "snapshots"
+    collection = rr.collect_records(
+        root, store, rr.snapshot_chain(root, store, scene.new), frozenset(), _RULE_2020
+    )
+    keys = [("USDJPY", "15m@v1", (HOUR_02 + timedelta(hours=1)).value)]
+    (entry,) = rr._history(keys, collection)
+    assert "（補正の前の入力）" in entry[2]
+
+
+def test_the_old_and_candidate_snapshots_must_share_the_new_correction(tmp_path: Path) -> None:
+    """DST-5・DST-6: 比べる旧 snapshot と休場の候補区間の snapshot は補正後の snapshot に限る。"""
+    scene = _scene(tmp_path, new_rule=_RULE_2020)
+    assert rr.main(scene.args) == 1
+    assert not scene.out.exists() or not any(scene.out.iterdir())
+
+
 def test_a_record_built_on_a_snapshot_containing_the_refill_is_later(tmp_path: Path) -> None:
     """R3: 補充分 A を含む snapshot を入力にした計画 C の記録が後（参照関係で確かめる）。
 
@@ -439,7 +541,9 @@ def test_a_record_built_on_a_snapshot_containing_the_refill_is_later(tmp_path: P
     scene = _scene(tmp_path, with_later=True)
     assert rr.main(scene.args) == 0
     row = scene.rows()[ROW_02_15M]
-    assert row["states"] == rr.VALIDATION_REJECTED
+    # C の照合の時間の原データ（人工の値。出所 histdata）は提供元の値と合わないので、v1.19 では
+    # 配信元の値の差としてその塊を作らずに不合格（補充した足が 0 本）になる。
+    assert row["states"] == rr.SOURCE_DIFFERENCE
     assert row["basis_plan_ids"] == scene.plan_c
     assert row["bars_with_unordered_records"] == "0"
     assert f"plan={scene.plan_a} refill:{scene.refill_a} {rr.NOT_FETCHED}×4" in row["history"]
@@ -473,7 +577,8 @@ def test_a_rejected_plan_on_a_snapshot_outside_the_ancestry_is_collected(
     assert rr.main(scene.args) == 0
     row = scene.rows()[ROW_04_15M]
     assert rr.NOT_PLANNED not in row["states"]
-    assert row["states"] == rr.VALIDATION_REJECTED
+    # 照合の時間の原データ（人工の値。出所 histdata）は配信元の値の差になる（v1.19）。
+    assert row["states"] == rr.SOURCE_DIFFERENCE
     assert row["basis_plan_ids"] == scene.plan_c
     assert "置き場の中はすべて読めた" in scene.report()
 

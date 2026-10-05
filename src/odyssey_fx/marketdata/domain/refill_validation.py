@@ -23,13 +23,16 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 
 __all__ = [
     "HourlyConsistency",
+    "MismatchKind",
+    "NeighborCheck",
     "NeighborSide",
     "NeighborStatus",
-    "NeighborCheck",
-    "NotBuiltReason",
     "NotBuiltBar",
+    "NotBuiltReason",
     "ReconciledBar",
     "RefillValidation",
+    "SourceDifferenceChunk",
+    "SourceDifferenceEvidence",
     "UnreconciledChunk",
     "UsedHour",
 ]
@@ -46,6 +49,25 @@ class NotBuiltReason(Enum):
     NO_TICK_IN_BAR = "NO_TICK_IN_BAR"
     #: 塊が未照合（判断待ち。D03 §14.4）。
     UNRECONCILED = "UNRECONCILED"
+    #: 塊が配信元の値の差（D03 §14.7 の v1.19 の (iii)。§14.8 の表）。
+    SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
+
+
+class MismatchKind(Enum):
+    """丸めた後も一致しない照合用の足の区分（D03 §14.7 の v1.19「不一致の分け方」）。
+
+    次の順に 1 つに分ける。
+    """
+
+    #: (i) 時刻ズレの疑い: 同じ系列で、原データのラベルが 1 時間前または 1 時間後の足が実在し、
+    #: 照合用の足と（丸めて）四本値がすべて一致する。不合格（補正規則の漏れか誤りの疑い）。
+    TIME_SHIFT = "TIME_SHIFT"
+    #: (ii) 提供元の訂正の疑い: (i) に当たらず、原データの足の出所が提供元と同じ配信元
+    #: （`dukascopy`・`dukascopy_refill`）。不合格（RF-21 の決定のまま）。
+    PROVIDER_CORRECTION = "PROVIDER_CORRECTION"
+    #: (iii) 配信元の値の差: (i) に当たらず、原データの足の出所が提供元と別の配信元（`histdata`）。
+    #: 不合格にせず、その足を照合に使った塊の対象足を補充しない。
+    SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +104,70 @@ class UnreconciledChunk:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceDifferenceChunk:
+    """配信元の値の差の塊の記録 `(系列, 塊の開始時刻, 対象足の数)`（D03 §14.7 の v1.19・§14.11）。
+
+    補充の manifest に書く形。価格は持たない。
+    """
+
+    series: SeriesId
+    chunk_start: UtcTime
+    target_count: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.target_count, bool) or not isinstance(self.target_count, int):
+            raise MarketDataValueError("SourceDifferenceChunk.target_count must be an int")
+        if self.target_count < 1:
+            raise MarketDataValueError("SourceDifferenceChunk.target_count must be >= 1")
+
+    def sort_key(self) -> tuple[str, str]:
+        """整列鍵 `(系列の文字列, 塊の開始時刻)`。"""
+        return (str(self.series), str(self.chunk_start))
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDifferenceEvidence:
+    """配信元の値の差の塊 1 つと、その理由（D03 §14.7 の v1.19・§14.15 の 2）。
+
+    `mismatch_count` はその塊の照合に使った足のうち配信元の値の差に当たった足の数（同じ銘柄の
+    15分足・1時間足の合計）、`max_difference` は丸めた後の差（tick から作った値 − 原データの値）の
+    絶対値の最大、`max_difference_pips` はそれを pip で表したもの。検証記録 `validation.json` と
+    取得記録の検証の結果の行に書く（補充の manifest には価格を書かない）。
+    """
+
+    chunk: SourceDifferenceChunk
+    mismatch_count: int
+    max_difference: Decimal
+    max_difference_pips: Decimal
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.chunk, SourceDifferenceChunk):
+            raise MarketDataValueError("SourceDifferenceEvidence.chunk must be a chunk")
+        if isinstance(self.mismatch_count, bool) or not isinstance(self.mismatch_count, int):
+            raise MarketDataValueError("SourceDifferenceEvidence.mismatch_count must be an int")
+        if self.mismatch_count < 1:
+            raise MarketDataValueError("SourceDifferenceEvidence.mismatch_count must be >= 1")
+        for value in (self.max_difference, self.max_difference_pips):
+            if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
+                raise MarketDataValueError(
+                    "SourceDifferenceEvidence differences must be finite non-negative Decimals"
+                )
+
+    def sort_key(self) -> tuple[str, str]:
+        """整列鍵 `(系列の文字列, 塊の開始時刻)`。"""
+        return self.chunk.sort_key()
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciledBar:
     """照合用の足 1 本の照合結果（D03 §14.7 の 1・2）。
 
-    原データに実在する足を、同じ規則で tick から作って比べたもの。`differences` は
-    `(項目, tick から作った値 − 原データの値)` の列で、一致すれば空。tick から足を作れな
-    かった（区間に tick が無い）ときは `built=False` で、一致しないものとして数える。
+    原データに実在する足を、同じ規則で tick から作って比べたもの。`differences` は、両者を
+    銘柄の価格の桁で丸めた後の `(項目, tick から作った値 − 原データの値)` の列で、一致すれば空
+    （D03 §14.7 の v1.19 の丸め。許容差ではない）。`rounded_only` は丸める前は差があり、丸めて
+    初めて一致した足の印（記録のみ）。tick から足を作れなかった（区間に tick が無い）ときは
+    `built=False` で、一致しないものとして数える。一致しない足は `mismatch` に区分（D03 §14.7 の
+    v1.19「不一致の分け方」）を持つ。
     """
 
     series: SeriesId
@@ -95,10 +175,21 @@ class ReconciledBar:
     hour: HourKey
     built: bool
     differences: tuple[tuple[str, Decimal], ...]
+    rounded_only: bool = False
+    mismatch: MismatchKind | None = None
+
+    def __post_init__(self) -> None:
+        matched = self.built and not self.differences
+        if matched != (self.mismatch is None):
+            raise MarketDataValueError(
+                "ReconciledBar carries a mismatch kind exactly when it does not match"
+            )
+        if self.rounded_only and not matched:
+            raise MarketDataValueError("only a matched ReconciledBar can be matched by rounding")
 
     @property
     def matched(self) -> bool:
-        """原データと始値・高値・安値・終値がすべて一致したか（差 0 を一致とする）。"""
+        """原データと始値・高値・安値・終値がすべて一致したか（丸めた後の差 0 を一致とする）。"""
         return self.built and not self.differences
 
     def sort_key(self) -> tuple[str, str]:
@@ -200,8 +291,9 @@ class RefillValidation:
     """検証 5 点の結果（D03 §14.7）。
 
     `failures` が空なら合格。`built_bars` は補充した足（対象足だけ。系列・開始時刻の順）。
-    `not_built` は作らなかった対象足と理由、`unreconciled` は未照合の塊。残りは合否に使わない
-    記録（検証記録 `validation.json` の材料。書き出しは後続の実装）。
+    `not_built` は作らなかった対象足と理由、`unreconciled` は未照合の塊、`source_differences` は
+    配信元の値の差の塊とその理由（D03 §14.7 の v1.19）。残りは合否に使わない記録（検証記録
+    `validation.json` の材料）。
     """
 
     failures: tuple[str, ...]
@@ -214,6 +306,7 @@ class RefillValidation:
     neighbors: tuple[NeighborCheck, ...]
     hourly_consistency: tuple[HourlyConsistency, ...]
     used_hours: tuple[UsedHour, ...]
+    source_differences: tuple[SourceDifferenceEvidence, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -229,3 +322,13 @@ class RefillValidation:
     def matched_count(self) -> int:
         """照合して一致した足の数（D03 §14.7 の 1）。"""
         return sum(1 for record in self.reconciled if record.matched)
+
+    @property
+    def rounding_matched_count(self) -> int:
+        """丸めで初めて一致した照合用の足の数（D03 §14.7 の v1.19。合否に使わない）。"""
+        return sum(1 for record in self.reconciled if record.rounded_only)
+
+    @property
+    def source_difference_chunks(self) -> tuple[SourceDifferenceChunk, ...]:
+        """配信元の値の差の塊の記録（補充の manifest に書く形。価格を持たない）。"""
+        return tuple(item.chunk for item in self.source_differences)

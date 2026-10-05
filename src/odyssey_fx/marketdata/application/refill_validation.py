@@ -7,14 +7,27 @@
 
 | # | 検証 | 不合格の条件 |
 |---|---|---|
-| 1 | UTC の時刻 | ミリ秒が時間ファイルの範囲外の tick がある。照合用の足が原データと一致しない |
-| 2 | bid／ask の区別 | 照合用の足のうち 1 本でも四本値が原データと異なる（差 0 を一致） |
+| 1 | UTC の時刻 | ミリ秒が時間ファイルの範囲外の tick がある。照合用の足の不一致が下の (i)・(ii) |
+| 2 | bid／ask の区別 | 照合用の足の四本値が原データと異なり、それが (i)・(ii) に当たる |
 | 3 | 前後の足との整合 | 合否に使わない（差をすべて記録し、10 pip を超えた塊に「要確認」の印） |
 | 4 | 重複 | 補充した足の中に同じ系列・開始時刻が 2 本ある。開始時刻が原データにある |
 | 5 | 出所 | 補充した足のもとの時間ファイルの出所の記録が無い |
 
 あわせて、足の不変条件に違反する足（tick の価格が正でないなど）と、補充した足が 0 本で
 あることも不合格にする。未照合の塊は合否の外に置き、その足は作らない（D03 §14.4）。
+
+**照合の丸めと不一致の分け方**（D03 §14.7 の v1.19。2026-10-05 の人間の決定 2・3）: 照合用の足と
+原データの足の四本値を、どちらも銘柄の価格の桁（提供元の設定の `price_scale` の 10 の指数）に
+`ROUND_HALF_EVEN` で丸めてから差 0 を一致とする（許容差ではない。価格の桁の 1 単位の差は不一致の
+まま）。丸めた後も一致しない足は次の順に 1 つの区分に分ける。
+
+- (i) 時刻ズレの疑い（`TIME_SHIFT`）: 同じ系列で、原データのラベルが 1 時間前または 1 時間後の足
+  （研究履歴区分の足）が実在し、照合用の足と丸めて四本値がすべて一致する。→ 不合格。
+- (ii) 提供元の訂正の疑い（`PROVIDER_CORRECTION`）: (i) に当たらず、原データの足の出所が
+  `dukascopy` または `dukascopy_refill`。→ 不合格（RF-21 の決定のまま）。
+- (iii) 配信元の値の差（`SOURCE_DIFFERENCE`）: (i) に当たらず、原データの足の出所が `histdata`。
+  → 不合格にしない。その足を照合に使った塊（同じ銘柄の連続する対象の時間と、足した照合用の時間）の
+  対象足は 15分足・1時間足とも作らず、塊ごとに記録する（未照合の塊と同じく合否の外）。
 
 **照合用の足**: 計画の時間ファイル（対象の時間と照合用の時間）に入る、研究履歴区分の原データの
 足すべて。照合用の足が原データにある塊で、取得できなかったためにどれも比べられないまま
@@ -26,7 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
@@ -38,7 +51,7 @@ from odyssey_fx.marketdata.application.refill_plan import (
     hour_chunks,
     reference_hour_for,
 )
-from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.bar import Bar, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.refill import (
@@ -54,6 +67,7 @@ from odyssey_fx.marketdata.domain.refill import (
 )
 from odyssey_fx.marketdata.domain.refill_validation import (
     HourlyConsistency,
+    MismatchKind,
     NeighborCheck,
     NeighborSide,
     NeighborStatus,
@@ -61,12 +75,19 @@ from odyssey_fx.marketdata.domain.refill_validation import (
     NotBuiltReason,
     ReconciledBar,
     RefillValidation,
+    SourceDifferenceChunk,
+    SourceDifferenceEvidence,
     UnreconciledChunk,
     UsedHour,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
 
-__all__ = ["NEIGHBOR_REVIEW_THRESHOLD_PIPS", "HourData", "validate_refill"]
+__all__ = [
+    "NEIGHBOR_REVIEW_THRESHOLD_PIPS",
+    "HourData",
+    "round_to_scale",
+    "validate_refill",
+]
 
 #: 前後の足との差の「要確認」の表示閾値（10 pip。合否に使わない。D03 §14.18 の 7）。
 NEIGHBOR_REVIEW_THRESHOLD_PIPS: Final = decimal_from_int(10)
@@ -94,15 +115,58 @@ def _series_lookup(originals: Sequence[SeriesId]) -> dict[tuple[str, str], Serie
     return {(str(series.symbol), series.timeframe.id): series for series in originals}
 
 
-def _ohlc_differences(built: Bar, raw: Bar) -> tuple[tuple[str, Decimal], ...]:
-    """`(項目, tick から作った値 − 原データの値)` の列（一致すれば空）。"""
+_OHLC: Final = ("open", "high", "low", "close")
+
+#: 時刻ズレの疑いを確かめる原データのラベルのずれ（1 時間前・後。D03 §14.7 の v1.19 の (i)）。
+_TIME_SHIFT_PROBES: Final = (-HOUR, HOUR)
+
+
+def round_to_scale(value: Decimal, exponent: int) -> Decimal:
+    """価格を銘柄の価格の桁（小数 `exponent` 桁）に丸める（D03 §14.7 の v1.19 の 1）。
+
+    最も近い値へ、ちょうど中間は偶数側（`ROUND_HALF_EVEN`）。グローバルな Decimal の文脈に依存
+    しない（ADR-0012）。丸めは比較にだけ使い、原データ・snapshot・補充した足の値は変えない。
+    """
+    context = kernel_context()
+    step = context.scaleb(decimal_from_int(1), decimal_from_int(-exponent))
+    return value.quantize(step, rounding=ROUND_HALF_EVEN, context=context)
+
+
+def _ohlc_differences(
+    built: Bar, raw: Bar, exponent: int
+) -> tuple[tuple[tuple[str, Decimal], ...], bool]:
+    """丸めた後の `(項目, tick から作った値 − 原データの値)` の列（一致すれば空）と、丸める前に
+    差があったか。"""
     differences: list[tuple[str, Decimal]] = []
-    for name in ("open", "high", "low", "close"):
+    differed = False
+    for name in _OHLC:
         made = getattr(built, name).value
         recorded = getattr(raw, name).value
         if made != recorded:
-            differences.append((name, kernel_context().subtract(made, recorded)))
-    return tuple(differences)
+            differed = True
+        rounded_made = round_to_scale(made, exponent)
+        rounded_recorded = round_to_scale(recorded, exponent)
+        if rounded_made != rounded_recorded:
+            differences.append((name, kernel_context().subtract(rounded_made, rounded_recorded)))
+    return tuple(differences), differed
+
+
+def _mismatch_kind(made: Bar | None, raw_bar: Bar, raw: RawBarIndex, exponent: int) -> MismatchKind:
+    """丸めた後も一致しない照合用の足の区分（D03 §14.7 の v1.19「不一致の分け方」）。"""
+    if made is not None:
+        for probe in _TIME_SHIFT_PROBES:
+            neighbor = raw.research_bar(raw_bar.series, raw_bar.bar_start + probe)
+            if neighbor is not None and not _ohlc_differences(made, neighbor, exponent)[0]:
+                return MismatchKind.TIME_SHIFT
+    kind = raw_bar.provenance.kind
+    if kind in (ProvenanceKind.DUKASCOPY, ProvenanceKind.DUKASCOPY_REFILL):
+        return MismatchKind.PROVIDER_CORRECTION
+    if kind is ProvenanceKind.HISTDATA:
+        return MismatchKind.SOURCE_DIFFERENCE
+    raise MarketDataValueError(  # pragma: no cover - 原データの足は生成した足ではない
+        f"{raw_bar.series} {raw_bar.bar_start}: a raw bar of source {kind.value} cannot be"
+        " reconciled (D03 §14.7)"
+    )
 
 
 def _bar_chunks(targets: Sequence[TargetBar]) -> list[list[TargetBar]]:
@@ -206,12 +270,18 @@ def validate_refill(
     reconciled: list[ReconciledBar] = []
     unreconciled_hours: set[HourKey] = set()
     unreconciled: list[UnreconciledChunk] = []
+    source_difference_hours: set[HourKey] = set()
+    source_differences: list[SourceDifferenceEvidence] = []
     unverified_hours: set[HourKey] = set()
     used_references: set[HourKey] = set()
     symbols = sorted({key.symbol for key in targets_by_hour}, key=str)
     for symbol in symbols:
         target_hours = [key.start for key in targets_by_hour if key.symbol == symbol]
         symbol_series = [series for series in originals if series.symbol == symbol]
+        quote = settings.symbol(symbol)
+        exponent = quote.price_exponent
+        if exponent is None:  # pragma: no cover - ProviderSymbol の構築時に拒否している
+            raise MarketDataValueError(f"price_scale of {symbol} must be a power of 10")
         for chunk in hour_chunks(target_hours):
             reference = reference_hour_for(symbol, chunk, symbol_series, raw)
             chunk_keys = [HourKey(symbol=symbol, start=moment) for moment in chunk]
@@ -227,6 +297,7 @@ def validate_refill(
                 used_references.add(reference_key)
             compared = 0
             has_sources = False
+            chunk_records: list[ReconciledBar] = []
             for key in sources:
                 for timeframe_id in sorted(REFILL_TIMEFRAME_IDS):
                     series = lookup.get((str(symbol), timeframe_id))
@@ -239,17 +310,25 @@ def validate_refill(
                         if ticks_of(key) is None:
                             continue  # 取得できなかった時間の足は比べられない
                         made = build(series, raw_bar.interval, key)
-                        reconciled.append(
-                            ReconciledBar(
-                                series=series,
-                                start=raw_bar.bar_start,
-                                hour=key,
-                                built=made is not None,
-                                differences=()
-                                if made is None
-                                else _ohlc_differences(made, raw_bar),
-                            )
+                        differences, differed = (
+                            ((), False)
+                            if made is None
+                            else _ohlc_differences(made, raw_bar, exponent)
                         )
+                        matched = made is not None and not differences
+                        record = ReconciledBar(
+                            series=series,
+                            start=raw_bar.bar_start,
+                            hour=key,
+                            built=made is not None,
+                            differences=differences,
+                            rounded_only=matched and differed,
+                            mismatch=None
+                            if matched
+                            else _mismatch_kind(made, raw_bar, raw, exponent),
+                        )
+                        reconciled.append(record)
+                        chunk_records.append(record)
                         compared += 1
             if not has_sources:
                 unreconciled_hours.update(chunk_keys)
@@ -267,6 +346,37 @@ def validate_refill(
                     )
             elif compared == 0:
                 unverified_hours.update(chunk_keys)
+            differing = [
+                record
+                for record in chunk_records
+                if record.mismatch is MismatchKind.SOURCE_DIFFERENCE
+            ]
+            if differing:
+                # (iii) 配信元の値の差: この塊の対象足は 15分足・1時間足とも作らない（D03 §14.7 の
+                # v1.19）。理由として不一致の足の数と差の最大（価格と pip）を残す（§14.15 の 2）。
+                source_difference_hours.update(chunk_keys)
+                largest = max(
+                    (abs(value) for record in differing for _, value in record.differences),
+                    default=decimal_from_int(0),
+                )
+                largest_pips = kernel_context().divide(largest, quote.pip_size)
+                grouped: dict[SeriesId, list[TargetBar]] = {}
+                for key in chunk_keys:
+                    for target in targets_by_hour.get(key, []):
+                        grouped.setdefault(target.series, []).append(target)
+                for series, bars in grouped.items():
+                    source_differences.append(
+                        SourceDifferenceEvidence(
+                            chunk=SourceDifferenceChunk(
+                                series=series,
+                                chunk_start=min(bars, key=lambda bar: bar.start.value).start,
+                                target_count=len(bars),
+                            ),
+                            mismatch_count=len(differing),
+                            max_difference=largest,
+                            max_difference_pips=largest_pips,
+                        )
+                    )
 
     if used_references != reference_hours:
         unexpected = sorted(str(key) for key in reference_hours - used_references)
@@ -275,12 +385,20 @@ def validate_refill(
             " differs from the one the plan was built from (D03 §14.4)"
         )
 
-    mismatches = [record for record in reconciled if not record.matched]
+    mismatches = [
+        record
+        for record in reconciled
+        if record.mismatch in (MismatchKind.TIME_SHIFT, MismatchKind.PROVIDER_CORRECTION)
+    ]
     if mismatches:
-        listed = ", ".join(f"{record.series}@{record.start}" for record in mismatches[:10])
+        listed = ", ".join(
+            f"{record.series}@{record.start} ({record.mismatch.value if record.mismatch else ''})"
+            for record in mismatches[:10]
+        )
         failures.append(
-            f"{len(mismatches)} reconciliation bar(s) differ from the raw data ({listed});"
-            " no tolerance is applied (D03 §14.7 の 1・2, §14.18 の 6)"
+            f"{len(mismatches)} reconciliation bar(s) differ from the raw data after rounding to"
+            f" the price scale and are a suspected time shift or provider correction ({listed});"
+            " no tolerance is applied (D03 §14.7 の 1・2 v1.19, §14.18 の 6)"
         )
 
     # --- 対象足を作る ----------------------------------------------------------------
@@ -293,6 +411,15 @@ def validate_refill(
             not_built.append(
                 NotBuiltBar(
                     series=target.series, start=target.start, reason=NotBuiltReason.UNRECONCILED
+                )
+            )
+            continue
+        if key in source_difference_hours:
+            not_built.append(
+                NotBuiltBar(
+                    series=target.series,
+                    start=target.start,
+                    reason=NotBuiltReason.SOURCE_DIFFERENCE,
                 )
             )
             continue
@@ -355,7 +482,8 @@ def validate_refill(
     if not built:
         failures.append(
             "no bar was built (every hour was empty or not fetched, or every chunk is"
-            " unreconciled); an empty refill is not an input to acceptance (D03 §14.7)"
+            " unreconciled or a source difference); an empty refill is not an input to"
+            " acceptance (D03 §14.7)"
         )
 
     # --- 前後の足との整合（検証 3。合否に使わない）---------------------------------------
@@ -421,6 +549,7 @@ def validate_refill(
         neighbors=tuple(sorted(neighbors, key=lambda item: item.sort_key())),
         hourly_consistency=tuple(consistency),
         used_hours=used,
+        source_differences=tuple(sorted(source_differences, key=lambda item: item.sort_key())),
     )
 
 

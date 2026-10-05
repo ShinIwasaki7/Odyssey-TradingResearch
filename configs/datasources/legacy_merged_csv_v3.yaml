@@ -1,0 +1,140 @@
+# 旧基盤から移管した結合済み CSV の列対応、版 3（D03 §4 の v1.19・§9 の v1.19）
+#
+# 版 2（legacy_merged_csv_v2.yaml）と同じ列対応に、**原データの時刻ラベルの補正規則 1 件**を足した
+# もの（2026-10-05 の人間の決定。D03 §14.18.2 の 4）。版 1・版 2 は変えない（承認済みの snapshot の
+# 受入れに使った宣言のまま残す）。
+#
+# **補正する理由**（D03 §2 の「原データの夏時間ズレ」）: 米国（America/New_York）だけが夏時間で
+# 欧州（Europe/London）が冬時間の週に、HistData 由来の原データ（2019〜2026 年の 26 週、20 系列すべて）
+# は時刻のラベルが週全体で 1 時間早い。受入れはその週の足の開始時刻に +1 時間を足してから区間を
+# 決める（D03 §4 の「適用」）。**原 CSV は変えない**。補充した足のファイル（dukascopy_refill）には
+# 当てない（提供元の tick の UTC から作るのでずれていない）。
+#
+# **補正しない週**（2026-10-05 の人間の決定 DST-3: 根拠は D03 §2 の事実とこの注記に書くだけで、
+# 機械では確かめない）: 同じ種類の週のうち、2016〜2018 年の 9 週（出所 histdata）と 2023 年 3 月の
+# 2 週（3 月 12 日・19 日の週。出所 dukascopy）は、週の最初と最後の足がカレンダーの開場・閉場と
+# 一致しラベルが正しいので列挙しない。2026 年 10 月 25 日の週は原データの期間の外。
+#
+# **対象の週の書き方**（D03 §4）: 補正の前のラベルで見た UTC の半開区間
+# [週の開場 − 1 時間, 週の閉場 − 1 時間)。どの週も日曜 20:00Z から金曜 20:00Z（開場は日曜の
+# ニューヨーク 17:00 = 夏時間で 21:00Z）。受入れは補正を当てる前に、列挙したすべての週が「開場の
+# 時点で America/New_York が夏時間で Europe/London が夏時間でない週の開場区間を 1 時間前へずらした
+# もの」であることを、渡されたカレンダーと tz の暦から計算し直して確かめ、満たさない週があれば
+# 何も書かずに失敗する（2026-10-05 の人間の決定 DST-1）。
+#
+# 規則の識別 histdata_us_only_dst_weeks は D03 §4 の仮称のまま使う。規則の宣言の内容（識別と版・
+# 補正量・対象の系列・対象の週・週を導いた暦）と、系列ごとの動かした足の本数（20 系列の合計で
+# 15分足 124,595 本・1時間足 31,150 本の見込み。D03 §2）と補正の後の再検査の結果は、snapshot の
+# manifest の conversion に記録され snapshot_id の対象になる（D03 §3.7）。
+#
+# **時刻の規約は宣言する**（上位設計書 §3.2）。値の見た目からタイムゾーンを推測しない。
+# **価格基準は検証済みの事実ではなく人間の宣言**（D03 §2）。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+id: legacy_merged_csv
+version: 3
+
+root: data/raw/market
+
+# 原ファイルの名前から銘柄と時間足を取り出す規則（補充した足のファイルには使わない）。
+filename_pattern: "{symbol}_{timeframe}_merged.csv"
+timeframes:
+  - 15m
+  - 1h
+
+time_convention: explicit_offset_utc
+
+# 足の時刻ラベルは足の**開始**（D03 §2）。終了ラベルとして解釈しない。
+time_label: bar_start
+
+columns:
+  time: timestamp
+  open: open
+  high: high
+  low: low
+  close: close
+  volume: volume
+  source: source
+
+basis_declaration:
+  value: bid
+  verified: false
+
+allowed_sources:
+  - histdata
+  - dukascopy
+  - dukascopy_refill
+
+volume_note: histdata_and_refill_rows_report_zero_volume
+
+# 原データの時刻ラベルの補正規則（D03 §4 の v1.19。1 件）。
+time_label_correction:
+  id: histdata_us_only_dst_weeks
+  version: 1
+  # 補正量（補正の前のラベルに足す時間）。
+  shift_hours: 1
+  # 週を導いた夏時間の暦: daylight が夏時間で standard が夏時間でない週。
+  dst_zones:
+    daylight: America/New_York
+    standard: Europe/London
+  # 対象の系列（10 銘柄 × 15分足・1時間足の 20 系列）。
+  series:
+    - AUDJPY/15m/bid
+    - AUDJPY/1h/bid
+    - AUDUSD/15m/bid
+    - AUDUSD/1h/bid
+    - EURGBP/15m/bid
+    - EURGBP/1h/bid
+    - EURJPY/15m/bid
+    - EURJPY/1h/bid
+    - EURUSD/15m/bid
+    - EURUSD/1h/bid
+    - GBPJPY/15m/bid
+    - GBPJPY/1h/bid
+    - GBPUSD/15m/bid
+    - GBPUSD/1h/bid
+    - USDCAD/15m/bid
+    - USDCAD/1h/bid
+    - USDCHF/15m/bid
+    - USDCHF/1h/bid
+    - USDJPY/15m/bid
+    - USDJPY/1h/bid
+  # 対象の週（26 週。補正の前のラベルの UTC の半開区間。年ごとに、日曜の開場から金曜の閉場まで）。
+  weeks:
+    # 2019 年（4 週）
+    - {start: "2019-03-10T20:00:00Z", end: "2019-03-15T20:00:00Z"}
+    - {start: "2019-03-17T20:00:00Z", end: "2019-03-22T20:00:00Z"}
+    - {start: "2019-03-24T20:00:00Z", end: "2019-03-29T20:00:00Z"}
+    - {start: "2019-10-27T20:00:00Z", end: "2019-11-01T20:00:00Z"}
+    # 2020 年（4 週）
+    - {start: "2020-03-08T20:00:00Z", end: "2020-03-13T20:00:00Z"}
+    - {start: "2020-03-15T20:00:00Z", end: "2020-03-20T20:00:00Z"}
+    - {start: "2020-03-22T20:00:00Z", end: "2020-03-27T20:00:00Z"}
+    - {start: "2020-10-25T20:00:00Z", end: "2020-10-30T20:00:00Z"}
+    # 2021 年（3 週）
+    - {start: "2021-03-14T20:00:00Z", end: "2021-03-19T20:00:00Z"}
+    - {start: "2021-03-21T20:00:00Z", end: "2021-03-26T20:00:00Z"}
+    - {start: "2021-10-31T20:00:00Z", end: "2021-11-05T20:00:00Z"}
+    # 2022 年（3 週）
+    - {start: "2022-03-13T20:00:00Z", end: "2022-03-18T20:00:00Z"}
+    - {start: "2022-03-20T20:00:00Z", end: "2022-03-25T20:00:00Z"}
+    - {start: "2022-10-30T20:00:00Z", end: "2022-11-04T20:00:00Z"}
+    # 2023 年（1 週）
+    - {start: "2023-10-29T20:00:00Z", end: "2023-11-03T20:00:00Z"}
+    # 2024 年（4 週）
+    - {start: "2024-03-10T20:00:00Z", end: "2024-03-15T20:00:00Z"}
+    - {start: "2024-03-17T20:00:00Z", end: "2024-03-22T20:00:00Z"}
+    - {start: "2024-03-24T20:00:00Z", end: "2024-03-29T20:00:00Z"}
+    - {start: "2024-10-27T20:00:00Z", end: "2024-11-01T20:00:00Z"}
+    # 2025 年（4 週）
+    - {start: "2025-03-09T20:00:00Z", end: "2025-03-14T20:00:00Z"}
+    - {start: "2025-03-16T20:00:00Z", end: "2025-03-21T20:00:00Z"}
+    - {start: "2025-03-23T20:00:00Z", end: "2025-03-28T20:00:00Z"}
+    - {start: "2025-10-26T20:00:00Z", end: "2025-10-31T20:00:00Z"}
+    # 2026 年（3 週）
+    - {start: "2026-03-08T20:00:00Z", end: "2026-03-13T20:00:00Z"}
+    - {start: "2026-03-15T20:00:00Z", end: "2026-03-20T20:00:00Z"}
+    - {start: "2026-03-22T20:00:00Z", end: "2026-03-27T20:00:00Z"}

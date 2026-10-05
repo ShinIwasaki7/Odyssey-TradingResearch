@@ -53,8 +53,24 @@ __all__ = [
 
 
 def series_lines(manifest: SnapshotManifest) -> list[str]:
-    """系列ごとの足数と区間（D03 §3.7 の `series`）。"""
-    lines = ["系列ごとの足数:"]
+    """系列ごとの足数と区間（D03 §3.7 の `series`）。
+
+    原データの時刻ラベルを補正した受入れ（D03 §4 の v1.19）では、当てた規則と系列ごとの動かした足の
+    本数を先に示す。
+    """
+    lines: list[str] = []
+    correction = manifest.conversion.time_label_correction
+    if correction is not None:
+        rule = correction.rule
+        total = sum(count for _, count in correction.shifted_bar_counts)
+        lines.append(
+            f"時刻ラベルの補正: {rule.rule_id} 版 {rule.rule_version}（+{rule.shift}、対象の週"
+            f" {len(rule.weeks)}・対象の系列 {len(rule.series)}）。動かした足 {total} 本"
+            f"（再検査: 重複 {correction.recheck_duplicates}・休場帯"
+            f" {correction.recheck_out_of_calendar}）"
+        )
+        lines.extend(f"  {name}: {count} 本" for name, count in correction.shifted_bar_counts)
+    lines.append("系列ごとの足数:")
     for record in manifest.series:
         lines.append(
             f"  {record.series_id}: {record.bar_count} 本"
@@ -393,7 +409,8 @@ def refill_finalize_lines(report: FinalizeReport) -> list[str]:
         f"取得計画: {report.plan_id}",
         f"状態（書き出しの前）: {report.state_before.value}",
         f"検証: {'合格' if report.passed else '不合格'}",
-        f"  照合した足: {validation.reconciled_count} 本（一致 {validation.matched_count} 本）",
+        f"  照合した足: {validation.reconciled_count} 本（一致 {validation.matched_count} 本。"
+        f"うち価格の桁で丸めて初めて一致 {validation.rounding_matched_count} 本）",
         f"  補充した足: {len(validation.built_bars)} 本（出来高は「出来高不明」として 0 を書く）",
         f"  作らなかった対象足: {len(validation.not_built)} 本",
     ]
@@ -403,6 +420,10 @@ def refill_finalize_lines(report: FinalizeReport) -> list[str]:
     lines.extend(f"    {reason}: {count} 本" for reason, count in sorted(reasons.items()))
     lines.append(
         f"  未照合の塊（補充分に書かず、人間の判断を待つ）: {len(validation.unreconciled)}"
+    )
+    lines.append(
+        "  配信元の値の差の塊（原データ histdata と提供元の値が違う。補充分に書かない）:"
+        f" {len(validation.source_differences)}"
     )
     review = sum(1 for item in validation.neighbors if item.needs_review)
     lines.append(f"  前後の足との差で「要確認」の印が付いた比較: {review}（合否に使わない）")

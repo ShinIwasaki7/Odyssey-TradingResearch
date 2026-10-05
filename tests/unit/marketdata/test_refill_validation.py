@@ -12,12 +12,12 @@ from datetime import timedelta
 
 import pytest
 
-from odyssey_fx.common.money import decimal_from_str
+from odyssey_fx.common.money import Price, decimal_from_str
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.application.refill_plan import RawBarIndex, build_plan
 from odyssey_fx.marketdata.application.refill_validation import HourData, validate_refill
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
-from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.refill import (
     ArchiveProvenance,
@@ -31,6 +31,7 @@ from odyssey_fx.marketdata.domain.refill import (
     Tick,
 )
 from odyssey_fx.marketdata.domain.refill_validation import (
+    MismatchKind,
     NeighborSide,
     NeighborStatus,
     NotBuiltReason,
@@ -189,28 +190,96 @@ def test_neighbors_are_recorded_with_the_review_flag() -> None:
     assert after.crosses_closure is False
 
 
-def test_a_reconciliation_mismatch_fails_without_tolerance() -> None:
+def _with_close(
+    bars: dict[SeriesId, tuple[Bar, ...]],
+    series: SeriesId,
+    start: UtcTime,
+    delta: str,
+    *,
+    kind: ProvenanceKind | None = None,
+) -> None:
+    """原データの 1 本の終値を `delta` だけ変える（出所も変えられる）。"""
+    changed: list[Bar] = []
+    for bar in bars[series]:
+        if bar.bar_start == start:
+            close = Price(bar.close.value + decimal_from_str(delta))
+            bar = replace(
+                bar,
+                close=close,
+                high=max(bar.high, close),
+                low=min(bar.low, close),
+                provenance=bar.provenance
+                if kind is None
+                else Provenance(kind=kind, source_ref=bar.provenance.source_ref),
+            )
+        changed.append(bar)
+    bars[series] = tuple(changed)
+
+
+def test_a_provider_correction_mismatch_fails_without_tolerance() -> None:
+    """(ii) 原データの出所が提供元と同じ配信元（dukascopy）で、価格の桁の 1 単位の差は不合格。"""
     bars = raw_bars()
-    shifted = [
-        bar
-        if bar.bar_start != HOUR_00
-        else probe_bar("15m", "2020-11-30T00:00:00Z").__class__(
-            series=bar.series,
-            interval=bar.interval,
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=type(bar.close)(bar.close.value + decimal_from_str("0.001")),
-            volume=bar.volume,
-            available_at=bar.available_at,
-            provenance=bar.provenance,
-        )
-        for bar in bars[USDJPY_15M]
-    ]
-    bars[USDJPY_15M] = tuple(shifted)
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.001", kind=ProvenanceKind.DUKASCOPY)
     result = _validate(raw=bars)
     assert not result.passed
-    assert any("differ from the raw data" in reason for reason in result.failures)
+    assert any("provider correction" in reason for reason in result.failures)
+    [record] = [item for item in result.reconciled if not item.matched]
+    assert record.mismatch is MismatchKind.PROVIDER_CORRECTION
+    assert record.differences == (("close", decimal_from_str("-0.001")),)
+
+
+def test_a_representation_error_below_the_price_scale_matches_after_rounding() -> None:
+    """丸め（D03 §14.7 の v1.19 の 1）: 価格の桁より下の表現誤差だけの差は一致とする。"""
+    bars = raw_bars()
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.0000000000000001")
+    result = _validate(raw=bars)
+    assert result.passed, result.failures
+    assert (result.reconciled_count, result.matched_count) == (5, 5)
+    assert result.rounding_matched_count == 1
+    assert len(result.built_bars) == 5
+
+
+def test_a_source_difference_chunk_is_not_written_and_not_failed() -> None:
+    """(iii) 原データの出所が histdata で 1 時間前後の足とも合わない差は、その塊を補充しない。"""
+    bars = raw_bars()
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.002")
+    result = _validate(raw=bars)
+    [record] = [item for item in result.reconciled if not item.matched]
+    assert record.mismatch is MismatchKind.SOURCE_DIFFERENCE
+    # 塊（01 時の対象の時間と 00 時の照合用の時間）の対象足は 15分足・1時間足とも作らない。
+    assert result.built_bars == ()
+    assert {item.reason for item in result.not_built} == {NotBuiltReason.SOURCE_DIFFERENCE}
+    assert [
+        (str(item.chunk.series), item.chunk.target_count, item.mismatch_count)
+        for item in result.source_differences
+    ] == [("USDJPY/15m/bid", 4, 1), ("USDJPY/1h/bid", 1, 1)]
+    assert {item.max_difference for item in result.source_differences} == {
+        decimal_from_str("0.002")
+    }
+    assert {item.max_difference_pips for item in result.source_differences} == {
+        decimal_from_str("0.2")
+    }
+    # 不合格の理由は「補充した足が 0 本」だけで、照合の不一致そのものは不合格にしない。
+    assert all("no bar was built" in reason for reason in result.failures)
+
+
+def test_a_suspected_time_shift_fails() -> None:
+    """(i) 照合用の足が原データの 1 時間前のラベルの足と一致するなら、補正規則を疑って不合格。"""
+    bars = raw_bars()
+    probe = probe_bar("15m", "2020-11-30T00:00:00Z")
+    earlier = HOUR_00 - timedelta(hours=1)
+    bars[USDJPY_15M] = tuple(
+        replace(bar, open=probe.open, high=probe.high, low=probe.low, close=probe.close)
+        if bar.bar_start == earlier
+        else bar
+        for bar in bars[USDJPY_15M]
+    )
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.005")
+    result = _validate(raw=bars)
+    [record] = [item for item in result.reconciled if not item.matched]
+    assert record.mismatch is MismatchKind.TIME_SHIFT
+    assert not result.passed
+    assert any("time shift" in reason for reason in result.failures)
 
 
 def test_hours_without_ticks_build_no_bars() -> None:

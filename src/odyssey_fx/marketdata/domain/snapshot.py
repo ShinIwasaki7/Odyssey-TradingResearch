@@ -48,6 +48,7 @@ from odyssey_fx.marketdata.domain.classification import (
 )
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
+from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRecord
 
 __all__ = [
     "Approval",
@@ -176,6 +177,11 @@ class ConversionRecord:
 
     `time_convention` は原データの時刻規約（初版は `explicit_offset_utc`: オフセットが
     明示された UTC）。時刻の見た目から規約を推測しない（上位設計書 §3.2）。
+
+    `time_label_correction` は、列対応の宣言に時刻ラベルの補正規則があったときに当てた規則・
+    系列ごとの動かした足の本数・補正の後の再検査の結果（D03 §3.7・§4 の v1.19 の追記）。補正規則の
+    無い宣言（版 1・版 2）では `None` で、識別子の計算対象（`identity_payload`）に鍵ごと現れない
+    （既存の snapshot の識別子は変わらない）。
     """
 
     code_version: str
@@ -183,6 +189,7 @@ class ConversionRecord:
     aggregation_rule_version: str
     calendar_id: str
     calendar_version: int
+    time_label_correction: TimeLabelCorrectionRecord | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.code_version, "ConversionRecord.code_version")
@@ -199,6 +206,44 @@ class ConversionRecord:
             raise MarketDataValueError(
                 f"ConversionRecord.calendar_version must be >= 1, got {self.calendar_version}"
             )
+        if self.time_label_correction is not None and not isinstance(
+            self.time_label_correction, TimeLabelCorrectionRecord
+        ):
+            raise MarketDataValueError(
+                "ConversionRecord.time_label_correction must be a TimeLabelCorrectionRecord"
+            )
+
+    def identity_payload(self) -> Mapping[str, Any]:
+        """`SnapshotId` のダイジェスト対象としての形（D03 §3.7.1）。
+
+        補正の記録が無ければ従来の 5 項目だけを持つ（`None` の鍵を足さない。補正規則の無い宣言で
+        作る snapshot の識別子を変えないため。D03 §4 の v1.19 の「manifest への記録」）。
+        """
+        payload: dict[str, Any] = {
+            "aggregation_rule_version": self.aggregation_rule_version,
+            "calendar_id": self.calendar_id,
+            "calendar_version": self.calendar_version,
+            "code_version": self.code_version,
+            "time_convention": self.time_convention,
+        }
+        if self.time_label_correction is not None:
+            payload["time_label_correction"] = self.time_label_correction.payload()
+        return payload
+
+    def with_calendar(self, calendar_id: str, calendar_version: int) -> ConversionRecord:
+        """カレンダーの識別と版だけを置き換えた記録（確定段階の再実行。D03 §4 の 9）。
+
+        コード版・時刻規約・集約規則の版・時刻ラベルの補正の記録は引き継ぐ（再実行は暫定 snapshot の
+        補正の後の足を再利用し、原ファイルを読み直さないので補正を 2 度当てない。D03 §4 の v1.19）。
+        """
+        return ConversionRecord(
+            code_version=self.code_version,
+            time_convention=self.time_convention,
+            aggregation_rule_version=self.aggregation_rule_version,
+            calendar_id=calendar_id,
+            calendar_version=calendar_version,
+            time_label_correction=self.time_label_correction,
+        )
 
 
 # --- partition と系列（D03 §3.7・§3.8）--------------------------------------
@@ -484,7 +529,7 @@ class SnapshotManifest:
         """
         return {
             "basis_declaration": self.basis_declaration,
-            "conversion": self.conversion,
+            "conversion": self.conversion.identity_payload(),
             "integrity_report_ref": self.integrity_report_ref,
             "legacy_access": self.legacy_access,
             "partitions": self.partitions,

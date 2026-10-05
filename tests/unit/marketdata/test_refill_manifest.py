@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from odyssey_fx.common.money import Price, decimal_from_str
@@ -20,6 +23,8 @@ from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.refill import ValidationRecord, journal_entry_from_payload
 from odyssey_fx.marketdata.domain.refill_manifest import (
     RefillFileRecord,
+    RefillManifest,
+    RefillValidationRecord,
     bar_file_name,
     refill_id_of,
 )
@@ -156,3 +161,19 @@ def test_a_refill_only_fills_raw_series_with_refilled_bars() -> None:
     histdata = _bar(USDJPY_1H, "2020-11-30T01:00:00Z", kind=ProvenanceKind.HISTDATA)
     with pytest.raises(MarketDataValueError, match="dukascopy_refill"):
         merge_refill_bars(original, [(_raw_file(USDJPY_1H), (histdata,))])
+
+
+def test_refills_written_before_v1_19_are_still_read() -> None:
+    """形式 v1（配信元の値の差の記録を持たない。代表例の試行の補充分）もそのまま読む。"""
+    root = Path(__file__).resolve().parents[3] / "data/raw/market/refill"
+    directories = sorted(path for path in root.iterdir() if not path.name.startswith("_"))
+    assert directories
+    for directory in directories:
+        manifest_payload = json.loads((directory / "refill_manifest.json").read_text())
+        assert manifest_payload["format"] == "refill_manifest_v1"
+        manifest = RefillManifest.from_payload(manifest_payload)
+        assert manifest.source_differences == ()
+        validation = RefillValidationRecord.from_payload(
+            json.loads((directory / "validation.json").read_text())
+        )
+        assert (validation.rounding_matched_count, validation.source_differences) == (None, ())

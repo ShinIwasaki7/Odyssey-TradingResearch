@@ -42,9 +42,14 @@ from odyssey_fx.marketdata.domain.refill_manifest import (
     RefillManifest,
     RefillValidationRecord,
     not_built_from_payload,
+    source_difference_evidence_from_payload,
     unreconciled_from_payload,
 )
-from odyssey_fx.marketdata.domain.refill_validation import NotBuiltBar, UnreconciledChunk
+from odyssey_fx.marketdata.domain.refill_validation import (
+    NotBuiltBar,
+    SourceDifferenceEvidence,
+    UnreconciledChunk,
+)
 from odyssey_fx.marketdata.domain.series import SeriesId
 
 __all__ = [
@@ -111,9 +116,13 @@ class Rejection:
     record: ValidationRecord
     not_built: tuple[NotBuiltBar, ...]
     unreconciled: tuple[UnreconciledChunk, ...]
+    #: 配信元の値の差の塊と理由（D03 §14.7 の v1.19。v1.19 より前の行は 0 件）。
+    source_differences: tuple[SourceDifferenceEvidence, ...] = ()
 
 
 _DETAIL_KEYS = frozenset({"mismatches", "not_built", "unreconciled"})
+#: v1.19 の書き手の形（配信元の値の差の塊を足した）。前の形の行もそのまま読む。
+_DETAIL_KEYS_V2 = _DETAIL_KEYS | {"source_differences"}
 
 
 def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejection:
@@ -124,11 +133,11 @@ def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejec
     """
     label = f"journal line {line} details"
     details = record.details
-    if frozenset(details) != _DETAIL_KEYS:
+    if frozenset(details) not in (_DETAIL_KEYS, _DETAIL_KEYS_V2):
         raise MarketDataValueError(
-            f"{label}: keys {sorted(details)} do not match {sorted(_DETAIL_KEYS)}"
+            f"{label}: keys {sorted(details)} do not match {sorted(_DETAIL_KEYS_V2)}"
         )
-    for key in _DETAIL_KEYS:
+    for key in details:
         if not isinstance(details[key], Sequence) or isinstance(details[key], str):
             raise MarketDataValueError(f"{label}.{key} must be a list")
     not_built = tuple(
@@ -139,10 +148,18 @@ def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejec
         unreconciled_from_payload(item, f"{label}.unreconciled[{index}]")
         for index, item in enumerate(details["unreconciled"])
     )
+    source_differences = tuple(
+        source_difference_evidence_from_payload(item, f"{label}.source_differences[{index}]")
+        for index, item in enumerate(details.get("source_differences", ()))
+    )
     targets = {(bar.series, bar.start) for bar in plan.target_bars}
     for name, keys in (
         ("not_built", [(item.series, item.start) for item in not_built]),
         ("unreconciled", [(item.series, item.chunk_start) for item in unreconciled]),
+        (
+            "source_differences",
+            [(item.chunk.series, item.chunk.chunk_start) for item in source_differences],
+        ),
     ):
         seen: set[tuple[SeriesId, UtcTime]] = set()
         for bar_key in keys:
@@ -152,7 +169,13 @@ def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejec
                     " the plan exactly once (D03 §14.11)"
                 )
             seen.add(bar_key)
-    return Rejection(line=line, record=record, not_built=not_built, unreconciled=unreconciled)
+    return Rejection(
+        line=line,
+        record=record,
+        not_built=not_built,
+        unreconciled=unreconciled,
+        source_differences=source_differences,
+    )
 
 
 @dataclass(frozen=True, slots=True)
