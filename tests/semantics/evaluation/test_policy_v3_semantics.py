@@ -166,6 +166,8 @@ def test_17_the_current_version_is_the_largest_standard_one(tmp_path: Path) -> N
         policy_v3_text(version=4, replace={"purpose": "  purpose: STANDARD"}),
     )
     append_registry_entry(root, "research_policy", 4)
+    # 版 5（機構確認用）を足す前の現行の版。足した後も同じ（下の最後の確かめ）。
+    assert current_standard_version(load_research_policy_registry(registry), "research_policy") == 4
     write_policy(root, "research_policy", 5, policy_v3_text(version=5))
     append_registry_entry(root, "research_policy", 5)
 
