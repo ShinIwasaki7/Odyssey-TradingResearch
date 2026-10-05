@@ -259,7 +259,7 @@ class _Store:
         raise NotImplementedError
 
     def write_aggregate_tables(  # pragma: no cover - 使わない
-        self, manifest: object, selections: object, records: object
+        self, manifest: object, selections: object, records: object, metrics: object
     ) -> None:
         raise NotImplementedError
 

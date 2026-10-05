@@ -535,7 +535,7 @@ class RunExperiment:
         started, binding = self._start_ledger(prepared, basis, execution_nonce, out_base, running)
 
         # 探索中: fold を番号の昇順に進める（D09 §5.4・§6.6）。
-        evidence, selections, records = self._run_folds(prepared)
+        evidence, selections, records, metrics = self._run_folds(prepared)
         standard = manifest.evaluation_standard
         if standard is None:  # pragma: no cover - 探索の記録票は評価基準を持つ
             raise KernelValueError("a search manifest carries its evaluation standard")
@@ -544,7 +544,9 @@ class RunExperiment:
         status = ExperimentStatus.FAILED_POST_RUN_CHECK if failed else ExperimentStatus.COMPLETED
 
         # 終端の書き込み: (1) 集約表 → (2) 結末記録 → (3) 台帳の結末の行（D09 §10.7）。
-        self._store.write_aggregate_tables(manifest, selections, records)
+        # 指標は選定・判定に使った値をそのまま渡す（読み出しは `read_evaluation_metrics` だけ。
+        # D07 v2.11 §3、D09 §17.7.4 の4）。
+        self._store.write_aggregate_tables(manifest, selections, records, metrics)
         outcome = self._search_outcome(
             prepared,
             status=status,
@@ -669,7 +671,12 @@ class RunExperiment:
 
     def _run_folds(
         self, prepared: PreparedSearch
-    ) -> tuple[tuple[FoldEvidence, ...], tuple[FoldSelection, ...], tuple[TrialRunRecord, ...]]:
+    ) -> tuple[
+        tuple[FoldEvidence, ...],
+        tuple[FoldSelection, ...],
+        tuple[TrialRunRecord, ...],
+        dict[TrialUnitKey, tuple[MetricRecord, ...]],
+    ]:
         """fold ごとに選定区間の全単位 → 選定記録 → 検証区間の単位（D09 §4.1 の4・§6.6）。"""
         manifest = prepared.manifest
         split = manifest.split
@@ -680,6 +687,7 @@ class RunExperiment:
         evidence: list[FoldEvidence] = []
         selections: list[FoldSelection] = []
         records: list[TrialRunRecord] = []
+        metrics: dict[TrialUnitKey, tuple[MetricRecord, ...]] = {}
         for fold in split.folds:
             train_units: list[TrainUnitEvaluation] = []
             for trial in prepared.trials:
@@ -704,6 +712,7 @@ class RunExperiment:
                 )
                 done = self._run_unit(prepared, trial, unit, cache)
                 records.append(done.record)
+                metrics[unit] = done.metrics
                 train_units.append(_train_unit(done))
             # 選定区間の結果だけから選び、検証区間の単位より前に選定記録を保存する（D09 §7.5）。
             selection = select_trial(fold.fold_index, standard.selection, train_units)
@@ -719,6 +728,7 @@ class RunExperiment:
                 )
                 done = self._run_unit(prepared, chosen, unit, cache)
                 records.append(done.record)
+                metrics[unit] = done.metrics
                 validation = _validation_unit(done)
             evidence.append(
                 FoldEvidence(
@@ -728,7 +738,7 @@ class RunExperiment:
                     validation=validation,
                 )
             )
-        return tuple(evidence), tuple(selections), tuple(records)
+        return tuple(evidence), tuple(selections), tuple(records), metrics
 
     def _run_unit(
         self,

@@ -53,7 +53,9 @@ from odyssey_fx.evaluation.domain.search import (
     SelectionRule,
     StandardPurpose,
     SufficiencyRule,
+    TrialPhase,
     TrialPlan,
+    TrialUnitKey,
     ValidationRule,
     compile_rejections_of,
     enumerate_assignments,
@@ -379,7 +381,7 @@ def test_the_aggregate_tables_keep_their_columns_and_types_with_no_rows(tmp_path
         experiment_version=manifest.experiment_version,
         identity_of=lambda item: item.experiment_id,
     )
-    store.write_aggregate_tables(manifest, selections, ())
+    store.write_aggregate_tables(manifest, selections, (), {})
     search = store.directory / "search"
     units = pl.read_parquet(search / "trial_units.parquet")
     assert units.height == 4
@@ -391,5 +393,9 @@ def test_the_aggregate_tables_keep_their_columns_and_types_with_no_rows(tmp_path
     assert metrics.height == 0
     assert metrics.columns[:4] == ["fold_index", "phase", "trial_index", "metric_id"]
     assert metrics.schema["fold_index"] == pl.Int64()
+    # 指標は試行記録の単位とちょうど同じ単位について渡す（D09 §17.7.4 の4）。
+    stray = TrialUnitKey(fold_index=0, phase=TrialPhase.TRAIN, trial_index=0)
+    with pytest.raises(KernelValueError, match="cover exactly the units"):
+        store.write_aggregate_tables(manifest, selections, (), {stray: ()})
     with pytest.raises(ArtifactAlreadyExists):
-        store.write_aggregate_tables(manifest, selections, ())
+        store.write_aggregate_tables(manifest, selections, (), {})

@@ -32,6 +32,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialLedgerLine,
     TrialRunRecord,
     TrialStartRecord,
+    TrialUnitKey,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.domain.access import AccessClass
@@ -442,12 +443,14 @@ class ExperimentStore(Protocol):
         manifest: ExperimentManifest,
         selections: tuple[FoldSelection, ...],
         records: tuple[TrialRunRecord, ...],
+        metrics: Mapping[TrialUnitKey, tuple[MetricRecord, ...]],
     ) -> None:
-        """集約表2つを書く（D09 §11.2）。
+        """集約表2つを書く（D09 §11.2、D07 v2.11 §3）。
 
         記録票（割当・コンパイル結果）・選定記録（候補の区分・選んだ試行）・試行記録（run と評価の
-        項目）から行を作り、指標の行は各単位の評価の `METRICS` 表をそのまま写す。0 行でも列と型を
-        残す。
+        項目）から行を作る。指標の行は、選定・判定に使った各単位の指標（`metrics`。試行記録の
+        単位ごと）を写す。評価の成果物をここで読まない（D09 §17.7.4 の4）。0 行でも列と型を残す。
+        試行記録と `metrics` の単位が一致しなければ構造エラー。
         """
         ...
 

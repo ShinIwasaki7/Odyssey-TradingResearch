@@ -1972,37 +1972,42 @@ class FileSystemExperimentStore:
         manifest: ExperimentManifest,
         selections: tuple[FoldSelection, ...],
         records: tuple[TrialRunRecord, ...],
+        metrics: Mapping[TrialUnitKey, tuple[MetricRecord, ...]],
     ) -> None:
-        """集約表2つを書く（D09 §11.2）。0 行でも列と型を残し、指標の値は計算し直さない。"""
+        """集約表2つを書く（D09 §11.2）。0 行でも列と型を残し、指標の値は計算し直さない。
+
+        指標の行は、選定・判定に使った値（`metrics`）を写す。評価の成果物をここで読まない
+        （読み出しは `read_evaluation_metrics` の1経路。D07 v2.11 §3、D09 §17.7.4 の4）。
+        """
         self._require_own(manifest)
+        if set(metrics) != {record.unit for record in records} or len(metrics) != len(records):
+            raise KernelValueError(
+                "the metrics given for trial_metrics must cover exactly the units of the trial"
+                " records (D09 §11.2)"
+            )
         rows = trial_units_rows(manifest, selections, records)
         units = pl.DataFrame(
             {name: [row[name] for row in rows] for name in _TRIAL_UNITS_SCHEMA},
             schema=dict(_TRIAL_UNITS_SCHEMA),
         )
         schema = _metrics_schema()
-        frames: list[pl.DataFrame] = []
+        metric_rows: list[dict[str, object]] = []
         for record in sorted(records, key=lambda item: item.unit.order):
-            source = (
-                evaluation_directory(
-                    self.root, record.run_id, RunEvaluationId(record.run_evaluation_id)
+            unit = record.unit
+            for metric in metrics[unit]:
+                if not isinstance(metric, MetricRecord):
+                    raise KernelValueError("trial_metrics rows must be MetricRecord values")
+                metric_rows.append(
+                    {
+                        "fold_index": unit.fold_index,
+                        "phase": unit.phase.value,
+                        "trial_index": unit.trial_index,
+                        **flatten_row(metric),
+                    }
                 )
-                / f"{EvaluationTable.METRICS.value}.parquet"
-            )
-            metrics = pl.read_parquet(source)
-            frames.append(
-                metrics.with_columns(
-                    pl.lit(record.unit.fold_index, dtype=pl.Int64()).alias("fold_index"),
-                    pl.lit(record.unit.phase.value, dtype=pl.String()).alias("phase"),
-                    pl.lit(record.unit.trial_index, dtype=pl.Int64()).alias("trial_index"),
-                )
-                .select(list(schema))
-                .cast(pl.Schema(schema))
-            )
-        table = (
-            pl.concat(frames, how="vertical")
-            if frames
-            else pl.DataFrame({name: [] for name in schema}, schema=schema)
+        table = pl.DataFrame(
+            {name: [row[name] for row in metric_rows] for name in schema},
+            schema=schema,
         )
         order = [_METRIC_ORDER[value] for value in table.get_column("metric_id").to_list()]
         table = (
