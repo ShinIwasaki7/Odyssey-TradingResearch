@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from odyssey_fx.common.money import Price, decimal_from_str
@@ -20,9 +23,14 @@ from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.refill import ValidationRecord, journal_entry_from_payload
 from odyssey_fx.marketdata.domain.refill_manifest import (
     RefillFileRecord,
+    RefillManifest,
+    RefillValidationRecord,
     bar_file_name,
     refill_id_of,
+    unreconciled_from_payload,
+    unreconciled_payload,
 )
+from odyssey_fx.marketdata.domain.refill_validation import UnreconciledCause, UnreconciledChunk
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from tests.fixtures.refill import USDJPY_1H, USDJPY_15M, provider_ref, raw_bars
 from tests.fixtures.synthetic import market
@@ -156,3 +164,131 @@ def test_a_refill_only_fills_raw_series_with_refilled_bars() -> None:
     histdata = _bar(USDJPY_1H, "2020-11-30T01:00:00Z", kind=ProvenanceKind.HISTDATA)
     with pytest.raises(MarketDataValueError, match="dukascopy_refill"):
         merge_refill_bars(original, [(_raw_file(USDJPY_1H), (histdata,))])
+
+
+def test_refills_written_before_v1_19_are_still_read() -> None:
+    """形式 v1（配信元の値の差の記録を持たない。代表例の試行の補充分）もそのまま読む。"""
+    root = Path(__file__).resolve().parents[3] / "data/raw/market/refill"
+    directories = [
+        path
+        for path in sorted(root.iterdir())
+        if not path.name.startswith("_")
+        and json.loads((path / "refill_manifest.json").read_text())["format"]
+        == "refill_manifest_v1"
+    ]
+    assert directories  # 代表例の試行（2026-10-01）の補充分
+    for directory in directories:
+        manifest_payload = json.loads((directory / "refill_manifest.json").read_text())
+        manifest = RefillManifest.from_payload(manifest_payload)
+        assert manifest.source_differences == ()
+        validation = RefillValidationRecord.from_payload(
+            json.loads((directory / "validation.json").read_text())
+        )
+        assert (validation.rounding_matched_count, validation.source_differences) == (None, ())
+
+
+def _v2_validation_payload() -> dict[str, object]:
+    """形式 v2 の最小の `validation.json`（配信元の値の差の足 1 本）。"""
+    return {
+        "bid_above_ask_tick_count": 0,
+        "format": "refill_validation_v2",
+        "hourly_consistency": [],
+        "matched_count": 0,
+        "neighbors": [],
+        "out_of_range_tick_count": 0,
+        "passed": True,
+        "plan_id": "a" * 64,
+        "reconciled_count": 1,
+        "refill_id": "b" * 64,
+        "rounding_matched_count": 0,
+        "source_difference_bars": [
+            {
+                "built": True,
+                "differences": [["close", "0.002"]],
+                "hour": "USDJPY@2020-11-30T00:00:00Z",
+                "kind": "SOURCE_DIFFERENCE",
+                "series": "USDJPY/15m/bid",
+                "start": "2020-11-30T00:15:00Z",
+                "timeframe_version": 1,
+            }
+        ],
+        "source_differences": [],
+        "unreconciled": [],
+    }
+
+
+def test_a_v2_validation_record_checks_each_source_difference_bar() -> None:
+    RefillValidationRecord.from_payload(_v2_validation_payload())
+    cases: tuple[dict[str, object] | None, ...] = (
+        None,
+        {"kind": "TIME_SHIFT"},
+        {"differences": []},
+        {"differences": [["volume", "1"]]},
+        {"built": False},
+        {"hour": "USDJPY@2020-11-30T01:00:00Z"},
+    )
+    for broken in cases:
+        payload = _v2_validation_payload()
+        bars = payload["source_difference_bars"]
+        assert isinstance(bars, list)
+        payload["source_difference_bars"] = [None if broken is None else {**bars[0], **broken}]
+        with pytest.raises(MarketDataValueError):
+            RefillValidationRecord.from_payload(payload)
+
+
+# --- 未照合の塊の原因（D03 §14.7・§14.8 の v1.20。決定 3・A）-----------------------------------
+
+
+def _unbuilt_chunk(*causes: UnreconciledCause) -> UnreconciledChunk:
+    return UnreconciledChunk(
+        series=USDJPY_15M,
+        chunk_start=UtcTime.parse("2020-11-30T01:00:00Z"),
+        target_count=4,
+        causes=causes,
+        unbuilt_reconciliation_bars=((USDJPY_15M, UtcTime.parse("2020-11-30T00:15:00Z")),),
+    )
+
+
+def test_an_unreconciled_chunk_records_both_causes_and_reads_back() -> None:
+    """照合用の足を作れない塊の原因に、配信元の値の差も併記できる（決定 A）。"""
+    chunk = _unbuilt_chunk(
+        UnreconciledCause.RECONCILIATION_NOT_BUILT, UnreconciledCause.SOURCE_DIFFERENCE
+    )
+    payload = unreconciled_payload(chunk)
+    assert payload["causes"] == ["RECONCILIATION_NOT_BUILT", "SOURCE_DIFFERENCE"]
+    assert payload["unbuilt_reconciliation_bars"] == [
+        {"series": "USDJPY/15m/bid", "start": "2020-11-30T00:15:00Z", "timeframe_version": 1}
+    ]
+    assert unreconciled_from_payload(payload, "x") == chunk
+    # 原因を持たない形は v1.20 より前の書き手の形としてだけ読む（照合できる足が無い塊）。
+    legacy = {key: payload[key] for key in ("chunk_start", "series", "target_count")}
+    legacy["timeframe_version"] = 1
+    with pytest.raises(MarketDataValueError):
+        unreconciled_from_payload(legacy, "x")
+    assert unreconciled_from_payload(legacy, "x", legacy=True).causes == (
+        UnreconciledCause.NO_RECONCILIATION_BAR,
+    )
+
+
+@pytest.mark.parametrize(
+    "causes",
+    [
+        (),
+        (UnreconciledCause.SOURCE_DIFFERENCE,),
+        (UnreconciledCause.SOURCE_DIFFERENCE, UnreconciledCause.RECONCILIATION_NOT_BUILT),
+        (UnreconciledCause.NO_RECONCILIATION_BAR, UnreconciledCause.RECONCILIATION_NOT_BUILT),
+    ],
+)
+def test_unreconciled_causes_must_be_consistent(causes: tuple[UnreconciledCause, ...]) -> None:
+    with pytest.raises(MarketDataValueError):
+        _unbuilt_chunk(*causes)
+
+
+def test_an_unbuilt_cause_needs_its_unbuilt_reconciliation_bars() -> None:
+    with pytest.raises(MarketDataValueError, match="unbuilt reconciliation bars"):
+        UnreconciledChunk(
+            series=USDJPY_15M,
+            chunk_start=UtcTime.parse("2020-11-30T01:00:00Z"),
+            target_count=4,
+            causes=(UnreconciledCause.RECONCILIATION_NOT_BUILT,),
+        )

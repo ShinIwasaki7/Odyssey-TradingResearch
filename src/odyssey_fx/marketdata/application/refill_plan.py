@@ -32,7 +32,11 @@ from typing import Final
 
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.marketdata.application.acceptance import ColumnMapping, RawFile, normalize_rows
+from odyssey_fx.marketdata.application.acceptance import (
+    ColumnMapping,
+    RawFile,
+    normalize_rows_with_correction,
+)
 from odyssey_fx.marketdata.application.ports import RawBarSource, RefillStore
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
@@ -45,6 +49,7 @@ from odyssey_fx.marketdata.domain.errors import (
     RefillPlanEmpty,
     RefillStoreInconsistent,
     SnapshotNotApproved,
+    TimeLabelCorrectionFailed,
 )
 from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.refill import (
@@ -65,6 +70,7 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
 __all__ = [
     "REFERENCE_SEARCH_HOURS",
+    "REFILL_SOURCE_ROOT",
     "REFILL_CALENDAR_VERSIONS",
     "RawBarIndex",
     "build_plan",
@@ -77,6 +83,10 @@ __all__ = [
     "require_consistent_refills",
     "require_plan_matches",
 ]
+
+#: 補充分の置き場（リポジトリからの相対。D03 §14.11）。snapshot の `sources` の `path` も
+#: この下を指す。
+REFILL_SOURCE_ROOT: Final = "data/raw/market/refill"
 
 #: 計画が受けるカレンダーの版（版 2 または版 3。D03 §14.4・§3.4.2）。
 REFILL_CALENDAR_VERSIONS: Final = frozenset({2, 3})
@@ -104,9 +114,20 @@ def load_raw_bars(
     読む前に（同じ読込のバイト列で）sha256 と行数が manifest の `sources` と一致することを
     確かめ、一致しなければ何も書かずに失敗する（D03 §14.4。PR #55 の再現スクリプトと同じ
     検査）。同じ系列のファイルが複数ある（補充分を含む snapshot）ときは時刻順に合わせる。
+
+    **原データの時刻ラベルの補正**（D03 §14.4 の v1.19）: manifest の `conversion` に補正規則が
+    記録されていれば、受入れと同じ規則を**原ファイル**（補充分の置き場の外のファイル）の行にだけ
+    当てた足を返す（対象足の導出・照合用の足・照合用の時間・前後の足のすべてがこの足を使う）。
+    補充した足のファイル（`data/raw/market/refill/…`）の行には当てない。原ファイルの行で数えた
+    系列ごとの当てた本数が manifest の記録と一致しなければ、何も書かずに失敗する
+    （`TimeLabelCorrectionFailed`、構造エラー）。
     """
+    record_of_correction = manifest.conversion.time_label_correction
+    rule = None if record_of_correction is None else record_of_correction.rule
+    refill_prefix = f"{REFILL_SOURCE_ROOT}/"
     wanted = set(symbols)
     bars_by_series: dict[SeriesId, list[Bar]] = {}
+    shifted_counts: dict[SeriesId, int] = {}
     for record in manifest.sources:
         if record.symbol not in wanted:
             continue
@@ -131,8 +152,32 @@ def load_raw_bars(
             timeframe=record.timeframe,
             declared_basis=record.declared_basis,
         )
-        bars = normalize_rows(raw_file, content.rows, mapping, definition, calendar)
+        original = not record.path.startswith(refill_prefix)
+        bars, corrected = normalize_rows_with_correction(
+            raw_file,
+            content.rows,
+            mapping,
+            definition,
+            calendar,
+            correction=rule if original else None,
+        )
+        if original and rule is not None and str(raw_file.series) in rule.series:
+            shifted_counts[raw_file.series] = shifted_counts.get(raw_file.series, 0) + len(
+                corrected
+            )
         bars_by_series.setdefault(raw_file.series, []).extend(bars)
+    if record_of_correction is not None:
+        differing = [
+            f"{series}: {count} (recorded {record_of_correction.count_of(series)})"
+            for series, count in sorted(shifted_counts.items(), key=lambda pair: str(pair[0]))
+            if record_of_correction.count_of(series) != count
+        ]
+        if differing:
+            raise TimeLabelCorrectionFailed(
+                "the time-label correction recorded in the snapshot's manifest shifts a different"
+                f" number of raw bars than reading the raw files again: {differing}; nothing was"
+                " written (D03 §14.4 v1.19)"
+            )
     return {
         series: tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
         for series, bars in bars_by_series.items()

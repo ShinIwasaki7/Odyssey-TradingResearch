@@ -47,6 +47,7 @@ __all__ = [
     "RefillValidationFailed",
     "SnapshotAlreadyExists",
     "SnapshotNotApproved",
+    "TimeLabelCorrectionFailed",
     "UnsupportedCapability",
 ]
 
@@ -89,6 +90,16 @@ class IntegrityCheckFailed(MarketDataValueError):
     def __init__(self, message: str, *, report: IntegrityReport | None = None) -> None:
         super().__init__(message)
         self.report = report
+
+
+class TimeLabelCorrectionFailed(MarketDataValueError):
+    """原データの時刻ラベルの宣言された補正が成り立たない（D03 §4 の v1.19 の追記）。
+
+    列挙した週が夏時間の暦から導けない（2026-10-05 の人間の決定 DST-1）、補正した足が
+    カレンダーで休場の時間帯に入る（同 DST-2）、補充分の入力 snapshot の補正規則が受入れの宣言と
+    違う、再取得ツールが数えた補正の本数が manifest の記録と違う、のいずれか。宣言か入力の
+    誤りであり、何も書かずに止める（構造エラー）。
+    """
 
 
 class PartitionContentMismatch(MarketDataValueError):

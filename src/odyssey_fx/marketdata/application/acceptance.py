@@ -68,7 +68,11 @@ from odyssey_fx.marketdata.domain.classification import (
     ClassificationDecision,
     ClassificationOutcome,
 )
-from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import (
+    IntegrityCheckFailed,
+    MarketDataValueError,
+    TimeLabelCorrectionFailed,
+)
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
@@ -82,6 +86,10 @@ from odyssey_fx.marketdata.domain.snapshot import (
     SnapshotManifest,
     SourceFile,
 )
+from odyssey_fx.marketdata.domain.time_label_correction import (
+    TimeLabelCorrectionRecord,
+    TimeLabelCorrectionRule,
+)
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
 __all__ = [
@@ -90,12 +98,15 @@ __all__ = [
     "RawFile",
     "build_pending_snapshot",
     "classify_partitions",
+    "correction_record",
     "finalize",
     "merge_refill_bars",
     "normalize_rows",
+    "normalize_rows_with_correction",
     "out_of_session_exclusions",
     "provisional_id",
     "reaccept_with_calendar",
+    "recheck_corrected_bars",
     "requires_rerun",
 ]
 
@@ -204,6 +215,8 @@ def normalize_rows(
     mapping: ColumnMapping,
     timeframe_def: TimeframeDefinition,
     calendar: TradingCalendar,
+    *,
+    correction: TimeLabelCorrectionRule | None = None,
 ) -> tuple[Bar, ...]:
     """原の行を足へ正規化する（D03 §4 の 2〜3）。
 
@@ -213,11 +226,41 @@ def normalize_rows(
 
     `available_at` は足の終了時刻に置く。通常の公開遅延と遅延シナリオの適用は、公開予定
     （`SeriesSchedule`）と遅延シナリオが別に行う（D03 §3.5・§3.6）。
+
+    `correction` は列対応の宣言の時刻ラベルの補正規則（D03 §4 の v1.19）。渡すのは**原ファイル**の
+    行だけで、補充した足のファイルには渡さない（提供元の tick の UTC から作るのでずれていない）。
+    補正した足を知る必要がある呼び出し側は `normalize_rows_with_correction` を使う。
+    """
+    bars, _ = normalize_rows_with_correction(
+        raw_file, rows, mapping, timeframe_def, calendar, correction=correction
+    )
+    return bars
+
+
+def normalize_rows_with_correction(
+    raw_file: RawFile,
+    rows: Sequence[RawRow],
+    mapping: ColumnMapping,
+    timeframe_def: TimeframeDefinition,
+    calendar: TradingCalendar,
+    *,
+    correction: TimeLabelCorrectionRule | None,
+) -> tuple[tuple[Bar, ...], tuple[Bar, ...]]:
+    """原の行を足へ正規化し、`(すべての足, 時刻ラベルを補正した足)` を返す（D03 §4 の 2〜3）。
+
+    **補正の適用**（D03 §4 の v1.19 の「適用」）: 系列が規則の対象の系列にあり、補正の前のラベルが
+    対象の週の区間に入る行は、足の開始時刻に補正量を足して**から**区間（`expected_interval`）を
+    決める。価格・出来高・`source` は変えない。補正は原ファイルの中身と宣言だけで決まり、決定論的
+    である。補正の後の再検査（重複・休場帯）は `recheck_corrected_bars` が行う。
     """
     if not isinstance(mapping, ColumnMapping):
         raise MarketDataValueError("normalize_rows requires a ColumnMapping")
+    if correction is not None and not isinstance(correction, TimeLabelCorrectionRule):
+        raise MarketDataValueError("normalize_rows requires a TimeLabelCorrectionRule correction")
     series = raw_file.series
+    targeted = correction is not None and str(series) in correction.series
     bars: list[Bar] = []
+    corrected: list[Bar] = []
     for index, row in enumerate(rows):
         for column in (
             mapping.time_column,
@@ -238,6 +281,10 @@ def normalize_rows(
         # 区切りだけを受けるので、区切りだけを置き換えて厳密な検査に掛ける。値の見た目
         # からタイムゾーンを補うことはしない（オフセットがなければそのまま拒否される）。
         bar_start = UtcTime.parse(raw_time.replace(" ", "T", 1))
+        shifted = False
+        if targeted and correction is not None and correction.week_of(bar_start) is not None:
+            bar_start = bar_start + correction.shift
+            shifted = True
         interval = timeframe_def.expected_interval(calendar, bar_start)
         if interval is None:
             # カレンダー上存在しない時間帯の足。区間を切り詰められないので、整列上の区間
@@ -248,23 +295,112 @@ def normalize_rows(
             # 「その時刻から整列上の終端まで」にする。
             interval = Interval(start=bar_start, end=interval.end)
         volume: Decimal = decimal_from_str(row[mapping.volume_column])
-        bars.append(
-            Bar(
-                series=series,
-                interval=interval,
-                open=_price(row[mapping.open_column], "open"),
-                high=_price(row[mapping.high_column], "high"),
-                low=_price(row[mapping.low_column], "low"),
-                close=_price(row[mapping.close_column], "close"),
-                volume=volume,
-                available_at=interval.end,
-                provenance=Provenance(
-                    kind=_provenance_kind(row[mapping.source_column]),
-                    source_ref=raw_file.path,
-                ),
-            )
+        bar = Bar(
+            series=series,
+            interval=interval,
+            open=_price(row[mapping.open_column], "open"),
+            high=_price(row[mapping.high_column], "high"),
+            low=_price(row[mapping.low_column], "low"),
+            close=_price(row[mapping.close_column], "close"),
+            volume=volume,
+            available_at=interval.end,
+            provenance=Provenance(
+                kind=_provenance_kind(row[mapping.source_column]),
+                source_ref=raw_file.path,
+            ),
         )
-    return tuple(bars)
+        bars.append(bar)
+        if shifted:
+            corrected.append(bar)
+    return tuple(bars), tuple(corrected)
+
+
+def recheck_corrected_bars(
+    bars_by_series: Mapping[SeriesId, Sequence[Bar]],
+    corrected_by_series: Mapping[SeriesId, Sequence[Bar]],
+    *,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+    calendar: TradingCalendar,
+) -> None:
+    """時刻ラベルを補正した足を再検査する（D03 §4 の v1.19 の「補正の後の再検査」）。
+
+    `bars_by_series` は原ファイルから読んだ系列ごとのすべての足（補正の後）、`corrected_by_series`
+    はそのうち補正した足。期待値はどちらの数も 0 である（D03 §2）。
+
+    1. 補正していない足（隣の週の足や、同じ週で宣言の区間の外に残った足）と同じ系列・同じ開始時刻に
+       なる足（重複）。手順4 の重複（`DUPLICATE_TIMESTAMP`、ERROR）として、系列・時刻・件数を持つ
+       検査結果を添えて受入れを失敗させる（`IntegrityCheckFailed`）。
+    2. カレンダーで休場の時間帯に入る足（期待区間が無い足。休場帯の足 `UNEXPECTED_BAR` と同じ
+       判定）。
+       1 本でもあれば、該当の足を列挙して受入れを失敗させる（宣言の誤り。人間の決定 DST-2。
+       `TimeLabelCorrectionFailed`）。
+
+    どちらも何も書かずに止める。
+    """
+    duplicates: list[CheckResult] = []
+    outside: list[str] = []
+    for series in sorted(corrected_by_series, key=str):
+        corrected = corrected_by_series[series]
+        if not corrected:
+            continue
+        shifted_ids = {id(bar) for bar in corrected}
+        uncorrected_starts: dict[UtcTime, int] = {}
+        for bar in bars_by_series.get(series, ()):
+            if id(bar) not in shifted_ids:
+                uncorrected_starts[bar.bar_start] = uncorrected_starts.get(bar.bar_start, 0) + 1
+        definition = _timeframe_def_for(series, timeframe_defs)
+        for bar in sorted(corrected, key=lambda item: item.bar_start.value):
+            clashes = uncorrected_starts.get(bar.bar_start, 0)
+            if clashes:
+                duplicates.append(
+                    CheckResult.create(
+                        CheckKind.DUPLICATE_TIMESTAMP,
+                        series,
+                        Interval(
+                            start=bar.bar_start, end=bar.bar_start + timedelta(microseconds=1)
+                        ),
+                        detail={
+                            "rows": str(clashes + 1),
+                            "sources": "time_label_corrected|uncorrected",
+                        },
+                    )
+                )
+            if definition.expected_interval(calendar, bar.bar_start) is None:
+                outside.append(f"{series} {bar.bar_start}")
+    if duplicates:
+        report = IntegrityReport(results=tuple(duplicates))
+        listed = ", ".join(f"{item.series} {item.interval.start}" for item in report.results[:10])
+        raise IntegrityCheckFailed(
+            f"{len(report.results)} time-label-corrected bar(s) overlap an uncorrected bar of the"
+            f" same series ({CheckKind.DUPLICATE_TIMESTAMP.value}: {listed});"
+            f" {len(outside)} corrected bar(s) fall outside the calendar sessions. Acceptance"
+            " fails and no snapshot is produced (D03 §4 v1.19)",
+            report=report,
+        )
+    if outside:
+        raise TimeLabelCorrectionFailed(
+            f"{len(outside)} time-label-corrected bar(s) fall outside the calendar sessions:"
+            f" {outside[:50]}; the correction rule is wrong. Acceptance fails and no snapshot is"
+            " produced (D03 §4 v1.19, human decision DST-2)"
+        )
+
+
+def correction_record(
+    rule: TimeLabelCorrectionRule,
+    accepted_series: Collection[SeriesId],
+    corrected_by_series: Mapping[SeriesId, Sequence[Bar]],
+) -> TimeLabelCorrectionRecord:
+    """manifest の `conversion` に記録する補正の結果を作る（D03 §3.7・§4 の v1.19）。
+
+    受け入れた原ファイルの系列のうち規則の対象の系列ごとに、動かした足の本数（0 本の系列も含む）を
+    持つ。再検査の結果は、`recheck_corrected_bars` を通った後なので重複 0・休場帯 0 である。
+    """
+    counts = tuple(
+        (str(series), len(corrected_by_series.get(series, ())))
+        for series in sorted(set(accepted_series), key=str)
+        if str(series) in rule.series
+    )
+    return TimeLabelCorrectionRecord(rule=rule, shifted_bar_counts=counts)
 
 
 def _provenance_counts(bars: Sequence[Bar]) -> tuple[tuple[str, int], ...]:
@@ -971,13 +1107,7 @@ def reaccept_with_calendar(
         calendar=calendar,
         boundaries=boundaries,
         basis_declaration=manifest.basis_declaration,
-        conversion=ConversionRecord(
-            code_version=manifest.conversion.code_version,
-            time_convention=manifest.conversion.time_convention,
-            aggregation_rule_version=manifest.conversion.aggregation_rule_version,
-            calendar_id=calendar.id,
-            calendar_version=calendar.version,
-        ),
+        conversion=manifest.conversion.with_calendar(calendar.id, calendar.version),
         aggregated_findings=findings,
         legacy_access=manifest.legacy_access,
     )

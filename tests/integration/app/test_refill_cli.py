@@ -456,6 +456,21 @@ def test_accept_refuses_a_refill_outside_its_place_or_with_the_old_datasource(
     assert not pending.exists() or not any(pending.iterdir())
 
 
+def test_accept_refuses_a_refill_whose_input_snapshot_has_another_time_label_correction(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """補充分と合わせる受入れ（D03 §4 の v1.19）: 補充分の入力 snapshot は補正なしで受け入れたので、
+    補正規則のある宣言（版 3）で合わせる受入れは何も書かずに失敗する。"""
+    plan_id = _fetch_all(repo, monkeypatch)
+    assert _finalize(repo, plan_id) == 0
+    refill_dir = repo / "data/raw/market/refill" / _refill_id(repo)
+    capsys.readouterr()
+    assert _accept_with(repo, refill_dir, datasource="legacy_merged_csv_v3.yaml") == 1
+    assert "time-label correction" in capsys.readouterr().err
+    pending = repo / "data/snapshots/_pending"
+    assert not pending.exists() or not any(pending.iterdir())
+
+
 def test_an_unreadable_input_snapshot_is_a_structural_error_not_a_missing_refill(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

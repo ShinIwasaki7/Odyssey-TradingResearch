@@ -76,6 +76,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
     SnapshotManifest,
     SourceFile,
 )
+from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRecord
 
 __all__ = ["MANIFEST_SCHEMA_VERSION", "ParquetSnapshotStore", "manifest_payload"]
 
@@ -160,13 +161,8 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             "value": manifest.basis_declaration.value.value,
             "verified": manifest.basis_declaration.verified,
         },
-        "conversion": {
-            "aggregation_rule_version": manifest.conversion.aggregation_rule_version,
-            "calendar_id": manifest.conversion.calendar_id,
-            "calendar_version": manifest.conversion.calendar_version,
-            "code_version": manifest.conversion.code_version,
-            "time_convention": manifest.conversion.time_convention,
-        },
+        # 補正の記録が無ければ従来の 5 項目だけ（D03 §3.7 の v1.19）。識別子の対象と同じ形。
+        "conversion": dict(manifest.conversion.identity_payload()),
         "integrity_report_ref": _digest_payload(manifest.integrity_report_ref),
         "provisional_report_ref": _digest_payload(provisional_ref),
         "sources": [
@@ -300,6 +296,11 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
             aggregation_rule_version=str(conversion["aggregation_rule_version"]),
             calendar_id=str(conversion["calendar_id"]),
             calendar_version=int(conversion["calendar_version"]),
+            time_label_correction=None
+            if "time_label_correction" not in conversion
+            else TimeLabelCorrectionRecord.from_payload(
+                conversion["time_label_correction"], "manifest.conversion.time_label_correction"
+            ),
         ),
         series=tuple(
             SeriesManifest(

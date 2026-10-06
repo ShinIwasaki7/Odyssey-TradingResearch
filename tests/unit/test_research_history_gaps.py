@@ -77,7 +77,11 @@ RAW_HEADER = ",open,high,low,close,volume,source\n"
 RAW_ROW = "2019-03-15 19:45:00+00:00,1,1,1,1,0,histdata\n"
 
 
-def _write_snapshot(tmp_path: Path, raw_content: dict[tuple[str, str], str]) -> list[str]:
+def _write_snapshot(
+    tmp_path: Path,
+    raw_content: dict[tuple[str, str], str],
+    conversion: dict[str, Any] | None = None,
+) -> list[str]:
     """20 系列の研究履歴 partition と原 CSV を持つ最小の snapshot を作り、main の引数を返す。"""
     snapshot_id = "s" * 8
     partitions = [
@@ -113,12 +117,14 @@ def _write_snapshot(tmp_path: Path, raw_content: dict[tuple[str, str], str]) -> 
                     "sha256": hashlib.sha256(accepted.encode()).hexdigest(),
                 }
             )
-    manifest = {
+    manifest: dict[str, Any] = {
         "snapshot_id": snapshot_id,
         "partitions": partitions,
         "resolved_classifications": records,
         "sources": sources,
     }
+    if conversion is not None:
+        manifest["conversion"] = conversion
     (tmp_path / "snap" / snapshot_id).mkdir(parents=True)
     (tmp_path / "snap" / snapshot_id / "manifest.json").write_text(json.dumps(manifest))
     return [
@@ -155,6 +161,42 @@ def test_main_fails_when_raw_csv_differs_from_snapshot_sources(tmp_path: Path) -
     # 受入れ後に書き換えた（区間内に足を足した）原 CSV は snapshot の記録と一致しない
     edited = RAW_HEADER + RAW_ROW + "2019-03-15 20:00:00+00:00,1,1,1,1,0,histdata\n"
     code = rhg.main(_write_snapshot(tmp_path, {("USDJPY", "15m@v1"): edited}))
+
+    assert code == 1
+    assert not (tmp_path / "out").exists()
+
+
+def _correction(count: int) -> dict[str, Any]:
+    """USDJPY 15分足の 2019-03-10 の週を +1 時間する補正の記録（manifest の形。D03 §3.7）。"""
+    return {
+        "time_label_correction": {
+            "recheck": {"duplicates": 0, "out_of_calendar": 0},
+            "rule": {
+                "dst_zones": {"daylight": "America/New_York", "standard": "Europe/London"},
+                "id": "histdata_us_only_dst_weeks",
+                "series": ["USDJPY/15m/bid"],
+                "shift_seconds": 3600,
+                "version": 1,
+                "weeks": [{"end": "2019-03-15T20:00:00Z", "start": "2019-03-10T20:00:00Z"}],
+            },
+            "shifted_bar_counts": [{"count": count, "series": "USDJPY/15m/bid"}],
+        }
+    }
+
+
+def test_a_corrected_snapshot_counts_raw_rows_at_the_corrected_labels(tmp_path: Path) -> None:
+    """補正後の snapshot（D03 §14.14 の段 6c）: 原 CSV の 19:45 の行は 20:45 の足として数える。"""
+    code = rhg.main(_write_snapshot(tmp_path, {}, _correction(1)))
+
+    assert code == 0
+    with (tmp_path / "out" / "gap_intervals.csv").open() as f:
+        (row,) = list(csv.DictReader(f))
+    assert row["raw_rows_in_interval"] == "0"
+    assert (row["raw_prev_row_utc"], row["raw_next_row_utc"]) == ("", "2019-03-15T20:45Z")
+
+
+def test_a_correction_count_differing_from_the_manifest_fails(tmp_path: Path) -> None:
+    code = rhg.main(_write_snapshot(tmp_path, {}, _correction(2)))
 
     assert code == 1
     assert not (tmp_path / "out").exists()

@@ -12,8 +12,14 @@
 **補充の manifest**（D03 §14.11）は価格を持たない。持つのは識別子・計画の中身（`plan.json` と
 同じ正規化内容）・入力と設定の識別・時間ファイルごとの出所・補充した足のファイルごとの
 `(ファイル名, 銘柄, 時間足)` と sha256 と行数・`validation.json` の sha256・系列ごとの本数・作らな
-かった対象足と理由・未照合の塊・作成時刻（識別子に入れない）。PR #58 が定めた最小の項目
-（`plan_id` と時間ごとの `hour`・`outcome`・`tick_digest`）を含む（`RefillManifestCore` が読む）。
+かった対象足と理由・未照合の塊・配信元の値の差の塊（v1.19）・作成時刻（識別子に入れない）。
+PR #58 が定めた最小の項目（`plan_id` と時間ごとの `hour`・`outcome`・`tick_digest`）を含む
+（`RefillManifestCore` が読む）。
+
+**形式の版**（D03 §14.7・§14.11 の v1.19）: 配信元の値の差の塊を足した書き出しは
+`refill_manifest_v2`・`refill_validation_v2`。v1.19 より前に書いた補充分（形式 v1。配信元の値の差の
+記録を持たない）もそのまま読む（配信元の値の差は 0 件として読む。補充分は一度書いたら変えない
+ため）。
 """
 
 from __future__ import annotations
@@ -47,6 +53,9 @@ from odyssey_fx.marketdata.domain.refill_validation import (
     NeighborStatus,
     NotBuiltBar,
     NotBuiltReason,
+    SourceDifferenceChunk,
+    SourceDifferenceEvidence,
+    UnreconciledCause,
     UnreconciledChunk,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -66,6 +75,10 @@ __all__ = [
     "not_built_from_payload",
     "not_built_payload",
     "refill_id_of",
+    "source_difference_evidence_from_payload",
+    "source_difference_evidence_payload",
+    "source_difference_from_payload",
+    "source_difference_payload",
     "unreconciled_from_payload",
     "unreconciled_payload",
 ]
@@ -74,8 +87,11 @@ __all__ = [
 REFILL_AGGREGATION_RULE_VERSION: Final = "refill_ticks_v1"
 
 #: 補充の manifest の形式の印と、補充分のディレクトリの中の名前（D03 §14.11）。
-REFILL_MANIFEST_FORMAT: Final = "refill_manifest_v1"
-REFILL_VALIDATION_FORMAT: Final = "refill_validation_v1"
+REFILL_MANIFEST_FORMAT: Final = "refill_manifest_v2"
+REFILL_VALIDATION_FORMAT: Final = "refill_validation_v2"
+#: v1.19 より前の形式（配信元の値の差の記録を持たない）。読むだけで書かない。
+_REFILL_MANIFEST_FORMAT_V1: Final = "refill_manifest_v1"
+_REFILL_VALIDATION_FORMAT_V1: Final = "refill_validation_v1"
 REFILL_MANIFEST_FILE: Final = "refill_manifest.json"
 REFILL_VALIDATION_FILE: Final = "validation.json"
 
@@ -522,8 +538,75 @@ def not_built_from_payload(payload: object, label: str) -> NotBuiltBar:
     )
 
 
+_UNRECONCILED_KEYS_V1: Final = frozenset(
+    {"chunk_start", "series", "target_count", "timeframe_version"}
+)
+_UNRECONCILED_KEYS: Final = _UNRECONCILED_KEYS_V1 | {"causes", "unbuilt_reconciliation_bars"}
+
+
 def unreconciled_payload(item: UnreconciledChunk) -> Mapping[str, Any]:
-    """未照合の塊 1 つの記録の形 `(系列, 塊の開始時刻, 対象足の数)`。"""
+    """未照合の塊 1 つの記録の形 `(系列, 塊の開始時刻, 対象足の数)` と原因（D03 §14.8 の v1.20）。
+
+    原因 `causes` は 1 つ以上（照合用の足を作れない塊で配信元の値の差にも当たれば両方。
+    2026-10-06 の人間の決定 A）。`unbuilt_reconciliation_bars` は作れなかった照合用の足。
+    """
+    return {
+        **_series_payload(item.series),
+        "causes": [cause.value for cause in item.causes],
+        "chunk_start": str(item.chunk_start),
+        "target_count": item.target_count,
+        "unbuilt_reconciliation_bars": [
+            {**_series_payload(series), "start": str(start)}
+            for series, start in item.unbuilt_reconciliation_bars
+        ],
+    }
+
+
+def unreconciled_from_payload(
+    payload: object, label: str, *, legacy: bool = False
+) -> UnreconciledChunk:
+    """未照合の塊 1 つの記録を読む。
+
+    `legacy` は v1.20 より前の書き手の形（原因を持たない。manifest・`validation.json` の形式 v1
+    と、取得記録の前の形の行）。原因は照合できる足が無い（`NO_RECONCILIATION_BAR`）として読む。
+    """
+    mapping = _mapping(payload, label)
+    _keys(mapping, _UNRECONCILED_KEYS_V1 if legacy else _UNRECONCILED_KEYS, label)
+    series = series_from_record(mapping["series"], mapping["timeframe_version"], label)
+    chunk_start = _time(mapping["chunk_start"], f"{label}.chunk_start")
+    target_count = _int(mapping["target_count"], f"{label}.target_count", minimum=1)
+    if legacy:
+        return UnreconciledChunk(series=series, chunk_start=chunk_start, target_count=target_count)
+    causes: list[UnreconciledCause] = []
+    for index, value in enumerate(_sequence(mapping["causes"], f"{label}.causes")):
+        try:
+            causes.append(UnreconciledCause(value))
+        except ValueError as exc:
+            raise MarketDataValueError(f"{label}.causes[{index}]: {exc}") from exc
+    bars: list[tuple[SeriesId, UtcTime]] = []
+    for index, entry in enumerate(
+        _sequence(mapping["unbuilt_reconciliation_bars"], f"{label}.unbuilt_reconciliation_bars")
+    ):
+        at = f"{label}.unbuilt_reconciliation_bars[{index}]"
+        bar = _mapping(entry, at)
+        _keys(bar, frozenset({"series", "start", "timeframe_version"}), at)
+        bars.append(
+            (
+                series_from_record(bar["series"], bar["timeframe_version"], at),
+                _time(bar["start"], f"{at}.start"),
+            )
+        )
+    return UnreconciledChunk(
+        series=series,
+        chunk_start=chunk_start,
+        target_count=target_count,
+        causes=tuple(causes),
+        unbuilt_reconciliation_bars=tuple(bars),
+    )
+
+
+def source_difference_payload(item: SourceDifferenceChunk) -> Mapping[str, Any]:
+    """配信元の値の差の塊 1 つの記録の形 `(系列, 塊の開始時刻, 対象足の数)`（価格を持たない）。"""
     return {
         **_series_payload(item.series),
         "chunk_start": str(item.chunk_start),
@@ -531,14 +614,108 @@ def unreconciled_payload(item: UnreconciledChunk) -> Mapping[str, Any]:
     }
 
 
-def unreconciled_from_payload(payload: object, label: str) -> UnreconciledChunk:
-    """未照合の塊 1 つの記録を読む。"""
+def source_difference_from_payload(payload: object, label: str) -> SourceDifferenceChunk:
+    """配信元の値の差の塊 1 つの記録を読む。"""
     mapping = _mapping(payload, label)
     _keys(mapping, frozenset({"chunk_start", "series", "target_count", "timeframe_version"}), label)
-    return UnreconciledChunk(
+    return SourceDifferenceChunk(
         series=series_from_record(mapping["series"], mapping["timeframe_version"], label),
         chunk_start=_time(mapping["chunk_start"], f"{label}.chunk_start"),
         target_count=_int(mapping["target_count"], f"{label}.target_count", minimum=1),
+    )
+
+
+_SOURCE_DIFFERENCE_BAR_KEYS: Final = frozenset(
+    {"built", "differences", "hour", "kind", "series", "start", "timeframe_version"}
+)
+_OHLC_NAMES: Final = frozenset({"open", "high", "low", "close"})
+
+
+def _source_difference_bar_from_payload(
+    payload: object, label: str
+) -> tuple[SeriesId, UtcTime, tuple[tuple[str, Decimal], ...]]:
+    """`validation.json` の配信元の値の差に当たる不一致の足 1 本の記録を検査して読む（D03 §14.7）。
+
+    書き手は `refill_finalize._mismatch_entry`。区分は配信元の値の差だけで、tick から作った足
+    （`built` が真）の丸めた後の差（四本値の名前と 0 でない差）を 1 つ以上持つ。
+    """
+    mapping = _mapping(payload, label)
+    _keys(mapping, _SOURCE_DIFFERENCE_BAR_KEYS, label)
+    series = series_from_record(mapping["series"], mapping["timeframe_version"], label)
+    start = _time(mapping["start"], f"{label}.start")
+    hour = _str(mapping["hour"], f"{label}.hour")
+    expected_hour = (
+        f"{series.symbol}@{UtcTime(start.value.replace(minute=0, second=0, microsecond=0))}"
+    )
+    if hour != expected_hour:
+        raise MarketDataValueError(f"{label}.hour must be {expected_hour!r}, got {hour!r}")
+    if mapping["kind"] != "SOURCE_DIFFERENCE":
+        raise MarketDataValueError(f"{label}.kind must be 'SOURCE_DIFFERENCE'")
+    if _bool(mapping["built"], f"{label}.built") is not True:
+        raise MarketDataValueError(f"{label}.built must be true for a source difference")
+    differences: list[tuple[str, Decimal]] = []
+    for index, entry in enumerate(_sequence(mapping["differences"], f"{label}.differences")):
+        at = f"{label}.differences[{index}]"
+        pair = _sequence(entry, at)
+        if len(pair) != 2 or pair[0] not in _OHLC_NAMES:
+            raise MarketDataValueError(f"{at} must be [open|high|low|close, difference]")
+        value = _optional_decimal(pair[1], f"{at}[1]")
+        if value is None or value == 0:
+            raise MarketDataValueError(f"{at}[1] must be a non-zero difference")
+        differences.append((str(pair[0]), value))
+    if not differences:
+        raise MarketDataValueError(f"{label}.differences must not be empty")
+    return series, start, tuple(differences)
+
+
+_EVIDENCE_KEYS: Final = frozenset(
+    {
+        "chunk_start",
+        "max_difference",
+        "max_difference_pips",
+        "mismatch_count",
+        "series",
+        "target_count",
+        "timeframe_version",
+    }
+)
+
+
+def source_difference_evidence_payload(item: SourceDifferenceEvidence) -> Mapping[str, Any]:
+    """配信元の値の差の塊と理由（不一致の足の数・差の最大の価格と pip）の記録の形。
+
+    検証記録 `validation.json` と取得記録の検証の結果の行に書く（D03 §14.7 の v1.19・§14.15 の 2）。
+    """
+    return {
+        **source_difference_payload(item.chunk),
+        "max_difference": format(item.max_difference, "f"),
+        "max_difference_pips": format(item.max_difference_pips, "f"),
+        "mismatch_count": item.mismatch_count,
+    }
+
+
+def source_difference_evidence_from_payload(
+    payload: object, label: str
+) -> SourceDifferenceEvidence:
+    """配信元の値の差の塊と理由の記録を読む。"""
+    mapping = _mapping(payload, label)
+    _keys(mapping, _EVIDENCE_KEYS, label)
+    chunk = source_difference_from_payload(
+        {
+            key: mapping[key]
+            for key in ("chunk_start", "series", "target_count", "timeframe_version")
+        },
+        label,
+    )
+    largest = _optional_decimal(mapping["max_difference"], f"{label}.max_difference")
+    largest_pips = _optional_decimal(mapping["max_difference_pips"], f"{label}.max_difference_pips")
+    if largest is None or largest_pips is None:
+        raise MarketDataValueError(f"{label}: the largest difference is required")
+    return SourceDifferenceEvidence(
+        chunk=chunk,
+        mismatch_count=_int(mapping["mismatch_count"], f"{label}.mismatch_count", minimum=1),
+        max_difference=largest,
+        max_difference_pips=largest_pips,
     )
 
 
@@ -563,6 +740,7 @@ _MANIFEST_KEYS: Final = frozenset(
         "unreconciled",
     }
 )
+_MANIFEST_KEYS_V2: Final = _MANIFEST_KEYS | {"source_differences"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +770,8 @@ class RefillManifest:
     not_built: tuple[NotBuiltBar, ...]
     unreconciled: tuple[UnreconciledChunk, ...]
     created_at: UtcTime
+    #: 配信元の値の差の塊ごとの `(系列, 塊の開始時刻, 対象足の数)`（D03 §14.7 の v1.19・§14.11）。
+    source_differences: tuple[SourceDifferenceChunk, ...] = ()
 
     def __post_init__(self) -> None:
         require_hex_digest(self.refill_id, "RefillManifest.refill_id")
@@ -662,6 +842,10 @@ class RefillManifest:
         for label, keys in (
             ("not_built", [(entry.series, entry.start) for entry in self.not_built]),
             ("unreconciled", [(entry.series, entry.chunk_start) for entry in self.unreconciled]),
+            (
+                "source_differences",
+                [(entry.series, entry.chunk_start) for entry in self.source_differences],
+            ),
         ):
             seen: set[tuple[SeriesId, UtcTime]] = set()
             for series, start in keys:
@@ -706,19 +890,30 @@ class RefillManifest:
             "refill_id": self.refill_id,
             "series_counts": [item.payload() for item in self.series_counts],
             "snapshot_id": self.plan.snapshot_id,
+            "source_differences": [
+                source_difference_payload(item) for item in self.source_differences
+            ],
             "unreconciled": [unreconciled_payload(item) for item in self.unreconciled],
         }
 
     @classmethod
     def from_payload(cls, payload: object) -> RefillManifest:
-        """`refill_manifest.json` の内容から読む。形が違えば `MarketDataValueError`。"""
+        """`refill_manifest.json` の内容から読む。形が違えば `MarketDataValueError`。
+
+        形式 v1（v1.19 より前の書き出し。配信元の値の差の鍵を持たない）も読む。
+        """
         label = REFILL_MANIFEST_FILE
         mapping = _mapping(payload, label)
-        _keys(mapping, _MANIFEST_KEYS, label)
-        if mapping["format"] != REFILL_MANIFEST_FORMAT:
-            raise MarketDataValueError(
-                f"{label}.format must be {REFILL_MANIFEST_FORMAT!r}, got {mapping['format']!r}"
-            )
+        legacy = mapping.get("format") == _REFILL_MANIFEST_FORMAT_V1
+        if legacy:
+            _keys(mapping, _MANIFEST_KEYS, label)
+        else:
+            _keys(mapping, _MANIFEST_KEYS_V2, label)
+            if mapping["format"] != REFILL_MANIFEST_FORMAT:
+                raise MarketDataValueError(
+                    f"{label}.format must be {REFILL_MANIFEST_FORMAT!r} (or"
+                    f" {_REFILL_MANIFEST_FORMAT_V1!r}), got {mapping['format']!r}"
+                )
         plan = RefillPlan.from_payload(mapping["plan"])
         calendar = _mapping(mapping["calendar"], f"{label}.calendar")
         provider = _mapping(mapping["provider"], f"{label}.provider")
@@ -760,12 +955,18 @@ class RefillManifest:
                 for index, item in enumerate(_sequence(mapping["not_built"], f"{label}.not_built"))
             ),
             unreconciled=tuple(
-                unreconciled_from_payload(item, f"{label}.unreconciled[{index}]")
+                unreconciled_from_payload(item, f"{label}.unreconciled[{index}]", legacy=legacy)
                 for index, item in enumerate(
                     _sequence(mapping["unreconciled"], f"{label}.unreconciled")
                 )
             ),
             created_at=_time(mapping["created_at"], f"{label}.created_at"),
+            source_differences=tuple(
+                source_difference_from_payload(item, f"{label}.source_differences[{index}]")
+                for index, item in enumerate(
+                    _sequence(mapping.get("source_differences", []), f"{label}.source_differences")
+                )
+            ),
         )
 
 
@@ -786,6 +987,11 @@ _VALIDATION_KEYS: Final = frozenset(
         "unreconciled",
     }
 )
+_VALIDATION_KEYS_V2: Final = _VALIDATION_KEYS | {
+    "rounding_matched_count",
+    "source_difference_bars",
+    "source_differences",
+}
 _NEIGHBOR_KEYS: Final = frozenset(
     {
         "chunk_end",
@@ -867,6 +1073,10 @@ class RefillValidationRecord:
     neighbors: tuple[NeighborCheck, ...]
     hourly_consistency: tuple[HourlyConsistency, ...]
     unreconciled: tuple[UnreconciledChunk, ...]
+    #: 丸めで初めて一致した照合用の足の数（v1.19。形式 v1 の記録には無いので `None`）。
+    rounding_matched_count: int | None = None
+    #: 配信元の値の差の塊と理由（v1.19。形式 v1 の記録は 0 件）。
+    source_differences: tuple[SourceDifferenceEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         require_hex_digest(self.refill_id, "RefillValidationRecord.refill_id")
@@ -883,11 +1093,20 @@ class RefillValidationRecord:
         """`validation.json` の内容から読む。形が違えば `MarketDataValueError`。"""
         label = REFILL_VALIDATION_FILE
         mapping = _mapping(payload, label)
-        _keys(mapping, _VALIDATION_KEYS, label)
-        if mapping["format"] != REFILL_VALIDATION_FORMAT:
+        legacy = mapping.get("format") == _REFILL_VALIDATION_FORMAT_V1
+        _keys(mapping, _VALIDATION_KEYS if legacy else _VALIDATION_KEYS_V2, label)
+        if not legacy and mapping["format"] != REFILL_VALIDATION_FORMAT:
             raise MarketDataValueError(
-                f"{label}.format must be {REFILL_VALIDATION_FORMAT!r}, got {mapping['format']!r}"
+                f"{label}.format must be {REFILL_VALIDATION_FORMAT!r} (or"
+                f" {_REFILL_VALIDATION_FORMAT_V1!r}), got {mapping['format']!r}"
             )
+        if not legacy:
+            for index, item in enumerate(
+                _sequence(mapping["source_difference_bars"], f"{label}.source_difference_bars")
+            ):
+                _source_difference_bar_from_payload(
+                    item, f"{label}.source_difference_bars[{index}]"
+                )
         if mapping["passed"] is not True:
             raise MarketDataValueError(f"{label}.passed must be true (only a passed refill has it)")
 
@@ -915,6 +1134,18 @@ class RefillValidationRecord:
                 _hourly_from_payload(item, at) for at, item in items("hourly_consistency")
             ),
             unreconciled=tuple(
-                unreconciled_from_payload(item, at) for at, item in items("unreconciled")
+                unreconciled_from_payload(item, at, legacy=legacy)
+                for at, item in items("unreconciled")
+            ),
+            rounding_matched_count=None
+            if legacy
+            else _int(
+                mapping["rounding_matched_count"], f"{label}.rounding_matched_count", minimum=0
+            ),
+            source_differences=()
+            if legacy
+            else tuple(
+                source_difference_evidence_from_payload(item, at)
+                for at, item in items("source_differences")
             ),
         )

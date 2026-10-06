@@ -16,6 +16,11 @@
   確かめ、1 つでも欠けるか一致しなければ何も書かずに失敗する。補充分を含む snapshot（D03
   §14.11）では、同じ系列の補充した足のファイル（``data/raw/market/refill/<refill_id>/…``）の行も
   同じ検査の後に数える。
+- **補正後の snapshot**（D03 §4・§14.14 の段 6c の v1.19）: manifest の ``conversion`` に時刻ラベル
+  の補正規則（``time_label_correction``）が記録されていれば、原 CSV の行の時刻に受入れと同じ補正を
+  当ててから数える（対象の系列の、対象の週に入るラベルに補正量を足す。補充した足のファイルの行には
+  当てない）。系列ごとの当てた本数が manifest の記録と一致しなければ何も書かずに失敗する。補正後の
+  snapshot の識別子を ``--snapshot-id`` に渡せば、補正後の欠落一覧を作り直せる。
 
 戦略の成績（指標・レポート）は読まない。標準ライブラリだけを使う。
 """
@@ -30,7 +35,7 @@ import json
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -288,6 +293,44 @@ class RawSourceMismatch(RuntimeError):
 
 #: manifest の ``sources`` の ``path`` が原データの基点からの相対になる接頭辞（D03 §3.7）。
 RAW_ROOT_PREFIX = "data/raw/market/"
+#: 補充した足のファイルの置き場（D03 §14.11）。時刻ラベルの補正はここのファイルに当てない。
+REFILL_ROOT_PREFIX = "data/raw/market/refill/"
+
+
+@dataclass(frozen=True)
+class LabelCorrection:
+    """manifest に記録された時刻ラベルの補正（D03 §3.7・§4 の v1.19）。"""
+
+    series: frozenset[str]
+    weeks: tuple[Interval, ...]
+    shift: timedelta
+    counts: dict[str, int]
+
+    def shifted(self, moment: datetime) -> datetime | None:
+        """補正の前のラベルが対象の週に入れば補正後の時刻、入らなければ ``None``。"""
+        for start, end in self.weeks:
+            if start <= moment < end:
+                return moment + self.shift
+        return None
+
+
+def label_correction(manifest: dict[str, Any]) -> LabelCorrection | None:
+    """manifest の ``conversion.time_label_correction`` を読む（無ければ ``None``）。"""
+    record = manifest.get("conversion", {}).get("time_label_correction")
+    if record is None:
+        return None
+    rule = record["rule"]
+    return LabelCorrection(
+        series=frozenset(rule["series"]),
+        weeks=tuple((parse_utc(week["start"]), parse_utc(week["end"])) for week in rule["weeks"]),
+        shift=timedelta(seconds=int(rule["shift_seconds"])),
+        counts={entry["series"]: int(entry["count"]) for entry in record["shifted_bar_counts"]},
+    )
+
+
+def _series_text(symbol: str, timeframe: str, record: dict[str, Any]) -> str:
+    """系列の文字列（``USDJPY/15m/bid``。manifest の補正の記録の鍵）。"""
+    return f"{symbol}/{RAW_FILE_SUFFIX[timeframe]}/{record.get('declared_basis', 'bid')}"
 
 
 def source_records(manifest: dict[str, Any]) -> dict[tuple[str, str], list[dict[str, Any]]]:
@@ -313,17 +356,22 @@ def load_raw_timestamps(
     symbol: str,
     timeframe: str,
     expected: dict[str, Any] | list[dict[str, Any]] | None,
+    correction: LabelCorrection | None = None,
 ) -> list[str]:
     """原 CSV の先頭列（足の開始時刻、``YYYY-MM-DD HH:MM:SS+00:00``）を昇順で返す。
 
     ファイルの sha256 と行数（見出しを除く）が manifest の記録と一致しなければ
     ``RawSourceMismatch`` を送出する。同じ系列の記録が複数（原ファイルと補充した足のファイル）
-    あれば、すべてを検査して合わせる。
+    あれば、すべてを検査して合わせる。``correction`` があれば原ファイル（補充分の置き場の外）の
+    対象の系列の行に補正を当て、当てた本数が manifest の記録と一致しなければ
+    ``RawSourceMismatch`` を送出する（D03 §4 の v1.19）。
     """
     if not expected:
         raise RawSourceMismatch(f"manifest の sources に記録が無い: {symbol} {timeframe}")
     records = expected if isinstance(expected, list) else [expected]
     stamps: list[str] = []
+    shifted_count = 0
+    series_text = _series_text(symbol, timeframe, records[0])
     for record in records:
         path = _source_path(raw_dir, symbol, timeframe, record)
         if not path.is_file():
@@ -341,7 +389,25 @@ def load_raw_timestamps(
             raise RawSourceMismatch(
                 f"行数が manifest と一致しない: {path}（{len(rows)} != {record['rows']}）"
             )
+        original = not str(record.get("path", "")).startswith(REFILL_ROOT_PREFIX)
+        if correction is not None and original and series_text in correction.series:
+            corrected: list[str] = []
+            for stamp in rows:
+                moved = correction.shifted(datetime.fromisoformat(stamp))
+                if moved is None:
+                    corrected.append(stamp)
+                else:
+                    shifted_count += 1
+                    corrected.append(moved.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S+00:00"))
+            rows = corrected
         stamps.extend(rows)
+    if correction is not None and series_text in correction.series:
+        recorded = correction.counts.get(series_text)
+        if recorded != shifted_count:
+            raise RawSourceMismatch(
+                f"時刻ラベルの補正の本数が manifest と一致しない: {series_text}"
+                f"（{shifted_count} != {recorded}）"
+            )
     stamps.sort()
     return stamps
 
@@ -372,6 +438,7 @@ def build_interval_rows(
     overlap_rows: list[dict[str, Any]],
     raw_dir: Path | None,
     sources: dict[tuple[str, str], list[dict[str, Any]]],
+    correction: LabelCorrection | None = None,
 ) -> list[dict[str, Any]]:
     all10: dict[str, list[Interval]] = defaultdict(list)
     for r in overlap_rows:
@@ -383,7 +450,7 @@ def build_interval_rows(
         for tf in TIMEFRAMES:
             other = TIMEFRAMES[1] if tf == TIMEFRAMES[0] else TIMEFRAMES[0]
             stamps = (
-                load_raw_timestamps(raw_dir, symbol, tf, sources.get((symbol, tf)))
+                load_raw_timestamps(raw_dir, symbol, tf, sources.get((symbol, tf)), correction)
                 if raw_dir is not None
                 else None
             )
@@ -512,7 +579,14 @@ def print_summary(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--snapshot-root", type=Path, default=Path("data/snapshots"))
-    parser.add_argument("--snapshot-id", default=DEFAULT_SNAPSHOT_ID)
+    parser.add_argument(
+        "--snapshot-id",
+        default=DEFAULT_SNAPSHOT_ID,
+        help=(
+            "欠落一覧を作る snapshot（既定は補正の前の承認済み snapshot。補正後の欠落一覧は補正後の"
+            " snapshot の識別子を渡す。D03 §14.14 の段 6c）"
+        ),
+    )
     parser.add_argument(
         "--raw-dir",
         type=Path,
@@ -536,7 +610,9 @@ def main(argv: list[str] | None = None) -> int:
     overlap_rows = sweep_overlap(merged)
     raw_dir = args.raw_dir if args.raw_dir.is_dir() else None
     try:
-        rows = build_interval_rows(merged, overlap_rows, raw_dir, source_records(manifest))
+        rows = build_interval_rows(
+            merged, overlap_rows, raw_dir, source_records(manifest), label_correction(manifest)
+        )
     except RawSourceMismatch as exc:
         print(f"原データが snapshot の記録と一致しない: {exc}", file=sys.stderr)
         return 1

@@ -141,8 +141,11 @@ from odyssey_fx.marketdata.application.acceptance import (
     PendingSnapshot,
     RawFile,
     build_pending_snapshot,
+    correction_record,
     merge_refill_bars,
     normalize_rows,
+    normalize_rows_with_correction,
+    recheck_corrected_bars,
 )
 from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSION, aggregate
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
@@ -172,7 +175,11 @@ from odyssey_fx.marketdata.domain.access import (
 )
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError, RefillStoreInconsistent
+from odyssey_fx.marketdata.domain.errors import (
+    MarketDataValueError,
+    RefillStoreInconsistent,
+    TimeLabelCorrectionFailed,
+)
 from odyssey_fx.marketdata.domain.integrity import CheckResult
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.refill import (
@@ -189,6 +196,12 @@ from odyssey_fx.marketdata.domain.snapshot import (
     ConversionRecord,
     PartitionId,
     SnapshotManifest,
+)
+from odyssey_fx.marketdata.domain.time_label_correction import (
+    TimeLabelCorrectionRecord,
+    TimeLabelCorrectionRule,
+    correction_rule_of,
+    verify_correction_weeks,
 )
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
@@ -286,11 +299,18 @@ def snapshot_manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
     return manifest_payload(manifest)
 
 
-def build_conversion_record(calendar: TradingCalendar, time_convention: str) -> ConversionRecord:
+def build_conversion_record(
+    calendar: TradingCalendar,
+    time_convention: str,
+    *,
+    time_label_correction: TimeLabelCorrectionRecord | None = None,
+) -> ConversionRecord:
     """変換の版の記録を作る（D03 §3.7）。
 
     コード版・時刻規約・集約規則の版・カレンダーの識別と版をまとめる。これらはすべて
-    snapshot の識別子の計算対象なので、どれか1つでも変われば別の snapshot になる。
+    snapshot の識別子の計算対象なので、どれか1つでも変われば別の snapshot になる。列対応の宣言に
+    時刻ラベルの補正規則があれば、当てた規則と動かした本数・再検査の結果も記録する（D03 §4 の
+    v1.19）。
     """
     return ConversionRecord(
         code_version=code_version(),
@@ -298,6 +318,7 @@ def build_conversion_record(calendar: TradingCalendar, time_convention: str) -> 
         aggregation_rule_version=AGGREGATION_RULE_VERSION,
         calendar_id=calendar.id,
         calendar_version=calendar.version,
+        time_label_correction=time_label_correction,
     )
 
 
@@ -350,6 +371,17 @@ class AcceptanceService:
     ) -> tuple[RawFile, tuple[Bar, ...]]:
         """原ファイルを**1回読んで**、その登録と正規化した足を作る（D03 §4 の 1〜3）。
 
+        列対応の宣言に時刻ラベルの補正規則があれば当てる（D03 §4 の v1.19）。補正した足が要る
+        ときは `read_source_file_with_correction` を使う。
+        """
+        raw_file, bars, _ = self.read_source_file_with_correction(symbol, timeframe_id)
+        return raw_file, bars
+
+    def read_source_file_with_correction(
+        self, symbol: Symbol, timeframe_id: str
+    ) -> tuple[RawFile, tuple[Bar, ...], tuple[Bar, ...]]:
+        """原ファイルを**1回読んで**、登録・正規化した足・時刻ラベルを補正した足を作る（D03 §4）。
+
         内容の sha256 と行を同じ読込から得る。別々に読むと、その間にファイルが差し替わった
         ときに manifest の出所の記録（sha256・行数）が実データと食い違い、「記録どおりで
         ない snapshot」ができてしまう（D03 §3.7.1）。
@@ -376,14 +408,15 @@ class AcceptanceService:
                     " 宣言していない出所の行は受け入れない（D03 §4 の 2）"
                 )
 
-        bars = normalize_rows(
+        bars, corrected = normalize_rows_with_correction(
             raw_file,
             content.rows,
             self.datasource.mapping,
             self.timeframe_definition(timeframe_id),
             self.calendar,
+            correction=self.datasource.time_label_correction,
         )
-        return raw_file, bars
+        return raw_file, bars, corrected
 
     def read_refill_file(
         self, manifest: RefillManifest, record: RefillFileRecord
@@ -494,14 +527,31 @@ class AcceptanceService:
         実体（partition の Parquet）と検査報告の書き出しは行わない。書く場所は暫定か確定
         かで変わるので、呼び出し側（`app.cli`）が決める。
         """
+        rule = self.datasource.time_label_correction
+        if rule is not None:
+            # 列挙した週を夏時間の暦から検算してから当てる（D03 §4 の v1.19。人間の決定 DST-1）。
+            verify_correction_weeks(rule, self.calendar)
         raw_files: list[RawFile] = []
         bars_by_file: dict[str, tuple[Bar, ...]] = {}
         bars_by_series: dict[SeriesId, tuple[Bar, ...]] = {}
+        corrected_by_series: dict[SeriesId, tuple[Bar, ...]] = {}
         for symbol, timeframe_id in targets:
-            raw_file, bars = self.read_source_file(symbol, timeframe_id)
+            raw_file, bars, corrected = self.read_source_file_with_correction(symbol, timeframe_id)
             raw_files.append(raw_file)
             bars_by_file[raw_file.path] = bars
             bars_by_series[raw_file.series] = bars
+            corrected_by_series[raw_file.series] = corrected
+        correction: TimeLabelCorrectionRecord | None = None
+        if rule is not None:
+            # 補正の後の再検査（重複・休場帯の足。D03 §4 の v1.19、人間の決定 DST-2）は、補充分を
+            # 合わせる前の原ファイルの足に対して行う（補充した足には補正を当てない）。
+            recheck_corrected_bars(
+                bars_by_series,
+                corrected_by_series,
+                timeframe_defs=self.timeframe_defs,
+                calendar=self.calendar,
+            )
+            correction = correction_record(rule, bars_by_series.keys(), corrected_by_series)
         refill_files: list[tuple[RawFile, tuple[Bar, ...]]] = []
         for manifest in refills:
             for record in manifest.bar_files:
@@ -522,7 +572,9 @@ class AcceptanceService:
             boundaries=self.boundaries,
             basis_declaration=self.datasource.basis_declaration,
             conversion=build_conversion_record(
-                self.calendar, self.datasource.mapping.time_convention
+                self.calendar,
+                self.datasource.mapping.time_convention,
+                time_label_correction=correction,
             ),
             aggregated_bars=aggregated,
             aggregated_findings=findings,
@@ -2345,8 +2397,19 @@ def finalize_refill_plan(
     )
 
 
+def _rule_label(rule: TimeLabelCorrectionRule | None) -> str:
+    """補正規則の表示（無ければ「補正なし」）。"""
+    if rule is None:
+        return "none"
+    return f"{rule.rule_id} version {rule.rule_version}"
+
+
 def load_refills_for_acceptance(
-    *, refill_dirs: Sequence[Path], repo_root: Path, snapshots_root: Path
+    *,
+    refill_dirs: Sequence[Path],
+    repo_root: Path,
+    snapshots_root: Path,
+    correction: TimeLabelCorrectionRule | None = None,
 ) -> tuple[RefillManifest, ...]:
     """受入れに渡された補充分を検算して manifest を返す（D03 §14.11・§14.11.1 の W5）。
 
@@ -2356,6 +2419,11 @@ def load_refills_for_acceptance(
        ファイルの集合と sha256・行数。
     3. 集合の検査: 同じ計画の補充分を 2 つ以上渡していない。各補充分の入力 snapshot が含む
        補充分（補充を重ねた前の補充分）をすべて渡している。
+    4. 補正規則の一致（D03 §4 の v1.19「補充分と合わせる受入れ」）: 各補充分の入力 snapshot の
+       manifest に記録された時刻ラベルの補正規則（記録が無ければ「補正なし」）が、今回の受入れの
+       宣言の補正規則 `correction` と同じである。補充分の対象足は入力 snapshot のラベルで決まって
+       いるので、補正の違う原系列と合わせると同じ足を別のラベルで 2 度持つか、補充した足と欠落が
+       ずれるためである（`TimeLabelCorrectionFailed`、構造エラー）。
 
     どれかが合わなければ何も書かずに失敗する。
     """
@@ -2405,6 +2473,14 @@ def load_refills_for_acceptance(
                 f"the directory of the input snapshot {manifest.snapshot_id} of the refill"
                 f" {manifest.refill_id} holds the manifest of {source_manifest.snapshot_id()};"
                 " the input is structurally broken (D03 §3.7.1, §14.11). Nothing was written"
+            )
+        recorded = correction_rule_of(source_manifest.conversion.time_label_correction)
+        if recorded != correction:
+            raise TimeLabelCorrectionFailed(
+                f"the input snapshot {manifest.snapshot_id} of the refill {manifest.refill_id}"
+                f" was accepted with the time-label correction {_rule_label(recorded)}, but this"
+                f" acceptance declares {_rule_label(correction)}; a refill is merged only with raw"
+                " series corrected the same way (D03 §4 v1.19). Nothing was written"
             )
         input_sources[manifest.snapshot_id] = tuple(
             record.path for record in source_manifest.sources

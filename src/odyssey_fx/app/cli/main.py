@@ -554,7 +554,10 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
     # 補充分は読む前にすべて検算する（置き場所・識別子・ファイル・同じ計画の重複・重ねた補充分
     # の渡し漏れ。D03 §14.11・§14.11.1 の W5）。どれかが合わなければ何も書かずに失敗する。
     refills = composition.load_refills_for_acceptance(
-        refill_dirs=args.refill, repo_root=args.repo_root, snapshots_root=args.out
+        refill_dirs=args.refill,
+        repo_root=args.repo_root,
+        snapshots_root=args.out,
+        correction=datasource.time_label_correction,
     )
     if refills:
         out.lines(summary.accepted_refill_lines(refills))

@@ -1,6 +1,6 @@
 """原データの列対応の読込（D03 §4 の 2・§9、D01 §10.1）。
 
-`configs/datasources/legacy_merged_csv_v1.yaml` を読み、受入れが使う
+`configs/datasources/legacy_merged_csv_v<版>.yaml` を読み、受入れが使う
 `marketdata.application.acceptance.ColumnMapping` と、その周辺の宣言（原データの基点、
 ファイル名の規則、宣言した価格基準、受け入れる出所の値）へ変換する。
 
@@ -15,12 +15,17 @@
 ファイル名の規則（`{symbol}_{timeframe}_merged.csv`）から銘柄と時間足を取り出すのは、
 受入れの前段として `app` が行う仕事である（D03 §4 の 1）。規則の解釈をこの層に置くのは、
 規則が設定ファイルの宣言だからである。
+
+**時刻ラベルの補正規則**（版 3。D03 §4 の v1.19）: 省略可能な `time_label_correction` に、原データの
+夏時間ズレを直す規則 1 件（規則の識別と版・補正量・対象の系列・対象の週・週を導いた夏時間の暦）を
+書く。domain の `TimeLabelCorrectionRule` へ変換し、受入れが適用する。
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Final
 
@@ -30,10 +35,12 @@ from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.app.config.models import StrictModel, require_schema_version, validate
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.symbol import Symbol
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.acceptance import ColumnMapping
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.series import PriceBasis
 from odyssey_fx.marketdata.domain.snapshot import BasisDeclaration
+from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRule
 
 __all__ = ["DataSourceConfig", "load_datasource", "parse_file_name"]
 
@@ -71,6 +78,31 @@ class _BasisDeclarationModel(StrictModel):
     verified: bool = False
 
 
+class _DstZonesModel(StrictModel):
+    """補正の対象の週を導いた夏時間の暦（D03 §4 の v1.19）。"""
+
+    daylight: str
+    standard: str
+
+
+class _WeekModel(StrictModel):
+    """対象の週 1 件（補正の前のラベルで見た UTC の半開区間。D03 §4 の v1.19）。"""
+
+    start: str
+    end: str
+
+
+class _TimeLabelCorrectionModel(StrictModel):
+    """原データの時刻ラベルの補正規則 1 件（列対応の宣言の版 3。D03 §4 の v1.19・§9）。"""
+
+    id: str
+    version: Annotated[int, Field(ge=1)]
+    shift_hours: Annotated[int, Field(ge=1)]
+    dst_zones: _DstZonesModel
+    series: Annotated[list[str], Field(min_length=1)]
+    weeks: Annotated[list[_WeekModel], Field(min_length=1)]
+
+
 class _DataSourceModel(StrictModel):
     """`configs/datasources/*.yaml` の形（D03 §9）。"""
 
@@ -86,6 +118,7 @@ class _DataSourceModel(StrictModel):
     basis_declaration: _BasisDeclarationModel
     allowed_sources: Annotated[list[str], Field(min_length=1)]
     volume_note: str = ""
+    time_label_correction: _TimeLabelCorrectionModel | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +133,8 @@ class DataSourceConfig:
     - `timeframes`: 受け入れる時間足の `id`（`15m`、`1h`）。
     - `basis_declaration`: 宣言した価格基準（識別に関わる部分、D03 §3.7）。
     - `allowed_sources`: `source` 列に現れてよい値。これ以外は受入れで拒否する。
+    - `time_label_correction`: 原データの時刻ラベルの補正規則（版 3。D03 §4 の v1.19）。補正規則の
+      無い宣言（版 1・版 2）では `None`。
     """
 
     id: str
@@ -111,6 +146,7 @@ class DataSourceConfig:
     basis_declaration: BasisDeclaration
     allowed_sources: frozenset[str]
     volume_note: str = ""
+    time_label_correction: TimeLabelCorrectionRule | None = None
 
     def file_name(self, symbol: Symbol, timeframe_id: str) -> str:
         """銘柄と時間足から原ファイル名を作る（D03 §4 の 1）。"""
@@ -197,6 +233,12 @@ def load_datasource(path: Path) -> DataSourceConfig:
     except MarketDataValueError as exc:  # pragma: no cover - 値はここまでで検査済み
         raise ConfigError(f"{path}: 価格基準の宣言として成立しない: {exc}") from exc
 
+    correction = (
+        None
+        if model.time_label_correction is None
+        else _correction_rule(model.time_label_correction, model, basis, path)
+    )
+
     return DataSourceConfig(
         id=model.id,
         version=model.version,
@@ -207,7 +249,45 @@ def load_datasource(path: Path) -> DataSourceConfig:
         basis_declaration=declaration,
         allowed_sources=frozenset(model.allowed_sources),
         volume_note=model.volume_note,
+        time_label_correction=correction,
     )
+
+
+def _correction_rule(
+    model: _TimeLabelCorrectionModel,
+    datasource: _DataSourceModel,
+    basis: PriceBasis,
+    path: Path,
+) -> TimeLabelCorrectionRule:
+    """補正規則の宣言を domain の値へ変換する（D03 §4 の v1.19）。
+
+    対象の系列は、この宣言が受け入れる時間足（`timeframes`）と宣言した価格基準の系列に限る。
+    週の検算（夏時間の暦から導けること。人間の決定 DST-1）はカレンダーが要るので受入れが行う。
+    """
+    for text in model.series:
+        parts = text.split("/")
+        if len(parts) != 3 or parts[1] not in datasource.timeframes or parts[2] != basis.value:
+            raise ConfigError(
+                f"{path}: `time_label_correction.series` の {text!r} は、この宣言の時間足"
+                f" {datasource.timeframes} と価格基準 {basis.value!r} の系列"
+                "（例 USDJPY/15m/bid）でなければならない（D03 §4 の v1.19）"
+            )
+    try:
+        weeks = tuple(
+            Interval(start=UtcTime.parse(week.start), end=UtcTime.parse(week.end))
+            for week in model.weeks
+        )
+        return TimeLabelCorrectionRule(
+            rule_id=model.id,
+            rule_version=model.version,
+            shift=timedelta(hours=model.shift_hours),
+            series=tuple(model.series),
+            weeks=weeks,
+            daylight_zone=model.dst_zones.daylight,
+            standard_zone=model.dst_zones.standard,
+        )
+    except (KernelValueError, MarketDataValueError) as exc:
+        raise ConfigError(f"{path}: `time_label_correction` として成立しない: {exc}") from exc
 
 
 def parse_file_name(pattern: str, file_name: str) -> tuple[Symbol, str] | None:

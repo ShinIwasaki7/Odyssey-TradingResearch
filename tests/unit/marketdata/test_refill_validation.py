@@ -12,12 +12,12 @@ from datetime import timedelta
 
 import pytest
 
-from odyssey_fx.common.money import decimal_from_str
+from odyssey_fx.common.money import Price, decimal_from_str
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.application.refill_plan import RawBarIndex, build_plan
 from odyssey_fx.marketdata.application.refill_validation import HourData, validate_refill
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
-from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.refill import (
     ArchiveProvenance,
@@ -31,10 +31,12 @@ from odyssey_fx.marketdata.domain.refill import (
     Tick,
 )
 from odyssey_fx.marketdata.domain.refill_validation import (
+    MismatchKind,
     NeighborSide,
     NeighborStatus,
     NotBuiltReason,
     RefillValidation,
+    UnreconciledCause,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
 from tests.fixtures.refill import (
@@ -189,28 +191,96 @@ def test_neighbors_are_recorded_with_the_review_flag() -> None:
     assert after.crosses_closure is False
 
 
-def test_a_reconciliation_mismatch_fails_without_tolerance() -> None:
+def _with_close(
+    bars: dict[SeriesId, tuple[Bar, ...]],
+    series: SeriesId,
+    start: UtcTime,
+    delta: str,
+    *,
+    kind: ProvenanceKind | None = None,
+) -> None:
+    """原データの 1 本の終値を `delta` だけ変える（出所も変えられる）。"""
+    changed: list[Bar] = []
+    for bar in bars[series]:
+        if bar.bar_start == start:
+            close = Price(bar.close.value + decimal_from_str(delta))
+            bar = replace(
+                bar,
+                close=close,
+                high=max(bar.high, close),
+                low=min(bar.low, close),
+                provenance=bar.provenance
+                if kind is None
+                else Provenance(kind=kind, source_ref=bar.provenance.source_ref),
+            )
+        changed.append(bar)
+    bars[series] = tuple(changed)
+
+
+def test_a_provider_correction_mismatch_fails_without_tolerance() -> None:
+    """(ii) 原データの出所が提供元と同じ配信元（dukascopy）で、価格の桁の 1 単位の差は不合格。"""
     bars = raw_bars()
-    shifted = [
-        bar
-        if bar.bar_start != HOUR_00
-        else probe_bar("15m", "2020-11-30T00:00:00Z").__class__(
-            series=bar.series,
-            interval=bar.interval,
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=type(bar.close)(bar.close.value + decimal_from_str("0.001")),
-            volume=bar.volume,
-            available_at=bar.available_at,
-            provenance=bar.provenance,
-        )
-        for bar in bars[USDJPY_15M]
-    ]
-    bars[USDJPY_15M] = tuple(shifted)
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.001", kind=ProvenanceKind.DUKASCOPY)
     result = _validate(raw=bars)
     assert not result.passed
-    assert any("differ from the raw data" in reason for reason in result.failures)
+    assert any("provider correction" in reason for reason in result.failures)
+    [record] = [item for item in result.reconciled if not item.matched]
+    assert record.mismatch is MismatchKind.PROVIDER_CORRECTION
+    assert record.differences == (("close", decimal_from_str("-0.001")),)
+
+
+def test_a_representation_error_below_the_price_scale_matches_after_rounding() -> None:
+    """丸め（D03 §14.7 の v1.19 の 1）: 価格の桁より下の表現誤差だけの差は一致とする。"""
+    bars = raw_bars()
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.0000000000000001")
+    result = _validate(raw=bars)
+    assert result.passed, result.failures
+    assert (result.reconciled_count, result.matched_count) == (5, 5)
+    assert result.rounding_matched_count == 1
+    assert len(result.built_bars) == 5
+
+
+def test_a_source_difference_chunk_is_not_written_and_not_failed() -> None:
+    """(iii) 原データの出所が histdata で 1 時間前後の足とも合わない差は、その塊を補充しない。"""
+    bars = raw_bars()
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.002")
+    result = _validate(raw=bars)
+    [record] = [item for item in result.reconciled if not item.matched]
+    assert record.mismatch is MismatchKind.SOURCE_DIFFERENCE
+    # 塊（01 時の対象の時間と 00 時の照合用の時間）の対象足は 15分足・1時間足とも作らない。
+    assert result.built_bars == ()
+    assert {item.reason for item in result.not_built} == {NotBuiltReason.SOURCE_DIFFERENCE}
+    assert [
+        (str(item.chunk.series), item.chunk.target_count, item.mismatch_count)
+        for item in result.source_differences
+    ] == [("USDJPY/15m/bid", 4, 1), ("USDJPY/1h/bid", 1, 1)]
+    assert {item.max_difference for item in result.source_differences} == {
+        decimal_from_str("0.002")
+    }
+    assert {item.max_difference_pips for item in result.source_differences} == {
+        decimal_from_str("0.2")
+    }
+    # 不合格の理由は「補充した足が 0 本」だけで、照合の不一致そのものは不合格にしない。
+    assert all("no bar was built" in reason for reason in result.failures)
+
+
+def test_a_suspected_time_shift_fails() -> None:
+    """(i) 照合用の足が原データの 1 時間前のラベルの足と一致するなら、補正規則を疑って不合格。"""
+    bars = raw_bars()
+    probe = probe_bar("15m", "2020-11-30T00:00:00Z")
+    earlier = HOUR_00 - timedelta(hours=1)
+    bars[USDJPY_15M] = tuple(
+        replace(bar, open=probe.open, high=probe.high, low=probe.low, close=probe.close)
+        if bar.bar_start == earlier
+        else bar
+        for bar in bars[USDJPY_15M]
+    )
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.005")
+    result = _validate(raw=bars)
+    [record] = [item for item in result.reconciled if not item.matched]
+    assert record.mismatch is MismatchKind.TIME_SHIFT
+    assert not result.passed
+    assert any("time shift" in reason for reason in result.failures)
 
 
 def test_hours_without_ticks_build_no_bars() -> None:
@@ -346,3 +416,103 @@ def test_a_reference_hour_the_raw_data_does_not_need_is_rejected() -> None:
             raw=RawBarIndex.build(with_bar, INITIAL_ACCESS_BOUNDARIES),
             calendar=REFILL_CALENDAR,
         )
+
+
+def _without_00_15() -> DecodedTicks:
+    """00 時の tick から 00:15〜00:30 を除いたもの（照合用の 15分足 00:15 を作れない）。"""
+    return DecodedTicks(
+        tick_digest="9" * 64,
+        ticks=tuple(
+            tick
+            for tick in decoded(BI5_00H).ticks
+            if not 15 * 60 * 1000 <= tick.offset_ms < 30 * 60 * 1000
+        ),
+    )
+
+
+def test_a_chunk_whose_reconciliation_bar_cannot_be_built_is_unreconciled() -> None:
+    """照合用の足を tick から作れない（`NOT_BUILT`）塊は不合格にせず「未照合」として補充から外し、
+    原因と作れなかった照合用の足を記録する（D03 §14.7 の v1.20。決定 3）。有効な補充の足が 0 本
+    なら不合格（その理由だけ）。"""
+    result = _validate(
+        {KEY_00: _fetched(KEY_00, _without_00_15()), KEY_01: _fetched(KEY_01, decoded(BI5_01H))}
+    )
+    assert MismatchKind.NOT_BUILT in {item.mismatch for item in result.reconciled}
+    assert result.built_bars == ()
+    assert {item.reason for item in result.not_built} == {NotBuiltReason.UNRECONCILED}
+    assert result.source_differences == ()
+    assert [(str(item.series), item.target_count, item.causes) for item in result.unreconciled] == [
+        ("USDJPY/15m/bid", 4, (UnreconciledCause.RECONCILIATION_NOT_BUILT,)),
+        ("USDJPY/1h/bid", 1, (UnreconciledCause.RECONCILIATION_NOT_BUILT,)),
+    ]
+    for item in result.unreconciled:
+        assert [
+            (str(series), str(start)) for series, start in item.unbuilt_reconciliation_bars
+        ] == [("USDJPY/15m/bid", "2020-11-30T00:15:00Z")]
+    assert not result.passed
+    assert all("no bar was built" in reason for reason in result.failures)
+
+
+def test_other_chunks_continue_when_one_chunk_is_unreconciled() -> None:
+    """照合用の足を作れない塊だけを外し、独立に照合できた他の塊の補充は続ける（決定 3）。"""
+    hour_04 = HOUR_01 + timedelta(hours=3)
+    bars = raw_bars(drop_hours=(HOUR_01, hour_04))
+    plan = build_plan(
+        manifest=manifest_for(gap_resolutions(hours=(HOUR_01, hour_04))),
+        raw_bars=bars,
+        calendar=REFILL_CALENDAR,
+        calendar_ref=calendar_ref(),
+        timeframe_defs=market.TIMEFRAME_DEFS,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        provider=provider_ref(),
+        refill_filter=RefillFilter(),
+    )
+    # 01 時の塊は録画した tick で照合でき、04 時の塊の時間（照合用の時間を含む）は tick が無い。
+    hours = {key: _fetched(key, decoded(b"")) for key in plan.hour_keys}
+    hours[KEY_00] = _fetched(KEY_00, decoded(BI5_00H))
+    hours[KEY_01] = _fetched(KEY_01, decoded(BI5_01H))
+    result = validate_refill(
+        plan=plan,
+        hours=hours,
+        originals=ORIGINALS,
+        raw=RawBarIndex.build(bars, INITIAL_ACCESS_BOUNDARIES),
+        calendar=REFILL_CALENDAR,
+    )
+    assert result.passed, result.failures
+    assert {str(bar.bar_start)[:13] for bar in result.built_bars} == {"2020-11-30T01"}
+    assert len(result.built_bars) == 5
+    assert [(str(item.series), str(item.chunk_start)) for item in result.unreconciled] == [
+        ("USDJPY/15m/bid", "2020-11-30T04:00:00Z"),
+        ("USDJPY/1h/bid", "2020-11-30T04:00:00Z"),
+    ]
+    assert {item.causes for item in result.unreconciled} == {
+        (UnreconciledCause.RECONCILIATION_NOT_BUILT,)
+    }
+    unreconciled = {
+        str(item.start) for item in result.not_built if item.reason is NotBuiltReason.UNRECONCILED
+    }
+    assert {start[:13] for start in unreconciled} == {"2020-11-30T04"}
+
+
+def test_a_chunk_both_unbuilt_and_source_different_is_unreconciled_with_both_causes() -> None:
+    """塊が配信元の値の差と照合用の足を作れないの両方に当たれば、状態は「未照合」1 つで、原因に
+    両方を書く（2026-10-06 の人間の決定 A）。配信元の値の差の塊としては記録しない。"""
+    bars = raw_bars()
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.002")
+    result = _validate(
+        {KEY_00: _fetched(KEY_00, _without_00_15()), KEY_01: _fetched(KEY_01, decoded(BI5_01H))},
+        raw=bars,
+    )
+    kinds = {item.mismatch for item in result.reconciled if not item.matched}
+    assert {MismatchKind.NOT_BUILT, MismatchKind.SOURCE_DIFFERENCE} <= kinds
+    assert result.source_differences == ()
+    assert {item.reason for item in result.not_built} == {NotBuiltReason.UNRECONCILED}
+    assert {item.causes for item in result.unreconciled} == {
+        (UnreconciledCause.RECONCILIATION_NOT_BUILT, UnreconciledCause.SOURCE_DIFFERENCE)
+    }
+    # 不一致の足と差は照合の記録に残る（validation.json の材料）。
+    [differing] = [
+        item for item in result.reconciled if item.mismatch is MismatchKind.SOURCE_DIFFERENCE
+    ]
+    assert differing.differences == (("close", decimal_from_str("-0.002")),)
+    assert all("no bar was built" in reason for reason in result.failures)

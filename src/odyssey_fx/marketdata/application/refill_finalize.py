@@ -38,6 +38,7 @@ from odyssey_fx.marketdata.application.refill_fetch import (
     verify_archive,
 )
 from odyssey_fx.marketdata.application.refill_plan import (
+    REFILL_SOURCE_ROOT,
     RawBarIndex,
     finalized_refills,
     require_consistent_refills,
@@ -76,9 +77,14 @@ from odyssey_fx.marketdata.domain.refill_manifest import (
     bar_file_name,
     not_built_payload,
     refill_id_of,
+    source_difference_evidence_payload,
     unreconciled_payload,
 )
-from odyssey_fx.marketdata.domain.refill_validation import RefillValidation
+from odyssey_fx.marketdata.domain.refill_validation import (
+    MismatchKind,
+    ReconciledBar,
+    RefillValidation,
+)
 from odyssey_fx.marketdata.domain.series import SeriesId
 
 __all__ = [
@@ -96,10 +102,6 @@ __all__ = [
     "validation_payload",
     "verify_refill_directory",
 ]
-
-#: 補充分の置き場（リポジトリからの相対。D03 §14.11）。snapshot の `sources` の `path` も
-#: この下を指す。
-REFILL_SOURCE_ROOT: Final = "data/raw/market/refill"
 
 #: 補充した足のファイルの見出し（原データと同じ列。先頭列は無名。D03 §2・§14.11）。
 _CSV_HEADER: Final = ",open,high,low,close,volume,source\n"
@@ -150,24 +152,34 @@ def _series_entry(series: SeriesId) -> dict[str, Any]:
 def failure_details(validation: RefillValidation) -> Mapping[str, Any]:
     """不合格の取得記録の行に残す構造的な記録（D03 §14.7）。
 
-    照合で合わなかった足と差、未照合の塊ごとの `(系列, 塊の開始時刻, 対象足の数)`、作らな
-    かった対象足と理由。対象は研究履歴区分に限る（計画の対象足と比べる足が研究履歴区分の
-    ものだけなので。D03 §14.4 の 4）。
+    照合で合わなかった足と差（丸めた後の差と不一致の区分。D03 §14.7 の v1.19）、未照合の塊ごとの
+    `(系列, 塊の開始時刻, 対象足の数)`、配信元の値の差の塊ごとの `(系列, 塊の開始時刻, 対象足の数)`
+    と理由（不一致の足の数・差の最大）、作らなかった対象足と理由。補充分のディレクトリが作られない
+    不合格では、報告（D03 §14.15）がこの行から未照合・配信元の値の差・作らなかった足を読む
+    （D03 §14.7）。対象は研究履歴区分に限る（計画の対象足と比べる足が研究履歴区分のものだけ
+    なので。D03 §14.4 の 4）。
     """
     return {
         "mismatches": [
-            {
-                **_series_entry(record.series),
-                "built": record.built,
-                "differences": [[name, decimal_text(value)] for name, value in record.differences],
-                "hour": str(record.hour),
-                "start": str(record.start),
-            }
-            for record in validation.reconciled
-            if not record.matched
+            _mismatch_entry(record) for record in validation.reconciled if not record.matched
         ],
         "not_built": [not_built_payload(item) for item in validation.not_built],
+        "source_differences": [
+            source_difference_evidence_payload(item) for item in validation.source_differences
+        ],
         "unreconciled": [unreconciled_payload(item) for item in validation.unreconciled],
+    }
+
+
+def _mismatch_entry(record: ReconciledBar) -> dict[str, Any]:
+    """照合で合わなかった足 1 本の記録（丸めた後の差と不一致の区分）。"""
+    return {
+        **_series_entry(record.series),
+        "built": record.built,
+        "differences": [[name, decimal_text(value)] for name, value in record.differences],
+        "hour": str(record.hour),
+        "kind": None if record.mismatch is None else record.mismatch.value,
+        "start": str(record.start),
     }
 
 
@@ -178,7 +190,9 @@ def validation_payload(
 
     照合した足の数と一致した数、範囲外の tick の数、bid が ask より大きい tick の数、前後の
     足との差（価格と pip。閾値以下も含めてすべての塊）と「要確認」の印、1時間足と 15分足
-    4 本の一致、未照合の塊。合格した補充分だけが持つ（不合格は取得記録の行に残す）。
+    4 本の一致、未照合の塊。v1.19 で、丸めで初めて一致した照合用の足の数、配信元の値の差の塊と
+    理由（不一致の足の数・差の最大）、配信元の値の差に当たる不一致の足と差を足した（合否に
+    使わない。D03 §14.7）。合格した補充分だけが持つ（不合格は取得記録の行に残す）。
     """
     if not validation.passed:
         raise MarketDataValueError("validation.json is written only for a passed validation")
@@ -213,6 +227,15 @@ def validation_payload(
         "plan_id": plan_id,
         "reconciled_count": validation.reconciled_count,
         "refill_id": refill_id,
+        "rounding_matched_count": validation.rounding_matched_count,
+        "source_difference_bars": [
+            _mismatch_entry(record)
+            for record in validation.reconciled
+            if record.mismatch is MismatchKind.SOURCE_DIFFERENCE
+        ],
+        "source_differences": [
+            source_difference_evidence_payload(item) for item in validation.source_differences
+        ],
         "unreconciled": [unreconciled_payload(item) for item in validation.unreconciled],
     }
 
@@ -307,6 +330,7 @@ def build_refill_output(
         not_built=validation.not_built,
         unreconciled=validation.unreconciled,
         created_at=created_at,
+        source_differences=validation.source_difference_chunks,
     )
     return RefillOutput(manifest=manifest, files=tuple(sorted(files, key=lambda item: item[0])))
 

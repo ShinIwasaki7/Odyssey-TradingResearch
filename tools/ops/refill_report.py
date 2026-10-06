@@ -21,6 +21,24 @@
   せず「理由未確定」とする。
 - **件数の表示**: 理由ごとに件数の列を分け、複数の理由を含む区間を 1 つの理由として数えない。
 
+v1.19 の追記（D03 §14.15。2026-10-05 の人間の決定）:
+
+- **配信元の値の差**: 状態の語彙に「配信元の値の差」（`SOURCE_DIFFERENCE`）を足し、塊ごとに理由
+  として不一致の足の数と差の最大（価格と pip）を示す。
+- **補正の前の snapshot を入力にした計画**（人間の決定 DST-4）: 集めた記録のうち、入力 snapshot の
+  時刻ラベルの補正規則が新 snapshot と違うもの（補正の前の snapshot を入力にした計画）は、対象の週の
+  足の鍵の開始時刻を新 snapshot の補正規則のとおり +1 時間に読み替えてから突き合わせ、「補正の前の
+  入力」の印を付ける。
+- **読み替えで足の鍵が重なるとき**（D03 §14.15 の v1.20。2026-10-05 の決定 1、2026-10-06 の決定 B）:
+  1 つの記録の中で、読み替えた足の鍵が読み替えない足の鍵と重なれば、重なった鍵と元の 2 つの鍵を
+  「網羅性を確かめられない理由」に載せる。その記録での重なった足の結果は「理由未確定」1 つとし、
+  元の 2 つの記録（元の鍵とそれぞれの結果）はどちらも履歴に残す（黙って片方を消さない）。
+- **未照合の原因**（D03 §14.15 の v1.20）: 未照合の足の履歴に、塊の原因（照合できる足が無い／
+  照合用の足を作れない。配信元の値の差の併記を含む。決定 A）を示す。
+- **比べる旧 snapshot と休場の候補区間**（人間の決定 DST-5・DST-6）: 旧 snapshot と、休場の候補
+  1・2・9 の候補区間を作る snapshot は、どちらも補正後の snapshot（新 snapshot と同じ補正規則の
+  もの）に限る。補正の前の snapshot から作った候補区間は印に使わない（読み替えも当てない）。
+
 **入力の検算は本体の関数だけで行う**（2026-10-01 の人間の決定。報告の側で読み方を書き直さ
 ない）: snapshot の manifest は ``snapshot_store(...).read_manifest``（内容から識別子を計算し
 直す）、補充分・計画・取得記録は ``marketdata.application.refill_inventory``（書き出しと受入れが
@@ -45,7 +63,8 @@ import csv
 import shlex
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -64,9 +83,14 @@ from odyssey_fx.marketdata.application.refill_inventory import (
 )
 from odyssey_fx.marketdata.domain.errors import MarketDataError
 from odyssey_fx.marketdata.domain.refill import RefillPlan
-from odyssey_fx.marketdata.domain.refill_validation import NotBuiltBar, NotBuiltReason
+from odyssey_fx.marketdata.domain.refill_validation import (
+    NotBuiltBar,
+    NotBuiltReason,
+    UnreconciledChunk,
+)
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
+from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRule
 from tools.ops import research_history_gaps as rhg
 
 # --- 語彙 ----------------------------------------------------------------------------
@@ -79,6 +103,7 @@ OUT_OF_SCOPE = "OUT_OF_SCOPE"
 VALIDATION_REJECTED = "VALIDATION_REJECTED"
 NOT_PLANNED = "NOT_PLANNED"
 UNDETERMINED = "UNDETERMINED"
+SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
 
 STATE_LABELS: dict[str, str] = {
     NOT_FETCHED: "取得できなかった（HTTP 404 を含む）",
@@ -86,6 +111,7 @@ STATE_LABELS: dict[str, str] = {
     UNRECONCILED: "未照合（判断待ち）",
     OUT_OF_SCOPE: "補充の対象外（研究履歴区分の外）",
     VALIDATION_REJECTED: "検証で不合格になり補充しなかった",
+    SOURCE_DIFFERENCE: "配信元の値の差",
     NOT_PLANNED: "対象だが計画・試行されていない",
     UNDETERMINED: "理由未確定",
 }
@@ -95,21 +121,27 @@ STATE_ORDER: tuple[str, ...] = tuple(STATE_LABELS)
 BUILT = "BUILT"  # 補充分が足を作り、その補充分が新 snapshot に入っている（なお欠落なら食い違い）
 BUILT_NOT_IN_SNAPSHOT = "BUILT_NOT_IN_SNAPSHOT"  # 足を作ったが、その補充分は新 snapshot に無い
 IN_PROGRESS = "IN_PROGRESS"  # 計画はあるが、書き出しも不合格もまだ無い
+#: 補正の前の入力の記録で、読み替えた足の鍵が読み替えない足の鍵と重なった（D03 §14.15 の v1.20、
+#: 決定 B）。元の 2 つの記録は履歴に示す。
+RELABEL_OVERLAP = "RELABEL_OVERLAP"
 
 RESULT_LABELS: dict[str, str] = {
     **STATE_LABELS,
     BUILT: "補充した（新 snapshot に入っている）",
     BUILT_NOT_IN_SNAPSHOT: "補充した（その補充分は新 snapshot に無い）",
     IN_PROGRESS: "計画・取得の途中（書き出しも不合格もまだ無い）",
+    RELABEL_OVERLAP: "読み替えで足の鍵が重なった（重なった 2 つの記録を履歴に示す）",
 }
 RESULT_TO_STATE: dict[str, str] = {
     NOT_FETCHED: NOT_FETCHED,
     PROVIDER_NO_TICKS: PROVIDER_NO_TICKS,
     UNRECONCILED: UNRECONCILED,
     VALIDATION_REJECTED: VALIDATION_REJECTED,
+    SOURCE_DIFFERENCE: SOURCE_DIFFERENCE,
     BUILT: UNDETERMINED,
     BUILT_NOT_IN_SNAPSHOT: UNDETERMINED,
     IN_PROGRESS: UNDETERMINED,
+    RELABEL_OVERLAP: UNDETERMINED,
 }
 
 #: 作らなかった理由（本体の語彙。D03 §14.8 の表）から結果への対応。
@@ -118,6 +150,7 @@ NOT_BUILT_TO_RESULT: dict[NotBuiltReason, str] = {
     NotBuiltReason.PROVIDER_EMPTY: PROVIDER_NO_TICKS,
     NotBuiltReason.NO_TICK_IN_BAR: PROVIDER_NO_TICKS,
     NotBuiltReason.UNRECONCILED: UNRECONCILED,
+    NotBuiltReason.SOURCE_DIFFERENCE: SOURCE_DIFFERENCE,
 }
 
 #: 休場の候補（保留。D03 §3.4.2 の候補 1・2・9。RF-11・RF-12・RF-19）。
@@ -282,6 +315,14 @@ class Record:
     is_state: bool
     results: dict[BarKey, str]
     rejection: Rejection | None = None
+    #: 入力 snapshot の補正規則が新 snapshot と違い、足の鍵を読み替えた記録（「補正の前の入力」。
+    #: D03 §14.15 の v1.19、人間の決定 DST-4）。
+    pre_correction: bool = False
+    #: 足ごとの結果の注記（未照合の原因。D03 §14.15 の v1.20）。履歴にだけ出る。
+    notes: dict[BarKey, str] = field(default_factory=dict)
+    #: 読み替えで鍵が重なった足ごとの元の記録 ``(元の開始時刻, 結果, 注記)``（決定 B）。
+    #: その足の ``results`` は ``RELABEL_OVERLAP``（状態は「理由未確定」）。
+    overlaps: dict[BarKey, tuple[tuple[datetime, str, str], ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -302,69 +343,227 @@ def _bar_key(series: SeriesId, start: UtcTime) -> BarKey:
     return str(series.symbol), str(series.timeframe), start.value
 
 
-def _targets(plan: RefillPlan) -> list[BarKey]:
-    return [_bar_key(bar.series, bar.start) for bar in plan.target_bars]
+#: 記録の足の鍵の読み替え（補正の前の入力の記録だけ。D03 §14.15 の v1.19、人間の決定 DST-4）。
+#: 新 snapshot の補正規則。`None` なら読み替えない。
+Relabel = TimeLabelCorrectionRule | None
 
 
-def _not_built(items: tuple[NotBuiltBar, ...]) -> dict[BarKey, str]:
-    return {_bar_key(item.series, item.start): NOT_BUILT_TO_RESULT[item.reason] for item in items}
+def _relabelled(series: SeriesId, start: UtcTime, relabel: Relabel) -> BarKey:
+    """足の鍵。補正の前の入力の記録なら、新 snapshot の補正規則のとおり対象の週の足を読み替える。"""
+    if relabel is not None and relabel.applies(series, start):
+        return _bar_key(series, start + relabel.shift)
+    return _bar_key(series, start)
 
 
-def records_from(inventory: RefillInventory, in_snapshot: frozenset[str]) -> Collection:
-    """本体が集めて検算した補充分と計画（``survey_refill_store``）から記録を作る。"""
+Origin = tuple[SeriesId, UtcTime]
+#: 足 1 本（元の鍵）の結果と注記。
+Outcome = Callable[[Origin], tuple[str, str]]
+
+
+def _not_built(items: tuple[NotBuiltBar, ...]) -> dict[Origin, str]:
+    return {(item.series, item.start): NOT_BUILT_TO_RESULT[item.reason] for item in items}
+
+
+def _unreconciled_notes(
+    plan: RefillPlan, chunks: tuple[UnreconciledChunk, ...]
+) -> dict[Origin, str]:
+    """未照合の塊の対象足ごとの原因の注記（D03 §14.15 の v1.20。履歴に示す）。
+
+    塊は系列ごとに、計画の対象足のうち塊の開始時刻から対象足の数だけ続く足（本体の塊の記録の
+    作り方と同じ。計画の対象足は系列・時刻の順）。
+    """
+    by_series: dict[SeriesId, list[UtcTime]] = defaultdict(list)
+    for bar in plan.target_bars:
+        by_series[bar.series].append(bar.start)
+    notes: dict[Origin, str] = {}
+    for chunk in chunks:
+        starts = by_series.get(chunk.series, [])
+        if chunk.chunk_start not in starts:
+            continue
+        index = starts.index(chunk.chunk_start)
+        text = "原因 " + "+".join(cause.value for cause in chunk.causes)
+        for start in starts[index : index + chunk.target_count]:
+            notes[(chunk.series, start)] = text
+    return notes
+
+
+def _outcome(not_built: dict[Origin, str], notes: dict[Origin, str], default: str) -> Outcome:
+    def outcome(origin: Origin) -> tuple[str, str]:
+        return not_built.get(origin, default), notes.get(origin, "")
+
+    return outcome
+
+
+@dataclass(frozen=True)
+class _Keyed:
+    results: dict[BarKey, str]
+    notes: dict[BarKey, str]
+    overlaps: dict[BarKey, tuple[tuple[datetime, str, str], ...]]
+
+
+def _keyed(plan: RefillPlan, outcome: Outcome, relabel: Relabel) -> _Keyed:
+    """記録の足ごとの結果を、読み替えた後の鍵で引けるようにする（D03 §14.15 の v1.19・v1.20）。
+
+    読み替えた鍵が同じ記録の別の足の鍵と重なれば、どちらの結果も選ばずに ``RELABEL_OVERLAP``
+    とし、元の記録をすべて ``overlaps`` に残す（決定 1・B。黙って片方を消さない）。
+    """
+    grouped: dict[BarKey, list[tuple[datetime, str, str]]] = defaultdict(list)
+    for bar in plan.target_bars:
+        result, note = outcome((bar.series, bar.start))
+        grouped[_relabelled(bar.series, bar.start, relabel)].append((bar.start.value, result, note))
+    keyed = _Keyed({}, {}, {})
+    for key, items in grouped.items():
+        if len(items) == 1:
+            (_, result, note) = items[0]
+            keyed.results[key] = result
+            if note:
+                keyed.notes[key] = note
+        else:
+            keyed.results[key] = RELABEL_OVERLAP
+            keyed.overlaps[key] = tuple(sorted(items))
+    return keyed
+
+
+def _overlap_problems(record: Record) -> list[str]:
+    """読み替えで鍵が重なった足を「網羅性を確かめられない理由」に載せる文（決定 1）。"""
+    return [
+        f"補正の前の入力の記録の読み替えで足の鍵が重なった（計画 {record.plan_id} の"
+        f" {record.source}）: {symbol} {timeframe} {rhg.fmt_utc(start)} ← 元の鍵 "
+        + "・".join(rhg.fmt_utc(origin) for origin, _, _ in items)
+        for (symbol, timeframe, start), items in sorted(record.overlaps.items())
+    ]
+
+
+def records_from(
+    inventory: RefillInventory,
+    in_snapshot: frozenset[str],
+    relabels: dict[str, Relabel] | None = None,
+) -> Collection:
+    """本体が集めて検算した補充分と計画（``survey_refill_store``）から記録を作る。
+
+    ``relabels`` は入力 snapshot の識別子から、その記録の足の鍵を読み替える補正規則（補正の前の
+    入力の記録だけが持つ。``input_relabels``）。載っていない入力は読み替えない。
+    """
+    table = relabels or {}
     records: list[Record] = []
     plans_with_refill: set[str] = set()
+
+    def add(
+        plan: RefillPlan,
+        outcome: Outcome,
+        relabel: Relabel,
+        **fields: Any,
+    ) -> None:
+        keyed = _keyed(plan, outcome, relabel)
+        records.append(
+            Record(
+                **fields,
+                results=keyed.results,
+                pre_correction=relabel is not None,
+                notes=keyed.notes,
+                overlaps=keyed.overlaps,
+            )
+        )
+
     for refill in inventory.refills:
         manifest = refill.manifest
         built = BUILT if manifest.refill_id in in_snapshot else BUILT_NOT_IN_SNAPSHOT
-        not_built = _not_built(manifest.not_built)
-        records.append(
-            Record(
-                plan_id=manifest.plan_id,
-                input_snapshot=manifest.snapshot_id,
-                source=f"refill:{manifest.refill_id}",
-                refill_id=manifest.refill_id,
-                recorded_at=str(manifest.created_at),
-                is_state=True,
-                results={bar: not_built.get(bar, built) for bar in _targets(manifest.plan)},
-            )
+        add(
+            manifest.plan,
+            _outcome(
+                _not_built(manifest.not_built),
+                _unreconciled_notes(manifest.plan, manifest.unreconciled),
+                built,
+            ),
+            table.get(manifest.snapshot_id),
+            plan_id=manifest.plan_id,
+            input_snapshot=manifest.snapshot_id,
+            source=f"refill:{manifest.refill_id}",
+            refill_id=manifest.refill_id,
+            recorded_at=str(manifest.created_at),
+            is_state=True,
         )
         plans_with_refill.add(manifest.plan_id)
     for plan in inventory.plans:
-        targets = _targets(plan.plan)
+        relabel = table.get(plan.plan.snapshot_id)
         rejected_now = plan.state is PlanState.REJECTED and plan.plan_id not in plans_with_refill
         for rejection in plan.rejections:
-            not_built = _not_built(rejection.not_built)
-            records.append(
-                Record(
-                    plan_id=plan.plan_id,
-                    input_snapshot=plan.plan.snapshot_id,
-                    source=f"journal:{rejection.line}",
-                    refill_id=None,
-                    recorded_at=str(rejection.record.at),
-                    is_state=rejected_now and rejection is plan.rejections[-1],
-                    results={bar: not_built.get(bar, VALIDATION_REJECTED) for bar in targets},
-                    rejection=rejection,
-                )
+            add(
+                plan.plan,
+                _outcome(
+                    _not_built(rejection.not_built),
+                    _unreconciled_notes(plan.plan, rejection.unreconciled),
+                    VALIDATION_REJECTED,
+                ),
+                relabel,
+                plan_id=plan.plan_id,
+                input_snapshot=plan.plan.snapshot_id,
+                source=f"journal:{rejection.line}",
+                refill_id=None,
+                recorded_at=str(rejection.record.at),
+                is_state=rejected_now and rejection is plan.rejections[-1],
+                rejection=rejection,
             )
         if plan.plan_id not in plans_with_refill and not rejected_now:
-            records.append(
-                Record(
-                    plan_id=plan.plan_id,
-                    input_snapshot=plan.plan.snapshot_id,
-                    source="plan",
-                    refill_id=None,
-                    recorded_at="" if plan.last_at is None else str(plan.last_at),
-                    is_state=True,
-                    results=dict.fromkeys(targets, IN_PROGRESS),
-                )
+            add(
+                plan.plan,
+                _outcome({}, {}, IN_PROGRESS),
+                relabel,
+                plan_id=plan.plan_id,
+                input_snapshot=plan.plan.snapshot_id,
+                source="plan",
+                refill_id=None,
+                recorded_at="" if plan.last_at is None else str(plan.last_at),
+                is_state=True,
             )
+    problems = list(inventory.problems)
+    for record in records:
+        problems.extend(_overlap_problems(record))
     return Collection(
         records,
-        list(inventory.problems),
+        problems,
         plan_count=len(inventory.plans),
         refill_count=len(inventory.refills),
     )
+
+
+def correction_of(snapshot: Snapshot) -> TimeLabelCorrectionRule | None:
+    """snapshot の manifest に記録された時刻ラベルの補正規則（無ければ「補正なし」の ``None``）。"""
+    record = snapshot.manifest.conversion.time_label_correction
+    return None if record is None else record.rule
+
+
+def input_relabels(
+    snapshot_root: Path, input_ids: set[str], new_rule: TimeLabelCorrectionRule | None
+) -> tuple[dict[str, Relabel], list[str]]:
+    """記録の入力 snapshot ごとに、足の鍵の読み替えを決める（D03 §14.15 の v1.19、DST-4）。
+
+    入力 snapshot の補正規則が新 snapshot と同じなら読み替えない。入力が補正なしで新 snapshot に
+    補正規則があれば、新 snapshot の規則のとおり対象の週の足を +1 時間に読み替える。入力の manifest
+    が読めないとき、または入力にも別の補正規則があるとき（設計が読み替えを定めていない組み合わせ）は
+    読み替えを決められないので、網羅性を確かめられない理由として返す（その記録は読み替えない）。
+    """
+    relabels: dict[str, Relabel] = {}
+    problems: list[str] = []
+    for snapshot_id in sorted(input_ids):
+        try:
+            rule = correction_of(load_snapshot(snapshot_root, snapshot_id))
+        except ReportInputError as exc:
+            problems.append(
+                f"記録の入力 snapshot の補正規則を確かめられない: {snapshot_id}（{exc}）"
+            )
+            continue
+        if rule == new_rule:
+            continue
+        if rule is None and new_rule is not None:
+            relabels[snapshot_id] = new_rule
+            continue
+        problems.append(
+            f"記録の入力 snapshot {snapshot_id} の補正規則が新 snapshot と違い、読み替えを決め"
+            "られない"
+            "（設計は補正なしの入力から補正規則のある新 snapshot への読み替えだけを定める）"
+        )
+    return relabels, problems
 
 
 def collect_records(
@@ -372,6 +571,7 @@ def collect_records(
     store: RefillStore,
     chain: dict[str, frozenset[str]],
     in_snapshot: frozenset[str],
+    new_rule: TimeLabelCorrectionRule | None = None,
 ) -> Collection:
     """置き場にある計画・補充分の記録を、入力 snapshot を問わずすべて集める（R4）。
 
@@ -387,8 +587,10 @@ def collect_records(
         item.plan.snapshot_id for item in inventory.plans
     }
     problems = extend_chain(snapshot_root, store, chain, inputs)
-    collection = records_from(inventory, in_snapshot)
+    relabels, relabel_problems = input_relabels(snapshot_root, inputs, new_rule)
+    collection = records_from(inventory, in_snapshot, relabels)
     collection.problems.extend(problems)
+    collection.problems.extend(relabel_problems)
     return collection
 
 
@@ -512,13 +714,41 @@ def overlapping_candidates(
 
 
 def _history(bars: list[BarKey], collection: Collection) -> list[tuple[str, str, str, str, int]]:
-    """区間の足を対象にした記録をすべて（状態を表さない記録も）。記録した時刻の順。"""
+    """区間の足を対象にした記録をすべて（状態を表さない記録も）。記録した時刻の順。
+
+    読み替えで鍵が重なった足は、重なった元の記録をどちらも示す（D03 §14.15 の v1.20、決定 B）。
+    未照合の足は塊の原因を結果に添える（v1.20）。
+    """
     counts: Counter[tuple[str, str, str, str]] = Counter()
     wanted = set(bars)
+
+    def shown(result: str, note: str) -> str:
+        return f"{result}（{note}）" if note else result
+
     for record in collection.records:
+        source = f"{record.source}（補正の前の入力）" if record.pre_correction else record.source
         for bar, result in record.results.items():
-            if bar in wanted:
-                counts[(record.recorded_at, record.plan_id, record.source, result)] += 1
+            if bar not in wanted:
+                continue
+            if bar in record.overlaps:
+                for origin, original, note in record.overlaps[bar]:
+                    counts[
+                        (
+                            record.recorded_at,
+                            record.plan_id,
+                            f"{source}（読み替えで鍵が重なった。元の鍵 {rhg.fmt_utc(origin)}）",
+                            shown(original, note),
+                        )
+                    ] += 1
+                continue
+            counts[
+                (
+                    record.recorded_at,
+                    record.plan_id,
+                    source,
+                    shown(result, record.notes.get(bar, "")),
+                )
+            ] += 1
     return [(*key, count) for key, count in sorted(counts.items())]
 
 
@@ -702,17 +932,47 @@ def render_report(
     ]
     lines.append(f"未照合の塊（補充分に書かず、人間の判断を待つ）: {len(unreconciled)}")
     lines += [
-        f"- {item.series} {item.chunk_start}（対象足 {item.target_count} 本）"
+        f"- {item.series} {item.chunk_start}（対象足 {item.target_count} 本。原因 "
+        + "+".join(cause.value for cause in item.causes)
+        + (
+            "。作れなかった照合用の足 "
+            + ", ".join(f"{series} {start}" for series, start in item.unbuilt_reconciliation_bars)
+            if item.unbuilt_reconciliation_bars
+            else ""
+        )
+        + "）"
         for item in unreconciled
+    ]
+    lines.append("")
+    differences = [item for refill in refills for item in refill.validation.source_differences] + [
+        item
+        for rej in rejected
+        if rej.rejection is not None
+        for item in rej.rejection.source_differences
+    ]
+    lines.append(
+        "配信元の値の差の塊（照合用の足が原データ histdata と一致せず、時刻ズレでも表現誤差でも"
+        f"ない。補充分に書かない。D03 §14.7）: {len(differences)}"
+    )
+    lines += [
+        f"- {item.chunk.series} {item.chunk.chunk_start}（対象足 {item.chunk.target_count} 本。"
+        f"理由: 不一致の足 {item.mismatch_count} 本、差の最大 {item.max_difference}"
+        f"（{item.max_difference_pips} pip））"
+        for item in differences
     ]
     lines.append("")
     for refill in refills:
         validation = refill.validation
         review = [item for item in validation.neighbors if item.needs_review]
         short = refill.manifest.refill_id[:12]
+        rounded = (
+            "記録なし（v1.19 より前の形式）"
+            if validation.rounding_matched_count is None
+            else f"{validation.rounding_matched_count} 本"
+        )
         lines.append(
             f"検証（`{short}…`）: 照合 {validation.reconciled_count} 本・"
-            f"一致 {validation.matched_count} 本、"
+            f"一致 {validation.matched_count} 本（うち価格の桁で丸めて初めて一致 {rounded}）、"
             f"範囲外の tick {validation.out_of_range_tick_count} 件、"
             f"bid が ask より大きい tick {validation.bid_above_ask_tick_count} 件"
             f"（合否に使わない）、「要確認」の印 {len(review)} 件"
@@ -876,13 +1136,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--snapshot-id", required=True, help="新しい snapshot の識別子")
     parser.add_argument(
         "--previous-snapshot-id",
-        default=rhg.DEFAULT_SNAPSHOT_ID,
-        help="比較する旧 snapshot の識別子（既定は補充の前の承認済み snapshot）",
+        required=True,
+        help=(
+            "比較する旧 snapshot の識別子（補充の計画の入力にした補正後の snapshot。新 snapshot と"
+            "同じ補正規則のもの。D03 §14.15 の v1.19）"
+        ),
     )
     parser.add_argument(
         "--candidates-snapshot-id",
-        default=rhg.DEFAULT_SNAPSHOT_ID,
-        help="休場の候補区間を定めた snapshot（既定は PR #55 の欠落一覧の snapshot）",
+        required=True,
+        help=(
+            "休場の候補区間を作る snapshot（補正後の欠落一覧の snapshot。新 snapshot と同じ補正規則"
+            "のもの。D03 §3.4.2・§14.15 の v1.19、人間の決定 DST-5・DST-6）"
+        ),
     )
     parser.add_argument("--refill-root", type=Path, default=Path("data/raw/market/refill"))
     parser.add_argument("--out", type=Path, required=True, help="報告と CSV の出力先ディレクトリ")
@@ -898,7 +1164,21 @@ def main(argv: list[str] | None = None) -> int:
     except ReportInputError as exc:
         print(f"報告の入力が読めない: {exc}", file=sys.stderr)
         return 1
-    collection = collect_records(args.snapshot_root, store, chain, frozenset(new.refill_ids))
+    new_rule = correction_of(new)
+    for label, other in (("旧 snapshot", old), ("休場の候補区間の snapshot", candidates_snapshot)):
+        if correction_of(other) != new_rule:
+            # 比べる表・旧 CSV・候補区間は補正後の snapshot のものを使う（D03 §14.15 の v1.19、
+            # 人間の決定 DST-5・DST-6）。補正の前の snapshot から作った候補区間は印に使わない。
+            print(
+                f"{label} {other.snapshot_id} の時刻ラベルの補正規則が新 snapshot と違う。補正後の"
+                " snapshot（新 snapshot と同じ補正規則のもの）を指定すること"
+                "（D03 §14.15 の v1.19）",
+                file=sys.stderr,
+            )
+            return 1
+    collection = collect_records(
+        args.snapshot_root, store, chain, frozenset(new.refill_ids), new_rule
+    )
     new_merged, new_bounds = rhg.collect_gaps(new.payload)
     old_merged, old_bounds = rhg.collect_gaps(old.payload)
     candidates = candidate_intervals(rhg.collect_gaps(candidates_snapshot.payload)[0])
