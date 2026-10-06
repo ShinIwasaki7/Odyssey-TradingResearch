@@ -121,7 +121,8 @@ class Rejection:
 
 
 _DETAIL_KEYS = frozenset({"mismatches", "not_built", "unreconciled"})
-#: v1.19 の書き手の形（配信元の値の差の塊を足した）。前の形の行もそのまま読む。
+#: v1.19 の書き手の形（配信元の値の差の塊を足した。v1.20 で未照合の塊に原因を足した）。前の形の
+#: 行もそのまま読む（未照合の塊は原因を持たない形として読む）。
 _DETAIL_KEYS_V2 = _DETAIL_KEYS | {"source_differences"}
 
 
@@ -144,8 +145,9 @@ def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejec
         not_built_from_payload(item, f"{label}.not_built[{index}]")
         for index, item in enumerate(details["not_built"])
     )
+    legacy = frozenset(details) == _DETAIL_KEYS
     unreconciled = tuple(
-        unreconciled_from_payload(item, f"{label}.unreconciled[{index}]")
+        unreconciled_from_payload(item, f"{label}.unreconciled[{index}]", legacy=legacy)
         for index, item in enumerate(details["unreconciled"])
     )
     source_differences = tuple(

@@ -29,6 +29,12 @@
   → 不合格にしない。その足を照合に使った塊（同じ銘柄の連続する対象の時間と、足した照合用の時間）の
   対象足は 15分足・1時間足とも作らず、塊ごとに記録する（未照合の塊と同じく合否の外）。
 
+**照合用の足を作れない塊**（D03 §14.7 の v1.20。2026-10-05 の人間の決定 3）: 照合用の足を tick から
+作れない（区間に tick が無い。`NOT_BUILT`）ときは不合格にせず、その足を照合に使う塊を「未照合」
+として補充から外し、原因と作れなかった照合用の足を記録する。他の塊は続ける。補充した足が 0 本
+なら不合格。同じ塊が (iii) にも当たれば状態は未照合 1 つで、原因に両方を書く（2026-10-06 の人間の
+決定 A）。
+
 **照合用の足**: 計画の時間ファイル（対象の時間と照合用の時間）に入る、研究履歴区分の原データの
 足すべて。照合用の足が原データにある塊で、取得できなかったためにどれも比べられないまま
 補充する足ができるときは、検証できない足を書かないよう不合格にする（取り直しで回復する。
@@ -77,6 +83,7 @@ from odyssey_fx.marketdata.domain.refill_validation import (
     RefillValidation,
     SourceDifferenceChunk,
     SourceDifferenceEvidence,
+    UnreconciledCause,
     UnreconciledChunk,
     UsedHour,
 )
@@ -155,7 +162,8 @@ def _mismatch_kind(made: Bar | None, raw_bar: Bar, raw: RawBarIndex, exponent: i
     """丸めた後も一致しない照合用の足の区分（D03 §14.7 の v1.19「不一致の分け方」）。
 
     tick から作れなかった照合用の足（区間に tick が無い）は比べる値が無いので (i)〜(iii) に当てず、
-    `NOT_BUILT` として不合格にする（v1.19 より前と同じ扱い。PR #69 の仮置き 2）。
+    `NOT_BUILT` とする。その足を照合に使う塊は不合格にせず「未照合」として補充から外す（D03
+    §14.7 の v1.20「照合用の足を作れない塊」。2026-10-05 の人間の決定 3）。
     """
     if made is None:
         return MismatchKind.NOT_BUILT
@@ -172,6 +180,21 @@ def _mismatch_kind(made: Bar | None, raw_bar: Bar, raw: RawBarIndex, exponent: i
         f"{raw_bar.series} {raw_bar.bar_start}: a raw bar of source {kind.value} cannot be"
         " reconciled (D03 §14.7)"
     )
+
+
+def _targets_by_series(
+    chunk_keys: Sequence[HourKey], targets_by_hour: Mapping[HourKey, Sequence[TargetBar]]
+) -> dict[SeriesId, list[TargetBar]]:
+    """塊の時間に入る対象足を系列ごとに（塊の記録は系列ごとに 1 つ。D03 §14.8）。"""
+    grouped: dict[SeriesId, list[TargetBar]] = {}
+    for key in chunk_keys:
+        for target in targets_by_hour.get(key, []):
+            grouped.setdefault(target.series, []).append(target)
+    return grouped
+
+
+def _first_start(bars: Sequence[TargetBar]) -> UtcTime:
+    return min(bars, key=lambda bar: bar.start.value).start
 
 
 def _bar_chunks(targets: Sequence[TargetBar]) -> list[list[TargetBar]]:
@@ -337,16 +360,10 @@ def validate_refill(
                         compared += 1
             if not has_sources:
                 unreconciled_hours.update(chunk_keys)
-                counts: dict[SeriesId, list[TargetBar]] = {}
-                for key in chunk_keys:
-                    for target in targets_by_hour.get(key, []):
-                        counts.setdefault(target.series, []).append(target)
-                for series, bars in counts.items():
+                for series, bars in _targets_by_series(chunk_keys, targets_by_hour).items():
                     unreconciled.append(
                         UnreconciledChunk(
-                            series=series,
-                            chunk_start=min(bars, key=lambda bar: bar.start.value).start,
-                            target_count=len(bars),
+                            series=series, chunk_start=_first_start(bars), target_count=len(bars)
                         )
                     )
             elif compared == 0:
@@ -356,7 +373,33 @@ def validate_refill(
                 for record in chunk_records
                 if record.mismatch is MismatchKind.SOURCE_DIFFERENCE
             ]
-            if differing:
+            unbuilt = sorted(
+                {
+                    (record.series, record.start)
+                    for record in chunk_records
+                    if record.mismatch is MismatchKind.NOT_BUILT
+                },
+                key=lambda item: (str(item[0]), str(item[1])),
+            )
+            if unbuilt:
+                # 照合用の足を作れない塊（D03 §14.7 の v1.20）: 不合格にせず「未照合」として
+                # 補充から外し、他の塊は続ける。配信元の値の差にも当たれば、状態は未照合 1 つで、
+                # 原因に両方を書く（2026-10-06 の人間の決定 A。不一致の足と差は照合の記録に残る）。
+                causes = (UnreconciledCause.RECONCILIATION_NOT_BUILT,) + (
+                    (UnreconciledCause.SOURCE_DIFFERENCE,) if differing else ()
+                )
+                unreconciled_hours.update(chunk_keys)
+                for series, bars in _targets_by_series(chunk_keys, targets_by_hour).items():
+                    unreconciled.append(
+                        UnreconciledChunk(
+                            series=series,
+                            chunk_start=_first_start(bars),
+                            target_count=len(bars),
+                            causes=causes,
+                            unbuilt_reconciliation_bars=tuple(unbuilt),
+                        )
+                    )
+            elif differing:
                 # (iii) 配信元の値の差: この塊の対象足は 15分足・1時間足とも作らない（D03 §14.7 の
                 # v1.19）。理由として不一致の足の数と差の最大（価格と pip）を残す（§14.15 の 2）。
                 source_difference_hours.update(chunk_keys)
@@ -365,16 +408,12 @@ def validate_refill(
                     default=decimal_from_int(0),
                 )
                 largest_pips = kernel_context().divide(largest, quote.pip_size)
-                grouped: dict[SeriesId, list[TargetBar]] = {}
-                for key in chunk_keys:
-                    for target in targets_by_hour.get(key, []):
-                        grouped.setdefault(target.series, []).append(target)
-                for series, bars in grouped.items():
+                for series, bars in _targets_by_series(chunk_keys, targets_by_hour).items():
                     source_differences.append(
                         SourceDifferenceEvidence(
                             chunk=SourceDifferenceChunk(
                                 series=series,
-                                chunk_start=min(bars, key=lambda bar: bar.start.value).start,
+                                chunk_start=_first_start(bars),
                                 target_count=len(bars),
                             ),
                             mismatch_count=len(differing),
@@ -390,10 +429,12 @@ def validate_refill(
             " differs from the one the plan was built from (D03 §14.4)"
         )
 
+    # 不合格にするのは (i) 時刻ズレの疑いと (ii) 提供元の訂正の疑いだけ（D03 §14.7 の v1.19 の 3）。
+    # (iii) 配信元の値の差と、照合用の足を作れない足（v1.20）は塊を補充から外すだけ。
     mismatches = [
         record
         for record in reconciled
-        if record.mismatch is not None and record.mismatch is not MismatchKind.SOURCE_DIFFERENCE
+        if record.mismatch in (MismatchKind.TIME_SHIFT, MismatchKind.PROVIDER_CORRECTION)
     ]
     if mismatches:
         listed = ", ".join(
@@ -402,8 +443,7 @@ def validate_refill(
         )
         failures.append(
             f"{len(mismatches)} reconciliation bar(s) differ from the raw data after rounding to"
-            f" the price scale and are a suspected time shift or provider correction, or could not"
-            f" be built from the ticks ({listed});"
+            f" the price scale and are a suspected time shift or provider correction ({listed});"
             " no tolerance is applied (D03 §14.7 の 1・2 v1.19, §14.18 の 6)"
         )
 

@@ -55,6 +55,7 @@ from odyssey_fx.marketdata.domain.refill_validation import (
     NotBuiltReason,
     SourceDifferenceChunk,
     SourceDifferenceEvidence,
+    UnreconciledCause,
     UnreconciledChunk,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -537,23 +538,70 @@ def not_built_from_payload(payload: object, label: str) -> NotBuiltBar:
     )
 
 
+_UNRECONCILED_KEYS_V1: Final = frozenset(
+    {"chunk_start", "series", "target_count", "timeframe_version"}
+)
+_UNRECONCILED_KEYS: Final = _UNRECONCILED_KEYS_V1 | {"causes", "unbuilt_reconciliation_bars"}
+
+
 def unreconciled_payload(item: UnreconciledChunk) -> Mapping[str, Any]:
-    """未照合の塊 1 つの記録の形 `(系列, 塊の開始時刻, 対象足の数)`。"""
+    """未照合の塊 1 つの記録の形 `(系列, 塊の開始時刻, 対象足の数)` と原因（D03 §14.8 の v1.20）。
+
+    原因 `causes` は 1 つ以上（照合用の足を作れない塊で配信元の値の差にも当たれば両方。
+    2026-10-06 の人間の決定 A）。`unbuilt_reconciliation_bars` は作れなかった照合用の足。
+    """
     return {
         **_series_payload(item.series),
+        "causes": [cause.value for cause in item.causes],
         "chunk_start": str(item.chunk_start),
         "target_count": item.target_count,
+        "unbuilt_reconciliation_bars": [
+            {**_series_payload(series), "start": str(start)}
+            for series, start in item.unbuilt_reconciliation_bars
+        ],
     }
 
 
-def unreconciled_from_payload(payload: object, label: str) -> UnreconciledChunk:
-    """未照合の塊 1 つの記録を読む。"""
+def unreconciled_from_payload(
+    payload: object, label: str, *, legacy: bool = False
+) -> UnreconciledChunk:
+    """未照合の塊 1 つの記録を読む。
+
+    `legacy` は v1.20 より前の書き手の形（原因を持たない。manifest・`validation.json` の形式 v1
+    と、取得記録の前の形の行）。原因は照合できる足が無い（`NO_RECONCILIATION_BAR`）として読む。
+    """
     mapping = _mapping(payload, label)
-    _keys(mapping, frozenset({"chunk_start", "series", "target_count", "timeframe_version"}), label)
+    _keys(mapping, _UNRECONCILED_KEYS_V1 if legacy else _UNRECONCILED_KEYS, label)
+    series = series_from_record(mapping["series"], mapping["timeframe_version"], label)
+    chunk_start = _time(mapping["chunk_start"], f"{label}.chunk_start")
+    target_count = _int(mapping["target_count"], f"{label}.target_count", minimum=1)
+    if legacy:
+        return UnreconciledChunk(series=series, chunk_start=chunk_start, target_count=target_count)
+    causes: list[UnreconciledCause] = []
+    for index, value in enumerate(_sequence(mapping["causes"], f"{label}.causes")):
+        try:
+            causes.append(UnreconciledCause(value))
+        except ValueError as exc:
+            raise MarketDataValueError(f"{label}.causes[{index}]: {exc}") from exc
+    bars: list[tuple[SeriesId, UtcTime]] = []
+    for index, entry in enumerate(
+        _sequence(mapping["unbuilt_reconciliation_bars"], f"{label}.unbuilt_reconciliation_bars")
+    ):
+        at = f"{label}.unbuilt_reconciliation_bars[{index}]"
+        bar = _mapping(entry, at)
+        _keys(bar, frozenset({"series", "start", "timeframe_version"}), at)
+        bars.append(
+            (
+                series_from_record(bar["series"], bar["timeframe_version"], at),
+                _time(bar["start"], f"{at}.start"),
+            )
+        )
     return UnreconciledChunk(
-        series=series_from_record(mapping["series"], mapping["timeframe_version"], label),
-        chunk_start=_time(mapping["chunk_start"], f"{label}.chunk_start"),
-        target_count=_int(mapping["target_count"], f"{label}.target_count", minimum=1),
+        series=series,
+        chunk_start=chunk_start,
+        target_count=target_count,
+        causes=tuple(causes),
+        unbuilt_reconciliation_bars=tuple(bars),
     )
 
 
@@ -856,7 +904,8 @@ class RefillManifest:
         """
         label = REFILL_MANIFEST_FILE
         mapping = _mapping(payload, label)
-        if mapping.get("format") == _REFILL_MANIFEST_FORMAT_V1:
+        legacy = mapping.get("format") == _REFILL_MANIFEST_FORMAT_V1
+        if legacy:
             _keys(mapping, _MANIFEST_KEYS, label)
         else:
             _keys(mapping, _MANIFEST_KEYS_V2, label)
@@ -906,7 +955,7 @@ class RefillManifest:
                 for index, item in enumerate(_sequence(mapping["not_built"], f"{label}.not_built"))
             ),
             unreconciled=tuple(
-                unreconciled_from_payload(item, f"{label}.unreconciled[{index}]")
+                unreconciled_from_payload(item, f"{label}.unreconciled[{index}]", legacy=legacy)
                 for index, item in enumerate(
                     _sequence(mapping["unreconciled"], f"{label}.unreconciled")
                 )
@@ -1085,7 +1134,8 @@ class RefillValidationRecord:
                 _hourly_from_payload(item, at) for at, item in items("hourly_consistency")
             ),
             unreconciled=tuple(
-                unreconciled_from_payload(item, at) for at, item in items("unreconciled")
+                unreconciled_from_payload(item, at, legacy=legacy)
+                for at, item in items("unreconciled")
             ),
             rounding_matched_count=None
             if legacy

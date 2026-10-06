@@ -36,6 +36,7 @@ from odyssey_fx.marketdata.domain.refill_validation import (
     NeighborStatus,
     NotBuiltReason,
     RefillValidation,
+    UnreconciledCause,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
 from tests.fixtures.refill import (
@@ -417,10 +418,9 @@ def test_a_reference_hour_the_raw_data_does_not_need_is_rejected() -> None:
         )
 
 
-def test_a_reconciliation_bar_without_ticks_still_fails() -> None:
-    """照合用の足を tick から作れない（区間に tick が無い）ときは、出所が histdata でも配信元の
-    値の差に当てず不合格にする（v1.19 より前と同じ。PR #69 の仮置き 2）。"""
-    without_00_15 = DecodedTicks(
+def _without_00_15() -> DecodedTicks:
+    """00 時の tick から 00:15〜00:30 を除いたもの（照合用の 15分足 00:15 を作れない）。"""
+    return DecodedTicks(
         tick_digest="9" * 64,
         ticks=tuple(
             tick
@@ -428,10 +428,91 @@ def test_a_reconciliation_bar_without_ticks_still_fails() -> None:
             if not 15 * 60 * 1000 <= tick.offset_ms < 30 * 60 * 1000
         ),
     )
+
+
+def test_a_chunk_whose_reconciliation_bar_cannot_be_built_is_unreconciled() -> None:
+    """照合用の足を tick から作れない（`NOT_BUILT`）塊は不合格にせず「未照合」として補充から外し、
+    原因と作れなかった照合用の足を記録する（D03 §14.7 の v1.20。決定 3）。有効な補充の足が 0 本
+    なら不合格（その理由だけ）。"""
     result = _validate(
-        {KEY_00: _fetched(KEY_00, without_00_15), KEY_01: _fetched(KEY_01, decoded(BI5_01H))}
+        {KEY_00: _fetched(KEY_00, _without_00_15()), KEY_01: _fetched(KEY_01, decoded(BI5_01H))}
+    )
+    assert MismatchKind.NOT_BUILT in {item.mismatch for item in result.reconciled}
+    assert result.built_bars == ()
+    assert {item.reason for item in result.not_built} == {NotBuiltReason.UNRECONCILED}
+    assert result.source_differences == ()
+    assert [(str(item.series), item.target_count, item.causes) for item in result.unreconciled] == [
+        ("USDJPY/15m/bid", 4, (UnreconciledCause.RECONCILIATION_NOT_BUILT,)),
+        ("USDJPY/1h/bid", 1, (UnreconciledCause.RECONCILIATION_NOT_BUILT,)),
+    ]
+    for item in result.unreconciled:
+        assert [
+            (str(series), str(start)) for series, start in item.unbuilt_reconciliation_bars
+        ] == [("USDJPY/15m/bid", "2020-11-30T00:15:00Z")]
+    assert not result.passed
+    assert all("no bar was built" in reason for reason in result.failures)
+
+
+def test_other_chunks_continue_when_one_chunk_is_unreconciled() -> None:
+    """照合用の足を作れない塊だけを外し、独立に照合できた他の塊の補充は続ける（決定 3）。"""
+    hour_04 = HOUR_01 + timedelta(hours=3)
+    bars = raw_bars(drop_hours=(HOUR_01, hour_04))
+    plan = build_plan(
+        manifest=manifest_for(gap_resolutions(hours=(HOUR_01, hour_04))),
+        raw_bars=bars,
+        calendar=REFILL_CALENDAR,
+        calendar_ref=calendar_ref(),
+        timeframe_defs=market.TIMEFRAME_DEFS,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        provider=provider_ref(),
+        refill_filter=RefillFilter(),
+    )
+    # 01 時の塊は録画した tick で照合でき、04 時の塊の時間（照合用の時間を含む）は tick が無い。
+    hours = {key: _fetched(key, decoded(b"")) for key in plan.hour_keys}
+    hours[KEY_00] = _fetched(KEY_00, decoded(BI5_00H))
+    hours[KEY_01] = _fetched(KEY_01, decoded(BI5_01H))
+    result = validate_refill(
+        plan=plan,
+        hours=hours,
+        originals=ORIGINALS,
+        raw=RawBarIndex.build(bars, INITIAL_ACCESS_BOUNDARIES),
+        calendar=REFILL_CALENDAR,
+    )
+    assert result.passed, result.failures
+    assert {str(bar.bar_start)[:13] for bar in result.built_bars} == {"2020-11-30T01"}
+    assert len(result.built_bars) == 5
+    assert [(str(item.series), str(item.chunk_start)) for item in result.unreconciled] == [
+        ("USDJPY/15m/bid", "2020-11-30T04:00:00Z"),
+        ("USDJPY/1h/bid", "2020-11-30T04:00:00Z"),
+    ]
+    assert {item.causes for item in result.unreconciled} == {
+        (UnreconciledCause.RECONCILIATION_NOT_BUILT,)
+    }
+    unreconciled = {
+        str(item.start) for item in result.not_built if item.reason is NotBuiltReason.UNRECONCILED
+    }
+    assert {start[:13] for start in unreconciled} == {"2020-11-30T04"}
+
+
+def test_a_chunk_both_unbuilt_and_source_different_is_unreconciled_with_both_causes() -> None:
+    """塊が配信元の値の差と照合用の足を作れないの両方に当たれば、状態は「未照合」1 つで、原因に
+    両方を書く（2026-10-06 の人間の決定 A）。配信元の値の差の塊としては記録しない。"""
+    bars = raw_bars()
+    _with_close(bars, USDJPY_15M, HOUR_00, "0.002")
+    result = _validate(
+        {KEY_00: _fetched(KEY_00, _without_00_15()), KEY_01: _fetched(KEY_01, decoded(BI5_01H))},
+        raw=bars,
     )
     kinds = {item.mismatch for item in result.reconciled if not item.matched}
-    assert MismatchKind.NOT_BUILT in kinds
-    assert not result.passed
+    assert {MismatchKind.NOT_BUILT, MismatchKind.SOURCE_DIFFERENCE} <= kinds
     assert result.source_differences == ()
+    assert {item.reason for item in result.not_built} == {NotBuiltReason.UNRECONCILED}
+    assert {item.causes for item in result.unreconciled} == {
+        (UnreconciledCause.RECONCILIATION_NOT_BUILT, UnreconciledCause.SOURCE_DIFFERENCE)
+    }
+    # 不一致の足と差は照合の記録に残る（validation.json の材料）。
+    [differing] = [
+        item for item in result.reconciled if item.mismatch is MismatchKind.SOURCE_DIFFERENCE
+    ]
+    assert differing.differences == (("close", decimal_from_str("-0.002")),)
+    assert all("no bar was built" in reason for reason in result.failures)

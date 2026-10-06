@@ -33,6 +33,7 @@ __all__ = [
     "RefillValidation",
     "SourceDifferenceChunk",
     "SourceDifferenceEvidence",
+    "UnreconciledCause",
     "UnreconciledChunk",
     "UsedHour",
 ]
@@ -69,8 +70,28 @@ class MismatchKind(Enum):
     #: 不合格にせず、その足を照合に使った塊の対象足を補充しない。
     SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
     #: 照合用の足を tick から作れなかった（区間に tick が無い）。丸めて比べる値が無いので
-    #: (i)〜(iii) のどれにも当たらず、v1.19 より前と同じく不合格にする（PR #69 の仮置き 2）。
+    #: (i)〜(iii) のどれにも当たらない。不合格にせず、その足を照合に使う塊を「未照合」として
+    #: 補充から外す（D03 §14.7 の v1.20「照合用の足を作れない塊」。2026-10-05 の人間の決定 3）。
     NOT_BUILT = "NOT_BUILT"
+
+
+class UnreconciledCause(Enum):
+    """未照合の塊の原因（D03 §14.7・§14.8 の v1.20）。
+
+    `NO_RECONCILIATION_BAR` は単独で使う。`RECONCILIATION_NOT_BUILT` には、同じ塊が配信元の
+    値の差にも当たるとき `SOURCE_DIFFERENCE` を併記する（状態は「未照合」1 つ。2026-10-06 の
+    人間の決定 A。D03 §14.15）。
+    """
+
+    #: 照合できる足が無い（照合用の足も照合用の時間も無い塊。D03 §14.4）。
+    NO_RECONCILIATION_BAR = "NO_RECONCILIATION_BAR"
+    #: 照合用の足を tick から作れない（`NOT_BUILT`。D03 §14.7 の v1.20）。
+    RECONCILIATION_NOT_BUILT = "RECONCILIATION_NOT_BUILT"
+    #: 配信元の値の差（D03 §14.7 の (iii)）。`RECONCILIATION_NOT_BUILT` と併記するときだけ。
+    SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
+
+
+_CAUSE_ORDER = tuple(UnreconciledCause)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,17 +110,56 @@ class NotBuiltBar:
 
 @dataclass(frozen=True, slots=True)
 class UnreconciledChunk:
-    """未照合の塊の記録 `(系列, 塊の開始時刻, 対象足の数)`（D03 §14.4・§14.8）。"""
+    """未照合の塊の記録 `(系列, 塊の開始時刻, 対象足の数)` と原因（D03 §14.4・§14.8 の v1.20）。
+
+    `causes` は原因（`UnreconciledCause` の順。重複なし）。照合用の足を作れない塊は
+    `unbuilt_reconciliation_bars` に作れなかった照合用の足の `(系列, 開始時刻)` を持つ（D03
+    §14.7 の v1.20 の 1）。v1.20 より前の記録（原因を持たない形）は、照合できる足が無い塊
+    （`NO_RECONCILIATION_BAR`）として読む（それより前の未照合の原因はそれだけだったため）。
+    """
 
     series: SeriesId
     chunk_start: UtcTime
     target_count: int
+    causes: tuple[UnreconciledCause, ...] = (UnreconciledCause.NO_RECONCILIATION_BAR,)
+    unbuilt_reconciliation_bars: tuple[tuple[SeriesId, UtcTime], ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.target_count, bool) or not isinstance(self.target_count, int):
             raise MarketDataValueError("UnreconciledChunk.target_count must be an int")
         if self.target_count < 1:
             raise MarketDataValueError("UnreconciledChunk.target_count must be >= 1")
+        causes = self.causes
+        if (
+            not causes
+            or not all(isinstance(cause, UnreconciledCause) for cause in causes)
+            or list(causes) != sorted(set(causes), key=_CAUSE_ORDER.index)
+        ):
+            raise MarketDataValueError(
+                "UnreconciledChunk.causes must be distinct causes in their declared order"
+            )
+        no_bar = UnreconciledCause.NO_RECONCILIATION_BAR in causes
+        not_built = UnreconciledCause.RECONCILIATION_NOT_BUILT in causes
+        if no_bar and len(causes) != 1:
+            raise MarketDataValueError(
+                "a chunk without reconciliation bars has no other unreconciled cause"
+            )
+        if UnreconciledCause.SOURCE_DIFFERENCE in causes and not not_built:
+            raise MarketDataValueError(
+                "a source difference is an unreconciled cause only beside an unbuilt"
+                " reconciliation bar (D03 §14.15 の v1.20 の決定 A)"
+            )
+        bars = self.unbuilt_reconciliation_bars
+        if not_built != bool(bars):
+            raise MarketDataValueError(
+                "UnreconciledChunk lists unbuilt reconciliation bars exactly when one could not"
+                " be built (D03 §14.7 の v1.20)"
+            )
+        keys = [(str(series), str(start)) for series, start in bars]
+        if keys != sorted(set(keys)):
+            raise MarketDataValueError(
+                "UnreconciledChunk.unbuilt_reconciliation_bars must be sorted, without twins"
+            )
 
     def sort_key(self) -> tuple[str, str]:
         """整列鍵 `(系列の文字列, 塊の開始時刻)`。"""

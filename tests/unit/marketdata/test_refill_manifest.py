@@ -27,7 +27,10 @@ from odyssey_fx.marketdata.domain.refill_manifest import (
     RefillValidationRecord,
     bar_file_name,
     refill_id_of,
+    unreconciled_from_payload,
+    unreconciled_payload,
 )
+from odyssey_fx.marketdata.domain.refill_validation import UnreconciledCause, UnreconciledChunk
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from tests.fixtures.refill import USDJPY_1H, USDJPY_15M, provider_ref, raw_bars
 from tests.fixtures.synthetic import market
@@ -231,3 +234,61 @@ def test_a_v2_validation_record_checks_each_source_difference_bar() -> None:
         payload["source_difference_bars"] = [None if broken is None else {**bars[0], **broken}]
         with pytest.raises(MarketDataValueError):
             RefillValidationRecord.from_payload(payload)
+
+
+# --- 未照合の塊の原因（D03 §14.7・§14.8 の v1.20。決定 3・A）-----------------------------------
+
+
+def _unbuilt_chunk(*causes: UnreconciledCause) -> UnreconciledChunk:
+    return UnreconciledChunk(
+        series=USDJPY_15M,
+        chunk_start=UtcTime.parse("2020-11-30T01:00:00Z"),
+        target_count=4,
+        causes=causes,
+        unbuilt_reconciliation_bars=((USDJPY_15M, UtcTime.parse("2020-11-30T00:15:00Z")),),
+    )
+
+
+def test_an_unreconciled_chunk_records_both_causes_and_reads_back() -> None:
+    """照合用の足を作れない塊の原因に、配信元の値の差も併記できる（決定 A）。"""
+    chunk = _unbuilt_chunk(
+        UnreconciledCause.RECONCILIATION_NOT_BUILT, UnreconciledCause.SOURCE_DIFFERENCE
+    )
+    payload = unreconciled_payload(chunk)
+    assert payload["causes"] == ["RECONCILIATION_NOT_BUILT", "SOURCE_DIFFERENCE"]
+    assert payload["unbuilt_reconciliation_bars"] == [
+        {"series": "USDJPY/15m/bid", "start": "2020-11-30T00:15:00Z", "timeframe_version": 1}
+    ]
+    assert unreconciled_from_payload(payload, "x") == chunk
+    # 原因を持たない形は v1.20 より前の書き手の形としてだけ読む（照合できる足が無い塊）。
+    legacy = {key: payload[key] for key in ("chunk_start", "series", "target_count")}
+    legacy["timeframe_version"] = 1
+    with pytest.raises(MarketDataValueError):
+        unreconciled_from_payload(legacy, "x")
+    assert unreconciled_from_payload(legacy, "x", legacy=True).causes == (
+        UnreconciledCause.NO_RECONCILIATION_BAR,
+    )
+
+
+@pytest.mark.parametrize(
+    "causes",
+    [
+        (),
+        (UnreconciledCause.SOURCE_DIFFERENCE,),
+        (UnreconciledCause.SOURCE_DIFFERENCE, UnreconciledCause.RECONCILIATION_NOT_BUILT),
+        (UnreconciledCause.NO_RECONCILIATION_BAR, UnreconciledCause.RECONCILIATION_NOT_BUILT),
+    ],
+)
+def test_unreconciled_causes_must_be_consistent(causes: tuple[UnreconciledCause, ...]) -> None:
+    with pytest.raises(MarketDataValueError):
+        _unbuilt_chunk(*causes)
+
+
+def test_an_unbuilt_cause_needs_its_unbuilt_reconciliation_bars() -> None:
+    with pytest.raises(MarketDataValueError, match="unbuilt reconciliation bars"):
+        UnreconciledChunk(
+            series=USDJPY_15M,
+            chunk_start=UtcTime.parse("2020-11-30T01:00:00Z"),
+            target_count=4,
+            causes=(UnreconciledCause.RECONCILIATION_NOT_BUILT,),
+        )

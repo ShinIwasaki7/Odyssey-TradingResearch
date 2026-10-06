@@ -48,6 +48,7 @@ from odyssey_fx.marketdata.domain.classification import (
 from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.refill import RefillFilter, RefillPlan
 from odyssey_fx.marketdata.domain.refill_manifest import RefillManifest
+from odyssey_fx.marketdata.domain.refill_validation import UnreconciledCause, UnreconciledChunk
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
@@ -524,6 +525,63 @@ def test_the_history_marks_a_relabelled_record(tmp_path: Path) -> None:
     keys = [("USDJPY", "15m@v1", (HOUR_02 + timedelta(hours=1)).value)]
     (entry,) = rr._history(keys, collection)
     assert "（補正の前の入力）" in entry[2]
+
+
+#: 対象の週の終端が 02:00 の人工の規則。計画 A の 01 時の足を +1 時間に読み替えると、読み替えない
+#: 02 時の足（同じ計画の対象足）の鍵と重なる（D03 §14.15 の v1.20 の決定 1・B）。
+_RULE_ENDING_02 = replace(
+    _RULE_2020,
+    weeks=(Interval(start=UtcTime.parse("2020-11-29T21:00:00Z"), end=HOUR_02),),
+)
+
+
+def test_an_overlap_of_relabelled_keys_is_reported_and_keeps_both_records(
+    tmp_path: Path,
+) -> None:
+    """決定 1・B: 読み替えた鍵が読み替えない鍵と重なれば、網羅性を確かめられない理由に載せ、
+    その足の状態は「理由未確定」1 つとし、重なった 2 つの記録をどちらも履歴に残す。"""
+    scene = _scene(tmp_path, new_rule=_RULE_ENDING_02)
+    root = tmp_path / "snapshots"
+    store = FsRefillStore(root=scene.refill_root)
+    chain = rr.snapshot_chain(root, store, scene.new)
+    collection = rr.collect_records(root, store, chain, frozenset(), _RULE_ENDING_02)
+    (record,) = collection.records
+    overlapped = ("USDJPY", "15m@v1", HOUR_02.value)
+    assert record.results[overlapped] == rr.RELABEL_OVERLAP
+    # 15分足 4 本と 1時間足 1 本が重なる。
+    assert len(record.overlaps) == 5
+    assert [origin for origin, _, _ in record.overlaps[overlapped]] == [
+        HOUR_01.value,
+        HOUR_02.value,
+    ]
+    assert not collection.complete
+    [problem] = [item for item in collection.problems if "15m@v1 2020-11-30T02:00Z" in item]
+    assert "鍵が重なった" in problem and "元の鍵 2020-11-30T01:00Z・2020-11-30T02:00Z" in problem
+    assert sum("鍵が重なった" in item for item in collection.problems) == 5
+    # 状態は「理由未確定」1 つ（2 つの結果のどちらも選ばない）。
+    states = rr.bar_states([overlapped], collection, chain)
+    assert states[overlapped].states == (rr.UNDETERMINED,)
+    # 履歴には元の 2 つの記録がどちらも残る（01 時は補充した、02 時は取得できなかった）。
+    entries = rr._history([overlapped], collection)
+    assert len(entries) == 2
+    assert {entry[3] for entry in entries} == {rr.BUILT_NOT_IN_SNAPSHOT, rr.NOT_FETCHED}
+    assert all("元の鍵" in entry[2] for entry in entries)
+
+
+def test_the_cause_of_an_unreconciled_chunk_is_shown_for_its_bars() -> None:
+    """v1.20: 未照合の足の履歴に塊の原因を示す（照合用の足を作れない＋配信元の値の差。決定 A）。"""
+    plan = _plan(9)
+    chunk = UnreconciledChunk(
+        series=USDJPY_15M,
+        chunk_start=HOUR_01,
+        target_count=8,
+        causes=(UnreconciledCause.RECONCILIATION_NOT_BUILT, UnreconciledCause.SOURCE_DIFFERENCE),
+        unbuilt_reconciliation_bars=((USDJPY_15M, UtcTime.parse("2020-11-30T00:15:00Z")),),
+    )
+    notes = rr._unreconciled_notes(plan, (chunk,))
+    assert len(notes) == 8
+    assert {series for series, _ in notes} == {USDJPY_15M}
+    assert set(notes.values()) == {"原因 RECONCILIATION_NOT_BUILT+SOURCE_DIFFERENCE"}
 
 
 def test_the_old_and_candidate_snapshots_must_share_the_new_correction(tmp_path: Path) -> None:
