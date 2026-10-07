@@ -306,7 +306,7 @@
 ## 5. 再現
 
 ```
-uv run python -m tools.ops.refill_report --snapshot-root /Users/sanchez/Desktop/Odyssey-TradingResearch/data/snapshots --snapshot-id 1092f66c999026f5551a2289b0986d0565c411cd0b0bd2c9e312dad85d9bb151 --previous-snapshot-id d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db --candidates-snapshot-id d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db --refill-root /Users/sanchez/Desktop/Odyssey-TradingResearch/data/raw/market/refill --out docs/data/refill_report_2026-10-06
+uv run python -m tools.ops.refill_report --snapshot-root data/snapshots --snapshot-id 1092f66c999026f5551a2289b0986d0565c411cd0b0bd2c9e312dad85d9bb151 --previous-snapshot-id d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db --candidates-snapshot-id d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db --refill-root data/raw/market/refill --out docs/data/refill_report_2026-10-06
 ```
 
 戦略の成績（指標・レポート・`runs/`）は読んでいない。snapshot の manifest・補充分の manifest と検証記録・計画と取得記録だけを読んだ（D03 §14.2 の 7）。
