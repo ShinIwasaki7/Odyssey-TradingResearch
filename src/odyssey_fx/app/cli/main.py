@@ -893,9 +893,12 @@ def _run_refill_finalize(args: argparse.Namespace, out: _Writer) -> int:
     if report.passed:
         out.line("")
         out.line(
-            "受入れは `odyssey-fx data accept ... --datasource"
-            " configs/datasources/legacy_merged_csv_v3.yaml --refill"
-            f" {args.out / str(report.refill_id)}` で行う（原データと補充分を合わせる）"
+            "受入れは `odyssey-fx data accept ... --datasource <列対応の宣言> --refill"
+            f" {args.out / str(report.refill_id)}` で行う（原データと補充分を合わせる）。"
+            "列対応の宣言は、補充分の入力 snapshot と同じ補正規則のものを使う（補正後の"
+            " snapshot なら configs/datasources/legacy_merged_csv_v3.yaml、補正なしなら"
+            " configs/datasources/legacy_merged_csv_v2.yaml。違えば受入れは失敗する。D03 §4 の"
+            " v1.19）"
         )
         return _EXIT_OK
     return _EXIT_FAILED
