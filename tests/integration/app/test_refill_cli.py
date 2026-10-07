@@ -395,6 +395,9 @@ def test_finalize_then_accept_with_the_refill(
     assert f"補充の識別子（refill_id）: {refill_id}" in shown
     assert "USDJPY_15m_refill.csv: 4 本" in shown
     assert "104." not in shown and "103." not in shown  # 価格を出さない
+    # 受入れの案内は現行の列対応の宣言（版 3。D03 §14.14 の段 7）を挙げる。
+    assert "configs/datasources/legacy_merged_csv_v3.yaml --refill" in shown
+    assert "legacy_merged_csv_v2.yaml" not in shown
     # 同じコードでもう一度書き出すと失敗する（存在すれば失敗）。
     assert _finalize(repo, plan_id) == 1
     assert "already finalized" in capsys.readouterr().err
@@ -441,7 +444,10 @@ def test_accept_refuses_a_refill_outside_its_place_or_with_the_old_datasource(
     capsys.readouterr()
     # 列対応の宣言の版 1 は dukascopy_refill を受けない。
     assert _accept_with(repo, refill_dir, datasource="legacy_merged_csv_v1.yaml") == 1
-    assert "dukascopy_refill" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "dukascopy_refill" in err
+    # 案内は現行の列対応の宣言（版 3。D03 §14.14 の段 7）を挙げる。
+    assert "legacy_merged_csv_v3.yaml" in err and "legacy_merged_csv_v2.yaml" not in err
     # 所定の置き場の外へ写した補充分は受けない。
     copied = repo / "elsewhere" / refill_id
     shutil.copytree(refill_dir, copied)

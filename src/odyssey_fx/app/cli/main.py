@@ -894,7 +894,7 @@ def _run_refill_finalize(args: argparse.Namespace, out: _Writer) -> int:
         out.line("")
         out.line(
             "受入れは `odyssey-fx data accept ... --datasource"
-            " configs/datasources/legacy_merged_csv_v2.yaml --refill"
+            " configs/datasources/legacy_merged_csv_v3.yaml --refill"
             f" {args.out / str(report.refill_id)}` で行う（原データと補充分を合わせる）"
         )
         return _EXIT_OK

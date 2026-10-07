@@ -457,7 +457,7 @@ class AcceptanceService:
                 raise MarketDataValueError(
                     f"{path} row {index}: 出所 {value!r} は宣言に無い"
                     f"（{sorted(self.datasource.allowed_sources)}）。補充分を受け入れるには"
-                    " `dukascopy_refill` を足した列対応の宣言（legacy_merged_csv_v2.yaml）を使う"
+                    " `dukascopy_refill` を足した列対応の宣言（legacy_merged_csv_v3.yaml）を使う"
                     "（D03 §4・§9）"
                 )
         raw_file = RawFile(
