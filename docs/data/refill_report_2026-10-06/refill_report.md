@@ -1,0 +1,300 @@
+# 補充の後の残存欠落と実行可能な連続期間（報告の材料）
+
+## 1. 入力と出力の識別
+
+| 項目 | 値 |
+|---|---|
+| 旧 snapshot | `d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db` |
+| 新 snapshot | `1092f66c999026f5551a2289b0986d0565c411cd0b0bd2c9e312dad85d9bb151` |
+| 新 snapshot の承認 | 承認済み（ShinIwasaki7、2026-10-07T03:58:18.141260Z） |
+| カレンダー | `fx_ny17` 版 2 |
+| 補充の識別子（新 snapshot に入っているもの） | `5b6e8d1065617f1aec088c8e16d95f52872a6316e7014c051cac58da29771af6` |
+| 不合格のままの計画（自動収集） | `4990928b85e78610f4e190cdff2507e2d02be8efdf9e28842b8ee6e08f82eb38`, `a26edf3fc8b4c01e792b149846af71570cb454f476640203b2ec8550fc2868e0` |
+| 休場の候補区間を定めた snapshot | `d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db` |
+
+補充の置き場の自動収集: 計画 6 件・補充分 4 件（入力 snapshot を問わず置き場のすべて）。置き場の中はすべて読めた（網羅性を確かめた）。
+
+人間が消した作業ディレクトリ（`_work/<plan_id>/`）の計画は置き場から分からないので、この収集に入らない。
+
+## 2. 補充の結果
+
+補充した足の出来高は 0 で、「出来高不明」を意味する（実際の出来高として使わない。D03 §14.6）。
+
+補充分ごとの行（補充を重ねたとき、前の補充分の「作らなかった」には後の補充分が補充した足も含まれる。行を足し合わせない）。
+
+| 補充分 | 系列 | 対象足 | 補充した | 作らなかった | 理由別（作らなかった足） |
+|---|---|---|---|---|---|
+| `5b6e8d106561…` | AUDJPY/15m/bid | 347 | 200 | 147 | NO_TICK_IN_BAR 17, PROVIDER_EMPTY 12, SOURCE_DIFFERENCE 66, UNRECONCILED 52 |
+| `5b6e8d106561…` | AUDJPY/1h/bid | 82 | 50 | 32 | PROVIDER_EMPTY 3, SOURCE_DIFFERENCE 16, UNRECONCILED 13 |
+| `5b6e8d106561…` | AUDUSD/15m/bid | 365 | 196 | 169 | NO_TICK_IN_BAR 13, PROVIDER_EMPTY 4, SOURCE_DIFFERENCE 64, UNRECONCILED 88 |
+| `5b6e8d106561…` | AUDUSD/1h/bid | 87 | 49 | 38 | PROVIDER_EMPTY 1, SOURCE_DIFFERENCE 15, UNRECONCILED 22 |
+| `5b6e8d106561…` | EURGBP/15m/bid | 365 | 176 | 189 | NO_TICK_IN_BAR 12, PROVIDER_EMPTY 16, SOURCE_DIFFERENCE 65, UNRECONCILED 96 |
+| `5b6e8d106561…` | EURGBP/1h/bid | 87 | 44 | 43 | PROVIDER_EMPTY 4, SOURCE_DIFFERENCE 15, UNRECONCILED 24 |
+| `5b6e8d106561…` | EURJPY/15m/bid | 370 | 212 | 158 | NO_TICK_IN_BAR 24, PROVIDER_EMPTY 12, SOURCE_DIFFERENCE 66, UNRECONCILED 56 |
+| `5b6e8d106561…` | EURJPY/1h/bid | 86 | 53 | 33 | PROVIDER_EMPTY 3, SOURCE_DIFFERENCE 16, UNRECONCILED 14 |
+| `5b6e8d106561…` | EURUSD/15m/bid | 343 | 200 | 143 | NO_TICK_IN_BAR 9, PROVIDER_EMPTY 8, SOURCE_DIFFERENCE 66, UNRECONCILED 60 |
+| `5b6e8d106561…` | EURUSD/1h/bid | 83 | 50 | 33 | PROVIDER_EMPTY 2, SOURCE_DIFFERENCE 16, UNRECONCILED 15 |
+| `5b6e8d106561…` | GBPJPY/15m/bid | 380 | 196 | 184 | NO_TICK_IN_BAR 30, PROVIDER_EMPTY 16, SOURCE_DIFFERENCE 66, UNRECONCILED 72 |
+| `5b6e8d106561…` | GBPJPY/1h/bid | 87 | 49 | 38 | PROVIDER_EMPTY 4, SOURCE_DIFFERENCE 16, UNRECONCILED 18 |
+| `5b6e8d106561…` | GBPUSD/15m/bid | 361 | 200 | 161 | NO_TICK_IN_BAR 11, PROVIDER_EMPTY 16, SOURCE_DIFFERENCE 66, UNRECONCILED 68 |
+| `5b6e8d106561…` | GBPUSD/1h/bid | 87 | 50 | 37 | PROVIDER_EMPTY 4, SOURCE_DIFFERENCE 16, UNRECONCILED 17 |
+| `5b6e8d106561…` | USDCAD/15m/bid | 370 | 176 | 194 | NO_TICK_IN_BAR 20, PROVIDER_EMPTY 8, SOURCE_DIFFERENCE 66, UNRECONCILED 100 |
+| `5b6e8d106561…` | USDCAD/1h/bid | 86 | 44 | 42 | PROVIDER_EMPTY 2, SOURCE_DIFFERENCE 15, UNRECONCILED 25 |
+| `5b6e8d106561…` | USDCHF/15m/bid | 428 | 188 | 240 | NO_TICK_IN_BAR 52, PROVIDER_EMPTY 32, SOURCE_DIFFERENCE 68, UNRECONCILED 88 |
+| `5b6e8d106561…` | USDCHF/1h/bid | 93 | 47 | 46 | PROVIDER_EMPTY 8, SOURCE_DIFFERENCE 16, UNRECONCILED 22 |
+| `5b6e8d106561…` | USDJPY/15m/bid | 320 | 184 | 136 | NO_TICK_IN_BAR 10, PROVIDER_EMPTY 20, SOURCE_DIFFERENCE 66, UNRECONCILED 40 |
+| `5b6e8d106561…` | USDJPY/1h/bid | 77 | 46 | 31 | PROVIDER_EMPTY 5, SOURCE_DIFFERENCE 16, UNRECONCILED 10 |
+
+未照合の塊（補充分に書かず、人間の判断を待つ）: 112
+- AUDJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/15m/bid 2019-05-26T21:00:00Z（対象足 12 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/15m/bid 2022-12-25T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/1h/bid 2019-05-26T21:00:00Z（対象足 3 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/1h/bid 2022-12-25T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/15m/bid 2019-05-26T21:00:00Z（対象足 48 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/15m/bid 2023-12-24T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/1h/bid 2019-05-26T21:00:00Z（対象足 12 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/1h/bid 2023-12-24T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/15m/bid 2018-12-30T22:00:00Z（対象足 8 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/15m/bid 2019-05-26T21:00:00Z（対象足 52 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/1h/bid 2018-12-30T22:00:00Z（対象足 2 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/1h/bid 2019-05-26T21:00:00Z（対象足 13 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/15m/bid 2019-05-26T21:00:00Z（対象足 20 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/1h/bid 2019-05-26T21:00:00Z（対象足 5 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/15m/bid 2019-05-26T21:00:00Z（対象足 24 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/1h/bid 2019-05-26T21:00:00Z（対象足 6 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/15m/bid 2019-03-10T21:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/15m/bid 2019-05-26T21:00:00Z（対象足 32 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/1h/bid 2019-03-10T21:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/1h/bid 2019-05-26T21:00:00Z（対象足 8 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/15m/bid 2019-05-26T21:00:00Z（対象足 28 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/15m/bid 2023-01-01T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/1h/bid 2019-05-26T21:00:00Z（対象足 7 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/1h/bid 2023-01-01T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2019-03-10T21:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2019-05-26T21:00:00Z（対象足 52 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2022-10-09T21:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2023-01-01T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2019-03-10T21:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2019-05-26T21:00:00Z（対象足 13 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2022-10-09T21:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2023-01-01T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2019-03-10T21:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2019-05-26T21:00:00Z（対象足 44 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2023-12-24T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2019-03-10T21:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2019-05-26T21:00:00Z（対象足 11 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2023-12-24T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- USDJPY/15m/bid 2019-03-10T21:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- USDJPY/1h/bid 2019-03-10T21:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/15m/bid 2019-05-26T21:00:00Z（対象足 12 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/15m/bid 2022-12-25T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/1h/bid 2019-05-26T21:00:00Z（対象足 3 本。原因 NO_RECONCILIATION_BAR）
+- AUDJPY/1h/bid 2022-12-25T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/15m/bid 2019-05-26T21:00:00Z（対象足 48 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/15m/bid 2023-12-24T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/1h/bid 2019-05-26T21:00:00Z（対象足 12 本。原因 NO_RECONCILIATION_BAR）
+- AUDUSD/1h/bid 2023-12-24T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/15m/bid 2018-12-30T22:00:00Z（対象足 8 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/15m/bid 2019-05-26T21:00:00Z（対象足 52 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/1h/bid 2018-12-30T22:00:00Z（対象足 2 本。原因 NO_RECONCILIATION_BAR）
+- EURGBP/1h/bid 2019-05-26T21:00:00Z（対象足 13 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/15m/bid 2019-05-26T21:00:00Z（対象足 20 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- EURJPY/1h/bid 2019-05-26T21:00:00Z（対象足 5 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/15m/bid 2019-05-26T21:00:00Z（対象足 24 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- EURUSD/1h/bid 2019-05-26T21:00:00Z（対象足 6 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/15m/bid 2019-05-26T21:00:00Z（対象足 32 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- GBPJPY/1h/bid 2019-05-26T21:00:00Z（対象足 8 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/15m/bid 2019-05-26T21:00:00Z（対象足 28 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/15m/bid 2023-01-01T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/1h/bid 2019-05-26T21:00:00Z（対象足 7 本。原因 NO_RECONCILIATION_BAR）
+- GBPUSD/1h/bid 2023-01-01T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2019-05-26T21:00:00Z（対象足 52 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2022-10-09T21:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/15m/bid 2023-01-01T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2019-05-26T21:00:00Z（対象足 13 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2022-10-09T21:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCAD/1h/bid 2023-01-01T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2019-05-26T21:00:00Z（対象足 44 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/15m/bid 2023-12-24T22:00:00Z（対象足 4 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2019-05-26T21:00:00Z（対象足 11 本。原因 NO_RECONCILIATION_BAR）
+- USDCHF/1h/bid 2023-12-24T22:00:00Z（対象足 1 本。原因 NO_RECONCILIATION_BAR）
+- USDJPY/15m/bid 2017-01-01T22:00:00Z（対象足 36 本。原因 NO_RECONCILIATION_BAR）
+- USDJPY/1h/bid 2017-01-01T22:00:00Z（対象足 9 本。原因 NO_RECONCILIATION_BAR）
+
+配信元の値の差の塊（照合用の足が原データ histdata と一致せず、時刻ズレでも表現誤差でもない。補充分に書かない。D03 §14.7）: 33
+- AUDJPY/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.120（12.0 pip））
+- AUDJPY/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.031（3.1 pip））
+- AUDJPY/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.031（3.1 pip））
+- AUDUSD/15m/bid 2016-12-25T22:15:00Z（対象足 1 本。理由: 不一致の足 4 本、差の最大 0.00071（7.1 pip））
+- AUDUSD/15m/bid 2016-12-26T07:15:00Z（対象足 63 本。理由: 不一致の足 2 本、差の最大 0.00033（3.3 pip））
+- AUDUSD/1h/bid 2016-12-26T08:00:00Z（対象足 15 本。理由: 不一致の足 2 本、差の最大 0.00033（3.3 pip））
+- EURGBP/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.00221（22.1 pip））
+- EURGBP/15m/bid 2016-12-26T07:15:00Z（対象足 63 本。理由: 不一致の足 2 本、差の最大 0.00042（4.2 pip））
+- EURGBP/1h/bid 2016-12-26T08:00:00Z（対象足 15 本。理由: 不一致の足 2 本、差の最大 0.00042（4.2 pip））
+- EURJPY/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.171（17.1 pip））
+- EURJPY/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.037（3.7 pip））
+- EURJPY/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.037（3.7 pip））
+- EURUSD/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.00147（14.7 pip））
+- EURUSD/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.00018（1.8 pip））
+- EURUSD/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.00018（1.8 pip））
+- GBPJPY/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.289（28.9 pip））
+- GBPJPY/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.028（2.8 pip））
+- GBPJPY/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.028（2.8 pip））
+- GBPUSD/15m/bid 2016-12-25T22:15:00Z（対象足 1 本。理由: 不一致の足 4 本、差の最大 0.00297（29.7 pip））
+- GBPUSD/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.00020（2.0 pip））
+- GBPUSD/15m/bid 2017-08-13T21:15:00Z（対象足 1 本。理由: 不一致の足 4 本、差の最大 0.00287（28.7 pip））
+- GBPUSD/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.00020（2.0 pip））
+- USDCAD/15m/bid 2016-09-04T21:15:00Z（対象足 1 本。理由: 不一致の足 4 本、差の最大 0.00087（8.7 pip））
+- USDCAD/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.00133（13.3 pip））
+- USDCAD/15m/bid 2016-12-26T07:15:00Z（対象足 63 本。理由: 不一致の足 2 本、差の最大 0.00106（10.6 pip））
+- USDCAD/1h/bid 2016-12-26T08:00:00Z（対象足 15 本。理由: 不一致の足 2 本、差の最大 0.00106（10.6 pip））
+- USDCHF/15m/bid 2016-12-25T22:00:00Z（対象足 3 本。理由: 不一致の足 2 本、差の最大 0.00142（14.2 pip））
+- USDCHF/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.00039（3.9 pip））
+- USDCHF/15m/bid 2018-04-01T21:15:00Z（対象足 1 本。理由: 不一致の足 4 本、差の最大 0.00070（7.0 pip））
+- USDCHF/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.00039（3.9 pip））
+- USDJPY/15m/bid 2016-12-25T22:00:00Z（対象足 2 本。理由: 不一致の足 3 本、差の最大 0.133（13.3 pip））
+- USDJPY/15m/bid 2016-12-26T07:00:00Z（対象足 64 本。理由: 不一致の足 5 本、差の最大 0.018（1.8 pip））
+- USDJPY/1h/bid 2016-12-26T07:00:00Z（対象足 16 本。理由: 不一致の足 5 本、差の最大 0.018（1.8 pip））
+
+検証（`5b6e8d106561…`）: 照合 1001 本・一致 917 本（うち価格の桁で丸めて初めて一致 8 本）、範囲外の tick 0 件、bid が ask より大きい tick 0 件（合否に使わない）、「要確認」の印 0 件
+不合格の計画 `4990928b85e7…`: no bar was built (every hour was empty or not fetched, or every chunk is unreconciled); an empty refill is not an input to acceptance (D03 §14.7)
+不合格の計画 `a26edf3fc8b4…`: 842 reconciliation bar(s) differ from the raw data (AUDJPY/15m/bid@2016-12-25T22:30:00Z, AUDJPY/15m/bid@2016-12-25T22:45:00Z, AUDJPY/1h/bid@2016-12-25T22:00:00Z, AUDJPY/15m/bid@2016-12-26T06:00:00Z, AUDJPY/15m/bid@2016-12-26T06:15:00Z, AUDJPY/15m/bid@2016-12-26T06:30:00Z, AUDJPY/15m/bid@2016-12-26T06:45:00Z, AUDJPY/1h/bid@2016-12-26T06:00:00Z, AUDJPY/15m/bid@2019-03-15T19:00:00Z, AUDJPY/15m/bid@2019-03-15T19:15:00Z); no tolerance is applied (D03 §14.7 の 1・2, §14.18 の 6)
+
+## 3. 残存欠落
+
+区間ごとの (a) 現在の状態・(b) 試行の履歴・(c) 休場の候補の印・(d) 根拠の計画は CSV の列 `states`（と状態ごとの足の数 `bars_<状態>`）・`history`・`holiday_candidate_pending`／`holiday_candidates`・`basis_plan_ids`。
+
+### 3.1 系列別（旧 → 新。件数 / 合計時間）
+
+| 系列 | 旧 | 新 |
+|---|---|---|
+| AUDJPY 15m@v1 | 29 / 86.75h | 16 / 36.75h |
+| AUDJPY 1h@v1 | 19 / 82.00h | 6 / 32.00h |
+| AUDUSD 15m@v1 | 24 / 91.25h | 12 / 42.25h |
+| AUDUSD 1h@v1 | 17 / 87.00h | 5 / 38.00h |
+| EURGBP 15m@v1 | 22 / 91.25h | 15 / 47.25h |
+| EURGBP 1h@v1 | 15 / 87.00h | 8 / 43.00h |
+| EURJPY 15m@v1 | 30 / 92.50h | 18 / 39.50h |
+| EURJPY 1h@v1 | 18 / 86.00h | 6 / 33.00h |
+| EURUSD 15m@v1 | 19 / 85.75h | 11 / 35.75h |
+| EURUSD 1h@v1 | 13 / 83.00h | 5 / 33.00h |
+| GBPJPY 15m@v1 | 34 / 95.00h | 25 / 46.00h |
+| GBPJPY 1h@v1 | 16 / 87.00h | 7 / 38.00h |
+| GBPUSD 15m@v1 | 23 / 90.25h | 14 / 40.25h |
+| GBPUSD 1h@v1 | 16 / 87.00h | 7 / 37.00h |
+| USDCAD 15m@v1 | 28 / 92.50h | 21 / 48.50h |
+| USDCAD 1h@v1 | 15 / 86.00h | 8 / 42.00h |
+| USDCHF 15m@v1 | 54 / 107.00h | 44 / 60.00h |
+| USDCHF 1h@v1 | 17 / 93.00h | 7 / 46.00h |
+| USDJPY 15m@v1 | 19 / 80.00h | 10 / 34.00h |
+| USDJPY 1h@v1 | 16 / 77.00h | 7 / 31.00h |
+| **合計** | **444 / 1767.25h** | **252 / 803.25h** |
+
+### 3.2 年別（新。足の終端の年）
+
+| 年 | 件数 / 合計 |
+|---|---|
+| 2016 | 32 / 321.25h |
+| 2017 | 21 / 180.25h |
+| 2018 | 5 / 5.00h |
+| 2019 | 58 / 196.25h |
+| 2020 | 15 / 7.00h |
+| 2021 | 14 / 4.50h |
+| 2022 | 44 / 19.00h |
+| 2023 | 63 / 70.00h |
+
+### 3.3 状態別（新）
+
+状態ごとに列を分けて数える。1 つの区間に複数の状態の足があれば、その区間は各行に数える（区間の数の列の合計は区間の総数を超えうる）。比較できない記録を併記した足は、併記した状態のそれぞれに数える。
+
+| 状態 | その状態の足を含む区間 | 足の数 | 足の時間の合計 |
+|---|---|---|---|
+| 取得できなかった（HTTP 404 を含む）（`NOT_FETCHED`） | 8 | 16 | 5.50h |
+| 提供元にも tick が無い（`PROVIDER_NO_TICKS`） | 159 | 379 | 121.75h |
+| 未照合（判断待ち）（`UNRECONCILED`） | 60 | 900 | 360.00h |
+| 補充の対象外（研究履歴区分の外）（`OUT_OF_SCOPE`） | 0 | 0 | 0.00h |
+| 検証で不合格になり補充しなかった（`VALIDATION_REJECTED`） | 34 | 805 | 317.50h |
+| 配信元の値の差（`SOURCE_DIFFERENCE`） | 34 | 816 | 321.75h |
+| 対象だが計画・試行されていない（`NOT_PLANNED`） | 0 | 0 | 0.00h |
+| 理由未確定（`UNDETERMINED`） | 0 | 0 | 0.00h |
+
+- 複数の状態の足を含む区間: 38 / 区間の総数 252
+- 比較できない記録を併記した足: 2070 本（CSV の `bars_with_unordered_records`）
+- 休場の候補（保留）の区間と重なる残存欠落: 41 区間 / 496.75h（D03 §3.4.2 の候補 1・2・9。状態とは別の印）
+
+## 4. 実行可能な連続期間
+
+### 20 系列すべてに欠落の無い連続区間の上位 5（新）
+
+| 順位 | 始端（UTC） | 終端（UTC） | 日数 |
+|---|---|---|---|
+| 1 | 2018-04-01T21:30Z | 2018-12-24T22:45Z | 267.05 |
+| 2 | 2016-01-03T22:00Z | 2016-09-04T21:15Z | 244.97 |
+| 3 | 2017-08-13T21:30Z | 2018-04-01T21:15Z | 230.99 |
+| 4 | 2017-01-02T07:00Z | 2017-08-13T21:15Z | 223.59 |
+| 5 | 2019-05-27T10:00Z | 2019-12-24T22:00Z | 211.50 |
+
+### USDJPY 15 分足だけの上位 5（新）
+
+| 順位 | 始端（UTC） | 終端（UTC） | 日数 |
+|---|---|---|---|
+| 1 | 2019-12-25T09:00Z | 2022-06-26T21:00Z | 914.50 |
+| 2 | 2017-01-02T07:00Z | 2019-03-10T21:00Z | 797.58 |
+| 3 | 2022-06-26T21:30Z | 2023-09-25T10:15Z | 455.53 |
+| 4 | 2016-01-03T22:00Z | 2016-12-25T22:00Z | 357.00 |
+| 5 | 2019-05-26T23:45Z | 2019-12-24T22:00Z | 211.93 |
+
+### 旧 snapshot との比較
+
+| 項目 | 旧 | 新 |
+|---|---|---|
+| 20 系列の連続区間の数 | 106 | 70 |
+| 20 系列の最長（日） | 267.05 | 267.05 |
+| USDJPY 15 分足の連続区間の数 | 20 | 11 |
+| USDJPY 15 分足の最長（日） | 797.58 | 914.50 |
+
+## 5. 再現
+
+```
+uv run python -m tools.ops.refill_report --snapshot-root data/snapshots --snapshot-id 1092f66c999026f5551a2289b0986d0565c411cd0b0bd2c9e312dad85d9bb151 --previous-snapshot-id d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db --candidates-snapshot-id d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db --refill-root data/raw/market/refill --out docs/data/refill_report_2026-10-06
+```
+
+戦略の成績（指標・レポート・`runs/`）は読んでいない。snapshot の manifest・補充分の manifest と検証記録・計画と取得記録だけを読んだ（D03 §14.2 の 7）。

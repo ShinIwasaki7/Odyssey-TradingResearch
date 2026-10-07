@@ -1,0 +1,848 @@
+# 分類ファイルの案（形式版 2。D03 §4・§10）: 夏時間ズレの補正後の受入れ（データソース設定 v3）
+# 対象: 暫定 snapshot e56ff981…（provisional_id e56ff9812899bc95ec1d493a5e0b90f6f42d6e6dfdc6eddd93dfbeb24042dc6d）
+# の分類対象の警告: 存在すべき足の欠落 7,073 件（記入が必要な区間 6,362）。休場帯の足 0 件。
+# 人間の決定（2026-10-06「分類を実行して構いません」）で data classify を実行済み。確定 snapshot d37ec89da9365d73bbffe86407c026d94670228762494e8fd41ec4f87455e2db（分類 167 件。2026-10-06 承認）。
+# 前回の分類（configs/calendars/classification_fx_ny17_v2.yaml）の休場（決定 1・2）と日曜の早期データ（決定 3）は、
+# カレンダー v2 で最初から受け入れ・補正で警告が消えたので含めない（D03 §4 の確定時の検査 3「対応なし」）。
+schema_version: 2
+# calendar は書かない: 暫定 snapshot は最初からカレンダー v2 で受け入れ済みで、カレンダーを変えない（書くと確定時に 5〜7 を再実行する）
+
+decisions:
+# --- 単発の大規模欠損 2 件（DATA_GAP）。前回の決定 4 の踏襲 ---
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-11-29T22:00:00Z", end: "2020-12-01T22:00:00Z"}
+    series: all
+    outcome: DATA_GAP
+    note: 2020-11-30 単発の大規模欠損（既知の休場と一致しない。データ欠損）。前回の分類（決定 4）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-05-30T21:00:00Z", end: "2021-06-01T21:00:00Z"}
+    series: all
+    outcome: DATA_GAP
+    note: 2021-05-31 単発の大規模欠損（既知の休場と一致しない。データ欠損）。前回の分類（決定 4）を踏襲
+# --- 日曜の開場直後の欠落 13 件（系列×週）と、そこから作る 4時間足・日足（DATA_GAP）。D03 §4 で通常の欠落と規定 ---
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T21:00:00Z"}
+    series: [GBPJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [GBPJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T01:00:00Z"}
+    series: [GBPJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [USDCAD/15m/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T21:00:00Z"}
+    series: [USDCAD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [USDCAD/1h/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T01:00:00Z"}
+    series: [USDCAD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T21:00:00Z"}
+    series: [USDCHF/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [USDCHF/1h/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T01:00:00Z"}
+    series: [USDCHF/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [USDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T21:00:00Z"}
+    series: [USDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-10T22:00:00Z"}
+    series: [USDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-10T21:00:00Z", end: "2019-03-11T01:00:00Z"}
+    series: [USDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 2019-03-10 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-14T21:00:00Z", end: "2021-03-14T21:45:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 2021-03-14 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-10-30T21:00:00Z", end: "2022-10-30T21:30:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 2022-10-30 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2024-10-27T21:00:00Z", end: "2024-10-27T22:00:00Z"}
+    series: [EURUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 2024-10-27 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2024-10-27T21:00:00Z", end: "2024-10-28T21:00:00Z"}
+    series: [EURUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 2024-10-27 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2024-10-27T21:00:00Z", end: "2024-10-27T22:00:00Z"}
+    series: [EURUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 2024-10-27 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2024-10-27T21:00:00Z", end: "2024-10-28T01:00:00Z"}
+    series: [EURUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 2024-10-27 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2025-03-09T21:00:00Z", end: "2025-03-09T21:15:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 2025-03-09 日曜の開場直後の足が原データにもともと無い（夏時間ズレの補正の後に見える欠落。D03 §2・§4。通常の欠落として分類）
+# --- 残る散発的な欠落（DATA_GAP）。系列ごとに上 2 節の警告をまたがない最大の区間。前回の決定 5 の踏襲 ---
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [AUDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [AUDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-04-15T22:00:00Z"}
+    series: [AUDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [AUDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [AUDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T21:00:00Z"}
+    series: [AUDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [AUDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [AUDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [AUDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [AUDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [AUDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T05:00:00Z"}
+    series: [AUDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:15:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [AUDUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-24T22:30:00Z", end: "2021-04-05T21:30:00Z"}
+    series: [AUDUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [AUDUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [AUDUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [AUDUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-03-30T21:00:00Z"}
+    series: [AUDUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T08:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [AUDUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [AUDUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [AUDUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [AUDUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [AUDUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-03-30T01:00:00Z"}
+    series: [AUDUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [EURGBP/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-24T23:30:00Z", end: "2021-05-21T19:00:00Z"}
+    series: [EURGBP/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-04-15T22:00:00Z"}
+    series: [EURGBP/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [EURGBP/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-24T22:00:00Z", end: "2021-05-21T21:00:00Z"}
+    series: [EURGBP/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T21:00:00Z"}
+    series: [EURGBP/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T08:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [EURGBP/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T07:00:00Z", end: "2021-05-21T19:00:00Z"}
+    series: [EURGBP/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [EURGBP/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [EURGBP/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T06:00:00Z", end: "2021-05-21T21:00:00Z"}
+    series: [EURGBP/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T05:00:00Z"}
+    series: [EURGBP/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [EURJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T07:45:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [EURJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-12-26T22:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [EURJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [EURJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [EURJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-03-30T21:00:00Z"}
+    series: [EURJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [EURJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [EURJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [EURJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [EURJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [EURJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-03-30T01:00:00Z"}
+    series: [EURJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [EURUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-24T22:15:00Z", end: "2021-04-20T21:30:00Z"}
+    series: [EURUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2024-04-01T00:00:00Z"}
+    series: [EURUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2024-12-25T02:15:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [EURUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [EURUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [EURUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2024-04-01T21:00:00Z"}
+    series: [EURUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2025-03-30T21:00:00Z", end: "2026-03-30T21:00:00Z"}
+    series: [EURUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [EURUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [EURUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2024-04-01T00:00:00Z"}
+    series: [EURUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2025-03-30T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [EURUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [EURUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [EURUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2024-04-01T01:00:00Z"}
+    series: [EURUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2025-03-30T21:00:00Z", end: "2026-03-30T01:00:00Z"}
+    series: [EURUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2018-12-24T23:00:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T07:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-12-05T22:00:00Z", end: "2025-02-24T23:00:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2025-03-30T23:00:00Z", end: "2026-04-15T22:00:00Z"}
+    series: [GBPJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2017-01-02T22:00:00Z"}
+    series: [GBPJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [GBPJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [GBPJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T21:00:00Z"}
+    series: [GBPJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2017-01-02T07:00:00Z"}
+    series: [GBPJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [GBPJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [GBPJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [GBPJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2017-01-02T10:00:00Z"}
+    series: [GBPJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [GBPJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [GBPJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T05:00:00Z"}
+    series: [GBPJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:15:00Z", end: "2020-07-12T21:15:00Z"}
+    series: [GBPUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T07:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [GBPUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-04-15T22:00:00Z"}
+    series: [GBPUSD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [GBPUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-24T22:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [GBPUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T21:00:00Z"}
+    series: [GBPUSD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [GBPUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T07:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [GBPUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [GBPUSD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [GBPUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-25T06:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [GBPUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T05:00:00Z"}
+    series: [GBPUSD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-09-04T21:15:00Z", end: "2017-01-02T07:00:00Z"}
+    series: [USDCAD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-08-16T21:15:00Z"}
+    series: [USDCAD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2020-12-24T23:15:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [USDCAD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-04-15T22:00:00Z"}
+    series: [USDCAD/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2017-01-02T22:00:00Z"}
+    series: [USDCAD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [USDCAD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [USDCAD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T21:00:00Z"}
+    series: [USDCAD/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T08:00:00Z", end: "2017-01-02T07:00:00Z"}
+    series: [USDCAD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [USDCAD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [USDCAD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [USDCAD/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2017-01-02T10:00:00Z"}
+    series: [USDCAD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [USDCAD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [USDCAD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T05:00:00Z"}
+    series: [USDCAD/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2018-04-01T21:30:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-08-23T21:15:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-07-14T21:15:00Z", end: "2022-10-18T21:30:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-11-27T22:15:00Z", end: "2026-04-15T22:00:00Z"}
+    series: [USDCHF/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2017-01-02T22:00:00Z"}
+    series: [USDCHF/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [USDCHF/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [USDCHF/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T21:00:00Z"}
+    series: [USDCHF/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2017-01-02T07:00:00Z"}
+    series: [USDCHF/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [USDCHF/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [USDCHF/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [USDCHF/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2017-01-02T10:00:00Z"}
+    series: [USDCHF/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [USDCHF/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [USDCHF/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-05-01T05:00:00Z"}
+    series: [USDCHF/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2017-01-02T07:00:00Z"}
+    series: [USDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [USDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [USDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [USDJPY/15m/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-25T22:00:00Z", end: "2017-01-02T22:00:00Z"}
+    series: [USDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T21:00:00Z"}
+    series: [USDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T21:00:00Z"}
+    series: [USDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-03-30T21:00:00Z"}
+    series: [USDJPY/1d_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T07:00:00Z", end: "2017-01-02T07:00:00Z"}
+    series: [USDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T23:00:00Z", end: "2020-03-30T00:00:00Z"}
+    series: [USDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T23:00:00Z", end: "2021-03-29T00:00:00Z"}
+    series: [USDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T23:00:00Z", end: "2026-03-30T00:00:00Z"}
+    series: [USDJPY/1h/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2016-12-26T06:00:00Z", end: "2017-01-02T10:00:00Z"}
+    series: [USDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2019-03-31T21:00:00Z", end: "2020-03-30T01:00:00Z"}
+    series: [USDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2021-03-28T21:00:00Z", end: "2021-03-29T01:00:00Z"}
+    series: [USDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
+  - kind: MISSING_EXPECTED_BAR
+    interval: {start: "2022-03-27T21:00:00Z", end: "2026-03-30T01:00:00Z"}
+    series: [USDJPY/4h_ny17/bid]
+    outcome: DATA_GAP
+    note: 散発的な欠落の一括宣言（銘柄×時間足ごと。個別調査しない）。前回の分類（決定 5）を踏襲
