@@ -39,6 +39,15 @@ v1.19 の追記（D03 §14.15。2026-10-05 の人間の決定）:
   1・2・9 の候補区間を作る snapshot は、どちらも補正後の snapshot（新 snapshot と同じ補正規則の
   もの）に限る。補正の前の snapshot から作った候補区間は印に使わない（読み替えも当てない）。
 
+v1.21 の追記（D03 §3.4.2・§14.15。2026-10-06・2026-10-07 の人間の決定）:
+
+- **保留の休場の候補は 1・2・10**: 候補 9 は閉じた。候補 10（2021年クリスマスイブのUSDCHF欠落
+  候補）の候補区間は USDCHF/15m/bid の 2021-12-24T21:00Z〜21:30Z の 1 区間の列挙で、印「10」は
+  この区間と重なる残存欠落にだけ付ける（「金曜 NY 16 時台」のような規則で候補区間を作らない）。
+- **未照合の塊は記録元ごとに分けて示す**: 補充分・不合格の計画ごとに数と一覧を出し、合計は
+  「記録上の延べ N 塊」と明記する。補正の前の入力の計画の塊は、補正後の時刻へ読み替えた時刻と、
+  元の時刻と「補正前の入力」の印を示す。
+
 **入力の検算は本体の関数だけで行う**（2026-10-01 の人間の決定。報告の側で読み方を書き直さ
 ない）: snapshot の manifest は ``snapshot_store(...).read_manifest``（内容から識別子を計算し
 直す）、補充分・計画・取得記録は ``marketdata.application.refill_inventory``（書き出しと受入れが
@@ -65,7 +74,7 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -153,8 +162,21 @@ NOT_BUILT_TO_RESULT: dict[NotBuiltReason, str] = {
     NotBuiltReason.SOURCE_DIFFERENCE: SOURCE_DIFFERENCE,
 }
 
-#: 休場の候補（保留。D03 §3.4.2 の候補 1・2・9。RF-11・RF-12・RF-19）。
-HOLIDAY_CANDIDATES: tuple[str, ...] = ("1", "2", "9")
+#: 休場の候補（保留。D03 §3.4.2 の候補 1・2・10。RF-11・RF-12 と 2026-10-07 の人間の決定）。
+#: 候補 9 は閉じた（2026-10-06 の人間の決定。D03 v1.21）。
+HOLIDAY_CANDIDATES: tuple[str, ...] = ("1", "2", "10")
+
+#: 列挙で定める候補区間（系列, 始端, 終端, 番号。UTC の半開区間）。候補 10 は「2021年クリスマス
+#: イブのUSDCHF欠落候補」で、対象は USDCHF/15m/bid の 2021-12-24T21:00Z〜21:30Z に限る（D03 v1.21
+#: §3.4.2。休場と認定した名前ではない。規則で区間を広げない）。
+ENUMERATED_CANDIDATES: tuple[tuple[tuple[str, str], datetime, datetime, str], ...] = (
+    (
+        ("USDCHF", "15m@v1"),
+        datetime(2021, 12, 24, 21, 0, tzinfo=UTC),
+        datetime(2021, 12, 24, 21, 30, tzinfo=UTC),
+        "10",
+    ),
+)
 
 RESIDUAL_FIELDS: tuple[str, ...] = (
     "symbol",
@@ -318,6 +340,9 @@ class Record:
     #: 入力 snapshot の補正規則が新 snapshot と違い、足の鍵を読み替えた記録（「補正の前の入力」。
     #: D03 §14.15 の v1.19、人間の決定 DST-4）。
     pre_correction: bool = False
+    #: 読み替えに使った新 snapshot の補正規則（``pre_correction`` のときだけ。報告の第 2 節で塊の
+    #: 時刻を補正後の時刻へ読み替えて示すため。D03 §14.15 の v1.21）。
+    relabel: TimeLabelCorrectionRule | None = None
     #: 足ごとの結果の注記（未照合の原因。D03 §14.15 の v1.20）。履歴にだけ出る。
     notes: dict[BarKey, str] = field(default_factory=dict)
     #: 読み替えで鍵が重なった足ごとの元の記録 ``(元の開始時刻, 結果, 注記)``（決定 B）。
@@ -460,6 +485,7 @@ def records_from(
                 **fields,
                 results=keyed.results,
                 pre_correction=relabel is not None,
+                relabel=relabel,
                 notes=keyed.notes,
                 overlaps=keyed.overlaps,
             )
@@ -672,28 +698,32 @@ def _bars_of(gap: rhg.GapInterval) -> list[BarKey]:
 
 
 def candidate_number(gap: rhg.GapInterval) -> str | None:
-    """PR #55 の欠落区間が保留の休場の候補（D03 §3.4.2 の候補 1・2・9）のどれに当たるか。"""
+    """PR #55 の帰属の規則で、欠落区間が保留の休場の候補 1・2（D03 §3.4.2）のどちらに当たるか。
+
+    候補 9（金曜 NY 16 時台の欠落の規則）は閉じた（D03 v1.21）。候補 10 は規則でなく列挙
+    （``ENUMERATED_CANDIDATES``）で定める。
+    """
     attribution, _, _ = rhg.classify(gap)
     if attribution == rhg.CALENDAR_UNDECLARED_OR_PARTLY_SOURCE:
         return "1"
     if attribution == rhg.CALENDAR:
         return "2"
-    start_ny = gap.start.astimezone(rhg.NEW_YORK)
-    if start_ny.weekday() == 4 and start_ny.hour == 16 and gap.hours <= 1.5:
-        return "9"
     return None
 
 
 def candidate_intervals(
     merged: dict[tuple[str, str], list[rhg.Interval]],
 ) -> dict[tuple[str, str], list[tuple[datetime, datetime, str]]]:
-    """候補区間: 候補を定めた snapshot（PR #55）の欠落区間のうち、候補に当たるもの（系列ごと）。"""
+    """候補区間（系列ごと）: 候補を定めた snapshot の欠落区間のうち候補 1・2 に当たるものと、
+    列挙で定めた候補区間（候補 10。D03 v1.21 §3.4.2）。"""
     found: dict[tuple[str, str], list[tuple[datetime, datetime, str]]] = defaultdict(list)
     for (symbol, tf), gaps in merged.items():
         for start, end in gaps:
             number = candidate_number(rhg.GapInterval(symbol, tf, start, end))
             if number is not None:
                 found[(symbol, tf)].append((start, end, number))
+    for key, start, end, number in ENUMERATED_CANDIDATES:
+        found[key].append((start, end, number))
     return found
 
 
@@ -836,6 +866,84 @@ def _hours(gaps: list[rhg.Interval]) -> float:
     return sum((e - s).total_seconds() / 3600 for s, e in gaps)
 
 
+def _shown_time(series: SeriesId, start: UtcTime, relabel: Relabel) -> str:
+    """塊の時刻の表示。補正の前の入力の記録は補正後の時刻へ読み替え、元の時刻と印も示す
+    （D03 §14.15 の v1.21。照合も読み替えた時刻で行う。決定 DST-4）。"""
+    if relabel is None:
+        return str(start)
+    shown = start + relabel.shift if relabel.applies(series, start) else start
+    return f"{shown}（元の時刻 {start}・補正前の入力）"
+
+
+def _unreconciled_lines(
+    refills: list[VerifiedRefill],
+    rejected: list[Record],
+    relabel_of: dict[str, Relabel],
+) -> list[str]:
+    """未照合の塊を記録元（補充分・不合格の計画）ごとに分けて示す（D03 §14.15 の v1.21）。
+
+    合計は「記録上の延べ N 塊」と明記する（現在の補充の結果と過去の試行を 1 つの数で混同させない）。
+    """
+    groups: list[tuple[str, tuple[UnreconciledChunk, ...], Relabel]] = []
+    for refill in refills:
+        relabel = relabel_of.get(refill.manifest.plan_id)
+        marked = "。補正前の入力" if relabel is not None else ""
+        groups.append(
+            (
+                f"補充分 `{refill.manifest.refill_id[:12]}…`（新 snapshot に入っている。計画"
+                f" `{refill.manifest.plan_id[:12]}…`{marked}）",
+                refill.manifest.unreconciled,
+                relabel,
+            )
+        )
+    for rej in rejected:
+        assert rej.rejection is not None
+        marked = "。補正前の入力" if rej.pre_correction else ""
+        groups.append(
+            (
+                f"不合格のままの計画 `{rej.plan_id[:12]}…`（{rej.source}{marked}）",
+                rej.rejection.unreconciled,
+                rej.relabel,
+            )
+        )
+    total = sum(len(chunks) for _, chunks, _ in groups)
+    lines = [
+        "未照合の塊（補充分に書かず、人間の判断を待つ）は、記録元（補充分・不合格の計画）ごとに"
+        "分けて示す（D03 §14.15 の v1.21）。補正前の入力の計画の塊の時刻は補正後の時刻へ読み替えて"
+        "示し、括弧に元の時刻と「補正前の入力」の印を示す。",
+        "",
+        "| 記録元 | 未照合の塊 |",
+        "|---|---|",
+        *(f"| {label} | {len(chunks)} |" for label, chunks, _ in groups),
+        "",
+        f"記録上の延べ {total} 塊（上の記録元ごとの数の合計。同じ欠落を別の記録が重ねて数えうる"
+        "ので、いま未照合の塊の数ではない）。",
+        "",
+    ]
+    for label, chunks, relabel in groups:
+        if not chunks:
+            continue
+        lines.append(f"{label}: {len(chunks)} 塊")
+        lines += [
+            f"- {item.series} {_shown_time(item.series, item.chunk_start, relabel)}"
+            f"（対象足 {item.target_count} 本。原因 "
+            + "+".join(cause.value for cause in item.causes)
+            + (
+                "。作れなかった照合用の足 "
+                + ", ".join(
+                    f"{series} {_shown_time(series, start, relabel)}"
+                    for series, start in item.unbuilt_reconciliation_bars
+                )
+                if item.unbuilt_reconciliation_bars
+                else ""
+            )
+            + "）"
+            for item in chunks
+        ]
+        lines.append("")
+    return lines
+
+
 def render_report(
     *,
     old_id: str,
@@ -927,25 +1035,14 @@ def render_report(
                 f" {count.not_built} | {detail or '—'} |"
             )
     lines.append("")
-    unreconciled = [item for refill in refills for item in refill.manifest.unreconciled] + [
-        item for rej in rejected if rej.rejection is not None for item in rej.rejection.unreconciled
-    ]
-    lines.append(f"未照合の塊（補充分に書かず、人間の判断を待つ）: {len(unreconciled)}")
-    lines += [
-        f"- {item.series} {item.chunk_start}（対象足 {item.target_count} 本。原因 "
-        + "+".join(cause.value for cause in item.causes)
-        + (
-            "。作れなかった照合用の足 "
-            + ", ".join(f"{series} {start}" for series, start in item.unbuilt_reconciliation_bars)
-            if item.unbuilt_reconciliation_bars
-            else ""
-        )
-        + "）"
-        for item in unreconciled
-    ]
-    lines.append("")
-    differences = [item for refill in refills for item in refill.validation.source_differences] + [
-        item
+    relabel_of = {record.plan_id: record.relabel for record in collection.records}
+    lines += _unreconciled_lines(refills, rejected, relabel_of)
+    differences = [
+        (item, relabel_of.get(refill.manifest.plan_id))
+        for refill in refills
+        for item in refill.validation.source_differences
+    ] + [
+        (item, rej.relabel)
         for rej in rejected
         if rej.rejection is not None
         for item in rej.rejection.source_differences
@@ -955,10 +1052,11 @@ def render_report(
         f"ない。補充分に書かない。D03 §14.7）: {len(differences)}"
     )
     lines += [
-        f"- {item.chunk.series} {item.chunk.chunk_start}（対象足 {item.chunk.target_count} 本。"
+        f"- {item.chunk.series} {_shown_time(item.chunk.series, item.chunk.chunk_start, relabel)}"
+        f"（対象足 {item.chunk.target_count} 本。"
         f"理由: 不一致の足 {item.mismatch_count} 本、差の最大 {item.max_difference}"
         f"（{item.max_difference_pips} pip））"
-        for item in differences
+        for item, relabel in differences
     ]
     lines.append("")
     for refill in refills:
@@ -984,8 +1082,10 @@ def render_report(
         ]
     for rej in rejected:
         assert rej.rejection is not None
+        marked = "（補正前の入力。理由の文の時刻は元の時刻）" if rej.pre_correction else ""
         lines.append(
-            f"不合格の計画 `{rej.plan_id[:12]}…`: " + "; ".join(rej.rejection.record.reasons)
+            f"不合格の計画 `{rej.plan_id[:12]}…`{marked}: "
+            + "; ".join(rej.rejection.record.reasons)
         )
     lines.append("")
 
@@ -1048,8 +1148,9 @@ def render_report(
         f"- 複数の状態の足を含む区間: {len(mixed)} / 区間の総数 {len(rows)}",
         f"- 比較できない記録を併記した足: {unordered} 本（CSV の `bars_with_unordered_records`）",
         f"- 休場の候補（保留）の区間と重なる残存欠落: {len(pending)} 区間 / "
-        f"{sum(row['duration_hours'] for row in pending):.2f}h（D03 §3.4.2 の候補 1・2・9。"
-        "状態とは別の印）",
+        f"{sum(row['duration_hours'] for row in pending):.2f}h（D03 §3.4.2 の候補 "
+        + "・".join(HOLIDAY_CANDIDATES)
+        + "。候補 10 は 2021年クリスマスイブのUSDCHF欠落候補。状態とは別の印）",
         "",
     ]
 

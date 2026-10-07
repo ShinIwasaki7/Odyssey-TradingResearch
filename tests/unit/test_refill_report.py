@@ -26,6 +26,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -37,6 +39,7 @@ from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.adapters.refill_store import FsRefillStore
 from odyssey_fx.marketdata.application.refill_fetch import fetch_plan
 from odyssey_fx.marketdata.application.refill_finalize import finalize_plan
+from odyssey_fx.marketdata.application.refill_inventory import Rejection, VerifiedRefill
 from odyssey_fx.marketdata.application.refill_plan import build_plan, create_plan
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
@@ -708,6 +711,96 @@ def test_a_partial_refill_keeps_the_holiday_candidate_mark(tmp_path: Path) -> No
         rhg.parse_utc("2017-01-02T07:00:00Z"),
     )
     assert rr.candidate_number(gap) is None
+
+
+def _gap_utc(symbol: str, tf: str, start: str, end: str) -> rhg.GapInterval:
+    return rhg.GapInterval(symbol, tf, rhg.parse_utc(start), rhg.parse_utc(end))
+
+
+def test_candidate_10_marks_only_its_enumerated_interval() -> None:
+    """D03 v1.21: 候補 9 は閉じ、候補 10 は USDCHF/15m/bid の 2021-12-24T21:00Z〜21:30Z だけに付く。
+
+    「金曜 NY 16 時台」の規則では候補を作らない（他の金曜・他の時間足・他の銘柄には付かない）。
+    """
+    candidates = rr.candidate_intervals({})
+    assert rr.HOLIDAY_CANDIDATES == ("1", "2", "10")
+    target = _gap_utc("USDCHF", "15m@v1", "2021-12-24T21:00:00Z", "2021-12-24T21:30:00Z")
+    assert rr.overlapping_candidates(target, candidates) == ["10"]
+    # 部分的に重なる欠落にも付く（候補区間との重なりで付ける）。
+    part = _gap_utc("USDCHF", "15m@v1", "2021-12-24T21:15:00Z", "2021-12-24T21:30:00Z")
+    assert rr.overlapping_candidates(part, candidates) == ["10"]
+    for other in (
+        # 別の金曜の NY 16 時台（旧候補 9 の規則に当たる形）
+        _gap_utc("USDCHF", "15m@v1", "2021-12-17T21:00:00Z", "2021-12-17T21:30:00Z"),
+        # 同じ時刻の別の時間足・別の銘柄
+        _gap_utc("USDCHF", "1h@v1", "2021-12-24T21:00:00Z", "2021-12-24T22:00:00Z"),
+        _gap_utc("USDJPY", "15m@v1", "2021-12-24T21:00:00Z", "2021-12-24T21:30:00Z"),
+        # 区間の直後に接するだけの欠落
+        _gap_utc("USDCHF", "15m@v1", "2021-12-24T21:30:00Z", "2021-12-24T21:45:00Z"),
+    ):
+        assert rr.candidate_number(other) is None
+        assert rr.overlapping_candidates(other, candidates) == []
+    assert "9" not in {number for items in candidates.values() for _, _, number in items}
+
+
+def _chunk(start: UtcTime, count: int = 4) -> UnreconciledChunk:
+    return UnreconciledChunk(
+        series=USDJPY_15M,
+        chunk_start=start,
+        target_count=count,
+        causes=(UnreconciledCause.NO_RECONCILIATION_BAR,),
+    )
+
+
+def test_unreconciled_chunks_are_shown_per_record_with_relabelled_times() -> None:
+    """D03 v1.21: 未照合の塊は記録元ごとに分けて示し、合計は「記録上の延べ N 塊」。補正前の入力の
+    計画の塊は補正後の時刻へ読み替えて示し、元の時刻と「補正前の入力」の印も示す。"""
+    refill = cast(
+        VerifiedRefill,
+        SimpleNamespace(
+            manifest=SimpleNamespace(
+                refill_id="a" * 64,
+                plan_id="b" * 64,
+                unreconciled=(_chunk(HOUR_02), _chunk(HOUR_03)),
+            )
+        ),
+    )
+    old_plan = rr.Record(
+        plan_id="c" * 64,
+        input_snapshot="d" * 64,
+        source="journal:7",
+        refill_id=None,
+        recorded_at="2026-10-05T00:00:00Z",
+        is_state=True,
+        results={},
+        rejection=cast(Rejection, SimpleNamespace(unreconciled=(_chunk(HOUR_01, 8),))),
+        pre_correction=True,
+        relabel=_RULE_2020,
+    )
+    lines = rr._unreconciled_lines([refill], [old_plan], {"b" * 64: None})
+    text = "\n".join(lines)
+    assert f"| 補充分 `{'a' * 12}…`（新 snapshot に入っている。計画 `{'b' * 12}…`） | 2 |" in lines
+    assert f"| 不合格のままの計画 `{'c' * 12}…`（journal:7。補正前の入力） | 1 |" in lines
+    assert "記録上の延べ 3 塊" in text
+    # 補充分の塊は元の時刻のまま、印なし。
+    assert "- USDJPY/15m/bid 2020-11-30T02:00:00Z（対象足 4 本。" in text
+    # 補正前の入力の計画の塊: 補正後の時刻（01:00 → 02:00）と元の時刻と印。
+    assert (
+        "- USDJPY/15m/bid 2020-11-30T02:00:00Z（元の時刻 2020-11-30T01:00:00Z・補正前の入力）"
+        "（対象足 8 本。原因 NO_RECONCILIATION_BAR）" in text
+    )
+    # 112 のような 1 つの数だけの表示はしない。
+    assert "未照合の塊（補充分に書かず、人間の判断を待つ）: " not in text
+
+
+def test_the_report_counts_unreconciled_chunks_as_a_total_over_records(tmp_path: Path) -> None:
+    scene = _scene(tmp_path, with_b=True)
+    assert rr.main(scene.args) == 0
+    report = scene.report()
+    assert "記録上の延べ" in report
+    assert f"| 補充分 `{scene.refill_a[:12]}…`（新 snapshot に入っている。計画" in report
+    assert f"| 不合格のままの計画 `{str(scene.plan_b)[:12]}…`（journal:" in report
+    assert "（D03 §3.4.2 の候補 1・2・10。" in report
 
 
 def test_an_unapproved_snapshot_gives_only_a_draft(tmp_path: Path) -> None:
