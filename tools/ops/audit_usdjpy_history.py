@@ -688,7 +688,7 @@ def _m1_aggregates(
                     continue
                 label = _m1_label(parts[0])
                 minute = label + alignment.offset(label)
-                if minute + 3600 > RESEARCH_END:
+                if minute - minute % 3600 + 3600 > RESEARCH_END:
                     continue
                 o, h, low, c = (Decimal(x) for x in parts[1:5])
                 for step, table in tables.items():
