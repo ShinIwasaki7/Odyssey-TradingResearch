@@ -91,3 +91,81 @@ def test_ohlc_rows_report_only_counts(tmp_path: Path) -> None:
     assert all(
         set(r) == {"timeframe", "year_of_bar_end", "source", "verdict", "bars"} for r in rows
     )
+
+
+def test_series_year_rows_separates_before_and_after_refill_gaps() -> None:
+    """補充前（原 CSV）と補充後の欠落の列が別々に数えられる（補充で値が変わる）。
+
+    期待する足 12 本のうち、原 CSV に無いのは 2 区間（3 本・2 本 ＝ 1.25 時間）。補充分で
+    1 区間（3 本）をすべて埋め、もう 1 区間は 1 本だけ埋める。補充後は 1 区間・1 本・0.25 時間。
+    """
+    step = 900
+    base = _e("2020-06-08T00:00")
+    expected = tuple(base + step * k for k in range(12))
+    absent = {expected[2], expected[3], expected[4], expected[8], expected[9]}
+    refill = (expected[2], expected[3], expected[4], expected[8])
+    raw = tuple(b for b in expected if b not in absent)
+    merged = audit.MergedFile(
+        path=Path("USDJPY_15m_merged.csv"),
+        sha256="",
+        starts=raw,
+        sources=tuple("histdata" for _ in raw),
+    )
+    series = audit.SeriesAudit(
+        timeframe="15m@v1",
+        merged=merged,
+        corrected_rows=raw,
+        corrected=raw,
+        source_at=dict.fromkeys(raw, "histdata"),
+        moved=0,
+        refill=refill,
+        expected=expected,
+        span=(expected[0], expected[-1] + step),
+    )
+    snapshot = [(expected[9], expected[9] + step)]
+    (row,) = audit.series_year_rows("15m@v1", series, snapshot)
+    assert row["year_of_bar_end"] == 2020
+    assert row["raw_rows"] == 7
+    assert row["refill_rows"] == 4
+    assert row["expected_bars"] == 12
+    assert row["missing_bars_raw_csv"] == 5
+    assert row["missing_bars_after_refill"] == 1
+    assert row["gap_intervals_raw_csv"] == 2
+    assert row["gap_hours_raw_csv"] == 1.25
+    assert row["gap_intervals_after_refill"] == 1
+    assert row["gap_hours_after_refill"] == 0.25
+    assert row["gap_intervals_snapshot"] == 1
+    assert row["gap_hours_snapshot"] == 0.25
+    assert row["same_intervals"] is True
+    # snapshot の記録が補充前の区間のままなら不一致と出る
+    raw_like = [(expected[2], expected[5]), (expected[8], expected[10])]
+    (stale,) = audit.series_year_rows("15m@v1", series, raw_like)
+    assert stale["gap_intervals_raw_csv"] == 2
+    assert stale["gap_intervals_after_refill"] == 1
+    assert stale["same_intervals"] is False
+
+
+def test_series_year_rows_counts_year_spanning_gap_in_end_year() -> None:
+    """年をまたぐ欠落区間は終端の年に 1 区間として数える（補充前・補充後とも）。"""
+    step = 3600
+    base = _e("2020-12-31T22:00")
+    expected = tuple(base + step * k for k in range(4))  # 22:00, 23:00, 00:00, 01:00
+    raw = (expected[0], expected[3])
+    merged = audit.MergedFile(
+        path=Path("USDJPY_1h_merged.csv"), sha256="", starts=raw, sources=("h", "h")
+    )
+    series = audit.SeriesAudit(
+        timeframe="1h@v1",
+        merged=merged,
+        corrected_rows=raw,
+        corrected=raw,
+        source_at=dict.fromkeys(raw, "h"),
+        moved=0,
+        refill=(),
+        expected=expected,
+        span=(expected[0], expected[-1] + step),
+    )
+    rows = {r["year_of_bar_end"]: r for r in audit.series_year_rows("1h@v1", series, [])}
+    assert rows[2020]["missing_bars_raw_csv"] == 1 and rows[2020]["gap_intervals_raw_csv"] == 0
+    assert rows[2021]["missing_bars_raw_csv"] == 1 and rows[2021]["gap_intervals_raw_csv"] == 1
+    assert rows[2021]["gap_hours_raw_csv"] == 2.0

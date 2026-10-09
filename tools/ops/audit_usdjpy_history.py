@@ -464,46 +464,65 @@ def year_rows(
     """年ごとの保有と欠落（足の終端の年）。元 CSV からの計算と snapshot の記録を並べる。"""
     rows: list[dict[str, Any]] = []
     for tf, audit in audits.items():
-        step = STEP[tf]
-        expected = set(audit.expected)
-        missing_raw = sorted(expected - set(audit.corrected))
-        missing_final = sorted(expected - set(audit.corrected) - set(audit.refill))
-        gaps_final = runs(missing_final, step)
         snap_gaps = snapshot_spans(final_manifest, tf, "MISSING_EXPECTED_BAR", "DATA_GAP")
-        by_year: dict[int, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
-        for name, values in (
-            ("raw", list(audit.corrected)),
-            ("refill", list(audit.refill)),
-            ("expected", list(audit.expected)),
-            ("missing_raw", missing_raw),
-            ("missing_final", missing_final),
-        ):
-            for start in values:
-                by_year[year_of_end(start + step)][name].append(start)
-        for year in sorted(by_year):
-            bucket = by_year[year]
-            gy = [g for g in gaps_final if year_of_end(g[1]) == year]
-            sy = [g for g in snap_gaps if year_of_end(g[1]) == year]
-            held = bucket["raw"] + bucket["refill"]
-            rows.append(
-                {
-                    "timeframe": tf,
-                    "year_of_bar_end": year,
-                    "access_class": access_class(year),
-                    "first_bar_utc": iso(min(held)) if held else "",
-                    "last_bar_end_utc": iso(max(held) + step) if held else "",
-                    "raw_rows": len(bucket["raw"]),
-                    "refill_rows": len(bucket["refill"]),
-                    "expected_bars": len(bucket["expected"]),
-                    "missing_bars_raw_csv": len(bucket["missing_raw"]),
-                    "missing_bars_after_refill": len(bucket["missing_final"]),
-                    "gap_intervals_raw_csv": len(gy),
-                    "gap_hours_raw_csv": hours(gy),
-                    "gap_intervals_snapshot": len(sy),
-                    "gap_hours_snapshot": hours(sy),
-                    "same_intervals": gy == sy,
-                }
-            )
+        rows.extend(series_year_rows(tf, audit, snap_gaps))
+    return rows
+
+
+def series_year_rows(
+    tf: str, audit: SeriesAudit, snap_gaps: Sequence[Span]
+) -> list[dict[str, Any]]:
+    """1 系列ぶんの年ごとの行。
+
+    欠落の列は 3 組ある。``*_raw_csv`` は補充前（原 CSV（補正後）だけ）、``*_after_refill`` は
+    原 CSV（補正後）＋補充分から直接計算した補充後、``*_snapshot`` は補充後 snapshot の確定済み
+    分類（データ欠損）。``same_intervals`` は補充後の直接計算と snapshot の区間の一致。区間は
+    終端の年に数える（年をまたぐ区間は終端の年の 1 区間）。
+    """
+    step = STEP[tf]
+    expected = set(audit.expected)
+    missing_raw = sorted(expected - set(audit.corrected))
+    missing_final = sorted(expected - set(audit.corrected) - set(audit.refill))
+    gaps_raw = runs(missing_raw, step)
+    gaps_final = runs(missing_final, step)
+    by_year: dict[int, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+    for name, values in (
+        ("raw", list(audit.corrected)),
+        ("refill", list(audit.refill)),
+        ("expected", list(audit.expected)),
+        ("missing_raw", missing_raw),
+        ("missing_final", missing_final),
+    ):
+        for start in values:
+            by_year[year_of_end(start + step)][name].append(start)
+    rows: list[dict[str, Any]] = []
+    for year in sorted(by_year):
+        bucket = by_year[year]
+        ry = [g for g in gaps_raw if year_of_end(g[1]) == year]
+        fy = [g for g in gaps_final if year_of_end(g[1]) == year]
+        sy = [g for g in snap_gaps if year_of_end(g[1]) == year]
+        held = bucket["raw"] + bucket["refill"]
+        rows.append(
+            {
+                "timeframe": tf,
+                "year_of_bar_end": year,
+                "access_class": access_class(year),
+                "first_bar_utc": iso(min(held)) if held else "",
+                "last_bar_end_utc": iso(max(held) + step) if held else "",
+                "raw_rows": len(bucket["raw"]),
+                "refill_rows": len(bucket["refill"]),
+                "expected_bars": len(bucket["expected"]),
+                "missing_bars_raw_csv": len(bucket["missing_raw"]),
+                "missing_bars_after_refill": len(bucket["missing_final"]),
+                "gap_intervals_raw_csv": len(ry),
+                "gap_hours_raw_csv": hours(ry),
+                "gap_intervals_after_refill": len(fy),
+                "gap_hours_after_refill": hours(fy),
+                "gap_intervals_snapshot": len(sy),
+                "gap_hours_snapshot": hours(sy),
+                "same_intervals": fy == list(sy),
+            }
+        )
     return rows
 
 
