@@ -5,6 +5,8 @@
 読むもの（どれも書き換えない）:
 
 - 原 CSV ``<data-root>/raw/market/USDJPY_<15m|1h>_merged.csv``（D03 §2。旧基盤から移管した集約足）
+- 他の 9 銘柄の原 CSV ``<data-root>/raw/market/<銘柄>_<15m|1h>_merged.csv``（20 系列の補正した足の
+  数を数え直すため。全期間の時刻の列とファイル全体の sha256・行数だけ。価格の列は解析しない）
 - HistData の 1 分足 ``<data-root>/raw/histdata/USDJPY/*/DAT_ASCII_USDJPY_M1_*.csv``（原 CSV の
   元になったと見られるファイル。取得の手順は repo に無い）
 - 補充分 ``<data-root>/raw/market/refill/<refill_id>/``（補充の manifest と USDJPY の足のファイル）
