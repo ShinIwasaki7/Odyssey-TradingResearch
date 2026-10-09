@@ -438,6 +438,15 @@ def hash_rows(
     return rows
 
 
+def require_hash_match(rows: Sequence[dict[str, Any]]) -> None:
+    """原 CSV の sha256・行数が 1 つでも snapshot の記録と合わなければ失敗する（何も書かない）。"""
+    bad = [f"{r['file']}（{r['snapshot']}）" for r in rows if not r["match"]]
+    if bad:
+        raise rhg.RawSourceMismatch(
+            "原 CSV の sha256・行数が snapshot の記録と一致しない: " + "、".join(bad)
+        )
+
+
 def source_counts(audits: dict[str, SeriesAudit]) -> list[dict[str, Any]]:
     """原 CSV の出所（``source`` 列）の年ごとの行数（補正後の足の終端の年）。"""
     rows: list[dict[str, Any]] = []
@@ -1149,6 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         tables: dict[str, list[dict[str, Any]]] = {}
         tables["hashes"] = hash_rows(audits, manifests)
+        require_hash_match(tables["hashes"])
         tables["m1_files"] = [
             {
                 "file": f.name,

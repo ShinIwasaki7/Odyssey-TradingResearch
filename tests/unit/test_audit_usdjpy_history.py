@@ -8,7 +8,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from tools.ops import audit_usdjpy_history as audit
+from tools.ops import research_history_gaps as rhg
 
 
 def _e(text: str) -> int:
@@ -169,3 +172,47 @@ def test_series_year_rows_counts_year_spanning_gap_in_end_year() -> None:
     assert rows[2020]["missing_bars_raw_csv"] == 1 and rows[2020]["gap_intervals_raw_csv"] == 0
     assert rows[2021]["missing_bars_raw_csv"] == 1 and rows[2021]["gap_intervals_raw_csv"] == 1
     assert rows[2021]["gap_hours_raw_csv"] == 2.0
+
+
+def test_hash_mismatch_with_any_snapshot_record_fails(tmp_path: Path) -> None:
+    """原 CSV の sha256 が 1 つの snapshot の記録とだけ合わなくても、失敗して理由を示す。"""
+    raw = tmp_path / "USDJPY_15m_merged.csv"
+    raw.write_text(",open,high,low,close,volume,source\n2019-06-03 13:00:00+00:00,,,,,,h\n")
+    merged = audit.read_merged(raw)
+    series = audit.SeriesAudit(
+        timeframe="15m@v1",
+        merged=merged,
+        corrected_rows=merged.starts,
+        corrected=merged.starts,
+        source_at=dict(zip(merged.starts, merged.sources, strict=True)),
+        moved=0,
+        refill=(),
+        expected=merged.starts,
+        span=(merged.starts[0], merged.starts[0] + 900),
+    )
+
+    def manifest(sha: str) -> dict[str, object]:
+        return {
+            "sources": [
+                {
+                    "symbol": "USDJPY",
+                    "timeframe": "15m@v1",
+                    "path": "raw/market/USDJPY_15m_merged.csv",
+                    "sha256": sha,
+                    "rows": 1,
+                }
+            ]
+        }
+
+    good = {sid: manifest(merged.sha256) for _, sid in audit.SNAPSHOTS}
+    rows = audit.hash_rows({"15m@v1": series}, good)
+    assert all(r["match"] for r in rows)
+    audit.require_hash_match(rows)  # 一致なら失敗しない
+
+    last_label, last_sid = audit.SNAPSHOTS[-1]
+    bad = dict(good)
+    bad[last_sid] = manifest("0" * 64)
+    rows = audit.hash_rows({"15m@v1": series}, bad)
+    assert [r["match"] for r in rows] == [True] * (len(audit.SNAPSHOTS) - 1) + [False]
+    with pytest.raises(rhg.RawSourceMismatch, match=last_sid[:8]):
+        audit.require_hash_match(rows)

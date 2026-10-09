@@ -214,7 +214,7 @@ uv run pytest tests/unit/test_audit_usdjpy_history.py
 ```
 
 - 所要時間: 約 1〜2 分（1 分足約 360 万行を読む）。`--skip-ohlc` で 4 値の一致の件数を省ける（1 分足の価格の列を読まず、原 CSV の価格も比べない）。
-- スクリプトは原 CSV・補充分の sha256 と行数を manifest と照らし、合わなければ何も書かずに失敗する。
+- スクリプトは原 CSV の sha256 と行数を 3 つの snapshot（補正前・補正後・補充後）の manifest の記録と、補充分の sha256 を補充の manifest と照らし、1 つでも合わなければ何も書かずに失敗する（終了コード 1、合わないファイルと snapshot を標準エラーに出す）。
 
 | CSV | 中身 |
 |---|---|
