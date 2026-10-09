@@ -1,0 +1,33 @@
+item,where,stated,reproduced,match
+補正した足 15分足（20 系列）,D03 §2・§14.18.2,124595,124595,True
+補正した足 1時間足（20 系列）,D03 §2・§14.18.2,31150,31150,True
+補正の対象の週,D03 §2・§4,26,26,True
+補正前の見かけの欠落（金曜 20 時台）の足,D03 §2,1300,1300,True
+補正前の見かけの休場帯の足（日曜 20 時台）,D03 §2,1270,1270,True
+見かけの警告の足の合計,D03 §2,2570,2570,True
+見かけの警告の系列×週×種別のまとまり,D03 §2,1030,1030,True
+日曜の開場前 1 時間が原データに丸ごと無い系列×週,D03 §2,10,10,True
+補正後に日曜の開場直後の足が無い系列×週,D03 §2,13,13,True
+USDJPY 15m の補正した足（manifest の記録との一致）,snapshot d37ec89d の conversion,12444,12444,True
+USDJPY 1h の補正した足（manifest の記録との一致）,snapshot d37ec89d の conversion,3111,3111,True
+研究履歴 20 系列の欠落区間（補充後 1092f66c）,research_history_gaps.md §2・§11・§12,252,252,True
+同 合計時間（補充後 1092f66c）,同上,803.25,803.25,True
+USDJPY 15分足 区間・時間（補充後）,同 §2・§3.2,10/34.0,10/34.0,True
+USDJPY 1時間足 区間・時間（補充後）,同 §2,7/31.0,7/31.0,True
+USDJPY 残存欠落の か所（15分足・1時間足を重ねる）・区間,D09 §17.8,10/17,10/17,True
+研究履歴 20 系列の欠落区間（補充前（補正後）d37ec89d）,research_history_gaps.md §2・§11・§12,444,444,True
+同 合計時間（補充前（補正後）d37ec89d）,同上,1767.25,1767.25,True
+研究履歴 20 系列の欠落区間（補正前 a498b8cf）,research_history_gaps.md §2・§11・§12,733,733,True
+同 合計時間（補正前 a498b8cf）,同上,2058.25,2058.25,True
+USDJPY 15分足 補正前の区間・時間,research_history_gaps.md §9,33/94.0,33/94.0,True
+USDJPY 15分足 補正前の欠落の足（研究履歴）,同 §9（D07 §23.2 の 376）,376,376,True
+補充した足（補充分 5b6e8d10）,research_history_gaps.md 冒頭,2410,2410,True
+未照合の塊（補充分 5b6e8d10）,D03 §14.18.2・unreconciled_recheck §4,60,60,True
+同 15分足/1時間足,unreconciled_recheck §4,30/30,30/30,True
+同 USDJPY,unreconciled_recheck §4,4,4,True
+同 原因の種類,unreconciled_recheck §2・§4,NO_RECONCILIATION_BAR,NO_RECONCILIATION_BAR,True
+区間 A（2017-01-01T22Z〜01-02T07Z）の tick 数,unreconciled_recheck §1,1245,1245,True
+区間 B（2019-03-10T21Z〜22Z）の tick 数,unreconciled_recheck §1,611,611,True
+区間 A の直前の原データの 15分足,unreconciled_recheck §2,2016-12-30T21:45Z,2016-12-30T21:45Z,True
+区間 B の直前の原データの 15分足,unreconciled_recheck §2,2019-03-08T21:45Z,2019-03-08T21:45Z,True
+USDJPY 15分足・1時間足に欠落の無い最長の連続区間（研究履歴）,D09 §17.8.5 の段 3 の素材,—（826 日は土曜 12:00Z 揃えと余白の後の値）,2019-12-25T09:00Z〜2022-06-26T21:00Z,False
