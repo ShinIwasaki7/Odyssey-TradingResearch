@@ -410,6 +410,7 @@ def _unreconciled_notes(
     chunks: tuple[UnreconciledChunk, ...],
     differences: tuple[SourceDifferenceChunk, ...] = (),
     reconciliations: tuple[ChunkReconciliation, ...] | None = None,
+    relabel: Relabel = None,
 ) -> dict[Origin, str]:
     """未照合の塊の対象足ごとの原因の注記（D03 §14.15 の v1.20。履歴に示す）。
 
@@ -431,7 +432,9 @@ def _unreconciled_notes(
         record = bilateral.get((series, start))
         if record is None:
             return ""
-        return "。両側照合: " + "・".join(_side_text(side, series, None) for side in record.sides)
+        return "。両側照合: " + "・".join(
+            _side_text(side, series, relabel) for side in record.sides
+        )
 
     notes: dict[Origin, str] = {}
     marked: list[tuple[SeriesId, UtcTime, int, str]] = [
@@ -556,6 +559,7 @@ def records_from(
                     manifest.unreconciled,
                     manifest.source_differences,
                     manifest.reconciliations,
+                    table.get(manifest.snapshot_id),
                 ),
                 built,
             ),
@@ -581,6 +585,7 @@ def records_from(
                         rejection.unreconciled,
                         tuple(item.chunk for item in rejection.source_differences),
                         rejection.reconciliations,
+                        relabel,
                     ),
                     VALIDATION_REJECTED,
                 ),

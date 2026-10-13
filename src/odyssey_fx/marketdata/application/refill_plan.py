@@ -674,6 +674,8 @@ def plan_layout(
         plan_hours[key] = PlanHour(hour=key, reference=False, roles=() if bilateral else None)
     for key, listed in roles.items():
         if key in plan_hours:  # pragma: no cover - そろう時間には対象足が無い
+            if not bilateral:
+                continue  # v1.22 より前の規則のまま（対象の時間の印を優先する）
             raise MarketDataValueError(f"the reference hour {key} holds a target bar (D03 §14.4)")
         ordered_roles = tuple(sorted(listed, key=lambda role: role.sort_key()))
         plan_hours[key] = PlanHour(
