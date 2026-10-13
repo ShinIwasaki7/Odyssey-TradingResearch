@@ -1068,9 +1068,11 @@ def _unbuilt_chunks(
         ]
         found = [reasons.get((bar.series, bar.start)) for bar in bars]
         if bars and all(reason is not None for reason in found):
-            first = found[0]
-            assert first is not None
-            result[(str(record.series), str(record.chunk_start))] = NOT_BUILT_TO_RESULT[first]
+            # 理由が混在すれば全部を示す（1 つの理由に潰さない。D03 §14.15 の R5 の趣旨）。
+            states = [NOT_BUILT_TO_RESULT[reason] for reason in found if reason is not None]
+            result[(str(record.series), str(record.chunk_start))] = "+".join(
+                state for state in STATE_ORDER if state in states
+            )
     return result
 
 
@@ -1153,7 +1155,7 @@ def _method_lines(
                 key = (str(record.series), str(record.chunk_start))
                 state = outcome.get(key)
                 shown = (
-                    STATE_LABELS[state]
+                    "・".join(STATE_LABELS[part] for part in state.split("+"))
                     if state is not None
                     else ("補充した" if written else "不合格の計画（書き出していない）")
                 )
