@@ -828,10 +828,10 @@ def require_reconciliations_match(
                 " refill (D03 §14.7.1)"
             )
         if SideResult.UNAVAILABLE in results:
-            if found is None or found.sides != record.sides:
+            if found is None or found.sides != record.sides or key in differing:
                 raise MarketDataValueError(
                     f"{label}: {record.series} {record.chunk_start} has an unavailable side but"
-                    " is not recorded as unreconciled with the same sides (D03 §14.7.1, R-1e)"
+                    " is not recorded only as unreconciled with the same sides (D03 §14.7.1, R-1e)"
                 )
             continue
         if found is not None:

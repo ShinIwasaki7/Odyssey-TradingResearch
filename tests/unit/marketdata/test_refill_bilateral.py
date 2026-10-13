@@ -640,3 +640,31 @@ def test_a_chunk_without_any_built_bar_is_not_counted_as_refilled() -> None:
     assert f"| 補充分 `{short}…` | 両側照合 | 0 | 2 |" in text
     assert f"| 補充分 `{short}…` | 直前 24 時間以内 | 2 | 0 |" in text
     assert "取得できなかった" in text
+
+
+def test_an_unreconciled_bilateral_chunk_cannot_also_be_a_source_difference() -> None:
+    """R-1e: 片側取得不能の塊は未照合の一覧だけに入る（配信元の値の差の一覧に同時に載せない）。"""
+    mon_02 = MON_00 + 2 * H
+    raw = raw_bars(drop=(*GAP, mon_02))
+    plan = plan_for(raw, gap=(*GAP, mon_02))
+    result, hours = validate(plan, raw, missing=(MON_00,))
+    assert result.passed, result.failures
+    payload = dict(
+        build_refill_output(
+            plan=plan, validation=result, hours=hours, code_version="test", created_at=AT
+        ).manifest.payload()
+    )
+    assert RefillManifest.from_payload(payload).unreconciled
+    tampered = {
+        **payload,
+        "source_differences": [
+            {
+                "chunk_start": str(SUN_22),
+                "series": "USDJPY/15m/bid",
+                "target_count": 8,
+                "timeframe_version": USDJPY_15M.timeframe.version,
+            }
+        ],
+    }
+    with pytest.raises(MarketDataValueError):
+        RefillManifest.from_payload(tampered)

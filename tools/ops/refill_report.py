@@ -1089,11 +1089,12 @@ def _method_lines(
         manifest = refill.manifest
         outcome = {
             **_unbuilt_chunks(manifest.plan, manifest.reconciliations, manifest.not_built),
-            **{(str(i.series), str(i.chunk_start)): UNRECONCILED for i in manifest.unreconciled},
             **{
                 (str(i.series), str(i.chunk_start)): SOURCE_DIFFERENCE
                 for i in manifest.source_differences
             },
+            # 未照合を最後に置き、配信元の値の差より優先する（R-1e）。
+            **{(str(i.series), str(i.chunk_start)): UNRECONCILED for i in manifest.unreconciled},
         }
         groups.append(
             (
