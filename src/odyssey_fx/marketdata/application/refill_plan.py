@@ -18,7 +18,19 @@
 **照合用の時間**（D03 §14.4、§14.18 の 2）: 対象の時間の連続する塊について、塊のどの時間
 ファイルにも照合できる足（原データに実在する研究履歴区分の足）が無いときだけ、塊の直前に
 ある「原データに 15分足 4 本と 1時間足 1 本がそろう最も近い時間」（24 時間以内）を 1 本だけ
-足す。無ければ足さず、その塊は「未照合」になる（書き出しの検証が扱う）。
+足す。
+
+**両側照合**（D03 §14.4.1。v1.22）: 直前 24 時間以内にも見つからない塊は、欠落の前後の両側で
+照合する。前側は欠落の直前の原データの足を含む時間を起点に、その取引日の中で原データにそろう
+最後の 1 時間まで遡り、後側は欠落の直後の原データの足を含む時間を起点に、その取引日の中でそろう
+最初の 1 時間まで進む（R-1d と PR #78 の仮置き 1・2 の決定）。取引日の中にそろう時間が無い側・
+起点が研究履歴区分の外の側は「計画の時点で取得不能」とし、照合用の時間を足さない。
+
+**照合の方法の記録**（D03 §14.7.1 の記録先 1。v1.22）: 計画は、時間ファイルの印の中身（方法と、
+両側照合ではどの塊の前側か後側かと距離）と、塊ごとの照合の記録の列を持つ（`plan_id` の対象）。
+規則の版は計画の形式の版（`refill_plan_v2`）で区別する。v1.22 より前の計画（`refill_plan_v1`）の
+検証は、その計画を作った規則（両側照合なし。塊に照合できる足も照合用の時間も無ければ「未照合」）
+で照合の配置を計算し直す（`plan_layout` の `bilateral=False`）。
 """
 
 from __future__ import annotations
@@ -56,12 +68,18 @@ from odyssey_fx.marketdata.domain.refill import (
     HOUR,
     REFILL_TIMEFRAME_IDS,
     CalendarRef,
+    ChunkReconciliation,
     HourKey,
     PlanHour,
     ProviderRef,
+    ReconciliationMethod,
+    ReconciliationSide,
+    ReferenceRole,
     RefillFilter,
     RefillManifestCore,
     RefillPlan,
+    SideRecord,
+    SideUnavailable,
     TargetBar,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -70,6 +88,8 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
 __all__ = [
     "REFERENCE_SEARCH_HOURS",
+    "ChunkLayout",
+    "PlanLayout",
     "REFILL_SOURCE_ROOT",
     "REFILL_CALENDAR_VERSIONS",
     "RawBarIndex",
@@ -79,6 +99,7 @@ __all__ = [
     "finalized_refills",
     "hour_chunks",
     "load_raw_bars",
+    "plan_layout",
     "reference_hour_for",
     "require_consistent_refills",
     "require_plan_matches",
@@ -426,6 +447,247 @@ def reference_hour_for(
     return None
 
 
+# --- 照合の配置（D03 §14.4・§14.4.1・§14.7.1）---------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkLayout:
+    """塊 1 つ（同じ銘柄の対象の時間の連続する塊）の照合の配置。
+
+    `method` が `None` なのは v1.22 より前の規則で、塊に照合できる足も照合用の時間も無い塊
+    （「未照合（照合できる足が無い）」）だけ。`preceding` は直前 24 時間以内の照合用の時間、
+    `sides` は両側照合の前側・後側の記録（計画の時点。結果を持たない）。
+    """
+
+    symbol: Symbol
+    hours: tuple[UtcTime, ...]
+    method: ReconciliationMethod | None
+    preceding: UtcTime | None = None
+    sides: tuple[SideRecord, ...] = ()
+
+    @property
+    def keys(self) -> tuple[HourKey, ...]:
+        """塊の時間ファイルの鍵。"""
+        return tuple(HourKey(symbol=self.symbol, start=moment) for moment in self.hours)
+
+    @property
+    def span(self) -> Interval:
+        """塊の区間（最初の時間の始まりから最後の時間の終わりまで）。"""
+        return Interval(start=self.hours[0], end=self.hours[-1] + HOUR)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanLayout:
+    """計画全体の照合の配置（時間ファイルの列と塊ごとの照合の記録）。
+
+    `reconciliations` は v1.22 の規則（`bilateral=True`）のときだけ持ち、v1.22 より前の規則では
+    `None`（時間ファイルの印の中身も持たない）。
+    """
+
+    hours: tuple[PlanHour, ...]
+    reconciliations: tuple[ChunkReconciliation, ...] | None
+    chunks: tuple[ChunkLayout, ...]
+
+
+def _symbol_series(symbol: Symbol, originals: Iterable[SeriesId]) -> tuple[SeriesId, ...]:
+    return tuple(
+        series
+        for series in originals
+        if series.symbol == symbol and series.timeframe.id in REFILL_TIMEFRAME_IDS
+    )
+
+
+def _hour_of(moment: UtcTime) -> UtcTime:
+    return UtcTime(moment.value.replace(minute=0, second=0, microsecond=0))
+
+
+def _minutes(start: UtcTime, end: UtcTime) -> int:
+    return int((end.value - start.value).total_seconds()) // 60
+
+
+def _bilateral_side(
+    symbol: Symbol,
+    chunk: Sequence[UtcTime],
+    side: ReconciliationSide,
+    originals: Sequence[SeriesId],
+    raw: RawBarIndex,
+    calendar: TradingCalendar,
+) -> SideRecord:
+    """両側照合の片側の照合用の時間（D03 §14.4.1 の規則の 2）。
+
+    起点は、前側は欠落の直前の原データの足（研究履歴区分）を含む時間、後側は欠落の直後の原データ
+    の足を含む時間。起点の時間に 15分足 4 本と 1時間足 1 本がそろわなければ、起点の時間が属する
+    取引日の中で、前側は起点以前のそろう最後の 1 時間まで遡り、後側は起点以後のそろう最初の
+    1 時間まで進む（R-1d。PR #78 の仮置き 1）。取引日の中に無ければ取得不能（同 2）。
+    """
+    series = _symbol_series(symbol, originals)
+    chunk_start = chunk[0]
+    chunk_end = chunk[-1] + HOUR
+
+    def unavailable(cause: SideUnavailable) -> SideRecord:
+        return SideRecord(side=side, reference_start=None, distance_minutes=None, unavailable=cause)
+
+    if side is ReconciliationSide.BEFORE:
+        found = [raw.research_bar_before(item, chunk_start) for item in series]
+        bars = [bar for bar in found if bar is not None]
+        if not bars:
+            return unavailable(SideUnavailable.NO_COMPLETE_HOUR)
+        origin = _hour_of(max(bars, key=lambda bar: bar.bar_end.value).bar_start)
+    else:
+        found = [raw.research_bar_after(item, chunk_end) for item in series]
+        bars = [bar for bar in found if bar is not None]
+        if not bars:
+            if any(raw.any_bar_after(item, chunk_end) for item in series):
+                return unavailable(SideUnavailable.OUTSIDE_RESEARCH_HISTORY)
+            return unavailable(SideUnavailable.NO_COMPLETE_HOUR)
+        origin = _hour_of(min(bars, key=lambda bar: bar.bar_start.value).bar_start)
+    day = calendar.trading_day_of(origin)
+    step = -HOUR if side is ReconciliationSide.BEFORE else HOUR
+    candidate = origin
+    while day.start <= candidate and candidate + HOUR <= day.end:
+        if _is_complete_hour(symbol, candidate, series, raw):
+            distance = (
+                _minutes(candidate + HOUR, chunk_start)
+                if side is ReconciliationSide.BEFORE
+                else _minutes(chunk_end, candidate)
+            )
+            return SideRecord(side=side, reference_start=candidate, distance_minutes=distance)
+        candidate = candidate + step
+    return unavailable(SideUnavailable.NO_COMPLETE_HOUR)
+
+
+def chunk_layout(
+    symbol: Symbol,
+    chunk: Sequence[UtcTime],
+    originals: Sequence[SeriesId],
+    raw: RawBarIndex,
+    calendar: TradingCalendar,
+    *,
+    bilateral: bool,
+) -> ChunkLayout:
+    """塊 1 つの照合の配置（D03 §14.4・§14.4.1）。
+
+    塊のどれかの時間ファイルに照合できる足があれば「塊の時間ファイルの中」、無ければ直前
+    24 時間以内の照合用の時間（「直前 24 時間以内」）、それも無ければ v1.22 の規則
+    （`bilateral=True`）では両側照合、v1.22 より前の規則では方法なし（未照合）。
+    """
+    hours = tuple(chunk)
+    if _chunk_has_reconcilable_bars(symbol, hours, originals, raw):
+        return ChunkLayout(symbol=symbol, hours=hours, method=ReconciliationMethod.IN_CHUNK)
+    preceding = reference_hour_for(symbol, hours, originals, raw)
+    if preceding is not None:
+        return ChunkLayout(
+            symbol=symbol,
+            hours=hours,
+            method=ReconciliationMethod.PRECEDING_24H,
+            preceding=preceding,
+        )
+    if not bilateral:
+        return ChunkLayout(symbol=symbol, hours=hours, method=None)
+    return ChunkLayout(
+        symbol=symbol,
+        hours=hours,
+        method=ReconciliationMethod.BILATERAL,
+        sides=tuple(
+            _bilateral_side(symbol, hours, side, originals, raw, calendar)
+            for side in (ReconciliationSide.BEFORE, ReconciliationSide.AFTER)
+        ),
+    )
+
+
+def _chunk_records(
+    layout: ChunkLayout, targets_by_hour: Mapping[HourKey, Sequence[TargetBar]]
+) -> list[ChunkReconciliation]:
+    """塊の、系列ごとの照合の記録（塊の開始時刻はその系列の最初の対象足の開始時刻）。"""
+    method = layout.method
+    if method is None:
+        return []
+    firsts: dict[SeriesId, UtcTime] = {}
+    for key in layout.keys:
+        for target in targets_by_hour.get(key, ()):
+            current = firsts.get(target.series)
+            if current is None or target.start < current:
+                firsts[target.series] = target.start
+    return [
+        ChunkReconciliation(series=series, chunk_start=start, method=method, sides=layout.sides)
+        for series, start in firsts.items()
+    ]
+
+
+def plan_layout(
+    targets: Sequence[TargetBar],
+    originals: Sequence[SeriesId],
+    raw: RawBarIndex,
+    calendar: TradingCalendar,
+    *,
+    bilateral: bool,
+) -> PlanLayout:
+    """対象足から、時間ファイルの列と塊ごとの照合の記録を決める（D03 §14.4・§14.10・§14.7.1）。
+
+    計画の作成（`bilateral=True`）と、書き出しの検証が計画を計算し直して確かめるとき（計画の
+    形式の版に合わせる）の両方が使う。`bilateral=False` は v1.22 より前の計画の規則で、
+    印の中身と塊ごとの照合の記録を持たない。
+    """
+    targets_by_hour: dict[HourKey, list[TargetBar]] = {}
+    for target in targets:
+        targets_by_hour.setdefault(target.hour, []).append(target)
+    hours_by_symbol: dict[Symbol, set[UtcTime]] = {}
+    for key in targets_by_hour:
+        hours_by_symbol.setdefault(key.symbol, set()).add(key.start)
+    chunks: list[ChunkLayout] = []
+    records: list[ChunkReconciliation] = []
+    roles: dict[HourKey, list[ReferenceRole]] = {}
+    for symbol in sorted(hours_by_symbol, key=str):
+        for chunk in hour_chunks(hours_by_symbol[symbol]):
+            layout = chunk_layout(symbol, chunk, originals, raw, calendar, bilateral=bilateral)
+            chunks.append(layout)
+            chunk_records = _chunk_records(layout, targets_by_hour)
+            records.extend(chunk_records)
+            if layout.preceding is not None:
+                key = HourKey(symbol=symbol, start=layout.preceding)
+                roles.setdefault(key, []).extend(
+                    ReferenceRole(
+                        series=record.series,
+                        chunk_start=record.chunk_start,
+                        method=ReconciliationMethod.PRECEDING_24H,
+                        side=None,
+                        distance_minutes=None,
+                    )
+                    for record in chunk_records
+                )
+            for side in layout.sides:
+                if side.reference_start is None:
+                    continue
+                key = HourKey(symbol=symbol, start=side.reference_start)
+                roles.setdefault(key, []).extend(
+                    ReferenceRole(
+                        series=record.series,
+                        chunk_start=record.chunk_start,
+                        method=ReconciliationMethod.BILATERAL,
+                        side=side.side,
+                        distance_minutes=side.distance_minutes,
+                    )
+                    for record in chunk_records
+                )
+    plan_hours: dict[HourKey, PlanHour] = {}
+    for key in targets_by_hour:
+        plan_hours[key] = PlanHour(hour=key, reference=False, roles=() if bilateral else None)
+    for key, listed in roles.items():
+        if key in plan_hours:  # pragma: no cover - そろう時間には対象足が無い
+            raise MarketDataValueError(f"the reference hour {key} holds a target bar (D03 §14.4)")
+        ordered_roles = tuple(sorted(listed, key=lambda role: role.sort_key()))
+        plan_hours[key] = PlanHour(
+            hour=key, reference=True, roles=ordered_roles if bilateral else None
+        )
+    return PlanLayout(
+        hours=tuple(plan_hours[key] for key in sorted(plan_hours, key=lambda key: key.sort_key())),
+        reconciliations=tuple(sorted(records, key=lambda record: record.sort_key()))
+        if bilateral
+        else None,
+        chunks=tuple(chunks),
+    )
+
+
 def build_plan(
     *,
     manifest: SnapshotManifest,
@@ -455,29 +717,21 @@ def build_plan(
             "no bar classified as a data gap matches the plan (research history only, the"
             " given calendar and filter); no plan was written (D03 §14.4)"
         )
-    originals = _original_series(manifest)
-    raw = RawBarIndex.build(raw_bars, boundaries)
-    hours_by_symbol: dict[Symbol, set[UtcTime]] = {}
-    for target in targets:
-        hours_by_symbol.setdefault(target.series.symbol, set()).add(target.hour.start)
-    plan_hours: dict[HourKey, PlanHour] = {}
-    for symbol, hours in hours_by_symbol.items():
-        for moment in hours:
-            key = HourKey(symbol=symbol, start=moment)
-            plan_hours[key] = PlanHour(hour=key, reference=False)
-        for chunk in hour_chunks(hours):
-            reference = reference_hour_for(symbol, chunk, originals, raw)
-            if reference is not None:
-                key = HourKey(symbol=symbol, start=reference)
-                plan_hours.setdefault(key, PlanHour(hour=key, reference=True))
-    ordered = tuple(plan_hours[key] for key in sorted(plan_hours, key=lambda key: key.sort_key()))
+    layout = plan_layout(
+        targets,
+        tuple(_original_series(manifest)),
+        RawBarIndex.build(raw_bars, boundaries),
+        calendar,
+        bilateral=True,
+    )
     return RefillPlan(
         snapshot_id=str(manifest.snapshot_id()),
         calendar=calendar_ref,
         provider=provider,
         filter=refill_filter,
         target_bars=targets,
-        hours=ordered,
+        hours=layout.hours,
+        reconciliations=layout.reconciliations,
     )
 
 

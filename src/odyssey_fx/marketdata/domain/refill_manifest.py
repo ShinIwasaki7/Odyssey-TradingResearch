@@ -20,6 +20,12 @@ PR #58 が定めた最小の項目（`plan_id` と時間ごとの `hour`・`outc
 `refill_manifest_v2`・`refill_validation_v2`。v1.19 より前に書いた補充分（形式 v1。配信元の値の差の
 記録を持たない）もそのまま読む（配信元の値の差は 0 件として読む。補充分は一度書いたら変えない
 ため）。
+
+**v1.22**（D03 §14.7.1・§14.11）: 塊ごとの照合の方法と、両側照合の両側の照合時刻・結果・欠落区間
+からの距離（`reconciliations`）を足した書き出しは `refill_manifest_v3`・`refill_validation_v3`。
+v1.22 の規則で作った計画（形式 `refill_plan_v2`）の補充分は必ず持ち、v1.22 より前の計画の補充分は
+持たない（`null`。報告は「照合の方法の記録なし（v1.22 より前の記録）」の別区分で示す。2026-10-13 の
+人間の決定。PR #78 の仮置き 8）。形式 v1・v2 の補充分もそのまま読む（記録なしとして読む）。
 """
 
 from __future__ import annotations
@@ -37,13 +43,20 @@ from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.refill import (
     REFILL_TIMEFRAME_IDS,
     ArchiveProvenance,
+    ChunkReconciliation,
     FailureKind,
     FinalResult,
     HourKey,
     HourOutcome,
     ManifestHour,
+    ReconciliationMethod,
     RefillPlan,
+    SideRecord,
+    SideResult,
+    reconciliations_from_payload,
+    reconciliations_payload,
     require_hex_digest,
+    require_sorted_reconciliations,
     series_from_record,
 )
 from odyssey_fx.marketdata.domain.refill_validation import (
@@ -75,6 +88,7 @@ __all__ = [
     "not_built_from_payload",
     "not_built_payload",
     "refill_id_of",
+    "require_reconciliations_match",
     "source_difference_evidence_from_payload",
     "source_difference_evidence_payload",
     "source_difference_from_payload",
@@ -87,11 +101,14 @@ __all__ = [
 REFILL_AGGREGATION_RULE_VERSION: Final = "refill_ticks_v1"
 
 #: 補充の manifest の形式の印と、補充分のディレクトリの中の名前（D03 §14.11）。
-REFILL_MANIFEST_FORMAT: Final = "refill_manifest_v2"
-REFILL_VALIDATION_FORMAT: Final = "refill_validation_v2"
+REFILL_MANIFEST_FORMAT: Final = "refill_manifest_v3"
+REFILL_VALIDATION_FORMAT: Final = "refill_validation_v3"
 #: v1.19 より前の形式（配信元の値の差の記録を持たない）。読むだけで書かない。
 _REFILL_MANIFEST_FORMAT_V1: Final = "refill_manifest_v1"
 _REFILL_VALIDATION_FORMAT_V1: Final = "refill_validation_v1"
+#: v1.22 より前の形式（塊ごとの照合の記録を持たない）。読むだけで書かない。
+_REFILL_MANIFEST_FORMAT_V2: Final = "refill_manifest_v2"
+_REFILL_VALIDATION_FORMAT_V2: Final = "refill_validation_v2"
 REFILL_MANIFEST_FILE: Final = "refill_manifest.json"
 REFILL_VALIDATION_FILE: Final = "validation.json"
 
@@ -542,15 +559,19 @@ _UNRECONCILED_KEYS_V1: Final = frozenset(
     {"chunk_start", "series", "target_count", "timeframe_version"}
 )
 _UNRECONCILED_KEYS: Final = _UNRECONCILED_KEYS_V1 | {"causes", "unbuilt_reconciliation_bars"}
+#: 両側照合で片側が取得不能の塊は、両側の記録 `sides` も持つ（v1.22。人間の決定 R-1e）。
+_UNRECONCILED_KEYS_BILATERAL: Final = _UNRECONCILED_KEYS | {"sides"}
 
 
 def unreconciled_payload(item: UnreconciledChunk) -> Mapping[str, Any]:
     """未照合の塊 1 つの記録の形 `(系列, 塊の開始時刻, 対象足の数)` と原因（D03 §14.8 の v1.20）。
 
     原因 `causes` は 1 つ以上（照合用の足を作れない塊で配信元の値の差にも当たれば両方。
-    2026-10-06 の人間の決定 A）。`unbuilt_reconciliation_bars` は作れなかった照合用の足。
+    2026-10-06 の人間の決定 A）。`unbuilt_reconciliation_bars` は作れなかった照合用の足。両側照合で
+    片側が取得不能の塊（v1.22）は、両側の記録 `sides`（どちらの側か・照合時刻・距離・取得不能の
+    原因・結果）も持つ（D03 §14.11。人間の決定 R-1e）。
     """
-    return {
+    body: dict[str, Any] = {
         **_series_payload(item.series),
         "causes": [cause.value for cause in item.causes],
         "chunk_start": str(item.chunk_start),
@@ -560,6 +581,9 @@ def unreconciled_payload(item: UnreconciledChunk) -> Mapping[str, Any]:
             for series, start in item.unbuilt_reconciliation_bars
         ],
     }
+    if item.sides:
+        body["sides"] = [side.payload(with_result=True) for side in item.sides]
+    return body
 
 
 def unreconciled_from_payload(
@@ -571,7 +595,12 @@ def unreconciled_from_payload(
     と、取得記録の前の形の行）。原因は照合できる足が無い（`NO_RECONCILIATION_BAR`）として読む。
     """
     mapping = _mapping(payload, label)
-    _keys(mapping, _UNRECONCILED_KEYS_V1 if legacy else _UNRECONCILED_KEYS, label)
+    if legacy:
+        _keys(mapping, _UNRECONCILED_KEYS_V1, label)
+    elif "sides" in mapping:
+        _keys(mapping, _UNRECONCILED_KEYS_BILATERAL, label)
+    else:
+        _keys(mapping, _UNRECONCILED_KEYS, label)
     series = series_from_record(mapping["series"], mapping["timeframe_version"], label)
     chunk_start = _time(mapping["chunk_start"], f"{label}.chunk_start")
     target_count = _int(mapping["target_count"], f"{label}.target_count", minimum=1)
@@ -596,12 +625,17 @@ def unreconciled_from_payload(
                 _time(bar["start"], f"{at}.start"),
             )
         )
+    sides = tuple(
+        SideRecord.from_payload(entry, f"{label}.sides[{index}]", with_result=True)
+        for index, entry in enumerate(_sequence(mapping.get("sides", []), f"{label}.sides"))
+    )
     return UnreconciledChunk(
         series=series,
         chunk_start=chunk_start,
         target_count=target_count,
         causes=tuple(causes),
         unbuilt_reconciliation_bars=tuple(bars),
+        sides=sides,
     )
 
 
@@ -741,6 +775,75 @@ _MANIFEST_KEYS: Final = frozenset(
     }
 )
 _MANIFEST_KEYS_V2: Final = _MANIFEST_KEYS | {"source_differences"}
+_MANIFEST_KEYS_V3: Final = _MANIFEST_KEYS_V2 | {"reconciliations"}
+
+
+def require_reconciliations_match(
+    plan: RefillPlan,
+    reconciliations: tuple[ChunkReconciliation, ...] | None,
+    unreconciled: tuple[UnreconciledChunk, ...],
+    source_differences: tuple[SourceDifferenceChunk, ...],
+    label: str,
+) -> None:
+    """塊ごとの照合の記録（結果つき）が計画と、未照合・配信元の値の差の記録に合うこと。
+
+    - v1.22 の規則で作った計画の補充分は記録を必ず持ち、v1.22 より前の計画の補充分は持たない
+      （D03 §14.7.1 の記録先 2。どれも省けない）。
+    - 塊の集合と、方法・照合時刻・距離・計画の時点の取得不能の原因が計画と同じ。
+    - 両側照合の塊は、片側でも取得不能なら未照合の記録（原因 `BILATERAL_SIDE_UNAVAILABLE` と
+      同じ両側の記録）にあり、取得不能が無く片側か両側が配信元の値の差なら配信元の値の差の記録に
+      あり、両側とも一致ならどちらにも無い。補充分に「不一致で不合格」の側は無い（R-1・R-1e）。
+    """
+    if plan.reconciliations is None:
+        if reconciliations is not None:
+            raise MarketDataValueError(
+                f"{label}: a refill of a plan made before the v1.22 rules has no chunk records"
+            )
+        return
+    if reconciliations is None:
+        raise MarketDataValueError(
+            f"{label}: the chunk reconciliation records are required for a plan of the v1.22"
+            " rules (D03 §14.7.1)"
+        )
+    require_sorted_reconciliations(reconciliations, label)
+    if tuple(record.planned() for record in reconciliations) != plan.reconciliations:
+        raise MarketDataValueError(
+            f"{label}: the chunk records differ from the plan's records (D03 §14.7.1)"
+        )
+    unreconciled_by_key = {(item.series, item.chunk_start): item for item in unreconciled}
+    differing = {(item.series, item.chunk_start) for item in source_differences}
+    for record in reconciliations:
+        if not record.validated:
+            raise MarketDataValueError(
+                f"{label}: {record.series} {record.chunk_start} lacks results"
+            )
+        if record.method is not ReconciliationMethod.BILATERAL:
+            continue
+        key = (record.series, record.chunk_start)
+        results = record.side_results()
+        found = unreconciled_by_key.get(key)
+        if SideResult.MISMATCH in results:
+            raise MarketDataValueError(
+                f"{label}: {record.series} {record.chunk_start} has a failing side in a written"
+                " refill (D03 §14.7.1)"
+            )
+        if SideResult.UNAVAILABLE in results:
+            if found is None or found.sides != record.sides:
+                raise MarketDataValueError(
+                    f"{label}: {record.series} {record.chunk_start} has an unavailable side but"
+                    " is not recorded as unreconciled with the same sides (D03 §14.7.1, R-1e)"
+                )
+            continue
+        if found is not None:
+            raise MarketDataValueError(
+                f"{label}: {record.series} {record.chunk_start} is unreconciled although both"
+                " sides were reconciled"
+            )
+        if (SideResult.SOURCE_DIFFERENCE in results) != (key in differing):
+            raise MarketDataValueError(
+                f"{label}: {record.series} {record.chunk_start} is listed as a source difference"
+                " exactly when one of its sides is a source difference (D03 §14.7.1)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -772,6 +875,9 @@ class RefillManifest:
     created_at: UtcTime
     #: 配信元の値の差の塊ごとの `(系列, 塊の開始時刻, 対象足の数)`（D03 §14.7 の v1.19・§14.11）。
     source_differences: tuple[SourceDifferenceChunk, ...] = ()
+    #: 塊ごとの照合の方法と、両側照合の両側の照合時刻・結果・距離（D03 §14.7.1。v1.22 の計画の
+    #: 補充分だけ。v1.22 より前の計画の補充分は `None`）。
+    reconciliations: tuple[ChunkReconciliation, ...] | None = None
 
     def __post_init__(self) -> None:
         require_hex_digest(self.refill_id, "RefillManifest.refill_id")
@@ -859,6 +965,13 @@ class RefillManifest:
                         f"RefillManifest.{label}: {series} {start} is listed twice (D03 §14.11)"
                     )
                 seen.add((series, start))
+        require_reconciliations_match(
+            self.plan,
+            self.reconciliations,
+            self.unreconciled,
+            self.source_differences,
+            "RefillManifest.reconciliations",
+        )
 
     @property
     def bar_files(self) -> tuple[RefillFileRecord, ...]:
@@ -887,6 +1000,7 @@ class RefillManifest:
                 "id": self.plan.provider.settings.id,
                 "version": self.plan.provider.settings.version,
             },
+            "reconciliations": reconciliations_payload(self.reconciliations, with_result=True),
             "refill_id": self.refill_id,
             "series_counts": [item.payload() for item in self.series_counts],
             "snapshot_id": self.plan.snapshot_id,
@@ -900,19 +1014,24 @@ class RefillManifest:
     def from_payload(cls, payload: object) -> RefillManifest:
         """`refill_manifest.json` の内容から読む。形が違えば `MarketDataValueError`。
 
-        形式 v1（v1.19 より前の書き出し。配信元の値の差の鍵を持たない）も読む。
+        形式 v1（v1.19 より前の書き出し。配信元の値の差の鍵を持たない）と形式 v2（v1.22 より前の
+        書き出し。塊ごとの照合の記録の鍵を持たない）も読む。
         """
         label = REFILL_MANIFEST_FILE
         mapping = _mapping(payload, label)
-        legacy = mapping.get("format") == _REFILL_MANIFEST_FORMAT_V1
+        form = mapping.get("format")
+        legacy = form == _REFILL_MANIFEST_FORMAT_V1
         if legacy:
             _keys(mapping, _MANIFEST_KEYS, label)
-        else:
+        elif form == _REFILL_MANIFEST_FORMAT_V2:
             _keys(mapping, _MANIFEST_KEYS_V2, label)
-            if mapping["format"] != REFILL_MANIFEST_FORMAT:
+        else:
+            _keys(mapping, _MANIFEST_KEYS_V3, label)
+            if form != REFILL_MANIFEST_FORMAT:
                 raise MarketDataValueError(
                     f"{label}.format must be {REFILL_MANIFEST_FORMAT!r} (or"
-                    f" {_REFILL_MANIFEST_FORMAT_V1!r}), got {mapping['format']!r}"
+                    f" {_REFILL_MANIFEST_FORMAT_V2!r}, {_REFILL_MANIFEST_FORMAT_V1!r}),"
+                    f" got {form!r}"
                 )
         plan = RefillPlan.from_payload(mapping["plan"])
         calendar = _mapping(mapping["calendar"], f"{label}.calendar")
@@ -967,6 +1086,9 @@ class RefillManifest:
                     _sequence(mapping.get("source_differences", []), f"{label}.source_differences")
                 )
             ),
+            reconciliations=reconciliations_from_payload(
+                mapping.get("reconciliations"), f"{label}.reconciliations", with_result=True
+            ),
         )
 
 
@@ -992,6 +1114,7 @@ _VALIDATION_KEYS_V2: Final = _VALIDATION_KEYS | {
     "source_difference_bars",
     "source_differences",
 }
+_VALIDATION_KEYS_V3: Final = _VALIDATION_KEYS_V2 | {"reconciliations"}
 _NEIGHBOR_KEYS: Final = frozenset(
     {
         "chunk_end",
@@ -1077,6 +1200,9 @@ class RefillValidationRecord:
     rounding_matched_count: int | None = None
     #: 配信元の値の差の塊と理由（v1.19。形式 v1 の記録は 0 件）。
     source_differences: tuple[SourceDifferenceEvidence, ...] = ()
+    #: 塊ごとの照合の方法と両側照合の両側の記録（v1.22。形式 v1・v2 と v1.22 より前の計画の
+    #: 記録は `None`）。
+    reconciliations: tuple[ChunkReconciliation, ...] | None = None
 
     def __post_init__(self) -> None:
         require_hex_digest(self.refill_id, "RefillValidationRecord.refill_id")
@@ -1093,13 +1219,20 @@ class RefillValidationRecord:
         """`validation.json` の内容から読む。形が違えば `MarketDataValueError`。"""
         label = REFILL_VALIDATION_FILE
         mapping = _mapping(payload, label)
-        legacy = mapping.get("format") == _REFILL_VALIDATION_FORMAT_V1
-        _keys(mapping, _VALIDATION_KEYS if legacy else _VALIDATION_KEYS_V2, label)
-        if not legacy and mapping["format"] != REFILL_VALIDATION_FORMAT:
-            raise MarketDataValueError(
-                f"{label}.format must be {REFILL_VALIDATION_FORMAT!r} (or"
-                f" {_REFILL_VALIDATION_FORMAT_V1!r}), got {mapping['format']!r}"
-            )
+        form = mapping.get("format")
+        legacy = form == _REFILL_VALIDATION_FORMAT_V1
+        if legacy:
+            _keys(mapping, _VALIDATION_KEYS, label)
+        elif form == _REFILL_VALIDATION_FORMAT_V2:
+            _keys(mapping, _VALIDATION_KEYS_V2, label)
+        else:
+            _keys(mapping, _VALIDATION_KEYS_V3, label)
+            if form != REFILL_VALIDATION_FORMAT:
+                raise MarketDataValueError(
+                    f"{label}.format must be {REFILL_VALIDATION_FORMAT!r} (or"
+                    f" {_REFILL_VALIDATION_FORMAT_V2!r}, {_REFILL_VALIDATION_FORMAT_V1!r}),"
+                    f" got {form!r}"
+                )
         if not legacy:
             for index, item in enumerate(
                 _sequence(mapping["source_difference_bars"], f"{label}.source_difference_bars")
@@ -1147,5 +1280,8 @@ class RefillValidationRecord:
             else tuple(
                 source_difference_evidence_from_payload(item, at)
                 for at, item in items("source_differences")
+            ),
+            reconciliations=reconciliations_from_payload(
+                mapping.get("reconciliations"), f"{label}.reconciliations", with_result=True
             ),
         )

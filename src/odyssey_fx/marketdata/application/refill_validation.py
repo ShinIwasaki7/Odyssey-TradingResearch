@@ -35,6 +35,13 @@
 なら不合格。同じ塊が (iii) にも当たれば状態は未照合 1 つで、原因に両方を書く（2026-10-06 の人間の
 決定 A）。
 
+**両側照合**（D03 §14.4.1・§14.7.1。v1.22。人間の決定 R-1・R-1e）: 両側照合の塊は、前側・後側の
+照合用の時間の足をそれぞれ上の規則で比べ、**両側とも一致したときだけ補充する**。片側でも取得不能
+（照合用の時間を足さなかった・`NOT_FETCHED`・照合用の足を作れない）なら「未照合」1 つ（もう片側が
+配信元の値の差でも。原因に両側を書く）、取得不能が無く片側か両側が (iii) なら「配信元の値の差」、
+片側でも (i)・(ii) なら検証全体の不合格。塊ごとの照合の方法と両側の照合時刻・結果・距離を
+`RefillValidation.reconciliations` に残す（v1.22 より前の計画では `None`）。
+
 **照合用の足**: 計画の時間ファイル（対象の時間と照合用の時間）に入る、研究履歴区分の原データの
 足すべて。照合用の足が原データにある塊で、取得できなかったためにどれも比べられないまま
 補充する足ができるときは、検証できない足を書かないよう不合格にする（取り直しで回復する。
@@ -43,20 +50,18 @@ D03 §14.12 の不合格×出来事9）。
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
+from functools import partial
 from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import decimal_from_int, kernel_context
+from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.refill_aggregation import bar_from_ticks
-from odyssey_fx.marketdata.application.refill_plan import (
-    RawBarIndex,
-    hour_chunks,
-    reference_hour_for,
-)
+from odyssey_fx.marketdata.application.refill_plan import RawBarIndex, plan_layout
 from odyssey_fx.marketdata.domain.bar import Bar, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
@@ -64,11 +69,16 @@ from odyssey_fx.marketdata.domain.refill import (
     HOUR,
     REFILL_TIMEFRAME_IDS,
     ArchiveProvenance,
+    ChunkReconciliation,
     DecodedTicks,
     FinalResult,
     HourKey,
     HourOutcome,
+    ReconciliationMethod,
     RefillPlan,
+    SideRecord,
+    SideResult,
+    SideUnavailable,
     TargetBar,
 )
 from odyssey_fx.marketdata.domain.refill_validation import (
@@ -182,6 +192,74 @@ def _mismatch_kind(made: Bar | None, raw_bar: Bar, raw: RawBarIndex, exponent: i
     )
 
 
+#: 両側照合の片側の結果を不一致の区分から決める順（不合格 → 作れない → 配信元の値の差）。
+_FAILING_KINDS: Final = frozenset({MismatchKind.TIME_SHIFT, MismatchKind.PROVIDER_CORRECTION})
+
+
+def _reconcile_sides(
+    planned: Sequence[SideRecord],
+    symbol: Symbol,
+    hours: Mapping[HourKey, HourData],
+    reconcile: Callable[[Sequence[HourKey]], tuple[bool, list[ReconciledBar]]],
+) -> tuple[tuple[SideRecord, ...], list[ReconciledBar]]:
+    """両側照合の前側・後側をそれぞれ照合し、結果つきの記録と比べた足の記録を返す（§14.7.1）。
+
+    片側の結果: 計画の時点で取得不能 → 取得不能（原因はそのまま）。時間ファイルが `NOT_FETCHED`
+    → 取得不能（`HOUR_NOT_FETCHED`）。比べた足に (i)・(ii) があれば不一致で不合格（`MISMATCH`）、
+    無く照合用の足を作れない足があれば取得不能（`RECONCILIATION_NOT_BUILT`）、無く (iii) があれば
+    配信元の値の差、どれも無ければ一致。
+    """
+    results: list[SideRecord] = []
+    compared: list[ReconciledBar] = []
+    for side in planned:
+        if side.reference_start is None:
+            results.append(
+                SideRecord(
+                    side=side.side,
+                    reference_start=None,
+                    distance_minutes=None,
+                    unavailable=side.unavailable,
+                    result=SideResult.UNAVAILABLE,
+                )
+            )
+            continue
+        key = HourKey(symbol=symbol, start=side.reference_start)
+        if hours[key].final.outcome is HourOutcome.NOT_FETCHED:
+            results.append(
+                SideRecord(
+                    side=side.side,
+                    reference_start=side.reference_start,
+                    distance_minutes=side.distance_minutes,
+                    unavailable=SideUnavailable.HOUR_NOT_FETCHED,
+                    result=SideResult.UNAVAILABLE,
+                )
+            )
+            continue
+        _, records = reconcile([key])
+        compared.extend(records)
+        kinds = {record.mismatch for record in records}
+        unavailable: SideUnavailable | None = None
+        if kinds & _FAILING_KINDS:
+            result = SideResult.MISMATCH
+        elif MismatchKind.NOT_BUILT in kinds or not records:
+            result = SideResult.UNAVAILABLE
+            unavailable = SideUnavailable.RECONCILIATION_NOT_BUILT
+        elif MismatchKind.SOURCE_DIFFERENCE in kinds:
+            result = SideResult.SOURCE_DIFFERENCE
+        else:
+            result = SideResult.MATCHED
+        results.append(
+            SideRecord(
+                side=side.side,
+                reference_start=side.reference_start,
+                distance_minutes=side.distance_minutes,
+                unavailable=unavailable,
+                result=result,
+            )
+        )
+    return tuple(results), compared
+
+
 def _targets_by_series(
     chunk_keys: Sequence[HourKey], targets_by_hour: Mapping[HourKey, Sequence[TargetBar]]
 ) -> dict[SeriesId, list[TargetBar]]:
@@ -289,62 +367,55 @@ def validate_refill(
             )
             return None
 
+    # --- 照合の配置を計算し直して計画と比べる（D03 §14.4・§14.4.1・§14.7.1）------------
+    # 計画の形式の版に合わせた規則で計算し直す（v1.22 より前の計画は両側照合なし）。
+    layout = plan_layout(plan.target_bars, originals, raw, calendar, bilateral=not plan.is_legacy)
+    if layout.hours != plan.hours or layout.reconciliations != plan.reconciliations:
+        raise MarketDataValueError(
+            "the reference hours and chunk records recomputed from the raw data differ from the"
+            " plan; the raw data differs from the one the plan was built from"
+            " (D03 §14.4, §14.4.1, §14.7.1)"
+        )
+
     # --- 塊ごとの照合（検証 1・2）と未照合 --------------------------------------------
     targets_by_hour: dict[HourKey, list[TargetBar]] = {}
     for target in plan.target_bars:
         targets_by_hour.setdefault(target.hour, []).append(target)
     target_keys = {(target.series, target.start) for target in plan.target_bars}
-    reference_hours = {hour.hour for hour in plan.hours if hour.reference}
     reconciled: list[ReconciledBar] = []
     unreconciled_hours: set[HourKey] = set()
     unreconciled: list[UnreconciledChunk] = []
     source_difference_hours: set[HourKey] = set()
     source_differences: list[SourceDifferenceEvidence] = []
     unverified_hours: set[HourKey] = set()
-    used_references: set[HourKey] = set()
-    symbols = sorted({key.symbol for key in targets_by_hour}, key=str)
-    for symbol in symbols:
-        target_hours = [key.start for key in targets_by_hour if key.symbol == symbol]
-        symbol_series = [series for series in originals if series.symbol == symbol]
-        quote = settings.symbol(symbol)
-        exponent = quote.price_exponent
-        if exponent is None:  # pragma: no cover - ProviderSymbol の構築時に拒否している
-            raise MarketDataValueError(f"price_scale of {symbol} must be a power of 10")
-        for chunk in hour_chunks(target_hours):
-            reference = reference_hour_for(symbol, chunk, symbol_series, raw)
-            chunk_keys = [HourKey(symbol=symbol, start=moment) for moment in chunk]
-            sources = list(chunk_keys)
-            if reference is not None:
-                reference_key = HourKey(symbol=symbol, start=reference)
-                if reference_key not in reference_hours:
-                    raise MarketDataValueError(
-                        f"the reference hour {reference_key} is not marked in the plan;"
-                        " the raw data differs from the one the plan was built from"
+    chunk_reconciliations: list[ChunkReconciliation] = []
+
+    def reconcile(keys: Sequence[HourKey], exponent: int) -> tuple[bool, list[ReconciledBar]]:
+        """時間ファイルに入る研究履歴区分の原データの足を tick から作って比べる。
+
+        戻り値は「照合できる足があったか」と、比べた足の記録（取得できなかった時間の足は
+        比べられないので記録しない）。
+        """
+        has_sources = False
+        records: list[ReconciledBar] = []
+        for key in keys:
+            for timeframe_id in sorted(REFILL_TIMEFRAME_IDS):
+                series = lookup.get((str(key.symbol), timeframe_id))
+                if series is None:
+                    continue
+                for raw_bar in raw.research_bars_in(series, key.interval):
+                    if (series, raw_bar.bar_start) in target_keys:
+                        continue  # pragma: no cover - 対象足は原データに無い
+                    has_sources = True
+                    if ticks_of(key) is None:
+                        continue  # 取得できなかった時間の足は比べられない
+                    made = build(series, raw_bar.interval, key)
+                    differences, differed = (
+                        ((), False) if made is None else _ohlc_differences(made, raw_bar, exponent)
                     )
-                sources.append(reference_key)
-                used_references.add(reference_key)
-            compared = 0
-            has_sources = False
-            chunk_records: list[ReconciledBar] = []
-            for key in sources:
-                for timeframe_id in sorted(REFILL_TIMEFRAME_IDS):
-                    series = lookup.get((str(symbol), timeframe_id))
-                    if series is None:
-                        continue
-                    for raw_bar in raw.research_bars_in(series, key.interval):
-                        if (series, raw_bar.bar_start) in target_keys:
-                            continue  # pragma: no cover - 対象足は原データに無い
-                        has_sources = True
-                        if ticks_of(key) is None:
-                            continue  # 取得できなかった時間の足は比べられない
-                        made = build(series, raw_bar.interval, key)
-                        differences, differed = (
-                            ((), False)
-                            if made is None
-                            else _ohlc_differences(made, raw_bar, exponent)
-                        )
-                        matched = made is not None and not differences
-                        record = ReconciledBar(
+                    matched = made is not None and not differences
+                    records.append(
+                        ReconciledBar(
                             series=series,
                             start=raw_bar.bar_start,
                             hour=key,
@@ -355,79 +426,110 @@ def validate_refill(
                             if matched
                             else _mismatch_kind(made, raw_bar, raw, exponent),
                         )
-                        reconciled.append(record)
-                        chunk_records.append(record)
-                        compared += 1
-            if not has_sources:
-                unreconciled_hours.update(chunk_keys)
-                for series, bars in _targets_by_series(chunk_keys, targets_by_hour).items():
-                    unreconciled.append(
-                        UnreconciledChunk(
-                            series=series, chunk_start=_first_start(bars), target_count=len(bars)
-                        )
                     )
-            elif compared == 0:
-                unverified_hours.update(chunk_keys)
-            differing = [
-                record
-                for record in chunk_records
-                if record.mismatch is MismatchKind.SOURCE_DIFFERENCE
-            ]
-            unbuilt = sorted(
-                {
-                    (record.series, record.start)
-                    for record in chunk_records
-                    if record.mismatch is MismatchKind.NOT_BUILT
-                },
-                key=lambda item: (str(item[0]), str(item[1])),
+        return has_sources, records
+
+    for chunk in layout.chunks:
+        symbol = chunk.symbol
+        quote = settings.symbol(symbol)
+        exponent = quote.price_exponent
+        if exponent is None:  # pragma: no cover - ProviderSymbol の構築時に拒否している
+            raise MarketDataValueError(f"price_scale of {symbol} must be a power of 10")
+        chunk_keys = list(chunk.keys)
+        by_series = _targets_by_series(chunk_keys, targets_by_hour)
+        side_records: tuple[SideRecord, ...] = ()
+        if chunk.method is ReconciliationMethod.BILATERAL:
+            side_records, chunk_records = _reconcile_sides(
+                chunk.sides, symbol, hours, partial(reconcile, exponent=exponent)
             )
-            if unbuilt:
-                # 照合用の足を作れない塊（D03 §14.7 の v1.20）: 不合格にせず「未照合」として
-                # 補充から外し、他の塊は続ける。配信元の値の差にも当たれば、状態は未照合 1 つで、
-                # 原因に両方を書く（2026-10-06 の人間の決定 A。不一致の足と差は照合の記録に残る）。
-                causes = (UnreconciledCause.RECONCILIATION_NOT_BUILT,) + (
-                    (UnreconciledCause.SOURCE_DIFFERENCE,) if differing else ()
+            reconciled.extend(chunk_records)
+            has_sources = True
+            compared = len(chunk_records)
+            unavailable = any(side.result is SideResult.UNAVAILABLE for side in side_records)
+        else:
+            sources = list(chunk_keys)
+            if chunk.preceding is not None:
+                sources.append(HourKey(symbol=symbol, start=chunk.preceding))
+            has_sources, chunk_records = reconcile(sources, exponent)
+            reconciled.extend(chunk_records)
+            compared = len(chunk_records)
+            unavailable = False
+        if chunk.method is not None:
+            chunk_reconciliations.extend(
+                ChunkReconciliation(
+                    series=series,
+                    chunk_start=_first_start(bars),
+                    method=chunk.method,
+                    sides=side_records,
                 )
-                unreconciled_hours.update(chunk_keys)
-                for series, bars in _targets_by_series(chunk_keys, targets_by_hour).items():
-                    unreconciled.append(
-                        UnreconciledChunk(
+                for series, bars in by_series.items()
+            )
+        if not has_sources:
+            unreconciled_hours.update(chunk_keys)
+            for series, bars in by_series.items():
+                unreconciled.append(
+                    UnreconciledChunk(
+                        series=series, chunk_start=_first_start(bars), target_count=len(bars)
+                    )
+                )
+        elif compared == 0 and not unavailable:
+            unverified_hours.update(chunk_keys)
+        differing = [
+            record for record in chunk_records if record.mismatch is MismatchKind.SOURCE_DIFFERENCE
+        ]
+        unbuilt = sorted(
+            {
+                (record.series, record.start)
+                for record in chunk_records
+                if record.mismatch is MismatchKind.NOT_BUILT
+            },
+            key=lambda item: (str(item[0]), str(item[1])),
+        )
+        if unbuilt or unavailable:
+            # 照合用の足を作れない塊（D03 §14.7 の v1.20）と、両側照合で片側が取得不能の塊
+            # （§14.7.1。人間の決定 R-1e）: 不合格にせず「未照合」として補充から外し、他の塊は
+            # 続ける。配信元の値の差にも当たれば、状態は未照合 1 つで、原因に両方を書く
+            # （2026-10-06 の人間の決定 A。不一致の足と差は照合の記録に残る）。
+            causes = (
+                ((UnreconciledCause.RECONCILIATION_NOT_BUILT,) if unbuilt else ())
+                + ((UnreconciledCause.SOURCE_DIFFERENCE,) if differing else ())
+                + ((UnreconciledCause.BILATERAL_SIDE_UNAVAILABLE,) if unavailable else ())
+            )
+            unreconciled_hours.update(chunk_keys)
+            for series, bars in by_series.items():
+                unreconciled.append(
+                    UnreconciledChunk(
+                        series=series,
+                        chunk_start=_first_start(bars),
+                        target_count=len(bars),
+                        causes=causes,
+                        unbuilt_reconciliation_bars=tuple(unbuilt),
+                        sides=side_records if unavailable else (),
+                    )
+                )
+        elif differing:
+            # (iii) 配信元の値の差: この塊の対象足は 15分足・1時間足とも作らない（D03 §14.7 の
+            # v1.19。両側照合では片側か両側が配信元の値の差のとき。§14.7.1）。理由として不一致の
+            # 足の数と差の最大（価格と pip）を残す（§14.15 の 2）。
+            source_difference_hours.update(chunk_keys)
+            largest = max(
+                (abs(value) for record in differing for _, value in record.differences),
+                default=decimal_from_int(0),
+            )
+            largest_pips = kernel_context().divide(largest, quote.pip_size)
+            for series, bars in by_series.items():
+                source_differences.append(
+                    SourceDifferenceEvidence(
+                        chunk=SourceDifferenceChunk(
                             series=series,
                             chunk_start=_first_start(bars),
                             target_count=len(bars),
-                            causes=causes,
-                            unbuilt_reconciliation_bars=tuple(unbuilt),
-                        )
+                        ),
+                        mismatch_count=len(differing),
+                        max_difference=largest,
+                        max_difference_pips=largest_pips,
                     )
-            elif differing:
-                # (iii) 配信元の値の差: この塊の対象足は 15分足・1時間足とも作らない（D03 §14.7 の
-                # v1.19）。理由として不一致の足の数と差の最大（価格と pip）を残す（§14.15 の 2）。
-                source_difference_hours.update(chunk_keys)
-                largest = max(
-                    (abs(value) for record in differing for _, value in record.differences),
-                    default=decimal_from_int(0),
                 )
-                largest_pips = kernel_context().divide(largest, quote.pip_size)
-                for series, bars in _targets_by_series(chunk_keys, targets_by_hour).items():
-                    source_differences.append(
-                        SourceDifferenceEvidence(
-                            chunk=SourceDifferenceChunk(
-                                series=series,
-                                chunk_start=_first_start(bars),
-                                target_count=len(bars),
-                            ),
-                            mismatch_count=len(differing),
-                            max_difference=largest,
-                            max_difference_pips=largest_pips,
-                        )
-                    )
-
-    if used_references != reference_hours:
-        unexpected = sorted(str(key) for key in reference_hours - used_references)
-        raise MarketDataValueError(
-            f"the plan marks reference hours {unexpected} that no chunk needs; the raw data"
-            " differs from the one the plan was built from (D03 §14.4)"
-        )
 
     # 不合格にするのは (i) 時刻ズレの疑いと (ii) 提供元の訂正の疑いだけ（D03 §14.7 の v1.19 の 3）。
     # (iii) 配信元の値の差と、照合用の足を作れない足（v1.20）は塊を補充から外すだけ。
@@ -596,6 +698,9 @@ def validate_refill(
         hourly_consistency=tuple(consistency),
         used_hours=used,
         source_differences=tuple(sorted(source_differences, key=lambda item: item.sort_key())),
+        reconciliations=None
+        if plan.is_legacy
+        else tuple(sorted(chunk_reconciliations, key=lambda item: item.sort_key())),
     )
 
 

@@ -36,7 +36,12 @@ from odyssey_fx.marketdata.domain.errors import (
     MarketDataValueError,
     RefillStoreInconsistent,
 )
-from odyssey_fx.marketdata.domain.refill import RefillPlan, ValidationRecord
+from odyssey_fx.marketdata.domain.refill import (
+    ChunkReconciliation,
+    RefillPlan,
+    ValidationRecord,
+    reconciliations_from_payload,
+)
 from odyssey_fx.marketdata.domain.refill_manifest import (
     REFILL_VALIDATION_FILE,
     RefillManifest,
@@ -118,12 +123,17 @@ class Rejection:
     unreconciled: tuple[UnreconciledChunk, ...]
     #: 配信元の値の差の塊と理由（D03 §14.7 の v1.19。v1.19 より前の行は 0 件）。
     source_differences: tuple[SourceDifferenceEvidence, ...] = ()
+    #: 塊ごとの照合の方法と両側照合の両側の記録（D03 §14.7.1。v1.22 の計画の行だけ。v1.22 より
+    #: 前の計画の行は `None`）。
+    reconciliations: tuple[ChunkReconciliation, ...] | None = None
 
 
 _DETAIL_KEYS = frozenset({"mismatches", "not_built", "unreconciled"})
 #: v1.19 の書き手の形（配信元の値の差の塊を足した。v1.20 で未照合の塊に原因を足した）。前の形の
 #: 行もそのまま読む（未照合の塊は原因を持たない形として読む）。
 _DETAIL_KEYS_V2 = _DETAIL_KEYS | {"source_differences"}
+#: v1.22 の書き手の形（塊ごとの照合の記録を足した。v1.22 より前の計画の行は `null`）。
+_DETAIL_KEYS_V3 = _DETAIL_KEYS_V2 | {"reconciliations"}
 
 
 def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejection:
@@ -134,13 +144,29 @@ def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejec
     """
     label = f"journal line {line} details"
     details = record.details
-    if frozenset(details) not in (_DETAIL_KEYS, _DETAIL_KEYS_V2):
+    if frozenset(details) not in (_DETAIL_KEYS, _DETAIL_KEYS_V2, _DETAIL_KEYS_V3):
         raise MarketDataValueError(
-            f"{label}: keys {sorted(details)} do not match {sorted(_DETAIL_KEYS_V2)}"
+            f"{label}: keys {sorted(details)} do not match {sorted(_DETAIL_KEYS_V3)}"
         )
     for key in details:
+        if key == "reconciliations" and details[key] is None:
+            continue
         if not isinstance(details[key], Sequence) or isinstance(details[key], str):
             raise MarketDataValueError(f"{label}.{key} must be a list")
+    # 塊ごとの照合の記録（D03 §14.7.1 の記録先 2。補充分が無い計画は取得記録の検証の結果の行に
+    # 残す）: v1.22 の規則で作った計画の行は必ず持ち、計画と同じ塊・方法・照合時刻・距離を指す。
+    # v1.22 より前の計画の行は持たない。
+    reconciliations = reconciliations_from_payload(
+        details.get("reconciliations"), f"{label}.reconciliations", with_result=True
+    )
+    if (reconciliations is None) != plan.is_legacy or (
+        reconciliations is not None
+        and tuple(item.planned() for item in reconciliations) != plan.reconciliations
+    ):
+        raise MarketDataValueError(
+            f"{label}.reconciliations: the chunk records must be present exactly for a plan of the"
+            " v1.22 rules and match the plan's records (D03 §14.7.1)"
+        )
     not_built = tuple(
         not_built_from_payload(item, f"{label}.not_built[{index}]")
         for index, item in enumerate(details["not_built"])
@@ -177,6 +203,7 @@ def rejection_of(plan: RefillPlan, line: int, record: ValidationRecord) -> Rejec
         not_built=not_built,
         unreconciled=unreconciled,
         source_differences=source_differences,
+        reconciliations=reconciliations,
     )
 
 
