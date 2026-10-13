@@ -383,6 +383,16 @@ def validate_refill(
         targets_by_hour.setdefault(target.hour, []).append(target)
     target_keys = {(target.series, target.start) for target in plan.target_bars}
     reconciled: list[ReconciledBar] = []
+    reconciled_keys: set[tuple[SeriesId, UtcTime]] = set()
+
+    def add_reconciled(records: Sequence[ReconciledBar]) -> None:
+        """照合した足を 1 本 1 回だけ数える（2 つの塊が同じ照合用の時間を共有しても二重に数えない。
+        D03 §14.7 の「照合した足の数」）。塊ごとの判定には塊の記録をそのまま使う。"""
+        for record in records:
+            if (record.series, record.start) not in reconciled_keys:
+                reconciled_keys.add((record.series, record.start))
+                reconciled.append(record)
+
     unreconciled_hours: set[HourKey] = set()
     unreconciled: list[UnreconciledChunk] = []
     source_difference_hours: set[HourKey] = set()
@@ -442,7 +452,7 @@ def validate_refill(
             side_records, chunk_records = _reconcile_sides(
                 chunk.sides, symbol, hours, partial(reconcile, exponent=exponent)
             )
-            reconciled.extend(chunk_records)
+            add_reconciled(chunk_records)
             has_sources = True
             compared = len(chunk_records)
             unavailable = any(side.result is SideResult.UNAVAILABLE for side in side_records)
@@ -451,7 +461,7 @@ def validate_refill(
             if chunk.preceding is not None:
                 sources.append(HourKey(symbol=symbol, start=chunk.preceding))
             has_sources, chunk_records = reconcile(sources, exponent)
-            reconciled.extend(chunk_records)
+            add_reconciled(chunk_records)
             compared = len(chunk_records)
             unavailable = False
         if chunk.method is not None:

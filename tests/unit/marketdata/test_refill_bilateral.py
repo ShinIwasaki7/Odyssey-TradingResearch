@@ -696,3 +696,16 @@ def test_a_calendar_without_a_single_trading_day_boundary_stops_the_plan() -> No
             provider=provider_ref(),
             refill_filter=RefillFilter(),
         )
+
+
+def test_a_reference_hour_shared_by_two_chunks_is_counted_once() -> None:
+    """後側の照合用の時間（月曜 00 時台）が次の塊（01 時台）の直前 24 時間以内の照合用の時間も
+    兼ねるとき、照合した足の数は 1 本 1 回だけ数える（D03 §14.7 の「照合した足の数」）。"""
+    mon_01 = MON_00 + H
+    raw = raw_bars(drop=(*GAP, mon_01))
+    plan = plan_for(raw, gap=(*GAP, mon_01))
+    result, _ = validate(plan, raw)
+    assert result.passed, result.failures
+    keys = [(str(item.series), str(item.start)) for item in result.reconciled]
+    assert len(keys) == len(set(keys)) == 10
+    assert (result.reconciled_count, result.matched_count) == (10, 10)
