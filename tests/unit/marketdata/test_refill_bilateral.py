@@ -605,6 +605,8 @@ def test_the_report_shows_records_before_v1_22_as_a_separate_class() -> None:
             refill_id="a" * 64,
             plan_id="b" * 64,
             reconciliations=None,
+            plan=None,
+            not_built=(),
             unreconciled=(),
             source_differences=(),
         )
@@ -613,3 +615,28 @@ def test_the_report_shows_records_before_v1_22_as_a_separate_class() -> None:
     assert any(
         f"| 補充分 `{'a' * 12}…` | {refill_report.NO_METHOD_LABEL} |" in line for line in lines
     )
+
+
+def test_a_chunk_without_any_built_bar_is_not_counted_as_refilled() -> None:
+    """両側とも一致しても、対象の時間を取得できず足を 1 本も作らなかった塊は「補充しなかった」。"""
+    mon_02 = MON_00 + 2 * H
+    raw = raw_bars(drop=(*GAP, mon_02))
+    plan = plan_for(raw, gap=(*GAP, mon_02))
+    result, hours = validate(plan, raw, missing=GAP)
+    assert result.passed, result.failures
+    output = build_refill_output(
+        plan=plan, validation=result, hours=hours, code_version="test", created_at=AT
+    )
+    manifest = output.manifest
+    validation = RefillValidationRecord.from_payload(
+        validation_payload(result, refill_id=manifest.refill_id, plan_id=plan.plan_id())
+    )
+    text = "\n".join(
+        refill_report._method_lines(
+            [VerifiedRefill(manifest=manifest, validation=validation)], [], {}
+        )
+    )
+    short = manifest.refill_id[:12]
+    assert f"| 補充分 `{short}…` | 両側照合 | 0 | 2 |" in text
+    assert f"| 補充分 `{short}…` | 直前 24 時間以内 | 2 | 0 |" in text
+    assert "取得できなかった" in text

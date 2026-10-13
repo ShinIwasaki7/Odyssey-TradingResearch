@@ -1038,6 +1038,42 @@ def _side_text(side: SideRecord, series: SeriesId, relabel: Relabel) -> str:
     )
 
 
+def _unbuilt_chunks(
+    plan: RefillPlan,
+    records: tuple[ChunkReconciliation, ...] | None,
+    not_built: tuple[NotBuiltBar, ...],
+) -> dict[tuple[str, str], str]:
+    """足を 1 本も作らなかった塊の状態（作らなかった理由から。報告の方法別の表で使う）。
+
+    塊の足は、その系列の対象足のうち塊の開始時刻から、同じ系列の次の塊の開始時刻の前まで。
+    未照合・配信元の値の差でない塊でも、時間ファイルを取得できなかった・提供元に tick が無い
+    などで足を 1 本も作らなかった塊は「補充した塊」に数えない（D03 §14.15 の書式の 2）。
+    """
+    if records is None:
+        return {}
+    reasons = {(item.series, item.start): item.reason for item in not_built}
+    starts: dict[SeriesId, list[UtcTime]] = defaultdict(list)
+    for record in records:
+        starts[record.series].append(record.chunk_start)
+    result: dict[tuple[str, str], str] = {}
+    for record in records:
+        later = [start for start in starts[record.series] if start > record.chunk_start]
+        end = min(later, key=lambda start: start.value) if later else None
+        bars = [
+            bar
+            for bar in plan.target_bars
+            if bar.series == record.series
+            and bar.start >= record.chunk_start
+            and (end is None or bar.start < end)
+        ]
+        found = [reasons.get((bar.series, bar.start)) for bar in bars]
+        if bars and all(reason is not None for reason in found):
+            first = found[0]
+            assert first is not None
+            result[(str(record.series), str(record.chunk_start))] = NOT_BUILT_TO_RESULT[first]
+    return result
+
+
 def _method_lines(
     refills: list[VerifiedRefill],
     rejected: list[Record],
@@ -1050,6 +1086,7 @@ def _method_lines(
     for refill in refills:
         manifest = refill.manifest
         outcome = {
+            **_unbuilt_chunks(manifest.plan, manifest.reconciliations, manifest.not_built),
             **{(str(i.series), str(i.chunk_start)): UNRECONCILED for i in manifest.unreconciled},
             **{
                 (str(i.series), str(i.chunk_start)): SOURCE_DIFFERENCE

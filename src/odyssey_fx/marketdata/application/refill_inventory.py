@@ -107,6 +107,13 @@ def load_verified_refill(store: RefillStore, refill_id: str) -> VerifiedRefill:
             f"{refill_id}/{REFILL_VALIDATION_FILE} records another refill or plan"
             " (D03 §14.11.1 W5・W6)"
         )
+    if validation.reconciliations != manifest.reconciliations:
+        # 塊ごとの照合の記録は manifest と validation.json の両方に必須で、同じ内容（D03 §14.7.1 の
+        # 記録先 2。v1.22 より前の計画の補充分はどちらも持たない）。
+        raise RefillStoreInconsistent(
+            f"{refill_id}/{REFILL_VALIDATION_FILE}: the chunk reconciliation records differ from"
+            " the manifest's (D03 §14.7.1, §14.11.1 W5・W6)"
+        )
     return VerifiedRefill(manifest=manifest, validation=validation)
 
 
