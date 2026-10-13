@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import time, timedelta
 from types import SimpleNamespace
 from typing import cast
 
@@ -32,6 +32,7 @@ from odyssey_fx.marketdata.application.refill_plan import RawBarIndex, build_pla
 from odyssey_fx.marketdata.application.refill_validation import HourData, validate_refill
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES, AccessBoundaries
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar, WeeklyMoment
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.refill import (
     PLAN_FORMAT,
@@ -668,3 +669,30 @@ def test_an_unreconciled_bilateral_chunk_cannot_also_be_a_source_difference() ->
     }
     with pytest.raises(MarketDataValueError):
         RefillManifest.from_payload(tampered)
+
+
+def test_a_calendar_without_a_single_trading_day_boundary_stops_the_plan() -> None:
+    """取引日の境界が 1 つに決まらないカレンダーでは、計画を作らずに構造エラーで止める
+    （PR #79 の仮置き 10 の決定。D03 v1.23 §14.4.1 の規則の 2 の細部）。"""
+    uneven = TradingCalendar(
+        id="fx_ny17",
+        version=2,
+        tz=market.NEW_YORK,
+        weekly_open=WeeklyMoment(weekday=6, at=time(17, 0)),
+        weekly_close=WeeklyMoment(weekday=4, at=time(16, 0)),
+    )
+    assert uneven.trading_day_boundary is None
+    with pytest.raises(MarketDataValueError, match="no single trading-day boundary"):
+        uneven.trading_day_of(FRI_21)
+    raw = raw_bars()
+    with pytest.raises(MarketDataValueError, match="no single trading-day boundary"):
+        build_plan(
+            manifest=manifest_for(gap_resolutions(hours=GAP)),
+            raw_bars=raw,
+            calendar=uneven,
+            calendar_ref=calendar_ref(uneven),
+            timeframe_defs=market.TIMEFRAME_DEFS,
+            boundaries=INITIAL_ACCESS_BOUNDARIES,
+            provider=provider_ref(),
+            refill_filter=RefillFilter(),
+        )
