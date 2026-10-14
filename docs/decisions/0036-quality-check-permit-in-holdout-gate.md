@@ -59,7 +59,7 @@ K-55 の原文（2026-10-13、D11 §7.11）:
 
 ### 5. 許可を通常の戦略の実行へ転用させない
 
-1. 品質確認の許可は、品質確認の読み取りの経路だけが受け取れる型にする。as-of ビュー（`marketdata.application.asof`）へ渡す許可 partition 集合（D03 §3.8）には、品質確認の許可から partition を入れない。run・探索の実験・最終検証の合成（`app.composition`）は品質確認の許可を受け取らない。
+1. 品質確認の許可は、品質確認の読み取りの経路だけが受け取れる型にする。as-of ビュー（`marketdata.application.asof`）へ渡す許可 partition 集合（D03 §3.8）には、品質確認の許可から partition を入れない。`app.composition` の中で、run・探索の実験・最終検証を組み立てる入口は品質確認の許可を受け取らない。品質確認の許可を受け取るのは、品質確認のコマンド（受入れを含む）を組み立てる**専用の入口**だけである（【提案】入口の名前は順 4a で決める。仮置き 7）。
 2. 内部で戦略の成績を計算して判断に使う経路を作らない（P1-3）。**【提案】保証の仕方**（仮置き 9）: 品質確認の道具の処理を `marketdata` に置く。`marketdata` は既存の依存規則（D01 §3・§6 の L1）で `strategy`・`backtest`・`evaluation` を import できないので、道具の中で戦略を動かす経路が構造上無い。品質確認のコマンド（`app.cli`）は `backtest`・`strategy` の組み立てを呼ばないことを、順 4a の実装 PR のテストで検査する。依存規則（import-linter の契約）は変えない。
 
 ### 6. 2026 年分は隔離を保つ
@@ -76,6 +76,7 @@ K-55 の原文（2026-10-13、D11 §7.11）:
 2. 閲覧の記録: 関所が ADR-0035 第4項の閲覧の記録を追記し、記録に成功したことを確かめる（「成功」の意味は ADR-0035 第4項の 5）。
 3. 読み取り: 許可が覆う partition と原ファイルだけを読む。
 
+- 【提案】4 段目として、読み取りの後に閲覧の記録の**終了の行**（ADR-0035 第4項の 6）を書く。書くのは開始の行と同じく関所で、`app` の品質確認専用の入口が道具の終了（完了・途中で停止）を関所へ渡し、関所が `QualityAccessLog` で追記する（仮置き 7）。終了の行を書けなければ、結果を出さずに失敗として終わる（仮置き 13）。
 - 消費の記録（`access_log.jsonl`）は書かない。`HoldoutState` は変わらない（`SEALED` は `SEALED` のまま、`CONSUMED` は `CONSUMED` のまま）。
 - 許可を出しただけで記録が無い状態、記録があるのに読めない状態は、どちらも「読めない」に倒す（ADR-0014 の fail-closed と同じ考え方）。
 
@@ -93,8 +94,8 @@ P1-3 の原文「原CSV・1分足も対象に含め、関所を迂回する読�
 
 **【提案】依存関係**（仮置き 7。K-55 で本 ADR と D01 の改訂に委ねられた点）:
 
-1. 品質確認の許可を出すのは関所（`evaluation.application.holdout_gate`）である（P1-3 の「既存の読み取り関所を通し」）。
-2. 受入れ・品質確認の道具の処理は `marketdata` にあり、`marketdata` は `evaluation` を import できない（D01 §3.2）。そこで、`app`（`app.cli` のコマンドと `app.composition`）が関所から品質確認の許可を受け、閲覧の記録の成功の後に、**読み取りの許可の値**（`marketdata.domain` に置く型。許可の識別子・対象の区分と期間・対象の partition と原ファイル）を `marketdata` の受入れ・品質確認の道具に渡す。`evaluation` は `marketdata.domain` を参照できる（D01 §6 の F7）ので、関所はこの型の値を作れる。
+1. 品質確認の許可を出すのは関所（`evaluation.application.holdout_gate`）である（P1-3 の原文「既存の読み取り関所（holdout_gate）を通し」）。
+2. 受入れ・品質確認の道具の処理は `marketdata` にあり、`marketdata` は `evaluation` を import できない（D01 §3.2）。そこで、`app`（`app.cli` の品質確認のコマンドと、`app.composition` の品質確認専用の入口。第5項の 1）が関所から品質確認の許可を受け、閲覧の記録の成功の後に、**読み取りの許可の値**（`marketdata.domain` に置く型。許可の識別子・対象の区分と期間・対象の partition と原ファイル）を `marketdata` の受入れ・品質確認の道具に渡す。`evaluation` は `marketdata.domain` を参照できる（D01 §6 の F7）ので、関所はこの型の値を作れる。
 3. `marketdata` の原ファイルと partition の読み取り（`RawBarSource` の実装と 1 分足の読み取り、`SnapshotStore` の partition の読み取り）は、渡された読み取りの許可の値が覆わない 2024 年以降を含むファイル・partition を読まない（第8項）。値が渡されなければ、研究履歴だけを読む。
 4. 品質確認の閲覧の記録の追記は、関所が新しいポート（`QualityAccessLog`。定義は `evaluation.application.ports`、実装は `marketdata.adapters` の追記の adapters を `app` が適合させる。行の型は `marketdata.domain`。`HoldoutAccessLog` と同じ形）を通して行う。消費の記録のポート（`HoldoutAccessLog`）とは別のポートにする（P1-3 の「閲覧記録と消費記録を明確に区別する」）。
 5. パッケージ間の依存規則（D01 §3.2 の許可表と第6節の契約）は変えない。

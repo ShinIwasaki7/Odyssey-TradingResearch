@@ -68,7 +68,7 @@
 
 決定の内容は変えない。長期評価の設計 D11 の改訂依頼 6-16 のうち、D11 §9 の順 4 の分（品質確認の閲覧の区別の [ADR-0035](0035-quality-check-access-vs-strategy-selection-access.md)、読み取りの関所の品質確認専用の許可の [ADR-0036](0036-quality-check-permit-in-holdout-gate.md) との関係）を注記する。根拠は人間の決定 P1-3（2026-10-11）と K-55（2026-10-13）で、原文は D11 §7.9・§7.11 と ADR-0036 の第1項・第2項に引用した。
 
-1. **`HoldoutState` の表**: 品質確認の読み取り（ADR-0035 の条件をすべて満たし、ADR-0036 の品質確認の許可を通る読み取り）は、`SEALED` の partition でも `CONSUMED` の partition でも**状態を変えない**。`SEALED` を品質確認で読んでも `CONSUMED` にならず、`CONSUMED` が `SEALED` に戻ることもない。表の「`SEALED` は `holdout_gate` を通る最終評価でのみ読める」は**消費を伴う読み取り**についての規則であり、品質確認の読み取りは ADR-0036 の手順で別に扱う。品質確認の読み取りは、`CONSUMED` の研究・開発用途の明示の opt-in にも当たらない。
+1. **`HoldoutState` の表**: 品質確認の読み取り（ADR-0035 の条件をすべて満たし、ADR-0036 の品質確認の許可を通る読み取り）は、`SEALED` の partition でも `CONSUMED` の partition でも**状態を変えない**。`SEALED` を品質確認で読んでも `CONSUMED` にならず、`CONSUMED` が `SEALED` に戻ることもない。表の `SEALED` の読める条件（`holdout_gate` を通る最終評価でのみ。読んだ時点で `CONSUMED` へ遷移）は**消費を伴う読み取り**についての規則であり、品質確認の読み取りは ADR-0036 の手順で別に扱う。品質確認の読み取りは、`CONSUMED` の研究・開発用途の明示の opt-in にも当たらない。
 2. **分類の表**: `QUARANTINED_UNASSIGNED`（2026 年分）は、品質確認の許可があっても隔離を保つ。品質確認の許可で取り込み・時刻と件数の確認ができても、分類は変わらず、研究・戦略の実行・最終評価からは読めない（P1-3・K-55、ADR-0036 の第6項）。
 3. **fail-closed の手順**: 本 ADR の 3 段（許可の発行 → 消費記録の追記 → データ公開）は最終評価の読み取りの手順である。品質確認の読み取りは、許可の確認 → 品質確認の閲覧の記録 → 読み取り、の別の 3 段で fail-closed に行い、消費の記録を書かない（ADR-0036 の第7項）。
 4. **access log**: `data/snapshots/<snapshot_id>/access_log.jsonl` は、本 ADR の手順の記録（許可の発行・消費）と研究・開発用途の opt-in の記録だけを持つ。品質確認の閲覧の記録は別の記録に置く（ADR-0035 の第4項）。
