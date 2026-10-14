@@ -63,6 +63,7 @@ from odyssey_fx.marketdata.domain.refill import (
     ProviderSymbol,
     RefillPlan,
     ValidationRecord,
+    reconciliations_payload,
     sha256_hex,
 )
 from odyssey_fx.marketdata.domain.refill_manifest import (
@@ -154,7 +155,8 @@ def failure_details(validation: RefillValidation) -> Mapping[str, Any]:
 
     照合で合わなかった足と差（丸めた後の差と不一致の区分。D03 §14.7 の v1.19）、未照合の塊ごとの
     `(系列, 塊の開始時刻, 対象足の数)`、配信元の値の差の塊ごとの `(系列, 塊の開始時刻, 対象足の数)`
-    と理由（不一致の足の数・差の最大）、作らなかった対象足と理由。補充分のディレクトリが作られない
+    と理由（不一致の足の数・差の最大）、作らなかった対象足と理由、塊ごとの照合の方法と両側照合の
+    両側の照合時刻・結果・距離（v1.22 の計画だけ。D03 §14.7.1）。補充分のディレクトリが作られない
     不合格では、報告（D03 §14.15）がこの行から未照合・配信元の値の差・作らなかった足を読む
     （D03 §14.7）。対象は研究履歴区分に限る（計画の対象足と比べる足が研究履歴区分のものだけ
     なので。D03 §14.4 の 4）。
@@ -164,6 +166,7 @@ def failure_details(validation: RefillValidation) -> Mapping[str, Any]:
             _mismatch_entry(record) for record in validation.reconciled if not record.matched
         ],
         "not_built": [not_built_payload(item) for item in validation.not_built],
+        "reconciliations": reconciliations_payload(validation.reconciliations, with_result=True),
         "source_differences": [
             source_difference_evidence_payload(item) for item in validation.source_differences
         ],
@@ -192,7 +195,9 @@ def validation_payload(
     足との差（価格と pip。閾値以下も含めてすべての塊）と「要確認」の印、1時間足と 15分足
     4 本の一致、未照合の塊。v1.19 で、丸めで初めて一致した照合用の足の数、配信元の値の差の塊と
     理由（不一致の足の数・差の最大）、配信元の値の差に当たる不一致の足と差を足した（合否に
-    使わない。D03 §14.7）。合格した補充分だけが持つ（不合格は取得記録の行に残す）。
+    使わない。D03 §14.7）。v1.22 で塊ごとの照合の方法と両側照合の両側の照合時刻・結果・距離を
+    足した（v1.22 より前の計画では `null`。D03 §14.7.1）。合格した補充分だけが持つ（不合格は取得
+    記録の行に残す）。
     """
     if not validation.passed:
         raise MarketDataValueError("validation.json is written only for a passed validation")
@@ -226,6 +231,7 @@ def validation_payload(
         "passed": True,
         "plan_id": plan_id,
         "reconciled_count": validation.reconciled_count,
+        "reconciliations": reconciliations_payload(validation.reconciliations, with_result=True),
         "refill_id": refill_id,
         "rounding_matched_count": validation.rounding_matched_count,
         "source_difference_bars": [
@@ -331,6 +337,7 @@ def build_refill_output(
         unreconciled=validation.unreconciled,
         created_at=created_at,
         source_differences=validation.source_difference_chunks,
+        reconciliations=validation.reconciliations,
     )
     return RefillOutput(manifest=manifest, files=tuple(sorted(files, key=lambda item: item[0])))
 

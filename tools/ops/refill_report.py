@@ -48,6 +48,16 @@ v1.21 の追記（D03 §3.4.2・§14.15。2026-10-06・2026-10-07 の人間の�
   「記録上の延べ N 塊」と明記する。補正の前の入力の計画の塊は、補正後の時刻へ読み替えた時刻と、
   元の時刻と「補正前の入力」の印を示す。
 
+v1.22 の追記（D03 §14.7.1・§14.15 の書式の 2。2026-10-09 の人間の決定 R-1b、2026-10-13 の人間の
+決定（PR #78 の仮置き 8））:
+
+- **照合の方法ごとの塊の数と一覧**: 記録元（補充分・不合格の計画）ごとに、照合の方法（塊の時間
+  ファイルの中／直前 24 時間以内／両側照合）別に、補充した塊と補充しなかった塊の数と一覧を示す。
+  両側照合の塊は前側・後側それぞれの照合時刻・結果・欠落区間からの距離を一覧に含める。足の出所は
+  ``dukascopy_refill`` のままで、方法は出所とは別に示す。
+- **v1.22 より前の記録**（照合の方法の記録を持たない補充分・計画）の塊は、方法を推定せず「照合の
+  方法の記録なし（v1.22 より前の記録）」の別の区分として示す（網羅性の判定には使わない）。
+
 **入力の検算は本体の関数だけで行う**（2026-10-01 の人間の決定。報告の側で読み方を書き直さ
 ない）: snapshot の manifest は ``snapshot_store(...).read_manifest``（内容から識別子を計算し
 直す）、補充分・計画・取得記録は ``marketdata.application.refill_inventory``（書き出しと受入れが
@@ -91,10 +101,16 @@ from odyssey_fx.marketdata.application.refill_inventory import (
     survey_refill_store,
 )
 from odyssey_fx.marketdata.domain.errors import MarketDataError
-from odyssey_fx.marketdata.domain.refill import RefillPlan
+from odyssey_fx.marketdata.domain.refill import (
+    ChunkReconciliation,
+    ReconciliationMethod,
+    RefillPlan,
+    SideRecord,
+)
 from odyssey_fx.marketdata.domain.refill_validation import (
     NotBuiltBar,
     NotBuiltReason,
+    SourceDifferenceChunk,
     UnreconciledChunk,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -390,25 +406,65 @@ def _not_built(items: tuple[NotBuiltBar, ...]) -> dict[Origin, str]:
 
 
 def _unreconciled_notes(
-    plan: RefillPlan, chunks: tuple[UnreconciledChunk, ...]
+    plan: RefillPlan,
+    chunks: tuple[UnreconciledChunk, ...],
+    differences: tuple[SourceDifferenceChunk, ...] = (),
+    reconciliations: tuple[ChunkReconciliation, ...] | None = None,
+    relabel: Relabel = None,
 ) -> dict[Origin, str]:
     """未照合の塊の対象足ごとの原因の注記（D03 §14.15 の v1.20。履歴に示す）。
 
     塊は系列ごとに、計画の対象足のうち塊の開始時刻から対象足の数だけ続く足（本体の塊の記録の
-    作り方と同じ。計画の対象足は系列・時刻の順）。
+    作り方と同じ。計画の対象足は系列・時刻の順）。両側照合で補充しなかった塊（未照合・配信元の
+    値の差）は、どちらの側が何だったか（照合時刻・結果・取得不能の原因）も添える（D03 §14.15 の
+    R2 (a) と §14.7.1 の「報告」。v1.22）。
     """
     by_series: dict[SeriesId, list[UtcTime]] = defaultdict(list)
     for bar in plan.target_bars:
         by_series[bar.series].append(bar.start)
+    bilateral = {
+        (record.series, record.chunk_start): record
+        for record in reconciliations or ()
+        if record.method is ReconciliationMethod.BILATERAL
+    }
+
+    def sides_of(series: SeriesId, start: UtcTime) -> str:
+        record = bilateral.get((series, start))
+        if record is None:
+            return ""
+        return "。両側照合: " + "・".join(
+            _side_text(side, series, relabel) for side in record.sides
+        )
+
     notes: dict[Origin, str] = {}
-    for chunk in chunks:
-        starts = by_series.get(chunk.series, [])
-        if chunk.chunk_start not in starts:
+    marked: list[tuple[SeriesId, UtcTime, int, str]] = [
+        (
+            chunk.series,
+            chunk.chunk_start,
+            chunk.target_count,
+            "原因 "
+            + "+".join(cause.value for cause in chunk.causes)
+            + sides_of(chunk.series, chunk.chunk_start),
+        )
+        for chunk in chunks
+    ]
+    marked += [
+        (
+            item.series,
+            item.chunk_start,
+            item.target_count,
+            sides_of(item.series, item.chunk_start)[1:],
+        )
+        for item in differences
+        if (item.series, item.chunk_start) in bilateral
+    ]
+    for series, chunk_start, count, text in marked:
+        starts = by_series.get(series, [])
+        if chunk_start not in starts:
             continue
-        index = starts.index(chunk.chunk_start)
-        text = "原因 " + "+".join(cause.value for cause in chunk.causes)
-        for start in starts[index : index + chunk.target_count]:
-            notes[(chunk.series, start)] = text
+        index = starts.index(chunk_start)
+        for start in starts[index : index + count]:
+            notes[(series, start)] = text
     return notes
 
 
@@ -498,7 +554,13 @@ def records_from(
             manifest.plan,
             _outcome(
                 _not_built(manifest.not_built),
-                _unreconciled_notes(manifest.plan, manifest.unreconciled),
+                _unreconciled_notes(
+                    manifest.plan,
+                    manifest.unreconciled,
+                    manifest.source_differences,
+                    manifest.reconciliations,
+                    table.get(manifest.snapshot_id),
+                ),
                 built,
             ),
             table.get(manifest.snapshot_id),
@@ -518,7 +580,13 @@ def records_from(
                 plan.plan,
                 _outcome(
                     _not_built(rejection.not_built),
-                    _unreconciled_notes(plan.plan, rejection.unreconciled),
+                    _unreconciled_notes(
+                        plan.plan,
+                        rejection.unreconciled,
+                        tuple(item.chunk for item in rejection.source_differences),
+                        rejection.reconciliations,
+                        relabel,
+                    ),
                     VALIDATION_REJECTED,
                 ),
                 relabel,
@@ -944,6 +1012,164 @@ def _unreconciled_lines(
     return lines
 
 
+#: 照合の方法の表示名（D03 §14.7.1 の語彙）。
+METHOD_LABELS: dict[ReconciliationMethod, str] = {
+    ReconciliationMethod.IN_CHUNK: "塊の時間ファイルの中",
+    ReconciliationMethod.PRECEDING_24H: "直前 24 時間以内",
+    ReconciliationMethod.BILATERAL: "両側照合",
+}
+#: v1.22 より前の記録の区分（方法を推定しない。2026-10-13 の人間の決定。PR #78 の仮置き 8）。
+NO_METHOD_LABEL = "照合の方法の記録なし（v1.22 より前の記録）"
+SIDE_LABELS: dict[str, str] = {"BEFORE": "前側", "AFTER": "後側"}
+
+
+def _side_text(side: SideRecord, series: SeriesId, relabel: Relabel) -> str:
+    """両側照合の片側の表示（照合時刻・結果・欠落区間からの距離。取得不能は原因）。"""
+    label = SIDE_LABELS[side.side.value]
+    result = "（結果なし）" if side.result is None else side.result.value
+    cause = "" if side.unavailable is None else f"（{side.unavailable.value}）"
+    if side.reference_start is None:
+        return f"{label} 照合用の時間なし 結果 {result}{cause}"
+    assert side.distance_minutes is not None  # SideRecord の不変条件
+    hours = side.distance_minutes / 60
+    return (
+        f"{label} {_shown_time(series, side.reference_start, relabel)}"
+        f" 結果 {result}{cause} 距離 {hours:g} 時間"
+    )
+
+
+def _unbuilt_chunks(
+    plan: RefillPlan,
+    records: tuple[ChunkReconciliation, ...] | None,
+    not_built: tuple[NotBuiltBar, ...],
+) -> dict[tuple[str, str], str]:
+    """足を 1 本も作らなかった塊の状態（作らなかった理由から。報告の方法別の表で使う）。
+
+    塊の足は、その系列の対象足のうち塊の開始時刻から、同じ系列の次の塊の開始時刻の前まで。
+    未照合・配信元の値の差でない塊でも、時間ファイルを取得できなかった・提供元に tick が無い
+    などで足を 1 本も作らなかった塊は「補充した塊」に数えない（D03 §14.15 の書式の 2）。
+    """
+    if records is None:
+        return {}
+    reasons = {(item.series, item.start): item.reason for item in not_built}
+    starts: dict[SeriesId, list[UtcTime]] = defaultdict(list)
+    for record in records:
+        starts[record.series].append(record.chunk_start)
+    result: dict[tuple[str, str], str] = {}
+    for record in records:
+        later = [start for start in starts[record.series] if start > record.chunk_start]
+        end = min(later, key=lambda start: start.value) if later else None
+        bars = [
+            bar
+            for bar in plan.target_bars
+            if bar.series == record.series
+            and bar.start >= record.chunk_start
+            and (end is None or bar.start < end)
+        ]
+        found = [reasons.get((bar.series, bar.start)) for bar in bars]
+        if bars and all(reason is not None for reason in found):
+            # 理由が混在すれば全部を示す（1 つの理由に潰さない。D03 §14.15 の R5 の趣旨）。
+            states = [NOT_BUILT_TO_RESULT[reason] for reason in found if reason is not None]
+            result[(str(record.series), str(record.chunk_start))] = "+".join(
+                state for state in STATE_ORDER if state in states
+            )
+    return result
+
+
+def _method_lines(
+    refills: list[VerifiedRefill],
+    rejected: list[Record],
+    relabel_of: dict[str, Relabel],
+) -> list[str]:
+    """照合の方法ごとの塊の数と一覧を記録元ごとに示す（D03 §14.15 の書式の 2。v1.22）。"""
+    groups: list[
+        tuple[str, tuple[ChunkReconciliation, ...] | None, dict[tuple[str, str], str], Relabel]
+    ] = []
+    for refill in refills:
+        manifest = refill.manifest
+        outcome = {
+            **_unbuilt_chunks(manifest.plan, manifest.reconciliations, manifest.not_built),
+            **{
+                (str(i.series), str(i.chunk_start)): SOURCE_DIFFERENCE
+                for i in manifest.source_differences
+            },
+            # 未照合を最後に置き、配信元の値の差より優先する（R-1e）。
+            **{(str(i.series), str(i.chunk_start)): UNRECONCILED for i in manifest.unreconciled},
+        }
+        groups.append(
+            (
+                f"補充分 `{manifest.refill_id[:12]}…`",
+                manifest.reconciliations,
+                outcome,
+                relabel_of.get(manifest.plan_id),
+            )
+        )
+    for rej in rejected:
+        assert rej.rejection is not None
+        outcome = {
+            **{
+                (str(i.series), str(i.chunk_start)): UNRECONCILED
+                for i in rej.rejection.unreconciled
+            },
+            **{
+                (str(i.chunk.series), str(i.chunk.chunk_start)): SOURCE_DIFFERENCE
+                for i in rej.rejection.source_differences
+            },
+        }
+        groups.append(
+            (
+                f"不合格のままの計画 `{rej.plan_id[:12]}…`",
+                rej.rejection.reconciliations,
+                outcome,
+                rej.relabel,
+            )
+        )
+    lines = [
+        "照合の方法（塊の時間ファイルの中／直前 24 時間以内／両側照合）ごとの塊の数と一覧"
+        "（D03 §14.15 の書式の 2・§14.7.1）。足の出所は `dukascopy_refill` のままで、方法は出所とは"
+        "別の属性である。不合格のままの計画の塊は、どれも補充分に書かれていない。",
+        "",
+        "| 記録元 | 照合の方法 | 補充した塊 | 補充しなかった塊 |",
+        "|---|---|---|---|",
+    ]
+    details: list[str] = []
+    for label, records, outcome, relabel in groups:
+        written = label.startswith("補充分")
+        if records is None:
+            lines.append(
+                f"| {label} | {NO_METHOD_LABEL} | — | 未照合と配信元の値の差の塊は上の一覧 |"
+            )
+            continue
+        for method in ReconciliationMethod:
+            chosen = [record for record in records if record.method is method]
+            if not chosen:
+                continue
+            kept = [
+                record
+                for record in chosen
+                if not written or (str(record.series), str(record.chunk_start)) in outcome
+            ]
+            refilled = len(chosen) - len(kept)
+            lines.append(f"| {label} | {METHOD_LABELS[method]} | {refilled} | {len(kept)} |")
+            details.append(f"{label}・{METHOD_LABELS[method]}: {len(chosen)} 塊")
+            for record in chosen:
+                key = (str(record.series), str(record.chunk_start))
+                state = outcome.get(key)
+                shown = (
+                    "・".join(STATE_LABELS[part] for part in state.split("+"))
+                    if state is not None
+                    else ("補充した" if written else "不合格の計画（書き出していない）")
+                )
+                sides = "。".join(_side_text(side, record.series, relabel) for side in record.sides)
+                details.append(
+                    f"- {record.series} {_shown_time(record.series, record.chunk_start, relabel)}"
+                    f"（{shown}{'。' + sides if sides else ''}）"
+                )
+            details.append("")
+    lines.append("")
+    return lines + details
+
+
 def render_report(
     *,
     old_id: str,
@@ -1059,6 +1285,7 @@ def render_report(
         for item, relabel in differences
     ]
     lines.append("")
+    lines += _method_lines(refills, rejected, relabel_of)
     for refill in refills:
         validation = refill.validation
         review = [item for item in validation.neighbors if item.needs_review]

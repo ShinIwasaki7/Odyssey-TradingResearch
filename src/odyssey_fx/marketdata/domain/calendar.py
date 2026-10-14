@@ -584,6 +584,38 @@ class TradingCalendar:
                 return hull
         return None
 
+    def trading_day_of(self, moment: UtcTime) -> Interval:
+        """`moment` を含む取引日の UTC の半開区間（D03 §3.4.1・§14.4.1 の規則の 2）。
+
+        取引日は取引日の境界（週の開閉の現地時刻。`fx_ny17` では NY 17:00）で区切る。境界が
+        1 つに決まらないカレンダー（週の開始と終了の時刻が違う）では取引日を定められないので
+        `MarketDataValueError`（両側照合の「直前の取引日」「直後の取引日」は取引日の境界で区切る。
+        2026-10-13 の人間の決定。PR #78 の仮置き 1）。休場を取り除かない暦の上の区間である。
+        """
+        if not isinstance(moment, UtcTime):
+            raise MarketDataValueError("TradingCalendar.trading_day_of requires a UtcTime")
+        boundary = self.trading_day_boundary
+        if boundary is None:
+            raise MarketDataValueError(
+                f"the calendar {self.id} v{self.version} has no single trading-day boundary"
+                " (its weekly open and close differ), so a trading day cannot be determined"
+                " (D03 §3.4.1, §14.4.1)"
+            )
+        local = moment.value.astimezone(self.tz)
+        day = local.date() if local.time() >= boundary else local.date() - timedelta(days=1)
+        for _ in range(3):
+            start = _resolve_local(day, boundary, self.tz)
+            end = _resolve_local(day + timedelta(days=1), boundary, self.tz)
+            if moment < start:
+                day -= timedelta(days=1)
+            elif end <= moment:
+                day += timedelta(days=1)
+            else:
+                return Interval(start=start, end=end)
+        raise MarketDataValueError(  # pragma: no cover - 夏時間の切替でも 1 日で収まる
+            f"no trading day of {self.id} contains {moment}"
+        )
+
     def sessions(self, window: Interval) -> tuple[Interval, ...]:
         """`window` 内の取引セッションを昇順で返す（D03 §3.4）。
 

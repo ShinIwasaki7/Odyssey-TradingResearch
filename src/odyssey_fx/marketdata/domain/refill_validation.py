@@ -18,7 +18,14 @@ from enum import Enum
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
-from odyssey_fx.marketdata.domain.refill import ArchiveProvenance, FinalResult, HourKey
+from odyssey_fx.marketdata.domain.refill import (
+    ArchiveProvenance,
+    ChunkReconciliation,
+    FinalResult,
+    HourKey,
+    ReconciliationSide,
+    SideRecord,
+)
 from odyssey_fx.marketdata.domain.series import SeriesId
 
 __all__ = [
@@ -81,14 +88,22 @@ class UnreconciledCause(Enum):
     `NO_RECONCILIATION_BAR` は単独で使う。`RECONCILIATION_NOT_BUILT` には、同じ塊が配信元の
     値の差にも当たるとき `SOURCE_DIFFERENCE` を併記する（状態は「未照合」1 つ。2026-10-06 の
     人間の決定 A。D03 §14.15）。
+
+    両側照合（D03 §14.4.1。v1.22）で片側が取得不能の塊は `BILATERAL_SIDE_UNAVAILABLE` で、両側の
+    記録（どちらの側か・取得不能の原因・もう片側の結果）を持つ。片側の照合用の足を作れないときは
+    `RECONCILIATION_NOT_BUILT`（作れなかった照合用の足を持つ）を、もう片側が配信元の値の差なら
+    `SOURCE_DIFFERENCE` を併記する（状態は「未照合」1 つで、原因に両側を書く。人間の決定 R-1e）。
     """
 
     #: 照合できる足が無い（照合用の足も照合用の時間も無い塊。D03 §14.4）。
     NO_RECONCILIATION_BAR = "NO_RECONCILIATION_BAR"
     #: 照合用の足を tick から作れない（`NOT_BUILT`。D03 §14.7 の v1.20）。
     RECONCILIATION_NOT_BUILT = "RECONCILIATION_NOT_BUILT"
-    #: 配信元の値の差（D03 §14.7 の (iii)）。`RECONCILIATION_NOT_BUILT` と併記するときだけ。
+    #: 配信元の値の差（D03 §14.7 の (iii)）。`RECONCILIATION_NOT_BUILT` か
+    #: `BILATERAL_SIDE_UNAVAILABLE` と併記するときだけ。
     SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
+    #: 両側照合で片側が取得不能（D03 §14.7.1。v1.22。人間の決定 R-1e）。
+    BILATERAL_SIDE_UNAVAILABLE = "BILATERAL_SIDE_UNAVAILABLE"
 
 
 _CAUSE_ORDER = tuple(UnreconciledCause)
@@ -123,6 +138,8 @@ class UnreconciledChunk:
     target_count: int
     causes: tuple[UnreconciledCause, ...] = (UnreconciledCause.NO_RECONCILIATION_BAR,)
     unbuilt_reconciliation_bars: tuple[tuple[SeriesId, UtcTime], ...] = ()
+    #: 両側照合の塊の前側・後側の記録（結果つき。`BILATERAL_SIDE_UNAVAILABLE` のときだけ）。
+    sides: tuple[SideRecord, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.target_count, bool) or not isinstance(self.target_count, int):
@@ -144,10 +161,32 @@ class UnreconciledChunk:
             raise MarketDataValueError(
                 "a chunk without reconciliation bars has no other unreconciled cause"
             )
-        if UnreconciledCause.SOURCE_DIFFERENCE in causes and not not_built:
+        bilateral = UnreconciledCause.BILATERAL_SIDE_UNAVAILABLE in causes
+        if UnreconciledCause.SOURCE_DIFFERENCE in causes and not (not_built or bilateral):
             raise MarketDataValueError(
                 "a source difference is an unreconciled cause only beside an unbuilt"
-                " reconciliation bar (D03 §14.15 の v1.20 の決定 A)"
+                " reconciliation bar or an unavailable bilateral side (D03 §14.15 の v1.20 の"
+                " 決定 A、R-1e)"
+            )
+        sides = self.sides
+        if not isinstance(sides, tuple) or not all(isinstance(side, SideRecord) for side in sides):
+            raise MarketDataValueError("UnreconciledChunk.sides must be a tuple of SideRecord")
+        if bilateral:
+            if tuple(side.side for side in sides) != (
+                ReconciliationSide.BEFORE,
+                ReconciliationSide.AFTER,
+            ) or any(side.result is None for side in sides):
+                raise MarketDataValueError(
+                    "a bilateral unreconciled chunk records both sides with their results"
+                    " (D03 §14.7.1)"
+                )
+            if not any(side.unavailable is not None for side in sides):
+                raise MarketDataValueError(
+                    "a bilateral unreconciled chunk has an unavailable side (D03 §14.7.1)"
+                )
+        elif sides:
+            raise MarketDataValueError(
+                "UnreconciledChunk records sides only for a bilateral chunk (D03 §14.7.1)"
             )
         bars = self.unbuilt_reconciliation_bars
         if not_built != bool(bars):
@@ -370,6 +409,9 @@ class RefillValidation:
     hourly_consistency: tuple[HourlyConsistency, ...]
     used_hours: tuple[UsedHour, ...]
     source_differences: tuple[SourceDifferenceEvidence, ...] = ()
+    #: 塊ごとの照合の方法と、両側照合の両側の照合時刻・結果・距離（D03 §14.7.1。v1.22 の計画だけ。
+    #: v1.22 より前の計画では `None`）。
+    reconciliations: tuple[ChunkReconciliation, ...] | None = None
 
     @property
     def passed(self) -> bool:

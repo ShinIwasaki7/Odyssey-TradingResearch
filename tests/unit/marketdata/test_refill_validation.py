@@ -318,22 +318,28 @@ def test_a_lost_reference_hour_fails_instead_of_writing_unverified_bars() -> Non
 
 
 def test_an_unreconciled_chunk_is_not_written_and_not_failed_alone() -> None:
-    # 00 時台も 23 時台も欠かせると、01 時の塊の 24 時間以内に完全な時間が無くなる。
+    # 00 時台も 23 時台も欠かせると、01 時の塊の 24 時間以内に完全な時間が無くなる。v1.22 の
+    # 規則では両側照合になり（D03 §14.4.1）、前側は原データの足が無いので取得不能、後側は
+    # 02 時台。後側の時間ファイルも取得できないと、両側とも取得不能で「未照合」になる。
     window_hours = [HOUR_00 - timedelta(hours=back) for back in range(0, 5)]
     bars = raw_bars(drop_hours=[HOUR_01, *window_hours])
     plan = _plan(bars)
-    assert [hour.reference for hour in plan.hours] == [False]
+    key_02 = HourKey(symbol=market.USDJPY, start=HOUR_01 + timedelta(hours=1))
+    assert [(hour.hour, hour.reference) for hour in plan.hours] == [
+        (KEY_01, False),
+        (key_02, True),
+    ]
     result = validate_refill(
         plan=plan,
-        hours={KEY_01: _fetched(KEY_01, decoded(BI5_01H))},
+        hours={KEY_01: _fetched(KEY_01, decoded(BI5_01H)), key_02: _not_fetched(key_02)},
         originals=ORIGINALS,
         raw=RawBarIndex.build(bars, INITIAL_ACCESS_BOUNDARIES),
         calendar=REFILL_CALENDAR,
     )
     assert {item.reason for item in result.not_built} == {NotBuiltReason.UNRECONCILED}
-    assert [(str(item.series), item.target_count) for item in result.unreconciled] == [
-        ("USDJPY/15m/bid", 4),
-        ("USDJPY/1h/bid", 1),
+    assert [(str(item.series), item.target_count, item.causes) for item in result.unreconciled] == [
+        ("USDJPY/15m/bid", 4, (UnreconciledCause.BILATERAL_SIDE_UNAVAILABLE,)),
+        ("USDJPY/1h/bid", 1, (UnreconciledCause.BILATERAL_SIDE_UNAVAILABLE,)),
     ]
     assert result.built_bars == ()
     assert not result.passed  # 補充した足が 0 本なので空の補充分にはしない
@@ -405,7 +411,7 @@ def test_a_reference_hour_the_raw_data_does_not_need_is_rejected() -> None:
     plan = _plan(bars)
     with_bar = dict(bars)
     with_bar[USDJPY_15M] = (*bars[USDJPY_15M], probe_bar("15m", "2020-11-30T01:15:00Z"))
-    with pytest.raises(MarketDataValueError, match="no chunk needs"):
+    with pytest.raises(MarketDataValueError, match="differ from the plan"):
         validate_refill(
             plan=plan,
             hours={

@@ -44,6 +44,8 @@ __all__ = [
     "HOUR",
     "HOUR_MILLISECONDS",
     "PLAN_FORMAT",
+    "PLAN_FORMAT_V1",
+    "PLAN_TIME_UNAVAILABLE",
     "REFILL_TIMEFRAME_IDS",
     "WORK_DIRECTORY",
     "content_digest_of",
@@ -51,6 +53,7 @@ __all__ = [
     "ArchiveRead",
     "AttemptRecord",
     "CalendarRef",
+    "ChunkReconciliation",
     "CommunicationSettings",
     "DecodedTicks",
     "FailureKind",
@@ -72,11 +75,20 @@ __all__ = [
     "RefillFilter",
     "RefillManifestCore",
     "RefillPlan",
+    "ReconciliationMethod",
+    "ReconciliationSide",
+    "ReferenceRole",
     "RetryMark",
+    "SideRecord",
+    "SideResult",
+    "SideUnavailable",
     "TargetBar",
     "Tick",
     "ValidationRecord",
     "journal_entry_from_payload",
+    "reconciliations_from_payload",
+    "reconciliations_payload",
+    "require_sorted_reconciliations",
     "require_hex_digest",
     "series_from_record",
     "sha256_hex",
@@ -92,7 +104,10 @@ HOUR_MILLISECONDS: Final = 3_600_000
 REFILL_TIMEFRAME_IDS: Final = frozenset({"15m", "1h"})
 
 #: 取得計画の形式の印（`plan.json` の `format`）。
-PLAN_FORMAT: Final = "refill_plan_v1"
+PLAN_FORMAT: Final = "refill_plan_v2"
+#: v1.22 より前の計画の形式（照合の方法の記録を持たない）。読むだけで書かない。記録された中身の
+#: まま `plan_id` を計算し直す（無い項目を補わない。2026-10-13 の人間の決定。PR #78 の仮置き 7）。
+PLAN_FORMAT_V1: Final = "refill_plan_v1"
 
 #: 補充の置き場の下の、tick の保管場所と作業ディレクトリの名前（D03 §14.11）。
 ARCHIVE_DIRECTORY: Final = "_ticks"
@@ -910,25 +925,479 @@ class TargetBar:
         return cls(series=series, interval=interval)
 
 
+# --- 照合の方法と両側照合の記録（D03 §14.4.1・§14.7.1。v1.22）------------------------
+
+
+class ReconciliationMethod(Enum):
+    """塊の照合の方法（D03 §14.7.1 の「照合の方法の記録」の語彙。足の出所とは別の属性）。"""
+
+    #: 塊の時間ファイルの中に照合できる足がある（D03 §14.4 の現行の規則）。
+    IN_CHUNK = "IN_CHUNK"
+    #: 塊の直前 24 時間以内の照合用の時間（D03 §14.4・§14.18 の 2）。
+    PRECEDING_24H = "PRECEDING_24H"
+    #: 欠落の前後の両側の照合用の時間（両側照合。D03 §14.4.1）。
+    BILATERAL = "BILATERAL"
+
+
+class ReconciliationSide(Enum):
+    """両側照合の側（D03 §14.4.1 の規則の 2）。"""
+
+    BEFORE = "BEFORE"
+    AFTER = "AFTER"
+
+
+class SideUnavailable(Enum):
+    """両側照合の片側が取得不能な原因（D03 §14.4.1 の規則の 3・§14.7.1）。
+
+    計画の時点で分かる原因（`NO_COMPLETE_HOUR`・`OUTSIDE_RESEARCH_HISTORY`。照合用の時間を
+    足さない）と、検証の時点で分かる原因（`HOUR_NOT_FETCHED`・`RECONCILIATION_NOT_BUILT`）がある。
+    """
+
+    #: 取引日の中に原データの 15分足 4 本と 1時間足 1 本がそろう時間が無い（R-1d。PR #78 の
+    #: 仮置き 2 の決定）。起点の原データの足が無いときも含む。
+    NO_COMPLETE_HOUR = "NO_COMPLETE_HOUR"
+    #: 起点の原データの足が研究履歴区分の外にある（D03 §14.4.1 の規則の 2 の最後の項）。
+    OUTSIDE_RESEARCH_HISTORY = "OUTSIDE_RESEARCH_HISTORY"
+    #: 照合用の時間の時間ファイルが `NOT_FETCHED`。
+    HOUR_NOT_FETCHED = "HOUR_NOT_FETCHED"
+    #: 照合用の足を tick から作れない（`NOT_BUILT`。D03 §14.7 の v1.20）。
+    RECONCILIATION_NOT_BUILT = "RECONCILIATION_NOT_BUILT"
+
+
+#: 計画の時点で分かる取得不能の原因（照合用の時間を足さない側）。
+PLAN_TIME_UNAVAILABLE: Final = frozenset(
+    {SideUnavailable.NO_COMPLETE_HOUR, SideUnavailable.OUTSIDE_RESEARCH_HISTORY}
+)
+
+
+class SideResult(Enum):
+    """両側照合の片側の結果（D03 §14.7.1）。計画の時点では無い。"""
+
+    #: 照合用の足がすべて（丸めて）一致した。
+    MATCHED = "MATCHED"
+    #: 配信元の値の差（D03 §14.7 の (iii)）。
+    SOURCE_DIFFERENCE = "SOURCE_DIFFERENCE"
+    #: 不一致で不合格（(i) 時刻ズレの疑い・(ii) 提供元の訂正の疑い。検証全体の不合格）。
+    MISMATCH = "MISMATCH"
+    #: 取得不能（原因は `SideUnavailable`）。
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+def _optional_enum(value: object, enum_type: type[Any], label: str) -> Any:
+    if value is None:
+        return None
+    try:
+        return enum_type(value)
+    except ValueError as exc:
+        raise MarketDataValueError(f"{label}: unknown value {value!r}") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class SideRecord:
+    """両側照合の片側の記録（D03 §14.7.1 の記録先 1・2）。
+
+    照合用の時間を足した側は照合時刻（照合用の時間の開始時刻）と欠落区間からの距離（分。前側は
+    照合用の時間の終わりから塊の始まりまで、後側は塊の終わりから照合用の時間の始まりまでの暦の
+    時間）を持つ。計画の時点で取得不能と分かる側は照合時刻と距離を持たず、原因だけを持つ
+    （2026-10-13 の人間の決定。PR #78 の仮置き 6）。`result` は計画の時点では `None` で、
+    補充の manifest・`validation.json`・取得記録の検証の結果の行では必ず持つ。
+    """
+
+    side: ReconciliationSide
+    reference_start: UtcTime | None
+    distance_minutes: int | None
+    unavailable: SideUnavailable | None = None
+    result: SideResult | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.side, ReconciliationSide):
+            raise MarketDataValueError("SideRecord.side must be a ReconciliationSide")
+        if self.reference_start is not None and not isinstance(self.reference_start, UtcTime):
+            raise MarketDataValueError("SideRecord.reference_start must be a UtcTime or None")
+        if (self.reference_start is None) != (self.distance_minutes is None):
+            raise MarketDataValueError(
+                "SideRecord carries a distance exactly when it has a reference hour"
+            )
+        if self.distance_minutes is not None:
+            _require_int(self.distance_minutes, "SideRecord.distance_minutes", minimum=0)
+        if self.unavailable is not None and not isinstance(self.unavailable, SideUnavailable):
+            raise MarketDataValueError("SideRecord.unavailable must be a SideUnavailable or None")
+        if self.result is not None and not isinstance(self.result, SideResult):
+            raise MarketDataValueError("SideRecord.result must be a SideResult or None")
+        planned_out = self.unavailable in PLAN_TIME_UNAVAILABLE
+        if planned_out == (self.reference_start is not None):
+            raise MarketDataValueError(
+                "SideRecord: a side has a reference hour exactly when it was not found"
+                " unavailable at planning (D03 §14.7.1)"
+            )
+        if self.result is None:
+            if self.unavailable is not None and not planned_out:
+                raise MarketDataValueError("SideRecord: a cause found at validation needs a result")
+        elif (self.result is SideResult.UNAVAILABLE) != (self.unavailable is not None):
+            raise MarketDataValueError(
+                "SideRecord carries a cause exactly when its result is UNAVAILABLE"
+            )
+
+    def planned(self) -> SideRecord:
+        """計画の時点の記録（検証の結果と、検証の時点で分かる原因を除いたもの）。"""
+        return SideRecord(
+            side=self.side,
+            reference_start=self.reference_start,
+            distance_minutes=self.distance_minutes,
+            unavailable=self.unavailable if self.unavailable in PLAN_TIME_UNAVAILABLE else None,
+        )
+
+    def payload(self, *, with_result: bool) -> Mapping[str, Any]:
+        """記録に書く形（計画は `with_result=False`）。"""
+        body: dict[str, Any] = {
+            "distance_minutes": self.distance_minutes,
+            "reference_start": None if self.reference_start is None else str(self.reference_start),
+            "side": self.side.value,
+            "unavailable": None if self.unavailable is None else self.unavailable.value,
+        }
+        if with_result:
+            body["result"] = None if self.result is None else self.result.value
+        return body
+
+    @classmethod
+    def from_payload(cls, payload: object, label: str, *, with_result: bool) -> SideRecord:
+        """記録から読む。"""
+        mapping = _mapping(payload, label)
+        keys = {"distance_minutes", "reference_start", "side", "unavailable"}
+        _require_keys(mapping, frozenset(keys | {"result"} if with_result else keys), label)
+        side = _optional_enum(mapping["side"], ReconciliationSide, f"{label}.side")
+        if side is None:
+            raise MarketDataValueError(f"{label}.side is required")
+        record = cls(
+            side=side,
+            reference_start=_parse_optional_time(
+                mapping["reference_start"], f"{label}.reference_start"
+            ),
+            distance_minutes=_optional_int(
+                mapping["distance_minutes"], f"{label}.distance_minutes", minimum=0
+            ),
+            unavailable=_optional_enum(
+                mapping["unavailable"], SideUnavailable, f"{label}.unavailable"
+            ),
+            result=_optional_enum(mapping["result"], SideResult, f"{label}.result")
+            if with_result
+            else None,
+        )
+        if with_result and record.result is None:
+            raise MarketDataValueError(f"{label}.result is required after validation")
+        return record
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkReconciliation:
+    """塊ごとの照合の記録（D03 §14.7.1 の記録先 1・2。`(系列, 塊の開始時刻)` ごとに 1 つ）。
+
+    塊の開始時刻はその系列の、塊（対象の時間の連続する塊）に入る最初の対象足の開始時刻（未照合
+    の塊・配信元の値の差の塊の記録と同じ鍵）。両側照合の塊は前側・後側の記録をこの順に 1 つずつ
+    持ち、他の方法の塊は側の記録を持たない。
+    """
+
+    series: SeriesId
+    chunk_start: UtcTime
+    method: ReconciliationMethod
+    sides: tuple[SideRecord, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.series, SeriesId):
+            raise MarketDataValueError("ChunkReconciliation.series must be a SeriesId")
+        if not isinstance(self.chunk_start, UtcTime):
+            raise MarketDataValueError("ChunkReconciliation.chunk_start must be a UtcTime")
+        if not isinstance(self.method, ReconciliationMethod):
+            raise MarketDataValueError("ChunkReconciliation.method must be a ReconciliationMethod")
+        if not isinstance(self.sides, tuple) or not all(
+            isinstance(side, SideRecord) for side in self.sides
+        ):
+            raise MarketDataValueError("ChunkReconciliation.sides must be a tuple of SideRecord")
+        expected = (
+            (ReconciliationSide.BEFORE, ReconciliationSide.AFTER)
+            if self.method is ReconciliationMethod.BILATERAL
+            else ()
+        )
+        if tuple(side.side for side in self.sides) != expected:
+            raise MarketDataValueError(
+                "ChunkReconciliation: a bilateral chunk has its before and after sides in this"
+                " order, and other methods have no sides (D03 §14.7.1)"
+            )
+        if len({side.result is None for side in self.sides}) > 1:
+            raise MarketDataValueError(
+                "ChunkReconciliation: the sides are either both planned or both validated"
+            )
+
+    @property
+    def validated(self) -> bool:
+        """検証の結果を持つ記録か（両側照合でない塊は結果を持たないので常に真）。"""
+        return all(side.result is not None for side in self.sides)
+
+    def planned(self) -> ChunkReconciliation:
+        """計画の時点の記録。"""
+        return ChunkReconciliation(
+            series=self.series,
+            chunk_start=self.chunk_start,
+            method=self.method,
+            sides=tuple(side.planned() for side in self.sides),
+        )
+
+    def side_results(self) -> tuple[SideResult, ...]:
+        """両側照合の結果（前側・後側の順。検証の前と他の方法は空）。"""
+        return tuple(side.result for side in self.sides if side.result is not None)
+
+    def sort_key(self) -> tuple[str, str]:
+        """整列鍵 `(系列の文字列, 塊の開始時刻)`（D03 §14.10）。"""
+        return (str(self.series), str(self.chunk_start))
+
+    def payload(self, *, with_result: bool) -> Mapping[str, Any]:
+        """記録に書く形（計画は `with_result=False`）。"""
+        return {
+            "chunk_start": str(self.chunk_start),
+            "method": self.method.value,
+            "series": str(self.series),
+            "sides": [side.payload(with_result=with_result) for side in self.sides],
+            "timeframe_version": self.series.timeframe.version,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: object, label: str, *, with_result: bool) -> ChunkReconciliation:
+        """記録から読む。"""
+        mapping = _mapping(payload, label)
+        _require_keys(
+            mapping,
+            frozenset({"chunk_start", "method", "series", "sides", "timeframe_version"}),
+            label,
+        )
+        method = _optional_enum(mapping["method"], ReconciliationMethod, f"{label}.method")
+        if method is None:
+            raise MarketDataValueError(f"{label}.method is required")
+        return cls(
+            series=series_from_record(mapping["series"], mapping["timeframe_version"], label),
+            chunk_start=_parse_time(mapping["chunk_start"], f"{label}.chunk_start"),
+            method=method,
+            sides=tuple(
+                SideRecord.from_payload(item, f"{label}.sides[{index}]", with_result=with_result)
+                for index, item in enumerate(_sequence(mapping["sides"], f"{label}.sides"))
+            ),
+        )
+
+
+def require_sorted_reconciliations(records: Sequence[ChunkReconciliation], label: str) -> None:
+    """塊ごとの照合の記録が `(系列, 塊の開始時刻)` で整列し、重複が無いこと。"""
+    keys = [record.sort_key() for record in records]
+    if keys != sorted(keys) or len(set(keys)) != len(keys):
+        raise MarketDataValueError(
+            f"{label} must be sorted by (series, chunk start) without duplicates"
+        )
+
+
+def reconciliations_payload(
+    records: Sequence[ChunkReconciliation] | None, *, with_result: bool
+) -> list[Mapping[str, Any]] | None:
+    """塊ごとの照合の記録の列の形（v1.22 より前の計画から作った記録は `None`）。"""
+    if records is None:
+        return None
+    return [record.payload(with_result=with_result) for record in records]
+
+
+def reconciliations_from_payload(
+    value: object, label: str, *, with_result: bool
+) -> tuple[ChunkReconciliation, ...] | None:
+    """塊ごとの照合の記録の列を読む（`None` は v1.22 より前の計画から作った記録）。"""
+    if value is None:
+        return None
+    records = tuple(
+        ChunkReconciliation.from_payload(item, f"{label}[{index}]", with_result=with_result)
+        for index, item in enumerate(_sequence(value, label))
+    )
+    require_sorted_reconciliations(records, label)
+    if with_result and not all(record.validated for record in records):
+        raise MarketDataValueError(f"{label}: every bilateral side needs its result")
+    return records
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceRole:
+    """照合用の時間の印の 1 件（D03 §14.10 の v1.22: 方法と、どの塊の前側か後側かと距離）。
+
+    1 つの時間が複数の塊の照合用の時間を兼ねるときは、`(系列の文字列, 塊の開始時刻, 側)` で
+    整列した列として持つ。両側照合の印だけが側と距離を持つ（直前 24 時間以内の印は持たない）。
+    """
+
+    series: SeriesId
+    chunk_start: UtcTime
+    method: ReconciliationMethod
+    side: ReconciliationSide | None
+    distance_minutes: int | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.series, SeriesId):
+            raise MarketDataValueError("ReferenceRole.series must be a SeriesId")
+        if not isinstance(self.chunk_start, UtcTime):
+            raise MarketDataValueError("ReferenceRole.chunk_start must be a UtcTime")
+        if (
+            not isinstance(self.method, ReconciliationMethod)
+            or self.method is ReconciliationMethod.IN_CHUNK
+        ):
+            raise MarketDataValueError(
+                "ReferenceRole.method must be PRECEDING_24H or BILATERAL (a chunk reconciled"
+                " inside its own hour files has no reference hour)"
+            )
+        bilateral = self.method is ReconciliationMethod.BILATERAL
+        if bilateral != (self.side is not None) or bilateral != (self.distance_minutes is not None):
+            raise MarketDataValueError(
+                "ReferenceRole carries a side and a distance exactly for a bilateral chunk"
+            )
+        if self.side is not None and not isinstance(self.side, ReconciliationSide):
+            raise MarketDataValueError("ReferenceRole.side must be a ReconciliationSide")
+        if self.distance_minutes is not None:
+            _require_int(self.distance_minutes, "ReferenceRole.distance_minutes", minimum=0)
+
+    def sort_key(self) -> tuple[str, str, str]:
+        """整列鍵 `(系列の文字列, 塊の開始時刻, 側)`（D03 §14.10）。"""
+        side = "" if self.side is None else self.side.value
+        return (str(self.series), str(self.chunk_start), side)
+
+    def payload(self) -> Mapping[str, Any]:
+        """記録に書く形。"""
+        return {
+            "chunk_start": str(self.chunk_start),
+            "distance_minutes": self.distance_minutes,
+            "method": self.method.value,
+            "series": str(self.series),
+            "side": None if self.side is None else self.side.value,
+            "timeframe_version": self.series.timeframe.version,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: object, label: str) -> ReferenceRole:
+        """記録から読む。"""
+        mapping = _mapping(payload, label)
+        _require_keys(
+            mapping,
+            frozenset(
+                {"chunk_start", "distance_minutes", "method", "series", "side", "timeframe_version"}
+            ),
+            label,
+        )
+        method = _optional_enum(mapping["method"], ReconciliationMethod, f"{label}.method")
+        if method is None:
+            raise MarketDataValueError(f"{label}.method is required")
+        return cls(
+            series=series_from_record(mapping["series"], mapping["timeframe_version"], label),
+            chunk_start=_parse_time(mapping["chunk_start"], f"{label}.chunk_start"),
+            method=method,
+            side=_optional_enum(mapping["side"], ReconciliationSide, f"{label}.side"),
+            distance_minutes=_optional_int(
+                mapping["distance_minutes"], f"{label}.distance_minutes", minimum=0
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PlanHour:
-    """計画の時間ファイル 1 本（D03 §14.4）。`reference` は照合用の時間の印。"""
+    """計画の時間ファイル 1 本（D03 §14.4・§14.10）。`reference` は照合用の時間の印。
+
+    `roles` は v1.22 の計画の印の中身（方法と、両側照合ではどの塊の前側か後側かと距離。D03
+    §14.7.1 の記録先 1）。照合用の時間は 1 件以上、対象の時間は 0 件。v1.22 より前の計画
+    （形式 `refill_plan_v1`）では `None`。
+    """
 
     hour: HourKey
     reference: bool
+    roles: tuple[ReferenceRole, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.hour, HourKey):
             raise MarketDataValueError("PlanHour.hour must be an HourKey")
         _require_bool(self.reference, "PlanHour.reference")
+        if self.roles is None:
+            return
+        if not isinstance(self.roles, tuple) or not all(
+            isinstance(role, ReferenceRole) for role in self.roles
+        ):
+            raise MarketDataValueError("PlanHour.roles must be a tuple of ReferenceRole")
+        keys = [role.sort_key() for role in self.roles]
+        if keys != sorted(keys) or len(set(keys)) != len(keys):
+            raise MarketDataValueError(
+                "PlanHour.roles must be sorted by (series, chunk start, side) without duplicates"
+            )
+        if self.reference != bool(self.roles):
+            raise MarketDataValueError(
+                f"PlanHour {self.hour}: a reference hour has its roles and a target hour has"
+                " none (D03 §14.10)"
+            )
+        for role in self.roles:
+            if role.series.symbol != self.hour.symbol:
+                raise MarketDataValueError(
+                    f"PlanHour {self.hour}: a role of {role.series} belongs to another symbol"
+                )
 
     def payload(self) -> Mapping[str, Any]:
-        """記録に書く形。"""
-        return {
+        """記録に書く形（v1.22 より前の計画の時間は印の中身を持たない）。"""
+        body: dict[str, Any] = {
             "reference": self.reference,
             "start": str(self.hour.start),
             "symbol": str(self.hour.symbol),
         }
+        if self.roles is not None:
+            body["roles"] = [role.payload() for role in self.roles]
+        return body
+
+
+def _require_roles_match(
+    hours: Sequence[PlanHour], reconciliations: Sequence[ChunkReconciliation]
+) -> None:
+    """照合用の時間の印と塊ごとの照合の記録が同じ照合を指すこと（D03 §14.7.1 の記録先 1）。
+
+    - 両側照合の塊の照合用の時間を足した側は、その時間に同じ側と距離の印がちょうど 1 件ある。
+      照合用の時間を足さない側（計画の時点で取得不能）には印が無い。
+    - 直前 24 時間以内の塊には、照合用の時間の印がちょうど 1 件ある。
+    - 塊の時間ファイルの中で照合する塊には印が無い。印はどれも、ある塊の記録を指す。
+    """
+    expected: dict[tuple[str, str, str], tuple[HourKey | None, ReferenceRole | None]] = {}
+    for record in reconciliations:
+        if record.method is ReconciliationMethod.PRECEDING_24H:
+            expected[(*record.sort_key(), "")] = (None, None)
+        for side in record.sides:
+            if side.reference_start is None:
+                continue
+            role = ReferenceRole(
+                series=record.series,
+                chunk_start=record.chunk_start,
+                method=record.method,
+                side=side.side,
+                distance_minutes=side.distance_minutes,
+            )
+            at = HourKey(symbol=record.series.symbol, start=side.reference_start)
+            expected[role.sort_key()] = (at, role)
+    seen: set[tuple[str, str, str]] = set()
+    for plan_hour in hours:
+        for role in plan_hour.roles or ():
+            key = role.sort_key()
+            if key not in expected or key in seen:
+                raise MarketDataValueError(
+                    f"RefillPlan.hours: the role {key} at {plan_hour.hour} names no chunk"
+                    " record, or names one twice (D03 §14.7.1)"
+                )
+            seen.add(key)
+            want_hour, want_role = expected[key]
+            if want_role is None:
+                if role.method is not ReconciliationMethod.PRECEDING_24H:
+                    raise MarketDataValueError(
+                        f"RefillPlan.hours: the role {key} differs from its chunk record"
+                    )
+            elif (want_hour, want_role) != (plan_hour.hour, role):
+                raise MarketDataValueError(
+                    f"RefillPlan.hours: the role {key} at {plan_hour.hour} differs from its chunk"
+                    " record (D03 §14.7.1)"
+                )
+    missing = sorted(set(expected) - seen)
+    if missing:
+        raise MarketDataValueError(
+            f"RefillPlan.hours lacks the reference-hour roles of the chunk records {missing}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -938,6 +1407,12 @@ class RefillPlan:
     対象足は `(系列の文字列, 開始時刻)`、時間ファイルは `(銘柄, 時刻)` で整列する。対象足が
     1 本も無い計画は作らない（作る側が `RefillPlanEmpty` で止める）。対象足の時間はすべて
     時間ファイルの列に入り、照合用の時間の印の付いた時間には対象足が無い。
+
+    **形式の版**（D03 §14.10 の v1.22）: v1.22 の規則で作る計画（形式 `refill_plan_v2`）は、
+    時間ファイルの印の中身（`PlanHour.roles`）と塊ごとの照合の記録の列（`reconciliations`）を
+    必ず持つ。v1.22 より前の計画（形式 `refill_plan_v1`）はどちらも持たず（`None`）、記録された
+    中身のまま読み、`plan_id` を計算し直す（2026-10-13 の人間の決定。PR #78 の仮置き 7）。形式の
+    版は `plan_id` の対象である。
     """
 
     snapshot_id: str
@@ -946,6 +1421,7 @@ class RefillPlan:
     filter: RefillFilter
     target_bars: tuple[TargetBar, ...]
     hours: tuple[PlanHour, ...]
+    reconciliations: tuple[ChunkReconciliation, ...] | None = None
 
     def __post_init__(self) -> None:
         require_hex_digest(self.snapshot_id, "RefillPlan.snapshot_id")
@@ -988,6 +1464,46 @@ class RefillPlan:
             )
         for bar in self.target_bars:
             self.provider.settings.symbol(bar.series.symbol)
+        self._check_reconciliations()
+
+    def _check_reconciliations(self) -> None:
+        legacy = self.reconciliations is None
+        if any((hour.roles is None) != legacy for hour in self.hours):
+            raise MarketDataValueError(
+                "RefillPlan: a plan made under the v1.22 rules has the roles of every hour and"
+                " the chunk records; an earlier plan has neither (D03 §14.10)"
+            )
+        if self.reconciliations is None:
+            return
+        if not isinstance(self.reconciliations, tuple) or not all(
+            isinstance(record, ChunkReconciliation) for record in self.reconciliations
+        ):
+            raise MarketDataValueError(
+                "RefillPlan.reconciliations must be a tuple of ChunkReconciliation"
+            )
+        require_sorted_reconciliations(self.reconciliations, "RefillPlan.reconciliations")
+        target_keys = {(bar.series, bar.start) for bar in self.target_bars}
+        for record in self.reconciliations:
+            if (record.series, record.chunk_start) not in target_keys:
+                raise MarketDataValueError(
+                    f"RefillPlan.reconciliations: {record.series} {record.chunk_start} is not a"
+                    " target bar of the plan (D03 §14.7.1)"
+                )
+            if record.planned() != record:
+                raise MarketDataValueError(
+                    "RefillPlan.reconciliations: a plan carries no validation result"
+                )
+        _require_roles_match(self.hours, self.reconciliations)
+
+    @property
+    def is_legacy(self) -> bool:
+        """v1.22 より前の計画（照合の方法の記録を持たない。形式 `refill_plan_v1`）か。"""
+        return self.reconciliations is None
+
+    @property
+    def format(self) -> str:
+        """計画の形式の版（`plan_id` の対象）。"""
+        return PLAN_FORMAT_V1 if self.is_legacy else PLAN_FORMAT
 
     @property
     def hour_keys(self) -> tuple[HourKey, ...]:
@@ -996,15 +1512,20 @@ class RefillPlan:
 
     def identity_payload(self) -> Mapping[str, Any]:
         """`plan_id` のダイジェスト対象で、`plan.json` に書く内容そのもの（D03 §14.10）。"""
-        return {
+        body: dict[str, Any] = {
             "calendar": self.calendar.payload(),
             "filter": self.filter.payload(),
-            "format": PLAN_FORMAT,
+            "format": self.format,
             "hours": [hour.payload() for hour in self.hours],
             "provider": self.provider.payload(),
             "snapshot_id": self.snapshot_id,
             "target_bars": [bar.payload() for bar in self.target_bars],
         }
+        if self.reconciliations is not None:
+            body["reconciliations"] = reconciliations_payload(
+                self.reconciliations, with_result=False
+            )
+        return body
 
     def plan_id(self) -> str:
         """取得計画の識別子（16進 64 文字。D03 §14.10）。"""
@@ -1012,19 +1533,22 @@ class RefillPlan:
 
     @classmethod
     def from_payload(cls, payload: object) -> RefillPlan:
-        """`plan.json` の内容から読む。形が違えば `MarketDataValueError`。"""
+        """`plan.json` の内容から読む。形が違えば `MarketDataValueError`。
+
+        形式 `refill_plan_v2` は印の中身と塊ごとの照合の記録を必ず持ち、欠ければ形の誤り
+        （読み手は `RefillStoreInconsistent`）。形式 `refill_plan_v1` はどちらも持たない。
+        """
         label = "plan.json"
         mapping = _mapping(payload, label)
-        _require_keys(
-            mapping,
-            frozenset(
-                {"calendar", "filter", "format", "hours", "provider", "snapshot_id", "target_bars"}
-            ),
-            label,
+        legacy = mapping.get("format") == PLAN_FORMAT_V1
+        base = frozenset(
+            {"calendar", "filter", "format", "hours", "provider", "snapshot_id", "target_bars"}
         )
-        if mapping["format"] != PLAN_FORMAT:
+        _require_keys(mapping, base if legacy else base | {"reconciliations"}, label)
+        if not legacy and mapping["format"] != PLAN_FORMAT:
             raise MarketDataValueError(
-                f"{label}.format must be {PLAN_FORMAT!r}, got {mapping['format']!r}"
+                f"{label}.format must be {PLAN_FORMAT!r} (or {PLAN_FORMAT_V1!r}),"
+                f" got {mapping['format']!r}"
             )
         calendar = _mapping(mapping["calendar"], f"{label}.calendar")
         _require_keys(
@@ -1065,17 +1589,35 @@ class RefillPlan:
         except KernelValueError as exc:
             raise MarketDataValueError(f"{label}.filter: {exc}") from exc
         hours: list[PlanHour] = []
+        hour_keys = frozenset({"reference", "start", "symbol"})
         for index, raw in enumerate(_sequence(mapping["hours"], f"{label}.hours")):
-            entry = _mapping(raw, f"{label}.hours[{index}]")
-            _require_keys(entry, frozenset({"reference", "start", "symbol"}), f"{label}.hours")
+            at = f"{label}.hours[{index}]"
+            entry = _mapping(raw, at)
+            _require_keys(entry, hour_keys if legacy else hour_keys | {"roles"}, at)
             hours.append(
                 PlanHour(
                     hour=HourKey.from_payload(
-                        {"symbol": entry["symbol"], "start": entry["start"]},
-                        f"{label}.hours[{index}]",
+                        {"symbol": entry["symbol"], "start": entry["start"]}, at
                     ),
-                    reference=_require_bool(entry["reference"], f"{label}.hours.reference"),
+                    reference=_require_bool(entry["reference"], f"{at}.reference"),
+                    roles=None
+                    if legacy
+                    else tuple(
+                        ReferenceRole.from_payload(item, f"{at}.roles[{position}]")
+                        for position, item in enumerate(_sequence(entry["roles"], f"{at}.roles"))
+                    ),
                 )
+            )
+        reconciliations = (
+            None
+            if legacy
+            else reconciliations_from_payload(
+                mapping["reconciliations"], f"{label}.reconciliations", with_result=False
+            )
+        )
+        if not legacy and reconciliations is None:
+            raise MarketDataValueError(
+                f"{label}.reconciliations is required in a plan of the v1.22 rules (D03 §14.7.1)"
             )
         return cls(
             snapshot_id=require_hex_digest(mapping["snapshot_id"], f"{label}.snapshot_id"),
@@ -1101,6 +1643,7 @@ class RefillPlan:
                 )
             ),
             hours=tuple(hours),
+            reconciliations=reconciliations,
         )
 
 
