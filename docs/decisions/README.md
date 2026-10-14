@@ -38,3 +38,5 @@
 | [0032](0032-opportunity-concurrency-spec-for-retrigger.md) | 再発火は常に新しい Opportunity を生成し `OpportunityConcurrencySpec` を必須にする | E-3 |
 | [0033](0033-rename-request-side-supersession.md) | 評価要求側の追い越しを `REQUEST_SUPERSEDED` へ改名する | E-3 |
 | [0034](0034-review-rules-in-agents-md.md) | レビュー観点は AGENTS.md を正本とし両レーンで共有する | PR レビュー方針 §5 |
+| [0035](0035-quality-check-access-vs-strategy-selection-access.md) | 2024 年以降のデータの閲覧は品質確認と戦略選定に分け、品質確認の閲覧は必ず記録する（提案） | D11 §6 の 6-7a |
+| [0036](0036-quality-check-permit-in-holdout-gate.md) | 2024 年以降のデータの品質確認の読み取りは、読み取りの関所の品質確認専用の許可を通す（提案） | D11 §6 の 6-7c |

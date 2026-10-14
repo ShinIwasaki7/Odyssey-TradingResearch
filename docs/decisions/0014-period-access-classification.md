@@ -1,8 +1,8 @@
 # ADR-0014: 期間はアクセス状態で三分類し、LEGACY_HOLDOUT は SEALED / CONSUMED の状態を持つ
 
-- 状態: 承認（2026-09-18。2026-09-20 に HoldoutState を追加改訂、同日 消費遷移の直列化を追加）
+- 状態: 承認（2026-09-18。2026-09-20 に HoldoutState を追加改訂、同日 消費遷移の直列化を追加。2026-10-14 に品質確認の閲覧・品質確認専用の許可との関係の注記を提案（長期評価の設計 D11 §9 の順 4 の文書 PR の承認で確定））
 - 決定者: ユーザー
-- 関連: [全体計画書](../design/fx_research_platform_overall_plan.md) 第6節 C-2、[D03](../design/D03_marketdata_and_time.md) §3.8、[D01](../design/D01_architecture_and_dependency_rules.md) §10.2、PR #2 の Codex 指摘（CONSUMED が状態モデルに未定義）
+- 関連: [全体計画書](../design/fx_research_platform_overall_plan.md) 第6節 C-2、[ADR-0035](0035-quality-check-access-vs-strategy-selection-access.md)・[ADR-0036](0036-quality-check-permit-in-holdout-gate.md)（品質確認の閲覧と許可。2026-10-14 の注記）、[D11](../design/D11_long_range_data_and_evaluation.md) §5・§6 の 6-16、[D03](../design/D03_marketdata_and_time.md) §3.8、[D01](../design/D01_architecture_and_dependency_rules.md) §10.2、PR #2 の Codex 指摘（CONSUMED が状態モデルに未定義）
 
 ## 文脈
 
@@ -64,6 +64,17 @@
 - `evaluation.application.holdout_gate`（D07）が許可発行・消費記録・公開の順序と、`CONSUMED` 使用時の manifest 記録、holdout 成績としての集計拒否を実装する。
 - `access_log.jsonl` は追記専用とし、`HoldoutState` はそこから導出する。ADR-0013 と D01 §7.1・§10.2 の「manifest のみ追跡」を「manifest と access log を追跡」に改訂する。
 
+## 注記: 品質確認の閲覧・品質確認専用の許可との関係（2026-10-14）
+
+決定の内容は変えない。長期評価の設計 D11 の改訂依頼 6-16 のうち、D11 §9 の順 4 の分（品質確認の閲覧の区別の [ADR-0035](0035-quality-check-access-vs-strategy-selection-access.md)、読み取りの関所の品質確認専用の許可の [ADR-0036](0036-quality-check-permit-in-holdout-gate.md) との関係）を注記する。根拠は人間の決定 P1-3（2026-10-11）と K-55（2026-10-13）で、原文は D11 §7.9・§7.11 と ADR-0036 の第1項・第2項に引用した。
+
+1. **`HoldoutState` の表**: 品質確認の読み取り（ADR-0035 の条件をすべて満たし、ADR-0036 の品質確認の許可を通る読み取り）は、`SEALED` の partition でも `CONSUMED` の partition でも**状態を変えない**。`SEALED` を品質確認で読んでも `CONSUMED` にならず、`CONSUMED` が `SEALED` に戻ることもない。表の「`SEALED` は `holdout_gate` を通る最終評価でのみ読める」は**消費を伴う読み取り**についての規則であり、品質確認の読み取りは ADR-0036 の手順で別に扱う。品質確認の読み取りは、`CONSUMED` の研究・開発用途の明示の opt-in にも当たらない。
+2. **分類の表**: `QUARANTINED_UNASSIGNED`（2026 年分）は、品質確認の許可があっても隔離を保つ。品質確認の許可で取り込み・時刻と件数の確認ができても、分類は変わらず、研究・戦略の実行・最終評価からは読めない（P1-3・K-55、ADR-0036 の第6項）。
+3. **fail-closed の手順**: 本 ADR の 3 段（許可の発行 → 消費記録の追記 → データ公開）は最終評価の読み取りの手順である。品質確認の読み取りは、許可の確認 → 品質確認の閲覧の記録 → 読み取り、の別の 3 段で fail-closed に行い、消費の記録を書かない（ADR-0036 の第7項）。
+4. **access log**: `data/snapshots/<snapshot_id>/access_log.jsonl` は、本 ADR の手順の記録（許可の発行・消費）と研究・開発用途の opt-in の記録だけを持つ。品質確認の閲覧の記録は別の記録に置く（ADR-0035 の第4項）。
+5. **原ファイル**: 「元 CSV は期間をまたぐ」ため、2024 年以降を含む原ファイル（原 CSV・1 分足）の読み取りも関所の品質確認の許可の下に置く。既存の受入れも同じ（K-55、ADR-0036 の第8項）。
+6. **【提案】2026 年分の既定の道筋**（D11 §9 の順 4 の文書 PR の仮置き 11）: 「決定」の「確認できない場合は研究履歴として扱い、将来取得するデータを新しい prospective holdout にする」は、人間の決定 L-13（2026-10-09、原文は D11 §7.5）と食い違う（D11 §5.3 の 4 の「v0.1 案の推奨（確認できなければ ADR-0014 の既定どおり研究履歴として扱う）は採らない」）。この部分は 2026 年分の ADR（D11 の改訂依頼 6-7b、順 5）で置き換える（人間の決定 K-46）。置き換えまでは、この既定の道筋を適用しない。
+
 ## 改訂履歴
 
 | 日付 | 内容 |
@@ -72,3 +83,4 @@
 | 2026-09-20 | `HoldoutState`（SEALED / CONSUMED）、初期状態の判定、不可逆遷移、opt-in と manifest 記録、fail-closed 手順、access log からの導出を追加 |
 | 2026-09-20 | 消費遷移の直列化: access log を独立ファイルにし、origin への push を compare-and-set とする |
 | 2026-09-25 | 注記（決定の内容は変えない）: 「影響」の `holdout_gate`（D07）の担当を **D09（段階5）** と読み替える。人間の決定（2026-09-25）による。旧基盤の閲覧履歴が0件で `SEALED` の partition が存在せず、段階4 は研究履歴だけで完了条件を満たせるため（D07 v2.0 §24、D03 v1.12 §3.8） |
+| 2026-10-14 | 注記（決定の内容は変えない。提案）: 「注記: 品質確認の閲覧・品質確認専用の許可との関係」の節を足した。品質確認の読み取りは `HoldoutState` を変えず、消費の記録を書かず、2026 年分は品質確認の許可があっても隔離のまま。人間の決定 P1-3・K-55 による（D11 の改訂依頼 6-16 の順 4 の分。ADR-0035・ADR-0036） |
