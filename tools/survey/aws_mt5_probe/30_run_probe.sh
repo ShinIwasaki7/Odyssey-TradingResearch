@@ -7,6 +7,7 @@
 #   others       … 他の 7 通貨 × 2017-01-03・2017-03-07・2019-03-05・2023-03-07 の 00:00〜02:00 UTC
 #   offset-eu-dst … USDJPY 2023-03-28 の 00:00〜02:00 UTC（時刻のずれの原因の確認）
 #   range-8      … 8 通貨 × 2017-01-10・2019-03-05・2023-12-05 の 00:00〜02:00 UTC（要約だけ。価格の行は保存しない）
+#   m1-<通貨>    … 1 分足だけ、2023-12-05・2019-03-05・2017-01-10 の新しい順（USDJPY は 2017-01-10 だけ。要約だけ。空きが 3 GB を切ると止まる）
 # 道具は要求の終わりが 2024-01-01T00:00Z を超えると何も要求せずに止まる。
 #
 # MT5 の端末は、人間が RDP でログインした Administrator のセッションで動いている。SSM の既定の実行者
@@ -19,7 +20,7 @@ parse_execute_flag "$@"
 phase="usdjpy-time"
 for a in "$@"; do
   case "$a" in
-    usdjpy-time|usdjpy-range|others|offset-eu-dst|range-8) phase="$a" ;;
+    usdjpy-time|usdjpy-range|others|offset-eu-dst|range-8|m1-[A-Z][A-Z][A-Z][A-Z][A-Z][A-Z]) phase="$a" ;;
     --execute|--dry-run) ;;
     *) die "知らない引数: $a（段の名前は usdjpy-time・usdjpy-range・others）" ;;
   esac

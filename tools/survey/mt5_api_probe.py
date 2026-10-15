@@ -41,10 +41,11 @@ import csv
 import hashlib
 import importlib
 import json
+import shutil
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -155,8 +156,32 @@ PHASES: dict[str, tuple[tuple[str, Window], ...]] = {
     "offset-eu-dst": PHASE_OFFSET_EU_DST,
     "range-8": PHASE_RANGE8,
 }
+#: 1 分足だけを 1 通貨ずつ、新しい年から要求する段（人間の第 10 回の決定。tick は要求しない）。
+#: USDJPY は 2019-03・2023-03 を確かめ済みなので 2017-01 だけ。
+M1_WINDOWS_NEW_TO_OLD: tuple[Window, ...] = (
+    _two_hours("2023-12-05", "2023-12-05T00:00"),
+    _two_hours("2019-03-05", "2019-03-05T00:00"),
+    _two_hours("2017-01-10", "2017-01-10T00:00"),
+)
+M1_ORDER: tuple[str, ...] = (
+    USDJPY,
+    "EURUSD",
+    "EURJPY",
+    "GBPJPY",
+    "USDCHF",
+    "AUDJPY",
+    "GBPUSD",
+    "AUDUSD",
+)
+for _pair in M1_ORDER:
+    _windows = M1_WINDOWS_NEW_TO_OLD[2:] if _pair == USDJPY else M1_WINDOWS_NEW_TO_OLD
+    PHASES[f"m1-{_pair}"] = tuple((_pair, w) for w in _windows)
 #: 返った行（価格）を保存せず、要約だけを書く段。
-SUMMARY_ONLY_PHASES: frozenset[str] = frozenset({"range-8"})
+SUMMARY_ONLY_PHASES: frozenset[str] = frozenset({"range-8", *(f"m1-{pair}" for pair in M1_ORDER)})
+#: 1 分足だけを要求する段。
+M1_ONLY_PHASES: frozenset[str] = frozenset(f"m1-{pair}" for pair in M1_ORDER)
+#: ディスクの空きがこれを切ったら、次の要求を出さずに止まる（人間の第 10 回の決定。60 GB が上限）。
+MIN_FREE_BYTES = 3 * 1024**3
 
 
 class Mt5Api(Protocol):
@@ -253,6 +278,10 @@ class RequestRecord:
     output_file: str | None
     output_sha256: str | None
     tick_history: str
+    disk_free_before_bytes: int | None = None
+    disk_free_after_bytes: int | None = None
+    terminal_files_changed: list[list[Any]] | None = None
+    skipped_low_disk: bool = False
 
 
 def _sha256(path: Path) -> str:
@@ -330,6 +359,35 @@ def symbol_meta(api: Mt5Api, symbol: str) -> tuple[int | None, float | None, int
     )
 
 
+#: 端末のデータのフォルダの、銘柄ごとの履歴のファイルの一覧。
+#: 名前・大きさ・更新時刻だけで、中身は読まない。
+FileListing = dict[str, tuple[int, str]]
+
+
+def list_symbol_files(data_path: Path, symbol: str) -> FileListing:
+    """``bases/<サーバー>/<種類>/<銘柄>/`` のファイルの名前・大きさ・更新時刻（UTC）を返す。
+
+    種類は ``history``（足）か ``ticks``（tick）。ファイルの中身は開かない。
+    """
+    out: FileListing = {}
+    for f in sorted(data_path.glob(f"bases/*/*/{symbol}/*")):
+        if f.is_file():
+            st = f.stat()
+            rel = f.relative_to(data_path / "bases").as_posix()
+            out[rel] = (st.st_size, _iso_from_epoch(st.st_mtime))
+    return out
+
+
+def files_changed(before: FileListing, after: FileListing) -> list[list[Any]]:
+    """要求の前後で増えた・変わったファイル（名前、前の大きさ、後の大きさ、更新時刻）。"""
+    changed: list[list[Any]] = []
+    for name, (size, mtime) in after.items():
+        old = before.get(name)
+        if old is None or old != (size, mtime):
+            changed.append([name, old[0] if old else None, size, mtime])
+    return changed
+
+
 def run_phase(
     api: Mt5Api,
     plan: Iterable[tuple[str, Window]],
@@ -338,6 +396,10 @@ def run_phase(
     retry: bool = True,
     retry_wait_seconds: float = 5.0,
     save_rows: bool = True,
+    kinds: Sequence[str] = (KIND_TICKS, KIND_M1),
+    disk_free: Callable[[], int] | None = None,
+    min_free_bytes: int = MIN_FREE_BYTES,
+    lister: Callable[[str], FileListing] | None = None,
 ) -> list[RequestRecord]:
     """計画の要求を順に出し、記録を返す。
 
@@ -360,11 +422,17 @@ def run_phase(
         symbol, candidates = resolved[pair]
         chart_mode, point, digits = meta[pair]
         tick_count = 0
-        for kind in (KIND_TICKS, KIND_M1):
+        for kind in kinds:
             stamp = (now or datetime.now(tz=UTC)).isoformat()
             rows: list[dict[str, Any]] = []
             outside: list[float] = []
             retried = False
+            free_before = disk_free() if disk_free else None
+            if free_before is not None and free_before < min_free_bytes:
+                # ディスクの空きが足りない。この要求も、この後の要求も出さない。
+                records.append(_skipped(stamp, pair, symbol, candidates, kind, window, free_before))
+                return records
+            files_before = lister(symbol) if (lister and symbol) else None
             if symbol is not None:
                 rows, outside = split_by_window(request_once(api, kind, symbol, window), window)
                 if not rows and retry:
@@ -372,6 +440,12 @@ def run_phase(
                     time.sleep(retry_wait_seconds)  # 端末が履歴を取り寄せる時間を置く
                     rows, outside = split_by_window(request_once(api, kind, symbol, window), window)
             error = str(api.last_error())
+            free_after = disk_free() if disk_free else None
+            changed = (
+                files_changed(files_before, lister(symbol))
+                if (lister and symbol and files_before is not None)
+                else None
+            )
             out_file: str | None = None
             digest: str | None = None
             if rows and save_rows:
@@ -416,9 +490,51 @@ def run_phase(
                     output_file=out_file,
                     output_sha256=digest,
                     tick_history=status,
+                    disk_free_before_bytes=free_before,
+                    disk_free_after_bytes=free_after,
+                    terminal_files_changed=changed,
                 )
             )
     return records
+
+
+def _skipped(
+    stamp: str,
+    pair: str,
+    symbol: str | None,
+    candidates: list[str],
+    kind: str,
+    window: Window,
+    free: int,
+) -> RequestRecord:
+    return RequestRecord(
+        executed_at_utc=stamp,
+        pair=pair,
+        symbol=symbol,
+        symbol_candidates=candidates,
+        symbol_chart_mode=None,
+        symbol_point=None,
+        symbol_digits=None,
+        kind=kind,
+        window=window.label,
+        requested_from_utc=window.start.isoformat(),
+        requested_to_utc=window.end.isoformat(),
+        returned_count=0,
+        out_of_window_count=0,
+        out_of_window_min_utc=None,
+        out_of_window_max_utc=None,
+        returned_first_raw=None,
+        returned_last_raw=None,
+        returned_first_as_utc=None,
+        returned_last_as_utc=None,
+        last_error="not requested: low disk",
+        retried=False,
+        output_file=None,
+        output_sha256=None,
+        tick_history="not_requested",
+        disk_free_before_bytes=free,
+        skipped_low_disk=True,
+    )
 
 
 def terminal_summary(api: Mt5Api) -> dict[str, Any]:
@@ -507,11 +623,16 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         return 2
     try:
         out_dir = Path(args.out_dir)
+        info = api.terminal_info()
+        data_path = Path(str(getattr(info, "data_path", "") or out_dir))
         records = run_phase(
             api,
             PHASES[args.phase],
             out_dir,
             save_rows=args.phase not in SUMMARY_ONLY_PHASES,
+            kinds=(KIND_M1,) if args.phase in M1_ONLY_PHASES else (KIND_TICKS, KIND_M1),
+            disk_free=lambda: shutil.disk_usage(data_path).free,
+            lister=lambda symbol: list_symbol_files(data_path, symbol),
         )
         summary = {"phase": args.phase, **terminal_summary(api)}
         summary["requests"] = [asdict(r) for r in records]

@@ -268,3 +268,48 @@ def test_symbol_meta_is_recorded(tmp_path: Path) -> None:
     assert all(
         (r.symbol_chart_mode, r.symbol_point, r.symbol_digits) == (0, 0.001, 3) for r in records
     )
+
+
+def test_m1_phases_are_new_to_old_and_m1_only() -> None:
+    assert [w.label for _, w in probe.PHASES["m1-EURUSD"]] == [
+        "2023-12-05",
+        "2019-03-05",
+        "2017-01-10",
+    ]
+    assert [w.label for _, w in probe.PHASES["m1-USDJPY"]] == ["2017-01-10"]
+    assert len(probe.M1_ONLY_PHASES) == 8
+    assert probe.M1_ONLY_PHASES <= probe.SUMMARY_ONLY_PHASES
+
+
+def test_low_disk_stops_before_the_next_request(tmp_path: Path) -> None:
+    plan = probe.PHASES["m1-EURUSD"]
+    base = int(plan[0][1].start.timestamp())
+    api = FakeMt5(rates=[{"time": base, "open": 1.0}], names=("EURUSD.cl",))
+    frees = iter([10 * 1024**3, 9 * 1024**3, 2 * 1024**3])
+    records = probe.run_phase(
+        api,
+        plan,
+        tmp_path,
+        retry=False,
+        save_rows=False,
+        kinds=(probe.KIND_M1,),
+        disk_free=lambda: next(frees),
+    )
+    assert [r.skipped_low_disk for r in records] == [False, True]
+    assert records[0].disk_free_after_bytes == 9 * 1024**3
+    assert len([c for c in api.calls if c[0] == "copy_rates_range"]) == 1
+    assert not [c for c in api.calls if c[0] == "copy_ticks_range"]
+
+
+def test_terminal_files_are_listed_by_name_size_and_time_only(tmp_path: Path) -> None:
+    d = tmp_path / "bases" / "Srv" / "history" / "EURUSD.cl"
+    d.mkdir(parents=True)
+    (d / "2017.hcc").write_bytes(b"x" * 10)
+    before = probe.list_symbol_files(tmp_path, "EURUSD.cl")
+    assert list(before) == ["Srv/history/EURUSD.cl/2017.hcc"]
+    assert before["Srv/history/EURUSD.cl/2017.hcc"][0] == 10
+    (d / "2018.hcc").write_bytes(b"y" * 5)
+    after = probe.list_symbol_files(tmp_path, "EURUSD.cl")
+    changed = probe.files_changed(before, after)
+    assert [c[0] for c in changed] == ["Srv/history/EURUSD.cl/2018.hcc"]
+    assert changed[0][1] is None and changed[0][2] == 5

@@ -9,7 +9,7 @@ parse_execute_flag "$@"
 phase=""
 for a in "$@"; do
   case "$a" in
-    usdjpy-time|usdjpy-range|others|offset-eu-dst|range-8) phase="$a" ;;
+    usdjpy-time|usdjpy-range|others|offset-eu-dst|range-8|m1-[A-Z][A-Z][A-Z][A-Z][A-Z][A-Z]) phase="$a" ;;
     --execute|--dry-run) ;;
     *) die "知らない引数: $a" ;;
   esac

@@ -11,6 +11,7 @@
         "ec2:DescribeInstanceTypeOfferings",
         "ec2:DescribeInstanceCreditSpecifications",
         "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
         "ec2:DescribeSnapshots",
         "ec2:DescribeAddresses",
         "ec2:DescribeNetworkInterfaces",
@@ -30,7 +31,11 @@
         "cloudwatch:DescribeAlarms"
       ],
       "Resource": "*",
-      "Condition": {"StringEquals": {"aws:RequestedRegion": "ap-northeast-1"}}
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
     },
     {
       "Sid": "RunOnlyT3MediumWithProjectTag",
@@ -68,12 +73,19 @@
         "arn:aws:ec2:ap-northeast-1:*:security-group/*",
         "arn:aws:ec2:ap-northeast-1:*:key-pair/*"
       ],
-      "Condition": {"StringEquals": {"aws:RequestedRegion": "ap-northeast-1"}}
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
     },
     {
       "Sid": "CreateSgAndKeyWithProjectTag",
       "Effect": "Allow",
-      "Action": ["ec2:CreateSecurityGroup", "ec2:CreateKeyPair"],
+      "Action": [
+        "ec2:CreateSecurityGroup",
+        "ec2:CreateKeyPair"
+      ],
       "Resource": [
         "arn:aws:ec2:ap-northeast-1:*:security-group/*",
         "arn:aws:ec2:ap-northeast-1:*:key-pair/*"
@@ -90,7 +102,11 @@
       "Effect": "Allow",
       "Action": "ec2:CreateSecurityGroup",
       "Resource": "arn:aws:ec2:ap-northeast-1:*:vpc/*",
-      "Condition": {"StringEquals": {"aws:RequestedRegion": "ap-northeast-1"}}
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
     },
     {
       "Sid": "TagOnlyAtCreate",
@@ -100,7 +116,11 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "ap-northeast-1",
-          "ec2:CreateAction": ["RunInstances", "CreateSecurityGroup", "CreateKeyPair"]
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateSecurityGroup",
+            "CreateKeyPair"
+          ]
         }
       }
     },
@@ -116,7 +136,8 @@
         "ec2:RevokeSecurityGroupIngress",
         "ec2:DeleteSecurityGroup",
         "ec2:DeleteKeyPair",
-        "ec2:DeleteVolume"
+        "ec2:DeleteVolume",
+        "ec2:ModifyVolume"
       ],
       "Resource": "*",
       "Condition": {
@@ -131,12 +152,19 @@
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": "arn:aws:ssm:ap-northeast-1::document/AWS-RunPowerShellScript",
-      "Condition": {"StringEquals": {"aws:RequestedRegion": "ap-northeast-1"}}
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
     },
     {
       "Sid": "SsmOnlyProjectTaggedInstances",
       "Effect": "Allow",
-      "Action": ["ssm:SendCommand", "ssm:CancelCommand"],
+      "Action": [
+        "ssm:SendCommand",
+        "ssm:CancelCommand"
+      ],
       "Resource": "arn:aws:ec2:ap-northeast-1:*:instance/*",
       "Condition": {
         "StringEquals": {
@@ -150,14 +178,22 @@
       "Effect": "Allow",
       "Action": "ssm:CancelCommand",
       "Resource": "*",
-      "Condition": {"StringEquals": {"aws:RequestedRegion": "ap-northeast-1"}}
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
     },
     {
       "Sid": "PassOnlyTheSsmRoleToEc2",
       "Effect": "Allow",
       "Action": "iam:PassRole",
       "Resource": "arn:aws:iam::*:role/odyssey-mt5-probe-ssm-role",
-      "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
     },
     {
       "Sid": "ReadTheSsmInstanceProfile",
