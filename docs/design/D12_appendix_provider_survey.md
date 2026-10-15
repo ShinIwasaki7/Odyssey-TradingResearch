@@ -670,7 +670,9 @@
 
 ---
 
-## E. Tick Data へのサンプルと見積の条件の申請文（v0.3。**送信していない**。人間が送る）
+## E. Tick Data へのサンプルと見積の条件の申請文（v0.3。**検討記録。送信しない（人間の決定）**）
+
+> **v0.4 の注記**: 人間の第 3 回の指示（2026-10-15）「Tick Dataのサンプル・見積依頼は進めません。申請文は検討記録として残してください。」により、この申請文は送らない。下は v0.3 で作った文面の記録である。
 
 人間の決定（2026-10-15、第 2 回）「Tick Dataはサンプルと見積条件を確認する方向に賛成です。申請文を作成してください。購入・有料契約は別途判断します。」に基づく下書き。送り先は Tick Data の Web のフォーム（"Sample Data"・"Data Pricing"。付録 B-9）。フォームの項目に合わせて切り貼りする前提。**購入・契約・2024 年以降のデータの請求はしない文面にした**。
 
@@ -856,6 +858,234 @@
 
 ---
 
+## G. 利用条件の問い合わせの質問文（v0.4。**送っていない**。人間が判断して送る）
+
+人間の指示（2026-10-15、第 3 回）「問い合わせが必要なら、質問文を作成して人間に示してください」に基づく下書き。公開情報で「確認済み」にならなかった点（本文第10.2節）だけを聞く。用途は事実のとおりに書き、「非商用」とは書かない。送るかどうか・どの候補に送るかは人間が決める（外部への問い合わせの送信は人間の判断の後）。
+
+### G-1. OANDA証券（日本語。マイページの問い合わせ窓口など）
+
+> 件名: ティックデータ（マイページの配布 CSV）の利用条件についての確認
+>
+> 口座を持つ個人です（日本在住）。マイページの「ティックデータのダウンロード」で取得した CSV について、次の点を確認させてください。
+>
+> 用途: 個人での売買手法の研究とバックテスト、その結果をもとにした将来の自己資金での売買。第三者への再配布はしません。
+>
+> 1. 上の用途での利用は、利用規約・約款の上で認められますか。該当する規定を教えてください。
+> 2. ダウンロードした CSV と、そこから作ったデータ（1 分足・15 分足など）を、手元のパソコン・外部記憶装置に保存し、継続して利用してよいですか。
+> 3. 会員ステータスが変わった場合や、口座を解約した場合に、既にダウンロードしたデータとそこから作ったデータを保存・利用し続けてよいですか。
+> 4. ダウンロードの回数や量に上限はありますか。プログラムによる自動のダウンロードは認められますか。
+> 5. CSV の時刻と月の区切りについて、公式 FAQ（2190・2191）以外に資料があれば教えてください。取得できる最も古い月はいつですか。
+> 6. ティックデータの配布の対象（USDJPY・EURJPY・EURUSD・GBPJPY）以外の通貨ペア（USDCHF・AUDJPY・GBPUSD・AUDUSD）の過去の tick を、他の方法（API・MT5 など）で取得できますか。その条件を教えてください。
+
+### G-2. FXCM（英語。送り先は人間が選ぶ。公開の問い合わせ窓口など）
+
+> Subject: Terms of use for the historical candle data in the fxcm/MarketData repository
+>
+> I am an individual residing in Japan. I would like to confirm the terms for the historical 1-minute candle data published at candledata.fxcorporate.com (GitHub: fxcm/MarketData).
+>
+> Intended use: my own research and backtesting of trading methods, and possibly future trading with my own funds based on the results. No redistribution to third parties.
+>
+> 1. Is this use permitted? Which agreement applies (the README refers to the EULA at https://www.fxcm.com/uk/forms/eula/, which redirects to an Adobe Sign form)? Is signing that form required to use the public candle data?
+> 2. May I store the downloaded files and data derived from them (e.g., 15-minute bars) locally and keep using them indefinitely?
+> 3. Are there limits on automated downloading (number of requests, rate)?
+> 4. How are the bid and ask candles constructed? In samples from 2017–2021 we observed 1-minute bars where the ask is below the bid (also for high and low). Is this expected, and is there documentation explaining it?
+> 5. Is the candle open always the previous candle's close by design?
+
+### G-3. Dukascopy（英語）
+
+> Subject: Terms of use for historical tick data (Historical Data Export / JForex / S3 archive)
+>
+> I am an individual residing in Japan, interested in historical FX tick data for 2017–2023 (USD/JPY, USD/CHF, AUD/JPY, EUR/USD, EUR/JPY, GBP/JPY, GBP/USD, AUD/USD).
+>
+> Intended use: my own research and backtesting of trading methods, and possibly future trading with my own funds based on the results. No redistribution to third parties.
+>
+> 1. Is this use permitted for data obtained via (a) the Historical Data Export tool on your website, (b) JForex, and (c) the S3 archive (Requester Pays)? Which terms apply to each?
+> 2. Is registration or an account (demo or live) required for (a) and (b)?
+> 3. May I store the downloaded data and data derived from it locally and keep using it indefinitely, including after closing any account?
+> 4. Are there limits on automated downloading? The public HTTP datafeed returned HTTP 429 to us on 2026-10-15; is automated access via that endpoint still supported?
+> 5. Are historical files ever revised? If so, how can revisions be identified?
+
+---
+
+## H. FXCM・Dukascopy の利用条件の記録（v0.4。2026-10-15 16:15〜16:21 JST）
+
+### H-1. 調査役の記録（`<scratch>/survey_fxcm_duka_terms.md`、SHA-256 `abb963e61145b53c363cca81241fdedd7933b3383cd2a5d2129e731587581e89`。WebFetch の要約経由の引用を含む）
+
+取得時刻: 2026-10-15 16:15〜16:20 JST（`date` 実測）。使った時間: FXCM 約 3 分、Dukascopy 約 4 分（いずれも上限内。理由: 公式ページで取れる分は取り切り、残りは公式に記述なし／本文が読めないため「未確認」で終了）。
+注: WebFetch は小型モデルによる要約経由。引用は要約が返した原文断片であり、法的判断の前に原ページでの再確認が必要。購入・登録・送信・2024 年以降のデータ取得は一切していない。
+
+#### 1. FXCM
+##### 1-a 日本在住の個人が使えるか — 条件付き／未確認
+- https://www.fxcm.com/markets/trading-services/free-tick-data/ (16:17 JST): 情報は "is not directed at residents of the United States, Canada, United Kingdom, European Union" 及び Hong Kong, Australia, Israel, Japan, India にも向けない旨（要約）。これは「勧誘・案内の対象外」で、公開 CSV の取得を禁じる文ではない。未確認: 日本居住者のダウンロード可否。
+- https://github.com/fxcm/MarketData: 利用者資格の記述なし。
+##### 1-b 口座・登録の要否 — 条件付き
+- GitHub README: candledata の無料サンプルは URL 直取得（既存記録で登録なしを実測済み）。公式に「口座不要」と明記した文は未確認。tick は "Please send email request to premiumdata@fxcm.com."（メール問い合わせ＝未実施）。
+##### 1-c 個人の研究・バックテスト・自己売買 — 条件付き
+- README: "This is for personal use and abides by our EULA." 個人利用は明記。研究・バックテスト・売買に使えるかの個別記述なし。EULA 本文は未確認。
+##### 1-d 元データ・加工後データのローカル保存と継続利用 — 未確認
+- README に保存・再配布の記述なし。EULA https://www.fxcm.com/uk/forms/eula/ は本文でなく Adobe Sign 誘導のみ（取得 16:16 JST）。フォームは開いていない（上限内だが本文が静的に出ず未確認）。
+##### 1-e 自動取得・量制限・費用 — 条件付き
+- 費用: README "FXCM provide several sample data for free."（サンプル位置づけ）。"Please use our FXCM apps if you want the full data."
+- 量制限・自動取得の可否: 記述なし（未確認）。範囲は 2017〜2020 の限定セット（検索結果の要約。README 一覧と既存記録の実測が優先）。
+##### 1-f 解約後の保存・利用 — 未確認（公開 CSV は口座契約外のため、EULA 次第）
+##### bid/ask の作り方・indicative・lowest spreads・逆転
+- 確認済み（公式の文）: README "Data points are indicative and based on the lowest spreads available exclusively on Active Trader accounts." → 実際の約定可能価格ではなく「Active Trader 口座の最小スプレッドに基づく気配」。"indicative" の定義自体は README にない。
+- bid/ask の生成方法: README に記述なし（未確認）。
+- bid > ask（逆転）の説明: README・market-data・free-tick-data ページに記述なし（未確認）。
+- 参考（対比）: FXCM Pro の価格フィードページは executable pricing に基づく旨（検索要約、https://www.fxcm.com/pro/market-data/）。無料サンプルとは別商品。
+
+#### 2. Dukascopy
+##### 経路 A: 手動 Historical Data Export（https://www.dukascopy.com/swiss/english/marketwatch/historical/ 16:17 JST）
+- a 日本在住: 条件付き。利用者資格の記述なし。規約 https://www.dukascopy.com/swiss/english/legal-pages/terms-of-use/ §6 は "not aimed at residents of jurisdictions" の規制地域では "you may not access and use the WEBSITE"（日本が該当か明記なし → 未確認）。
+- b 口座・ログイン: ページに要件の記述なし（ログイン要否は未確認。実際の画面は未操作）。
+- c 個人用途: 条件付き。規約 §3 "solely for your own non-commercial use and benefit"、§4 "licensed to you by DUKASCOPY ONLY for your own personal, non-commercial use"。個人の研究・自己資金売買が「非商用」に当たるかは規約に定義なし（断定しない）。
+- d 保存: 条件付き。§3 "Nor may the WEBSITE be stored (in its entirety or in any part) in databases." DB 化の禁止がダウンロード CSV に及ぶかは不明。
+- e 自動取得・費用: ページ "It is free through Dukascopy's Historical Data Export tool"、".csv"、tick〜月足。量制限の記述なし。自動化: §3 "scraper," "robot," "bot" は "prior express written consent of DUKASCOPY" が必要 → 手動 UI のスクリプト化は要許可（条件付き）。
+- f 解約後: §10 終了後は取得した資料の削除義務（"must delete any materials"、要約）。→ 継続利用は不可の可能性（条件付き）。
+- 取得範囲・作業量: 未確認（ページに記述なし）。
+##### 経路 B: JForex Historical Data Manager（同ページ ＋ https://www.dukascopy.com/swiss/english/forex/demo-fx-account/）
+- 確認済み: "Log in to the demo or live version of JForex" → "Historical Data Manager" から取得。"JForex can give you more custom timeframes"。
+- b デモ登録: 確認済み。フォーム項目 First name/Last name/E-mail/Phone＋CAPTCHA、"Demo accounts automatically expire after 14 days."、"By opening demo you express your desire to be contacted by our representatives."。入金不要の明記は無し（無料は "typically free of charge"）。14 日で失効するため、再取得のたびに再登録要否は未確認。
+- a 日本居住者のデモ可否: 未確認（デモ資格の国別記述なし。フッターで Belgium, Israel, Russia, Turkey, Canada, UK への勧誘対象外）。
+- 履歴データ: https://www.dukascopy.com/wiki/en/development/strategy-api/historical-data/overview-historical-data/ "Historical data returns data from LIVE environment"（デモでも履歴は LIVE と同じ）。FAQ 要約: 保存は tick/1分/1時間/1日のみ、他は合成。
+- c〜f: 規約は経路 A と同じサイト規約が適用される想定だが、JForex 利用規約は未読 → 未確認。量制限・自動化（JForex API）は未確認。
+##### 経路 C: AWS S3 Requester Pays（https://www.dukascopy.com/wiki/en/development/data-export/ 16:19 JST）
+- 確認済み: バケット `cfg-public-proper-wallaby`（eu-west-1）、"SYMBOL/YEAR/MONTH/DAY_ticks.bi5"、月は 0 始まり、"each file represents one full day of tick data per instrument"。前提: "Valid AWS credentials"、"Understanding of requester pays billing model"。全体 "~400 GB, ~20,000,000 files"、EURUSD "Total objects: 26,586" / "Total size: 2.6 GB"。免責: "may be incomplete or outdated."
+- a/b: AWS アカウント（認証必須）が要る。AWS 公式 "anonymous access to that bucket is not allowed. You must authenticate all requests"。Dukascopy 側の口座・会員資格は wiki に要件なし。日本居住可否・個人用途・保存・解約後の条件は、wiki に記述なし → c〜f 未確認（規約の適用有無も不明）。
+- 1 分足ファイルは wiki に記述なし（tick のみ）。開始年も記述なし。
+- 自動取得: AWS CLI 前提の公式手順なので可（条件付き。規約 §3 のロボット禁止との関係は未確認）。
+##### 費用見積（8 ペア・2017〜2023）
+根拠: S3 GET "$0.0004 per 1,000 requests"（https://aws.amazon.com/s3/pricing/、US 例。eu-west-1 の GET 単価は該当ページに明記なし → 同額と仮定、未確認）。Ireland のインターネット転送 "$0.09 per GB"（同ページ例）。同ページ: "first 100GB per month" の無料枠の言及あり（適用条件は要約では不明）。Dukascopy wiki は転送 $0.02/GB と書くが AWS 公式例 $0.09 と食い違う → 保守的に $0.09 を採用。税: https://aws.amazon.com/tax-help/japan/ "JCT rate has been increased to 10%"、"The prices quoted on the AWS website are JCT exclusive"（個人への扱いは記述なし）。
+容量の外挿: EURUSD 26,586 ファイルは 1 日 1 ファイルでは説明できない（約 100 年分になる。旧 hourly ファイル混在の可能性）ため、年数での按分は不可。保守的上限として「8 ペアすべてが EURUSD 全履歴と同じ」（2.6 GB・26,586 ファイル）と置く: 20.8 GB・212,688 リクエスト。（全体平均 20.97 KB/ファイルに対し EURUSD は 100.1 KB で EURUSD は大口ペア。2017〜2023 は全履歴の一部なので実際はこれ以下の見込み。）
+- 転送 20.8 GB × $0.09 = $1.87（無料枠が効けば $0）。wiki 単価なら $0.42。
+- リクエスト 212.7 千 × $0.0004 = $0.085。
+- 合計 上限約 $1.96、JCT 10% 加算で約 $2.2。100 米ドルに対し約 2%。全アーカイブ（400 GB）でも 400×0.09 + 8 = 約 $44、税込み約 $48 で 100 ドル未満。
+- 為替・クレジットカード手数料は未調査。AWS アカウント作成にはカード登録が要る（作成はしていない）。
+- 1 分足を使う場合の S3 側ファイルは存在が未確認。tick から自前で集約する作業が要る。
+
+#### 主な未確認（優先順）
+1. FXCM EULA 本文（保存・再配布・解約後・日本居住者）。2. FXCM の bid/ask 生成と逆転の公式説明（無し）。3. Dukascopy 規約が経路 B/C に及ぶか、日本居住者の可否、手動取得のログイン要否。
+
+### H-2. 設計役が原ページで確かめた文（2026-10-15 16:19〜16:21 JST。ページを保存し、本文の行を取り出した。道具 `html_text.py`）
+
+| ページ（保存したファイルの SHA-256） | 確かめた文 |
+|---|---|
+| GitHub `fxcm/MarketData` の README（`gh api repos/fxcm/MarketData/readme`） | "Data points are indicative and based on the lowest spreads available exclusively on Active Trader accounts"（46 行目）、"This is for personal use and abides by our [EULA](https://www.fxcm.com/uk/forms/eula/)"（50 行目ほか） |
+| `https://www.dukascopy.com/swiss/english/legal-pages/terms-of-use/`（`d61398dea5d37dd6abbf1cee9b1d8fbb787d9bdb22af23c1f6b96deff6703810`） | "you agree to use the WEBSITE solely for your own non-commercial use"、"may the WEBSITE be stored (in its entirety or in any part) in databases for access by"、"\"scraper,\" \"robot,\" \"bot,\" \"spider,\" \"data mining,\" \"computer code,\" or any other"、"The WEBSITE provision is not aimed at residents of jurisdictions from which for whatever"（いずれも行の一部。前後の文は要約経由のまま。終了後の削除の文は行として取り出せなかった） |
+| `https://www.dukascopy.com/swiss/english/forex/demo-fx-account/`（`558cfdf26e756f780a6ba612860f7c0e5b97fd26b54445eb4726f393e9846610`） | "Demo accounts automatically expire after 14 days"、"By opening demo you express your desire to be contacted by our represen­tatives both from the Swiss headquarters and our worldwide subsi­diaries, branches and/or represen­tative offices."、"Demo trading is typically free of charge." |
+| `https://www.fxcm.com/markets/trading-services/free-tick-data/`（`d42947374d04ebf9881a7b238cea749c7c72b8d4005990a6bea37b1c0b0a0757`、5,554 バイト） | 本文が動的に読み込まれ、日本の居住者についての文を取り出せなかった（要約経由のまま。要再確認） |
+
+---
+
+## I. OANDA の利用条件と時刻の資料の記録（v0.4。2026-10-15 16:15〜16:21 JST）
+
+### I-1. 設計役が原ページで確かめた文（ページを保存し、本文の行を取り出した。道具 `html_text.py`、SHA-256 `ddca80750742b54a7453b899382ced83596d1e630fb06c543c052987a9ded01b`）
+
+| ページ（保存したファイルの SHA-256） | 確かめた文 |
+|---|---|
+| FAQ 2190 `https://help.oanda.jp/oanda/faq/show/2190?site_domain=default`（`345073818cc856ec753234360ee73fec47b16f69fde5468062d195b52d12b196`） | 「MT5サーバー時刻」、「・夏時間（GMT+3適用時）：日本時間との時差は「-6時間」」、「・冬時間（GMT+2適用時）：日本時間との時差は「-7時間」」、「※切替規則：米国サマータイムに準拠いたします。」、「（夏時間開始：3月第2日曜日 / 冬時間移行：11月第1日曜日）」、「なお、弊社のティックデータは日本時間で毎月1日0:00～末日23:59までのデータです。」、「取得データの加工・分析方法、集計ロジック、詳細な技術仕様に関する個別のお問い合わせにつきましては、サポート対象外とさせていただいております。」 |
+| FAQ 2191 `https://help.oanda.jp/oanda/faq/show/2191?site_domain=default`（`33de6d4fb7c54262b9cced587757d3a6403f24e92adce5504b45d882349c95fe`） | 「マイページからダウンロードできるデータのZIPファイル名は、「日本時間（JST）」を基準に区切られています。」、「2026.07.31 18:00:00 ～ 2026.08.31 17:59:59」、「日本時間に換算（+6時間）：」、「2026.08.01 00:00:00 ～ 2026.08.31 23:59:59」、「上記のように、CSV単体では前月末日の時刻から開始しているように見えますが、日本時間に換算することで「1日0:00～末日23:59」のデータが収まる仕様です。」 |
+| FAQ 965 `https://help.oanda.jp/oanda/faq/show/965?site_domain=default`（`d0d7f1a205bbf6f650c4814381010a91964a4f03b42331ef816b235fd5116f37`） | 「当社に口座をお持ちの方すべて、」「MT5用」「のみ実際に配信した高精度ヒストリカルデータ（ティックデータ）を無料でダウンロードできます。」、「ダウンロードしたデータは、MetaTrader5にインポートして、過去のティックチャートの表示の他、エキスパートアドバイザ (EA) やインディケータのバックテストでご利用いただけます。」、「・FX（2016年9月以降のデータ）」「USDJPY、EURJPY、EURUSD、GBPJPY」 |
+| FAQ 1727 `https://help.oanda.jp/oanda/faq/show/1727?site_domain=default`（`c4e40ba94d390da4a381227075372b9f88ea3292db3bee1d77ebcf0f0a9f12da`） | 「会員ステータスがGold以上であること」、「NYサーバーの口座残高が25万以上であること」、「NYサーバープロコースであること」 |
+
+- `https://www.oanda.jp/faq/2190` は HTTP 404（調査役が探した URL）。FAQ は `help.oanda.jp` にある。
+- 会員ステータスの表（`https://www.oanda.jp/lab-education/status/`）は、保存したページから列と行の対応を取り出せなかった（「ティックデータのダウンロード」がどのステータスに付くかは未確認）。
+
+### I-2. 調査役の記録（`<scratch>/survey_oanda_terms.md`、SHA-256 `a8b6938cfeb7fd687726bd05b45409995b4d2b738fbcd424098cd51bf1319e75`。取引約款の PDF 以外は WebFetch の要約経由）
+
+取得時刻（JST、date 実測）: 2026-10-15 16:15〜16:18。
+注意: 引用の多くは WebFetch（小型モデルの要約経由）。逐語でない場合は「要約経由」と明記。約款 PDF のみ自前で本文抽出して原文を確認（逐語）。
+区分: 【確認済み】公式の文で明記 / 【条件付き】条件つきで明記 / 【未確認】公式の文が見つからない
+購入・登録・ログイン・問い合わせは未実施。2024 年以降の価格データは未取得。
+
+#### 0. 読んだ URL
+
+- https://www.oanda.jp/faq/2190 → HTTP 404（探した URL。FAQ は help.oanda.jp にある）
+- https://help.oanda.jp/oanda/faq/show/2190?site_domain=default（FAQ 2190、取得 16:15 台）
+- https://help.oanda.jp/oanda/faq/show/2191?site_domain=default（FAQ 2191）
+- https://help.oanda.jp/oanda/faq/show/965?site_domain=default（配布 CSV の対象・無料）
+- https://www.oanda.jp/lab-education/status/（会員ステータス）
+- https://www.oanda.jp/fxproduct/api と https://help.oanda.jp/oanda/faq/show/1727（API 条件）
+- https://developer.oanda.com/rest-live-v20/introduction/
+- https://www.oanda.jp/pdf/transaction/fxtrade_manual.pdf（店頭外国為替証拠金取引約款。取得 16:16、PDFKit で全文抽出し原文確認）
+- https://www.oanda.jp/lab-education/blog_mt5/basicmt5/tickdata/ と .../historical_data/（解説記事。約款ではない）
+- 未取得: REST API 利用規約の本文（トークン発行画面で同意する形式。ログインが要るため読めず）、API 利用規約・情報利用規定の独立ページは検索で見つからず。
+
+#### 1. FAQ 2190 / 2191（時刻と月の区切り）
+
+FAQ 2190（要約経由。逐語でない）:
+- 質問: マイページからダウンロードできる MT5 用ヒストリカルティックデータのタイムゾーン。
+- CSV 内の日時は「MT5サーバー時刻」。夏時間 GMT+3（日本との差 6 時間）、冬時間 GMT+2（差 7 時間）。切替は米国のサマータイム準拠（3 月第 2 日曜〜11 月第 1 日曜）。
+- 「毎月1日0:00から末日23:59まで（日本時間）」のデータ（要約）。
+- 加工・分析・集計ロジックの個別問い合わせはサポート対象外。
+
+FAQ 2191（一部は逐語引用として返った）:
+- 「マイページからダウンロードできるデータのZIPファイル名は、「日本時間（JST）」を基準に区切られています。」
+- 例 ticks_USDJPY-oj5k_2026-08.zip: CSV 内は 2026.07.31 18:00:00 ～ 2026.08.31 17:59:59（夏時間）、+6 時間で JST 2026.08.01 00:00:00 ～ 2026.08.31 23:59:59。
+- 含意: CSV 内の生の時刻は前月末日から始まる。月の境界は JST 基準で、CSV 内の時刻はサーバー時刻（UTC ではない）。冬時間は +7 時間の差。
+- 注意: 夏時間の例のみ。冬時間の月の CSV 範囲の例は FAQ に無い（未確認）。
+- 原文の逐語確認は未了（Web 画面の目視で最終確認が望ましい）。
+
+#### 2. 経路別
+
+##### (1) マイページ「ティックデータのダウンロード」配布 CSV
+
+a. 個人が使えるか: 【確認済み】FAQ 965（要約経由）「当社に口座をお持ちの方すべて、MT5用のみ実際に配信した高精度ヒストリカルデータ（ティックデータ）を無料でダウンロードできます。」法人・金融機関限定の記載なし。
+b. 口座・資格: 【条件付き・食い違い】FAQ 965 は「口座をお持ちの方すべて」。一方、会員ステータス表（要約経由）では「ティックデータのダウンロード」に 6 列中 5 列でチェック。どの列（Silver 以上か）かは要約では特定できず、検索結果の要約には「Silver 以上」とあるが一次確認できていない。入金・残高・取引実績の要否は公式の文で見つからず。→ 【未確認】。ステータス表の画面で列の対応を目視要。
+c. 戦略研究・バックテスト・将来の自己資金売買: 【条件付き】FAQ 965「MetaTrader 5 にインポートして過去のティックチャート表示や EA・インジケーターのバックテストに使用できる」趣旨（要約経由）。MT5 用のバックテスト用途は明記。MT5 外での研究利用の可否・規約の該当条項は【未確認】。
+d. ローカル保存・継続利用・加工後データ: 【未確認】。取引約款にもデータ利用の条項は見つからず。解説記事は ZIP をダウンロードして展開して使うとのみ。再配布・ライセンスの記載は「記載なし」（解説記事・FAQ 965 とも）。
+e. 自動取得・取得量・費用: 費用は【確認済み】無料。取得量の制限【未確認】（1 か月単位・銘柄・年月を指定する手動の画面。解説記事「データは1カ月単位」）。自動取得（スクリプト）の可否【未確認】。約款 第9条(16)「当社の認めていないプログラム、ソフトウェア等の使用により、当社のシステムの意図から外れた方法で本サービスを利用」は取引サービスについての条項で、データダウンロードへの適用は不明。
+f. 解約後: 【未確認】。約款 第 6 条付近の解約条件列挙に、解約後のデータ保存への言及は見つからず。
+g. 通貨ペア・期間: 【確認済み】FAQ 965（要約経由）FX は 2016 年 9 月から USDJPY・EURJPY・EURUSD・GBPJPY。株価指数 CFD は 2020 年 5 月から、XAUUSD は 2022 年 6 月から。USDCHF・AUDJPY・GBPUSD・AUDUSD は無い。
+補足: 配布 CSV は東京サーバーで実際に配信された MT5 用ティック（解説記事、要約経由）。
+
+##### (2) v20 REST API（日本の口座）
+
+a. 個人: 【条件付き】fxproduct/api（要約経由）は個人向けと明記する文までは確認できず（トークンは「パーソナルトークン」）。利用ライセンスは「NY サーバープロコースの fxTrade 口座とそのサブ口座」のみ。
+b. 条件: 【確認済み】FAQ 1727（要約経由・逐語に近い引用）「会員ステータスがGold以上であること」「NYサーバーの口座残高が25万以上であること」「NYサーバープロコースであること」。fxproduct/api は「25 万円は単一の NY プロコース口座で」と記載（要約経由）。新規口座は開設翌月末まで Gold。条件を満たさないと予告なく停止され得る。個別の例外・期間延長不可。残高が下回ると定期チェックで停止との記載（検索要約）。
+c. 用途: 【未確認】API 利用規約本文を読めておらず、データの用途制限は確認できていない。
+d. 保存・加工: 【未確認】fxproduct/api は「API で得たデータの利用・保存・再配布には触れていない」（要約）。
+e. 自動取得・量・費用: 費用は【確認済み】初期費用・月額とも無料。レート制限: developer.oanda.com の別ページ（検索要約）に 1 秒 120 リクエスト、IP 単位とあるが、今回の WebFetch では確認できず【未確認】。日本の API 案内: 取引履歴は「直近2週間・最大5,000レコード」（要約経由。これは取引履歴で価格ではない）。
+f. 解約後: 【未確認】。条件喪失時は API 停止、口座自体は凍結されず fxTrade で建玉管理可（要約経由）。保存データの扱いは記載なし。
+g. 通貨ペア・期間: developer.oanda.com「Access historical pricing information dating back to 2005.」（要約経由・英語版の一般説明）。日本の口座で USDCHF・AUDJPY・GBPUSD・AUDUSD が取れ、2005 年まで遡れるかは【未確認】（日本版ページに価格履歴の範囲の記載なし。実測は購入・ログイン不可のため未実施）。
+追記: developer.oanda.com の説明ページに個人利用の可否の文は無い（要約）。
+
+##### (3) MT5 のヒストリー（口座のサーバーから）
+
+a. 個人: 【条件付き】MT5 標準 API（Python MetaTrader5 / MQL5）は「本番口座があればステータス不問・無料」（fxproduct/api、要約経由）。サーバー: 東京（TY3）。
+b. 条件: 上記のとおり本番口座のみ。デモ口座の可否は【未確認】（MT5 側）。
+c. 用途: 【未確認】。解説記事（要約経由）「バックテストの結果が良好でも、将来も同じ成績が得られるとは限りません。」は注意書きのみ。
+d. 保存・加工: 【未確認】。
+e. 自動取得・量: MT5 の Python/MQL5 での自動取得は API 案内で想定されているが、履歴取得の量制限は公式の文なし【未確認】。解説記事: 「サーバーから取得できるデータの期間や精度は、FX会社によって異なります。」「MT5の初期状態で遡れる期間には限りがある」（具体値なし）。
+f. 解約後: 【未確認】。
+g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指数 CFD（API 案内、要約経由）。USDCHF・AUDJPY・GBPUSD・AUDUSD の有無と履歴の深さは【未確認】（MT5 の銘柄一覧は口座にログインして見る必要がある）。
+
+##### (4) その他
+
+- OANDA Tick Chart Trader（MT5 インジケーター）からのティック CSV 出力: 検索結果で存在のみ確認。利用条件・取得範囲は未読【未確認】。
+- OANDA Global の外部経路（oanda.com の価格履歴等）は日本の口座の対象外か不明。【未確認】。
+- OANDA Lab の無料データ提供やヒストリカルデータのページ（lab-education/dictionary/historical_data/）は検索で確認のみ、未読。
+
+#### 3. 取引約款（店頭外国為替証拠金取引約款）の確認結果（逐語・自前抽出）
+
+データの利用・保存・再配布・商用利用を扱う条項: 【未確認】（全文で「商用」「再配信」「著作権」「マーケットデータ」を検索して該当なし。「API」も該当なし）。
+関連しうる条項（取引サービスに関するもの。データ取得への適用は不明で、許可・禁止のどちらにも寄せない）:
+- 第 9 条（禁止行為）(2)「極めて短時間に機械的に反復して本取引を行う行為」、(3)「取引の如何に関わらず本取引システム又は本取引システムの運用に対して過大に負荷を強いる行為」
+- 解約事由 (16)「当社の認めていない プログラム、ソフトウェア等の使用により、当社のシステムの意図から外れた方法で本サービスを利用した場合又は利用しようとする場合」
+- 解約事由 (18)「お客様の開設口座のお取引及び全ての残高がなくなった後、相当期間が経過したとき」
+- 解約事由 (7)「お客様が国内非居住者となり、居住者に復帰する見込みがなくなったとき」
+注: 検索結果の要約は禁止行為を「第8条」としたが、現行 PDF では第 9 条（版の違い。PDF の本文を優先）。デモ口座利用規約（検索要約）には「マーケットデータの加工、または再配信等を当社に無断で行った…場合」に利用停止の条項があるが、本番口座の約款ではなく、本文は未読。商品 CFD 約款（検索要約）に「無断で本取引及び本取引に係る情報を商用利用するなど、個人の取引から逸脱した行為」。いずれも未読の二次情報。
+
+#### 4. 未確認の主な項目（次に確認すべきもの）
+
+1. REST API 利用規約の本文（データの用途・保存・再配布）。
+2. 配布 CSV の利用条件（ログイン後の画面に注意書きがある可能性）と、ステータス表で「ティックデータ」が対象の列。
+3. FAQ 2190・2191 の原文逐語（画面で目視）。
+4. 日本口座の API／MT5 で USDCHF・AUDJPY・GBPUSD・AUDUSD の履歴が取れるか（公式の文なし）。
+5. 解約後のデータ保存・継続利用（全経路で公式の文なし）。
+
+---
+
 ## 改訂履歴
 
 | 版 | 日付 | 内容 |
@@ -863,3 +1093,4 @@
 | v0.1 案 | 2026-10-15 | 初版 |
 | v0.2 案 | 2026-10-15 | 節 D（OANDA のサンプル、同じ UTC 区間・同じ取引カレンダーでの比較、FXCM の ask < bid の調査、HistData の取引カレンダーでの年ごとの表、FXCM の利用許諾）と節 B-9（有料候補の追加調査）を追加。調査の時刻の注記を追加 |
 | v0.3 案 | 2026-10-15 | 節 E（Tick Data への申請文。日本語と英語。送信していない）と節 F（OANDA の 6 ファイルの形式と品質、OANDA の時刻の資料、同じ UTC 区間での比較、tick の間隔の分布、HistData の参考の最長区間、ハッシュ）を追加 |
+| v0.4 案 | 2026-10-15 | 付録 E に「検討記録。送信しない（人間の決定）」の注記。節 G（問い合わせの質問文。送っていない）、節 H（FXCM・Dukascopy の利用条件）、節 I（OANDA の利用条件と時刻の資料）を追加 |
