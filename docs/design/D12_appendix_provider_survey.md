@@ -875,7 +875,7 @@
 > 3. 会員ステータスが変わった場合や、口座を解約した場合に、既にダウンロードしたデータとそこから作ったデータを保存・利用し続けてよいですか。
 > 4. ダウンロードの回数や量に上限はありますか。プログラムによる自動のダウンロードは認められますか。
 > 5. CSV の時刻と月の区切りについて、公式 FAQ（2190・2191）以外に資料があれば教えてください。取得できる最も古い月はいつですか。
-> 6. ティックデータの配布の対象（USDJPY・EURJPY・EURUSD・GBPJPY）以外の通貨ペア（USDCHF・AUDJPY・GBPUSD・AUDUSD）の過去の tick を、他の方法（API・MT5 など）で取得できますか。その条件を教えてください。
+> 6. MT5 の標準 API（Python）で、MT5 のサーバーから過去の tick と 1 分足を取得することについて: (a) 取得したデータと、そこから作ったデータの保存・継続利用・解約後の扱いは、上の 1〜3 と同じですか。(b) 取得の回数や量に上限はありますか。(c) USDJPY・EURJPY・EURUSD・GBPJPY・USDCHF・AUDJPY・GBPUSD・AUDUSD について、取得できる最も古い時点（tick と 1 分足それぞれ）はいつですか。（v0.5 で改めた。v0.4 の文は「ティックデータの配布の対象（USDJPY・EURJPY・EURUSD・GBPJPY）以外の通貨ペア（USDCHF・AUDJPY・GBPUSD・AUDUSD）の過去の tick を、他の方法（API・MT5 など）で取得できますか。その条件を教えてください。」）
 
 ### G-2. FXCM（英語。送り先は人間が選ぶ。公開の問い合わせ窓口など）
 
@@ -1084,6 +1084,70 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 4. 日本口座の API／MT5 で USDCHF・AUDJPY・GBPUSD・AUDUSD の履歴が取れるか（公式の文なし）。
 5. 解約後のデータ保存・継続利用（全経路で公式の文なし）。
 
+## J. OANDA MT5 Python API の経路の記録（v0.5。2026-10-15 16:21〜16:50 ごろ JST）
+
+人間の第 4 回の指示（本文第0.1.5節）に基づく。調査役（読み取りだけ）がページを `<scratch>/d12_pages/mt5/` に保存し、設計役が保存したページの本文から下の文を文字列の検索で照合した（**逐語**）。要約の道具経由で原文を照合できなかったものは「要約経由」と書いた。登録・ログイン・購入・問い合わせ・インストーラーの取得・価格のデータの取得はしていない。調査役の記録は `<scratch>/survey_mt5_api.md`（SHA-256 `4ab99e08a2d90135c7564b2c04a358578d26dd849e7d95cb4716e126198bfe78`）。
+
+### J-1. OANDA証券の公式ページ（逐語）
+
+| ページ | 文 |
+|---|---|
+| API のページ `https://www.oanda.jp/platform/api`（旧 `https://www.oanda.jp/fxproduct/api`。保存 16:24） | 「（MT5標準APIは口座開設のみでご利用可）」「ご自身の、またはVPS上のWindowsにあるMT5」「本番口座を開設し、マイページからMT5サブアカウントを作成します（会員ステータスは不問）。」「（MT5標準APIも無料で、こちらは口座開設のみで始められます。）」「APIの内容・プログラミング・ネットワーク構築などの技術的なサポートは行っておりません。」デモ口座の案内に「MT5使用可能。」「バックテストも利用可。」 |
+| MT5 のページ `https://www.oanda.jp/platform/mt5` | 「MT5口座のご利用には、あらかじめOANDA fxTradeの口座開設をしてください。」「MT5ソフトはMacPCではご利用いただけません。Windows OSでのみ起動可能となっております。」「MT5のチャートは、売り価格（Bid）に基づいて生成されており、買い価格（Offer）はチャート上には表示されません。」 |
+| MT5 の接続の解説記事 `https://www.oanda.jp/lab-education/blog_mt5/auto_trading/mt5-claude-code-setup/` | 「デモ口座またはライブ口座に接続されている」（前提の文）、「MT5サブアカウントを作成する」 |
+| FAQ 164 `https://help.oanda.jp/oanda/faq/show/164?site_domain=default`（サブアカウントとは何ですか？） | 「東京サーバー/スタンダードプラン FX MT5サブアカウント」 |
+| FAQ 1928 `https://help.oanda.jp/oanda/faq/show/1928?site_domain=default`（Python（パイソン）を使ったシステムトレードはできますか？） | 「メタクォーツ公式APIを利用して、PythonからMT5を直接操作できます。」 |
+| 取扱通貨ペア（東京サーバー、個人）`https://www.oanda.jp/fx/ty3/retail-lineup` | 一覧に「AUD/JPY」「AUD/USD」「EUR/JPY」「GBP/JPY」「GBP/USD」「USD/CHF」がある（USD/JPY・EUR/USD を含む 8 ペアすべて）。表の「証拠金率（MT5）」の欄に 8 ペアとも値がある（例: GBP/USD 5%、他 4%） |
+| 会員ステータス `https://www.oanda.jp/lab-education/status/`（保存 16:21） | 比較表の行「ティックデータのダウンロード」: 「口座未開設の方」は「-」、SILVER（要件「50万米ドル未満」）・GOLD・PLATINUM・DIAMOND・BLACK はすべて ✔（画像の代替文字 "✔" で照合） |
+
+- 見つからなかったもの（**未確認**。許可・禁止のどちらにも寄せない）: MT5 API で取得したデータの利用・保存・加工・解約後の扱い、取得の量・回数の上限、MT5 のサーバーの履歴（tick・足）がいつまで遡れるか、端末での銘柄名の接尾辞。MT5 のマニュアルの PDF は保存したが、本文の検索はしていない。
+
+### J-2. MetaQuotes の公式ページ（逐語）
+
+| ページ | 文 |
+|---|---|
+| Python の連携の概要 `https://www.mql5.com/en/docs/python_metatrader5` | "MetaTrader package for Python is designed for convenient and fast obtaining of exchange data via interprocessor communication directly from the MetaTrader 5 terminal." |
+| `initialize` | "If required, the MetaTrader 5 terminal is launched to establish connection when executing the initialize() call." |
+| `copy_ticks_range` `https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksrange_py` | "Returns ticks as the numpy array with the named time, bid, ask, last and flags columns." "When creating the 'datetime' object, Python uses the local time zone, while MetaTrader 5 stores tick and bar open time in UTC time zone (without the shift). Therefore, 'datetime' should be created in UTC time for executing functions that use time." tick の履歴の深さ・上限の文は無い |
+| `copy_rates_range` `https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesrange_py` | "Returns bars as the numpy array with the named time, open, high, low, close, tick_volume, spread and real_volume columns." "MetaTrader 5 terminal provides bars only within a history available to a user on charts. The number of bars available to users is set in the "Max. bars in chart" parameter." |
+| PyPI `https://pypi.org/pypi/MetaTrader5/json`（2026-10-15 に設計役が再取得） | 最新 5.0.6231（2026-09-27 公開）。配布物は `metatrader5-5.0.6231-cp36-cp36m-win_amd64.whl` から `cp314-cp314-win_amd64.whl` までの 9 個だけ。platform は "Windows" |
+| Mac での端末 `https://www.metatrader5.com/en/terminal/help/start_advanced/install_mac` | "We provide a special installer for the platform on macOS."（Wine の上で動く）。Python の記述は無い |
+
+### J-3. 実測の環境の費用の資料
+
+| 資料 | 内容 | 種類 |
+|---|---|---|
+| AWS の EC2 の公開の価格表（`https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ec2-ondemand-without-sec-sel/Asia%20Pacific%20(Tokyo)/Windows/index.json`、公開日時 2026-10-12T19:39:25Z。設計役が取得） | 東京の Windows の t3.small 0.0456・t3.medium 0.0728・t3.large 0.1364 米ドル／時 | 公式（価格表のデータ） |
+| AWS の日本の税の案内（付録 H の AWS の費用と同じ） | 表示価格は消費税 10% を含まない | 公式 |
+| Apple のサポート `https://support.apple.com/en-us/102622` | "With Boot Camp, you can install Microsoft Windows 10 on your Intel-based Mac" | 公式（機種の対応は確かめていない） |
+| VirtualBox のライセンスの FAQ `https://www.virtualbox.org/wiki/Licensing_FAQ` | 拡張パックは個人・教育用の条件（PUEL）。本体の条件の文は照合していない | 公式（一部） |
+| Microsoft の Windows の評価版のページ | 今回は取得できなかった（混雑の表示）。「90 日」は第三者の記事だけ | 未確認 |
+| AWS の無料の枠 `https://aws.amazon.com/free/` | "$100 in credits immediately"、さらに最大 100 ドルで 6 か月に最大 200 ドル。Windows の EC2 に使えるかは書かれていない | 公式（Windows への適用は未確認） |
+| Parallels・Azure の価格 | ページが JavaScript で描かれ、価格を取得できなかった。Azure の無料のアカウントは "$200 credit to explore Azure for 30 days"（HTML のタグを除いた本文で照合） | 未確認（価格） |
+
+### J-4. 保存したページの SHA-256（`<scratch>/d12_pages/`）
+
+| ファイル | SHA-256 |
+|---|---|
+| oanda_status.html | 204233728fe23519224bd58b484482a3a44a68652e3b2ee7066ba00a07ac8e5d |
+| mt5/o_platform_api.html | c6f9b93a14e3cf850d6e2f6a50749185c12a68047c9ad96b5e0d0293c5cdfc2c |
+| mt5/o_mt5.html | 67fca808369f8cf1a26179b373e9721c95c1808e2e92851cf60caafcbcf70aab |
+| mt5/o_setup.html | 7853ab33bc903efbf46c7005795ced079a7a431cf9e9b358a1e69aad7f287d65 |
+| mt5/faq164.html | 821d80908489149e191bc3a62dbfed96169e0ef043fd79ac2ec6b7e9693c20c0 |
+| mt5/faq1928.html | 277db6847a3909ce6d0ba70eea82fa9664237ff360f77a24ce9e708fa05eb2e6 |
+| mt5/ty3_retail.html | a60eb20fea967c8f5b2fdf7cf12991d2b8067ede849d1c71fff63657f9e3e55c |
+| mt5/py_main.html | 23f5b2affb3b6e9d35221c86863a7aae3ea6d15f4296b5ae923c787f1995f121 |
+| mt5/initialize.html | 979e07bd7d2ffba382d27ae94ab646a87f4a6eb2f54390f9164c7b464dc0cc72 |
+| mt5/copy_ticks_range.html | a5917096817df73b4ca6d6944f0777a0d0c8a221ba4eb4d52564d2261922353d |
+| mt5/copy_rates_range.html | 01cbbaccbb12fb61345ce15ed7246615d97276211d9f6a386abaedf877d3ce1b |
+| mt5/pypi_files.html | 328aa8e143df26929c3118aa2a78275b03fd1136bafd1997ee918e4ac7220520 |
+| mt5/mq_mac.html | f9ac5bc5cf4d537d389ca337c86fa5a70de50b53b2897614a18c768bb24c10e1 |
+| mt5/bootcamp.html | 0dfa5d5f5cee4fef1498a312595b62fad94a935bbf46c611f598517227a05293 |
+| mt5/vbox.html | 02563e1fcebacf1917e17e9a2d51dd33365c05cfb6f78099e9fb4820aa39e3ff |
+| mt5/aws_ec2_win_tokyo.json | e2b92d16f0ea7638613bced2ae524672f344c7009cdbd913dc1e424d8d846cc0 |
+| mt5/awsfree.html | 72882acfecec93739d603bcd32f6c0e71aecc141ba905101367d414ac3c93c46 |
+| mt5/azure.html | 678bc19db0f8d194015736dbb78fd18d2fd3b342539b2ae4a59bded8f2c59e56 |
+
 ---
 
 ## 改訂履歴
@@ -1094,3 +1158,4 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 | v0.2 案 | 2026-10-15 | 節 D（OANDA のサンプル、同じ UTC 区間・同じ取引カレンダーでの比較、FXCM の ask < bid の調査、HistData の取引カレンダーでの年ごとの表、FXCM の利用許諾）と節 B-9（有料候補の追加調査）を追加。調査の時刻の注記を追加 |
 | v0.3 案 | 2026-10-15 | 節 E（Tick Data への申請文。日本語と英語。送信していない）と節 F（OANDA の 6 ファイルの形式と品質、OANDA の時刻の資料、同じ UTC 区間での比較、tick の間隔の分布、HistData の参考の最長区間、ハッシュ）を追加 |
 | v0.4 案 | 2026-10-15 | 出典の突き合わせで Dukascopy の規約の原文を H-2 に追記。付録 E に「検討記録。送信しない（人間の決定）」の注記。節 G（問い合わせの質問文。送っていない）、節 H（FXCM・Dukascopy の利用条件）、節 I（OANDA の利用条件と時刻の資料）を追加 |
+| v0.5 案 | 2026-10-15 | 節 J（OANDA MT5 Python API の経路の記録: OANDA・MetaQuotes の公式ページの逐語、実測の環境の費用の資料、保存したページのハッシュ）を追加。G-1 の問い 6 を MT5 API の問いに改めた |
