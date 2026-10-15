@@ -280,6 +280,8 @@
 
 ### C-1. HistData の 1 分足の時刻の列の集計（研究期間 2017〜2023、8 ペア）
 
+> **v0.2 の注記**: この節の集計は「隣の行との差が 24 時間以上の空白を数えない」作り方で、人間の指示（2026-10-15「24時間以上の空白も、根拠なく集計対象外にしない」）により本文での使用を撤回した。記録として残す。取引カレンダーで数え直した表は D-4。
+
 - 対象: `data/raw/histdata/<ペア>/HISTDATA_COM_ASCII_<ペア>_M1<年>/DAT_ASCII_<ペア>_M1_<年>.csv`（手元の既存ファイル。変更していない）。年 2017〜2023、ペア 8（USDJPY・USDCHF・AUDJPY・EURUSD・EURJPY・GBPJPY・GBPUSD・AUDUSD）。
 - 読んだもの: **各行の先頭の欄（時刻のラベル `YYYYMMDD HHMMSS`）だけ**。価格の列は分割もしていない。2024 年以降のファイルは開いていない。
 - 道具: `<scratch>/d12_scripts/histdata_gaps.py`（SHA-256 は C-3）。出力: `<scratch>/d12_histdata_gaps.csv`（SHA-256 `b5ef85b15309643b5ebb8d8146750ff8c59225332b0e81d372f508fd0b4159f6`。各ファイルの SHA-256・行数・空白の件数を年ごとに 1 行）。実行: 2026-10-15 14:19 ごろ（JST）、`/usr/bin/python3 -I`。
@@ -363,6 +365,309 @@
 | gap_list.py | 12a62599c887a89284de7f073cb57b1742937a72e390b29b0a193b46a6c8b037 | 空白の一覧（時刻の列だけ） |
 | fxcm_weeks.py | 8663ce9e1c5eaa9691e14de85394a575ef5ca6bab05944acc44534d0b1a75cc4 | A-3 の追加の確認（研究期間だけ。2024 年以降の行があれば止まる） |
 
+> 注: B-9 は v0.2 で足したので、節 C の後に置いた。
+
+### B-9. 有料候補の追加調査（v0.2。サンプルの条件・見積の条件・納品物の仕様・利用条件）
+
+調査役の記録（`<scratch>/survey_paid2.md`、SHA-256 `c87d47f63fdd4fecfccbc7b202227699573770461fe75814eecb71ac2e292ce3`）をそのまま写す。時刻は調査役が `date` で実測した値。
+
+実測時刻: 2026-10-15 14:51 JST（`date` 実測。取得は 14:50〜14:52 JST の範囲）。方法: WebFetch/WebSearch のみ。購入・登録・問い合わせ・サンプル取得なし。2024年以降のデータは未取得。
+注意: WebFetch は小型モデル要約経由。引用は要約が返した文言で原文照合未実施。検索結果のみは【二次】。前回記録 survey_paid.md と重複する点は省略。
+
+#### Tick Data LLC
+- 出典: https://www.tickdata.com/product/historical-forex-data/ , https://www.tickdata.com/forex-faq/ （14:51 JST）
+- サンプル: 「Sample Data」ボタン→ウェブフォーム（連絡先入力を伴う）。ペア・期間・粒度の選択可否、任意の月を指定できるか: 未確認。取得せず。
+- 見積: 価格非掲載。「Data Pricing」リンクもフォーム。見積項目はページに明記なし（未確認。前回の推定項目も未確認のまま）。
+- 納品物:
+  - bid/ask: ティックは bid と ask の両方。1分足は "built from Bid side of quotes"（bid のみ）。
+  - 形式: "ASCII text files"。ミリ秒精度。
+  - 時刻: FAQ "Forex data is also in U.S. Eastern Time."、"output the data in any time zone" 可（ツール経由）。UTC 文書は未確認。DST 扱いは未記載。週の開始 "6:00pm ET" ～金曜 "5:59:59.999pm ET"。
+  - クリーニング: "We filter the Forex Bid data on a tick-by-tick basis..." "We do NOT overwrite any ticks, but instead flag suspect ticks and suggest a corrected price." "Most of our data file contain both raw and filtered prices."（生データと補正案の両方が残る点は作業量削減に効く。ただし「Bid data を filter」とあり ask 側の扱いは未確認）。
+  - 気配元: "an aggregation of quotes from the various contributing institutions."
+  - 休場・祝日カレンダー/欠落報告: 未記載（未確認）。
+  - 改訂・版管理: 版管理は未記載。"We will make every attempt to fix the problem."（報告された問題について）。更新購読: 1年単位の日次更新。再ダウンロード可否: 未確認。
+- 利用条件: FAQ/商品ページに研究利用・保存の文なし。Terms of Use は前回確認済み（研究条項なし）。未確認。
+
+#### Massive（旧 Polygon）
+- 出典: https://massive.com/pricing?product=currencies , https://massive.com/docs/flat-files/forex/quotes , https://massive.com/legal/market-data-terms-of-service , https://massive.com/business （14:51 JST）
+- サンプル: 無料 Basic $0（2年・分足・5回/分、登録要）。Quotes は Basic に含まれない。Flat Files は Starter 以上。研究期間の任意月の指定可否（Basic は直近2年のため 2017〜2023 は不可）。
+- 見積: Starter $49/月（"Billed monthly"）で "10+ Years Historical Data"、Quotes、Flat Files、Second Aggregates 含む。Business 通貨プランの価格は business ページに非掲載（Stocks Business "$2,499/month" のみ掲載）。Enterprise "Custom"、"Contact us"。
+- 納品物:
+  - Flat Files forex quotes: bid_price, ask_price, participant_timestamp（ナノ秒 Unix）。"Records date back to September 25, 2009."、"daily downloadable S3 file"。"Updated at 11a ET to include the previous day"。
+  - 時刻: Unix なので実質 UTC だが、ページに時刻基準の明記なし（例値から UTC と読めるのみ）。
+  - 欠落・補正・クリーニング方針、休場カレンダー、改訂・版管理、再ダウンロード: 記載なし（未確認）。
+  - 気配元（単一/集約）: 未確認。bid_exchange/ask_exchange のID項目あり。
+- 利用条件（Market Data Terms of Service）: "exclusively for your personal, non-business, and non-commercial purposes"（§1）。"may not be copied, reproduced, republished, uploaded, posted, publicly displayed"（§2、Market Data は原則 display use only との記述）。§5(c) 第三者への派生データ・研究の共有禁止。§8 解約時 "delete all Market Data in your possession"（保存は解約まで）。→ 個人の非公開研究は「非事業」であれば範囲内の可能性があるが、保存の明示許諾文は無し。事業・法人用途は不可。
+
+#### Kibot
+- 出典: http://www.kibot.com/ , http://www.kibot.com/free-historical-intraday-data.html , http://www.kibot.com/file-format/data-format-reference.html （14:52 JST）
+- サンプル: 無料サンプルに FX なし。"Futures and forex samples are available on request through the contact form."（問い合わせ必要。実施せず）。無料枠自体は登録不要、1分足は直近3か月・ティックは直近30日のみ → 2017〜2023 の任意月は無料枠では不可。
+- 見積: FX 専用価格なし。Custom orders は $40〜（前回）。FX の項目別条件は未確認。
+- 納品物: FX は Bid/Ask。ティック列 `Date,Time,Price,Bid,Ask,Volume`（Price は bid、Volume は1またはティック数）。時刻は既定 US Eastern（変更可）、DST は未記載。バー時刻 = バー開始時刻（秒・分・日足）。取引の無い区間はバーを出さない（ゼロ出来高バーなし）。気配元、FX 開始年、欠落報告、休場カレンダー、改訂・版管理、再ダウンロード: 未確認。
+- 利用条件: 前回確認済み "The Data is for the Licensee's own internal use only."（個人の非公開研究への明示なし。internal use は社内/自己利用と解釈可能だが未確認）。
+
+#### FirstRate Data
+- 出典: https://firstratedata.com/it/fx , https://firstratedata.com/about/dataquality , https://firstratedata.com/free-tick-data （14:51 JST）
+- サンプル: 各データセットにサンプルあり（FX ページ）。ただし free-tick-data ページの無料枠は株・ETF のみで FX 無し、"limited to one day of tick data (or two weks of 1-minute intraday data)"。登録・メールの要否: 記載なし。FX サンプルの期間は未記載（前回の S3 リンク先は未取得）。任意月指定は不可と見られる（固定サンプル）。
+- 見積: FX ページに価格なし（"cost-effective bundles" とバンドルページへの案内）。更新購読 $99.95/年（前回）。FX Majors（70 クロス）バンドルの存在のみ確認。EURJPY・GBPJPY は 74 ティッカー一覧に無し（今回要約。一部項目は "Available only in the" で途切れ、不確実）。
+- 納品物: OHLCV の 1分/5分/30分/1時間。bid/ask の別: 記載なし。時刻: "All datasets are in the local timezone of the instrument or index."（FX の具体的基準は未確認、UTC 文書なし）。品質ページ: "checked for gaps, duplicates, truncation, and anomalies"、"we do not include zero volume bars"（欠落は区間欠落として現れる）。"We update all datasets at the end of each trading day."、問題時は "we firstly rerun the data collection and assembly process"。休場カレンダー、改訂履歴・版管理、再ダウンロード可否: 未確認（品質ページは株式の記述が中心で FX への適用は未確認）。
+- 利用条件: 公開ページに利用条項なし（about/terms は 404）。未確認。
+
+#### LSEG Tick History
+- 出典: 公式 tick-history ページは 404。検索結果のみ【二次】: https://community.developers.lseg.com/discussion/116035/how-to-change-timestamp ほか（14:52 JST）
+- サンプル/見積/利用条件: 公開情報で未確認（前回: 価格非公開、見積要）。見積項目も公式には未確認。
+- 納品物【二次】: LSEG 開発者フォーラム上のサポート回答で、FX の時刻は GMT/UTC のみ（"local exchange time is also Gmt/Utc as source is from Refinitv"）。クエリ日付範囲は DateRangeTimeZone で指定可。bid/ask の別、クリーニング方針、版管理: 未確認。
+
+#### TraderMade
+- 出典: https://tradermade.com/pricing , https://tradermade.com/terms-and-conditions , https://marketdata.tradermade.com/blog/how-to-get-forex-historical-data （14:51 JST）
+- サンプル: 無料はお試し的な分足・時間足・日足（"only to show our data quality"）、7-Day Trial（内容未記載）。ティックの無料サンプルは記載なし。2017〜2023 の任意月は未確認。
+- 見積: FX & Crypto "£ 599 /month"（"Business Use"、Historical Tick を機能として記載）。Enterprise "Custom"（25+ Years Historical、再配布権）。ダウンロード式は "calculate the data cost without setting up an account at the data shopping cart"（カート計算器で登録なし見積可。ペア・期間で変動。前回の £240/年/ペアは二次）。
+- 納品物: CSV、メールまたはリンクで配信。"bid-ask rates with the timestamp in milliseconds"。"aggregated and cleaned for accuracy"。ティック・分足は 2016-09 から。時刻基準、欠落報告、版管理、再ダウンロード: 未確認。
+- 利用条件: "receive, process TraderMade API Data & Services internally"、"solely to use ... for your own reference"、"prepare derivative work(s)... based on" 禁止、契約終了後の "use, store, or access" 禁止。→ 保存は契約期間中のみと読める。ダウンロード購入分に別規約があるかは未確認。
+
+#### Dukascopy（有料経路以外）
+- 検索結果のみ【二次】: Tickstory サポート返信 "you are also bound by Dukascopy's license terms"。Dukascopy 自身の商用ライセンス条項は今回確認できず（未確認）。
+
+#### 主な発見
+1. Tick Data: ティック bid/ask、生値と補正案を併記（上書きしない）、時刻は US Eastern。サンプルと価格はフォーム経由のみ。
+2. Massive Starter $49/月で 2009-09 から bid/ask のナノ秒 quotes を日次ファイルで取得可。ただし規約は非事業の個人限定で、保存は解約まで。
+3. LSEG は FX 時刻 UTC【二次】だが公式の価格・サンプル・規約は未確認。
+4. Kibot の FX サンプルは問い合わせ必須、FirstRate の無料サンプルに FX なし（登録なしで取れる FX サンプルは今回見つからず）。
+5. 休場カレンダー・欠落報告・版管理を文書化している候補は、今回の公開情報では無し。
+
+---
+
+## D. v0.2 案で足した確認（2026-10-15 14:50〜15:10 ごろ JST、設計役）
+
+道具はすべて `<scratch>/d12_scripts/`、出力は `<scratch>/d12_work/`（ハッシュは D-6）。価格を読んだのは研究期間（2017〜2023 年）のサンプルだけで、どの道具も 2024 年以降の行があれば止まる。HistData の手元のファイルは時刻の列だけを読んだ。
+
+### D-1. OANDA のサンプル（人間のダウンロード）
+
+- ファイル: `data/raw/oanda/USDJPY/ticks_USDJPY-oj5k_2019-03.csv`（人間が 2026-10-15 14:45 JST ごろに置いた。設計役は読んだだけで、変更・移動・上書きしていない）。`.gitignore` の 17 行目 `data/raw/*` で版管理の外（`git check-ignore -v` で確認）。
+- SHA-256 `9ae0fe4de82a5ba2e97cab6450194f0afe29793b92f5ba87ab47d55284448ef2`、235,513,950 バイト、5,607,475 行（見出し 1 行を含む）。
+- 見出し: `<DATE>	<TIME>	<BID>	<ASK>	<LAST>	<VOLUME>`（タブ区切り）。`<LAST>`・`<VOLUME>` は空。日付は `YYYY.MM.DD`、時刻はミリ秒まで。
+- 道具: `oanda_ticks.py`（出力 `oanda_ticks_out.txt` と、1 分ごとの集計 `oanda_min.csv`。後者は価格を含むので scratch にだけ置く）。
+- 結果: 時刻の逆行 0、直前の行と同じ時刻の行 40,442、直前の行と全く同じ内容の行 37,824、ask < bid 0、ask = bid 0、bid・ask の空 0。tick のある分 30,659。
+- 日ごとの最初と最後の tick（サーバー時刻）: 2019.02.28 は 17:00:00.001〜23:59:59.717。2019.03.01〜03.29 の平日は、各日 00:00 台〜23:59 台（月曜は 00:00:04〜00:00:19 に始まる）。土日の日付の行は無い。最後の行は 2019.03.29 23:59:59.056。
+- 時刻の読み方: 週のデータが月曜 00:00〜金曜 24:00（サーバー時刻）で、2019-03-10（米国の夏時間の開始）の前後で変わらない → サーバー時刻 = ニューヨークの現地時刻 + 7 時間と読んだ（文書での確認は【未確認】）。D-2 のずらしの比較でこの読み方を確かめた。
+
+### D-2. 同じ UTC 区間・同じ取引カレンダーでの比較
+
+- 道具: `compare_gaps.py`。取引カレンダー `fx_ny17` の週（ニューヨーク日曜 17:00〜金曜 17:00、`zoneinfo` の `America/New_York`）の中の 1 分ごとに、各社のデータの有無を数える。空白は長さを問わずすべて数える。HistData は公表仕様（EST 固定）で +5 時間、OANDA は D-1 の読み方、FXCM は UTC のまま。
+- 2019-03-01 00:00Z〜2019-03-29 21:00Z（出力 `compare_2019_03.txt`）: 期待 30,120 分。HistData 欠け 96（0.32%）、15 分以上の空白 1（03-10 21:00Z、60 分）、週の外 0。OANDA 欠け 1（0.00%）、最長 1 分、週の外 0。FXCM 欠け 96（0.32%）、15 分以上 0、最長 11 分、週の外 0。
+- 2023-03-05 22:00Z〜2023-03-31 21:00Z（出力 `compare_2023_03.txt`）: 期待 28,800 分。HistData 欠け 8,502（29.52%）、15 分以上の空白 124、最長 240 分。FXCM 欠け 199（0.69%）、15 分以上 1（03-19 21:17Z、17 分）、最長 17 分。
+- 同じ UTC の分の bid の終値の差の中央値（pip、ずらし −60・−1・0・+1・+60 分）: 2019 年 3 月は HistData 対 OANDA 4.00・0.50・**0.10**・0.50・3.90、HistData 対 FXCM 4.00・0.50・**0.10**・0.50・4.00、OANDA 対 FXCM 4.00・0.50・**0.10**・0.50・4.00。2023 年 3 月の HistData 対 FXCM は 7.70・2.10・**0.20**・2.10・13.60。
+- 比べた 2 つの区間に、カレンダー版 2 の休場の宣言は無い（版 2 の宣言は元日とクリスマスだけ）。
+
+### D-3. FXCM の ask < bid の調査
+
+- 追加で取得したサンプル（`https://candledata.fxcorporate.com/m1/USDJPY/<年>/11.csv.gz`、2026-10-15 14:50〜15:00 JST の間、`<scratch>/survey_samples/fxcm_years/`）:
+
+| ファイル | SHA-256 |
+|---|---|
+| USDJPY_m1_2017_w11.csv.gz | 1c16b1a208db403d2714a23febe65fdb1c0a3754fef569eccc2f3ed8e7480eed |
+| USDJPY_m1_2018_w11.csv.gz | 3dd4e2939e6ab0f09ca0210fe68e3896104b8ec176a614e9b12522c802a34c9e |
+| USDJPY_m1_2020_w11.csv.gz | 197fbb30cafba59f29935fbaca56f4135db93d78fcc3ef8f2c006b917a941dea |
+| USDJPY_m1_2021_w11.csv.gz | bf2e29110b3eec217cd76cb1af10229ae3bea806ea1137c8c913179839564554 |
+| USDJPY_m1_2022_w11.csv.gz | 64377cb360133160dccae5fdb2df6ca8db3aecfd042d16a64b4e807e896f1f59 |
+
+- 道具: `fxcm_inversion.py`（出力 `fxcm_inversion.txt`）。逆転の数え方: AskOpen < BidOpen・AskHigh < BidHigh・AskLow < BidLow・AskClose < BidClose のどれか（`any`）。
+
+| 週 | 足 | 逆転（any） | 始値 | 高値 | 安値 | 終値 | 大きさ 中央値・最大（pip） | 多い時間帯（UTC 時: 本数、上位 2） |
+|---|---|---|---|---|---|---|---|---|
+| 2017 w11 | 7,150 | 154 | 40 | 39 | 61 | 40 | 0.1・0.5 | 18: 24、20: 21 |
+| 2018 w11 | 7,187 | 522 | 159 | 144 | 219 | 159 | 0.1・1.0 | 17: 47、20: 41 |
+| 2019 w9 | 7,188 | 192 | 44 | 68 | 64 | 44 | 0.1・1.3 | 16: 20、10: 17 |
+| 2019 w10 | 7,177 | 130 | 34 | 56 | 23 | 34 | 0.1・0.9 | 8: 13、6: 11 |
+| 2019 w11 | 7,188 | 116 | 29 | 31 | 41 | 29 | 0.1・0.5 | 14: 10、10: 9 |
+| 2019 w12 | 7,162 | 182 | 61 | 75 | 77 | 61 | 0.1・1.6 | 21: 30、15: 15 |
+| 2019 w13 | 7,177 | 147 | 43 | 51 | 50 | 43 | 0.1・0.8 | 21: 13、4: 11 |
+| 2019 w14 | 7,185 | 138 | 40 | 34 | 48 | 40 | 0.1・1.4 | 19: 14、9: 13 |
+| 2020 w11 | 7,189 | 225 | 60 | 63 | 80 | 60 | 0.1・1.5 | 15: 21、13: 19 |
+| 2021 w11 | 7,126 | 265 | 73 | 71 | 95 | 73 | 0.1・0.4 | 9: 32、8: 26 |
+| 2022 w11 | 7,139 | 0 | 0 | 0 | 0 | 0 | — | — |
+| 2023 w11 | 7,155 | 0 | 0 | 0 | 0 | 0 | — | — |
+
+- 終値のスプレッド（AskClose − BidClose）の中央値（pip）: 2017 年 0.4、2018・2019 年 0.2、2020 年 0.4、2021 年 0.2、2022 年 0.3、2023 年 0.7（各年の週 11）。
+- OANDA との同じ分: 2019 年の週 9〜13 の逆転した足のうち、OANDA のサンプル（2019-02-28 15:00Z〜03-29 21:00Z）に同じ UTC の分がある 618 本（週 9: 43、週 10: 130、週 11: 116、週 12: 182、週 13: 147）で、OANDA のその分の最小のスプレッドが負の分は 0。例（週 12、UTC 21 時台）: FXCM の終値のスプレッド −1.2 pip のとき、OANDA の終値のスプレッド 4.3 pip。
+- 始値と直前の終値: 2019 年の週 11 で BidOpen = 直前の BidClose が 7,187 本中 7,187 本、AskOpen = 直前の AskClose も同じ。2023 年の週 11 は 7,154 本中 7,154 本（`<scratch>` で 1 行の Python で確認。道具のファイルは無い）。
+
+### D-4. HistData の取引カレンダーでの年ごとの表（時刻の列だけ）
+
+- 道具: `histdata_calendar_gaps.py`。2017〜2023 年（UTC の年。2023 年は 2023-12-29 22:00Z まで）、8 ペア。取引カレンダー `fx_ny17` の週の中の 1 分ごとに 1 分足の有無を数え、空白は長さを問わずすべて数える。カレンダー版 2（`configs/calendars/fx_ny17_v2.yaml`）の休場の宣言に重なる 15 分以上の空白は、数えた上で列 `gaps_overlapping_v2_closure` に件数を出した（除いていない）。2024 年のファイルは開いていない。
+- 時刻の読み方を 2 通りで出した。**どちらも全週では合わない**（`outside_session_rows` が 0 でない年がある）。
+- `histdata_outside.py` の確認: 公表仕様（EST 固定、+5 時間）で読むと、週の外の行は USDJPY の 2019 年で 1,799 行、2017 年で 2,031 行で、すべて金曜のニューヨーク 17 時台。
+
+**(a) ラベルをニューヨークの現地時刻（夏時間あり）として読む**（出力 `histdata_cal_nylocal.csv`、空白の一覧 `histdata_cal_gaps_nylocal.csv`）
+
+| pair | year_utc | expected_session_min | present_in_session | outside_session_rows | missing_min | missing_pct | gaps_ge15 | gaps_ge60 | gaps_ge1440 | longest_gap_min | gaps_overlapping_v2_closure |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| USDJPY | 2017 | 374520 | 371298 | 0 | 3222 | 0.860 | 3 | 3 | 1 | 1440 | 1 |
+| USDJPY | 2018 | 375840 | 371800 | 0 | 4040 | 1.075 | 3 | 3 | 0 | 1320 | 3 |
+| USDJPY | 2019 | 375840 | 372349 | 176 | 3491 | 0.929 | 11 | 11 | 0 | 1320 | 3 |
+| USDJPY | 2020 | 377280 | 371912 | 228 | 5368 | 1.423 | 9 | 9 | 0 | 1320 | 3 |
+| USDJPY | 2021 | 375720 | 369168 | 165 | 6552 | 1.744 | 6 | 6 | 0 | 1320 | 1 |
+| USDJPY | 2022 | 374400 | 372386 | 150 | 2014 | 0.538 | 7 | 6 | 0 | 60 | 0 |
+| USDJPY | 2023 | 374400 | 322729 | 167 | 51671 | 13.801 | 706 | 705 | 0 | 1380 | 1 |
+| USDCHF | 2017 | 374520 | 369892 | 0 | 4628 | 1.236 | 3 | 3 | 1 | 1440 | 1 |
+| USDCHF | 2018 | 375840 | 370264 | 0 | 5576 | 1.484 | 5 | 3 | 0 | 1320 | 3 |
+| USDCHF | 2019 | 375840 | 370905 | 176 | 4935 | 1.313 | 11 | 10 | 0 | 1325 | 3 |
+| USDCHF | 2020 | 377280 | 370131 | 216 | 7149 | 1.895 | 10 | 9 | 0 | 1324 | 3 |
+| USDCHF | 2021 | 375720 | 365390 | 100 | 10330 | 2.749 | 15 | 6 | 0 | 1320 | 1 |
+| USDCHF | 2022 | 374400 | 369255 | 93 | 5145 | 1.374 | 30 | 8 | 0 | 65 | 0 |
+| USDCHF | 2023 | 374400 | 320642 | 91 | 53758 | 14.358 | 694 | 688 | 0 | 1380 | 1 |
+| AUDJPY | 2017 | 374520 | 372157 | 0 | 2363 | 0.631 | 3 | 3 | 1 | 1441 | 0 |
+| AUDJPY | 2018 | 375840 | 372850 | 0 | 2990 | 0.796 | 3 | 3 | 0 | 1320 | 3 |
+| AUDJPY | 2019 | 375840 | 372652 | 233 | 3188 | 0.848 | 10 | 9 | 0 | 1320 | 3 |
+| AUDJPY | 2020 | 377280 | 372530 | 225 | 4750 | 1.259 | 9 | 9 | 0 | 1320 | 3 |
+| AUDJPY | 2021 | 375720 | 371944 | 168 | 3776 | 1.005 | 6 | 6 | 0 | 1320 | 1 |
+| AUDJPY | 2022 | 374400 | 372310 | 139 | 2090 | 0.558 | 12 | 11 | 0 | 65 | 0 |
+| AUDJPY | 2023 | 374400 | 322732 | 55 | 51668 | 13.800 | 718 | 712 | 0 | 1264 | 1 |
+| EURUSD | 2017 | 374520 | 371635 | 0 | 2885 | 0.770 | 3 | 3 | 1 | 1440 | 1 |
+| EURUSD | 2018 | 375840 | 372607 | 0 | 3233 | 0.860 | 3 | 3 | 0 | 1320 | 3 |
+| EURUSD | 2019 | 375840 | 372241 | 229 | 3599 | 0.958 | 11 | 10 | 0 | 1322 | 3 |
+| EURUSD | 2020 | 377280 | 372047 | 228 | 5233 | 1.387 | 10 | 9 | 0 | 1320 | 3 |
+| EURUSD | 2021 | 375720 | 369267 | 175 | 6453 | 1.718 | 7 | 6 | 0 | 1320 | 1 |
+| EURUSD | 2022 | 374400 | 372640 | 165 | 1760 | 0.470 | 4 | 4 | 0 | 60 | 0 |
+| EURUSD | 2023 | 374400 | 322464 | 114 | 51936 | 13.872 | 701 | 698 | 0 | 1264 | 1 |
+| EURJPY | 2017 | 374520 | 372258 | 0 | 2262 | 0.604 | 3 | 3 | 1 | 1442 | 0 |
+| EURJPY | 2018 | 375840 | 373304 | 0 | 2536 | 0.675 | 3 | 3 | 0 | 1321 | 3 |
+| EURJPY | 2019 | 375840 | 372319 | 231 | 3521 | 0.937 | 12 | 11 | 0 | 1326 | 3 |
+| EURJPY | 2020 | 377280 | 372443 | 204 | 4837 | 1.282 | 9 | 9 | 0 | 1326 | 3 |
+| EURJPY | 2021 | 375720 | 371093 | 152 | 4627 | 1.232 | 7 | 6 | 0 | 1320 | 1 |
+| EURJPY | 2022 | 374400 | 371997 | 137 | 2403 | 0.642 | 12 | 8 | 0 | 65 | 0 |
+| EURJPY | 2023 | 374400 | 322934 | 106 | 51466 | 13.746 | 690 | 686 | 0 | 1320 | 1 |
+| GBPJPY | 2017 | 374520 | 370949 | 0 | 3571 | 0.953 | 3 | 3 | 1 | 1443 | 0 |
+| GBPJPY | 2018 | 375840 | 372495 | 0 | 3345 | 0.890 | 4 | 3 | 0 | 1322 | 3 |
+| GBPJPY | 2019 | 375840 | 371863 | 179 | 3977 | 1.058 | 11 | 10 | 0 | 1326 | 3 |
+| GBPJPY | 2020 | 377280 | 372421 | 228 | 4859 | 1.288 | 10 | 9 | 0 | 1324 | 3 |
+| GBPJPY | 2021 | 375720 | 371370 | 139 | 4350 | 1.158 | 9 | 6 | 0 | 1320 | 1 |
+| GBPJPY | 2022 | 374400 | 372102 | 127 | 2298 | 0.614 | 15 | 6 | 0 | 66 | 0 |
+| GBPJPY | 2023 | 374400 | 321964 | 107 | 52436 | 14.005 | 696 | 693 | 0 | 1320 | 1 |
+| GBPUSD | 2017 | 374520 | 371204 | 0 | 3316 | 0.885 | 4 | 3 | 1 | 1440 | 1 |
+| GBPUSD | 2018 | 375840 | 372261 | 0 | 3579 | 0.952 | 4 | 3 | 0 | 1320 | 3 |
+| GBPUSD | 2019 | 375840 | 372096 | 240 | 3744 | 0.996 | 11 | 10 | 0 | 1326 | 3 |
+| GBPUSD | 2020 | 377280 | 372766 | 231 | 4514 | 1.196 | 13 | 9 | 0 | 1322 | 3 |
+| GBPUSD | 2021 | 375720 | 370182 | 156 | 5538 | 1.474 | 7 | 6 | 0 | 1320 | 1 |
+| GBPUSD | 2022 | 374400 | 372286 | 148 | 2114 | 0.565 | 9 | 6 | 0 | 61 | 0 |
+| GBPUSD | 2023 | 374400 | 322352 | 55 | 52048 | 13.902 | 701 | 697 | 0 | 1320 | 1 |
+| AUDUSD | 2017 | 374520 | 368436 | 0 | 6084 | 1.624 | 3 | 3 | 1 | 1440 | 1 |
+| AUDUSD | 2018 | 375840 | 369457 | 0 | 6383 | 1.698 | 3 | 3 | 0 | 1320 | 3 |
+| AUDUSD | 2019 | 375840 | 371700 | 238 | 4140 | 1.102 | 13 | 13 | 0 | 1320 | 3 |
+| AUDUSD | 2020 | 377280 | 371594 | 221 | 5686 | 1.507 | 11 | 9 | 0 | 1320 | 3 |
+| AUDUSD | 2021 | 375720 | 369513 | 171 | 6207 | 1.652 | 7 | 6 | 0 | 1320 | 1 |
+| AUDUSD | 2022 | 374400 | 371347 | 148 | 3053 | 0.815 | 9 | 7 | 0 | 60 | 0 |
+| AUDUSD | 2023 | 374400 | 321921 | 168 | 52479 | 14.017 | 685 | 681 | 0 | 1320 | 1 |
+
+**(b) 公表仕様（EST 固定、+5 時間）で読む**（出力 `histdata_cal.csv`、空白の一覧 `histdata_cal_gaps.csv`）
+
+| pair | year_utc | expected_session_min | present_in_session | outside_session_rows | missing_min | missing_pct | gaps_ge15 | gaps_ge60 | gaps_ge1440 | longest_gap_min | gaps_overlapping_v2_closure |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| USDJPY | 2017 | 374520 | 369267 | 2031 | 5253 | 1.403 | 37 | 37 | 1 | 1440 | 1 |
+| USDJPY | 2018 | 375840 | 369775 | 2025 | 6065 | 1.614 | 37 | 37 | 0 | 1320 | 3 |
+| USDJPY | 2019 | 375840 | 370726 | 1799 | 5114 | 1.361 | 37 | 37 | 0 | 1320 | 3 |
+| USDJPY | 2020 | 377280 | 370354 | 1786 | 6926 | 1.836 | 35 | 35 | 0 | 1320 | 3 |
+| USDJPY | 2021 | 375720 | 367520 | 1813 | 8200 | 2.182 | 34 | 34 | 0 | 1320 | 1 |
+| USDJPY | 2022 | 374400 | 370682 | 1854 | 3718 | 0.993 | 34 | 34 | 0 | 90 | 0 |
+| USDJPY | 2023 | 374400 | 321760 | 1136 | 52640 | 14.060 | 715 | 714 | 0 | 1380 | 1 |
+| USDCHF | 2017 | 374520 | 367868 | 2024 | 6652 | 1.776 | 37 | 37 | 1 | 1440 | 1 |
+| USDCHF | 2018 | 375840 | 368277 | 1987 | 7563 | 2.012 | 39 | 37 | 0 | 1320 | 3 |
+| USDCHF | 2019 | 375840 | 369290 | 1791 | 6550 | 1.743 | 37 | 36 | 0 | 1325 | 3 |
+| USDCHF | 2020 | 377280 | 368586 | 1761 | 8694 | 2.304 | 35 | 35 | 0 | 1324 | 3 |
+| USDCHF | 2021 | 375720 | 363729 | 1761 | 11991 | 3.191 | 44 | 34 | 0 | 1320 | 1 |
+| USDCHF | 2022 | 374400 | 367500 | 1848 | 6900 | 1.843 | 52 | 36 | 0 | 92 | 0 |
+| USDCHF | 2023 | 374400 | 319429 | 1304 | 54971 | 14.682 | 706 | 699 | 0 | 1380 | 1 |
+| AUDJPY | 2017 | 374520 | 370118 | 2039 | 4402 | 1.175 | 37 | 37 | 1 | 1441 | 0 |
+| AUDJPY | 2018 | 375840 | 370859 | 1991 | 4981 | 1.325 | 37 | 37 | 0 | 1320 | 3 |
+| AUDJPY | 2019 | 375840 | 371086 | 1799 | 4754 | 1.265 | 35 | 34 | 0 | 1320 | 3 |
+| AUDJPY | 2020 | 377280 | 370958 | 1797 | 6322 | 1.676 | 35 | 35 | 0 | 1320 | 3 |
+| AUDJPY | 2021 | 375720 | 370262 | 1850 | 5458 | 1.453 | 34 | 34 | 0 | 1320 | 1 |
+| AUDJPY | 2022 | 374400 | 370592 | 1857 | 3808 | 1.017 | 39 | 39 | 0 | 90 | 0 |
+| AUDJPY | 2023 | 374400 | 321469 | 1318 | 52931 | 14.138 | 729 | 723 | 0 | 1264 | 1 |
+| EURUSD | 2017 | 374520 | 369599 | 2036 | 4921 | 1.314 | 37 | 37 | 1 | 1440 | 1 |
+| EURUSD | 2018 | 375840 | 370579 | 2028 | 5261 | 1.400 | 37 | 37 | 0 | 1320 | 3 |
+| EURUSD | 2019 | 375840 | 370671 | 1799 | 5169 | 1.375 | 36 | 35 | 0 | 1322 | 3 |
+| EURUSD | 2020 | 377280 | 370478 | 1797 | 6802 | 1.803 | 36 | 35 | 0 | 1320 | 3 |
+| EURUSD | 2021 | 375720 | 367618 | 1824 | 8102 | 2.156 | 35 | 34 | 0 | 1320 | 1 |
+| EURUSD | 2022 | 374400 | 370948 | 1857 | 3452 | 0.922 | 32 | 32 | 0 | 64 | 0 |
+| EURUSD | 2023 | 374400 | 321259 | 1319 | 53141 | 14.194 | 710 | 707 | 0 | 1264 | 1 |
+| EURJPY | 2017 | 374520 | 370220 | 2038 | 4300 | 1.148 | 37 | 37 | 1 | 1442 | 0 |
+| EURJPY | 2018 | 375840 | 371271 | 2033 | 4569 | 1.216 | 37 | 37 | 0 | 1321 | 3 |
+| EURJPY | 2019 | 375840 | 370751 | 1799 | 5089 | 1.354 | 37 | 36 | 0 | 1326 | 3 |
+| EURJPY | 2020 | 377280 | 370850 | 1797 | 6430 | 1.704 | 35 | 35 | 0 | 1326 | 3 |
+| EURJPY | 2021 | 375720 | 369389 | 1856 | 6331 | 1.685 | 35 | 34 | 0 | 1320 | 1 |
+| EURJPY | 2022 | 374400 | 370276 | 1858 | 4124 | 1.101 | 38 | 36 | 0 | 90 | 0 |
+| EURJPY | 2023 | 374400 | 321660 | 1380 | 52740 | 14.087 | 699 | 695 | 0 | 1320 | 1 |
+| GBPJPY | 2017 | 374520 | 368924 | 2025 | 5596 | 1.494 | 37 | 37 | 1 | 1443 | 0 |
+| GBPJPY | 2018 | 375840 | 370465 | 2030 | 5375 | 1.430 | 38 | 37 | 0 | 1322 | 3 |
+| GBPJPY | 2019 | 375840 | 370242 | 1800 | 5598 | 1.489 | 37 | 36 | 0 | 1326 | 3 |
+| GBPJPY | 2020 | 377280 | 370852 | 1797 | 6428 | 1.704 | 36 | 35 | 0 | 1324 | 3 |
+| GBPJPY | 2021 | 375720 | 369650 | 1859 | 6070 | 1.616 | 37 | 34 | 0 | 1320 | 1 |
+| GBPJPY | 2022 | 374400 | 370369 | 1860 | 4031 | 1.077 | 40 | 34 | 0 | 90 | 0 |
+| GBPJPY | 2023 | 374400 | 320751 | 1320 | 53649 | 14.329 | 703 | 701 | 0 | 1320 | 1 |
+| GBPUSD | 2017 | 374520 | 369167 | 2037 | 5353 | 1.429 | 38 | 37 | 1 | 1440 | 1 |
+| GBPUSD | 2018 | 375840 | 370244 | 2017 | 5596 | 1.489 | 38 | 37 | 0 | 1320 | 3 |
+| GBPUSD | 2019 | 375840 | 370537 | 1799 | 5303 | 1.411 | 36 | 35 | 0 | 1326 | 3 |
+| GBPUSD | 2020 | 377280 | 371199 | 1798 | 6081 | 1.612 | 38 | 35 | 0 | 1322 | 3 |
+| GBPUSD | 2021 | 375720 | 368497 | 1841 | 7223 | 1.922 | 35 | 34 | 0 | 1320 | 1 |
+| GBPUSD | 2022 | 374400 | 370579 | 1855 | 3821 | 1.021 | 36 | 34 | 0 | 85 | 0 |
+| GBPUSD | 2023 | 374400 | 321272 | 1135 | 53128 | 14.190 | 708 | 704 | 0 | 1320 | 1 |
+| AUDUSD | 2017 | 374520 | 366438 | 1998 | 8082 | 2.158 | 37 | 37 | 1 | 1440 | 1 |
+| AUDUSD | 2018 | 375840 | 367512 | 1945 | 8328 | 2.216 | 37 | 37 | 0 | 1320 | 3 |
+| AUDUSD | 2019 | 375840 | 370143 | 1795 | 5697 | 1.516 | 38 | 38 | 0 | 1320 | 3 |
+| AUDUSD | 2020 | 377280 | 370031 | 1784 | 7249 | 1.921 | 37 | 35 | 0 | 1320 | 3 |
+| AUDUSD | 2021 | 375720 | 367866 | 1818 | 7854 | 2.090 | 35 | 34 | 0 | 1320 | 1 |
+| AUDUSD | 2022 | 374400 | 369646 | 1849 | 4754 | 1.270 | 37 | 35 | 0 | 72 | 0 |
+| AUDUSD | 2023 | 374400 | 320686 | 1403 | 53714 | 14.347 | 693 | 689 | 0 | 1320 | 1 |
+
+**USDJPY の 600 分以上の空白（(a) の読み方）**
+
+| 始まり（UTC） | 分 | カレンダー版 2 の休場の宣言と |
+|---|---|---|
+| 2017-12-24T22:00:00+00:00 | 1440 | 重なる |
+| 2018-01-01T00:00:00+00:00 | 1320 | 重なる |
+| 2018-12-25T08:00:00+00:00 | 840 | 重なる |
+| 2019-01-01T00:00:00+00:00 | 1320 | 重なる |
+| 2019-12-25T08:00:00+00:00 | 840 | 重なる |
+| 2020-01-01T00:00:00+00:00 | 1320 | 重なる |
+| 2020-11-30T05:00:00+00:00 | 1140 | 重ならない |
+| 2020-12-25T08:00:00+00:00 | 840 | 重なる |
+| 2021-01-01T00:00:00+00:00 | 1320 | 重なる |
+| 2021-05-31T04:00:00+00:00 | 1200 | 重ならない |
+| 2023-04-07T00:00:00+00:00 | 1380 | 重ならない |
+| 2023-12-25T07:59:00+00:00 | 845 | 重なる |
+
+### D-5. FXCM の利用許諾のページ（2026-10-15 15:00〜15:05 JST の間）
+
+- `https://www.fxcm.com/uk/forms/eula/`（WebFetch の要約）: 契約の本文ではなく、FXCM Software End User License Agreement の案内のページ。"Click the button below to be redirected to the form."。フォームは Adobe Sign にあり、中身は取得していない。署名する人・対象のデータ・個人か商用かの記述は案内のページに無い。ページにある関係しそうな文は "FXCM will use data collected for the purposes of providing service, contacting, and sending you important information." と "The products are intended for retail, professional, and eligible counterparty clients." だけ。
+- `gh api repos/fxcm/MarketData`（15:05 JST ごろ）: `license` は null（リポジトリに使用許諾の設定が無い）。最後の push は 2026-07-09。
+- 署名・申込みはしていない（人間の指示「署名や申込みが必要なら、その条件を確認する段階で止めて判断すればよい」）。
+
+### D-6. Dukascopy の公開 HTTP 配信の再確認と公式ページ
+
+- 2026-10-15 15:05:37 JST に `https://datafeed.dukascopy.com/datafeed/USDJPY/2019/02/05/10h_ticks.bi5`（2019-03-05 10 時台の tick）へ 1 回だけ要求: HTTP 429（`content-type: application/json`、本文 113 バイト）。
+- Historical Data Export のページ（`https://www.dukascopy.com/swiss/english/marketwatch/historical/`、WebFetch の要約、15:05 JST ごろ）: "It is free through Dukascopy's Historical Data Export tool"、"The data is in .csv format."。登録・ログインの要否、期間・粒度の制限、時刻帯の選択は、ページの本文からは読めなかった（【未確認】）。
+- 公式の wiki（`https://www.dukascopy.com/wiki/en/development/data-export/`、WebFetch の要約、2026-10-15 14:20〜14:30 JST の間）: 公開 HTTP 配信の制限や終了には触れていない。S3 のバケット `cfg-public-proper-wallaby`（eu-west-1）、"configured with Requester Pays policy"、"Valid AWS credentials with appropriate permissions"、"$0.0004 per 1,000 requests"・"$0.02 per GB"、全体 "~400 GB, ~20,000,000 files"、EURUSD は "Total objects: 26,586"・約 2.6 GB。
+
+### D-7. 道具と出力の SHA-256
+
+| ファイル | SHA-256 |
+|---|---|
+| d12_scripts/oanda_ticks.py | 902fee4d7b35c386a57263be5cc598537ceb321f053c4d5540ceb7f04fcba02a |
+| d12_scripts/compare_gaps.py | be3d813135df84ae1940cb58a92b812da1dc53946a36f409113774e7aea42ddb |
+| d12_scripts/fxcm_inversion.py | 218e4ce565379ca01ec31243e2f56c35eb28e29046e6d75a1101f1018c67a2f3 |
+| d12_scripts/histdata_calendar_gaps.py | c53ccba726b290f549957cd224d3a5b8f48de7c789ed09d436c06033895fb127 |
+| d12_scripts/histdata_outside.py | c2701c86d7966b662a8b427180d15c7d24b2afc04f27a18a129c203339dcaca9 |
+| d12_work/oanda_ticks_out.txt | f190178a7df27493977fae12731ab86bd96f948e8a4136eae53be3f1352c4cb4 |
+| d12_work/oanda_min.csv | 8c06eb689509401bf549ddc231ec5adebcabc50730315c39e10932806e8662bd |
+| d12_work/compare_2019_03.txt | c3baace04a287f1898380c8fcf342ca6093cc15f81025d84d6bd12c750ff33b3 |
+| d12_work/compare_2023_03.txt | 354cedf5ac66b9f1df63a8090d9dbf73d9e22ca2b085b14c2e5ce5074c81218b |
+| d12_work/fxcm_inversion.txt | 9050a9be0d1554a9acd524c44c8e71c5b8d20e25657e35e7c5024b9e41bc2358 |
+| d12_work/histdata_cal_nylocal.csv | 2e25a1d6748f4f1f27312402153fb4410dcc8edcdb42b44b5e9e477b44b8c1cf |
+| d12_work/histdata_cal_gaps_nylocal.csv | 957dd7c7b03813ad33efe23efe0b0edf786ec944cde96b7c28660d88a735b966 |
+| d12_work/histdata_cal.csv | 605047d945f421731743afc7704b326d73fbd206bfc809a1640ff670bff8d593 |
+| d12_work/histdata_cal_gaps.csv | 22110aed0767c6dd21b80de4550e589b30daa2e447553022435034174c868401 |
+
 ---
 
 ## 改訂履歴
@@ -370,3 +675,4 @@
 | 版 | 日付 | 内容 |
 |---|---|---|
 | v0.1 案 | 2026-10-15 | 初版 |
+| v0.2 案 | 2026-10-15 | 節 D（OANDA のサンプル、同じ UTC 区間・同じ取引カレンダーでの比較、FXCM の ask < bid の調査、HistData の取引カレンダーでの年ごとの表、FXCM の利用許諾）と節 B-9（有料候補の追加調査）を追加。調査の時刻の注記を追加 |
