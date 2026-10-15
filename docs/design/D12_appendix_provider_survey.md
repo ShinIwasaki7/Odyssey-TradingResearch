@@ -1243,6 +1243,43 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 - SSM のコマンドの実行（Run Command）は追加の料金が無い（作業役の知識。料金のページとの照合はしていない）。結果の回収は SSM の API の応答で、量は数 MB の見込み。
 - 実績は Cost Explorer に翌日反映されるので、終了の後に「使った時間 × 単価」の概算を K-3 に書き、翌日の確認を人間に依頼する（K-2 手順 8）。
 
+### K-5. API の 1 分足の中身と、時刻のずれ・CSV との差の整理（2026-10-15 21:15〜21:35 JST。人間の第 9 回の指示による。作業役）
+
+使ったデータ: K-3 の再試行で取った USDJPY（端末の銘柄名 `USDJPY.cl`）の 1 分足、2019-03-05（米国の冬時間）と 2019-03-19（米国の夏時間。米国の切り替えは 2019-03-10）の 00:00〜02:00（API の時刻の値）各 120 本。比べる相手は配布 CSV `ticks_USDJPY-oj5k_2019-03.csv` の tick（FAQ 2190 の規則で UTC に直した）。**価格の水準は書かない**（差・件数・相関・スプレッドの値だけ）。道具と出力は `<scratch>/d12_scripts/`（`analyze_m1.py` `1f78d5da4a2e2b23b7fc90d7c60b2a9f07b7a8b2be98d939360fdac7aec863a2`、`signed_diff.py` `fdf29eefe7bab6c9da00ac98a57bd3b7067d55bcfcce61386af3c1946bb6ffb6`）、`<scratch>/analyze_m1_result.json` `8fee923bcec060b630ec3fcbe3a8d6538b3b4879cdd7fd9ea6a1c7bcd59fe252`、`<scratch>/signed_diff_result.json` `4a4cd75ecd5c543758e438c0a3be83eb27fa1710c12489280911c544a929247e`。公式のページは `<scratch>/d12_pages/mt5b/` に保存（`mqlrates.html` `083da11289d1229de3c117c14ec43ad72062502512495c70c619b773ea5e62ee`、`charts.html` `89bedad8553c144fc097bfe0602fd2b44cbe034a3784f9273175a20c380e2529`、`copyrates.html` `e4cf6ed6e5b262ac56dc25dbca8916641d5ca3a3d49b0b9e9b000621a77413fd`）。
+
+#### K-5.1 1 分足 1 本の項目
+
+| 列 | 公式の説明（逐語） | 実データ（2019-03、各 120 本） |
+|---|---|---|
+| time | 「Period start time」（MqlRates `https://www.mql5.com/en/docs/constants/structures/mqlrates`）。Python では "MetaTrader 5 stores tick and bar open time in UTC time zone (without the shift)" "Data received from the MetaTrader 5 terminal has UTC time."（`copy_rates_range` `https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesrange_py`） | 足の始めの時刻。ただし値は UTC より約 2 時間進んでいる（K-5.2） |
+| open・high・low・close | 「Open price」「The highest price of the period」「The lowest price of the period」「Close price」（MqlRates）。どの価格かは "Bid prices are used for constructing charts."（MetaTrader 5 のヘルプ `https://www.metatrader5.com/en/terminal/help/charts_analysis/charts`）、「MT5のチャートは、売り価格（Bid）に基づいて生成されており、買い価格（Offer）はチャート上には表示されません。」（OANDA `https://www.oanda.jp/platform/mt5`。付録 J-1） | CSV の bid に最も近い（K-5.3）。ask の足は無い |
+| tick_volume | 「Tick volume」（MqlRates。数え方の定義の文は無い） | 冬: 最小 1・中央値 26.5・最大 262。夏: 2・18.5・91。CSV の 1 分あたりの tick の数（比べた前後 12 時間の平均で約 140〜160）よりずっと少ない |
+| spread | 「Spread」（MqlRates。単位の文は無い）。ヘルプのデータウィンドウの説明に "spread (minimum value on a selected bar)"（同じヘルプ） | 0 の足は無し。冬: 最小 8・中央値 10・最大 46、夏: 3・10・14（単位はポイントとみなした。USDJPY の 1 ポイント = 0.001 円は仮定で、端末の `symbol_info` は読んでいない） |
+| real_volume | 「Trade volume」（MqlRates） | **未確認**: 道具が保存する列に入れていなかった（`RATE_FIELDS` は time・open・high・low・close・tick_volume・spread）。FX では 0 の見込みだが確かめていない |
+
+- 区間の扱い: "When requesting data in a specified range of dates, only data from this interval will be returned. The interval is set and counted up to seconds."（MQL5 の `CopyRates` `https://www.mql5.com/en/docs/series/copyrates`）。実際に `copy_rates_range` は終わりちょうど（02:00）の足も返した（終わりを含む）。道具は保存していない（区間外の 1 件として記録）。
+- 2026-07-10 の足が返った件（K-3）は、上限の足数より古い区間を求めたときの振る舞いで、上の文と食い違う（観察）。
+
+#### K-5.2 時刻の約 2 時間のずれ（観察と仮説）
+
+- 仮説（司令塔の案）: API の time はサーバーの時計の値（FAQ 2190: 米国の夏時間に合わせて夏 GMT+3・冬 GMT+2）を UTC の数値として返す → **冬は +2 時間、夏は +3 時間**進むはず。
+- 検証の方法: API の時刻を −240〜+240 分の 1 分刻みでずらし、1 分ごとの終値の変化の相関と、tick の数の相関が最大になるずれを探した（K-3 の終値の差の中央値より強い方法）。
+- 観察: **冬・夏とも −120 分で最大**（冬: 変化の相関 0.768・tick の数の相関 0.551、夏: 0.960・0.839）。−180 分では冬 0.027、夏 −0.217。**夏（3/19）は仮説の −3 時間ではなく −2 時間**。
+- 配布 CSV の側の規則（米国の夏時間に合わせる）は、2019-03 の月全体で FXCM（UTC）とずらし 0 分で揃うことを確かめ済み（付録 F-3。終値の差の中央値 0.10）。食い違いは API の側にあると見る。
+- 考えられる原因（未確認）: (1) API のサーバーの 2019 年の履歴が、夏時間なしの GMT+2 で付いている。(2) API のサーバーが欧州の夏時間の規則（2019 年は 3/31 に切り替え）で動いていて、3/19 はまだ GMT+2。(3) 照合の限界（2 時間ずつ 2 区間だけ）。(1) と (2) は、欧州の切り替えの後（例: 2023-03-28 や 2017-03-28。配布 CSV が手元にある月）の USDJPY の 2 時間を 1 回要求すれば見分けられる（GMT+2 固定なら −2 時間、欧州の規則なら −3 時間）。この要求は道具の段に無いので、まだ出していない。
+
+#### K-5.3 配布 CSV との差の原因の候補と検証（ずれ −120 分で比較）
+
+| 候補 | 今のデータで検証できるか・方法 | 結果 |
+|---|---|---|
+| (a) 比べ方の差（CSV は bid・ask の tick、API は足） | できる。CSV の bid・ask・mid の 1 分足を作って比べる | 終値の差（API − CSV、符号つき、銭）の中央値: bid 冬 −0.2・夏 +0.4、mid −0.55・−0.65、ask −0.85・−1.7。**bid が最も近い**が、0.1 銭以内の足は冬 6.7%・夏 0.8% だけ。4 値の完全一致は bid で 120 本中 1 本（冬）・0 本（夏） |
+| (b) 配信元の違い（口座の種類 `.cl`、プラン） | 一部できる。スプレッドと tick の数を比べる | API の spread は、CSV の同じ分の始めの ask−bid とも、分の最小の ask−bid とも 120 本中 0 本で一致（CSV の分の最小の中央値は冬 3・夏 23 ポイント、API は冬・夏とも 10）。tick_volume の中央値は CSV の 1 分あたりの tick の数の平均の約 1/6〜1/8（目安）。**別の気配の流れ（間引きや別の値付け）である可能性が高い**。口座の種類の違いそのものは、他の口座で取らないと確かめられない |
+| (c) 足の境界（始め・終わり、含む・含まない） | できる。境界を ±1 分ずらして比べる | bid の終値の差の中央値: −121 分 0.5、−120 分 0.4、−119 分 0.6（冬）。夏も −120 分が最小か同じ。**境界のずれでは説明できない** |
+| (d) 気配の集約の方法（足を作る規則） | できない（API の足の元の tick が取れない。`copy_ticks_range` が 0 件） | 未確認 |
+
+- まとめ（観察）: API の 1 分足は bid の足に近く、時刻は −2 時間で揃うが、値は CSV の bid と 0.2〜0.5 銭ほど食い違い、スプレッドと tick の数も違う。**配布 CSV と同じ配信ではない見込み**で、差の原因は (b)（または (d)）の可能性が高い。断定はしない。
+- バックテストの設計への当てはめ（同じ足の中の利確と損切り、ask の扱い）は別の設計役が行う（人間の第 9 回の指示の (A)）。ここでは、ask の足が無いこと、spread は 1 本に 1 つの値（ヘルプでは足の中の最小）であること、足の中の価格の順序は分からないことだけを記録する。
+
 ---
 
 ## 改訂履歴
@@ -1256,3 +1293,4 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 | v0.5 案 | 2026-10-15 | 節 J（OANDA MT5 Python API の経路の記録: OANDA・MetaQuotes の公式ページの逐語、実測の環境の費用の資料、保存したページのハッシュ）を追加。G-1 の問い 6 を MT5 API の問いに改めた |
 | v0.6 案 | 2026-10-15 | 節 J-5（AWS 上の Windows での試験の費用の資料: EC2・EBS・データ転送の公開の価格表、EC2・EBS・VPC の料金ページの原文、保存したファイルのハッシュ）を追加 |
 | v0.7 案（作業記録） | 2026-10-15 | 節 K（AWS 試験の作業記録: 人間の事前の作業 K-1（12 手順）、試験の途中の人間の作業 K-2（9 手順）、作業役の作業の記録 K-3、費用の再見積 K-4）。人間の第 8 回の分担による。スクリプトは `tools/survey/aws_mt5_probe/` |
+| v0.7 案（作業記録の追加） | 2026-10-15 | 節 K-5（API の 1 分足の項目、時刻の約 2 時間のずれの観察と仮説、配布 CSV との差の原因の候補と検証）。人間の第 9 回の指示による |
