@@ -10,11 +10,12 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 |---|---|---|
 | `00_check.sh` | なし | プロファイルの確認、AMI の特定、人間の事前作業（SSM 用のロール・Budgets）の確認、起動の権限の試し（EC2 の `--dry-run`）、費用の再見積 |
 | `10_launch.sh --execute` | **始まる** | セキュリティグループ（RDP を人間の IP だけ）・キーペアを作り、t3.medium を 1 台起動。司令塔の「起動してよい」の後だけ |
-| `95_deadline_guard.sh` | — | 起動から 6 時間で `90_teardown.sh --execute` を実行する見張り（Mac で裏で動かす） |
+| `95_deadline_guard.sh` | — | 起動から 4 時間（時刻の調査 3 時間＋空白の測定 1 時間）で `90_teardown.sh --execute` を実行する見張り（Mac で裏で動かす） |
 | `20_prepare.sh --execute` | 続く | Python 3.12.10・MetaTrader5 5.0.6231 を入れ、試験の道具を `C:\probe\` に置く。RDP の接続先とパスワードの出し方を表示 |
 | （人間） | 続く | RDP で接続し、OANDA のマイページから MT5 の端末を入れてログインし、チャートを閉じ、RDP を「切断」する（付録 K-2） |
 | `30_run_probe.sh [段] --execute` | 続く | 試験の道具を実行。段は `usdjpy-time`（既定）・`usdjpy-range`・`others` |
 | `40_collect.sh <段> --execute` | 続く | 結果を回収し `data/raw/oanda_mt5_probe/<試験の日付>/<段>/` に置き、SHA-256 の一覧を作る |
+| `35_time_survey.sh <段> --execute` | 続く | 時刻の調査（D12 §11.7）の段と空白の測定（§11.9、段 G）を実行し、回収し、Mac で評価して決定木の次の段を示す（付録 K-8） |
 | `90_teardown.sh --execute` | 止まる | 終了と削除、残りの確認（`--verify` は確認だけ） |
 
 `--execute` を付けなければ、どのスクリプトも計画を表示するだけで何も変えない。
@@ -24,7 +25,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 - AWS CLI は `lib.sh` の `aws_p` でだけ呼び、プロファイル `odyssey-mt5-probe`・リージョン `ap-northeast-1` に固定する。環境変数の認証情報は消してから呼ぶ。認証情報のファイルは読まない。
 - 作るものにはタグ `Project=odyssey-mt5-probe` と、`odyssey-mt5-probe` を含む名前を付ける。消すのはこのタグのものだけ。
 - 構成: t3.medium、CPU クレジットは標準、gp3 30 GB（終了時に削除）、Elastic IP なし、IMDSv2 必須、受信は RDP を人間の IP（`PROBE_RDP_CIDR`、既定 126.221.39.9/32）からだけ、シャットダウンの動作は停止、Windows の中で 5 時間 30 分後に自動の停止。
-- 起動から 6 時間を超えたら、`90_teardown.sh` 以外は動かない（`check_deadline`）。
+- 起動から 4 時間（作業上限）を超えたら、`90_teardown.sh` 以外は動かない（`check_deadline`）。ディスクは起動時から 60 GB（上限。拡張しない）。
 - 要求の区間は試験の道具の段の名前でだけ指定する。道具は 2024-01-01T00:00Z 以降を含む要求を出さない。`30_run_probe.sh` は実行の前に、注文・売買・口座の関数の呼び出しが道具に無いことを文字列で確かめる。
 - 回収するのは道具の出力（`C:\probe\out\<段>`）だけ。MT5 の端末のデータのフォルダは読まない。
 

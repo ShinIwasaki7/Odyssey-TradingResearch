@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import hashlib
 import importlib
 import json
@@ -616,6 +617,304 @@ def compare_ticks(
     return out
 
 
+# --- 時刻の調査（D12 §11.7。人間の決定 D12-34・D12-35） -----------------------------------------
+#
+# 1 分足だけを要求する。週末の区間は API の時刻の値で金曜 18:00〜月曜 02:00、
+# 火曜の区間は 00:00〜02:00。保存するのは足の時刻の並び・件数と、
+# 火曜の区間の配布 CSV との照合の統計（E1）だけ。
+# 価格の値はメモリの中で比べるだけで、ファイルにも標準出力にも出さない。
+
+#: 時刻の調査の要求の上限（D12 §11.7.3。段の 67 と決定木の追加 20）。
+TIME_SURVEY_BASE_REQUESTS = 67
+TIME_SURVEY_EXTRA_REQUESTS = 20
+#: E1 の照合で試すずれ（時間。API の時刻 − UTC の候補を引く向き）。
+E1_SHIFTS_HOURS: tuple[int, ...] = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
+STATES: tuple[str, ...] = ("S1", "S2", "S3", "S4")
+
+
+@dataclass(frozen=True)
+class SurveyRequest:
+    """時刻の調査の 1 要求。
+
+    ``kind`` は ``weekend``（``date`` は日曜）か ``tuesday``（``date`` は火曜）。
+    """
+
+    rid: str
+    stage: str
+    pair: str
+    kind: str
+    date: str
+    state: str
+
+    def window(self) -> Window:
+        d = datetime.fromisoformat(self.date).replace(tzinfo=UTC)
+        if self.kind == "weekend":
+            if d.weekday() != 6:
+                raise ValueError(f"週末の区間の日付は日曜: {self.rid}")
+            return Window(
+                self.rid,
+                d - timedelta(days=2) + timedelta(hours=18),
+                d + timedelta(days=1, hours=2),
+            )
+        if self.kind == "gapweek":
+            # 空白の測定の代表週（D12 §11.9.2）。API の時刻の値で日曜 00:00〜土曜 03:00
+            # （ずれ +2〜+3 時間でも日曜の開場の前から金曜の閉場の後までを含む）。
+            if d.weekday() != 6:
+                raise ValueError(f"代表週の日付は日曜: {self.rid}")
+            return Window(self.rid, d, d + timedelta(days=6, hours=3))
+        if self.kind == "tuesday":
+            if d.weekday() != 1:
+                raise ValueError(f"火曜の区間の日付は火曜: {self.rid}")
+            return Window(self.rid, d, d + timedelta(hours=2))
+        raise ValueError(self.kind)
+
+
+_YEAR_SUNDAYS: dict[int, tuple[str, str, str, str]] = {
+    # 年: (S1 両方冬, S2 米国だけ夏・春, S3 両方夏, S4 米国だけ夏・秋) の日曜（D12 §11.7.2）
+    2017: ("2017-01-15", "2017-03-12", "2017-07-16", "2017-10-29"),
+    2018: ("2018-01-14", "2018-03-11", "2018-07-15", "2018-10-28"),
+    2019: ("2019-01-13", "2019-03-10", "2019-07-14", "2019-10-27"),
+    2020: ("2020-01-12", "2020-03-08", "2020-07-12", "2020-10-25"),
+    2021: ("2021-01-17", "2021-03-14", "2021-07-11", "2021-10-31"),
+    2022: ("2022-01-16", "2022-03-13", "2022-07-17", "2022-10-30"),
+    2023: ("2023-01-15", "2023-03-12", "2023-07-16", "2023-10-29"),
+}
+
+
+def _weekends(
+    stage: str, pair: str, years: Sequence[int], states: Sequence[str]
+) -> list[SurveyRequest]:
+    out = []
+    for y in years:
+        for s in states:
+            date = _YEAR_SUNDAYS[y][STATES.index(s)]
+            out.append(SurveyRequest(f"{stage}-{pair}-W{date}", stage, pair, "weekend", date, s))
+    return out
+
+
+def _tuesdays(stage: str, pair: str, items: Sequence[tuple[str, str]]) -> list[SurveyRequest]:
+    return [SurveyRequest(f"{stage}-{pair}-T{d}", stage, pair, "tuesday", d, s) for d, s in items]
+
+
+#: D12 §11.7.2 の段（新しい年から）。A2 10・A1 23・B1 28・B2 6 の計 67。
+TIME_SURVEY_STAGES: dict[str, tuple[SurveyRequest, ...]] = {
+    "A2": tuple(
+        _weekends("A2", USDJPY, (2023, 2019), STATES)
+        + _tuesdays("A2", USDJPY, (("2023-03-07", "S1"), ("2023-03-14", "S2")))
+    ),
+    "A1": tuple(
+        _weekends("A1", USDJPY, (2022, 2021, 2020, 2018, 2017), STATES)
+        + _tuesdays(
+            "A1", USDJPY, (("2017-03-07", "S1"), ("2017-03-14", "S2"), ("2017-03-28", "S3"))
+        )
+    ),
+    "B1": tuple(
+        r for pair in OTHER_PAIRS for r in _weekends("B1", pair, (2023, 2019), ("S2", "S3"))
+    ),
+    "B2": tuple(
+        r
+        for pair in ("EURJPY", "EURUSD", "GBPJPY")
+        for r in _tuesdays("B2", pair, (("2019-03-05", "S1"), ("2019-03-19", "S2")))
+    ),
+}
+
+
+#: 空白の測定（D12 §11.9.2。人間の決定 D12-38・D12-39）の代表週の日曜。
+#: W1 は 6 月の第 1 金曜を含む週、
+#: W2 は日曜が 12 月 22〜28 日にある週。8 通貨 × 7 年 × 2 週 = 112 要求。保存するのは足の時刻だけ。
+GAP_WEEK_SUNDAYS: dict[int, tuple[str, str]] = {
+    2017: ("2017-05-28", "2017-12-24"),
+    2018: ("2018-05-27", "2018-12-23"),
+    2019: ("2019-06-02", "2019-12-22"),
+    2020: ("2020-05-31", "2020-12-27"),
+    2021: ("2021-05-30", "2021-12-26"),
+    2022: ("2022-05-29", "2022-12-25"),
+    2023: ("2023-05-28", "2023-12-24"),
+}
+GAP_PAIRS: tuple[str, ...] = (USDJPY, *OTHER_PAIRS)
+GAP_STAGE: tuple[SurveyRequest, ...] = tuple(
+    SurveyRequest(f"G-{pair}-{wk}-{d}", "G", pair, "gapweek", d, wk)
+    for pair in GAP_PAIRS
+    for year in sorted(GAP_WEEK_SUNDAYS, reverse=True)
+    for wk, d in zip(("W1", "W2"), GAP_WEEK_SUNDAYS[year], strict=True)
+)
+GAP_REQUESTS = 112
+
+
+def load_plan_file(path: Path) -> list[SurveyRequest]:
+    """決定木の追加の要求（JSON の配列）を読む。区間を確かめる。"""
+    items = json.loads(path.read_text(encoding="utf-8"))
+    reqs = [SurveyRequest(**item) for item in items]
+    for r in reqs:
+        check_window(r.window())
+    return reqs
+
+
+def _bar_key(row: Mapping[str, Any], digits: int) -> tuple[str, str, str, str]:
+    return tuple(f"{float(row[k]):.{digits}f}" for k in ("open", "high", "low", "close"))  # type: ignore[return-value]
+
+
+def e1_stats(
+    api_rows: Sequence[Mapping[str, Any]],
+    ref_bars: Mapping[int, Sequence[str]],
+    digits: int,
+    point: float,
+) -> list[dict[str, Any]]:
+    """API の 1 分足と、配布 CSV の bid で作った 1 分足（UTC の分の始め → 4 値の文字列）を、
+    ずれの候補ごとに比べた統計。価格の値は返さない。"""
+    out: list[dict[str, Any]] = []
+    api_bars = {int(r["time"]): _bar_key(r, digits) for r in api_rows}
+    ref = {int(t): tuple(f"{float(v):.{digits}f}" for v in vals) for t, vals in ref_bars.items()}
+    for h in E1_SHIFTS_HOURS:
+        pairs = [(a, ref[t - h * 3600]) for t, a in api_bars.items() if (t - h * 3600) in ref]
+        exact = sum(a == b for a, b in pairs)
+        diffs = sorted(abs(float(a[3]) - float(b[3])) / point for a, b in pairs)
+        med = diffs[len(diffs) // 2] if diffs else None
+        out.append(
+            {
+                "shift_hours": h,
+                "compared": len(pairs),
+                "ohlc_exact": exact,
+                "median_abs_close_diff_points": round(med, 1) if med is not None else None,
+            }
+        )
+    return out
+
+
+@dataclass
+class SurveyRecord:
+    """時刻の調査の 1 要求の記録（価格の値は持たない）。"""
+
+    rid: str
+    stage: str
+    pair: str
+    kind: str
+    date: str
+    state: str
+    executed_at_utc: str
+    symbol: str | None
+    symbol_chart_mode: int | None
+    symbol_point: float | None
+    symbol_digits: int | None
+    requested_from_api_time: str
+    requested_to_api_time: str
+    returned_count: int
+    out_of_window_count: int
+    bar_times: list[int]
+    last_error: str
+    disk_free_before_bytes: int | None
+    disk_free_after_bytes: int | None
+    e1: list[dict[str, Any]] | None
+    skipped: str | None = None
+
+
+def run_time_survey(
+    api: Mt5Api,
+    plan: Sequence[SurveyRequest],
+    max_requests: int,
+    e1_ref: Mapping[str, Mapping[int, Sequence[str]]] | None = None,
+    disk_free: Callable[[], int] | None = None,
+    min_free_bytes: int = MIN_FREE_BYTES,
+) -> list[SurveyRecord]:
+    """時刻の調査の要求を順に出す。上限（要求の数・ディスクの空き）に達したら、残りは出さずに記録する。"""
+    windows = [r.window() for r in plan]
+    for w in windows:
+        check_window(w)  # 1 つでも 2024 年以降を含めば、何も要求せずに止まる
+    resolved: dict[str, tuple[str | None, tuple[int | None, float | None, int | None]]] = {}
+    out: list[SurveyRecord] = []
+    sent = 0
+    stop: str | None = None
+    for req, w in zip(plan, windows, strict=True):
+        stamp = datetime.now(tz=UTC).isoformat()
+        free_before = disk_free() if disk_free else None
+        if stop is None and sent >= max_requests:
+            stop = "request_limit"
+        if stop is None and free_before is not None and free_before < min_free_bytes:
+            stop = "low_disk"
+        if req.pair not in resolved:
+            sym = resolve_symbol(api, req.pair)[0] if stop is None else None
+            meta: tuple[int | None, float | None, int | None] = (None, None, None)
+            if sym is not None:
+                api.symbol_select(sym, True)
+                meta = symbol_meta(api, sym)
+            resolved[req.pair] = (sym, meta)
+        symbol, (mode, point, digits) = resolved[req.pair]
+        rows: list[dict[str, Any]] = []
+        outside: list[float] = []
+        error = ""
+        e1 = None
+        if stop is None and symbol is not None:
+            rows, outside = split_by_window(request_once(api, KIND_M1, symbol, w), w)
+            sent += 1
+            error = str(api.last_error())
+            ref = (e1_ref or {}).get(req.rid)
+            if ref is not None and digits is not None and point:
+                e1 = e1_stats(rows, ref, digits, point)
+        out.append(
+            SurveyRecord(
+                rid=req.rid,
+                stage=req.stage,
+                pair=req.pair,
+                kind=req.kind,
+                date=req.date,
+                state=req.state,
+                executed_at_utc=stamp,
+                symbol=symbol,
+                symbol_chart_mode=mode,
+                symbol_point=point,
+                symbol_digits=digits,
+                requested_from_api_time=w.start.isoformat(),
+                requested_to_api_time=w.end.isoformat(),
+                returned_count=len(rows),
+                out_of_window_count=len(outside),
+                bar_times=[int(r["time"]) for r in rows],
+                last_error=error,
+                disk_free_before_bytes=free_before,
+                disk_free_after_bytes=disk_free() if disk_free else None,
+                e1=e1,
+                skipped=stop if stop is not None else (None if symbol else "symbol_not_found"),
+            )
+        )
+    return out
+
+
+def _cmd_timesurvey(args: argparse.Namespace) -> int:
+    if args.stage == "G":
+        plan = list(GAP_STAGE)
+    else:
+        plan = list(TIME_SURVEY_STAGES[args.stage]) if args.stage != "extra" else []
+    if args.plan_file:
+        plan += load_plan_file(Path(args.plan_file))
+    e1_ref: dict[str, dict[int, list[str]]] | None = None
+    if args.e1_ref:
+        raw = json.loads(gzip.decompress(Path(args.e1_ref).read_bytes()).decode("utf-8"))
+        e1_ref = {rid: {int(t): v for t, v in bars.items()} for rid, bars in raw.items()}
+    api = load_mt5()
+    if not api.initialize():
+        print(json.dumps({"initialize": False, "last_error": str(api.last_error())}))
+        return 2
+    try:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        info = api.terminal_info()
+        data_path = Path(str(getattr(info, "data_path", "") or out_dir))
+        records = run_time_survey(
+            api,
+            plan,
+            max_requests=args.max_requests,
+            e1_ref=e1_ref,
+            disk_free=lambda: shutil.disk_usage(data_path).free,
+        )
+        summary = {"stage": args.stage, **terminal_summary(api)}
+        summary["requests"] = [asdict(r) for r in records]
+        path = out_dir / f"summary_ts-{args.stage}.json"
+        path.write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(path)
+    finally:
+        api.shutdown()
+    return 0
+
+
 def _cmd_probe(args: argparse.Namespace) -> int:
     api = load_mt5()
     if not api.initialize():
@@ -666,12 +965,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = sub.add_parser("probe", help="Windows の MT5 から短い区間を要求する")
     p.add_argument("--phase", choices=sorted(PHASES), required=True)
     p.add_argument("--out-dir", required=True)
+    t = sub.add_parser("timesurvey", help="時刻の調査の段（D12 §11.7）を Windows の MT5 で要求する")
+    t.add_argument("--stage", choices=[*TIME_SURVEY_STAGES, "extra", "G"], required=True)
+    t.add_argument("--out-dir", required=True)
+    t.add_argument("--max-requests", type=int, required=True)
+    t.add_argument("--plan-file")
+    t.add_argument("--e1-ref")
     c = sub.add_parser("compare", help="USDJPY の tick を配布 CSV と突き合わせる（Mac）")
     c.add_argument("--probe-dir", required=True)
     c.add_argument("--oanda-csv", required=True)
     args = parser.parse_args(argv)
     if args.command == "probe":
         return _cmd_probe(args)
+    if args.command == "timesurvey":
+        return _cmd_timesurvey(args)
     return _cmd_compare(args)
 
 

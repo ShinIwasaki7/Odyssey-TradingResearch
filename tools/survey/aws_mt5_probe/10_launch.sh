@@ -31,10 +31,10 @@ done
 
 userdata=$(mktemp)
 trap 'rm -f "$userdata"' EXIT
-# 起動の時に Windows の中で自動の停止（5 時間 30 分後）を入れる。シャットダウンの動作は「停止」。
+# 起動の時に Windows の中で自動の停止（4 時間 30 分後）を入れる。シャットダウンの動作は「停止」。
 cat >"$userdata" <<PS
 <powershell>
-shutdown /s /t ${PROBE_SHUTDOWN_SECONDS} /c "odyssey-mt5-probe auto stop (5h30m)"
+shutdown /s /t ${PROBE_SHUTDOWN_SECONDS} /c "odyssey-mt5-probe auto stop (4h30m)"
 </powershell>
 PS
 
@@ -49,7 +49,7 @@ cat >&2 <<INFO
   キーペア: ${key_name}（秘密鍵は ${key_file}、権限 600。リポジトリの外）
   シャットダウンの動作: 停止。Windows の中で ${PROBE_SHUTDOWN_SECONDS} 秒後に自動の停止
   タグ: ${PROBE_TAG_KEY}=${PROBE_TAG_VALUE}
-  作業役が必ず終了する時刻: 起動から 6 時間
+  作業役が必ず終了する時刻: 起動から 4 時間（Windows の中の自動の停止は 4 時間 30 分で、止め忘れの備え）
 INFO
 
 if [[ "$EXECUTE" != 1 ]]; then
