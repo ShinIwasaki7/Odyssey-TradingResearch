@@ -4,7 +4,7 @@
 
 **この記録の性質**
 
-- 調査は 2026-10-15 14:14〜15:00 ごろ（JST）。公開ページの閲覧と、登録不要・無料のファイルの取得だけ。購入・申込・登録・問い合わせはしていない。
+- 調査は 2026-10-15 14:14〜14:28 ごろ（JST。取得したファイルの保存時刻から）。**節 A・B の調査役の記録にある 14:25 より後の時刻（「14:42 頃」など）は調査役の推定の書き誤りで、実際の保存時刻は 14:14〜14:23（ページ）・14:17（HistData の zip）・14:18（FXCM の 2019 年分）である**（照合役の確認、2026-10-15）。下では時刻の後に〔保存時刻〕を添えた。公開ページの閲覧と、登録不要・無料のファイルの取得だけ。購入・申込・登録・問い合わせはしていない。
 - 節 A・B は調査役（2 つ）の記録をほぼそのまま写した。ページの読み取りの一部は要約の道具（WebFetch）を経由したので、「引用」は要約が返した文で、原文との一字一句の照合はしていない。検索結果だけに基づく事実は【二次】と印を付けた。
 - **2024-01-01 以降の価格は取得・閲覧していない**。2024 年以降については、ページの表示か、ファイルの有無（HTTP の HEAD）だけを確かめた。
 - サンプルと取得したページは、リポジトリの外の作業用の場所（scratchpad、以下 `<scratch>`）に置いた。`<scratch>/survey_samples/<提供元>/`（サンプル）、`<scratch>/survey_scripts/`（取得したページと解析の道具）、`<scratch>/d12_scripts/`（設計役の道具）。**リポジトリの `data/` には何も置いていない**。正式な置き場は D12 §7.2 の【提案】。
@@ -43,10 +43,10 @@
 ### A-2. HistData.com
 
 #### 出典・取得日時（JST）
-- https://www.histdata.com/f-a-q/ （2026-10-15 14:25 頃）
+- https://www.histdata.com/f-a-q/ （2026-10-15 14:25 頃〔保存時刻 14:14〜14:23 の間〕）
 - https://www.histdata.com/f-a-q/data-files-detailed-specification/
 - https://www.histdata.com/download-free-forex-data/ , https://www.histdata.com/download-by-ftp/ , https://www.histdata.com/about-us/
-- ペア別の年一覧: `https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/usdjpy/2019` ほか（同日 14:28〜14:40）
+- ペア別の年一覧: `https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/usdjpy/2019` ほか（同日 14:28〜14:40〔保存時刻 14:14〜14:23 の間〕）
 
 #### 確認した事実
 - 通貨ペア: FAQ の一覧に USD/JPY, USD/CHF, AUD/JPY, EUR/USD, EUR/JPY, GBP/JPY, GBP/USD, AUD/USD の 8 つ全てあり。
@@ -66,7 +66,7 @@
 - 再配布・商用・研究利用の可否: 未確認（明文なし）。
 
 #### サンプル
-- 取得: 2026-10-15 約 14:42 JST。`survey_samples/histdata/HISTDATA_COM_ASCII_USDJPY_M1_2019.zip`
+- 取得: 2026-10-15 約 14:42 JST〔保存時刻 14:17〕。`survey_samples/histdata/HISTDATA_COM_ASCII_USDJPY_M1_2019.zip`
   - SHA-256 `c1e4fed59edb1a31b99e4e8b3d1e71c174ca48b3947bf11fcb31c85b98d78dcd`（3,329,299 バイト）
 - 展開（別ディレクトリ `histdata/extracted/`）:
   - `DAT_ASCII_USDJPY_M1_2019.csv` SHA-256 `733abb305f9a0e8f0f50c5cfc0faf2df35c10c5751866f4242e0597eaccb6287`
@@ -83,8 +83,8 @@
 ### A-3. FXCM の公開履歴（candledata.fxcorporate.com）
 
 #### 出典・取得日時（JST）
-- https://github.com/fxcm/MarketData （README 原文、2026-10-15 14:45 頃）
-- https://candledata.fxcorporate.com/m1/USDJPY/2019/{9..14}.csv.gz （同日 14:46 頃）
+- https://github.com/fxcm/MarketData （README 原文、2026-10-15 14:45 頃〔保存時刻 14:14〜14:23 の間〕）
+- https://candledata.fxcorporate.com/m1/USDJPY/2019/{9..14}.csv.gz （同日 14:46 頃〔保存時刻 14:18〕）
 - https://tickdata.fxcorporate.com/ （同日。302 で Cloudflare Access のログインへ。ログインしていない）
 - EULA https://www.fxcm.com/uk/forms/eula/ は 403（Cloudflare チェック）で本文を読めず。
 
@@ -103,7 +103,7 @@
 - "Please use our FXCM apps if you want the full data."
 - 再配布・商用の可否は EULA 本文が読めず未確認。
 
-#### サンプル（取得 2026-10-15 約 14:46 JST、`survey_samples/fxcm/`）
+#### サンプル（取得 2026-10-15 約 14:46 JST〔保存時刻 14:18〕、`survey_samples/fxcm/`）
 | ファイル | SHA-256 |
 |---|---|
 | USDJPY_m1_2019_w9.csv.gz | 30a79a84b92b2e93609c781b3f5f6453da906f2b7771c7d39a3d12dcc8f68c98 |
@@ -160,7 +160,7 @@
 
 ### A-5. TrueFX
 
-- https://www.truefx.com/truefx-historical-downloads/ （2026-10-15 14:48 頃）
+- https://www.truefx.com/truefx-historical-downloads/ （2026-10-15 14:48 頃〔保存時刻 14:14〜14:23 の間〕）
   - "Please log in or register for free access to the historical data downloads."
   - 「historical tick-by-tick market data, at zero cost to you」。"Top-of-book, tick-by-tick market data"。
 - 通貨ペア・開始年・形式・時刻基準・bid/ask・規約: 公式ページに記載なし（未確認）。第三者資料（2012 年の R パッケージのコミット）は「15 ペア、2009-05 から、bid/ask tick」とするが古く未検証。
@@ -178,7 +178,7 @@
 
 調査の記録の冒頭（原文）:
 
-取得日時: 2026-10-15 14:14〜約15:00 JST。方法: WebFetch/WebSearch のみ。購入・登録・問い合わせなし。
+取得日時: 2026-10-15 14:14〜約15:00 JST〔終わりの時刻は推定の書き誤り。調査役の終了は 14:18 ごろ（所要約 3.5 分）〕。方法: WebFetch/WebSearch のみ。購入・登録・問い合わせなし。
 注意: WebFetch は小型モデルによる要約経由のため、「原文引用」は要約が返した引用であり、ページ原文との照合は未実施。要約・検索結果由来は【二次】と記す。
 サンプル: ダウンロードしていない（理由は各項。保存先 survey_samples/ は空）。
 対象8ペア: USDJPY USDCHF AUDJPY EURUSD EURJPY GBPJPY GBPUSD AUDUSD。ペア別の提供有無は、特記なき限り「未確認」。
@@ -200,7 +200,7 @@
 
 #### 無料の候補の調査で見た OANDA の公開ページ
 
-- https://developer.oanda.com/rest-live-v20/introduction/ , https://developer.oanda.com/rest-live-v20/instrument-df/ （2026-10-15 14:49 頃）。instrument-ep（エンドポイント詳細）は 404 で未読。
+- https://developer.oanda.com/rest-live-v20/introduction/ , https://developer.oanda.com/rest-live-v20/instrument-df/ （2026-10-15 14:49 頃〔保存時刻 14:14〜14:23 の間〕）。instrument-ep（エンドポイント詳細）は 404 で未読。
 - 条件: "To use this API you must have a v20 trading account…"。"Get an OANDA v20 fxTrade account - Try a free demo account or open a live account"。"Generate your personal access token immediately after you agree to the API license."（口座とトークンが必須。取得していない）
 - 粒度: S5, S10, S15, S30, M1（minute alignment）, M2〜M30, H1 など。ローソク足 `time` は "The start time of the candlestick"。bid / ask / mid は要求した種別のみ返る。
 - 提供期間、通貨ペア、DST 基準（dailyAlignment 等）、取得上限、データ利用条件（API ライセンス本文）: 未確認。
