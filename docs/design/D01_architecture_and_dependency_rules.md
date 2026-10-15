@@ -148,7 +148,7 @@ app → evaluation → backtest → strategy → marketdata → common
 | `ExperimentStore` | `evaluation.application.ports` | `evaluation.adapters.fs_store` | 実験 manifest・探索履歴の保存、試行台帳の追記と読込（v2.9。D09 v0.2 §10.10・§16.2 の7。操作は D07 §3） |
 | `TickArchiveSource` | `marketdata.application.ports` | `marketdata.adapters` | 元データの再取得（補充）で、時間ファイル1本を提供元から取得して結果を返す（v2.9。D03 v1.15 §14.16・§14.20 の1） |
 | `RefillStore` | `marketdata.application.ports` | `marketdata.adapters` | 補充の作業ディレクトリ・tick の保管場所・補充分の読み書き（v2.9。同上） |
-| `HoldoutAccessLog` | `evaluation.application.ports` | `marketdata` の消費の記録の追記・導出と、git の取得・コミット・push を行う adapters（`app` が適合させる。v2.8。D09 v0.1 §16 の9、2026-09-29 の人間の決定 Q11） | 封印期間の**消費の記録**（`access_log.jsonl`。ADR-0014 の許可の発行・消費と、研究・開発用途の opt-in の記録）。品質確認の閲覧の記録は持たない（v2.11。ADR-0035・ADR-0036）（操作は D09 の後続版） |
+| `HoldoutAccessLog` | `evaluation.application.ports` | `marketdata` の消費の記録の追記・導出と、git の取得・コミット・push を行う adapters（`app` が適合させる。v2.8。D09 v0.1 §16 の9、2026-09-29 の人間の決定 Q11） | 封印期間の**消費の記録**（`access_log.jsonl`。ADR-0014 の許可の発行・消費と、研究・開発用途の opt-in の記録）。品質確認の閲覧の記録は持たない（v2.11。ADR-0035・ADR-0036）（操作は D09 の後続版）。v2.11: 後から品質確認の条件違反と判定した閲覧の消費の記録も、人間だけが使う管理コマンド（`app.cli`。順 4a で足す）がこのポートを通して追記・コミット・push する（【決定】PR #80 の仮置き 20。ADR-0035 第3項） |
 | `QualityAccessLog`【決定】 | `evaluation.application.ports` | `marketdata.adapters` の品質確認の閲覧の記録の追記を行う adapters（行の型は `marketdata.domain`。`app` が適合させる。`HoldoutAccessLog` と同じ形） | 2024 年以降の区分の**品質確認の閲覧の記録**の追記（v2.11。ADR-0035 の第4項、ADR-0036 の第9項の 4）。消費の記録とは別のポート・別の記録 |
 
 ポート名は D02 以降で変更されうるが、**所在（どのパッケージの application が定義するか）と実装者の層**は本書で確定する。
