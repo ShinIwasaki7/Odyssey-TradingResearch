@@ -670,9 +670,196 @@
 
 ---
 
+## E. Tick Data へのサンプルと見積の条件の申請文（v0.3。**送信していない**。人間が送る）
+
+人間の決定（2026-10-15、第 2 回）「Tick Dataはサンプルと見積条件を確認する方向に賛成です。申請文を作成してください。購入・有料契約は別途判断します。」に基づく下書き。送り先は Tick Data の Web のフォーム（"Sample Data"・"Data Pricing"。付録 B-9）。フォームの項目に合わせて切り貼りする前提。**購入・契約・2024 年以降のデータの請求はしない文面にした**。
+
+### E-1. 日本語（人間の確認用）
+
+> 件名: スポット FX の過去データのサンプルと見積の条件についての問い合わせ
+>
+> 個人で、非公開の研究（売買の手法の検証。第三者への再配布はしません）のために、スポット FX の過去データの購入を検討しています。購入の判断の前に、サンプルと見積の条件を確認させてください。
+>
+> **1. 対象**
+> - 通貨ペア（8）: USD/JPY、USD/CHF、AUD/JPY、EUR/USD、EUR/JPY、GBP/JPY、GBP/USD、AUD/USD
+> - 期間: 2017-01-01 〜 2023-12-31（この期間だけ。2024 年以降は今回は不要です）
+> - 粒度: tick（第一希望）。1 分足は参考
+> - 価格種別: bid と ask の両方（tick）。生の値と、疑わしい tick の印・補正案の両方が含まれる形式を希望
+> - 時刻: UTC での出力を希望。できない場合は、時刻帯と夏時間の扱いを書いた資料をください。精度はミリ秒
+> - 形式: ASCII（CSV）。ペア × 日（または月）ごとのファイル。ファイルごとのチェックサムがあれば希望
+>
+> **2. サンプル**
+> - USD/JPY の 2019 年 3 月の tick（bid・ask、生の値と印つき）を希望します。難しければ、2017〜2023 年の中の任意の 1 か月でかまいません
+> - 2024 年 1 月 1 日以降のデータを含めないでください
+>
+> **3. 見積の前提**
+> - 上の 8 ペア × 2017〜2023 年の tick の一括購入（更新の購読は今は不要。将来の追加は別に相談）
+> - 利用者 1 名、個人の非公開の研究、再配布なし、データは非公開の手元の記憶装置に保存
+> - 1 分足を同時に購入した場合との差額も知りたい
+>
+> **4. 確認したいこと**
+> 1. 個人の非公開の研究のための利用と、購入後のデータ（と、そこから作る足）の保存が、利用許諾で認められるか。許諾の文書をいただけますか
+> 2. 過去データが後から修正されることがあるか。ある場合、版の管理と再ダウンロードの方法
+> 3. 欠落・配信の停止・祝日の扱いについての資料があるか
+> 4. 気配の出し手（集約の対象）と、bid・ask の作り方（同じ気配の組か）の資料があるか
+> 5. 支払い・納品の方法と、購入後の再ダウンロードの可否
+
+### E-2. 英語（送信用の下書き）
+
+> Subject: Request for a sample and quote conditions — historical spot FX tick data (private research)
+>
+> I am an individual considering a purchase of historical spot FX data for private, non-commercial research (testing trading methods; no redistribution to third parties). Before deciding, I would like to request a sample and confirm the quote conditions.
+>
+> **1. Scope**
+> - Currency pairs (8): USD/JPY, USD/CHF, AUD/JPY, EUR/USD, EUR/JPY, GBP/JPY, GBP/USD, AUD/USD
+> - Period: 2017-01-01 to 2023-12-31 only (data from 2024 onward is not needed for this request)
+> - Granularity: tick (preferred); 1-minute bars for reference
+> - Price types: both bid and ask (tick). Preferably a format containing both raw prices and your suspect-tick flags / suggested corrections
+> - Timestamps: UTC output preferred. If not available, please provide documentation of the time zone and daylight-saving handling. Millisecond precision
+> - Format: ASCII (CSV), one file per pair per day (or month); per-file checksums if available
+>
+> **2. Sample**
+> - USD/JPY tick data for March 2019 (bid and ask, raw and flagged). If that is not possible, any single month between 2017 and 2023 is fine
+> - Please do not include any data dated on or after 2024-01-01
+>
+> **3. Assumptions for the quote**
+> - One-time purchase of tick data for the 8 pairs above, 2017–2023 (no ongoing update subscription for now)
+> - One user; private, non-commercial research; no redistribution; data stored on private local storage
+> - Please also indicate the price difference if 1-minute bars are included
+>
+> **4. Questions**
+> 1. Does the license permit private research use and retention of the purchased data (and bars derived from it) after purchase? Could you share the license document?
+> 2. Is historical data ever revised after delivery? If so, how are versions managed and can updated files be re-downloaded?
+> 3. Is there documentation on gaps, feed outages and holiday handling?
+> 4. Is there documentation on the contributing sources and on how bid and ask are formed (i.e., whether each bid/ask pair comes from the same quote)?
+> 5. Payment and delivery methods, and whether re-downloads are possible after purchase.
+
+### E-3. 送る前に人間が決めること
+
+- 名前・連絡先・国をフォームに書くこと（Tick Data に連絡先を渡すこと）を承認するか。
+- 用途を「個人の非公開の研究」と書いてよいか（実態と違えば直す）。
+- サンプルの月（2019 年 3 月の USD/JPY を推奨。OANDA・FXCM・HistData と同じ UTC 区間で比べられるため）。
+
+---
+
+## F. v0.3 案で足した確認（2026-10-15 15:36〜15:50 ごろ JST、設計役）
+
+道具は `<scratch>/d12_scripts/`、出力は `<scratch>/d12_work/`（ハッシュは F-6）。OANDA のファイルは人間が置いた研究期間の原データで、読んだだけ（変更・移動・上書きしていない）。どの道具も 2024 年以降の行があれば止まる。大きいファイルは 1 行ずつ読んだ（ストリーム処理）。
+
+### F-1. OANDA の 6 ファイルの形式と品質（`oanda_check.py`）
+
+| ファイル | SHA-256 | バイト | 行（見出しを除く） | 欄の数 | 日付・時刻の書式の違反 | 小数の桁（bid・ask） | 逆行 | 同じ時刻の連続 | 同じ内容の連続 | ask < bid | ask = bid | 空 | tick のある分 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| USDJPY/ticks_USDJPY-oj5k_2017-03.csv | e81a25e40df1132bac238be51dc53935d9a401eae14c61ba9b9ec64e52ec7f56 | 452,212,530 | 10,766,964 | 6 | 0 | 3・3 | 0 | 649 | 378 | 0 | 0 | 0 | 33,166 |
+| USDJPY/ticks_USDJPY-oj5k_2019-03.csv | 9ae0fe4de82a5ba2e97cab6450194f0afe29793b92f5ba87ab47d55284448ef2 | 235,513,950 | 5,607,474 | 6 | 0 | 3・3 | 0 | 40,442 | 37,824 | 0 | 0 | 0 | 30,659 |
+| USDJPY/ticks_USDJPY-oj5k_2023-03.csv | 1c65012d9997e065250c2f35e05350464738ebd2f87d0462aa667724f26ed6d8 | 289,878,036 | 6,901,857 | 6 | 0 | 3・3 | 0 | 0 | 0 | 0 | 0 | 0 | 33,430 |
+| EURJPY/ticks_EURJPY-oj5k_2019-03.csv | fbfc7dc6dec9505bb4c95118cfcc74c63b7e5f72c7bc4db4e98a37956759f80e | 317,656,080 | 7,563,239 | 6 | 0 | 3・3 | 0 | 12,630 | 11,504 | 0 | 0 | 0 | 30,659 |
+| EURUSD/ticks_EURUSD-oj5k_2019-03.csv | 3cdb8eaa56f15269eef62d8e5ce3a1c70741a70d20051f5fb98bddbd98cc4e26 | 206,962,476 | 4,927,677 | 6 | 0 | 5・5 | 0 | 17,600 | 16,588 | 0 | 0 | 0 | 30,660 |
+| GBPJPY/ticks_GBPJPY-oj5k_2019-03.csv | 66834f31e4e11ccea93ef5a04db19ff47128978d3a072493433bf42fbc484ea0 | 719,255,208 | 17,125,123 | 6 | 0 | 3・3 | 0 | 24,366 | 21,906 | 0 | 22 | 0 | 30,648 |
+
+- 見出しはすべて `<DATE>	<TIME>	<BID>	<ASK>	<LAST>	<VOLUME>`（タブ区切り）。
+- 最初と最後の tick（ファイルの時刻）: 2017-03 は 2017.02.28 17:00:00.029〜2017.03.31 17:59:59.987、2023-03 は 2023.02.28 17:00:00.049〜2023.03.31 17:59:59.982、2019-03 の 4 ファイルは 2019.02.28 17:00 台〜2019.03.29 23:59 台（GBPJPY の最後は 23:59:56.306）。
+- 2023-03 の日曜の行（ファイルの日付 2023.03.05・03.12・03.19・03.26 の 22:00 台〜23:59 台）: 169・424・795・470 行。ニューヨーク時間の日曜 15〜17 時（開場前）。2017-03・2019-03 のファイルに日曜の日付の行は無い。
+- `.gitignore` の 17 行目 `data/raw/*` の対象（2019-03 の USDJPY で `git check-ignore -v` を確認済み。同じディレクトリの形なので他も対象）。
+
+### F-2. OANDA の時刻の資料（WebFetch の要約、WebSearch。2026-10-15 15:38〜15:42 JST）
+
+- `https://www.oanda.jp/lab-education/blog_column/local_time/`（公式。日付の表示なし）: 「OANDAのMT5/MT4のサーバの時間は米国夏時間がGMT+3、米国冬時間がGMT+2となります。」「OANDAのMT5、MT4のサーバ時間は米国夏時間がGMT＋3、米国冬時間がGMT2となるため、米国夏時間の場合は6、米国冬時間の場合は7と入力すると、GMT9となり、日本時間（GMT+9）が表示されます。」
+- `https://www.oanda.jp/lab-education/blog_mt5/basicmt5/tickdata`（公式。日付の表示なし）: マイページの「ティックデータのダウンロード」から、通貨ペア・年・月を選んで ZIP をダウンロードする。**時刻帯・列・ファイル名の説明は無い**。
+- `https://www.oanda.jp/info/1159`（公式のお知らせ、2024-05-02）: 「変更前：USDJPY、EURJPY、EURUSD、GBPJPY」「変更後：USDJPY、EURJPY、EURUSD、GBPJPY、JP225、US30、US100、US500、XAUUSD」。改訂後のステータスの表でティックデータのダウンロードは Silver・Gold が利用可。時刻帯・期間・形式の記載は無い。
+- `https://www.fxnav.net/historicaldata/`（第三者、2026-09-30）【二次】: 「データは1カ月単位です。」「期間は「日本時間1日0：00～末日23：59まで」のデータになります。」FX は「2016年9月以降」。
+- **配布 CSV の時刻の基準を直接書いた公式資料は見つからなかった**。
+
+### F-3. 同じ UTC 区間・同じ取引カレンダーでの比較（`compare2.py`）
+
+- 区間: 各ファイルの日本時間の月（UTC で前月末 15:00Z〜当月末 15:00Z）。取引カレンダー `fx_ny17` の週の中の 1 分ごと（`zoneinfo` の `America/New_York`）。空白は長さを問わずすべて数える。比べた区間にカレンダー版 2 の休場の宣言は無い。
+- 読み方: OANDA は「ファイルの時刻 − 7 時間をニューヨークの現地時刻として UTC に直す」、FXCM は UTC のまま、HistData は EST 固定（+5 時間）とニューヨークの現地時刻の 2 通り。
+- FXCM の追加のファイル（研究期間。`https://candledata.fxcorporate.com/m1/<ペア>/<年>/<週>.csv.gz`、2026-10-15 15:37 JST ごろ、`<scratch>/survey_samples/fxcm_v3/`）: USDJPY 2017 年の週 9〜13 と 2023 年の週 9、EURUSD・EURJPY・GBPJPY 2019 年の週 9〜13（SHA-256 は F-6）。FXCM は保留（人間の決定）なので、比較の窓を埋めるためだけに使い、逆転の調査はしていない。
+
+| ペア・月 | 期待する分 | OANDA 欠け（週の外） | FXCM 欠け | HistData(EST) 欠け（週の外） | HistData(NY) 欠け（週の外） | bid の終値の差の中央値（ずらし −60・−1・0・+1・+60 分）OANDA 対 FXCM |
+|---|---|---|---|---|---|---|
+| USDJPY 2017-03 | 33,180 | 14（0） | 197 | 255（120） | 75（0） | 6.30・0.70・0.10・0.70・6.30 |
+| USDJPY 2019-03 | 30,660 | 1（0） | 100 | 98（0） | 214（116） | 4.00・0.50・0.10・0.50・4.00 |
+| USDJPY 2023-03 | 33,180 | 72（322） | 220 | 9,842（0） | 9,953（111） | 11.70・1.40・0.10・1.40・11.70 |
+| EURJPY 2019-03 | 30,660 | 1（0） | 29 | 7（0） | 182（175） | 5.50・0.80・0.10・0.80・5.50 |
+| EURUSD 2019-03 | 30,660 | 0（0） | 105 | 10（0） | 183（173） | 3.50・0.50・0.20・0.60・3.60 |
+| GBPJPY 2019-03 | 30,660 | 12（0） | 50 | 108（0） | 227（119） | 10.00・1.20・0.20・1.20・10.00 |
+
+- OANDA 対 HistData のずらし 0 分の中央値: 2017-03 は NY の読みで 0.10（EST の読みでは 2.50、+60 分で 0.20）、2019-03 の USDJPY は EST の読みで 0.10（NY の読みでは 2.20）、2023-03 は EST 0.20・NY 0.30、EURJPY は EST 0.10、EURUSD は EST 0.10、GBPJPY は EST 0.30（pip。EURUSD は 0.0001、他は 0.01）。
+- 各ペア・月の週ごとの欠けの数と、15 分以上の空白の一覧は、出力のファイル（`cmp_<ペア>_<月>.txt`）にある。
+
+### F-4. OANDA の tick の間隔の分布（`tick_gap_dist.py`）
+
+- 各分の中で終わる tick の間隔の最大（`oanda_check.py` の `max_gap_ms`）から数えた。ファイルの日付の変わり目（ニューヨーク 17:00）をまたぐ間隔は測っていない（限界）。表は本文第9.2節と同じ（出力 `tick_gap_dist.txt`）。
+
+### F-5. 参考: HistData の 1 分足の、15 分以上の空白で切った最長の区間（`longest_runs.py`。時刻の列だけ）
+
+2017-01-01T00:00Z〜2023-12-29T22:00Z。D-4 の空白の一覧から計算。ウォームアップは引いていない。「宣言で切らない」はカレンダー版 2 の休場の宣言に重なる空白で切らない場合。
+
+| ペア | NY 現地時刻の読み: すべてで切る | NY: 宣言で切らない | EST 固定の読み: すべてで切る | EST: 宣言で切らない |
+|---|---|---|---|---|
+| USDJPY | 357.4 日（2018-01-01〜12-25） | 440.8 日（2017-12-30〜2019-03-15） | 154.0 日（2021-10-24〜2022-03-27） | 154.0 日（同じ） |
+| USDCHF | 356.6 日（2017-01-02〜12-24） | 361.6 日（2017-01-02〜12-29） | 86.0 日（2020-01-01〜03-27） | 103.9 日（2020-12-01〜2021-03-14） |
+| AUDJPY | 357.4 日 | 440.8 日 | 154.0 日 | 154.0 日 |
+| EURUSD | 357.4 日 | 440.8 日 | 154.0 日 | 154.0 日 |
+| EURJPY | 357.4 日 | 440.8 日 | 92.9 日 | 154.0 日 |
+| GBPJPY | 357.0 日 | 359.9 日 | 88.0 日 | 95.9 日 |
+| GBPUSD | 357.0 日 | 359.9 日 | 89.0 日 | 117.9 日 |
+| AUDUSD | 357.4 日 | 440.8 日 | 154.0 日 | 154.0 日 |
+
+- 15 分という切り方は参考のための仮の値で、第4.1節の条件ではない。
+
+### F-6. 道具・出力・追加サンプルの SHA-256
+
+| ファイル | SHA-256 |
+|---|---|
+| d12_scripts/oanda_check.py | f6df4f38b85aa5afda9672409fd7532a6016df091190c4e00a61d1e298d9abbb |
+| d12_scripts/compare2.py | 2dcbdda81fd99ad311e455aa53e88886006e5e01cb7f4f33f3c03d0d8c9377b7 |
+| d12_scripts/tick_gap_dist.py | 9959752566bdef0bf3e53bd360414b7ce0aba69abc98570e4e42c65c7f8ea786 |
+| d12_scripts/longest_runs.py | ec850bd3a0c36ffa5e0504fc5bce3f87721a0336937cd496ecbf906d7adcf076 |
+| d12_work/oanda_check_USDJPY_2017-03.txt | fa50121b2ab48a02e9e2065eec882a1328f4a2fba80a0e1baf9037a119a1f1b8 |
+| d12_work/oanda_check_USDJPY_2019-03.txt | 6594e85bee37fe6742172d1f09a584b82290d1b5478d6af5e59ff5bf5877a702 |
+| d12_work/oanda_check_USDJPY_2023-03.txt | 302ac02100ed484bc16a9157c2315170ed30ff09d8999f6b8112619047b60f62 |
+| d12_work/oanda_check_EURJPY_2019-03.txt | b44d9be29fbed4f5bd0a2b89cb95021a91c39897b6d332e187382e2b23b13b4d |
+| d12_work/oanda_check_EURUSD_2019-03.txt | 832be426df4b3f4d2011553838629fb5eee871993a1feeea505296ffb1a170e6 |
+| d12_work/oanda_check_GBPJPY_2019-03.txt | 99115d0b99d586c69479a0b4467225f5e6b37d06749a1c8368e03c5f1914a9cb |
+| d12_work/cmp_USDJPY_2017-03.txt | 809acf3fd4a55b96e2ac96131f7e24a82739fab4cdd612e3e03fdc210f372c4c |
+| d12_work/cmp_USDJPY_2019-03.txt | d9a3f29411dd4dbfc1b933c1f4b80c88b70a178ec0f0e06956dbfd59ea5100dd |
+| d12_work/cmp_USDJPY_2023-03.txt | 70f0e2acebc0b801dd7498ffc26bc07becf078dd7f4e707dd6765a6ed9883e58 |
+| d12_work/cmp_EURJPY_2019-03.txt | 18278b9f21a41a1537eb7ae94f38b1eeb92de3c66a558d5ae4f5c0c11b5c2a73 |
+| d12_work/cmp_EURUSD_2019-03.txt | c8efd8fb7a0f433f1f6889209026786c9d86e5007a25ccc590d5908e84824127 |
+| d12_work/cmp_GBPJPY_2019-03.txt | 89395fa03d32739928094a1a761c78a90948f444d646e148e8f6289d34df92d9 |
+| d12_work/tick_gap_dist.txt | caa81c0488d5ae0e715cf4dae1ae93f2988c9570a3c0160da54b9c1f129e4fd1 |
+| d12_work/longest_runs_nylocal.txt | 1fa278ce06a9f2828969b1da53bb43465d7e3f5182bf6d363b47975921247a81 |
+| d12_work/longest_runs_est.txt | c5dffc43afb60c4a044f7d6277a35c0fe2df70e2f07eb9d3656d5b60ec06d22b |
+| survey_samples/fxcm_v3/USDJPY_m1_2017_w9.csv.gz | 488634ebe46d153249256a00488089c4ce1e8f758874dd5d0183eeae15e081e8 |
+| survey_samples/fxcm_v3/USDJPY_m1_2017_w10.csv.gz | bbc30cd35ee107d21abf142abbb91032e0155562c5068df3777125249911df85 |
+| survey_samples/fxcm_v3/USDJPY_m1_2017_w11.csv.gz | 1c16b1a208db403d2714a23febe65fdb1c0a3754fef569eccc2f3ed8e7480eed |
+| survey_samples/fxcm_v3/USDJPY_m1_2017_w12.csv.gz | 1e962edc944c3d8f408e6aea548ec04ac1daab6e62cbba5176f87d2e2255836a |
+| survey_samples/fxcm_v3/USDJPY_m1_2017_w13.csv.gz | a7afa5c817b415cf74af00323dc9eac3df2feaadefe22e6d4d307220d3421142 |
+| survey_samples/fxcm_v3/USDJPY_m1_2023_w9.csv.gz | 660c266b93a47fe0f4c3e5de2a4f38e957639951a5eb377fc0ba5a48d8b2e1d6 |
+| survey_samples/fxcm_v3/EURUSD_m1_2019_w9.csv.gz | a48078e0282cba504dcb8b6b33ad719a61230278f2a8aa80f7731bf82539b4bd |
+| survey_samples/fxcm_v3/EURUSD_m1_2019_w10.csv.gz | f776364ba1c130a80606b5f14b13bcec007716d22eb948e98339a776a6669fd2 |
+| survey_samples/fxcm_v3/EURUSD_m1_2019_w11.csv.gz | 3ad14968cc3cccb62c53fc1eec844185a825bec7d7920cbe4768480bc2258a88 |
+| survey_samples/fxcm_v3/EURUSD_m1_2019_w12.csv.gz | 50242293489fea4265be6a649e182a2d0adacb2e29a4ee44a5452d8abb7fc6c1 |
+| survey_samples/fxcm_v3/EURUSD_m1_2019_w13.csv.gz | 2b7cfc9c0e1413db094362019a8128052dbd06ea254b919a9ec4fa8dcd285f04 |
+| survey_samples/fxcm_v3/EURJPY_m1_2019_w9.csv.gz | 16ed0a964a1422b294b9335c0516d59f2bf470558d3fbed4f2c3f5eeccb88ed4 |
+| survey_samples/fxcm_v3/EURJPY_m1_2019_w10.csv.gz | f5319e0fec63a57fdee35544f200fe5d69345f239689898a4779b596f9dc39d0 |
+| survey_samples/fxcm_v3/EURJPY_m1_2019_w11.csv.gz | e71a7f5e098801302effc2293168c22c7bcc7c2d2fe4611bcd0b3b547d7c5214 |
+| survey_samples/fxcm_v3/EURJPY_m1_2019_w12.csv.gz | f18b06b45817d0613c215034d80c7442265e218034ad60fffd64a48f6a99c6f9 |
+| survey_samples/fxcm_v3/EURJPY_m1_2019_w13.csv.gz | 6649e4aa9712300ab69ffd955cec723e6b25b3451fb01514375a5c2545523d4c |
+| survey_samples/fxcm_v3/GBPJPY_m1_2019_w9.csv.gz | 543fe78c63520d12c91dac894b26ab35d77434e15cbf851becb8d528bd8a052f |
+| survey_samples/fxcm_v3/GBPJPY_m1_2019_w10.csv.gz | 1e19cb62476c1da3271b709a148926a96dcaf4fc4b7d1b793bfc511d10e02968 |
+| survey_samples/fxcm_v3/GBPJPY_m1_2019_w11.csv.gz | a5ebda727e72846f70730b142a7245614ef8160e8d15663b08638c6bb557de92 |
+| survey_samples/fxcm_v3/GBPJPY_m1_2019_w12.csv.gz | dd5ded98e3f97f8f090ff5dfdb013d97b8294685dbb6ad076344d4562e394de2 |
+| survey_samples/fxcm_v3/GBPJPY_m1_2019_w13.csv.gz | 1a6fc458c444101d76ef80ca46bca0954d27445ae455e5d84cd1663e7ea3c8c1 |
+
+---
+
 ## 改訂履歴
 
 | 版 | 日付 | 内容 |
 |---|---|---|
 | v0.1 案 | 2026-10-15 | 初版 |
 | v0.2 案 | 2026-10-15 | 節 D（OANDA のサンプル、同じ UTC 区間・同じ取引カレンダーでの比較、FXCM の ask < bid の調査、HistData の取引カレンダーでの年ごとの表、FXCM の利用許諾）と節 B-9（有料候補の追加調査）を追加。調査の時刻の注記を追加 |
+| v0.3 案 | 2026-10-15 | 節 E（Tick Data への申請文。日本語と英語。送信していない）と節 F（OANDA の 6 ファイルの形式と品質、OANDA の時刻の資料、同じ UTC 区間での比較、tick の間隔の分布、HistData の参考の最長区間、ハッシュ）を追加 |
