@@ -54,9 +54,16 @@ printf '  自分の AMI（全部）: '; aws_p ec2 describe-images --owners self 
 printf '  Elastic IP（全部）: '; aws_p ec2 describe-addresses --query "length(Addresses)" --output text
 
 echo "== 6. 料金の通知（Budgets。通知は支出を止めない）"
-aws_p budgets describe-budgets --account-id "$account" \
-  --query "Budgets[].[BudgetName,BudgetLimit.Amount,BudgetLimit.Unit,TimeUnit]" --output text 2>/dev/null \
-  | sed 's/^/  /' || echo "  読めない（権限か、まだ作っていない）"
+if budgets=$(aws_p budgets describe-budgets --account-id "$account" \
+     --query "Budgets[].[BudgetName,BudgetLimit.Amount,BudgetLimit.Unit,TimeUnit]" --output text 2>/dev/null); then
+  if [[ -z "$budgets" || "$budgets" == "None" ]]; then
+    echo "  0 件（警告: 料金の通知が無い。人間の確認か明示の許可が要る）"
+  else
+    while IFS= read -r line; do echo "  $line"; done <<<"$budgets"
+  fi
+else
+  echo "  読めない（警告: 権限が無い）"
+fi
 
 echo "== 7. 起動の権限の試し（EC2 の --dry-run。起動しない・課金なし）"
 dry=$(aws_p ec2 run-instances --dry-run --image-id "$ami_id" --instance-type "$PROBE_INSTANCE_TYPE" \

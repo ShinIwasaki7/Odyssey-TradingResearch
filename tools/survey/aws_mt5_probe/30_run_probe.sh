@@ -52,7 +52,7 @@ if (\$h -ne '${tool_sha}') { throw "probe SHA-256 mismatch: \$h" }
 if (-not (Get-Process -Name terminal64 -ErrorAction SilentlyContinue)) { throw 'MT5 terminal is not running (human must log in via RDP first)' }
 \$out = 'C:\\probe\\out\\${phase}'
 New-Item -ItemType Directory -Force -Path \$out | Out-Null
-\$cmd = '"${PY_EXE}" C:\\probe\\mt5_api_probe.py probe --phase ${phase} --out-dir ' + \$out + ' > ' + \$out + '\\run.log 2>&1'
+\$cmd = 'set "PYTHONUTF8=1" && "${PY_EXE}" C:\\probe\\mt5_api_probe.py probe --phase ${phase} --out-dir ' + \$out + ' > ' + \$out + '\\run.log 2>&1'
 \$task = '${PROBE_NAME}-${phase}'
 Unregister-ScheduledTask -TaskName \$task -Confirm:\$false -ErrorAction SilentlyContinue
 \$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c ' + \$cmd)

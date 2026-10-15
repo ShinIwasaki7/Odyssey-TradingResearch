@@ -141,7 +141,8 @@ def test_run_phase_records_counts_and_hashes(tmp_path: Path) -> None:
 
 
 def test_m1_without_ticks_is_not_tick_history(tmp_path: Path) -> None:
-    api = FakeMt5(ticks=[], rates=[{"time": 1, "open": 1.0}])
+    base = int(datetime(2019, 3, 5, tzinfo=UTC).timestamp())
+    api = FakeMt5(ticks=[], rates=[{"time": base, "open": 1.0}])
     records = probe.run_phase(
         api, [("USDJPY", probe.PHASE_USDJPY_TIME[0][1])], tmp_path, retry=True, retry_wait_seconds=0
     )
@@ -207,3 +208,35 @@ def test_reading_csv_beyond_2023_is_refused(tmp_path: Path) -> None:
                 path, datetime(2023, 12, 31, tzinfo=UTC), datetime(2024, 1, 2, tzinfo=UTC)
             )
         )
+
+
+def test_rows_outside_the_window_are_not_saved(tmp_path: Path) -> None:
+    # 端末が区間の外（2024 年以降を含む）の足を返しても、保存せず時刻と件数だけを記録する。
+    window = probe.PHASE_USDJPY_TIME[0][1]
+    base = int(window.start.timestamp())
+    late = int(datetime(2026, 7, 10, 1, 30, tzinfo=UTC).timestamp())
+    api = FakeMt5(
+        ticks=[_tick(base - 60), _tick(base + 1)],
+        rates=[{"time": late, "open": 157.123}],
+    )
+    records = probe.run_phase(api, [("USDJPY", window)], tmp_path, retry=True, retry_wait_seconds=0)
+    ticks, m1 = records
+    assert ticks.returned_count == 1 and ticks.out_of_window_count == 1
+    assert ticks.out_of_window_min_utc == "2019-03-04T23:59:00+00:00"
+    assert m1.returned_count == 0 and m1.out_of_window_count == 1 and m1.retried
+    assert m1.out_of_window_min_utc == m1.out_of_window_max_utc == "2026-07-10T01:30:00+00:00"
+    assert m1.output_file is None and m1.output_sha256 is None
+    assert m1.tick_history == "ticks_returned"
+    assert not (tmp_path / "USDJPY_2019-03-winter_m1.csv").exists()
+    saved = (tmp_path / "USDJPY_2019-03-winter_ticks.csv").read_text(encoding="utf-8")
+    assert str(base + 1) in saved and str(base - 60) not in saved
+    assert "157.123" not in json.dumps([r.__dict__ for r in records])
+
+
+def test_only_out_of_window_rows_count_as_nothing_returned(tmp_path: Path) -> None:
+    window = probe.PHASE_USDJPY_TIME[1][1]
+    late = int(datetime(2026, 7, 10, 1, 30, tzinfo=UTC).timestamp())
+    api = FakeMt5(ticks=[], rates=[{"time": late, "open": 1.0}])
+    records = probe.run_phase(api, [("USDJPY", window)], tmp_path, retry=False)
+    assert [r.tick_history for r in records] == ["no_ticks", "no_ticks"]
+    assert list(tmp_path.iterdir()) == []

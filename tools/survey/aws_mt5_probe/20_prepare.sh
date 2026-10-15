@@ -29,6 +29,10 @@ trap 'rm -rf "$work"' EXIT
 cat >"$work/py.ps1" <<PS
 \$ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path C:\\probe, C:\\probe\\out | Out-Null
+if (Test-Path '${PY_EXE}') {
+  & '${PY_EXE}' -c "import MetaTrader5 as m; print('already installed: MetaTrader5', m.__version__)"
+  if (\$LASTEXITCODE -eq 0) { exit 0 }
+}
 \$inst = 'C:\\probe\\python-installer.exe'
 Invoke-WebRequest -UseBasicParsing -Uri '${PY_INSTALLER_URL}' -OutFile \$inst
 \$h = (Get-FileHash -Algorithm SHA256 \$inst).Hash.ToLower()
@@ -48,7 +52,8 @@ ssm_ps "$INSTANCE_ID" 1800 "$work/py.ps1"
 log "試験の道具を置く"
 base64 <"$PROBE_TOOL" | tr -d '\n' | fold -w 6000 >"$work/tool.b64"
 first=1
-while IFS= read -r chunk; do
+# 最後の行は改行で終わらないので、|| [[ -n ]] で取りこぼさない。
+while IFS= read -r chunk || [[ -n "$chunk" ]]; do
   if [[ $first == 1 ]]; then op="Set-Content"; first=0; else op="Add-Content"; fi
   printf "%s -NoNewline -Encoding ascii -Path C:\\\\probe\\\\mt5_api_probe.b64 -Value '%s'\n" "$op" "$chunk" >"$work/chunk.ps1"
   ssm_ps "$INSTANCE_ID" 120 "$work/chunk.ps1" >/dev/null
@@ -61,6 +66,7 @@ Remove-Item C:\\probe\\mt5_api_probe.b64
 \$h = (Get-FileHash -Algorithm SHA256 C:\\probe\\mt5_api_probe.py).Hash.ToLower()
 if (\$h -ne '${tool_sha}') { throw "probe SHA-256 mismatch: \$h" }
 "probe sha256 ok: \$h"
+\$env:PYTHONUTF8 = '1'
 & '${PY_EXE}' C:\\probe\\mt5_api_probe.py --help
 PS
 ssm_ps "$INSTANCE_ID" 120 "$work/decode.ps1"

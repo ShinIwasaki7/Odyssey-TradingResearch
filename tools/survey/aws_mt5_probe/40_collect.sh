@@ -39,7 +39,7 @@ Compress-Archive -Path 'C:\\probe\\out\\${phase}\\*' -DestinationPath '${zip_win
 \$f = Get-Item '${zip_win}'
 '{0} {1}' -f \$f.Length, (Get-FileHash -Algorithm SHA256 '${zip_win}').Hash.ToLower()
 PS
-read -r size zip_sha < <(ssm_ps "$INSTANCE_ID" 300 "$work/zip.ps1" | tail -n 1)
+read -r size zip_sha < <(ssm_ps "$INSTANCE_ID" 300 "$work/zip.ps1" | tr -d "\r" | grep -v "^$" | tail -n 1)
 log "zip: ${size} バイト、SHA-256 ${zip_sha}"
 
 # SSM の出力は約 24,000 文字で切れるので、13,500 バイト（base64 で 18,000 文字）ずつ受け取る。

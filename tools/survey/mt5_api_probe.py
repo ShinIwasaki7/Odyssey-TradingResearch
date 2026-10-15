@@ -22,6 +22,9 @@
   API の時刻にはこの変換を当てず、ずれの候補（``CANDIDATE_SHIFTS_HOURS``）ごとの
   一致の件数で関係を確かめる。
 - 1 分足が返っても、tick が 0 件なら「tick の履歴が取れた」とは記録しない（``tick_history`` の欄）。
+- 返った行のうち要求の区間の外のものは保存しない（``split_by_window``）。端末は区間に足が無いと
+  区間の外の足を返すことがある（2026-10-15 の試験で、2019 年の要求に 2026 年の足が 1 本返った）。
+  区間の外の行は、件数と最小・最大の時刻だけを要約に書き、価格は保存しない。
 - 口座の情報（``account_info``）は読まない。端末が自動で保存した最近の履歴のファイルは読まない。
 
 実行の例::
@@ -215,6 +218,9 @@ class RequestRecord:
     requested_from_utc: str
     requested_to_utc: str
     returned_count: int
+    out_of_window_count: int
+    out_of_window_min_utc: str | None
+    out_of_window_max_utc: str | None
     returned_first_raw: float | None
     returned_last_raw: float | None
     returned_first_as_utc: str | None
@@ -244,6 +250,25 @@ def _write_rows(path: Path, rows: Sequence[Mapping[str, Any]], fields: Sequence[
 
 TICK_FIELDS: tuple[str, ...] = ("time", "time_msc", "bid", "ask", "last", "volume", "flags")
 RATE_FIELDS: tuple[str, ...] = ("time", "open", "high", "low", "close", "tick_volume", "spread")
+
+
+def split_by_window(
+    rows: Sequence[dict[str, Any]], window: Window
+) -> tuple[list[dict[str, Any]], list[float]]:
+    """返った行を、区間 [start, end) の中の行と、区間の外の行の時刻（秒）に分ける。
+
+    区間の外の行は価格を持ち出さないよう、時刻だけを返す。
+    """
+    lo, hi = window.start.timestamp(), window.end.timestamp()
+    inside: list[dict[str, Any]] = []
+    outside: list[float] = []
+    for r in rows:
+        t = float(r["time"])
+        if lo <= t < hi:
+            inside.append(r)
+        else:
+            outside.append(t)
+    return inside, outside
 
 
 def request_once(api: Mt5Api, kind: str, symbol: str, window: Window) -> list[dict[str, Any]]:
@@ -283,13 +308,14 @@ def run_phase(
         for kind in (KIND_TICKS, KIND_M1):
             stamp = (now or datetime.now(tz=UTC)).isoformat()
             rows: list[dict[str, Any]] = []
+            outside: list[float] = []
             retried = False
             if symbol is not None:
-                rows = request_once(api, kind, symbol, window)
+                rows, outside = split_by_window(request_once(api, kind, symbol, window), window)
                 if not rows and retry:
                     retried = True
                     time.sleep(retry_wait_seconds)  # 端末が履歴を取り寄せる時間を置く
-                    rows = request_once(api, kind, symbol, window)
+                    rows, outside = split_by_window(request_once(api, kind, symbol, window), window)
             error = str(api.last_error())
             out_file: str | None = None
             digest: str | None = None
@@ -320,6 +346,9 @@ def run_phase(
                     requested_from_utc=window.start.isoformat(),
                     requested_to_utc=window.end.isoformat(),
                     returned_count=len(rows),
+                    out_of_window_count=len(outside),
+                    out_of_window_min_utc=_iso_from_epoch(min(outside)) if outside else None,
+                    out_of_window_max_utc=_iso_from_epoch(max(outside)) if outside else None,
                     returned_first_raw=firsts[0] if firsts else None,
                     returned_last_raw=lasts[0] if lasts else None,
                     returned_first_as_utc=_iso_from_epoch(firsts[0]) if firsts else None,
