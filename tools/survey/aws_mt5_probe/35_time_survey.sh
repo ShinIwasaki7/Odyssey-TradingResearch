@@ -59,7 +59,9 @@ INFO
 
 if [[ "${TS_E1_REF_SHA:-}" == "" ]]; then
   ref="${eval_dir}/e1_ref.json.gz"
-  (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_time_survey e1-ref --out "$ref") >&2
+  if [[ ! -s "$ref" ]]; then  # 作るのに約 10 分かかるので、置いてあれば使う（中身は配布 CSV だけから決まる）
+    (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_time_survey e1-ref --out "$ref") >&2
+  fi
   ssm_put_file "$INSTANCE_ID" "$ref" 'C:\probe\e1_ref.json.gz'
   save_state TS_E1_REF_SHA "$(sha256_of "$ref")"
 fi

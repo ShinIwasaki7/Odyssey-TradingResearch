@@ -41,6 +41,7 @@ def _rec(
         "bar_times": times,
         "symbol_chart_mode": 0,
         "skipped": None,
+        "executed_at_utc": "2026-10-16T00:00:00+00:00",
         **kw,
     }
 
@@ -217,7 +218,7 @@ class FakeApi:
 def test_run_time_survey_keeps_times_only_and_stops_at_limits() -> None:
     api = FakeApi()
     plan = list(probe.TIME_SURVEY_STAGES["A2"])
-    recs = probe.run_time_survey(api, plan, max_requests=3)
+    recs = probe.run_time_survey(api, plan, max_requests=3, retry_waits=())
     assert api.calls == ["copy_rates_range"] * 3
     assert [r.skipped for r in recs[:3]] == [None] * 3
     assert all(r.skipped == "request_limit" for r in recs[3:])
@@ -226,7 +227,9 @@ def test_run_time_survey_keeps_times_only_and_stops_at_limits() -> None:
     assert recs[0].bar_times and recs[0].symbol == "USDJPY.cl"
     frees = iter([10 * 1024**3, 10 * 1024**3, 1 * 1024**3] + [1 * 1024**3] * 40)
     api2 = FakeApi()
-    recs2 = probe.run_time_survey(api2, plan, max_requests=99, disk_free=lambda: next(frees))
+    recs2 = probe.run_time_survey(
+        api2, plan, max_requests=99, disk_free=lambda: next(frees), retry_waits=()
+    )
     assert recs2[0].skipped is None and recs2[1].skipped == "low_disk"
     assert api2.calls == ["copy_rates_range"]
 
@@ -253,3 +256,55 @@ def test_gap_weeks_are_ignored_by_the_time_evaluation() -> None:
     rec = _rec(d.pair, "gapweek", d.date, d.state, [1, 2, 3])
     ev = ts.evaluate([rec])
     assert ev.rows == [] and ev.auto_plan == []
+
+
+def test_empty_window_is_retried_without_counting_a_new_request() -> None:
+    class SyncingApi(FakeApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.n = 0
+
+        def copy_rates_range(self, symbol: str, tf: int, start: datetime, end: datetime) -> Any:
+            self.n += 1
+            self.calls.append("copy_rates_range")
+            if self.n < 3:  # 取り寄せ中は区間の外の 1 本だけ
+                return [{"time": 1_783_647_000, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}]
+            return super().copy_rates_range(symbol, tf, start, end)[:0] + [
+                {"time": int(start.timestamp()), "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}
+            ]
+
+    api = SyncingApi()
+    plan = list(probe.TIME_SURVEY_STAGES["A2"])[:2]
+    recs = probe.run_time_survey(api, plan, max_requests=1, retry_waits=(0, 0, 0))
+    assert recs[0].returned_count == 1 and recs[0].retries == 2
+    assert recs[1].skipped == "request_limit"
+
+
+def test_latest_record_wins_when_a_request_is_repeated() -> None:
+    d = probe._YEAR_SUNDAYS[2023][0]
+    old = _rec("USDJPY", "weekend", d, "S1", [], executed_at_utc="2026-10-16T00:00:00+00:00")
+    new = _rec(
+        "USDJPY",
+        "weekend",
+        d,
+        "S1",
+        _weekend_times(d, 2, 2),
+        executed_at_utc="2026-10-16T01:00:00+00:00",
+    )
+    ev = ts.evaluate([new, old])
+    assert len(ev.rows) == 1 and ev.rows[0]["readable"]
+
+
+def test_sync_trigger_requests_ticks_once_and_keeps_no_values() -> None:
+    class TickApi(FakeApi):
+        def copy_ticks_range(self, *a: Any) -> Any:
+            self.calls.append("copy_ticks_range")
+            t = int(probe.SYNC_TRIGGER_WINDOW.start.timestamp())
+            return [{"time": t, "bid": 141.123, "ask": 141.126}]
+
+    api = TickApi()
+    out = probe.sync_trigger(api)
+    assert api.calls == ["copy_ticks_range"]
+    assert out["count"] == 1 and out["symbol"] == "USDJPY.cl"
+    assert "141.12" not in json.dumps(out)
+    assert probe.SYNC_TRIGGER_WINDOW.end <= probe.REQUEST_END_LIMIT

@@ -155,7 +155,14 @@ class Evaluation:
 def evaluate(records: Iterable[Mapping[str, Any]], extra_used: int = 0) -> Evaluation:
     """回収した記録の全部から、読み・年ごとの判定・決定木の分岐・自動の追加の計画を作る。"""
     # 空白の測定の代表週（gapweek）は時刻の判定に使わない（集計は時刻の確定の後に Mac で行う）。
-    recs = [r for r in records if not r.get("skipped") and r["kind"] in ("weekend", "tuesday")]
+    # 同じ要求を再び出した場合（取り寄せ待ちの空振りのやり直し）は、最後に実行した記録だけを使う。
+    latest: dict[str, Mapping[str, Any]] = {}
+    for r in records:
+        if r.get("skipped") or r["kind"] not in ("weekend", "tuesday"):
+            continue
+        if r["rid"] not in latest or r["executed_at_utc"] >= latest[r["rid"]]["executed_at_utc"]:
+            latest[r["rid"]] = r
+    recs = list(latest.values())
     rows: list[dict[str, Any]] = []
     by_week: dict[tuple[str, str], WeekendReading] = {}
     for r in recs:

@@ -629,6 +629,9 @@ TIME_SURVEY_BASE_REQUESTS = 67
 TIME_SURVEY_EXTRA_REQUESTS = 20
 #: E1 の照合で試すずれ（時間。API の時刻 − UTC の候補を引く向き）。
 E1_SHIFTS_HOURS: tuple[int, ...] = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
+#: 区間の中の足が 0 本のときの再試行の待ち時間（秒）。新しい端末は最初の要求で履歴を取り寄せ始め、
+#: 取り寄せが終わるまで区間の外の 1 本だけを返す（2026-10-16 の段 A2 の 1 回目。付録 K-9）。
+SURVEY_RETRY_WAITS: tuple[float, ...] = (10.0, 30.0, 60.0, 120.0)
 STATES: tuple[str, ...] = ("S1", "S2", "S3", "S4")
 
 
@@ -806,6 +809,7 @@ class SurveyRecord:
     disk_free_after_bytes: int | None
     e1: list[dict[str, Any]] | None
     skipped: str | None = None
+    retries: int = 0
 
 
 def run_time_survey(
@@ -815,6 +819,7 @@ def run_time_survey(
     e1_ref: Mapping[str, Mapping[int, Sequence[str]]] | None = None,
     disk_free: Callable[[], int] | None = None,
     min_free_bytes: int = MIN_FREE_BYTES,
+    retry_waits: Sequence[float] = SURVEY_RETRY_WAITS,
 ) -> list[SurveyRecord]:
     """時刻の調査の要求を順に出す。上限（要求の数・ディスクの空き）に達したら、残りは出さずに記録する。"""
     windows = [r.window() for r in plan]
@@ -843,8 +848,15 @@ def run_time_survey(
         outside: list[float] = []
         error = ""
         e1 = None
+        retries = 0
         if stop is None and symbol is not None:
             rows, outside = split_by_window(request_once(api, KIND_M1, symbol, w), w)
+            for wait in retry_waits:  # 同じ区間の再試行（要求の数には数えない）
+                if rows:
+                    break
+                time.sleep(wait)
+                retries += 1
+                rows, outside = split_by_window(request_once(api, KIND_M1, symbol, w), w)
             sent += 1
             error = str(api.last_error())
             ref = (e1_ref or {}).get(req.rid)
@@ -873,9 +885,54 @@ def run_time_survey(
                 disk_free_after_bytes=disk_free() if disk_free else None,
                 e1=e1,
                 skipped=stop if stop is not None else (None if symbol else "symbol_not_found"),
+                retries=retries,
             )
         )
     return out
+
+
+#: 端末の履歴の取り寄せを起こすためだけの tick の要求（人間の決定、2026-10-16。1 回だけ）。
+SYNC_TRIGGER_WINDOW = Window(
+    "sync-trigger", datetime(2023, 12, 27, tzinfo=UTC), datetime(2023, 12, 27, 0, 5, tzinfo=UTC)
+)
+
+
+def sync_trigger(api: Mt5Api, pair: str = USDJPY) -> dict[str, Any]:
+    """tick を 1 回だけ要求し、件数と最初・最後の時刻だけを返す（tick の値は保存しない）。"""
+    check_window(SYNC_TRIGGER_WINDOW)
+    symbol = resolve_symbol(api, pair)[0]
+    if symbol is None:
+        return {"symbol": None, "count": 0}
+    api.symbol_select(symbol, True)
+    rows = request_once(api, KIND_TICKS, symbol, SYNC_TRIGGER_WINDOW)
+    times = [int(r["time"]) for r in rows]
+    return {
+        "symbol": symbol,
+        "requested_from": SYNC_TRIGGER_WINDOW.start.isoformat(),
+        "requested_to": SYNC_TRIGGER_WINDOW.end.isoformat(),
+        "count": len(rows),
+        "first_as_utc": _iso_from_epoch(min(times)) if times else None,
+        "last_as_utc": _iso_from_epoch(max(times)) if times else None,
+        "last_error": str(api.last_error()),
+        "executed_at_utc": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def _cmd_synctrigger(args: argparse.Namespace) -> int:
+    api = load_mt5()
+    if not api.initialize():
+        print(json.dumps({"initialize": False, "last_error": str(api.last_error())}))
+        return 2
+    try:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        result = {**sync_trigger(api), **terminal_summary(api)}
+        path = out_dir / "summary_sync-trigger.json"
+        path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(path)
+    finally:
+        api.shutdown()
+    return 0
 
 
 def _cmd_timesurvey(args: argparse.Namespace) -> int:
@@ -971,6 +1028,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     t.add_argument("--max-requests", type=int, required=True)
     t.add_argument("--plan-file")
     t.add_argument("--e1-ref")
+    s = sub.add_parser(
+        "synctrigger", help="履歴の取り寄せを起こす tick の要求（1 回だけ。値は保存しない）"
+    )
+    s.add_argument("--out-dir", required=True)
     c = sub.add_parser("compare", help="USDJPY の tick を配布 CSV と突き合わせる（Mac）")
     c.add_argument("--probe-dir", required=True)
     c.add_argument("--oanda-csv", required=True)
@@ -979,6 +1040,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_probe(args)
     if args.command == "timesurvey":
         return _cmd_timesurvey(args)
+    if args.command == "synctrigger":
+        return _cmd_synctrigger(args)
     return _cmd_compare(args)
 
 
