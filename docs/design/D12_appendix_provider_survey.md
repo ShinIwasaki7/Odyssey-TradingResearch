@@ -1243,7 +1243,7 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 - SSM のコマンドの実行（Run Command）は追加の料金が無い（作業役の知識。料金のページとの照合はしていない）。結果の回収は SSM の API の応答で、量は数 MB の見込み。
 - 実績は Cost Explorer に翌日反映されるので、終了の後に「使った時間 × 単価」の概算を K-3 に書き、翌日の確認を人間に依頼する（K-2 手順 8）。
 
-### K-5. API の 1 分足の中身と、時刻のずれ・CSV との差の整理（2026-10-15 21:15〜21:35 JST。人間の第 9 回の指示による。作業役）
+### K-5. API の 1 分足の中身と、時刻のずれ・CSV との差の整理（2026-10-15 21:14〜21:22 JST。人間の第 9 回の指示による。作業役）
 
 使ったデータ: K-3 の再試行で取った USDJPY（端末の銘柄名 `USDJPY.cl`）の 1 分足、2019-03-05（米国の冬時間）と 2019-03-19（米国の夏時間。米国の切り替えは 2019-03-10）の 00:00〜02:00（API の時刻の値）各 120 本。比べる相手は配布 CSV `ticks_USDJPY-oj5k_2019-03.csv` の tick（FAQ 2190 の規則で UTC に直した）。**価格の水準は書かない**（差・件数・相関・スプレッドの値だけ）。道具と出力は `<scratch>/d12_scripts/`（`analyze_m1.py` `1f78d5da4a2e2b23b7fc90d7c60b2a9f07b7a8b2be98d939360fdac7aec863a2`、`signed_diff.py` `fdf29eefe7bab6c9da00ac98a57bd3b7067d55bcfcce61386af3c1946bb6ffb6`）、`<scratch>/analyze_m1_result.json` `8fee923bcec060b630ec3fcbe3a8d6538b3b4879cdd7fd9ea6a1c7bcd59fe252`、`<scratch>/signed_diff_result.json` `4a4cd75ecd5c543758e438c0a3be83eb27fa1710c12489280911c544a929247e`。公式のページは `<scratch>/d12_pages/mt5b/` に保存（`mqlrates.html` `083da11289d1229de3c117c14ec43ad72062502512495c70c619b773ea5e62ee`、`charts.html` `89bedad8553c144fc097bfe0602fd2b44cbe034a3784f9273175a20c380e2529`、`copyrates.html` `e4cf6ed6e5b262ac56dc25dbca8916641d5ca3a3d49b0b9e9b000621a77413fd`）。
 
