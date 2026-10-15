@@ -132,11 +132,31 @@ OTHER_WINDOWS: tuple[Window, ...] = (
 PHASE_OTHERS: tuple[tuple[str, Window], ...] = tuple(
     (pair, w) for pair in OTHER_PAIRS for w in OTHER_WINDOWS
 )
+#: 時刻のずれの原因を見分ける追加の 1 区間（人間の第 9 回の指示の範囲。D12 付録 K-5.2）。
+#: 欧州の夏時間の切り替え（2023-03-26）の後で、米国の夏時間の間。配布 CSV 2023-03 と比べる。
+PHASE_OFFSET_EU_DST: tuple[tuple[str, Window], ...] = (
+    (USDJPY, _two_hours("2023-03-28-eu-dst", "2023-03-28T00:00")),
+)
+#: 8 通貨の取得できる範囲の小さな確認（人間の第 9 回の指示）。
+#: 要約だけを保存し、価格の行は保存しない。
+RANGE8_PAIRS: tuple[str, ...] = (USDJPY, *OTHER_PAIRS)
+RANGE8_WINDOWS: tuple[Window, ...] = (
+    _two_hours("2017-01-10", "2017-01-10T00:00"),
+    _two_hours("2019-03-05", "2019-03-05T00:00"),
+    _two_hours("2023-12-05", "2023-12-05T00:00"),
+)
+PHASE_RANGE8: tuple[tuple[str, Window], ...] = tuple(
+    (pair, w) for pair in RANGE8_PAIRS for w in RANGE8_WINDOWS
+)
 PHASES: dict[str, tuple[tuple[str, Window], ...]] = {
     "usdjpy-time": PHASE_USDJPY_TIME,
     "usdjpy-range": PHASE_USDJPY_RANGE,
     "others": PHASE_OTHERS,
+    "offset-eu-dst": PHASE_OFFSET_EU_DST,
+    "range-8": PHASE_RANGE8,
 }
+#: 返った行（価格）を保存せず、要約だけを書く段。
+SUMMARY_ONLY_PHASES: frozenset[str] = frozenset({"range-8"})
 
 
 class Mt5Api(Protocol):
@@ -213,6 +233,9 @@ class RequestRecord:
     pair: str
     symbol: str | None
     symbol_candidates: list[str]
+    symbol_chart_mode: int | None
+    symbol_point: float | None
+    symbol_digits: int | None
     kind: str
     window: str
     requested_from_utc: str
@@ -249,7 +272,16 @@ def _write_rows(path: Path, rows: Sequence[Mapping[str, Any]], fields: Sequence[
 
 
 TICK_FIELDS: tuple[str, ...] = ("time", "time_msc", "bid", "ask", "last", "volume", "flags")
-RATE_FIELDS: tuple[str, ...] = ("time", "open", "high", "low", "close", "tick_volume", "spread")
+RATE_FIELDS: tuple[str, ...] = (
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "tick_volume",
+    "spread",
+    "real_volume",
+)
 
 
 def split_by_window(
@@ -283,6 +315,21 @@ def request_once(api: Mt5Api, kind: str, symbol: str, window: Window) -> list[di
     return rows_of(result)
 
 
+def symbol_meta(api: Mt5Api, symbol: str) -> tuple[int | None, float | None, int | None]:
+    """銘柄の足の価格の種類（chart_mode。0 が bid、1 が last）・最小単位（point）・桁数。"""
+    info = api.symbol_info(symbol)
+    if info is None:
+        return None, None, None
+    mode = getattr(info, "chart_mode", None)
+    point = getattr(info, "point", None)
+    digits = getattr(info, "digits", None)
+    return (
+        int(mode) if mode is not None else None,
+        float(point) if point is not None else None,
+        int(digits) if digits is not None else None,
+    )
+
+
 def run_phase(
     api: Mt5Api,
     plan: Iterable[tuple[str, Window]],
@@ -290,20 +337,28 @@ def run_phase(
     now: datetime | None = None,
     retry: bool = True,
     retry_wait_seconds: float = 5.0,
+    save_rows: bool = True,
 ) -> list[RequestRecord]:
-    """計画の要求を順に出し、記録を返す（CSV は ``out_dir`` に保存する）。"""
+    """計画の要求を順に出し、記録を返す。
+
+    ``save_rows`` が真なら区間の中の行を CSV に保存する。偽なら件数と時刻だけを記録する。
+    """
     plan = list(plan)
     for _, window in plan:
         check_window(window)  # 1 つでも範囲外があれば、何も要求せずに止まる
     out_dir.mkdir(parents=True, exist_ok=True)
     records: list[RequestRecord] = []
     resolved: dict[str, tuple[str | None, list[str]]] = {}
+    meta: dict[str, tuple[int | None, float | None, int | None]] = {}
     for pair, window in plan:
         if pair not in resolved:
             resolved[pair] = resolve_symbol(api, pair)
+            meta[pair] = (None, None, None)
             if resolved[pair][0] is not None:
                 api.symbol_select(str(resolved[pair][0]), True)
+                meta[pair] = symbol_meta(api, str(resolved[pair][0]))
         symbol, candidates = resolved[pair]
+        chart_mode, point, digits = meta[pair]
         tick_count = 0
         for kind in (KIND_TICKS, KIND_M1):
             stamp = (now or datetime.now(tz=UTC)).isoformat()
@@ -319,7 +374,7 @@ def run_phase(
             error = str(api.last_error())
             out_file: str | None = None
             digest: str | None = None
-            if rows:
+            if rows and save_rows:
                 fields = TICK_FIELDS if kind == KIND_TICKS else RATE_FIELDS
                 path = out_dir / f"{pair}_{window.label}_{kind}.csv"
                 _write_rows(path, rows, fields)
@@ -341,6 +396,9 @@ def run_phase(
                     pair=pair,
                     symbol=symbol,
                     symbol_candidates=candidates,
+                    symbol_chart_mode=chart_mode,
+                    symbol_point=point,
+                    symbol_digits=digits,
                     kind=kind,
                     window=window.label,
                     requested_from_utc=window.start.isoformat(),
@@ -449,7 +507,12 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         return 2
     try:
         out_dir = Path(args.out_dir)
-        records = run_phase(api, PHASES[args.phase], out_dir)
+        records = run_phase(
+            api,
+            PHASES[args.phase],
+            out_dir,
+            save_rows=args.phase not in SUMMARY_ONLY_PHASES,
+        )
         summary = {"phase": args.phase, **terminal_summary(api)}
         summary["requests"] = [asdict(r) for r in records]
         path = out_dir / f"summary_{args.phase}.json"

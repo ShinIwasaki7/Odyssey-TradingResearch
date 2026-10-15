@@ -90,6 +90,9 @@ def test_phase_sizes_match_the_design() -> None:
     assert len(probe.PHASE_USDJPY_TIME) == 2
     assert len(probe.PHASE_USDJPY_RANGE) == 2
     assert len(probe.PHASE_OTHERS) == 7 * 4
+    assert len(probe.PHASE_OFFSET_EU_DST) == 1
+    assert len(probe.PHASE_RANGE8) == 8 * 3
+    assert len(set(probe.RANGE8_PAIRS)) == 8
 
 
 def test_window_reaching_2024_is_refused_before_any_call(tmp_path: Path) -> None:
@@ -240,3 +243,28 @@ def test_only_out_of_window_rows_count_as_nothing_returned(tmp_path: Path) -> No
     records = probe.run_phase(api, [("USDJPY", window)], tmp_path, retry=False)
     assert [r.tick_history for r in records] == ["no_ticks", "no_ticks"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_summary_only_saves_no_price_rows(tmp_path: Path) -> None:
+    # range-8 の段は件数と時刻だけを記録し、価格の行を保存しない。
+    window = probe.RANGE8_WINDOWS[0]
+    base = int(window.start.timestamp())
+    api = FakeMt5(ticks=[_tick(base)], rates=[{"time": base, "open": 123.456}])
+    records = probe.run_phase(api, [("USDJPY", window)], tmp_path, retry=False, save_rows=False)
+    assert [r.returned_count for r in records] == [1, 1]
+    assert all(r.output_file is None and r.output_sha256 is None for r in records)
+    assert list(tmp_path.iterdir()) == []
+    assert "range-8" in probe.SUMMARY_ONLY_PHASES
+    assert "offset-eu-dst" not in probe.SUMMARY_ONLY_PHASES
+
+
+def test_symbol_meta_is_recorded(tmp_path: Path) -> None:
+    class WithInfo(FakeMt5):
+        def symbol_info(self, symbol: str) -> Any:
+            return SimpleNamespace(chart_mode=0, point=0.001, digits=3)
+
+    window = probe.PHASE_OFFSET_EU_DST[0][1]
+    records = probe.run_phase(WithInfo(), [("USDJPY", window)], tmp_path, retry=False)
+    assert all(
+        (r.symbol_chart_mode, r.symbol_point, r.symbol_digits) == (0, 0.001, 3) for r in records
+    )
