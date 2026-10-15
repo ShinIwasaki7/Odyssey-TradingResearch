@@ -1148,6 +1148,21 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 | mt5/awsfree.html | 72882acfecec93739d603bcd32f6c0e71aecc141ba905101367d414ac3c93c46 |
 | mt5/azure.html | 678bc19db0f8d194015736dbb78fd18d2fd3b342539b2ae4a59bded8f2c59e56 |
 
+### J-5. AWS 上の Windows での試験の費用の資料（v0.6。設計役が 2026-10-15 16:26〜17:06 JST に取得。AWS の登録・ログインはしていない）
+
+| 資料 | 内容（原文または価格表の値） | 保存したファイルと SHA-256（`<scratch>/d12_pages/`） |
+|---|---|---|
+| EC2 の価格表（東京・Windows・オンデマンド）`https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ec2-ondemand-without-sec-sel/Asia%20Pacific%20(Tokyo)/Windows/index.json`（"hawkFilePublicationDate": "2026-10-12T19:39:25Z"） | t3.small: "price": "0.0456000000"、"Memory": "2 GiB"、"vCPU": "2"。t3.medium: "price": "0.0728000000"、"Memory": "4 GiB"、"vCPU": "2"。両方 "License Model": "No License required"、"Operating System": "Windows" | mt5/aws_ec2_win_tokyo.json `e2b92d16f0ea7638613bced2ae524672f344c7009cdbd913dc1e424d8d846cc0` |
+| EBS の価格表 `https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ebs.json`（同 2026-10-12T19:39:25Z） | Asia Pacific (Tokyo) "Storage General Purpose gp3 GB Mo": "0.0960000000"。"Storage Snapshot Amazon S3 GB Mo": "0.0500000000"（作らない） | aws/ebs.json `8c732ea985c13261bdadc051d009ad2e572977d3cadea163d5d7e65d9b5aacdd` |
+| データ転送の価格表 `https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/datatransfer/USD/current/datatransfer.json`（"hawkFilePublicationDate": "2026-09-16T13:22:08Z"） | Asia Pacific (Tokyo) "DataTransfer External Outbound Next 10 TB": "0.1140000000"。"DataTransfer External Inbound": "0.0000000000" | aws/datatransfer.json `f88a4f928a40533f3651f199c7c2ec35aca2bb883856481627b89a9af039d6d3` |
+| EC2 のオンデマンドの料金ページ `https://aws.amazon.com/ec2/pricing/on-demand/` | "Each partial instance-hour consumed will be billed per-second for Linux, Windows, ..."、"For T2 and T3 instances in Unlimited mode, CPU Credits are charged at: $0.05 per vCPU-Hour for Linux, RHEL and SLES, and $0.096 per vCPU-Hour for Windows and Windows with SQL Web"、"AWS customers receive 100GB of data transfer out to the internet free each month, aggregated across all AWS Services and Regions (except China and GovCloud)." | mt5/aws_win.html `5a36616aa72088b2403b670955ab613cd8adbacd5b79e8723b942cb9dca03994` |
+| EBS の料金ページ `https://aws.amazon.com/ebs/pricing/` | "Volume storage for all EBS volume types is charged by the amount of GB you provision per month until you release the storage."、"Provisioned storage, provisioned IOPS, and provisioned throughput for gp3 volumes will be billed in per-second increments, with a 60-second minimum."（例は "in a 30-day month"） | aws/ebs_pricing.html `9f9e4e23ddff4a2ad00ab57f48dfb3dff8acd6fd29762b2d4e65e1ef112ca638` |
+| VPC の料金ページ `https://aws.amazon.com/vpc/pricing/` | "Hourly charge for In-use Public IPv4 Address $0.005"、"Hourly charge for Idle Public IPv4 Address $0.005" | aws/vpc_pricing.html `8f3cea1c8589dcb28a3fbc937a35160bd2bd00b75dcb6a870a891663c2d6c7f5` |
+| AWS の日本の税の案内（付録 H の AWS の費用と同じ） | 表示価格は消費税 10% を含まない | — |
+
+- 価格表のファイルは 3 つとも gzip で圧縮された JSON。値は設計役が Python で取り出した。
+- 確かめていないもの: Windows Server 2022 の AMI の既定のディスクの大きさ、MT5 の端末の必要メモリ、Mac の RDP のアプリの名前と入手先、カードの為替の手数料。
+
 ---
 
 ## 改訂履歴
@@ -1159,3 +1174,4 @@ g. 通貨ペア・期間: 取得可能な銘柄は FX＋金・原油・株価指
 | v0.3 案 | 2026-10-15 | 節 E（Tick Data への申請文。日本語と英語。送信していない）と節 F（OANDA の 6 ファイルの形式と品質、OANDA の時刻の資料、同じ UTC 区間での比較、tick の間隔の分布、HistData の参考の最長区間、ハッシュ）を追加 |
 | v0.4 案 | 2026-10-15 | 出典の突き合わせで Dukascopy の規約の原文を H-2 に追記。付録 E に「検討記録。送信しない（人間の決定）」の注記。節 G（問い合わせの質問文。送っていない）、節 H（FXCM・Dukascopy の利用条件）、節 I（OANDA の利用条件と時刻の資料）を追加 |
 | v0.5 案 | 2026-10-15 | 節 J（OANDA MT5 Python API の経路の記録: OANDA・MetaQuotes の公式ページの逐語、実測の環境の費用の資料、保存したページのハッシュ）を追加。G-1 の問い 6 を MT5 API の問いに改めた |
+| v0.6 案 | 2026-10-15 | 節 J-5（AWS 上の Windows での試験の費用の資料: EC2・EBS・データ転送の公開の価格表、EC2・EBS・VPC の料金ページの原文、保存したファイルのハッシュ）を追加 |
