@@ -308,3 +308,112 @@ def test_sync_trigger_requests_ticks_once_and_keeps_no_values() -> None:
     assert out["count"] == 1 and out["symbol"] == "USDJPY.cl"
     assert "141.12" not in json.dumps(out)
     assert probe.SYNC_TRIGGER_WINDOW.end <= probe.REQUEST_END_LIMIT
+
+
+# --- 人間の第 11 回の決定（2026-10-16）による改め -------------------------------------------------
+
+
+def _e1_diff_only(best: int) -> list[dict[str, Any]]:
+    """4 値の完全一致 0 本で、ずれ ``best`` の差だけが小さい E1 の統計（人工）。"""
+    return [
+        {
+            "shift_hours": h,
+            "compared": 120,
+            "ohlc_exact": 0,
+            "median_abs_close_diff_points": 4.0 if h == best else 50.0,
+        }
+        for h in probe.E1_SHIFTS_HOURS
+    ]
+
+
+def test_diff_only_e1_is_recorded_but_not_used_to_confirm() -> None:
+    reading = ts.read_e1(_e1_diff_only(2), "S2")
+    assert reading is not None
+    assert not reading["matched"] and reading["hypotheses"] == []
+    assert reading["evidence"] == "diff_only"
+    assert reading["diff_best_shift_hours"] == 2
+    assert reading["diff_hypotheses"] == ["EU", "FIXED"]
+    assert reading["diff_separation"] == 12.5
+
+
+def test_diff_only_e1_against_weekends_issues_t6_recheck() -> None:
+    recs = _year_records("USDJPY", 2017)
+    recs.append(_rec("USDJPY", "tuesday", "2017-03-14", "S2", [], e1=_e1_diff_only(2)))
+    ev = ts.evaluate(recs)
+    y = ev.years[("USDJPY", 2017)]
+    assert y["status"] == "confirmed" and y["rule"] == "US"
+    assert y["unresolved_states"] == ["S2"]
+    assert any(b["T"] == "T6" for b in ev.branches)
+    assert [a["rid"] for a in ev.auto_plan] == ["X-USDJPY-T2017-03-14-re"]
+    assert any(c.startswith("T6") for c in ev.needs_coordinator)
+
+
+def test_diff_only_e1_agreeing_with_weekends_adds_nothing() -> None:
+    recs = _year_records("USDJPY", 2017)
+    recs.append(_rec("USDJPY", "tuesday", "2017-03-14", "S2", [], e1=_e1_diff_only(3)))
+    ev = ts.evaluate(recs)
+    assert "unresolved_states" not in ev.years[("USDJPY", 2017)]
+    assert ev.auto_plan == [] and ev.needs_coordinator == []
+
+
+def test_e4_minute_differences_within_tolerance_support_the_same_rule() -> None:
+    recs = _year_records("USDJPY", 2023)
+    d = probe._YEAR_SUNDAYS[2023][1]
+    times = _weekend_times(d, 2, 3)
+    shifted = [t - 60 for t in times[:180]] + [t + 14 * 60 for t in times[180:]]
+    recs.append(_rec("EURUSD", "weekend", d, "S2", shifted))
+    ev = ts.evaluate(recs)
+    assert not any(b["T"] == "T4" for b in ev.branches)
+    rows = {r["boundary"]: r for r in ev.e4_rows}
+    assert rows["close"]["diff_min"] == -1.0 and rows["open"]["diff_min"] == 14.0
+    assert rows["close"]["supports_same_rule"] and rows["open"]["supports_same_rule"]
+
+
+def test_e4_one_hour_difference_is_not_absorbed_by_the_tolerance() -> None:
+    uj = ts.read_weekend(_weekend_times("2023-03-12", 2, 3), "2023-03-12", "S2")
+    other = ts.read_weekend(_weekend_times("2023-03-12", 2, 2), "2023-03-12", "S2")
+    cmp = ts.e4_compare(uj, other)
+    assert not cmp["supports_same_rule"] and cmp["reason"] == "offset_differs"
+    assert cmp["open_diff_min"] == -60.0
+
+
+def test_price_basis_stats_compare_bid_ask_mid_without_prices() -> None:
+    base = int(datetime(2019, 3, 19, tzinfo=UTC).timestamp())
+    # 6 時間ぶんの tick。値は時刻とともに変わるので、ずれが合うときだけ差が 0 になる
+    ticks = [
+        ((base + 60 * k) * 1000, f"{100 + k * 0.01:.3f}", f"{100.004 + k * 0.01:.3f}")
+        for k in range(360)
+    ]
+    ref = ts.csv_minute_bars(ticks)
+    api_rows = [
+        {"time": t + 2 * 3600, "open": v[0], "high": v[1], "low": v[2], "close": v[3]}
+        for t, v in ref["bid"].items()
+        if base + 3 * 3600 <= t < base + 5 * 3600
+    ]
+    res = ts.price_basis_stats(api_rows, ref, 0.001, "S2")
+    assert res["by_basis"]["bid"]["diff_best_shift_hours"] == 2
+    assert res["by_basis"]["bid"]["diff_hypotheses"] == ["EU", "FIXED"]
+    bid2 = next(r for r in res["by_basis"]["bid"]["by_shift"] if r["shift_hours"] == 2)
+    assert bid2["ohlc_exact"] == 120
+    ask2 = next(r for r in res["by_basis"]["ask"]["by_shift"] if r["shift_hours"] == 2)
+    assert ask2["ohlc_exact"] == 0 and ask2["median_abs_close_diff_points"] == 4.0
+    assert "100." not in json.dumps(res)
+
+
+def test_csv_weekend_gaps_read_raw_times_only(tmp_path: Path) -> None:
+    p = tmp_path / "t.csv"
+    p.write_text(
+        "<DATE>\t<TIME>\t<BID>\t<ASK>\t<LAST>\t<VOLUME>\n"
+        "2019.03.08\t23:59:58.000\t1\t2\t\t\n"
+        "2019.03.11\t00:00:08.000\t1\t2\t\t\n",
+        encoding="utf-8",
+    )
+    gaps = ts.csv_weekend_gaps(p)
+    assert gaps == [
+        {
+            "last_before_raw": "2019-03-08T23:59:58",
+            "first_after_raw": "2019-03-11T00:00:08",
+            "gap_hours": 48.003,
+            "first_after_as_utc": "2019-03-10T21:00:08+00:00",
+        }
+    ]
