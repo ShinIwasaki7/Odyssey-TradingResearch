@@ -67,3 +67,11 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 5. 残りの 8 区間: `37_final_survey.sh --remaining --execute`（4 で 1 本以上返った場合）。0 本の区間が残れば `37_final_survey.sh --redo-empty --execute`（上限 12 の残りの内だけ）。
 6. 判定は各回の後に自動で `data/raw/oanda_mt5_probe/<日付>/k10-eval/report.md`・`result.json` に出る。区分は「確認済み」（規則・適用期間・根拠）と「仮定付き」（理由と、候補の規則ごとの解釈）の 2 つだけ。
 7. 打ち切り（1 時間 30 分）・上限 12 に達したら要求を出さず、その時点のデータで判定して閉じる。片付けは `90_teardown.sh --execute`。片付けの後に判定し直す場合（AWS は要らない）: `.venv/bin/python -m tools.survey.mt5_time_survey final-evaluate data/raw/oanda_mt5_probe/<日付>/ts-K10-*/summary_ts-K10.json --report <報告> --json-out <結果>`。
+
+## 全期間取得（未実行。付録 K-16 の計画。人間の承認待ち）
+
+8 通貨 × 2017-01〜2023-12 の 1 分足を、1 要求 = 1 通貨 × 1 か月（計 672）で取り、gzip の CSV と manifest で保存する計画。**まだ実行しない。スクリプトと道具（段 `fullfetch`）は承認の後に作業役が足す**（今のスクリプトの挙動は変えていない）。
+
+- 見積もり（課金なし。Mac だけ）: `uv run python -m tools.survey.mt5_full_fetch_estimate`（`--json` で同じ数の JSON）。単価はこの `lib.sh` の `PRICE_*`・`TAX_RATE` を読む。
+- 今の回収（`40_collect.sh`。SSM の出力で 13,500 バイトずつ）は実測 約 1,900 バイト/秒で、全期間（圧縮後 約 0.3 GB）では約 43 時間かかる。回収の経路（S3・SSM のポート転送・RDP のフォルダの共有）は人間が決める（付録 K-16.3）。
+- 上限の案: 要求の打ち切り 2 時間 30 分、終了 4 時間、Windows の中の自動の停止 4 時間 30 分、要求 750、ディスク 60 GB（拡張しない）、回収 1 GB（付録 K-16.6）。
