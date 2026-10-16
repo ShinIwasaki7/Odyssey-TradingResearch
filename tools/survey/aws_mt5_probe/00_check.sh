@@ -91,10 +91,12 @@ inst, gp3, ip4, egress, credit, tax, root = map(float, sys.argv[1:])
 def total(hours, gb, egress_gb, credit_hours):
     sub = inst * hours + gb * gp3 * hours / 720 + ip4 * hours + egress * egress_gb + 2 * credit * credit_hours
     return sub * (1 + tax)
-print(f"  想定（4 時間＝作業上限、ディスク 60 GB、送信 0.1 GB）: 約 {total(4, 60, 0.1, 0):.2f}")
-print(f"  上限（6 時間＝自動の停止まで止め忘れ、60 GB、送信 5 GB、クレジットの標準を外した場合）: 約 {total(6, 60, 5, 6):.2f}")
+# 最後の調査（付録 K-10.3）: 作業 1.5 時間、止め忘れを含めて 3 時間、送信 0.1 GB（上限 1 GB）
+print(f"  想定（1.5 時間＝作業上限、ディスク 60 GB、送信 0.1 GB）: 約 {total(1.5, 60, 0.1, 0):.2f}")
+print(f"  上限（3 時間＝止め忘れを含む、60 GB、送信 1 GB）: 約 {total(3, 60, 1, 0):.2f}")
+print(f"  （CPU のクレジットの標準を外した場合はさらに 約 {total(3, 0, 0, 3) - total(3, 0, 0, 0):.2f}）")
 print(f"  止め忘れの 1 時間あたり（標準のクレジット、60 GB）: 約 {(inst + 60 * gp3 / 720 + ip4) * (1 + tax):.3f}")
-print("  使用済み（前回の試験。付録 K-4）: 約 0.24")
+print("  使用済み（前回までの 2 回。付録 K-4・K-9.4）: 約 0.48")
 print("  人間の目安: 総額 5 米ドル以内（D12-20）")
 PY
 echo "  AMI（記録用）: ${ami_id} ${ami_name}"

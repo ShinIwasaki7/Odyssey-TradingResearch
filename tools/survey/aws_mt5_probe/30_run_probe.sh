@@ -26,6 +26,7 @@ for a in "$@"; do
   esac
 done
 require_profile
+forbid_in_final_run
 load_state
 check_deadline
 assert_tagged_instance "$INSTANCE_ID"

@@ -23,6 +23,7 @@ for a in "$@"; do
 done
 [[ -n "$stage" ]] || die "段を指定する（A2・A1・B1・B2・extra・G）"
 require_profile
+forbid_in_final_run
 load_state
 check_deadline
 assert_tagged_instance "$INSTANCE_ID"

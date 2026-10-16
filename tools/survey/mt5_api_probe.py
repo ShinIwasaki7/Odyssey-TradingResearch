@@ -744,6 +744,70 @@ GAP_STAGE: tuple[SurveyRequest, ...] = tuple(
 GAP_REQUESTS = 112
 
 
+#: 最後の調査（D12 付録 K-10。人間の決定 D12-41 と第 12 回の決定）の要求の一覧。USDJPY だけ、
+#: 1 分足だけ、2017・2019 年だけ。状態 S2M は「米欧の間の週末」（金曜・日曜とも米国だけ夏時間）、
+#: S2E は「米欧の間で、日曜が欧州の切替日の週末」（金曜は米国だけ夏時間、日曜の開場は両方夏時間）。
+FINAL_STAGE_NAME = "K10"
+FINAL_STAGE: tuple[SurveyRequest, ...] = (
+    SurveyRequest("K10-USDJPY-W2017-03-05", "K10", USDJPY, "weekend", "2017-03-05", "S1"),
+    SurveyRequest("K10-USDJPY-W2019-03-03", "K10", USDJPY, "weekend", "2019-03-03", "S1"),
+    SurveyRequest("K10-USDJPY-W2017-03-19", "K10", USDJPY, "weekend", "2017-03-19", "S2M"),
+    SurveyRequest("K10-USDJPY-W2017-03-26", "K10", USDJPY, "weekend", "2017-03-26", "S2E"),
+    SurveyRequest("K10-USDJPY-W2019-03-17", "K10", USDJPY, "weekend", "2019-03-17", "S2M"),
+    SurveyRequest("K10-USDJPY-W2019-03-24", "K10", USDJPY, "weekend", "2019-03-24", "S2M"),
+    SurveyRequest("K10-USDJPY-W2019-03-31", "K10", USDJPY, "weekend", "2019-03-31", "S2E"),
+    SurveyRequest("K10-USDJPY-T2017-03-21", "K10", USDJPY, "tuesday", "2017-03-21", "S2"),
+    SurveyRequest("K10-USDJPY-T2017-03-14-re", "K10", USDJPY, "tuesday", "2017-03-14", "S2"),
+)
+#: 最後の調査の要求の数の上限（計画 9。残り 3 は取り寄せの空振りのやり直しだけ。付録 K-10.2）。
+FINAL_MAX_REQUESTS = 12
+#: 最後の調査で要求してよい年（付録 K-10.2。2024 年以降は REQUEST_END_LIMIT でも止める）。
+FINAL_YEARS: frozenset[int] = frozenset({2017, 2019})
+
+
+class FinalLimitError(ValueError):
+    """最後の調査の上限（要求 12・年・一覧の外の区間）を超える指定。"""
+
+
+def final_plan(
+    only: Sequence[str] | None, already_sent: int, max_requests: int
+) -> list[SurveyRequest]:
+    """最後の調査の計画を作り、上限を確かめる。``only`` は一覧の中の要求の名前だけ（やり直し用）。
+
+    ``already_sent`` は前の回までに出した要求の数（同じ区間のやり直しも数える）。上限を超える
+    ``max_requests`` や、一覧の外の名前は拒む。
+    """
+    if max_requests > FINAL_MAX_REQUESTS - already_sent:
+        raise FinalLimitError(
+            f"最後の調査の要求は合計 {FINAL_MAX_REQUESTS} まで（済み {already_sent}、"
+            f"指定 {max_requests}）"
+        )
+    known = {r.rid: r for r in FINAL_STAGE}
+    if only:
+        unknown = [rid for rid in only if rid not in known]
+        if unknown:
+            raise FinalLimitError(f"最後の調査の一覧に無い要求: {unknown}")
+        plan = [known[rid] for rid in only]
+    else:
+        plan = list(FINAL_STAGE)
+    for r in plan:
+        w = r.window()
+        check_window(w)
+        if w.start.year not in FINAL_YEARS or w.end.year not in FINAL_YEARS:
+            raise FinalLimitError(f"最後の調査は 2017・2019 年だけ: {r.rid}")
+    return plan
+
+
+def prior_final_requests(out_root: Path) -> int:
+    """前の回までに出した最後の調査の要求の数（``<out_root>/ts-K10-*/summary_ts-K10.json``）。"""
+    n = 0
+    for p in sorted(out_root.glob(f"ts-{FINAL_STAGE_NAME}-*/summary_ts-{FINAL_STAGE_NAME}.json")):
+        n += sum(
+            1 for r in json.loads(p.read_text(encoding="utf-8"))["requests"] if not r["skipped"]
+        )
+    return n
+
+
 def load_plan_file(path: Path) -> list[SurveyRequest]:
     """決定木の追加の要求（JSON の配列）を読む。区間を確かめる。"""
     items = json.loads(path.read_text(encoding="utf-8"))
@@ -762,25 +826,83 @@ def e1_stats(
     ref_bars: Mapping[int, Sequence[str]],
     digits: int,
     point: float,
+    ref_digits: int | None = None,
 ) -> list[dict[str, Any]]:
-    """API の 1 分足と、配布 CSV の bid で作った 1 分足（UTC の分の始め → 4 値の文字列）を、
-    ずれの候補ごとに比べた統計。価格の値は返さない。"""
+    """API の 1 分足と、配布 CSV で作った 1 分足（UTC の分の始め → 4 値の文字列）を、
+    ずれの候補ごとに比べた統計。価格の値は返さない。
+
+    ``ref_digits`` は参照の足の桁数（mid は bid と ask の平均なので 1 桁多い）。省くと ``digits``。
+    符号付きの差（API − 参照）の中央値も返す（補助。point 単位）。
+    """
     out: list[dict[str, Any]] = []
+    rd = digits if ref_digits is None else ref_digits
     api_bars = {int(r["time"]): _bar_key(r, digits) for r in api_rows}
-    ref = {int(t): tuple(f"{float(v):.{digits}f}" for v in vals) for t, vals in ref_bars.items()}
+    ref = {int(t): tuple(f"{float(v):.{rd}f}" for v in vals) for t, vals in ref_bars.items()}
     for h in E1_SHIFTS_HOURS:
         pairs = [(a, ref[t - h * 3600]) for t, a in api_bars.items() if (t - h * 3600) in ref]
-        exact = sum(a == b for a, b in pairs)
-        diffs = sorted(abs(float(a[3]) - float(b[3])) / point for a, b in pairs)
+        exact = sum(
+            all(abs(float(x) - float(y)) < point / 2 for x, y in zip(a, b, strict=True))
+            for a, b in pairs
+        )
+        signed = sorted((float(a[3]) - float(b[3])) / point for a, b in pairs)
+        diffs = sorted(abs(d) for d in signed)
         med = diffs[len(diffs) // 2] if diffs else None
+        smed = signed[len(signed) // 2] if signed else None
         out.append(
             {
                 "shift_hours": h,
                 "compared": len(pairs),
                 "ohlc_exact": exact,
                 "median_abs_close_diff_points": round(med, 1) if med is not None else None,
+                "median_signed_close_diff_points": round(smed, 1) if smed is not None else None,
             }
         )
+    return out
+
+
+#: 照合に使う配布 CSV の価格の種類（人間の第 11 回の決定の 3。ask・mid は補助）。
+REF_BASES: tuple[str, ...] = ("bid", "ask", "mid")
+#: 参照（配布 CSV の 1 分足）。旧の形は bid だけ（UTC の分の始め → 4 値）、新しい形は種類ごと。
+RefBars = Mapping[int, Sequence[str]]
+
+
+def load_ref(raw: Mapping[str, Any]) -> dict[str, dict[str, dict[int, list[str]]]]:
+    """参照のファイル（JSON）を、要求 → 価格の種類 → 足 の形に読む。旧の形（bid だけ）も読む。"""
+    out: dict[str, dict[str, dict[int, list[str]]]] = {}
+    for rid, bars in raw.items():
+        if isinstance(bars, Mapping) and set(bars) <= set(REF_BASES) and bars:
+            out[rid] = {b: {int(t): list(v) for t, v in bb.items()} for b, bb in bars.items()}
+        else:
+            out[rid] = {"bid": {int(t): list(v) for t, v in bars.items()}}
+    return out
+
+
+def aux_stats(
+    rows: Sequence[Mapping[str, Any]],
+    ref: Mapping[str, RefBars],
+    digits: int,
+    point: float,
+    split_at: float | None = None,
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """bid・ask・mid の照合の統計（補助）。価格はメモリの中だけで比べ、差の統計だけを返す。
+
+    ``split_at``（API の時刻の値、秒）があれば、週末の区間を金曜の側（``close_side``）と
+    日曜・月曜の側（``open_side``）に分けて比べる（閉場と開場で期待されるずれが違う状態があるため）。
+    無ければ区間の全体（``all``）。
+    """
+    if split_at is None:
+        parts: dict[str, Sequence[Mapping[str, Any]]] = {"all": rows}
+    else:
+        parts = {
+            "close_side": [r for r in rows if float(r["time"]) < split_at],
+            "open_side": [r for r in rows if float(r["time"]) >= split_at],
+        }
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for side, part in parts.items():
+        out[side] = {
+            basis: e1_stats(part, bars, digits, point, digits + 1 if basis == "mid" else digits)
+            for basis, bars in ref.items()
+        }
     return out
 
 
@@ -810,18 +932,26 @@ class SurveyRecord:
     e1: list[dict[str, Any]] | None
     skipped: str | None = None
     retries: int = 0
+    #: 照合の統計（補助）。区間の側 → 価格の種類 → ずれごとの差の統計。価格の値は持たない。
+    e1_aux: dict[str, dict[str, list[dict[str, Any]]]] | None = None
 
 
 def run_time_survey(
     api: Mt5Api,
     plan: Sequence[SurveyRequest],
     max_requests: int,
-    e1_ref: Mapping[str, Mapping[int, Sequence[str]]] | None = None,
+    e1_ref: Mapping[str, Mapping[Any, Any]] | None = None,
     disk_free: Callable[[], int] | None = None,
     min_free_bytes: int = MIN_FREE_BYTES,
     retry_waits: Sequence[float] = SURVEY_RETRY_WAITS,
 ) -> list[SurveyRecord]:
-    """時刻の調査の要求を順に出す。上限（要求の数・ディスクの空き）に達したら、残りは出さずに記録する。"""
+    """時刻の調査の要求を順に出す。上限（要求の数・ディスクの空き）に達したら、残りは出さずに記録する。
+
+    ``e1_ref`` は要求 → 足（旧の形。bid だけ）か、要求 → 価格の種類 → 足（``load_ref`` の形）。
+    火曜の区間の bid は従来どおり ``e1`` に、種類ごとの統計は ``e1_aux`` に書く。
+    週末の区間は日曜 00:00（API の時刻の値）で金曜の側と月曜の側に分けて ``e1_aux`` に書く
+    （``e1`` は書かない）。
+    """
     windows = [r.window() for r in plan]
     for w in windows:
         check_window(w)  # 1 つでも 2024 年以降を含めば、何も要求せずに止まる
@@ -848,6 +978,7 @@ def run_time_survey(
         outside: list[float] = []
         error = ""
         e1 = None
+        aux = None
         retries = 0
         if stop is None and symbol is not None:
             rows, outside = split_by_window(request_once(api, KIND_M1, symbol, w), w)
@@ -861,7 +992,15 @@ def run_time_survey(
             error = str(api.last_error())
             ref = (e1_ref or {}).get(req.rid)
             if ref is not None and digits is not None and point:
-                e1 = e1_stats(rows, ref, digits, point)
+                by_basis = ref if ref and set(ref) <= set(REF_BASES) else {"bid": ref}
+                if req.kind == "tuesday":
+                    if "bid" in by_basis:
+                        e1 = e1_stats(rows, by_basis["bid"], digits, point)
+                    if len(by_basis) > 1:
+                        aux = aux_stats(rows, by_basis, digits, point)
+                elif req.kind == "weekend":
+                    sunday = datetime.fromisoformat(req.date).replace(tzinfo=UTC).timestamp()
+                    aux = aux_stats(rows, by_basis, digits, point, split_at=sunday)
         out.append(
             SurveyRecord(
                 rid=req.rid,
@@ -886,6 +1025,7 @@ def run_time_survey(
                 e1=e1,
                 skipped=stop if stop is not None else (None if symbol else "symbol_not_found"),
                 retries=retries,
+                e1_aux=aux,
             )
         )
     return out
@@ -936,16 +1076,26 @@ def _cmd_synctrigger(args: argparse.Namespace) -> int:
 
 
 def _cmd_timesurvey(args: argparse.Namespace) -> int:
-    if args.stage == "G":
+    if args.stage == FINAL_STAGE_NAME:
+        if args.plan_file:
+            raise FinalLimitError(
+                "最後の調査には一覧の外の区間を足さない（--plan-file は使えない）"
+            )
+        only = [x for x in (args.only or "").split(",") if x]
+        already = prior_final_requests(Path(args.out_dir).parent)
+        plan = final_plan(only, already, args.max_requests)
+    elif args.only:
+        raise ValueError("--only は最後の調査（K10）だけ")
+    elif args.stage == "G":
         plan = list(GAP_STAGE)
     else:
         plan = list(TIME_SURVEY_STAGES[args.stage]) if args.stage != "extra" else []
     if args.plan_file:
         plan += load_plan_file(Path(args.plan_file))
-    e1_ref: dict[str, dict[int, list[str]]] | None = None
+    e1_ref: dict[str, dict[str, dict[int, list[str]]]] | None = None
     if args.e1_ref:
         raw = json.loads(gzip.decompress(Path(args.e1_ref).read_bytes()).decode("utf-8"))
-        e1_ref = {rid: {int(t): v for t, v in bars.items()} for rid, bars in raw.items()}
+        e1_ref = load_ref(raw)
     api = load_mt5()
     if not api.initialize():
         print(json.dumps({"initialize": False, "last_error": str(api.last_error())}))
@@ -1023,11 +1173,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--phase", choices=sorted(PHASES), required=True)
     p.add_argument("--out-dir", required=True)
     t = sub.add_parser("timesurvey", help="時刻の調査の段（D12 §11.7）を Windows の MT5 で要求する")
-    t.add_argument("--stage", choices=[*TIME_SURVEY_STAGES, "extra", "G"], required=True)
+    t.add_argument(
+        "--stage", choices=[*TIME_SURVEY_STAGES, "extra", "G", FINAL_STAGE_NAME], required=True
+    )
     t.add_argument("--out-dir", required=True)
     t.add_argument("--max-requests", type=int, required=True)
     t.add_argument("--plan-file")
     t.add_argument("--e1-ref")
+    t.add_argument(
+        "--only", help="最後の調査（K10）の一覧の中の要求の名前（カンマ区切り。やり直し用）"
+    )
     s = sub.add_parser(
         "synctrigger", help="履歴の取り寄せを起こす tick の要求（1 回だけ。値は保存しない）"
     )

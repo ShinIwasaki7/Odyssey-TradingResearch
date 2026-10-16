@@ -31,10 +31,10 @@ done
 
 userdata=$(mktemp)
 trap 'rm -f "$userdata"' EXIT
-# 起動の時に Windows の中で自動の停止（4 時間 30 分後）を入れる。シャットダウンの動作は「停止」。
+# 起動の時に Windows の中で自動の停止（PROBE_SHUTDOWN_SECONDS 後）を入れる。シャットダウンの動作は「停止」。
 cat >"$userdata" <<PS
 <powershell>
-shutdown /s /t ${PROBE_SHUTDOWN_SECONDS} /c "odyssey-mt5-probe auto stop (4h30m)"
+shutdown /s /t ${PROBE_SHUTDOWN_SECONDS} /c "odyssey-mt5-probe auto stop ($(( PROBE_SHUTDOWN_SECONDS / 60 ))m)"
 </powershell>
 PS
 
@@ -49,7 +49,8 @@ cat >&2 <<INFO
   キーペア: ${key_name}（秘密鍵は ${key_file}、権限 600。リポジトリの外）
   シャットダウンの動作: 停止。Windows の中で ${PROBE_SHUTDOWN_SECONDS} 秒後に自動の停止
   タグ: ${PROBE_TAG_KEY}=${PROBE_TAG_VALUE}
-  作業役が必ず終了する時刻: 起動から 4 時間（Windows の中の自動の停止は 4 時間 30 分で、止め忘れの備え）
+  作業上限: 起動から $(( FINAL_TIME_LIMIT_SECONDS / 60 )) 分で要求を打ち切り（起動の種類 ${PROBE_RUN_KIND}）
+  作業役が必ず終了する時刻: 起動から $(( PROBE_DEADLINE_SECONDS / 60 )) 分（Windows の中の自動の停止は $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分で、止め忘れの備え）
 INFO
 
 if [[ "$EXECUTE" != 1 ]]; then
@@ -92,6 +93,7 @@ save_state LAUNCHED_AT_UTC "$(date -u -r "$launched" +%Y-%m-%dT%H:%M:%SZ)"
 save_state DEADLINE_UTC "$(date -u -r $(( launched + PROBE_DEADLINE_SECONDS )) +%Y-%m-%dT%H:%M:%SZ)"
 save_state PROBE_DATE "$probe_date"
 save_state AMI_ID "$ami_id"
+save_state RUN_KIND "$PROBE_RUN_KIND"
 log "起動: ${instance_id}（起動 $(date -u -r "$launched" +%H:%M:%SZ)、必ず終了する時刻 $(date -u -r $(( launched + PROBE_DEADLINE_SECONDS )) +%H:%M:%SZ)）"
 
 aws_p ec2 wait instance-running --instance-ids "$instance_id"

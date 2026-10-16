@@ -28,6 +28,15 @@
 - E1 は 4 値の完全一致が無くても、ずれごとの差の統計を証拠の一部として記録する（``evidence`` が
   ``diff_only``）。差が最小のずれの仮説が週末の仮説と違えば T6 を出し、読み直しの要求と司令塔への
   事項を出す。差の統計は時刻の確定には使わない（調査漏れの修正。付録 K-9.5）。
+
+最後の調査（付録 K-10。人間の決定 D12-41 と第 12 回の決定）:
+
+- ``final-ref``: 配布 CSV から、最後の調査の要求（週末と火曜）の前後 5 時間の bid・ask・mid の
+  1 分足を作る。
+- ``final-evaluate``: 回収した最後の調査の要求を読み、2017・2019 年の米欧の切替日の間の期間を
+  「確認済み」（規則を根拠付きで特定。規則名・適用期間・根拠を出す）か「仮定付き」（特定できない。
+  候補の規則ごとの解釈を並べる。原データはそのまま）のどちらかに分ける。区分はこの 2 つだけ。
+  価格の差が最小という理由だけでは確認済みにしない（bid・ask・mid の照合は補助）。
 """
 
 from __future__ import annotations
@@ -58,6 +67,10 @@ EXPECTED: dict[str, dict[str, tuple[int, int]]] = {
     "S2": {"US": (2, 3), "EU": (2, 2), "FIXED": (2, 2)},
     "S3": {"US": (3, 3), "EU": (3, 3), "FIXED": (2, 2)},
     "S4": {"US": (3, 3), "EU": (3, 2), "FIXED": (2, 2)},
+    # 米欧の間の週末（金曜・日曜とも米国だけ夏時間。付録 K-10.2）
+    "S2M": {"US": (3, 3), "EU": (2, 2), "FIXED": (2, 2)},
+    # 米欧の間で日曜が欧州の切替日の週末（金曜は米国だけ夏時間、日曜の開場は両方夏時間）
+    "S2E": {"US": (3, 3), "EU": (2, 3), "FIXED": (2, 2)},
 }
 #: 火曜の区間（その日の状態）での期待されるずれ。
 EXPECTED_TUESDAY: dict[str, dict[str, int]] = {
@@ -65,6 +78,8 @@ EXPECTED_TUESDAY: dict[str, dict[str, int]] = {
     "S2": {"US": 3, "EU": 2, "FIXED": 2},
     "S3": {"US": 3, "EU": 3, "FIXED": 2},
     "S4": {"US": 3, "EU": 2, "FIXED": 2},
+    "S2M": {"US": 3, "EU": 2, "FIXED": 2},
+    "S2E": {"US": 3, "EU": 3, "FIXED": 2},  # その週の火曜は欧州の切替の後
 }
 #: E1 で「一致」とみなす、4 値が完全に一致した足の割合。
 E1_MATCH_RATIO = 0.9
@@ -131,21 +146,29 @@ def read_weekend(bar_times: Sequence[int], sunday: str, state: str) -> WeekendRe
     return reading
 
 
-def read_e1(e1: Sequence[Mapping[str, Any]] | None, state: str) -> dict[str, Any] | None:
+def read_e1(
+    e1: Sequence[Mapping[str, Any]] | None,
+    state: str,
+    expected: Mapping[str, int] | None = None,
+) -> dict[str, Any] | None:
     """火曜の E1 の統計から、一致したずれと、それで説明できる仮説を読む。
 
     4 値の完全一致が ``E1_MATCH_RATIO`` 以上なら ``evidence`` は ``exact`` で、``hypotheses`` を
     確定の材料にする。完全一致が足りなくても比べた足があれば ``diff_only`` とし、差の中央値が最小の
     ずれ（``diff_best_shift_hours``）と、その仮説（``diff_hypotheses``）、2 番目に小さい差との比
     （``diff_separation``）を記録する。``diff_only`` は確定に使わない（追加の確認を出す材料だけ）。
+
+    ``expected`` は仮説ごとの期待されるずれ（省くと ``EXPECTED_TUESDAY[state]``）。週末の区間の
+    金曜の側・月曜の側を読むときに、閉場・開場の期待を渡す。
     """
     if not e1:
         return None
+    exp = expected if expected is not None else EXPECTED_TUESDAY[state]
     best = max(e1, key=lambda r: (r["ohlc_exact"], -(r["median_abs_close_diff_points"] or 1e9)))
     ratio = best["ohlc_exact"] / best["compared"] if best["compared"] else 0.0
     matched = ratio >= E1_MATCH_RATIO
     # E1 のずれ h は「API の時刻 − h 時間 = UTC」なので、API の時刻 − UTC = h。
-    hyps = [h for h in HYPOTHESES if EXPECTED_TUESDAY[state][h] == best["shift_hours"]]
+    hyps = [h for h in HYPOTHESES if exp[h] == best["shift_hours"]]
     diffs = sorted(
         (r["median_abs_close_diff_points"], r["shift_hours"])
         for r in e1
@@ -165,11 +188,7 @@ def read_e1(e1: Sequence[Mapping[str, Any]] | None, state: str) -> dict[str, Any
         "diff_best_shift_hours": diff_best,
         "diff_separation": separation,
         "diff_by_shift": {str(r["shift_hours"]): r["median_abs_close_diff_points"] for r in e1},
-        "diff_hypotheses": [
-            h
-            for h in HYPOTHESES
-            if diff_best is not None and EXPECTED_TUESDAY[state][h] == diff_best
-        ],
+        "diff_hypotheses": [h for h in HYPOTHESES if diff_best is not None and exp[h] == diff_best],
     }
 
 
@@ -636,6 +655,399 @@ def csv_weekend_gaps(path: Path, min_hours: float = 24.0) -> list[dict[str, str 
     return out
 
 
+# --- 最後の調査（付録 K-10。人間の決定 D12-41・第 12 回の決定） -----------------------------------
+
+#: 判定する期間（各年の米国の切替日の日曜から、欧州の切替日の日曜 01:00 UTC の前まで）。
+FINAL_PERIODS: dict[int, tuple[str, str]] = {
+    2017: ("2017-03-12", "2017-03-26"),
+    2019: ("2019-03-10", "2019-03-31"),
+}
+#: 対照の週末の状態と、既知のずれ（閉場・開場とも +2 時間）。
+FINAL_CONTROL_STATE = "S1"
+FINAL_CONTROL_OFFSETS = (2, 2)
+#: 出力の区分はこの 2 つだけ（人間の第 12 回の決定）。
+LABEL_CONFIRMED = "確認済み"
+LABEL_ASSUMED = "仮定付き"
+
+
+def build_final_ref(
+    plan: Iterable[probe.SurveyRequest], csv_root: Path = CSV_ROOT
+) -> dict[str, dict[str, dict[str, list[str]]]]:
+    """最後の調査の要求ごとに、配布 CSV の bid・ask・mid の 1 分足を作る。
+
+    形は 要求 → 種類 → UTC の分の始め → 4 値の文字列。区間の前後 5 時間を含む（ずれの候補
+    −4〜+4 時間を覆う）。区間が月をまたげば両方の月のファイルを読む。CSV は 1 ファイルを 1 回だけ
+    読む。週末の区間も作る（付録 K-10.2 の道具の変更 1）。
+    """
+    by_file: dict[Path, list[tuple[str, datetime, datetime]]] = {}
+    for req in plan:
+        w = req.window()
+        lo, hi = w.start - timedelta(hours=5), w.end + timedelta(hours=5)
+        for month in sorted({lo.strftime("%Y-%m"), hi.strftime("%Y-%m")}):
+            path = csv_root / req.pair / f"ticks_{req.pair}-oj5k_{month}.csv"
+            if path.exists():
+                by_file.setdefault(path, []).append((req.rid, lo, hi))
+    acc: dict[str, dict[str, dict[int, list[Decimal]]]] = {}
+    for path, spans in by_file.items():
+        lo, hi = min(s[1] for s in spans), max(s[2] for s in spans)
+        for ms, bid, ask in probe.read_oanda_csv(path, lo, hi):
+            m = ms // 60000 * 60
+            b, a = Decimal(bid), Decimal(ask)
+            vals = {"bid": b, "ask": a, "mid": (b + a) / 2}
+            for rid, s, e in spans:
+                if not s.timestamp() <= m < e.timestamp():
+                    continue
+                for basis in probe.REF_BASES:
+                    bars = acc.setdefault(rid, {}).setdefault(basis, {})
+                    v = vals[basis]
+                    o = bars.get(m)
+                    bars[m] = [v, v, v, v] if o is None else [o[0], max(o[1], v), min(o[2], v), v]
+    return {
+        rid: {
+            basis: {str(t): [str(v) for v in vals] for t, vals in sorted(bars.items())}
+            for basis, bars in by_basis.items()
+        }
+        for rid, by_basis in acc.items()
+    }
+
+
+def _aux_item(
+    rid: str,
+    date: str,
+    side: str,
+    basis: str,
+    stats: Sequence[Mapping[str, Any]] | None,
+    expected: Mapping[str, int],
+    role: str,
+) -> dict[str, Any]:
+    """bid・ask・mid の照合の 1 つの読み（補助）。
+
+    完全一致があればそのずれ、無ければ差が最小のずれ。
+    """
+    r = read_e1(stats, "", expected) if stats else None
+    item: dict[str, Any] = {
+        "rid": rid,
+        "date": date,
+        "side": side,
+        "basis": basis,
+        "role": role,
+        "expected": dict(expected),
+    }
+    if r is None or r["evidence"] == "none":
+        item.update(evidence="none", observed_shift_hours=None)
+        return item
+    shift = r["best_shift_hours"] if r["matched"] else r["diff_best_shift_hours"]
+    item.update(
+        evidence=r["evidence"],
+        observed_shift_hours=shift,
+        exact_ratio=r["exact_ratio"],
+        diff_separation=r["diff_separation"],
+        diff_by_shift=r["diff_by_shift"],
+    )
+    return item
+
+
+def _side_ok(offset: int | None, residual: float | None) -> bool:
+    return offset is not None and residual is not None and abs(residual) <= TOLERANCE_MINUTES
+
+
+def _final_boundary(req: probe.SurveyRequest, rec: Mapping[str, Any] | None) -> dict[str, Any]:
+    """週末の境界の読み（閉場と開場を別々に。±15 分は境界付近の更新時刻の差の許容だけ）。"""
+    item: dict[str, Any] = {
+        "rid": req.rid,
+        "date": req.date,
+        "state": req.state,
+        "role": "対照" if req.state == FINAL_CONTROL_STATE else "判定",
+        "expected_close": {h: EXPECTED[req.state][h][0] for h in HYPOTHESES},
+        "expected_open": {h: EXPECTED[req.state][h][1] for h in HYPOTHESES},
+        "close_readable": False,
+        "open_readable": False,
+        "close_offset_h": None,
+        "open_offset_h": None,
+    }
+    if rec is None or not rec.get("bar_times"):
+        item["reason"] = "not_returned"
+        return item
+    w = read_weekend(rec["bar_times"], req.date, req.state)
+    close_ok = _side_ok(w.close_offset_h, w.close_residual_min)
+    open_ok = _side_ok(w.open_offset_h, w.open_residual_min)
+    item.update(
+        close_readable=close_ok,
+        open_readable=open_ok,
+        reason=w.reason,
+        close_offset_h=w.close_offset_h if close_ok else None,
+        open_offset_h=w.open_offset_h if open_ok else None,
+        close_residual_min=w.close_residual_min,
+        open_residual_min=w.open_residual_min,
+        friday_last=_iso(w.friday_last),
+        sunday_first=_iso(w.sunday_first),
+    )
+    return item
+
+
+def _final_aux(req: probe.SurveyRequest, rec: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if req.kind == "weekend":
+        role = "対照" if req.state == FINAL_CONTROL_STATE else "判定"
+        sides = (rec or {}).get("e1_aux") or {}
+        for side, idx in (("close_side", 0), ("open_side", 1)):
+            exp = {h: EXPECTED[req.state][h][idx] for h in HYPOTHESES}
+            for basis in probe.REF_BASES:
+                stats = (sides.get(side) or {}).get(basis)
+                out.append(_aux_item(req.rid, req.date, side, basis, stats, exp, role))
+        return out
+    exp = dict(EXPECTED_TUESDAY[req.state])
+    by_basis = dict(((rec or {}).get("e1_aux") or {}).get("all") or {})
+    if "bid" not in by_basis and rec and rec.get("e1"):
+        by_basis["bid"] = rec["e1"]
+    for basis in probe.REF_BASES:
+        out.append(_aux_item(req.rid, req.date, "all", basis, by_basis.get(basis), exp, "補助"))
+    return out
+
+
+def final_evaluate(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """最後の調査の記録から、期間を「確認済み」か「仮定付き」に分ける（区分はこの 2 つだけ）。
+
+    確認済みの条件（付録 K-10.5 の (i)。(ii) は人間の第 12 回の決定で「仮定付き」に置き換えた）:
+
+    - 判定の週末（S2M・S2E。2017・2019 年の 5 つ）の金曜の閉場が全部読めて、全部が同じずれ。
+      ±15 分は境界付近の更新時刻の差の許容だけに使う。
+    - 対照の週末（S1）が既知のずれ（閉場・開場とも +2 時間）で読める。
+    - 補助の比較（bid・ask・mid。週末の両側と火曜）が、そのずれと矛盾しない（比べられないものは
+      矛盾に数えない）。補助の比較は確認済みにする根拠にはしない。
+
+    どれかが欠ければ「仮定付き」とし、候補の規則ごとの解釈と、各根拠の支持・不支持を並べる
+    （候補は選ばない）。原データ（足の時刻・配布 CSV）は変えない。
+    """
+    final_ids = {r.rid for r in probe.FINAL_STAGE}
+    latest: dict[str, Mapping[str, Any]] = {}
+    for r in records:
+        if r.get("skipped") or r["rid"] not in final_ids:
+            continue
+        if r["rid"] not in latest or r["executed_at_utc"] >= latest[r["rid"]]["executed_at_utc"]:
+            latest[r["rid"]] = r
+    boundary = [
+        _final_boundary(req, latest.get(req.rid))
+        for req in probe.FINAL_STAGE
+        if req.kind == "weekend"
+    ]
+    aux = [a for req in probe.FINAL_STAGE for a in _final_aux(req, latest.get(req.rid))]
+    judged = [b for b in boundary if b["role"] == "判定"]
+    controls = [b for b in boundary if b["role"] == "対照"]
+    reasons: list[str] = []
+    unreadable = [b["rid"] for b in judged if not b["close_readable"]]
+    if unreadable:
+        reasons.append("金曜の閉場が読めない週末がある: " + ", ".join(unreadable))
+    closes = {b["close_offset_h"] for b in judged if b["close_readable"]}
+    if len(closes) > 1:
+        reasons.append(
+            "金曜の閉場のずれが週末で割れた: "
+            + ", ".join(
+                f"{b['date']} {b['close_offset_h']:+d} h" for b in judged if b["close_readable"]
+            )
+        )
+    bad_controls = [
+        b["rid"]
+        for b in controls
+        if (b["close_offset_h"], b["open_offset_h"]) != FINAL_CONTROL_OFFSETS
+    ]
+    if bad_controls:
+        reasons.append("対照の週末が既知のずれ（+2 時間）で読めない: " + ", ".join(bad_controls))
+    offset = next(iter(closes)) if len(closes) == 1 else None
+    rule_hyps = [
+        h
+        for h in HYPOTHESES
+        if offset is not None and all(b["expected_close"][h] == offset for b in judged)
+    ]
+    if offset is not None and not rule_hyps:
+        reasons.append(f"閉場のずれ {offset:+d} h に合う仮説が無い")
+    judged_aux = [a for a in aux if a["role"] != "対照" and a["observed_shift_hours"] is not None]
+    if rule_hyps:
+        conflicts = [
+            a
+            for a in judged_aux
+            if a["observed_shift_hours"] not in {a["expected"][h] for h in rule_hyps}
+        ]
+        if conflicts:
+            reasons.append(
+                "補助の比較（bid・ask・mid）が閉場と別のずれを示す: "
+                + ", ".join(
+                    f"{a['date']} {a['side']} {a['basis']} {a['observed_shift_hours']:+d} h"
+                    for a in conflicts
+                )
+            )
+    confirmed = not reasons and bool(rule_hyps)
+    label = LABEL_CONFIRMED if confirmed else LABEL_ASSUMED
+    out: dict[str, Any] = {
+        "label": label,
+        "periods": [
+            {"year": year, "from": start, "to_before": f"{end}T01:00Z", "label": label}
+            for year, (start, end) in sorted(FINAL_PERIODS.items())
+        ],
+        "boundary": boundary,
+        "aux": aux,
+        "requests_read": len(latest),
+        "raw_data_note": (
+            "原データ（API の足の時刻・配布 CSV）は変えていない。生の価格は保存していない"
+        ),
+        "other_pairs_note": (
+            "この判定は USDJPY だけの要求による。他の通貨に当てはめる根拠は、"
+            "通貨の間の時刻の判定（E4。付録 K-9.5）で同じ時刻の規則を支持した範囲に限る"
+        ),
+    }
+    if confirmed:
+        assert offset is not None
+        out["rule"] = {
+            "hypotheses": rule_hyps,
+            "api_minus_utc_hours_in_period": offset,
+            "note": (
+                "この期間では同じずれになる仮説を全部挙げた（期間の変換はどれでも同じ）"
+                if len(rule_hyps) > 1
+                else ""
+            ),
+            "grounds": [
+                f"{b['date']}（{b['state']}）の金曜の閉場 {b['close_offset_h']:+d} h"
+                f"（残り {b['close_residual_min']} 分）"
+                for b in judged
+            ]
+            + [f"{b['date']}（対照）の閉場・開場 +2 h" for b in controls]
+            + [f"補助の比較 {len(judged_aux)} 件が矛盾しない（確認済みの根拠にはしていない）"],
+        }
+    else:
+        out["reasons"] = reasons
+        out["candidates"] = _final_candidates(boundary, aux)
+    return out
+
+
+def _final_candidates(
+    boundary: Sequence[Mapping[str, Any]], aux: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """仮定付きのときの、候補の規則ごとの解釈と、各根拠の支持・不支持（候補は選ばない）。"""
+    out: list[dict[str, Any]] = []
+    for h in HYPOTHESES:
+        n = EXPECTED["S2M"][h][0]
+        support: list[str] = []
+        against: list[str] = []
+        for b in boundary:
+            if b["role"] != "判定":
+                continue
+            for side, key in (("閉場", "close"), ("開場", "open")):
+                obs = b[f"{key}_offset_h"]
+                if obs is None:
+                    continue
+                txt = f"{b['date']} {side} {obs:+d} h"
+                (support if b[f"expected_{key}"][h] == obs else against).append(txt)
+        for a in aux:
+            obs = a["observed_shift_hours"]
+            if a["role"] == "対照" or obs is None:
+                continue
+            txt = f"{a['date']} {a['side']} {a['basis']} {obs:+d} h（{a['evidence']}）"
+            (support if a["expected"][h] == obs else against).append(txt)
+        out.append(
+            {
+                "hypothesis": h,
+                "api_minus_utc_hours_in_period": n,
+                "interpretation": (
+                    f"{h} を仮定すると、期間の中は API の時刻 − {n} 時間 = UTC"
+                    "（欧州の切替日の 01:00 UTC の後は両方夏時間の規則）"
+                ),
+                "supported_by": support,
+                "not_supported_by": against,
+            }
+        )
+    return out
+
+
+def final_md(res: Mapping[str, Any]) -> str:
+    """最後の調査の判定の報告（Markdown。価格の値は含まない）。"""
+    lines = [
+        "# 最後の調査の判定（付録 K-10。区分は「確認済み」「仮定付き」の 2 つ）",
+        "",
+        "価格の値は含まない。",
+        "",
+        f"区分: **{res['label']}**（読んだ要求 {res['requests_read']}）",
+        "",
+        _cells("年", "期間", "区分"),
+        _cells("---", "---", "---"),
+    ]
+    for p in res["periods"]:
+        lines.append(_cells(p["year"], f"{p['from']} 〜 {p['to_before']} の前", p["label"]))
+    if "rule" in res:
+        rule = res["rule"]
+        lines += [
+            "",
+            "## 規則（確認済み）",
+            f"- 規則: {', '.join(rule['hypotheses'])}（期間の中の API の時刻 − UTC = "
+            f"{rule['api_minus_utc_hours_in_period']:+d} 時間）",
+        ]
+        if rule["note"]:
+            lines.append(f"- 注: {rule['note']}")
+        lines.append("- 適用期間: 上の表の期間（USDJPY）")
+        lines += [f"- 根拠: {g}" for g in rule["grounds"]]
+    else:
+        lines += ["", "## 確認済みにできなかった理由"]
+        lines += [f"- {r}" for r in res["reasons"]] or ["- なし"]
+        lines += [
+            "",
+            "## 候補の規則ごとの解釈（どれも選ばない。採用する仮説は戦略成績を見る前に固定する）",
+            _cells("候補", "期間のずれ", "解釈", "支持する根拠", "支持しない根拠"),
+            _cells(*["---"] * 5),
+        ]
+        for c in res["candidates"]:
+            lines.append(
+                _cells(
+                    c["hypothesis"],
+                    f"{c['api_minus_utc_hours_in_period']:+d} h",
+                    c["interpretation"],
+                    "、".join(c["supported_by"]) or "—",
+                    "、".join(c["not_supported_by"]) or "—",
+                )
+            )
+    lines += [
+        "",
+        "## 週末の境界（閉場・開場。±15 分は境界付近の更新時刻の差の許容だけ）",
+        _cells(
+            "要求", "日曜", "状態", "役割", "閉場(h)", "開場(h)", "閉場の残り(分)", "開場の残り(分)"
+        ),
+        _cells(*["---"] * 8),
+    ]
+    for b in res["boundary"]:
+        lines.append(
+            _cells(
+                b["rid"],
+                b["date"],
+                b["state"],
+                b["role"],
+                "—" if b["close_offset_h"] is None else b["close_offset_h"],
+                "—" if b["open_offset_h"] is None else b["open_offset_h"],
+                b.get("close_residual_min", "—"),
+                b.get("open_residual_min", "—"),
+            )
+        )
+    lines += [
+        "",
+        "## 補助の比較（bid・ask・mid。差の統計だけ。確認済みの根拠にはしない）",
+        _cells("要求", "側", "種類", "役割", "読み", "ずれ(h)", "期待（US/EU/FIXED）"),
+        _cells(*["---"] * 7),
+    ]
+    for a in res["aux"]:
+        e = a["expected"]
+        obs = a["observed_shift_hours"]
+        lines.append(
+            _cells(
+                a["rid"],
+                a["side"],
+                a["basis"],
+                a["role"],
+                a["evidence"],
+                "—" if obs is None else f"{obs:+d}",
+                f"{e['US']}/{e['EU']}/{e['FIXED']}",
+            )
+        )
+    lines += ["", f"- {res['raw_data_note']}", f"- {res['other_pairs_note']}"]
+    return "\n".join(lines) + "\n"
+
+
 def _cells(*cells: object) -> str:
     return "| " + " | ".join(str(c) for c in cells) + " |"
 
@@ -745,7 +1157,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     a.add_argument("--point", type=float, required=True)
     b = sub.add_parser("csv-boundaries", help="配布 CSV の元の時刻での週末の空白の位置（時刻だけ）")
     b.add_argument("--csv", required=True)
+    fr = sub.add_parser("final-ref", help="最後の調査の参照（配布 CSV の bid・ask・mid の 1 分足）")
+    fr.add_argument("--out", required=True)
+    fe = sub.add_parser("final-evaluate", help="最後の調査の判定（確認済み／仮定付き）")
+    fe.add_argument("summaries", nargs="+")
+    fe.add_argument("--report", required=True)
+    fe.add_argument("--json-out", required=True)
     args = parser.parse_args(argv)
+    if args.command == "final-ref":
+        fref = build_final_ref(probe.FINAL_STAGE)
+        Path(args.out).write_bytes(gzip.compress(json.dumps(fref).encode("utf-8"), mtime=0))
+        counts = {rid: {k: len(v) for k, v in bb.items()} for rid, bb in fref.items()}
+        print(json.dumps(counts, ensure_ascii=False))
+        return 0
+    if args.command == "final-evaluate":
+        frecs: list[dict[str, Any]] = []
+        for path in args.summaries:
+            frecs += json.loads(Path(path).read_text(encoding="utf-8"))["requests"]
+        res = final_evaluate(frecs)
+        Path(args.report).write_text(final_md(res), encoding="utf-8")
+        Path(args.json_out).write_text(
+            json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        summary = {"label": res["label"], "reasons": res.get("reasons", [])}
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
     if args.command == "s2-audit":
         api_rows = list(csv.DictReader(Path(args.api_m1).open(encoding="utf-8")))
         times = [int(r["time"]) for r in api_rows]

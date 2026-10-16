@@ -7,6 +7,7 @@
 source "$(dirname "$0")/lib.sh"
 parse_execute_flag "$@"
 require_profile
+forbid_in_final_run
 load_state
 check_deadline
 assert_tagged_instance "$INSTANCE_ID"

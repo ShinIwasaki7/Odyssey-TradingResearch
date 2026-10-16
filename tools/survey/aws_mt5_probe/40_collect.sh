@@ -41,6 +41,9 @@ Compress-Archive -Path 'C:\\probe\\out\\${phase}\\*' -DestinationPath '${zip_win
 PS
 read -r size zip_sha < <(ssm_ps "$INSTANCE_ID" 300 "$work/zip.ps1" | tr -d "\r" | grep -v "^$" | tail -n 1)
 log "zip: ${size} バイト、SHA-256 ${zip_sha}"
+collected="${COLLECTED_BYTES:-0}"
+(( collected + size <= PROBE_COLLECT_LIMIT_BYTES )) \
+  || die "回収の合計が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える（済み ${collected}、今回 ${size}）。回収しない"
 
 # SSM の出力は約 24,000 文字で切れるので、13,500 バイト（base64 で 18,000 文字）ずつ受け取る。
 chunk=13500
@@ -68,6 +71,7 @@ cp "$work/out.zip" "${dest}/../out_${phase}.zip"
 unzip -q "$work/out.zip" -d "$dest"
 ( cd "$dest" && find . -type f ! -name sha256sums.txt -print0 | sort -z | xargs -0 shasum -a 256 >"${work}/sums.txt" )
 mv "${work}/sums.txt" "${dest}/sha256sums.txt"
-log "回収した: ${dest}"
+save_state COLLECTED_BYTES $(( collected + size ))
+log "回収した: ${dest}（回収の合計 $(( collected + size )) バイト）"
 echo "zip ${zip_sha}  out_${phase}.zip"
 cat "${dest}/sha256sums.txt"
