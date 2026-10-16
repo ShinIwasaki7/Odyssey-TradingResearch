@@ -490,3 +490,73 @@ def test_other_pair_e1_without_conflict_changes_nothing(e1: str | None) -> None:
     assert not any(b["pair"] == "EURJPY" for b in ev.branches)
     assert ev.needs_coordinator == base.needs_coordinator
     assert ev.auto_plan == base.auto_plan
+
+
+# --- 人間の回答（評価の道具に C5・C8 を当てる (a)）: 観測と現行基準の区分を分ける -----------------
+
+
+def _current(ev: ts.Evaluation, pair: str, year: int, state: str) -> dict[str, Any]:
+    return next(c for c in ev.current if (c["pair"], c["year"], c["state"]) == (pair, year, state))
+
+
+def test_pair_without_csv_is_assumed_even_when_boundaries_agree() -> None:
+    recs = _year_records("USDJPY", 2023)
+    for st in ("S2", "S3"):
+        d = probe._YEAR_SUNDAYS[2023][probe.STATES.index(st)]
+        recs.append(_rec("EURUSD", "weekend", d, st, _weekend_times(d, *OFFSETS["US"][st])))
+    ev = ts.evaluate(recs)
+    # 観測（調査中の読み）は境界と E4 の一致のまま残す
+    assert ev.years[("EURUSD", 2023)]["status"] == "confirmed"
+    for st in ("S2", "S3"):
+        c = _current(ev, "EURUSD", 2023, st)
+        assert c["label"] == ts.LABEL_ASSUMED
+        assert c["reason"].startswith("C8 (i)")
+        assert "USDJPY と同じ規則を支持" in c["observed_weekends"][0]
+    assert all(c["label"] == ts.LABEL_ASSUMED for c in ev.current)
+    md = ts._md(ev)
+    assert "確認済み" not in md.split("## 観測と現行基準の区分")[0]
+    assert "| 確認済み |" not in md
+
+
+def test_csv_pair_with_consistent_bid_exact_and_diff_is_confirmed_for_that_week() -> None:
+    recs = _us_2019_with_eurjpy(_e1_exact(3))
+    recs.append(_rec("EURJPY", "tuesday", "2019-03-12", "S2", [], e1=_e1_diff_only(3)))
+    ev = ts.evaluate(recs)
+    c = _current(ev, "EURJPY", 2019, "S2")
+    assert c["label"] == ts.LABEL_CONFIRMED
+    assert c["rule"] == "+3 h（US）"
+    assert "2019-03-19" in c["scope"] and "2019-03-12" not in c["scope"]
+    assert ev.current_notices == []
+    # 同じ通貨の他の状態（照合なし）と、照合の無い USDJPY は仮定付き（C5・C8）
+    assert _current(ev, "EURJPY", 2019, "S1")["label"] == ts.LABEL_ASSUMED
+    assert _current(ev, "USDJPY", 2019, "S2")["label"] == ts.LABEL_ASSUMED
+    assert "| 確認済み |" in ts._md(ev)
+
+
+@pytest.mark.parametrize(
+    ("extra", "why"),
+    [
+        (None, "週末の読み"),  # 人間の再現: 境界は US、bid の完全一致は欧州式の +2 h
+        (_e1_diff_only(3), "差のみ"),  # 完全一致 +2 h と差の統計 +3 h が割れる
+    ],
+)
+def test_csv_pair_with_inconsistent_bid_is_assumed_with_notice(
+    extra: list[dict[str, Any]] | None, why: str
+) -> None:
+    recs = _us_2019_with_eurjpy(_e1_exact(2))
+    if extra is not None:
+        recs.append(_rec("EURJPY", "tuesday", "2019-03-12", "S2", [], e1=extra))
+    ev = ts.evaluate(recs)
+    c = _current(ev, "EURJPY", 2019, "S2")
+    assert c["label"] == ts.LABEL_ASSUMED
+    assert c["reason"].startswith("C7") and why in c["reason"]
+    assert any(n.startswith("現行基準: EURJPY 2019 S2") for n in ev.current_notices)
+
+
+def test_exact_match_that_cannot_tell_candidates_apart_is_assumed() -> None:
+    # 両方冬（S1）の完全一致 +2 h は US・EU が同じ変換（C8 (iii)、D12-53 (b)）
+    recs = _year_records("USDJPY", 2023)
+    recs.append(_rec("USDJPY", "tuesday", "2023-03-07", "S1", [], e1=_e1_exact(2, 118, 118)))
+    ev = ts.evaluate(recs)
+    c = _current(ev, "USDJPY", 2023, "S1")
+    assert c["label"] == ts.LABEL_ASSUMED and c["reason"].startswith("C8 (iii)")

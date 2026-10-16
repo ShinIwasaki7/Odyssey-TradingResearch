@@ -286,6 +286,10 @@ class Evaluation:
     needs_coordinator: list[str]
     sent: int
     e4_rows: list[dict[str, Any]] = field(default_factory=list)
+    #: 通貨 × 年 × 状態ごとの「観測」と「現行基準の区分」（``current_classification``）。
+    current: list[dict[str, Any]] = field(default_factory=list)
+    #: 現行基準の区分で、照合と境界が食い違ったときの通知（追加の要求は出さない）。
+    current_notices: list[str] = field(default_factory=list)
 
 
 def evaluate(records: Iterable[Mapping[str, Any]], extra_used: int = 0) -> Evaluation:
@@ -494,7 +498,146 @@ def evaluate(records: Iterable[Mapping[str, Any]], extra_used: int = 0) -> Evalu
         auto = auto[: max(remaining, 0)]
     states = {(r["pair"], r["date"]): r["state"] for r in recs}
     e4_rows = e4_residuals(by_week, states)
-    return Evaluation(rows, years, branches, auto, coordinator, len(recs), e4_rows)
+    current, notices = current_classification(rows, by_week)
+    return Evaluation(
+        rows, years, branches, auto, coordinator, len(recs), e4_rows, current, notices
+    )
+
+
+#: 現行基準で判別する候補の規則（時刻の規則の表 版 1 の標準と候補。仮説 固定は両方夏の週末（S3）で
+#: 支持されていない。D12 第11.7.8節）。両方が同じ変換を与える週は判別できない
+#: （C8 (iii)、D12-53 (b)）。
+CURRENT_CANDIDATES: tuple[str, ...] = ("US", "EU")
+#: 現行基準の判定条件の版（D12 第11.7.9節）。
+CURRENT_CRITERIA_VERSION = "判定条件 版 1（C1〜C8）"
+
+
+def current_classification(
+    rows: Sequence[Mapping[str, Any]], by_week: Mapping[tuple[str, str], WeekendReading]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """通貨 × 年 × 状態ごとに、「観測」と「現行基準の区分」（確認済み／仮定付き）を分けて出す。
+
+    人間の第 14 回の回答（評価の道具に C5・C8 を当てる (a)）による。観測は境界の一致の事実
+    （閉場・開場のずれ、通貨の間の一致、配布 CSV との照合の有無と結果）で、区分には使う条件だけを
+    使う（D12 第11.7.9節の判定条件 版 1）:
+
+    - 日曜の開場は使わない（C1）。境界の検査・通貨の間の一致（E4）・差の統計だけでは確認済みに
+      しない（C4）。他の通貨は、その通貨自身の証拠があるときだけ（C5）。
+    - 確認済みは、その通貨・年・状態の火曜の bid の照合が 4 値の完全一致（C2-b）で、
+      その一致が候補（US・EU）のうち 1 つにだけ合い（C8 (iii)）、同じ状態の他の bid の照合
+      （完全一致・差の統計）・金曜の閉場・週末の読み（T6 の割れ）と食い違わないとき（C7 (c)）だけ。
+      範囲は照合のある週だけ。ask・mid はこの段では比べていない。
+    - 配布 CSV の照合が無い（C8 (i)）・比べられない（C8 (ii)）・判別できない（C8 (iii)）ものは
+      仮定付き。食い違えば仮定付きにし、通知を出す（追加の要求は出さない。第11.7.9節）。
+    - 米欧の間の週の金曜の閉場（C2-a）は、この段の要求に無い（最後の調査
+      ``final_evaluate`` の範囲）。
+    """
+    keys: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for (pair, sunday), w in sorted(by_week.items()):
+        state = next(r["state"] for r in rows if r["pair"] == pair and r["date"] == sunday)
+        k = keys.setdefault((pair, year_of(sunday), state), {"weekends": [], "tuesdays": []})
+        uj = by_week.get((probe.USDJPY, sunday))
+        e4 = None if pair == probe.USDJPY or uj is None else e4_compare(uj, w)
+        k["weekends"].append((sunday, w, e4))
+    for r in rows:
+        if r["kind"] == "tuesday":
+            k = keys.setdefault(
+                (r["pair"], year_of(r["date"]), r["state"]), {"weekends": [], "tuesdays": []}
+            )
+            k["tuesdays"].append(r)
+    out: list[dict[str, Any]] = []
+    notices: list[str] = []
+    for (pair, year, state), k in sorted(keys.items()):
+        obs_w = []
+        for sunday, w, e4 in k["weekends"]:
+            txt = (
+                f"{sunday} 閉場 {w.close_offset_h:+d} h・開場 {w.open_offset_h:+d} h"
+                if w.readable and w.close_offset_h is not None and w.open_offset_h is not None
+                else f"{sunday} 読めない（{w.reason}）"
+            )
+            if e4 is not None:
+                txt += (
+                    "、USDJPY と同じ規則を支持" if e4["supports_same_rule"] else "、USDJPY と違う"
+                )
+            obs_w.append(txt)
+        obs_t = []
+        for t in k["tuesdays"]:
+            e1 = t.get("e1")
+            if not e1 or e1["evidence"] == "none":
+                obs_t.append(f"{t['date']} 照合なし" if not e1 else f"{t['date']} 比べられない")
+            elif e1["evidence"] == "exact":
+                obs_t.append(
+                    f"{t['date']} bid 完全一致 {e1['best_shift_hours']:+d} h（{e1['exact_ratio']}）"
+                )
+            else:
+                obs_t.append(
+                    f"{t['date']} bid 差のみ 最小 {e1['diff_best_shift_hours']:+d} h"
+                    f"（比 {e1['diff_separation']}）"
+                )
+        label, reason, scope, rule = LABEL_ASSUMED, "", "", ""
+        e1s = [t for t in k["tuesdays"] if t.get("e1") and t["e1"]["evidence"] != "none"]
+        exact = [t for t in e1s if t["e1"]["evidence"] == "exact"]
+        if not k["tuesdays"] or all(not t.get("e1") for t in k["tuesdays"]):
+            reason = "C8 (i) 配布 CSV との照合なし（境界のみ。C4）"
+        elif not e1s:
+            reason = "C8 (ii) 配布 CSV と比べられない（境界のみ。C4）"
+        elif not exact:
+            reason = "C4 差の統計だけ（単独では確定の根拠にしない）"
+        else:
+            shifts = {t["e1"]["best_shift_hours"] for t in exact}
+            hyps = sorted(set.intersection(*(set(t["e1"]["hypotheses"]) for t in exact)))
+            cands = [h for h in CURRENT_CANDIDATES if h in hyps]
+            conflicts = [
+                f"{t['date']} 差のみ {t['e1']['diff_best_shift_hours']:+d} h"
+                for t in e1s
+                if t["e1"]["evidence"] == "diff_only"
+                and not set(hyps) & set(t["e1"]["diff_hypotheses"])
+            ]
+            if len(shifts) > 1:
+                conflicts.append(
+                    "完全一致のずれが割れた: " + ", ".join(f"{x:+d} h" for x in shifts)
+                )
+            for sunday, w, _e4 in k["weekends"]:
+                if w.readable and not any(EXPECTED[state][h][0] == w.close_offset_h for h in hyps):
+                    conflicts.append(f"{sunday} 金曜の閉場 {w.close_offset_h:+d} h")
+                elif w.readable and not set(w.hypotheses) & set(hyps):
+                    # 日曜の開場は確定の根拠に使わない（C1）が、週末の読みと照合が別の仮説なら
+                    # 割れとして通知する（第11.7.3節の T6。人間の第 14 回の再現ケース）
+                    conflicts.append(f"{sunday} 週末の読み {', '.join(w.hypotheses)}")
+            if conflicts:
+                reason = "C7 bid の照合と食い違う: " + "; ".join(conflicts)
+                notices.append(
+                    f"現行基準: {pair} {year} {state} の bid の完全一致"
+                    f"（{', '.join(hyps) or '—'}）と食い違う観測がある"
+                    f"（{'; '.join(conflicts)}）。仮定付きにした"
+                )
+            elif len(cands) != 1:
+                reason = "C8 (iii) 候補（US・EU）を判別できない（候補の間で変換が同じ）"
+            else:
+                label = LABEL_CONFIRMED
+                shift = next(iter(shifts))
+                rule = f"{shift:+d} h（{', '.join(hyps)}）"
+                scope = "照合のある週: " + ", ".join(t["date"] for t in exact) + " の週"
+                reason = (
+                    "C2-b bid 4 値の完全一致（"
+                    + ", ".join(f"{t['date']} {t['e1']['exact_ratio']}" for t in exact)
+                    + "）。金曜の閉場・他の照合と食い違わない"
+                )
+        out.append(
+            {
+                "pair": pair,
+                "year": year,
+                "state": state,
+                "observed_weekends": obs_w,
+                "observed_csv": obs_t,
+                "label": label,
+                "rule": rule,
+                "scope": scope,
+                "reason": reason,
+                "criteria": CURRENT_CRITERIA_VERSION,
+            }
+        )
+    return out, notices
 
 
 def _e1_conflicts(
@@ -1183,7 +1326,12 @@ def _md(ev: Evaluation) -> str:
                 txt = "E1 なし（CSV なし）"
             cells = (r["rid"], r["pair"], "火曜", r["date"], r["state"], r["count"], "—", "—", txt)
         lines.append(_cells(*cells))
-    lines += ["", _cells("通貨", "年", "読めた週末", "読めない週末", "共通の仮説", "判定")]
+    lines += [
+        "",
+        "## 観測の読み（調査中の 4 区分の補助表示。現行基準の区分は下の表）",
+        "",
+        _cells("通貨", "年", "読めた週末", "読めない週末", "共通の仮説", "観測の読み"),
+    ]
     lines.append(_cells(*["---"] * 6))
     for (pair, year), y in sorted(ev.years.items()):
         verdict = "直接確認 " + y.get("rule", "") if y["status"] == "confirmed" else "未解決"
@@ -1191,6 +1339,41 @@ def _md(ev: Evaluation) -> str:
             verdict += "（" + "・".join(y["unresolved_states"]) + " の週は未解決）"
         inter = ",".join(y["intersection"]) or "—"
         lines.append(_cells(pair, year, len(y["weeks"]), len(y["unreadable"]), inter, verdict))
+    if ev.current:
+        lines += [
+            "",
+            f"## 観測と現行基準の区分（{CURRENT_CRITERIA_VERSION}。D12 第11.7.9節）",
+            "",
+            "観測は境界の一致の事実。区分は現行基準の条件だけで決める（日曜の開場・通貨の間の一致・"
+            "差の統計だけでは区分を変えない）。",
+            "",
+            _cells(
+                "通貨",
+                "年",
+                "状態",
+                "観測: 週末の境界",
+                "観測: 配布 CSV との照合（bid）",
+                "現行基準の区分",
+                "規則・範囲",
+                "理由",
+            ),
+            _cells(*["---"] * 8),
+        ]
+        for c in ev.current:
+            lines.append(
+                _cells(
+                    c["pair"],
+                    c["year"],
+                    c["state"],
+                    "<br>".join(c["observed_weekends"]) or "—",
+                    "<br>".join(c["observed_csv"]) or "—",
+                    c["label"],
+                    "、".join(x for x in (c["rule"], c["scope"]) if x) or "—",
+                    c["reason"],
+                )
+            )
+        lines += ["", "## 現行基準の通知（追加の要求は出さない）"]
+        lines += [f"- {n}" for n in ev.current_notices] or ["- なし"]
     if ev.e4_rows:
         lines += [
             "",
