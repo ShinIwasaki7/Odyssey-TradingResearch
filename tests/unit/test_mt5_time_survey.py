@@ -417,3 +417,76 @@ def test_csv_weekend_gaps_read_raw_times_only(tmp_path: Path) -> None:
             "first_after_as_utc": "2019-03-10T21:00:08+00:00",
         }
     ]
+
+
+# --- 人間の第 14 回の必須の修正（2026-10-16）: 他の通貨にも CSV 照合（E1）との矛盾判定 ---------
+
+
+def _e1_exact(best: int, exact: int = 119, compared: int = 120) -> list[dict[str, Any]]:
+    """ずれ ``best`` で 4 値の完全一致が ``exact`` / ``compared`` 本の E1 の統計（人工）。"""
+    return [
+        {
+            "shift_hours": h,
+            "compared": compared,
+            "ohlc_exact": exact if h == best else 0,
+            "median_abs_close_diff_points": 0.0 if h == best else 50.0,
+        }
+        for h in probe.E1_SHIFTS_HOURS
+    ]
+
+
+def _us_2019_with_eurjpy(e1: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """USDJPY と EURJPY の 2019 年の週末は全部 US。EURJPY の火曜 2019-03-19（S2）に E1。"""
+    recs = _year_records("USDJPY", 2019) + _year_records("EURJPY", 2019)
+    if e1 is not None:
+        recs.append(_rec("EURJPY", "tuesday", "2019-03-19", "S2", [], e1=e1))
+    return recs
+
+
+def test_other_pair_exact_e1_against_weekends_is_not_confirmed() -> None:
+    # 人間の再現: 境界は US、EURJPY の CSV 照合は 120 本中 119 本が欧州式のずれ（+2 h）で完全一致
+    ev = ts.evaluate(_us_2019_with_eurjpy(_e1_exact(2)))
+    y = ev.years[("EURJPY", 2019)]
+    assert y["status"] != "confirmed"
+    assert y["e1_conflict"] == "exact"
+    assert any(b["T"] == "T6" and b["pair"] == "EURJPY" for b in ev.branches)
+    assert "X-EURJPY-T2019-03-19-re" in [a["rid"] for a in ev.auto_plan]
+    assert any(c.startswith("T6: EURJPY 2019") for c in ev.needs_coordinator)
+    assert "未解決" in ts._md(ev).split("| EURJPY | 2019 |")[1].splitlines()[0]
+    # USDJPY の判定は変わらない
+    assert ev.years[("USDJPY", 2019)]["status"] == "confirmed"
+    assert ev.years[("USDJPY", 2019)]["rule"] == "US"
+    assert not any(b["T"] == "T6" and b["pair"] == "USDJPY" for b in ev.branches)
+
+
+def test_other_pair_diff_only_e1_against_weekends_issues_t6_recheck() -> None:
+    # 完全一致は無いが、差の統計が欧州式のずれ（+2 h）で最小
+    ev = ts.evaluate(_us_2019_with_eurjpy(_e1_diff_only(2)))
+    y = ev.years[("EURJPY", 2019)]
+    assert y["unresolved_states"] == ["S2"]
+    assert y["e1_conflict"] == "diff"
+    assert any(b["T"] == "T6" and b["pair"] == "EURJPY" for b in ev.branches)
+    assert "X-EURJPY-T2019-03-19-re" in [a["rid"] for a in ev.auto_plan]
+    assert any(c.startswith("T6: EURJPY 2019 の S2") for c in ev.needs_coordinator)
+    assert "unresolved_states" not in ev.years[("USDJPY", 2019)]
+
+
+@pytest.mark.parametrize("e1", [None, "agree_exact", "agree_diff", "not_compared"])
+def test_other_pair_e1_without_conflict_changes_nothing(e1: str | None) -> None:
+    stats = {
+        None: None,
+        "agree_exact": _e1_exact(3),
+        "agree_diff": _e1_diff_only(3),
+        # 比べた足が無い（比較不能）。食い違いにも一致にも数えない（C8）
+        "not_compared": [
+            {"shift_hours": h, "compared": 0, "ohlc_exact": 0, "median_abs_close_diff_points": None}
+            for h in probe.E1_SHIFTS_HOURS
+        ],
+    }[e1]
+    ev = ts.evaluate(_us_2019_with_eurjpy(stats))
+    base = ts.evaluate(_us_2019_with_eurjpy(None))
+    y = ev.years[("EURJPY", 2019)]
+    assert y["status"] == "confirmed" and "e1_conflict" not in y
+    assert not any(b["pair"] == "EURJPY" for b in ev.branches)
+    assert ev.needs_coordinator == base.needs_coordinator
+    assert ev.auto_plan == base.auto_plan

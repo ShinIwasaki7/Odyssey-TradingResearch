@@ -475,13 +475,15 @@ def evaluate(records: Iterable[Mapping[str, Any]], extra_used: int = 0) -> Evalu
             for st in ("S1", "S4"):
                 d = state_rows[probe.STATES.index(st)]
                 add(probe.SurveyRequest(f"X-{pair}-W{d}", "X", pair, "weekend", d, st), "T4")
-    for (pair, _year), y in years.items():
+    for (pair, _year), y in sorted(years.items()):
         if pair != probe.USDJPY and y.get("confirmed_weeks") and not y["unreadable"]:
             if len(y["confirmed_weeks"]) == len(y["weeks"]):
                 y["status"] = "confirmed"
+                y["rule"] = years[(probe.USDJPY, _year)]["rule"]
                 base_unres = years.get((probe.USDJPY, _year), {}).get("unresolved_states")
                 if base_unres:  # USDJPY の未解決の状態は、同じ規則を支持する通貨にも残る
                     y["unresolved_states"] = list(base_unres)
+                _other_pair_e1(pair, _year, y, rows, branches, coordinator, add)
 
     remaining = probe.TIME_SURVEY_EXTRA_REQUESTS - extra_used
     if len(auto) > remaining:
@@ -493,6 +495,94 @@ def evaluate(records: Iterable[Mapping[str, Any]], extra_used: int = 0) -> Evalu
     states = {(r["pair"], r["date"]): r["state"] for r in recs}
     e4_rows = e4_residuals(by_week, states)
     return Evaluation(rows, years, branches, auto, coordinator, len(recs), e4_rows)
+
+
+def _e1_conflicts(
+    tue: Sequence[Mapping[str, Any]], h: str
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """火曜の E1（bid）のうち、週末の仮説 ``h`` と食い違うものを、完全一致と差の統計に分けて返す。
+
+    比べた足が無い・比べられない E1（``evidence`` が ``none``、または E1 が無い）は、どちらにも
+    数えない。食い違いが無いことの根拠にもしない（C8。観察が無いことを「矛盾なし」と扱わない）。
+    """
+    exact = [
+        t for t in tue if t.get("e1") and t["e1"]["matched"] and h not in t["e1"]["hypotheses"]
+    ]
+    diff = [
+        t
+        for t in tue
+        if t.get("e1")
+        and t["e1"]["evidence"] == "diff_only"
+        and h not in t["e1"]["diff_hypotheses"]
+    ]
+    return exact, diff
+
+
+def _other_pair_e1(
+    pair: str,
+    year: int,
+    y: dict[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    branches: list[dict[str, Any]],
+    coordinator: list[str],
+    add: Any,
+) -> None:
+    """他の通貨の年に、配布 CSV との照合（E1）との矛盾の判定を当てる（USDJPY と同じ判定）。
+
+    人間の第 14 回の必須の修正（D12 §11.7.2a の「配布 CSV のある通貨・月」と §11.7.3 の T6）:
+    E4 で USDJPY と同じ規則を支持しても、その通貨の火曜の E1 が週末の仮説と食い違えば、
+
+    - 4 値の完全一致（``exact``）が別の仮説なら、その年を「直接確認」にしない。
+    - 差の統計（``diff_only``）が別の仮説なら、その状態の週を未解決とする（確定には使わない）。
+
+    どちらも T6 の分岐（食い違いの通知）・食い違った火曜の読み直しの要求・司令塔への事項を出す。
+    E1 は bid の照合（足の価格基準。C7 (c) の主の判定）。E1 の無い通貨・月は何も変えない。
+    """
+    h = y["rule"]
+    tue = [
+        r
+        for r in rows
+        if r["pair"] == pair and r["kind"] == "tuesday" and year_of(r["date"]) == year
+    ]
+    exact, diff = _e1_conflicts(tue, h)
+    for kind, conflicts in (("exact", exact), ("diff", diff)):
+        if not conflicts:
+            continue
+        what = "完全一致した E1" if kind == "exact" else "完全一致しない E1 の差の統計"
+        shift = "best_shift_hours" if kind == "exact" else "diff_best_shift_hours"
+        states_c = sorted({t["state"] for t in conflicts})
+        if kind == "exact":
+            y["status"] = "unresolved"
+            y["e1_conflict"] = "exact"
+        else:
+            y["unresolved_states"] = sorted(set(y.get("unresolved_states", [])) | set(states_c))
+            y.setdefault("e1_conflict", "diff")
+        branches.append(
+            {
+                "T": "T6",
+                "pair": pair,
+                "year": year,
+                "note": f"{what}が週末の仮説 {h} と別の仮説（"
+                + ", ".join(f"{t['date']} {t['e1'][shift]:+d} h" for t in conflicts)
+                + "）",
+            }
+        )
+        for t in conflicts:
+            add(
+                probe.SurveyRequest(
+                    f"X-{pair}-T{t['date']}-re", "X", pair, "tuesday", t["date"], t["state"]
+                ),
+                "T6",
+            )
+        coordinator.append(
+            f"T6: {pair} {year} の {'・'.join(states_c)} の週で、週末（E4 で USDJPY と同じ規則）は "
+            f"{h} だが{what}が別のずれを示す。読み直しの要求を出す。"
+            + (
+                "その年は直接確認にしない"
+                if kind == "exact"
+                else "割れたままなら、その状態の週を採用を妨げる未解決とする"
+            )
+        )
 
 
 def build_e1_ref(
