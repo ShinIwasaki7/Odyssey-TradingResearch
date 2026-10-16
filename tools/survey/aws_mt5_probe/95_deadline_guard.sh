@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 作業上限の見張り: 起動から PROBE_DEADLINE_SECONDS（最後の調査は 2 時間。付録 K-10.3）になったら 90_teardown.sh --execute で終了する。
+# 作業上限の見張り: 起動から PROBE_DEADLINE_SECONDS（全期間取得は 4 時間。付録 K-16.6。前回の最後の調査は 2 時間）
+# になったら 90_teardown.sh --execute で終了する。S3 の一時バケットは、回収が済んでいなければ消さずに残す（90 の説明）。
 # 10_launch.sh の後に、作業役が Mac で裏で動かしておく（Mac が眠ると遅れるので、check_deadline も併用する）。
 #
 # 使い方: tools/survey/aws_mt5_probe/95_deadline_guard.sh

@@ -2352,6 +2352,8 @@ URL の `info/<番号>` は `https://www.oanda.jp/info/<番号>`。
 7. **上限の値**（K-16.6 の 2 時間 30 分・4 時間・4 時間 30 分、要求 750）でよいか。
 8. **起動の日時**: 人間が RDP の作業（約 25〜45 分）と起動から 2 時間ほど対応できる時間帯。
 
+**道具の準備完了（2026-10-16 作業役。AWS は起動していない）**: 人間の第 18 回の決定（S3 の一時バケット・gzip の CSV・`data/raw/oanda_mt5/<取得日>/<通貨>/`・上限は案のとおり）に沿って、道具の段 `fullfetch`・`fullverify`（`tools/survey/mt5_api_probe.py`）、スクリプト `38_full_fetch.sh`・`45_collect_s3.sh`・`90_teardown.sh` の S3 の片付け、上限の値（`lib.sh`）、IAM の変更文面（`iam_policy_operator.json`・`iam_policy_ssm_role_s3.json`。人間が更新する）、手順（`tools/survey/aws_mt5_probe/README.md` の「全期間取得の実行手順」）と単体テスト `tests/unit/test_mt5_full_fetch.py` を足した。
+
 ## 改訂履歴
 
 | 版 | 日付 | 内容 |

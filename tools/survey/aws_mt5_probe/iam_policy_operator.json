@@ -202,6 +202,36 @@
       "Resource": "arn:aws:iam::*:instance-profile/odyssey-mt5-probe-ssm-role"
     },
     {
+      "Sid": "S3TempBucketOnlyProbePrefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:ListBucket",
+        "s3:DeleteBucket"
+      ],
+      "Resource": "arn:aws:s3:::odyssey-mt5-probe-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "S3TempBucketObjectsOnlyProbePrefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::odyssey-mt5-probe-*/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-1"
+        }
+      }
+    },
+    {
       "Sid": "BudgetsReadOnly",
       "Effect": "Allow",
       "Action": "budgets:ViewBudget",

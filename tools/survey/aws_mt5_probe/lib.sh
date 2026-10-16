@@ -22,16 +22,23 @@ readonly PROBE_ROOT_GB=60                             # gp3、終了時に削除
 readonly PROBE_AMI_NAME_PATTERN="Windows_Server-2022-English-Full-Base-*"
 readonly PROBE_SSM_ROLE="odyssey-mt5-probe-ssm-role"  # 人間が作る（付録 K-1）。インスタンスプロファイルも同名
 readonly PROBE_RDP_CIDR="${PROBE_RDP_CIDR:-126.221.39.9/32}"   # 人間の IP（司令塔が伝えた値）
-# 作業上限は最後の調査（付録 K-10.3。人間の決定 D12-41・第 12 回の決定で承認）の値。
-# 前回（付録 K-8・K-9）は 4 時間 30 分・4 時間・3 時間だった。
-readonly PROBE_SHUTDOWN_SECONDS=9000                  # 2 時間 30 分（Windows の中の自動の停止。止め忘れの備え）
-readonly PROBE_DEADLINE_SECONDS=7200                  # 2 時間（作業役が必ず終了する時刻。95_deadline_guard.sh と check_deadline）
-readonly FINAL_TIME_LIMIT_SECONDS=5400                # 1 時間 30 分（作業上限。この後は最後の調査の要求を出さず、片付ける）
+# 作業上限は全期間取得（付録 K-16.6。人間の第 18 回の決定「案のとおり」で承認）の値。
+# 前回（最後の調査。付録 K-10.3）は 2 時間 30 分・2 時間・1 時間 30 分、その前（付録 K-8・K-9）は
+# 4 時間 30 分・4 時間・3 時間だった。
+readonly PROBE_SHUTDOWN_SECONDS=16200                 # 4 時間 30 分（Windows の中の自動の停止。止め忘れの備え）
+readonly PROBE_DEADLINE_SECONDS=14400                 # 4 時間（作業役が必ず終了する時刻。95_deadline_guard.sh と check_deadline）
+readonly FULL_TIME_LIMIT_SECONDS=9000                 # 2 時間 30 分（要求の打ち切り。この後は新しい要求を出さず、回収に移る）
+readonly FULL_MAX_REQUESTS=750                        # 要求の上限（計画 672。残り 78 は 0 本の月のやり直しだけ。道具の側でも数える）
+readonly FINAL_TIME_LIMIT_SECONDS=5400                # 最後の調査（付録 K-10）の打ち切り 1 時間 30 分（前回の段。今回は使わない）
 readonly TS_TIME_LIMIT_SECONDS=10800                  # 時刻の調査（D12 §11.7）の作業上限 3 時間（前回の段。今回は使わない）
-# この起動の種類。final は最後の調査（付録 K-10）だけを行う起動で、他の段（30・35・36）は動かない。
-readonly PROBE_RUN_KIND="final"
-# 回収（SSM の出力で受け取る分）の合計の上限。送信の上限 1 GB（付録 K-10.3）のうち、道具で数えられる分。
+# この起動の種類。fullfetch は全期間取得（付録 K-16）だけを行う起動で、他の段（30・35・36・37）は動かない。
+readonly PROBE_RUN_KIND="fullfetch"
+# 回収（SSM の出力と S3 から受け取る分）の合計の上限 1 GB（付録 K-16.6）。道具で数えられる分。
 readonly PROBE_COLLECT_LIMIT_BYTES=1073741824
+# 全期間取得の回収に使う S3 の一時バケット（人間の第 18 回の決定 (A)）。名前は
+# odyssey-mt5-probe-<取得日>-<乱数 8 桁>。IAM で許すのはこの接頭辞のバケットだけ（iam_policy_*.json）。
+readonly S3_BUCKET_PREFIX="${PROBE_NAME}-"
+readonly S3_KEY_PREFIX="full"
 
 # Windows に入れるもの（版と SHA-256 を固定。2026-10-15 に作業役が python.org と PyPI から確認）
 readonly PY_INSTALLER_URL="https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
@@ -55,6 +62,11 @@ readonly PROBE_TOOL="${PROBE_SCRIPT_DIR}/../mt5_api_probe.py"
 readonly RESULT_ROOT="${RESULT_ROOT:-/Users/sanchez/Desktop/Odyssey-TradingResearch/data/raw/oanda_mt5_probe}"
 readonly STATE_DIR="${RESULT_ROOT}/_state"
 readonly STATE_FILE="${STATE_DIR}/state.env"
+# S3 の一時バケットの名前と回収の記録。インスタンスの片付け（state.env の退避）の後も、バケットを
+# 消すまで残す（回収が終わる前に終了の時刻が来ても、バケットから回収できるようにするため）。
+readonly S3_STATE_FILE="${STATE_DIR}/s3_bucket.env"
+# 全期間取得の置き場（人間の第 18 回の決定。data/raw/oanda_mt5/<取得日>/<通貨>/。.gitignore の data/raw/* で版管理の外）
+readonly FULL_ROOT="${FULL_ROOT:-/Users/sanchez/Desktop/Odyssey-TradingResearch/data/raw/oanda_mt5}"
 # キーペアの秘密鍵はリポジトリの外（~/.ssh）に置く。Windows の管理者のパスワードの復号にだけ使う。
 readonly KEY_DIR="${HOME}/.ssh"
 # Mac の Python（リポジトリの .python-version の影響を受けない、OS の Python を使う。標準ライブラリだけ）
@@ -132,10 +144,38 @@ check_deadline() {
   fi
 }
 
-# 最後の調査の起動（PROBE_RUN_KIND=final）では、一覧（K10）の外の要求を出す段を動かさない。
+# 最後の調査（PROBE_RUN_KIND=final）・全期間取得（fullfetch）の起動では、一覧の外の要求を出す段を動かさない。
 forbid_in_final_run() {
-  [[ "$PROBE_RUN_KIND" != "final" ]] \
-    || die "最後の調査の起動では、この段は動かさない（要求は 37_final_survey.sh の一覧だけ。付録 K-10.2）"
+  [[ "$PROBE_RUN_KIND" != "final" && "$PROBE_RUN_KIND" != "fullfetch" ]] \
+    || die "この起動（${PROBE_RUN_KIND}）では、この段は動かさない（要求は決めた一覧だけ。付録 K-10.2・K-16.2）"
+}
+
+# 道具が注文・売買・口座の関数を呼ばないことを、実行の前に文字列で確かめる（D12 §11.4）。
+assert_no_trading_calls() {
+  if grep -nE '\b(order_send|order_check|positions_get|positions_total|orders_get|orders_total|history_orders_get|history_orders_total|history_deals_get|history_deals_total|account_info|login)\s*\(' "$PROBE_TOOL"; then
+    die "道具に使ってはいけない関数の呼び出しがある"
+  fi
+}
+
+# --- S3 の一時バケットの記録 -----------------------------------------------------------------
+load_s3_state() {
+  [[ -f "$S3_STATE_FILE" ]] || return 1
+  # shellcheck disable=SC1090
+  source "$S3_STATE_FILE"
+  : "${S3_BUCKET:?}" "${FETCH_DATE:?}"
+  assert_probe_bucket "$S3_BUCKET"
+}
+save_s3_state() {  # save_s3_state KEY VALUE
+  mkdir -p "$STATE_DIR"
+  touch "$S3_STATE_FILE"
+  grep -v "^$1=" "$S3_STATE_FILE" >"${S3_STATE_FILE}.tmp" || true
+  printf '%s=%q\n' "$1" "$2" >>"${S3_STATE_FILE}.tmp"
+  mv "${S3_STATE_FILE}.tmp" "$S3_STATE_FILE"
+}
+# 試験のバケットの名前（odyssey-mt5-probe-YYYY-MM-DD-<小文字の英数字 8 桁>）でなければ止める（他のバケットを触らない）。
+assert_probe_bucket() {
+  [[ "$1" =~ ^odyssey-mt5-probe-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]{8}$ ]] \
+    || die "試験のバケットの名前ではない: $1"
 }
 
 # インスタンスが試験のタグを持つことを確かめる（他のインスタンスを触らない）。

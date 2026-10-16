@@ -2,6 +2,10 @@
 # 終了と削除の確認: 試験のタグの付いたインスタンスを終了し、セキュリティグループ・キーペアを消し、
 # 残りが無いことを describe で確かめる。人間が作った IAM のロール・インスタンスプロファイル・ユーザーは消さない。
 # 作業上限（4 時間）を超えていても、このスクリプトは動く。
+# 全期間取得（付録 K-16）の S3 の一時バケットは、回収が済んでいれば（S3 の manifest が Mac の manifest と同じで、
+# S3 の全ファイルが Mac の置き場にあり、照合が合えば）中身ごと消し、消えたことを確かめる。済んでいなければ
+# 消さずに残し、45_collect_s3.sh --all --execute の後にもう一度このスクリプトを実行するよう表示する
+# （見張りの自動の終了で、回収の前のデータを失わないため）。
 #
 # 使い方: tools/survey/aws_mt5_probe/90_teardown.sh            # 何を消すかを表示するだけ
 #         tools/survey/aws_mt5_probe/90_teardown.sh --execute  # 終了と削除を行う
@@ -26,9 +30,57 @@ verify() {
   printf '  試験のネットワークインターフェース: '; aws_p ec2 describe-network-interfaces --filters "$(tag_filter)" --query "length(NetworkInterfaces)" --output text
   printf '  試験のセキュリティグループ: '; aws_p ec2 describe-security-groups --filters "$(tag_filter)" --query "length(SecurityGroups)" --output text
   printf '  試験のキーペア: '; aws_p ec2 describe-key-pairs --filters "$(tag_filter)" --query "length(KeyPairs)" --output text
+  printf '  試験の S3 の一時バケット: '
+  if [[ -f "$S3_STATE_FILE" ]] && load_s3_state; then
+    if aws_p s3api head-bucket --bucket "$S3_BUCKET" >/dev/null 2>&1; then echo "1（${S3_BUCKET}。残っている）"; else echo "0（${S3_BUCKET} は無い）"; fi
+  else
+    echo "0（記録なし）"
+  fi
   echo "  人間が作ったもの（消していない。不要になったら人間が消す）: IAM ロールとインスタンスプロファイル ${PROBE_SSM_ROLE}、IAM ユーザー odyssey-mt5-probe-operator とそのアクセスキー、Budgets の予算"
 }
 if [[ "$verify_only" == 1 ]]; then verify; exit 0; fi
+
+# S3 の一時バケットの回収が済んだか（済んでいれば 0）。価格は読まない（ファイルの有無と SHA-256 だけ）。
+s3_collected() {
+  local w key missing=0 example=""
+  w=$(mktemp -d)
+  aws_p s3 cp "s3://${S3_BUCKET}/${S3_KEY_PREFIX}/manifest.json" "$w/manifest.json" --only-show-errors 2>/dev/null \
+    || { rm -rf "$w"; log "S3 に manifest が無い"; [[ -z "$(s3_keys)" ]]; return; }
+  if [[ "$(sha256_of "$w/manifest.json")" != "${COLLECTED_MANIFEST_SHA256:-}" ]]; then
+    rm -rf "$w"; log "S3 の manifest が、最後に回収した manifest と違う（回収が済んでいない）"; return 1
+  fi
+  rm -rf "$w"
+  for key in $(s3_keys); do
+    case "$key" in
+      "${S3_KEY_PREFIX}/manifest.json"|"${S3_KEY_PREFIX}/fetch_log.jsonl") ;;
+      "${S3_KEY_PREFIX}/"*.csv.gz) [[ -f "${FULL_ROOT}/${FETCH_DATE}/${key#"${S3_KEY_PREFIX}"/}" ]] || { missing=$(( missing + 1 )); example="$key"; } ;;
+      *) log "知らないキー: ${key}"; missing=$(( missing + 1 )); example="$key" ;;
+    esac
+  done
+  (( missing == 0 )) || { log "S3 にあって Mac に無いファイル: ${missing} 件（例 ${example}）"; return 1; }
+  (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe fullverify --root "${FULL_ROOT}/${FETCH_DATE}") >&2
+}
+s3_keys() {
+  aws_p s3api list-objects-v2 --bucket "$S3_BUCKET" --query "Contents[].Key" --output text | tr '\t' '\n' | grep -v '^None$' || true
+}
+teardown_bucket() {
+  [[ -f "$S3_STATE_FILE" ]] || return 0
+  load_s3_state
+  if ! aws_p s3api head-bucket --bucket "$S3_BUCKET" >/dev/null 2>&1; then
+    log "S3 の一時バケット ${S3_BUCKET} は無い（消し済み）"
+    mv "$S3_STATE_FILE" "${S3_STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)"
+    return 0
+  fi
+  if ! s3_collected; then
+    log "注意: S3 の一時バケット ${S3_BUCKET} は回収が済んでいないので消さない。45_collect_s3.sh --all --execute の後に、もう一度 90_teardown.sh --execute"
+    return 0
+  fi
+  aws_p s3 rm "s3://${S3_BUCKET}" --recursive --only-show-errors
+  aws_p s3api delete-bucket --bucket "$S3_BUCKET"
+  aws_p s3api wait bucket-not-exists --bucket "$S3_BUCKET"
+  log "消した: S3 の一時バケット ${S3_BUCKET}（中身ごと）"
+  mv "$S3_STATE_FILE" "${S3_STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)"
+}
 
 instances=$(aws_p ec2 describe-instances --filters "$(tag_filter)" \
   "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
@@ -40,6 +92,7 @@ cat >&2 <<INFO
   終了するインスタンス: ${instances:-なし}
   消すセキュリティグループ: ${sgs:-なし}
   消すキーペア: ${keys:-なし}（Mac の ${KEY_DIR}/<名前>.pem も消す）
+  S3 の一時バケット: $( [[ -f "$S3_STATE_FILE" ]] && grep '^S3_BUCKET=' "$S3_STATE_FILE" | cut -d= -f2 || echo なし)（回収が済んでいれば中身ごと消す）
 INFO
 if [[ "$EXECUTE" != 1 ]]; then echo "(dry-run) 何もしていない。" >&2; verify; exit 0; fi
 
@@ -73,4 +126,5 @@ print(f"  インスタンス・ディスク・IPv4: 約 {sub * (1 + tax):.3f} �
 PY
   mv "$STATE_FILE" "${STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)"
 fi
+teardown_bucket
 verify
