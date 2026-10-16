@@ -26,11 +26,24 @@
 - 曜日（M3）は取引日（ニューヨーク 17:00 で区切る）の終わりの日の曜日。
 - 空白の 1 件は、時刻の上で連続した空白の分の並び（休場をまたぐと別の件）。
 
+出典のある休場の除外（付録 K-14。D12-60 (a)・D12-61 (a)・D12-66 (a)・D12-68 (a)）:
+``--exclusions`` に休場の定義ファイル（``oanda_holiday_exceptions/1``。各行に告知の URL と
+SHA-256）を渡すと、その区間の分を「足が存在すべき時間」から外し、「休場（出典あり）」として
+行ごとに別に数える（外した分・その中で足が無かった分・その中にあった足）。区間をはみ出す
+空白は入力の不足のまま数え、前値で足を埋めない。休場の中にあった足は空白を埋めるのに使わない。
+指定しないとき（既定）は旧の挙動のまま（出力も旧と同じ）。
+
 実行（リポジトリの根で）::
 
     uv run python -m tools.survey.mt5_gap_aggregate \\
         --summary data/raw/oanda_mt5_probe/2026-10-16/ts-G-9/summary_ts-G.json \\
         --out-dir data/raw/oanda_mt5_probe/2026-10-16/gap_summary
+
+    # 付録 K-14（年末年始の休場を外した再集計）
+    uv run python -m tools.survey.mt5_gap_aggregate \\
+        --summary data/raw/oanda_mt5_probe/2026-10-16/ts-G-9/summary_ts-G.json \\
+        --exclusions tools/survey/oanda_holiday_exceptions_2026-10-16.json \\
+        --out-dir data/raw/oanda_mt5_probe/2026-10-16/gap_summary_r16
 """
 
 from __future__ import annotations
@@ -99,6 +112,94 @@ LONDON = ZoneInfo("Europe/London")
 
 class AggregateError(ValueError):
     """入力や規則の表で集計できないときの誤り。"""
+
+
+# --- 出典のある休場（足が存在すべき時間から外す区間。付録 K-14） ----------------------
+
+EXCLUSIONS_SCHEMA = "oanda_holiday_exceptions/1"
+JST_OFFSET = timedelta(hours=9)
+SHA256_HEX = frozenset("0123456789abcdef")
+
+
+@dataclass(frozen=True, slots=True)
+class Exclusion:
+    """足が存在すべき時間から外す区間 [start, end)（UTC の epoch 秒）。出典つき。"""
+
+    id: str
+    kind: str
+    start: int
+    end: int
+    sources: tuple[str, ...]  # URL
+
+    def contains(self, epoch: int) -> bool:
+        return self.start <= epoch < self.end
+
+
+def _parse_utc_text(text: str, where: str) -> datetime:
+    moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise AggregateError(f"{where}: 時刻 {text} にタイムゾーンが無い")
+    return moment
+
+
+def parse_exclusions(payload: Mapping[str, Any]) -> tuple[Exclusion, ...]:
+    """休場の定義を読む。日本時間と UTC の対応、出典（URL と SHA-256）、重なりを確かめる。"""
+    if payload.get("schema") != EXCLUSIONS_SCHEMA:
+        raise AggregateError(f"休場の定義の schema が {EXCLUSIONS_SCHEMA} ではない")
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise AggregateError("休場の定義に entries の列が無い")
+    out: list[Exclusion] = []
+    for raw in entries:
+        ident = str(raw.get("id"))
+        for key in ("kind", "start_jst", "end_jst", "start_utc", "end_utc", "sources"):
+            if not raw.get(key):
+                raise AggregateError(f"休場 {ident} に項目 {key} が無い")
+        start_jst = _parse_utc_text(str(raw["start_jst"]), ident)
+        end_jst = _parse_utc_text(str(raw["end_jst"]), ident)
+        start_utc = _parse_utc_text(str(raw["start_utc"]), ident)
+        end_utc = _parse_utc_text(str(raw["end_utc"]), ident)
+        for jst in (start_jst, end_jst):
+            if jst.utcoffset() != JST_OFFSET:
+                raise AggregateError(f"休場 {ident} の日本時間 {jst} が UTC+9 ではない")
+        if start_jst != start_utc or end_jst != end_utc:
+            raise AggregateError(f"休場 {ident} の日本時間と UTC が 9 時間の差で一致しない")
+        if not start_utc < end_utc:
+            raise AggregateError(f"休場 {ident} の開始が終端より前ではない")
+        sources = raw["sources"]
+        urls: list[str] = []
+        for source in sources:
+            url, digest = source.get("url"), str(source.get("sha256", ""))
+            if not url or len(digest) != 64 or not set(digest) <= SHA256_HEX:
+                raise AggregateError(f"休場 {ident} の出典に URL か SHA-256 が無い")
+            urls.append(str(url))
+        out.append(
+            Exclusion(
+                id=ident,
+                kind=str(raw["kind"]),
+                start=int(start_utc.timestamp()),
+                end=int(end_utc.timestamp()),
+                sources=tuple(urls),
+            )
+        )
+    out.sort(key=lambda e: e.start)
+    for before, after in zip(out, out[1:], strict=False):
+        if after.start < before.end:
+            raise AggregateError(f"休場 {before.id} と {after.id} が重なる")
+    if len({e.id for e in out}) != len(out):
+        raise AggregateError("休場の id が重複している")
+    return tuple(out)
+
+
+def load_exclusions(path: Path) -> tuple[Exclusion, ...]:
+    return parse_exclusions(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _exclusion_of(exclusions: Sequence[Exclusion], epoch: int) -> Exclusion | None:
+    for exclusion in exclusions:
+        if exclusion.contains(epoch):
+            return exclusion
+    return None
 
 
 # --- 時刻の規則の表 版 1（D12 §11.7.10） --------------------------------------------
@@ -333,6 +434,16 @@ class DailyBar:
 
 
 @dataclass(slots=True)
+class ExcludedCount:
+    """1 つの休場（出典あり）の区間について、ある週で数えたもの。"""
+
+    exclusion: Exclusion
+    minutes: int = 0  # 取引カレンダーのセッションの中で外した分
+    missing: int = 0  # そのうち足が無かった分（旧の集計では空白と数えていた分）
+    bars_present: int = 0  # そのうち足があった分（使わない。空白を埋めない）
+
+
+@dataclass(slots=True)
 class WeekResult:
     conversion: Conversion
     window_utc: tuple[int, int]
@@ -349,6 +460,20 @@ class WeekResult:
     bars_complete: dict[str, int] = field(default_factory=dict)
     daily: list[DailyBar] = field(default_factory=list)
     longest_gap_free_minutes: int = 0
+    exclusions_applied: bool = False
+    excluded: list[ExcludedCount] = field(default_factory=list)
+
+    @property
+    def excluded_minutes(self) -> int:
+        return sum(c.minutes for c in self.excluded)
+
+    @property
+    def excluded_missing(self) -> int:
+        return sum(c.missing for c in self.excluded)
+
+    @property
+    def excluded_bars_present(self) -> int:
+        return sum(c.bars_present for c in self.excluded)
 
     @property
     def missing_ratio(self) -> float:
@@ -380,6 +505,7 @@ class WeekResult:
             tuple(sorted(self.by_hour_utc.items())),
             tuple(sorted(self.bars_complete.items())),
             tuple((d.label, d.missing_minutes) for d in self.daily),
+            tuple((c.exclusion.id, c.minutes, c.missing, c.bars_present) for c in self.excluded),
         )
 
 
@@ -392,6 +518,7 @@ def aggregate_week(
     conversion: Conversion,
     calendar: TradingCalendar,
     timeframes: Mapping[str, TimeframeDefinition],
+    exclusions: Sequence[Exclusion] = (),
 ) -> WeekResult:
     shift = conversion.hours * 3600
     lo, hi = week.window_api[0] - shift, week.window_api[1] - shift
@@ -399,12 +526,32 @@ def aggregate_week(
     bars = [t - shift for t in week.bar_times_api if week.window_api[0] <= t < week.window_api[1]]
     result.unaligned = sum(1 for t in bars if t % MINUTE)
     present = set(bars)
-    expected = expected_minutes(calendar, lo, hi)
-    expected_set = set(expected)
+    in_session = expected_minutes(calendar, lo, hi)
+    session_set = set(in_session)
+    result.present_outside_session = sum(1 for t in present if t not in session_set)
+    expected = in_session
+    if exclusions:
+        # 出典のある休場の分を「足が存在すべき時間」から外し、休場ごとに別に数える
+        result.exclusions_applied = True
+        counts = {
+            e.id: ExcludedCount(exclusion=e) for e in exclusions if e.start < hi and lo < e.end
+        }
+        expected = []
+        for minute in in_session:
+            hit = _exclusion_of(exclusions, minute)
+            if hit is None:
+                expected.append(minute)
+                continue
+            count = counts[hit.id]
+            count.minutes += 1
+            if minute in present:
+                count.bars_present += 1
+            else:
+                count.missing += 1
+        result.excluded = [c for c in counts.values() if c.minutes]
     missing = [t for t in expected if t not in present]
     result.expected = len(expected)
     result.missing = len(missing)
-    result.present_outside_session = sum(1 for t in present if t not in expected_set)
     result.runs = gap_runs(missing)
     for start, end in result.runs:
         result.length_bins[length_bin((end - start) // MINUTE)] += 1
@@ -425,6 +572,9 @@ def aggregate_week(
             s, e = _to_epoch(interval.start), _to_epoch(interval.end)
             if s < lo or e > hi:
                 continue  # 窓の端で切れる足は数えない
+            n_expected = _count_in(expected, s, e)
+            if exclusions and n_expected == 0:
+                continue  # 足の区間がすべて出典のある休場の中（存在すべき足ではない）
             total += 1
             n_missing = _count_in(missing, s, e)
             if n_missing == 0:
@@ -436,7 +586,7 @@ def aggregate_week(
                         start=s,
                         end=e,
                         label=(label - timedelta(microseconds=1)).date().isoformat(),
-                        expected_minutes=_count_in(expected, s, e),
+                        expected_minutes=n_expected,
                         missing_minutes=n_missing,
                     )
                 )
@@ -467,11 +617,14 @@ def aggregate(
     weeks: Iterable[WeekInput],
     calendar: TradingCalendar,
     timeframes: Mapping[str, TimeframeDefinition],
+    exclusions: Sequence[Exclusion] = (),
 ) -> list[WeekReport]:
     reports: list[WeekReport] = []
     for week in weeks:
         rule = week_rule(week.pair, week.sunday)
-        results = tuple(aggregate_week(week, c, calendar, timeframes) for c in rule.conversions)
+        results = tuple(
+            aggregate_week(week, c, calendar, timeframes, exclusions) for c in rule.conversions
+        )
         reports.append(WeekReport(week=week, rule=rule, results=results))
     return reports
 
@@ -523,6 +676,11 @@ def week_rows(reports: Sequence[WeekReport]) -> list[dict[str, Any]]:
             row["m5_longest_gap_free_minutes"] = result.longest_gap_free_minutes
             row["m6_daily_bars"] = len(result.daily)
             row["m6_incomplete_days"] = " ".join(d.label for d in result.incomplete_days)
+            if result.exclusions_applied:
+                row["holiday_excluded_minutes"] = result.excluded_minutes
+                row["holiday_missing_minutes"] = result.excluded_missing
+                row["holiday_bars_present"] = result.excluded_bars_present
+                row["holiday_ids"] = " ".join(c.exclusion.id for c in result.excluded)
             rows.append(row)
     return rows
 
@@ -572,6 +730,34 @@ def run_rows(reports: Sequence[WeekReport]) -> list[dict[str, Any]]:
     return rows
 
 
+def holiday_rows(reports: Sequence[WeekReport]) -> list[dict[str, Any]]:
+    """休場（出典あり）として外した分を、週 × 休場の行ごとに出す。"""
+    rows: list[dict[str, Any]] = []
+    for report in reports:
+        for result in report.results:
+            for count in result.excluded:
+                rows.append(
+                    {
+                        "rid": report.week.rid,
+                        "pair": report.week.pair,
+                        "kind": report.week.kind,
+                        "year": report.week.year,
+                        "conversion": f"{result.conversion.name} +{result.conversion.hours}",
+                        "holiday_id": count.exclusion.id,
+                        "holiday_kind": count.exclusion.kind,
+                        "start_utc": iso(count.exclusion.start),
+                        "end_utc": iso(count.exclusion.end),
+                        "start_ny": ny_local(count.exclusion.start),
+                        "end_ny": ny_local(count.exclusion.end),
+                        "excluded_minutes": count.minutes,
+                        "missing_minutes": count.missing,
+                        "bars_present": count.bars_present,
+                        "sources": " ".join(count.exclusion.sources),
+                    }
+                )
+    return rows
+
+
 def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -591,7 +777,11 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def render_report(reports: Sequence[WeekReport], inputs: Mapping[str, str]) -> str:
+def render_report(
+    reports: Sequence[WeekReport],
+    inputs: Mapping[str, str],
+    exclusions: Sequence[Exclusion] = (),
+) -> str:
     """通貨 × 週の種類 × 年の表（D12 §11.9.6 の 4 の区分）を Markdown で書く。"""
     lines = [
         "# 空白の集計（D12 §11.9。道具 tools/survey/mt5_gap_aggregate.py）",
@@ -600,6 +790,32 @@ def render_report(reports: Sequence[WeekReport], inputs: Mapping[str, str]) -> s
         f"カレンダー: fx_ny17 版 {inputs.get('calendar_version', '?')}",
         *(f"- 入力 {key}: `{value}`" for key, value in inputs.items()),
         "",
+    ]
+    if exclusions:
+        lines += [
+            "## 休場（出典あり）として「足が存在すべき時間」から外した区間（付録 K-14）",
+            "",
+            "区間をはみ出す空白は入力の不足のまま数えた。休場の中にあった足は使っていない"
+            "（前値で埋めない）。",
+            "",
+            "| 休場 | 種類 | 開始（NY） | 終端（NY） | 外した分（全週） | うち足が無かった分 "
+            "| うち足があった分 |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for exclusion in exclusions:
+            counts = [
+                c
+                for rep in reports
+                for c in rep.results[0].excluded
+                if c.exclusion.id == exclusion.id
+            ]
+            lines.append(
+                f"| {exclusion.id} | {exclusion.kind} | {ny_local(exclusion.start)} | "
+                f"{ny_local(exclusion.end)} | {sum(c.minutes for c in counts)} | "
+                f"{sum(c.missing for c in counts)} | {sum(c.bars_present for c in counts)} |"
+            )
+        lines.append("")
+    lines += [
         "## 測定範囲の結果（仮定付きの印つき。標準仮説の変換。候補で違う週は下に別記）",
         "",
         "| 通貨 | 週 | 年 | 印 | M1 空白の分 / 取引時間の分（%） | 件数 | 最長（分） "
@@ -663,12 +879,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calendar", type=Path, default=CALENDAR_DEFAULT)
     parser.add_argument("--timeframes", type=Path, default=TIMEFRAMES_DEFAULT)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument(
+        "--exclusions",
+        type=Path,
+        default=None,
+        help="出典のある休場の定義（oanda_holiday_exceptions/1）。既定は無し（旧の挙動）",
+    )
     args = parser.parse_args(argv)
 
     calendar = load_calendar(args.calendar)
     timeframes = load_timeframes(args.timeframes)
     weeks = read_summary(args.summary)
-    reports = aggregate(weeks, calendar, timeframes)
+    exclusions = load_exclusions(args.exclusions) if args.exclusions else ()
+    reports = aggregate(weeks, calendar, timeframes, exclusions)
 
     out: Path = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -682,7 +905,11 @@ def main(argv: list[str] | None = None) -> int:
         "calendar_version": str(calendar.version),
         "timeframes_sha256": sha256_of(args.timeframes),
     }
-    (out / "report.md").write_text(render_report(reports, inputs), encoding="utf-8")
+    if args.exclusions:
+        inputs["exclusions"] = str(args.exclusions)
+        inputs["exclusions_sha256"] = sha256_of(args.exclusions)
+        write_csv(out / "holiday_excluded.csv", holiday_rows(reports))
+    (out / "report.md").write_text(render_report(reports, inputs, exclusions), encoding="utf-8")
     (out / "inputs.json").write_text(
         json.dumps({**inputs, "weeks": len(reports)}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

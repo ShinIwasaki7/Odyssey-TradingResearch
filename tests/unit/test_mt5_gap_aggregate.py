@@ -296,3 +296,161 @@ def test_main_writes_time_and_count_outputs_only(tmp_path: Path, calendar: Tradi
     report = (out / "report.md").read_text(encoding="utf-8")
     assert "測定範囲の結果" in report and "全期間では未確認のこと" in report
     assert "仮定付き" in report
+
+
+# --- 出典のある休場の除外（付録 K-14） -----------------------------------------------
+
+HOLIDAYS = ROOT / "tools/survey/oanda_holiday_exceptions_2026-10-16.json"
+_SHA = "0" * 64
+
+
+def _holiday(
+    ident: str, start_jst: str, end_jst: str, start_utc: str, end_utc: str
+) -> dict[str, Any]:
+    return {
+        "id": ident,
+        "kind": "休場",
+        "start_jst": start_jst,
+        "end_jst": end_jst,
+        "start_utc": start_utc,
+        "end_utc": end_utc,
+        "sources": [{"url": "https://example.invalid/notice", "sha256": _SHA}],
+    }
+
+
+def _exclusions(*entries: dict[str, Any]) -> tuple[agg.Exclusion, ...]:
+    return agg.parse_exclusions({"schema": agg.EXCLUSIONS_SCHEMA, "entries": list(entries)})
+
+
+#: 2022-12-26 の取引日（版 2 に宣言なし）を丸ごと閉じる人工の休場（日本時間 12/26 07:00〜）
+XMAS_2022 = _holiday(
+    "t-2022-12-26",
+    "2022-12-26T07:00+09:00",
+    "2022-12-27T07:00+09:00",
+    "2022-12-25T22:00Z",
+    "2022-12-26T22:00Z",
+)
+
+
+def test_default_has_no_exclusions_and_keeps_old_outputs(
+    calendar: TradingCalendar, timeframes: dict[str, TimeframeDefinition]
+) -> None:
+    bars = _full_week_api(calendar, "2022-12-25", 2)
+    week = agg.parse_request(_request("USDJPY", "2022-12-25", bars[100:], kind="W2"))
+    old = agg.aggregate([week], calendar, timeframes)
+    explicit = agg.aggregate([week], calendar, timeframes, ())
+    assert old[0].results[0].comparable() == explicit[0].results[0].comparable()
+    assert not old[0].results[0].exclusions_applied
+    rows = agg.week_rows(old)
+    assert not any(key.startswith("holiday_") for key in rows[0])
+    assert "休場（出典あり）" not in agg.render_report(old, {})
+
+
+def test_exclusion_removes_its_minutes_and_does_not_use_bars_inside(
+    calendar: TradingCalendar, timeframes: dict[str, TimeframeDefinition]
+) -> None:
+    # 足の無い区間が休場の 3 時間前から始まる（前の 3 時間は週の開く前で取引時間の外）
+    bars = _full_week_api(calendar, "2022-12-25", 2)
+    shift = 2 * 3600
+    lo, hi = _e("2022-12-25T22:00") - 3 * 3600 + shift, _e("2022-12-26T22:00") + shift
+    # 休場の中に足が 1 本ある（使わない。空白を埋めない）
+    inside = _e("2022-12-26T10:00") + shift
+    kept = [t for t in bars if not lo <= t < hi] + [inside]
+    week = agg.parse_request(_request("USDJPY", "2022-12-25", sorted(kept), kind="W2"))
+    old = agg.aggregate_week(week, agg.WINTER, calendar, timeframes)
+    new = agg.aggregate_week(week, agg.WINTER, calendar, timeframes, _exclusions(XMAS_2022))
+    # 週の窓は日曜 17:00（NY）から。休場の前の 3 時間は週の開く前で取引時間の外
+    assert old.missing == 1440 - 1
+    assert new.missing == 0
+    assert new.expected == old.expected - 1440
+    [count] = new.excluded
+    assert (count.minutes, count.missing, count.bars_present) == (1440, 1439, 1)
+    # 休場の取引日の日足は存在すべき足から外れ、日足は 5 → 4 本
+    assert old.bars_expected["1d_ny17"] == 5 and new.bars_expected["1d_ny17"] == 4
+    assert "2022-12-26" not in [d.label for d in new.daily]
+    assert new.bars_complete["1d_ny17"] == 4
+    assert new.present_outside_session == old.present_outside_session == 0
+
+
+def test_gap_overhanging_the_resume_time_stays_a_gap(
+    calendar: TradingCalendar, timeframes: dict[str, TimeframeDefinition]
+) -> None:
+    # 再開の時刻（10 分）を外しても、その後の 50 分の空白は入力の不足のまま。日足は欠けのまま
+    resume = _holiday(
+        "t-resume",
+        "2022-12-27T07:00+09:00",
+        "2022-12-27T07:10+09:00",
+        "2022-12-26T22:00Z",
+        "2022-12-26T22:10Z",
+    )
+    bars = _full_week_api(calendar, "2022-12-25", 2)
+    shift = 2 * 3600
+    lo, hi = _e("2022-12-26T22:00") + shift, _e("2022-12-26T23:00") + shift
+    week = agg.parse_request(
+        _request("USDJPY", "2022-12-25", [t for t in bars if not lo <= t < hi], kind="W2")
+    )
+    result = agg.aggregate_week(week, agg.WINTER, calendar, timeframes, _exclusions(resume))
+    assert result.missing == 50
+    assert result.runs == [(_e("2022-12-26T22:10"), _e("2022-12-26T23:00"))]
+    day = next(d for d in result.daily if d.label == "2022-12-27")
+    assert day.expected_minutes == 1430 and day.missing_minutes == 50 and not day.complete
+    rows = agg.week_rows(agg.aggregate([week], calendar, timeframes, _exclusions(resume)))
+    assert rows[0]["holiday_excluded_minutes"] == 10 and rows[0]["holiday_missing_minutes"] == 10
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"start_utc": "2022-12-25T21:00Z"},  # 日本時間と 9 時間の差で一致しない
+        {"start_jst": "2022-12-26T07:00+08:00", "start_utc": "2022-12-25T23:00Z"},
+        {"sources": [{"url": "https://example.invalid/notice", "sha256": "abc"}]},
+        {"sources": []},
+        {"end_jst": "2022-12-26T07:00+09:00", "end_utc": "2022-12-25T22:00Z"},
+    ],
+)
+def test_parse_exclusions_rejects_broken_entries(broken: dict[str, Any]) -> None:
+    with pytest.raises(agg.AggregateError):
+        _exclusions({**XMAS_2022, **broken})
+
+
+def test_parse_exclusions_rejects_overlap_and_wrong_schema() -> None:
+    with pytest.raises(agg.AggregateError):
+        _exclusions(XMAS_2022, {**XMAS_2022, "id": "t-other"})
+    with pytest.raises(agg.AggregateError):
+        agg.parse_exclusions({"schema": "x", "entries": [XMAS_2022]})
+
+
+def test_holiday_definition_file_has_only_sourced_trading_closures() -> None:
+    payload = json.loads(HOLIDAYS.read_text(encoding="utf-8"))
+    exclusions = agg.load_exclusions(HOLIDAYS)
+    years = {entry["year"] for entry in payload["entries"]}
+    assert years == {2018, 2019, 2020, 2021, 2023}  # 2017・2022 は含めない（D12-68 (a)）
+    assert len(exclusions) == 11
+    kinds = {e.kind for e in exclusions}
+    assert kinds == {"休場", "再開の遅れ（東京サーバ）"}
+    # 再開の時刻は告知に時刻のある 2018・2019 年の告知（翌日の東京サーバの 7:10）だけ
+    resumes = [e for e in exclusions if e.kind != "休場"]
+    assert [datetime.fromtimestamp(e.start, UTC).year for e in resumes] == [2018, 2019, 2019, 2020]
+    assert all(e.end - e.start == 600 for e in resumes)
+    assert all(e.sources for e in exclusions)
+
+
+def test_main_with_exclusions_writes_holiday_table(
+    tmp_path: Path, calendar: TradingCalendar
+) -> None:
+    bars = _full_week_api(calendar, "2022-12-25", 2)
+    payload = {"stage": "G", "requests": [_request("USDJPY", "2022-12-25", bars, kind="W2")]}
+    summary = tmp_path / "summary_ts-G.json"
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+    holidays = tmp_path / "holidays.json"
+    holidays.write_text(
+        json.dumps({"schema": agg.EXCLUSIONS_SCHEMA, "entries": [XMAS_2022]}), encoding="utf-8"
+    )
+    out = tmp_path / "out"
+    args = ["--summary", str(summary), "--out-dir", str(out), "--exclusions", str(holidays)]
+    assert agg.main(args) == 0
+    assert (out / "holiday_excluded.csv").exists()
+    inputs = json.loads((out / "inputs.json").read_text(encoding="utf-8"))
+    assert inputs["exclusions_sha256"] == agg.sha256_of(holidays)
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "休場（出典あり）" in report and "t-2022-12-26" in report
