@@ -27,8 +27,8 @@ calendar:
   holiday_exceptions:
     file: tools/survey/oanda_holiday_exceptions_2026-10-16.json
     sha256: 2c85a0936fa0c377568fa054f02268779cfaceeb4371c1ddf65e312af6186604
-  v2_2017_year_end_closures: null  # 版 2 の 2017-12-25・2018-01-01 の宣言を引き継ぐか（要決定 D12-98。Y9）
-  declared_as: null  # どの識別と版のカレンダーとして宣言するか（要決定 D12-93。Y4）。中身は上の 2 つの和集合（版 2 より広いクリスマスの 4 日は取引日単位の休場に置き換える。D03 §15.6 の 1 (v)）
+  v2_2017_year_end_closures: inherit  # 版 2 の 2017-12-25・2018-01-01 の宣言を引き継ぎ休場（D12-98 (a)。根拠は版 2 の宣言、OANDA の告知なし）
+  declared_as: {id: fx_ny17_oanda, version: 1, file: configs/calendars/fx_ny17_oanda_v1.yaml, sha256: a9da0d9ae6b3246b5bb67757a7b6cb4ac50e5a012c96a5c4a075bc1148a79b96}  # D12-93 (a)。中身は上の 2 つの和集合（D03 §15.6 の 1）
 
 minute_status_order: [closed, acquisition_shortfall, recorded, unrecorded]  # D03 §15.2。1 分に 1 つ、この順に判定
 
@@ -56,8 +56,8 @@ warmup:
   closure_day_breaks_continuity: false  # D12-83
   all_no_record_scheduled_day_resets: true  # D12-84（例外なし。2022-12-26 も同じ。D03 §15.7）
   ready_at: available_at_of_last_required_bar  # 準備完了は必要本数の最後の足の公開時刻（D03 §15.5・§15.7）
-  intraday_no_record_bar: null  # 15 分足・1 時間足・4 時間足の全分無記録（要決定 D12-90。Y1）
+  intraday_no_record_bar: resets_like_daily  # 15 分足・1 時間足・4 時間足の全分無記録も日足と同じ（D12-90 (a)）
 
 sensitivity:
-  variants: null  # 変換の組の作り方（要決定 D12-92。Y3。推奨 (a) は [standard, candidate]）
-  out_of_calendar_bars_in_candidate: null  # 候補の変換でカレンダーの外に出る足（要決定 D12-97。Y8）
+  variants: [standard, candidate]  # 変換の組ごとに snapshot（D12-92 (a)）。candidate は候補を持つ行をすべて替えた組
+  out_of_calendar_bars_in_candidate: exclude_and_report  # 足の生成に使わず件数を品質の報告に（D12-97 (a)）
