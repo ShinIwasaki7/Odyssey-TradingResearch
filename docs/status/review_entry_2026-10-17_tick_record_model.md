@@ -1,10 +1,9 @@
 # レビューの入口: 配布 tick 記録を再現するモデル（2026-10-17）
 
-人間の指示（2026-10-17「PR #82 の後続作業」）§4 の「レビュー用の入口となる短い文書」。数字・事実はすべて main（`189df94` 時点。集計の merge は `8c7e6eb`）と実装 PR #87（head `4d8be21`、**未 merge**）の成果物から引いた。出典は各行に書いた。
+人間の指示（2026-10-17「PR #82 の後続作業」）§4 の「レビュー用の入口となる短い文書」。数字・事実はすべて main（`8d89c65` 時点。実装 PR #87 の merge コミット。集計の merge は `8c7e6eb`）の成果物と PR の本文から引いた。出典は各行に書いた。
 
 - 「配布 tick 記録を再現するモデル」とは、OANDA MT5 API の 1 分足で**記録の無い分に価格を作らない**約束のこと（D03 §15.2 の末尾）。API の 1 分足が配布 tick 記録と一致すると主張するものではない。
 - 戦略の成績（`runs/`・評価結果・取引表）は読んでいない。実価格は載せていない（件数・時刻・被覆率・ハッシュだけ）。人工データの価格は「例示値」と書いた。
-- **PR #87 は head `4d8be21` 時点の内容**。merge 後に head とコミットを更新する。
 
 ## 読む順
 
@@ -22,8 +21,8 @@
 | 取得 | **完了**。8 通貨 × 84 か月（2017-01〜2023-12）、672 ファイル、1 分足 20,800,838 本。取得記録の写し SHA-256 `e4664b01…` | `docs/status/progress.md`（2026-10-17 01:35 JST の行）、[`manifest.json`](../data/oanda_mt5_full_fetch_2026-10-16/manifest.json) |
 | 設計 | **完了**（PR #84 merge） | D12 §0.1.26〜§0.1.27 |
 | データ上の検証（集計） | **完了**（PR #85 merge）。エンジンの動作・約定の再現性は確かめていない | `summary.md` の冒頭 |
-| 実装 | **実装済み・未 merge**（PR #87、draft、CI 成功、人間レビュー待ち） | PR #87 本文 |
-| 受入検証 | **合格**（人工データ 7 項目 C-1〜C-7、実データの突き合わせ一致。head `4d8be21` 時点） | PR #87 本文「受入検証」「実データの突き合わせ」 |
+| 実装 | **完了**（PR #87 merge `8d89c65`）。人間レビューで見つかった重大な問題 3 件を修正済み（§1.3） | PR #87 本文 |
+| 受入検証 | **合格**（人工データ 7 項目 C-1〜C-7、§1.3 の回帰テスト、実データの突き合わせ一致。最終 head `bd0f7ad`） | PR #87 本文「受入検証」「実データの突き合わせ」 |
 
 ### 1.2 PR ごとの状態
 
@@ -33,15 +32,29 @@
 |---|---|---|---|---|
 | A 設計改訂 | #84 | `5348d58` | 8 巡（第 7・8 巡は人間が追加を許可）。最終巡 a84af32 で P0 0・P1 0 | 人間レビュー 0 回。要決定 9 件（D12-90〜98）の回答と、文言 3 か所を直して merge の判断 |
 | B 全期間集計 | #85 | `8c7e6eb` | 2 巡（第 2 巡で P0/P1 0） | 人間レビュー 1 回（1fa49f4。2 件指摘 → 1dcdf68 で修正）→ merge 承認 |
-| C 実装 | #87 | **未 merge**（head `4d8be21`、draft） | 4 巡（3 巡＋人間が許可した追加 1 巡）。第 4 巡の P1 1 件は人間の決定で修正、追加の敵対レビューは回さない | 人間レビュー 0 回（待ち）。設計判断 2 件・仮置き 14 件・表22 の形 1 件を人間が決定（D12-110〜127） |
+| C 実装 | #87 | `8d89c65` | 4 巡（3 巡＋人間が許可した追加 1 巡）。第 4 巡の P1 1 件は人間の決定で修正 | 人間レビュー 1 回（4d8be21。P1 3 件 → bd0f7ad で修正、§1.3）→ merge 承認。設計判断 2 件・仮置き 14 件・表22 の形 2 件を人間が決定（D12-110〜128） |
 | D 道具修正 | #83 | `118be70` | 5 巡（第 6 巡は人間の指示で省略） | 人間レビュー 2 回（b434448 で P1 1 件、cd67e91 で検証のうえ merge 指示） |
 | 方針 | #86 | `6813e8f` | なし（人間の指示） | merge 承認 1 回 |
 
 出典: 各 PR の本文（`gh pr view`）、scratchpad の人間の決定の原文（`human_decision_2026-10-17_*.md`・`human_review_2026-10-17_*.md`）。
 
+### 1.3 人間レビューで見つかり修正した重大な問題（PR #87）
+
+必ず直す問題（P1）3 件。出典: PR #87 本文「人間レビュー第 1 回（4d8be21）」、D12 §0.1.30.3、人間の指示（2026-10-18）。
+
+| # | 見つかった問題（PR #87 の head `4d8be21`） | 影響 | 対応（修正 head `bd0f7ad`、merge `8d89c65`） | 回帰テスト |
+|---|---|---|---|---|
+| 1 | 損切りの更新（将来の時点から有効）の後、再開の分で旧い損切り水準の判定が消える | 再開時に損切りを見逃し、損益が誤る | 置き換えられた水準を、新しい水準が有効になるまで判定に使う（執行足の終わり・途中の再開の分・始値の 3 か所。D06 §8.3・§18.4 の順 1・§18.5）。建玉の表には最新の水準を残す | `test_a_future_stop_update_keeps_the_current_level_at_a_mid_bar_resumption`、`test_a_future_stop_update_takes_effect_from_its_bar` |
+| 2 | 表22（準備のやり直しの表）の正当な空値（`window_bars` など）で評価が例外終了 | 全分無記録を含む正常な run でも評価が止まる | 評価の主キー検査で空値を空のまま比べる（D06 §18.10、D07 §28.3） | `test_a_run_with_an_all_unrecorded_hour_is_evaluated` |
+| 3 | 同じ無記録の足・同じ窓から不足期間が 2 つ生じ、表22 の主キーが重複 | 記録が主キーとして読めない。単純にまとめると読める期間まで不足扱いになる | 人間の決定 D12-128 で記録形式を決め直した（下記）。主キーに `insufficient_from`（準備不足になる時刻）を足し、読める期間は不足にしない | `test_one_no_record_bar_can_make_two_insufficient_periods`（1 時間足 10:00〜11:00 が無記録・3 本窓・末尾 2 本除外 → 11:00〜12:00 と 13:00〜16:00 の 2 行。実行時の判定と一致） |
+
+**表22 の行の分け方の決定（D12-128、2026-10-18。原文 D12 §0.1.30.3）**: 「(a) 不足期間 1 つに 1 行。主キーに「不足になる時刻」を加える（推奨）」。反映状況: D06 §18.10 の表22 の主キーを `(series, bar_key, window_kind, window_bars, exclude_latest_bars, window_duration, insufficient_from)` に改訂。実装（`marketdata/application/read_readiness.py`・評価の主キー検査）とテスト済み。main `8d89c65` に入っている。
+
+**読み方の注意**: 3 件はいずれも、元の受入検証（C-1〜C-7）がすべて合格していた head `4d8be21` で、人間のレビューが見つけた。C-1〜C-7 の合格は、上の 3 つの条件（損切りの将来の更新と再開の組み合わせ、全分無記録を含む run の評価、1 つの足から複数の不足期間）で正しく動くことの確認ではなかった。今はそれぞれに回帰テストがある。
+
 ## 2. 決定 → 実装の対応表
 
-決定は D12 §6 の番号。D12-101〜109 は欠番（PR #87 が PR #85 の番号との衝突を避けて 110 から採番。PR #87 本文）。**D12-110〜127 は PR #87 の中だけにあり、main には未 merge**。実装・テストの場所は PR #87（`4d8be21`）の `src/odyssey_fx/` と `tests/`。結果はすべて「合格」（PR #87 本文の対応表と受入検証の表）。
+決定は D12 §6 の番号。D12-101〜109 は欠番（PR #87 が PR #85 の番号との衝突を避けて 110 から採番。PR #87 本文）。D12-110〜128 は PR #87 で決まり、main `8d89c65` に入っている。実装・テストの場所は main の `src/odyssey_fx/` と `tests/`。結果はすべて「合格」（PR #87 本文の対応表と受入検証の表。最終 head `bd0f7ad`）。
 
 | 決定 | 1 行要約 | 設計の節 | 実装の場所 | テスト |
 |---|---|---|---|---|
@@ -74,6 +87,7 @@
 | D12-125 | 受入れの CLI `data accept-mt5` は使った月・変換の組・規則の版・入力ハッシュ・分類を成果物に残す | D03 §15.3 | `app/cli/main.py`、`marketdata/domain/snapshot.py`、`mt5_acceptance.py` `months_of` | `test_the_manifest_records_the_months_variant_rules_and_input_hashes` |
 | D12-126 | 区分の印ごとの日数は「実行通貨・run 区間の UTC 暦日数」と明示 | D06 §18.9 | `app/mt5_run.py` `_mark_days`、`backtest/trace/manifest.py`、`evaluation/adapters/report.py` | `test_mark_days_are_the_execution_symbol_utc_calendar_days` |
 | D12-127 | 表22 の窓を種類・本数・末尾から除く本数・経過時間で区別し主キーも対応。経過時間は本数に換算しない | D06 §18.10、D07 §28.3 | `marketdata/domain/readiness.py` `ReadWindowSpec`、`read_readiness.py`、`backtest/trace/recorder.py` | `test_history_resets_match_the_runtime_reads`、`test_duration_window_reads_are_checked_for_shortfall` |
+| D12-128 | 同じ無記録の足・同じ窓から不足期間が 2 つ以上生じるときは不足期間 1 つに 1 行。表22 の主キーに `insufficient_from` を加える | D06 §18.10（表22） | `marketdata/application/read_readiness.py` `read_resets`、評価の主キー検査 | `test_one_no_record_bar_can_make_two_insufficient_periods` |
 
 テストの置き場: `tests/acceptance/test_tick_record_model.py`・`tests/acceptance/test_tick_record_model_marketdata.py`・`tests/unit/marketdata/test_mt5_rules.py`・`tests/unit/marketdata/test_mt5_acceptance.py`・`tests/unit/backtest/test_mt5_hierarchy_checks.py`・`tests/unit/evaluation/test_history_reset_minutes.py`（PR #87）、`tests/unit/test_full_period_final.py`（main）。規則 → 実装の全 15 行は D12 §11.13 と PR #87 本文の対応表。
 
@@ -140,22 +154,22 @@ uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-1
 
 出力先 `docs/data/full_period_feasibility/`。入力・出力・道具のハッシュと実行時刻は [`manifest.json`](../data/full_period_feasibility/manifest.json)。人間レビューで、記録したコマンドをそのまま実行して 14 の CSV が同じに出ることを確かめた（PR #85 本文）。
 
-### 5.3 受入検証（PR #87、head `4d8be21`）
+### 5.3 受入検証（main `8d89c65`）
 
 ```
 uv run pytest tests/acceptance/test_tick_record_model.py tests/acceptance/test_tick_record_model_marketdata.py
 ```
 
-全体の検査は `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest -q`（PR #87 本文: head 9530118 で 3,205 件合格・14 件スキップ。head `4d8be21` の CI は成功）。本書の作成時には再実行していない。
+全体の検査は `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest -q`（PR #87 本文: 最終 head `bd0f7ad` で 3,256 件合格・14 件スキップ）。本書の作成時には再実行していない。
 
-### 5.4 実データの突き合わせ（PR #87。記録の対象コミット `5f69703`）
+### 5.4 実データの突き合わせ（PR #87。記録の対象コミット `e3ffdb1`）
 
 ```
 uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置き場>/2026-10-16 --feasibility-dir docs/data/full_period_feasibility --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 --variants standard candidate --out-dir docs/data/mt5_platform_crosscheck
 ```
 
 - 比べた集計の出力（main と同じハッシュ）: `daily_bars.csv` `661cc7e6…`、`no_record_bars.csv` `c4cd5758…`、`warmup_resets.csv` `84f63b25…`。
-- 記録: PR #87 の `docs/data/mt5_platform_crosscheck/run_record.json`（SHA-256 `b376b3db…`）。`5f69703` から head `4d8be21` までの差は、この記録・README・`progress.md` だけ（`git diff --stat`）。
+- 記録: `docs/data/mt5_platform_crosscheck/run_record.json`（SHA-256 `34d79cc3…`）。対象コミット `e3ffdb1` はコードの最終コミットで、最終 head `bd0f7ad` との差は突き合わせの記録の更新と文書だけ（PR #87 本文）。
 - CLI での受入れの例（PR #87 本文）: `odyssey-fx data accept-mt5 --fetch-date 2026-10-16 --symbol USDJPY --months 2019-01`（ERROR 0・WARN 0）。
 
 ## 6. 未解決
@@ -174,6 +188,7 @@ uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置
 | 集計の道具と基盤の規則の読込 | 調査の道具 `mt5_gap_aggregate.time_rule` は置き換えず、全暦日一致の回帰テストで代替。main の `full_period_final.py` も独自の `load_time_rule_table` を持つ（同じファイル・ハッシュを読む）。一致は突き合わせ（§5.4）で確認 | 規則のコードが 2 か所にある。PR #87 本文は「PR #85 の最終集計で差し替える」と書くが、main ではまだ差し替わっていない | PR #87 本文、`tools/survey/full_period_final.py` |
 | 区分の印の日数の研究上の補足 | D12-126 の「研究上の補足は別途設計」 | 未設計 | D12 §6 の D12-126 |
 | PR #85 の見送った軽微な指摘（P2） | `monthly_stats.csv` の列名が先行統計の名前のまま、`--docs-manifest` の記録のパス、`manifest.json` の出力にハッシュが無い、表の印の語彙の外の値を T5 が拒否しない | 集計の値には影響しない | PR #85 本文「残る指摘」 |
-| PR #87 の人間レビュー | 未実施 | merge 判断の前提 | PR #87 本文 |
 
 D12-124（列対応の宣言の読込）は専用のテスト名が見当たらない（§2）。
+
+人間レビューで見つかった重大な問題 3 件（§1.3）は、修正と回帰テストの追加が済み、未解決には含めない。
