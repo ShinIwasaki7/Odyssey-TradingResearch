@@ -40,6 +40,7 @@ import argparse
 import bisect
 import json
 import re
+import shlex
 import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -934,6 +935,20 @@ CANDIDATE_DIFF_COLUMNS: tuple[str, ...] = (
 )
 
 
+#: 候補の間で比べる日足の属性（区分・分数・被覆率と観測の時刻。
+#: 観測の時刻だけが違う日足も漏らさない）
+DAILY_DIFF_FIELDS: tuple[str, ...] = (
+    "day_class",
+    "expected_minutes",
+    "recorded_minutes",
+    "unrecorded_minutes",
+    "shortfall_minutes",
+    "coverage_ratio",
+    "first_observed_utc",
+    "last_observed_utc",
+)
+
+
 def candidate_differences(standard: PairVariant, candidate: PairVariant) -> list[dict[str, Any]]:
     """§3-B「時刻の規則の候補間で結果が変わる区間と差」。"""
     rows: list[dict[str, Any]] = []
@@ -954,7 +969,7 @@ def candidate_differences(standard: PairVariant, candidate: PairVariant) -> list
     cand_days = {d["trading_day"]: d for d in candidate.days}
     for day in standard.days:
         other = cand_days.get(day["trading_day"], {})
-        for name in ("day_class", "expected_minutes", "recorded_minutes", "unrecorded_minutes"):
+        for name in DAILY_DIFF_FIELDS:
             add("daily_bar", day["trading_day"], name, day[name], other.get(name, ""))
     for a_row, b_row in zip(bar_count_rows(standard), bar_count_rows(candidate), strict=True):
         for name in (
@@ -1443,6 +1458,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+COMMAND_PREFIX: tuple[str, ...] = ("uv", "run", "python", "-m", "tools.survey.full_period_final")
+
+
+def recorded_command(argv: Sequence[str]) -> str:
+    """再現のコマンド。引数の境界を保つため shlex で引用する（空白を含む引数を割らない）。
+
+    原データの置き場は利用者の家のディレクトリを書かず、リポジトリの根からの形にする。
+    """
+    return shlex.join([*COMMAND_PREFIX, *(root_label(x) for x in argv)])
+
+
 def decision_record(file_arg: str, ref: str) -> dict[str, str] | None:
     """人間の決定の参照（原文のファイル名と SHA-256、設計書の節）。無ければ None。"""
     if not file_arg and not ref:
@@ -1450,7 +1476,7 @@ def decision_record(file_arg: str, ref: str) -> dict[str, str] | None:
     if not file_arg or not ref:
         raise FeasibilityError("--decision-file と --decision-ref は両方を渡す")
     path = Path(file_arg)
-    return {"ref": ref, "file": path.name, "sha256": sha256_file(path)}
+    return {"ref": ref, "file": path.as_posix(), "sha256": sha256_file(path)}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1487,17 +1513,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "エンジンの動作・約定の再現性は確かめていない）"
         ),
         "target_commit": _git_head(),
-        "command": " ".join(
-            [
-                "uv run python -m tools.survey.full_period_final",
-                *(
-                    Path(x).name
-                    if args.decision_file and x == args.decision_file
-                    else root_label(x)
-                    for x in sys.argv[1:]
-                ),
-            ]
-        ),
+        "command": recorded_command(sys.argv[1:]),
         "raw_root": root_label(str(root)),
         "decisions": decision,
         "started_at_utc": started.isoformat(timespec="seconds"),

@@ -254,7 +254,15 @@ def test_candidate_differences_list_changed_days() -> None:
     )
     for pv in (std, cand):
         for d in pv.days:
-            d.update(expected_minutes=1440, recorded_minutes=1440, unrecorded_minutes=0)
+            d.update(
+                expected_minutes=1440,
+                recorded_minutes=1440,
+                unrecorded_minutes=0,
+                shortfall_minutes=0,
+                coverage_ratio="1.000000",
+                first_observed_utc="",
+                last_observed_utc="",
+            )
         fin.continuous_segments(pv, [], _rules(1))
     cand.days[1].update(recorded_minutes=1380, unrecorded_minutes=60)
     rows = fin.candidate_differences(std, cand)
@@ -276,13 +284,68 @@ def test_closure_days_are_weekdays_without_daily_bar() -> None:
     assert fin.closure_days(labels) == ["2017-12-25"]
 
 
+def test_candidate_differences_include_observation_time_only_changes() -> None:
+    # 人間のレビュー第 1 回の 1: 記録分数が同じで最初の観測時刻だけが違う日足も差に載る
+    labels = _labels(2)
+    std = _pv([_day(lab, "partial") for lab in labels])
+    cand = _pv([_day(lab, "partial") for lab in labels], "candidate")
+    for pv in (std, cand):
+        for d in pv.days:
+            d.update(
+                expected_minutes=1440,
+                recorded_minutes=1436,
+                unrecorded_minutes=4,
+                shortfall_minutes=0,
+                coverage_ratio="0.997222",
+                first_observed_utc="2017-03-15T21:00Z",
+                last_observed_utc="2017-03-16T20:59Z",
+            )
+        fin.continuous_segments(pv, [], _rules(1))
+    std.days[1]["first_observed_utc"] = "2017-03-15T21:03Z"
+    rows = [r for r in fin.candidate_differences(std, cand) if r["scope"] == "daily_bar"]
+    assert [(r["key"], r["field"]) for r in rows] == [(labels[1], "first_observed_utc")]
+    assert (rows[0]["standard_value"], rows[0]["candidate_value"]) == (
+        "2017-03-15T21:03Z",
+        "2017-03-15T21:00Z",
+    )
+
+
+def test_recorded_command_runs_as_saved(tmp_path: Path) -> None:
+    # 人間のレビュー第 1 回の 2: 記録したコマンドをそのまま解析・実行して集計の入口に届く
+    import shlex
+
+    argv = [
+        "--root",
+        "/home/x/repo/data/raw/oanda_mt5/2026-10-16",
+        "--decision-file",
+        "docs/data/full_period_feasibility/human_decision_2026-10-17_pr85_final_aggregation.md",
+        "--decision-ref",
+        "D12 §0.1.29（D12-99・D12-100、2026-10-17）",
+        "--pairs",
+        "USDJPY",
+        "--out-dir",
+        str(tmp_path / "out"),
+    ]
+    saved = fin.recorded_command(argv)
+    tokens = shlex.split(saved)
+    assert tuple(tokens[: len(fin.COMMAND_PREFIX)]) == fin.COMMAND_PREFIX
+    args = fin.build_parser().parse_args(tokens[len(fin.COMMAND_PREFIX) :])
+    assert args.decision_ref == "D12 §0.1.29（D12-99・D12-100、2026-10-17）"
+    assert args.root == "data/raw/oanda_mt5/2026-10-16"
+    # 実行: 引数の解析を通り、集計の入口（原データの manifest の読み込み）まで進む
+    missing = tmp_path / "no_raw"
+    tokens[tokens.index("data/raw/oanda_mt5/2026-10-16")] = str(missing)
+    with pytest.raises(FileNotFoundError, match="manifest.json"):
+        fin.main(tokens[len(fin.COMMAND_PREFIX) :])
+
+
 def test_decision_record_hashes_original_and_requires_both(tmp_path: Path) -> None:
     original = tmp_path / "human_decision.md"
     original.write_text("回答: 「よい（推奨）」\n", encoding="utf-8")
     record = fin.decision_record(str(original), "D12 §0.1.29")
     assert record == {
         "ref": "D12 §0.1.29",
-        "file": "human_decision.md",
+        "file": original.as_posix(),
         "sha256": sha256_file(original),
     }
     assert fin.decision_record("", "") is None
