@@ -17,8 +17,11 @@ cat >&2 <<INFO
   1. SSM の接続を待つ
   2. Python のインストーラー（${PY_INSTALLER_URL}）を取り、SHA-256 ${PY_INSTALLER_SHA256} を確かめ、全ユーザーに入れる
   3. pip で ${MT5_PY_PACKAGE} を入れ、import できるかを確かめる（端末にはつながない）
-  4. 試験の道具 mt5_api_probe.py（SHA-256 ${tool_sha}）を C:\\probe\\ に置き、同じ SHA-256 かを確かめる
-  5. MT5 の端末: ${MT5_INSTALLER_URL:-入れない（人間が RDP の中でマイページから入れる）}
+  4. AWS CLI v2（S3 に置く道具。付録 K-17.4 の 1）: 既に入っていれば入れない。入れるときは
+     ${AWSCLI_MSI_URL} を取り、SHA-256 ${AWSCLI_MSI_SHA256} と
+     署名（有効・署名者 ${AWSCLI_SIGNER_ORG}）を確かめてから msiexec で入れる
+  5. 試験の道具 mt5_api_probe.py（SHA-256 ${tool_sha}）を C:\\probe\\ に置き、同じ SHA-256 かを確かめる
+  6. MT5 の端末:${MT5_INSTALLER_URL:-入れない（人間が RDP の中でマイページから入れる）}
 INFO
 [[ "$EXECUTE" == 1 ]] || { echo "(dry-run) 何もしていない。" >&2; exit 0; }
 
@@ -47,6 +50,11 @@ if (\$LASTEXITCODE -ne 0) { throw "import MetaTrader5 failed" }
 PS
 log "Python と MetaTrader5 のパッケージを入れる"
 ssm_ps "$INSTANCE_ID" 1800 "$work/py.ps1"
+
+# AWS CLI v2（py.ps1 は Python が入っていれば途中で終わるので、別のスクリプトにする）。
+awscli_install_ps >"$work/awscli.ps1"
+log "AWS CLI v2 を入れる（既に入っていれば入れない）"
+ssm_ps "$INSTANCE_ID" 900 "$work/awscli.ps1"
 
 # 道具を base64 で分けて送る（SSM の引数の大きさの制限のため）。
 log "試験の道具を置く"

@@ -59,7 +59,10 @@ INFO
 [[ "$EXECUTE" == 1 ]] || { echo "(dry-run) 何もしていない。" >&2; exit 0; }
 
 if [[ -z "$bucket" ]]; then
-  bucket="${S3_BUCKET_PREFIX}${PROBE_DATE}-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8)"
+  # 乱数 8 桁は random_suffix8（lib.sh）で作る。以前のこの行（tr と head のパイプ）は SIGPIPE と pipefail で
+  # 終了コード 141 になり、毎回ここで止まった（付録 K-17.4 の 2）。代入を分けて、失敗をそのまま止まる形で受ける。
+  suffix=$(random_suffix8)
+  bucket="${S3_BUCKET_PREFIX}${PROBE_DATE}-${suffix}"
   assert_probe_bucket "$bucket"
   aws_p s3api create-bucket --bucket "$bucket" \
     --create-bucket-configuration "LocationConstraint=${PROBE_REGION}" >/dev/null

@@ -11,7 +11,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 | `00_check.sh` | なし | プロファイルの確認、AMI の特定、人間の事前作業（SSM 用のロール・Budgets）の確認、起動の権限の試し（EC2 の `--dry-run`）、費用の再見積 |
 | `10_launch.sh --execute` | **始まる** | セキュリティグループ（RDP を人間の IP だけ）・キーペアを作り、t3.medium を 1 台起動。司令塔の「起動してよい」の後だけ |
 | `95_deadline_guard.sh` | — | 起動から 4 時間（全期間取得。前回の最後の調査は 2 時間）で `90_teardown.sh --execute` を実行する見張り（Mac で裏で動かす） |
-| `20_prepare.sh --execute` | 続く | Python 3.12.10・MetaTrader5 5.0.6231 を入れ、試験の道具を `C:\probe\` に置く。RDP の接続先とパスワードの出し方を表示 |
+| `20_prepare.sh --execute` | 続く | Python 3.12.10・MetaTrader5 5.0.6231・AWS CLI v2（2.38.1。既に入っていれば入れない）を入れ、試験の道具を `C:\probe\` に置く。RDP の接続先とパスワードの出し方を表示 |
 | （人間） | 続く | RDP で接続し、OANDA のマイページから MT5 の端末を入れてログインし、チャートを閉じ、RDP を「切断」する（付録 K-2） |
 | `30_run_probe.sh [段] --execute` | 続く | 試験の道具を実行。段は `usdjpy-time`（既定）・`usdjpy-range`・`others` |
 | `40_collect.sh <段> --execute` | 続く | 結果を回収し `data/raw/oanda_mt5_probe/<試験の日付>/<段>/` に置き、SHA-256 の一覧を作る |
@@ -19,7 +19,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 | `37_final_survey.sh [--only <要求,...> \| --remaining \| --redo-empty] --execute` | 続く | 最後の調査（付録 K-10）の 9 区間を実行し、回収し、Mac で「確認済み」「仮定付き」を判定する（下の「最後の調査の手順」） |
 | `38_full_fetch.sh [--pairs <通貨,...> \| --redo-empty] --execute` | 続く | 全期間取得（付録 K-16）。S3 の一時バケットを作り、通貨ごとに取得 → S3 に置く → `45` で回収（下の「全期間取得の実行手順」） |
 | `45_collect_s3.sh <通貨,...\|--all> --execute` | S3 だけ | S3 の一時バケットから受け取り、manifest の SHA-256・行数と照合してから `data/raw/oanda_mt5/<取得日>/<通貨>/` に置く。インスタンスの終了の後でも動く |
-| `90_teardown.sh --execute` | 止まる | 終了と削除、残りの確認（`--verify` は確認だけ）。S3 の一時バケットは回収が済んでいれば中身ごと消す |
+| `90_teardown.sh --execute` | 止まる | 終了と削除、残りの確認（`--verify` は確認だけ）。S3 の一時バケットは回収が済んでいれば中身ごと消し、head-bucket が 404 になるまで確かめる（下の「全期間取得の後の道具の修正」） |
 
 `--execute` を付けなければ、どのスクリプトも計画を表示するだけで何も変えない。
 
@@ -47,6 +47,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 |---|---|---|
 | Python 3.12.10（Windows 64 ビット。3.12 系の最後の Windows のインストーラー。3.12.11 は 404） | `https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe` | `67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb`（作業役が取得して計算。Windows でも一致を確かめる） |
 | MetaTrader5 5.0.6231（cp312 の wheel） | PyPI | `b94b1f8f52087ae36dfac5f352a96f5d04fe308704d9515f82cf5d1470bc31d4`（PyPI の表示） |
+| AWS CLI v2 2.38.1（Windows の MSI。2026-10-17 に作業役が確認） | `https://awscli.amazonaws.com/AWSCLIV2-2.38.1.msi`（版を固定した公式の配布元。版なしの `AWSCLIV2.msi` は中身が変わる） | `ad07f9acd855f48ad016e63b2f0b4f87783c1b6524b86e966f4a6d21d01f524a`（付録 K-17.4 の 1 で Windows に入れた MSI の値と、作業役が Mac でこの URL から取得して計算した値が一致。Windows では入れる前に SHA-256 と Authenticode の署名（有効・署名者 O=Amazon Web Services, Inc.）を確かめる） |
 | AMI | `aws ec2 describe-images --owners amazon` の `Windows_Server-2022-English-Full-Base-*` の最新 | 起動の時に ID を付録 K に記録する |
 
 ## 人間が作るもの（スクリプトは作らない・消さない）
@@ -58,7 +59,35 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 
 ## 確かめ方（課金なし）
 
-`bash -n` と shellcheck に加え、偽の `aws` コマンド（呼び出しのたびにプロファイルとリージョンを確かめ、決めた値を返す）を `PATH` の先頭に置いて、`00`→`10`→`20`→`30`→`40`→`90` を通して動かした（2026-10-15。付録 K-3）。
+`bash -n` と shellcheck に加え、偽の `aws` コマンド（呼び出しのたびにプロファイルとリージョンを確かめ、決めた値を返す）を `PATH` の先頭に置いて、`00`→`10`→`20`→`30`→`40`→`90` を通して動かした（2026-10-15。付録 K-3）。この確かめでは `38_full_fetch.sh` のバケットの作成の行を通っておらず、全期間取得で止まった（付録 K-17.4 の 2）。2026-10-17 から、全期間取得で問題になった分岐を実際に通すテストを `tests/unit/test_aws_probe_scripts.py` に置いた（下の「全期間取得の後の道具の修正」）。shellcheck は `cd tools/survey/aws_mt5_probe && uvx --from shellcheck-py shellcheck -x *.sh`。
+
+## 全期間取得の後の道具の修正（付録 K-17.8 の「後続の事項」の 1。2026-10-17）
+
+全期間取得（付録 K-17）で問題になった 3 件を直した。どれも AWS を起動せずに直し、偽の `aws` で確かめた。
+
+| 問題（付録 K-17 の記録） | 直したこと |
+|---|---|
+| `38_full_fetch.sh` の 62 行目 `tr -dc 'a-z0-9' </dev/urandom \| head -c 8` が、毎回終了コード 141 で止まった（K-17.4 の 2）。head が読み終えると tr が強制終了の合図（SIGPIPE）を受け、`set -o pipefail` で止まる | 乱数 8 桁を `lib.sh` の `random_suffix8` で作る。`od -An -N4 -tx1 /dev/urandom \| tr -d ' \n'`（od が 4 バイトだけ読んで自分で終わり、下流の tr は入力を最後まで読む。下流が先に読むのをやめる箇所が無いので SIGPIPE は起きない）。小文字の 16 進数 8 桁で、バケット名の規則（`assert_probe_bucket` の `[a-z0-9]{8}`）に入る |
+| Windows に AWS CLI が無く、AWS Tools for PowerShell の読み込みが 300 秒超で、S3 の道具の確認（120 秒）に間に合わない見込みだった。手作業で AWS CLI v2 を入れた（K-17.4 の 1） | `20_prepare.sh` で AWS CLI v2 を入れる（`lib.sh` の `awscli_install_ps`）。`aws.exe` があり `aws --version` が `aws-cli/2.` で始まれば入れない。無ければ版を固定した MSI を取り、SHA-256 と Authenticode の署名（状態が Valid、署名者が O=Amazon Web Services, Inc.）を確かめてから `msiexec /i … /qn /norestart` で入れ、`aws --version` を確かめる。`38` の確認の 120 秒は変えていない |
+| `90_teardown.sh` の `s3api wait bucket-not-exists`（5 秒 × 20 回）が「Max attempts exceeded」で止まり、直後の head-bucket は 404 だった。もう一度実行して片付けた（K-17.6） | 自分で head-bucket を繰り返す（`lib.sh` の `wait_bucket_absent`。10 秒 × 30 回 = 5 分まで。`S3_DELETE_WAIT_SECONDS`・`S3_DELETE_WAIT_ATTEMPTS`）。404 で成功とし、毎回の応答（200・403 など）を記録する。上限まで 404 にならなければ、記録 `s3_bucket.env` を残し、残りの確認を表示してから終了コード 1 で終わる（もう一度実行すれば、404 なら記録を退避して終わる） |
+| （同じ箇所で見つけた関連の不具合）以前は、片付けの最初と残りの確認で head-bucket の失敗をすべて「バケットは無い」と扱っていた。403（権限の不足など）でも記録を退避していた | `s3_bucket_state` で 200（ある）・404（無い）・それ以外（不明）を分ける。不明のときは消さず、記録を残し、残りの確認に「不明」と出して終了コード 1 |
+
+`wait bucket-not-exists` がどの応答で終わらなかったのか（S3 の削除の反映の遅れか、403 などか）は、K-17.6 に記録が無く、**原因は確かめていない**。直した道具は毎回の応答を記録するので、次に起きたときは原因が分かる。
+
+### 偽の `aws` で確認した範囲（`tests/unit/test_aws_probe_scripts.py`。AWS につながない）
+
+- `random_suffix8` が `set -euo pipefail` の下で 50 回とも成功し、作った名前が規則と `assert_probe_bucket` を通る（Mac の bash・od・tr で実際に実行）。以前の行が同じ条件で終了コード 141 になることも固定した。
+- `38_full_fetch.sh --pairs USDJPY --execute` をバケットの記録が無い状態で実行し、乱数の行を通ってバケットの作成（`s3api create-bucket`、東京リージョン）と `s3_bucket.env` の記録まで進む。修正前のスクリプトでは同じテストが終了コード 141 で失敗する（確認済み）。
+- `90_teardown.sh --execute` の分岐: 消した後に 403 → 200 → 404 で成功し記録を退避する／403 が続くと 3 回で止まり、記録を残し、残りの確認に「不明」と出して終了コード 1／最初から 404 なら消す操作をせずに記録を退避する／最初が 403 なら消さずに止まる／`--verify` で 404 を「0」と出す。修正前のスクリプトでは、偽の aws が `wait bucket-not-exists` に K-17.6 と同じ失敗を返すので、成功の分岐のテストが失敗する（確認済み）。
+- `20_prepare.sh --execute` が、AWS CLI の導入の PowerShell を SSM で 1 回送り、その中に版を固定した URL・SHA-256・署名の確認・msiexec がこの順にある。`--execute` なしでは何も送らない。
+- AWS CLI の導入の PowerShell の分岐（`pwsh` があるときだけ。GitHub Actions の ubuntu-latest で実行。作業役の Mac には `pwsh` が無いので飛ばす）: 入っていなければ取得 → SHA-256 → 署名 → msiexec の順に進む／入っていれば何もしない／SHA-256 の不一致・署名の状態が Valid でない・署名者が違うときは msiexec を呼ばずに止まる／msiexec が失敗すれば止まる。`Invoke-WebRequest`・`Get-FileHash`・`Get-AuthenticodeSignature`・`Start-Process` は偽物、Windows のパスは一時フォルダに置き換える。
+
+### 実環境（AWS・Windows）では未確認の範囲
+
+- 実際の S3 の削除の後の head-bucket の応答の並びと、10 秒 × 30 回で 404 を確かめられるか。AWS CLI v2 のエラー文の形（`(404)`・`Not Found`）は偽の aws が真似ただけ。
+- Windows Server 2022 の Windows PowerShell 5.1（SSM の `AWS-RunPowerShellScript`）での導入のスクリプトの動作。本物の `Get-AuthenticodeSignature` の Subject の書式（`O=` の値が引用符付きか否かの両方を受けるようにした）、msiexec の終了コード（3010 の「再起動が要る」も失敗と扱う）、SSM の 900 秒の制限で足りるか。
+- MSI の SHA-256 は Mac で取得して計算しただけで、この道具で Windows に入れてはいない（K-17.4 の 1 の手作業の記録と値が一致することだけ確かめた）。
+- `38_full_fetch.sh` のバケットの作成より後（SSM・S3 への置き方・回収）は今回変えておらず、今回のテストでも通していない（K-17 の実施で動いた）。
 
 ## 最後の調査の手順（付録 K-10。人間の決定 D12-41・第 12 回の決定）
 
@@ -72,7 +101,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 6. 判定は各回の後に自動で `data/raw/oanda_mt5_probe/<日付>/k10-eval/report.md`・`result.json` に出る。区分は「確認済み」（規則・適用期間・根拠）と「仮定付き」（理由と、候補の規則ごとの解釈）の 2 つだけ。
 7. 打ち切り（1 時間 30 分）・上限 12 に達したら要求を出さず、その時点のデータで判定して閉じる。片付けは `90_teardown.sh --execute`。片付けの後に判定し直す場合（AWS は要らない）: `.venv/bin/python -m tools.survey.mt5_time_survey final-evaluate data/raw/oanda_mt5_probe/<日付>/ts-K10-*/summary_ts-K10.json --report <報告> --json-out <結果>`。
 
-## 全期間取得の実行手順（付録 K-16。人間の第 18 回の決定。まだ実行していない）
+## 全期間取得の実行手順（付録 K-16。人間の第 18 回の決定。2026-10-16〜17 に実行し、記録は付録 K-17）
 
 8 通貨（USDJPY・EURJPY・EURUSD・GBPJPY・USDCHF・AUDJPY・GBPUSD・AUDUSD）× 2017-01〜2023-12 の 1 分足を、1 要求 = 1 通貨 × 1 か月（計 672、上限 750）で取り、通貨 × 月ごとに gzip の CSV で保存する。回収は S3 の一時バケット（片付けで消す）。
 
