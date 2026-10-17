@@ -754,7 +754,9 @@ def test_awscli_ps_keeps_an_installed_2x_of_another_version(tmp_path: Path) -> N
     "installed_script",
     [
         "echo 'aws-cli/1.29.0 Python/3.11 Windows/10 botocore/1.31.0'",  # 1.x は 2.x ではない
-        "echo 'broken' >&2; exit 1",  # --version が失敗する
+        # 2.x の版を出すが終了コード 1（正常に動かない）。終了コードの確認が無いと、
+        # 版の文字列だけで「導入済み」と扱われてしまう（人間のレビュー 2026-10-17 の P1）
+        "echo 'aws-cli/2.31.7 Python/3.12 Windows/2022'; exit 1",
     ],
 )
 def test_awscli_ps_reinstalls_when_the_installed_one_is_not_a_working_2x(
