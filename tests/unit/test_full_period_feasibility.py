@@ -5,7 +5,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -237,37 +236,6 @@ def test_divergent_rows_compare_clocks() -> None:
     assert same_count["no_record_positions_differ"] is True
 
 
-# --- 最終集計の骨格（PR-A の確定待ち） ---------------------------------------------------
-
-
-def test_final_stage_waits_for_design(tmp_path: Path) -> None:
-    rules = fpf.CountingRules(
-        version="x",
-        sha256="0" * 64,
-        warmup_daily_bars=1,
-        holiday_source="x",
-        partial_bar_counts_toward_warmup=True,
-        all_no_record_day_resets_warmup=True,
-        shortfall_policy="x",
-    )
-    with pytest.raises(fpf.PendingDesignError):
-        fpf.load_counting_rules(tmp_path / "rules.yaml")
-    with pytest.raises(fpf.PendingDesignError):
-        fpf.load_time_rule_table(tmp_path / "table.yaml")
-    calls: list[Callable[[], object]] = [
-        lambda: fpf.classify_days([], rules),
-        lambda: fpf.coverage_distribution([], rules),
-        lambda: fpf.continuous_segments([], rules),
-        lambda: fpf.warmup_resets([], rules),
-        lambda: fpf.research_windows([], [], rules),
-        lambda: fpf.candidate_differences({}, rules),
-        lambda: fpf.common_windows({}, rules),
-    ]
-    for call in calls:
-        with pytest.raises(fpf.PendingDesignError):
-            call()
-
-
 def test_write_prelim_outputs_no_price_columns(tmp_path: Path) -> None:
     counts = fpf.write_prelim(fpf.PrelimResult(verify_problems=[]), tmp_path)
     assert set(counts) == {
@@ -349,4 +317,4 @@ def test_render_summary_from_synthetic_result() -> None:
     assert "| USDJPY | eu_clock | 2 | 1 | 50.000% | 1 | 1 | 0（なし） | 0 | 0 |" in text
     assert "| USDJPY | us_clock | 2 | 0 | 0.000% | 1 | 0 | 0（なし） | 0 | 0 |" in text
     assert "最終判定ではない" in text
-    assert "`classify_days`" in text
+    assert "full_period_final.py" in text

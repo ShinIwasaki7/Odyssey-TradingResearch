@@ -19,17 +19,15 @@
 **価格は読まない・出さない**: CSV の 1 列目（時刻）だけを取り出す。出力は件数・時刻・被覆・
 ハッシュだけ。
 
-**この道具が今は出さないもの（PR-A の確定待ち）**: 日足の区分（部分観測・全日無記録・休場）、
-連続区間とその開始・終了の理由、準備（必要な履歴本数）の確保とやり直し、研究対象区間、
-候補間の差、8 通貨の共通区間。これらは下の「最終集計の骨格」に引数と出力形式だけを置き、
-規則はコードに決め打ちせず PR-A の規則表・設定ファイルから読む（``load_counting_rules``・
-``load_time_rule_table``）。呼ぶと ``PendingDesignError`` で止まる。
+**最終集計**（日足の区分、連続区間、準備、研究対象区間、候補間の差、8 通貨の共通区間）は
+``tools/survey/full_period_final.py`` が、数え方の規則ファイルと時刻の規則の表から読んで出す。
+本モジュールの読み込み・変換・分の区分の関数はそちらからも使う（規則の値は持たない）。
 
 実行（リポジトリの根で。原データは worktree の外にあるので ``--root`` で渡す）::
 
     uv run python -m tools.survey.full_period_feasibility prelim \\
         --root <原データの置き場>/data/raw/oanda_mt5/2026-10-16 \\
-        --out-dir docs/data/full_period_feasibility
+        --out-dir docs/data/full_period_feasibility/prelim_2026-10-17
 """
 
 from __future__ import annotations
@@ -49,7 +47,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
@@ -79,7 +77,7 @@ CALENDAR_DEFAULT = Path("configs/calendars/fx_ny17_v2.yaml")
 TIMEFRAMES_DEFAULT = Path("configs/calendars/timeframes_v1.yaml")
 EXCLUSIONS_DEFAULT = Path("tools/survey/oanda_holiday_exceptions_2026-10-16.json")
 DOCS_MANIFEST_DEFAULT = Path("docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json")
-OUT_DIR_DEFAULT = Path("docs/data/full_period_feasibility")
+OUT_DIR_DEFAULT = Path("docs/data/full_period_feasibility/prelim_2026-10-17")
 #: 研究期間（UTC）。2024 年以降は参照しない。
 PERIOD_START = datetime(2017, 1, 1, tzinfo=UTC)
 PERIOD_END = datetime(2024, 1, 1, tzinfo=UTC)
@@ -103,10 +101,6 @@ LONG_RUN_LIST_MINUTES = 61
 
 class FeasibilityError(ValueError):
     """入力や設定で集計できないときの誤り。"""
-
-
-class PendingDesignError(NotImplementedError):
-    """数え方の設計（PR-A）が確定するまで実行しない処理を呼んだときの誤り。"""
 
 
 # --- 入力（時刻だけ） --------------------------------------------------------------
@@ -321,7 +315,8 @@ def convert_series(
     """API の生の時刻を UTC に直す（元の列は変えない）。
 
     返り値は (UTC の時刻の列（昇順）, 取得した区間の UTC の列, 取得不足の区間と理由の列)。
-    区間の両端はそれぞれの端の時刻での変換で直す（隣り合う区間は同じ端点で直るので連続のまま）。
+    始まりはその時刻の変換、終わり（排他）は区間の中の最後の時刻の変換で直す。境目が週末の休場の
+    中にあるので、隣り合う区間の継ぎ目のずれは存在すべき分に掛からない（D03 §15.3 の 5）。
     """
     shift_cache: dict[int, int] = {}
 
@@ -334,13 +329,15 @@ def convert_series(
     utc = [t - shift(t) for t in series.times_api]
     if any(b <= a for a, b in zip(utc, utc[1:], strict=False)):
         raise FeasibilityError(f"{series.pair}: {conversion.name} の変換で時刻の順が崩れる")
+    # 区間の終わり（排他）は、区間の中の最後の時刻（hi − 1 秒）の変換で直す。終わりの時刻そのものは
+    # 区間の外で、研究期間の終わり（2024-01-01）は時刻の規則の表が覆わないため。
     acquired = [
-        (w.lo_api - shift(w.lo_api), w.hi_api - shift(w.hi_api))
+        (w.lo_api - shift(w.lo_api), w.hi_api - shift(w.hi_api - 1))
         for w in series.windows
         if w.acquired
     ]
     shortfall = [
-        (w.lo_api - shift(w.lo_api), w.hi_api - shift(w.hi_api), w.reason)
+        (w.lo_api - shift(w.lo_api), w.hi_api - shift(w.hi_api - 1), w.reason)
         for w in series.windows
         if not w.acquired
     ]
@@ -834,188 +831,6 @@ def coverage_row(series: PairSeries) -> dict[str, Any]:
     }
 
 
-# --- 最終集計の骨格（PR-A の確定待ち。規則はファイルから読む） ----------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class CountingRules:
-    """数え方の規則（PR-A の設計で確定し、版付きの設定ファイルから読む）。
-
-    この道具は規則の値を持たない。欄は PR-A が決める項目の入れ物で、既定値を置かない。
-
-    - ``version`` / ``sha256``: 規則ファイルの版とハッシュ（再現の記録に書く）
-    - ``warmup_daily_bars``: 現在の戦略の準備に必要な日足の本数（基盤の品質基準ではない）
-    - ``holiday_source``: 休場の判定に使う定義（承認済みカレンダーの版、休場の定義ファイル）
-    - ``partial_bar_counts_toward_warmup``: 部分観測の日足を準備の本数に数えるか
-    - ``all_no_record_day_resets_warmup``: 予定取引日が全日無記録なら準備をやり直すか
-    - ``shortfall_policy``: 取得不足を含む区間の扱い
-    """
-
-    version: str
-    sha256: str
-    warmup_daily_bars: int
-    holiday_source: str
-    partial_bar_counts_toward_warmup: bool
-    all_no_record_day_resets_warmup: bool
-    shortfall_policy: str
-
-
-def _pending(what: str) -> NoReturn:
-    raise PendingDesignError(
-        f"{what} は数え方の設計（PR-A）の確定後に実装する。規則は PR-A の規則ファイルから読む"
-    )
-
-
-def load_counting_rules(path: Path) -> CountingRules:
-    """入力点 1: PR-A の数え方の規則ファイル（形式は PR-A で確定）を読む。"""
-    del path
-    _pending("数え方の規則ファイルの読み込み")
-
-
-def load_time_rule_table(path: Path) -> Sequence[TimeConversion]:
-    """入力点 2: PR-A で版付きのファイルにした時刻の規則の表を読み、変換の列を返す。
-
-    返り値は [標準仮説, 感度の候補 …] の順で、各要素は ``TimeConversion``（通貨と API の
-    時刻から「API の時刻 − UTC」を返す）。表のハッシュは承認済みのものと照合する（D12-48）。
-    """
-    del path
-    _pending("時刻の規則の表ファイルの読み込み")
-
-
-class DayClass(StrEnum):
-    """取引日の区分（名前は指示の語。判定条件は PR-A の規則から読む）。"""
-
-    GENERATED = "generated"  # 日足を生成（全分が記録あり）
-    PARTIAL = "partial"  # 部分観測の日足（被覆情報つきで生成。「完全」とは呼ばない）
-    ALL_NO_RECORD = "all_no_record"  # 予定取引日の全日無記録（生成しない）
-    HOLIDAY = "holiday"  # 休場（生成しない。準備の連続を切らない）
-    SHORTFALL = "shortfall"  # 取得不足（必要な入力の不足）
-
-
-FINAL_DAILY_COLUMNS: tuple[str, ...] = (
-    *DAILY_COLUMNS,
-    "day_class",
-    "coverage_ratio",
-    "published_at_utc",
-)
-SEGMENT_COLUMNS: tuple[str, ...] = (
-    "pair",
-    "conversion",
-    "segment_id",
-    "start_trading_day",
-    "end_trading_day",
-    "daily_bars",
-    "partial_daily_bars",
-    "start_reason",
-    "end_reason",
-)
-RESEARCH_WINDOW_COLUMNS: tuple[str, ...] = (
-    "pair",
-    "conversion",
-    "segment_id",
-    "warmup_complete_published_at_utc",
-    "research_start_utc",
-    "research_end_utc",
-    "research_daily_bars",
-)
-WARMUP_RESET_COLUMNS: tuple[str, ...] = (
-    "pair",
-    "conversion",
-    "trading_day",
-    "reason",
-    "bars_before_reset",
-)
-CANDIDATE_DIFF_COLUMNS: tuple[str, ...] = (
-    "pair",
-    "standard",
-    "candidate",
-    "span_start_utc",
-    "span_end_utc",
-    "field",
-    "standard_value",
-    "candidate_value",
-)
-COMMON_WINDOW_COLUMNS: tuple[str, ...] = (
-    "conversion",
-    "start_utc",
-    "end_utc",
-    "daily_bars",
-    "pairs",
-)
-COVERAGE_DIST_COLUMNS: tuple[str, ...] = (
-    "pair",
-    "conversion",
-    "coverage_bin",
-    "daily_bars",
-)
-
-
-def classify_days(daily: Sequence[Mapping[str, Any]], rules: CountingRules) -> list[dict[str, Any]]:
-    """§3-B の「生成できる日足・部分観測・全日無記録・取得不足の数」と被覆率。
-
-    入力は ``daily_rows`` の行、出力は ``FINAL_DAILY_COLUMNS`` の行。公開時刻は区間の終わり。
-    """
-    del daily, rules
-    _pending("日足の区分")
-
-
-def coverage_distribution(
-    classified: Sequence[Mapping[str, Any]], rules: CountingRules
-) -> list[dict[str, Any]]:
-    """§3-B の「被覆率の分布」。出力は ``COVERAGE_DIST_COLUMNS``（区分の刻みも PR-A から）。"""
-    del classified, rules
-    _pending("被覆率の分布")
-
-
-def continuous_segments(
-    classified: Sequence[Mapping[str, Any]], rules: CountingRules
-) -> list[dict[str, Any]]:
-    """§3-B の「連続区間すべての開始・終了・日足本数、各区間が始まる理由と終わる理由」。
-
-    出力は ``SEGMENT_COLUMNS``。最長区間だけにせず、すべての区間を出す。
-    """
-    del classified, rules
-    _pending("連続区間")
-
-
-def warmup_resets(
-    classified: Sequence[Mapping[str, Any]], rules: CountingRules
-) -> list[dict[str, Any]]:
-    """§3-B の「準備のやり直しが起きる箇所と理由」。出力は ``WARMUP_RESET_COLUMNS``。"""
-    del classified, rules
-    _pending("準備のやり直し")
-
-
-def research_windows(
-    segments: Sequence[Mapping[str, Any]],
-    classified: Sequence[Mapping[str, Any]],
-    rules: CountingRules,
-) -> list[dict[str, Any]]:
-    """§3-B の「準備に必要な本数を確保した後の研究対象区間と本数」。
-
-    研究対象区間の始まりは、準備に必要な最後の日足（例: 60 本目）の公開時刻より前を含めない。
-    本数は ``rules.warmup_daily_bars`` から読む。出力は ``RESEARCH_WINDOW_COLUMNS``。
-    """
-    del segments, classified, rules
-    _pending("研究対象区間")
-
-
-def candidate_differences(
-    by_conversion: Mapping[str, Sequence[Mapping[str, Any]]], rules: CountingRules
-) -> list[dict[str, Any]]:
-    """§3-B の「時刻の規則の候補間で結果が変わる区間と差」。出力は ``CANDIDATE_DIFF_COLUMNS``。"""
-    del by_conversion, rules
-    _pending("候補間の差")
-
-
-def common_windows(
-    windows_by_pair: Mapping[str, Sequence[Mapping[str, Any]]], rules: CountingRules
-) -> list[dict[str, Any]]:
-    """§3-B の「8 通貨共通の利用可能区間（参考）」。出力は ``COMMON_WINDOW_COLUMNS``。"""
-    del windows_by_pair, rules
-    _pending("8 通貨の共通区間")
-
-
 # --- 実行 -------------------------------------------------------------------------
 
 
@@ -1193,27 +1008,6 @@ def _sum_by(
 
 
 SUMMARY_FAMILIES: tuple[ClockFamily, ...] = (ClockFamily.EU, ClockFamily.US)
-FINAL_FUNCTIONS: tuple[tuple[str, str, str], ...] = (
-    (
-        "生成できる日足・部分観測・全日無記録・取得不足の数、被覆率",
-        "classify_days",
-        "FINAL_DAILY_COLUMNS",
-    ),
-    ("被覆率の分布", "coverage_distribution", "COVERAGE_DIST_COLUMNS"),
-    (
-        "連続区間すべての開始・終了・日足本数、開始と終了の理由",
-        "continuous_segments",
-        "SEGMENT_COLUMNS",
-    ),
-    ("準備のやり直しの箇所と理由", "warmup_resets", "WARMUP_RESET_COLUMNS"),
-    (
-        "準備の後の研究対象区間と本数（必要な最後の日足の公開時刻より前を含めない）",
-        "research_windows",
-        "RESEARCH_WINDOW_COLUMNS",
-    ),
-    ("時刻の規則の候補の間で変わる区間と差", "candidate_differences", "CANDIDATE_DIFF_COLUMNS"),
-    ("8 通貨共通の利用可能区間（参考）", "common_windows", "COMMON_WINDOW_COLUMNS"),
-)
 OUTPUT_DESCRIPTIONS: dict[str, str] = {
     "coverage_by_pair.csv": "通貨ごとの取得範囲・本数・時刻の問題の数",
     "monthly_stats.csv": (
@@ -1388,26 +1182,10 @@ def render_summary(result: PrelimResult, record: Mapping[str, Any]) -> str:
         "K-14 で使った表 版 1 の写し）から読んだ**参考**。PR-A で表をファイルにした後は、"
         "その表から読む。",
         "",
-        "## 6. PR-A の確定後に出す項目と、規則の入力点",
+        "## 6. 最終集計",
         "",
-        "道具に関数の骨格（引数と出力の列）を置いた。呼ぶと「設計の確定待ち」の誤り"
-        "（`PendingDesignError`）で止まる。規則の値はコードに持たない。",
-        "",
-        "| 指示 §3-B の項目 | 関数 | 出力の列 |",
-        "|---|---|---|",
-        *(f"| {item} | `{fn}` | `{cols}` |" for item, fn, cols in FINAL_FUNCTIONS),
-        "",
-        "規則の入力点:",
-        "",
-        "1. `load_counting_rules(path)`: PR-A の数え方の規則ファイル（準備に必要な日足の本数、"
-        "休場の判定に使う定義、部分観測の日足を準備に数えるか、全日無記録で準備をやり直すか、"
-        "取得不足の扱い。版とハッシュ）。",
-        "2. `load_time_rule_table(path)`: PR-A で版付きのファイルにした時刻の規則の表"
-        "（標準仮説と感度の候補の変換。ハッシュは承認済みのものと照合）。",
-        "",
-        "最終集計の入力のデータは `daily_coverage.csv`（通貨 × 時計 × 取引日の、存在すべき分・"
-        "休場の定義の分・記録あり・無記録・取得不足・最初の記録の時刻・最長の無記録・"
-        "区間の終わり＝公開時刻の基準）。",
+        "PR-A の確定後の最終集計は `tools/survey/full_period_final.py` が出す"
+        "（規則は数え方の規則ファイルと時刻の規則の表から読む）。",
         "",
         "## 7. 再現方法",
         "",
