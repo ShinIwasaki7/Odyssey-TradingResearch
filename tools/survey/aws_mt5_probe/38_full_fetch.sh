@@ -59,7 +59,10 @@ INFO
 [[ "$EXECUTE" == 1 ]] || { echo "(dry-run) 何もしていない。" >&2; exit 0; }
 
 if [[ -z "$bucket" ]]; then
-  bucket="${S3_BUCKET_PREFIX}${PROBE_DATE}-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8)"
+  # 乱数 8 桁は random_suffix8（lib.sh）で作る。以前のこの行（tr と head のパイプ）は SIGPIPE と pipefail で
+  # 終了コード 141 になり、毎回ここで止まった（付録 K-17.4 の 2）。代入を分けて、失敗をそのまま止まる形で受ける。
+  suffix=$(random_suffix8)
+  bucket="${S3_BUCKET_PREFIX}${PROBE_DATE}-${suffix}"
   assert_probe_bucket "$bucket"
   aws_p s3api create-bucket --bucket "$bucket" \
     --create-bucket-configuration "LocationConstraint=${PROBE_REGION}" >/dev/null
@@ -72,16 +75,19 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # Windows から S3 に置く道具（インスタンスのロールの権限で置く。AWS CLI か AWS Tools for PowerShell）。
+# 20_prepare.sh が入れて版をログに残した固定の場所の AWS CLI v2 を最優先で使い（人間の決定 2026-10-17 の④:
+# 実際に使う版をログに残す。D12 付録 K-18）、無いときだけ PATH 上の aws、次に AWS Tools for PowerShell に落ちる。
+# 確認の段で、実際に使う aws の場所と版を表示する。
 # shellcheck disable=SC2016  # PowerShell の変数（$aws）なので bash では展開しない
 s3_client_ps='
 $aws = $null
 $c = Get-Command aws -ErrorAction SilentlyContinue
-if ($c) { $aws = $c.Source } elseif (Test-Path "C:\Program Files\Amazon\AWSCLIV2\aws.exe") { $aws = "C:\Program Files\Amazon\AWSCLIV2\aws.exe" }
+if (Test-Path "C:\Program Files\Amazon\AWSCLIV2\aws.exe") { $aws = "C:\Program Files\Amazon\AWSCLIV2\aws.exe" } elseif ($c) { $aws = $c.Source }
 if (-not $aws -and -not (Get-Command Write-S3Object -ErrorAction SilentlyContinue)) { throw "no S3 client (AWS CLI / AWS Tools for PowerShell) on this instance" }
 '
 # shellcheck disable=SC2016  # 同上
 printf '%s\n%s\n%s\n' "\$ErrorActionPreference = 'Stop'" "$s3_client_ps" \
-  'if ($aws) { "s3 client: aws-cli $aws" } else { "s3 client: Write-S3Object" }' >"$work/client.ps1"
+  'if ($aws) { "s3 client: $aws $((& $aws --version | Out-String).Trim())" } else { "s3 client: Write-S3Object" }' >"$work/client.ps1"
 ssm_ps "$INSTANCE_ID" 120 "$work/client.ps1"
 
 upload_pair() {  # upload_pair <通貨>

@@ -32,7 +32,13 @@ verify() {
   printf '  試験のキーペア: '; aws_p ec2 describe-key-pairs --filters "$(tag_filter)" --query "length(KeyPairs)" --output text
   printf '  試験の S3 の一時バケット: '
   if [[ -f "$S3_STATE_FILE" ]] && load_s3_state; then
-    if aws_p s3api head-bucket --bucket "$S3_BUCKET" >/dev/null 2>&1; then echo "1（${S3_BUCKET}。残っている）"; else echo "0（${S3_BUCKET} は無い）"; fi
+    local st
+    st=$(s3_bucket_state "$S3_BUCKET")
+    case "$st" in
+      exists) echo "1（${S3_BUCKET}。残っている）" ;;
+      absent) echo "0（${S3_BUCKET} は無い。head-bucket が 404）" ;;
+      *) echo "不明（${S3_BUCKET}。有無を確かめられない: ${st#unknown: }）" ;;
+    esac
   else
     echo "0（記録なし）"
   fi
@@ -63,23 +69,42 @@ s3_collected() {
 s3_keys() {
   aws_p s3api list-objects-v2 --bucket "$S3_BUCKET" --query "Contents[].Key" --output text | tr '\t' '\n' | grep -v '^None$' || true
 }
+# S3 の一時バケットを片付ける。済んだ（無い・消した・回収が済んでいないので残した）なら 0、
+# 有無を確かめられない・消した後に 404 を確かめられないなら 1（記録 s3_bucket.env は残し、もう一度実行できるようにする）。
+# 呼び出し側が `|| bucket_rc=$?` で受けるので、この中では set -e が効かない。失敗は各行で受けて 1 を返す。
 teardown_bucket() {
+  local st
   [[ -f "$S3_STATE_FILE" ]] || return 0
   load_s3_state
-  if ! aws_p s3api head-bucket --bucket "$S3_BUCKET" >/dev/null 2>&1; then
-    log "S3 の一時バケット ${S3_BUCKET} は無い（消し済み）"
-    mv "$S3_STATE_FILE" "${S3_STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)"
-    return 0
-  fi
+  st=$(s3_bucket_state "$S3_BUCKET")
+  case "$st" in
+    absent)
+      log "S3 の一時バケット ${S3_BUCKET} は無い（head-bucket が 404。消し済み）"
+      mv "$S3_STATE_FILE" "${S3_STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)" || return 1
+      return 0 ;;
+    exists) ;;
+    *)
+      # 以前は head-bucket の失敗をすべて「無い」と扱っていたが、403 などは無いとは限らない。
+      log "注意: S3 の一時バケット ${S3_BUCKET} の有無を確かめられない（${st}）。記録は残した。原因を確かめてからもう一度 90_teardown.sh --execute"
+      return 1 ;;
+  esac
   if ! s3_collected; then
     log "注意: S3 の一時バケット ${S3_BUCKET} は回収が済んでいないので消さない。45_collect_s3.sh --all --execute の後に、もう一度 90_teardown.sh --execute"
     return 0
   fi
-  aws_p s3 rm "s3://${S3_BUCKET}" --recursive --only-show-errors
-  aws_p s3api delete-bucket --bucket "$S3_BUCKET"
-  aws_p s3api wait bucket-not-exists --bucket "$S3_BUCKET"
+  aws_p s3 rm "s3://${S3_BUCKET}" --recursive --only-show-errors \
+    || { log "S3 の一時バケット ${S3_BUCKET} の中身を消せなかった。記録は残した"; return 1; }
+  aws_p s3api delete-bucket --bucket "$S3_BUCKET" \
+    || { log "S3 の一時バケット ${S3_BUCKET} を消せなかった。記録は残した"; return 1; }
+  # 以前の `s3api wait bucket-not-exists`（5 秒 × 20 回）は「Max attempts exceeded」で止まり、直後の head-bucket は
+  # 404 だった（付録 K-17.6）。どの応答で待ちが終わらなかったかは記録が無い。ここでは自分で head-bucket を
+  # 繰り返し、404 で成功とし、毎回の応答を記録する（wait_bucket_absent。lib.sh）。
+  if ! wait_bucket_absent "$S3_BUCKET"; then
+    log "停止: S3 の一時バケット ${S3_BUCKET} を消したが、${S3_DELETE_WAIT_ATTEMPTS} 回確かめても 404 にならない。記録（${S3_STATE_FILE}）は残した。少し待ってもう一度 90_teardown.sh --execute（404 なら記録を退避して終わる）"
+    return 1
+  fi
   log "消した: S3 の一時バケット ${S3_BUCKET}（中身ごと）"
-  mv "$S3_STATE_FILE" "${S3_STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)"
+  mv "$S3_STATE_FILE" "${S3_STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)" || return 1
 }
 
 instances=$(aws_p ec2 describe-instances --filters "$(tag_filter)" \
@@ -126,5 +151,11 @@ print(f"  インスタンス・ディスク・IPv4: 約 {sub * (1 + tax):.3f} �
 PY
   mv "$STATE_FILE" "${STATE_FILE}.done-$(date +%Y%m%dT%H%M%S)"
 fi
-teardown_bucket
+# バケットの片付けが失敗しても、残りの確認は必ず表示してから、失敗の終了コードで終わる。
+bucket_rc=0
+teardown_bucket || bucket_rc=$?
 verify
+if (( bucket_rc != 0 )); then
+  log "停止: S3 の一時バケットの片付けが済んでいない（上の表示を確かめる）。インスタンスなどの片付けは済んだ"
+  exit "$bucket_rc"
+fi

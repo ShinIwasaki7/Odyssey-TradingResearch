@@ -39,12 +39,29 @@ readonly PROBE_COLLECT_LIMIT_BYTES=1073741824
 # odyssey-mt5-probe-<取得日>-<乱数 8 桁>。IAM で許すのはこの接頭辞のバケットだけ（iam_policy_*.json）。
 readonly S3_BUCKET_PREFIX="${PROBE_NAME}-"
 readonly S3_KEY_PREFIX="full"
+# S3 の一時バケットを消した後、消えた（head-bucket が 404）と確かめるまでの待ち方（90_teardown.sh）。
+# 付録 K-17.6: `s3api wait bucket-not-exists`（5 秒 × 20 回）は「Max attempts exceeded」で止まったが、
+# 直後の head-bucket は 404 だった。間隔 10 秒 × 最大 30 回に延ばし、毎回の応答を記録する（人間の決定 2026-10-17 の①。
+# D12 付録 K-18）。待ちの合計は約 5 分だが、head-bucket の通信の時間を含まないので、厳密な「5 分以内」の保証ではない。
+readonly S3_DELETE_WAIT_SECONDS="${S3_DELETE_WAIT_SECONDS:-10}"
+readonly S3_DELETE_WAIT_ATTEMPTS="${S3_DELETE_WAIT_ATTEMPTS:-30}"
 
 # Windows に入れるもの（版と SHA-256 を固定。2026-10-15 に作業役が python.org と PyPI から確認）
 readonly PY_INSTALLER_URL="https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
 readonly PY_INSTALLER_SHA256="67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
 readonly PY_EXE='C:\Program Files\Python312\python.exe'
 readonly MT5_PY_PACKAGE="MetaTrader5==5.0.6231"       # cp312 の wheel の SHA-256 は README に記録
+# AWS CLI v2（Windows から S3 に置く道具。付録 K-17.4 の 1）。AWS Tools for PowerShell は読み込みに 300 秒超かかり、
+# 38_full_fetch.sh の S3 の道具の確認（120 秒）に間に合わないため、20_prepare.sh で入れる。
+# 版を固定した公式の配布元（版なしの AWSCLIV2.msi は中身が変わる）。SHA-256 は付録 K-17.4 の 1 で Windows に入れた
+# MSI（aws-cli/2.38.1）の値と同じ（2026-10-17 に作業役が Mac でこの URL から取得して計算し、一致を確かめた）。
+readonly AWSCLI_VERSION="2.38.1"
+readonly AWSCLI_MSI_URL="https://awscli.amazonaws.com/AWSCLIV2-${AWSCLI_VERSION}.msi"
+readonly AWSCLI_MSI_SHA256="ad07f9acd855f48ad016e63b2f0b4f87783c1b6524b86e966f4a6d21d01f524a"
+readonly AWSCLI_MSI_WIN='C:\probe\AWSCLIV2.msi'
+readonly AWSCLI_EXE='C:\Program Files\Amazon\AWSCLIV2\aws.exe'
+# Authenticode の署名者（証明書の Subject の O=）。付録 K-17.4 の 1 で確かめた値。
+readonly AWSCLI_SIGNER_ORG="Amazon Web Services, Inc."
 
 # 単価（米ドル。D12 §11.5.2 と同じ AWS の公開の価格表、2026-10-12 公開分）
 readonly PRICE_INSTANCE_HOUR="0.0728"
@@ -178,6 +195,111 @@ assert_probe_bucket() {
     || die "試験のバケットの名前ではない: $1"
 }
 
+# S3 の一時バケットの名前の末尾の乱数 8 桁（小文字の 16 進数。assert_probe_bucket の [a-z0-9]{8} に入る）。
+# 以前の `tr -dc 'a-z0-9' </dev/urandom | head -c 8` は、head が 8 文字で読むのをやめると上流の tr が
+# 強制終了の合図（SIGPIPE）を受けて終了コード 141 になり、`set -o pipefail` で毎回止まった（付録 K-17.4 の 2）。
+# ここでは od が /dev/urandom から 4 バイトだけ読んで（-N 4）自分で終わり、下流の tr は入力を最後まで読む。
+# パイプの下流が上流より先に読むのをやめる箇所が無いので、SIGPIPE は起きない。
+random_suffix8() {
+  local s
+  s=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  [[ "$s" =~ ^[0-9a-f]{8}$ ]] || die "乱数 8 桁を作れなかった: '${s}'"
+  printf '%s\n' "$s"
+}
+
+# S3 のバケットの有無を head-bucket で調べ、exists（ある）・absent（404。無い）・unknown: <応答>（403 など。
+# 有無を確かめられない）のどれかを出力する。403 は「無い」とは扱わない（権限の不足や他人のバケットでも 403 になる）。
+s3_bucket_state() {  # s3_bucket_state <bucket>
+  local err
+  if err=$(aws_p s3api head-bucket --bucket "$1" 2>&1 >/dev/null); then
+    echo "exists"
+  elif [[ "$err" == *"(404)"* || "$err" == *"Not Found"* || "$err" == *"NoSuchBucket"* ]]; then
+    echo "absent"
+  else
+    err=$(printf '%s' "$err" | tr '\n' ' ')
+    err="${err#"${err%%[![:space:]]*}"}"  # AWS CLI のエラーは空行で始まるので、先頭の空白を除く
+    printf 'unknown: %s\n' "${err:0:200}"
+  fi
+}
+
+# 消したバケットが 404 になるまで待つ（S3_DELETE_WAIT_SECONDS 間隔で S3_DELETE_WAIT_ATTEMPTS 回まで）。
+# 404 になれば 0、上限まで確かめられなければ 1。
+wait_bucket_absent() {  # wait_bucket_absent <bucket>
+  local i st
+  for (( i = 1; i <= S3_DELETE_WAIT_ATTEMPTS; i++ )); do
+    st=$(s3_bucket_state "$1")
+    if [[ "$st" == "absent" ]]; then
+      log "S3 のバケット $1 が無いことを確かめた（head-bucket が 404。${i}/${S3_DELETE_WAIT_ATTEMPTS} 回目）"
+      return 0
+    fi
+    log "S3 のバケット $1 が消えたとまだ確かめられない（${i}/${S3_DELETE_WAIT_ATTEMPTS} 回目）: ${st}"
+    (( i == S3_DELETE_WAIT_ATTEMPTS )) || sleep "$S3_DELETE_WAIT_SECONDS"
+  done
+  return 1
+}
+
+# Windows の中の自動の停止を、承認済みの時刻（起動の時刻 + PROBE_SHUTDOWN_SECONDS = 4 時間 30 分）に予約し直す
+# PowerShell（20_prepare.sh が実行のたびに SSM で送る。人間の決定 2026-10-17 の (A)。D12 付録 K-18 の⑤）。
+# 起動の時の予約（10_launch.sh の user-data の shutdown /s /t）は初回の起動で 1 回だけ動き、再起動（msiexec の
+# 3010 の後など）で消えるため。起動の時刻は Mac の状態のファイルの LAUNCHED_AT_EPOCH（10_launch.sh が run-instances
+# の直後に記録。load_state が無ければ止める）。残りの秒数は Windows の時計で計算する。既存の予約を shutdown /a で
+# 取り消してから予約するので、何度実行しても予約は 1 つで、時刻は同じ（冪等）。残りが 60 秒未満なら予約せずに止める。
+autostop_ps() {  # autostop_ps <停止の時刻（UNIX 秒）>
+  local at="$1"
+  cat <<PS
+\$ErrorActionPreference = 'Stop'
+\$at = [DateTimeOffset]::FromUnixTimeSeconds(${at})
+\$t = [int][math]::Floor((\$at - [DateTimeOffset]::UtcNow).TotalSeconds)
+if (\$t -lt 60) { throw "auto stop time already reached or too close: \$(\$at.UtcDateTime.ToString('u')) (\$t s)" }
+cmd /c "shutdown /a >nul 2>&1"
+shutdown /s /t \$t /c "odyssey-mt5-probe auto stop (launch + $(( PROBE_SHUTDOWN_SECONDS / 60 ))m, rescheduled)"
+if (\$LASTEXITCODE -ne 0) { throw "shutdown /s failed: \$LASTEXITCODE" }
+"auto stop scheduled: \$(\$at.UtcDateTime.ToString('u')) (in \$t s)"
+PS
+}
+
+# AWS CLI v2 を Windows に入れる PowerShell（20_prepare.sh が SSM で実行する）。既に入っていれば入れない。
+# 入れるときは、版を固定した公式の MSI を取り、SHA-256 と Authenticode の署名（有効で、署名者が Amazon）を
+# 確かめてから msiexec で入れ、`aws --version` が aws-cli/2. で始まることを確かめる。
+awscli_install_ps() {
+  cat <<PS
+\$ErrorActionPreference = 'Stop'
+\$cli = '${AWSCLI_EXE}'
+\$msi = '${AWSCLI_MSI_WIN}'
+\$have = \$null
+if (Test-Path -LiteralPath \$cli) {
+  \$have = (& \$cli --version | Out-String).Trim()
+  if (\$LASTEXITCODE -ne 0 -or \$have -notmatch '^aws-cli/2\.') { \$have = \$null }
+}
+if (\$have) {
+  "aws-cli: already installed, skip: \$have"
+} else {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent \$msi) | Out-Null
+  Invoke-WebRequest -UseBasicParsing -Uri '${AWSCLI_MSI_URL}' -OutFile \$msi
+  \$h = (Get-FileHash -Algorithm SHA256 -LiteralPath \$msi).Hash.ToLower()
+  if (\$h -ne '${AWSCLI_MSI_SHA256}') { throw "AWS CLI MSI SHA-256 mismatch: \$h" }
+  \$sig = Get-AuthenticodeSignature -FilePath \$msi
+  if ("\$(\$sig.Status)" -ne 'Valid') { throw "AWS CLI MSI signature status: \$(\$sig.Status)" }
+  \$subject = "\$(\$sig.SignerCertificate.Subject)"
+  if (-not (\$subject.Contains('O=${AWSCLI_SIGNER_ORG}') -or \$subject.Contains('O="${AWSCLI_SIGNER_ORG}"'))) { throw "AWS CLI MSI signer: \$subject" }
+  "aws-cli msi: sha256 ok, signature Valid (\$subject)"
+  \$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', \$msi, '/qn', '/norestart' -Wait -PassThru
+  if (\$p.ExitCode -eq 3010) {
+    # 3010 は「導入は成功、完了には再起動が必要」。通常の失敗と区別して表示し、自動の再起動・続行はしない
+    # （人間の決定 2026-10-17 の③。D12 付録 K-18）。20_prepare.sh がこの行を見て再起動の後の再実行を案内する。
+    'AWSCLI_RESTART_REQUIRED: msiexec exit 3010 (installed, restart required). Not restarting or continuing automatically.'
+    throw 'msiexec exit 3010: installed, restart required'
+  }
+  if (\$p.ExitCode -ne 0) { throw "msiexec exit \$(\$p.ExitCode): install failed" }
+  Remove-Item -LiteralPath \$msi
+  if (-not (Test-Path -LiteralPath \$cli)) { throw "aws.exe not found after install: \$cli" }
+  \$have = (& \$cli --version | Out-String).Trim()
+  if (\$LASTEXITCODE -ne 0 -or \$have -notmatch '^aws-cli/2\.') { throw "aws --version failed after install: \$have" }
+  "aws-cli: installed: \$have"
+}
+PS
+}
+
 # インスタンスが試験のタグを持つことを確かめる（他のインスタンスを触らない）。
 assert_tagged_instance() {
   local id="$1" v
@@ -194,7 +316,9 @@ ssm_ps() {
   local id="$1" timeout="$2" file="$3" params cmd_id status out err
   params=$("$PY_MAC" -I -c 'import json,sys; print(json.dumps({"commands": open(sys.argv[1], encoding="utf-8").read().splitlines(), "executionTimeout": [sys.argv[2]]}))' "$file" "$timeout")
   cmd_id=$(aws_p ssm send-command --instance-ids "$id" --document-name "AWS-RunPowerShellScript" \
-    --timeout-seconds 600 --parameters "$params" --query "Command.CommandId" --output text)
+    --timeout-seconds 600 --parameters "$params" --query "Command.CommandId" --output text) || true
+  # 呼び出し側が $(...) や if の中で使うと set -e が効かないので、送れなかったときに状態の確認を回し続けないよう、ここで止める。
+  [[ -n "$cmd_id" && "$cmd_id" != "None" ]] || { log "SSM のコマンドを送れなかった"; return 1; }
   status="Pending"
   while [[ "$status" == "Pending" || "$status" == "InProgress" || "$status" == "Delayed" ]]; do
     sleep 3
