@@ -1,14 +1,19 @@
 {
  "tool": "tools/survey/full_period_final.py",
  "tool_version": 1,
- "tool_sha256": "f75e7e72644040daa7f84c1f3c47eea8a2a256054d4e3b806b0476338d0e1bf0",
+ "tool_sha256": "4c007967f5846b86ff19fb5c2c02cc62f282522b6a5fa99455265755c9c6d69b",
  "shared_tool_sha256": "9d258bf81616883c40e33e84db2751d501b34fe61adb98555cefd5cb1bb05f88",
  "stage": "final（§3-B の 9 項目。データ上の実行可能性。エンジンの動作・約定の再現性は確かめていない）",
- "target_commit": "761bbf451e780679c3a1f5a10d26ac000c1678cc",
- "command": "uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility",
+ "target_commit": "d27e926d1308078c1980d2a854dba4012809bdcb",
+ "command": "uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility --decision-file human_decision_2026-10-17_pr85_final_aggregation.md --decision-ref D12 §0.1.29（D12-99・D12-100、2026-10-17）",
  "raw_root": "data/raw/oanda_mt5/2026-10-16",
- "started_at_utc": "2026-10-17T06:50:56+00:00",
- "finished_at_utc": "2026-10-17T06:55:54+00:00",
+ "decisions": {
+  "ref": "D12 §0.1.29（D12-99・D12-100、2026-10-17）",
+  "file": "human_decision_2026-10-17_pr85_final_aggregation.md",
+  "sha256": "629cd32881483d2150cc82af633f8bb229e9d519cb9266e36a9e424b9c3a6ac6"
+ },
+ "started_at_utc": "2026-10-17T10:52:44+00:00",
+ "finished_at_utc": "2026-10-17T10:57:24+00:00",
  "inputs": {
   "fetch_manifest": {
    "path": "docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json",

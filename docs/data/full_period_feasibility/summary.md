@@ -6,6 +6,7 @@
 - 価格は読んでいない・載せていない（件数・時刻・被覆率・ハッシュだけ）。戦略の成績は読んでいない。2024 年以降は参照していない。原データは変えていない。
 - 部分観測の日足（被覆率 1 未満）は「完全」と呼ばない。必要本数 60 本 は現在の戦略（検証戦略 B の日足の EMA）の必要履歴で、基盤全体の品質基準ではない。
 - 組 `standard` は時刻の規則の表の標準仮説、`candidate` は候補を持つ行をすべて候補の変換に替えた組（感度の検証。D12-92 (a)）。
+- **標準の組（`standard`）: 確定**（休場帯の足を人間が分類。D12 §0.1.29（D12-99・D12-100、2026-10-17）、原文 `human_decision_2026-10-17_pr85_final_aggregation.md`（SHA-256 `629cd32881483d2150cc82af633f8bb229e9d519cb9266e36a9e424b9c3a6ac6`））。**仮置き: 0 件**（集計の読み方 6 件は同じ決定で確定）。
 
 ## 1. 通貨ごとの研究対象区間（使える範囲）と使えない範囲
 
@@ -118,7 +119,7 @@
 
 - `standard` でカレンダーの外に出た足は休場帯の足（`UNEXPECTED_BAR`）で、人間の分類の対象（D12-94 (a)）。`candidate` で外に出た足は足の生成に使わず件数だけを報告する（D12-97 (a)）。週ごとの件数は `out_of_calendar_bars.csv`。
 
-**人間の分類が要る足**（`standard` の休場帯の足。D03 §15.3 の 4・D12-94 (a)。分類するまで`standard` の組の snapshot は確定しない。この集計ではその足を足の生成に使っていない）:
+**分類済みの足**（`standard` の休場帯の足。D12 §0.1.29（D12-99・D12-100、2026-10-17） で人間が「セッション外のデータ異常」と分類し、使わずに `standard` の組を確定した。表の次の版の検討材料としてD12 §11.7.10 に記録）:
 
 | 週（NY の日曜） | 足の数（8 通貨の計） | 通貨ごと |
 |---|---|---|
@@ -161,13 +162,13 @@
 ## 7. 再現方法
 
 ```
-uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility
+uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility --decision-file human_decision_2026-10-17_pr85_final_aggregation.md --decision-ref D12 §0.1.29（D12-99・D12-100、2026-10-17）
 ```
 
 - 原データの置き場（リポジトリの根から）: `data/raw/oanda_mt5/2026-10-16`（変更しない）
-- 対象のコミット: `761bbf451e780679c3a1f5a10d26ac000c1678cc`
-- 道具の SHA-256: `f75e7e72644040daa7f84c1f3c47eea8a2a256054d4e3b806b0476338d0e1bf0`（共通部分 `full_period_feasibility.py`: `9d258bf81616883c40e33e84db2751d501b34fe61adb98555cefd5cb1bb05f88`）
-- 実行時刻（UTC）: 2026-10-17T06:50:56+00:00 〜 2026-10-17T06:55:54+00:00
+- 対象のコミット: `d27e926d1308078c1980d2a854dba4012809bdcb`
+- 道具の SHA-256: `4c007967f5846b86ff19fb5c2c02cc62f282522b6a5fa99455265755c9c6d69b`（共通部分 `full_period_feasibility.py`: `9d258bf81616883c40e33e84db2751d501b34fe61adb98555cefd5cb1bb05f88`）
+- 実行時刻（UTC）: 2026-10-17T10:52:44+00:00 〜 2026-10-17T10:57:24+00:00
 - 入力・出力の一覧とハッシュは `manifest.json`。
 
 ## 8. ファイル
