@@ -371,3 +371,26 @@ def test_an_execution_series_read_by_the_strategy_is_checked_over_its_history(
     # 窓 21 本（20 本＋末尾から除く 1 本）を遡る。
     assert report.interval.start == _t("2026-01-21T03:00:00Z")
     assert report.interval.end == run.end
+
+
+def test_c2_history_reset_ready_bar_is_found_after_the_run(tmp_path: Path) -> None:
+    """D06 §18.10（第 3 巡のレビューの指摘）: 表22 の「準備が再び整う足」は、run
+    の終わりより後でも snapshot の
+    中にあればその足と公開時刻（run が 01-22 12:00Z に終わっても 01-22 19:00Z）。空にしない。"""
+    pending, snapshot = _snapshot(tmp_path)
+    observation = Mt5Observation.from_snapshot(snapshot)
+    assert observation is not None
+    parts = build_mt5_run_parts(
+        observation=observation,
+        compiled=compiled_strategy(),
+        execution_series=EXECUTION_SERIES,
+        hierarchy=(EXECUTION_SERIES,),
+        schedules=_schedules(snapshot),
+        bars_of=_bars_of(pending),
+        calendar=CALENDAR,
+        run_interval=_span("2026-01-21T00:00:00Z", "2026-01-22T12:00:00Z"),
+        repo_root=tmp_path,
+    )
+    rows = [row for row in parts.history_resets if row.series == HOURLY and row.window_bars == 21]
+    assert rows
+    assert {row.ready_at for row in rows} == {_t("2026-01-22T19:00:00Z")}

@@ -226,7 +226,9 @@ def _history_reset_rows(
             bars,
             no_record,
             start=bars[0].bar_start,
-            end=run_interval.end,
+            # 準備が実際に整う足は run の後にもありうる（D06 §18.10「実際に準備が整う足」）。
+            # snapshot の最後の足まで並べ、run の終わりで打ち切らない。
+            end=max(run_interval.end, bars[-1].bar_end, key=lambda value: value.value),
             published=published,
         )
         for window in sorted(windows):

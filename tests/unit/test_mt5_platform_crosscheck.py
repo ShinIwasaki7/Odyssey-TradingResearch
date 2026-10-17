@@ -95,3 +95,27 @@ def test_a_tool_day_with_no_expected_minutes_matches_a_closure() -> None:
     matched = [row for row in rows if row["interval_start_utc"] == "2018-12-24T22:00Z"]
     assert matched[0]["platform_class"] == "closed"
     assert matched[0]["match"] is True
+
+
+def test_a_shortfall_day_with_equal_counts_matches() -> None:
+    """取得不足の日も件数（存在すべき分・記録あり・無記録・取得不足）と最初の観測で比べる（第 3
+    巡の指摘）。"""
+    platform = {
+        "2018-12-26T22:00Z": _PlatformDay(
+            interval=Interval(
+                start=UtcTime.parse("2018-12-26T22:00:00Z"),
+                end=UtcTime.parse("2018-12-27T22:00:00Z"),
+            ),
+            bar_class="shortfall",
+            expected=1440,
+            recorded=1400,
+            shortfall=30,
+            first_observed="2018-12-26T22:00Z",
+        )
+    }
+    tool = _tool("2018-12-26T22:00Z", "2018-12-27T22:00Z", 1400)
+    tool["no_record_minutes"] = "10"
+    tool["shortfall_minutes"] = "30"
+    (row,) = compare_days("USDJPY", platform, [tool])
+    assert row["platform_class"] == row["tool_class"] == "shortfall"
+    assert row["match"] is True

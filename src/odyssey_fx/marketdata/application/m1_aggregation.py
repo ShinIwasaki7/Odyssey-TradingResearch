@@ -175,7 +175,11 @@ def aggregate_from_minutes(
                     interval,
                     detail={
                         "expected_minutes": str(item.counts.expected),
+                        "first_observed_at": ""
+                        if item.first_observed is None
+                        else str(utc(item.first_observed)),
                         "reasons": ",".join(reasons),
+                        "recorded_minutes": str(item.counts.recorded),
                         "shortfall_minutes": str(item.counts.shortfall),
                     },
                 )

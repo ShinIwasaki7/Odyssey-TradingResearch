@@ -127,7 +127,7 @@ class _PlatformDay:
 def _platform_days(
     bars: Sequence[Bar],
     no_record: Mapping[UtcTime, tuple[int, Interval]],
-    shortfall: Mapping[UtcTime, tuple[int, Interval]],
+    shortfall: Mapping[UtcTime, tuple[Mapping[str, str], Interval]],
 ) -> dict[str, _PlatformDay]:
     days: dict[str, _PlatformDay] = {}
     for bar in bars:
@@ -150,14 +150,15 @@ def _platform_days(
             shortfall=0,
             first_observed="",
         )
-    for start, (minutes, interval) in shortfall.items():
+    for start, (detail, interval) in shortfall.items():
+        first = detail.get("first_observed_at", "")
         days[_iso(start)] = _PlatformDay(
             interval=interval,
             bar_class="shortfall",
-            expected=-1,
-            recorded=-1,
-            shortfall=minutes,
-            first_observed="",
+            expected=int(detail["expected_minutes"]),
+            recorded=int(detail["recorded_minutes"]),
+            shortfall=int(detail["shortfall_minutes"]),
+            first_observed="" if not first else _iso(UtcTime.parse(first)),
         )
     return days
 
@@ -222,7 +223,7 @@ def compare_days(
             "tool_expected": "" if found is None else int(found["expected_minutes"]),
             "platform_recorded": mine.recorded,
             "tool_recorded": "" if found is None else int(found["recorded_minutes"]),
-            "platform_unrecorded": mine.expected - mine.recorded if mine.expected >= 0 else -1,
+            "platform_unrecorded": mine.expected - mine.recorded - mine.shortfall,
             "tool_unrecorded": "" if found is None else int(found["no_record_minutes"]),
             "platform_shortfall": mine.shortfall,
             "tool_shortfall": "" if found is None else int(found["shortfall_minutes"]),
@@ -320,10 +321,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if result.kind is CheckKind.NO_RECORD_BAR and result.series == daily
             }
             shortfall = {
-                result.interval.start: (
-                    int(dict(result.detail)["shortfall_minutes"]),
-                    result.interval,
-                )
+                result.interval.start: (dict(result.detail), result.interval)
                 for result in pending.report.results
                 if result.kind is CheckKind.ACQUISITION_SHORTFALL and result.series == daily
             }

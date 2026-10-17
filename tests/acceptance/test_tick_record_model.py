@@ -40,7 +40,12 @@ from odyssey_fx.backtest.domain.fills import (
 )
 from odyssey_fx.backtest.domain.orders import AcceptedEntryTerms, AcceptedOrder, OrderStatus
 from odyssey_fx.backtest.execution.protection_hits import IntrabarResolution, ResolutionMethod
-from odyssey_fx.backtest.trace.recorder import PublicationRow, ResumptionRow, TraceTable
+from odyssey_fx.backtest.trace.recorder import (
+    PublicationRow,
+    ResumptionRow,
+    TraceTable,
+    flatten_row,
+)
 from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
 from odyssey_fx.common.money import Price, decimal_from_str
 from odyssey_fx.common.time import Interval, UtcTime
@@ -460,6 +465,8 @@ def test_fully_recorded_mt5_run_matches_the_single_level_run(tmp_path: Path) -> 
     assert len(mt5_fills) == 2
     assert [price for _, price in mt5_fills] == [price for _, price in single_fills]
     assert mt5_fills[0][0] == single_fills[0][0]
+    # 2 件目（損切りの決済）の時刻も同じ（全分記録ありの執行足は親の 4 本値で判定する。D06 §18.5）。
+    assert mt5_fills == single_fills
     assert mt5.context.ledger.balance == single.context.ledger.balance
 
 
@@ -557,3 +564,87 @@ def test_the_last_execution_bar_is_not_carried_over_a_closure() -> None:
     sunday_open = UtcTime.parse("2026-01-25T22:00:00Z")
     assert engine(sunday_open, unrecorded=False) is None
     assert engine(_at("22:30"), unrecorded=True) is friday_bar
+
+
+def test_adding_a_later_minute_does_not_change_earlier_decisions(tmp_path: Path) -> None:
+    """D06 §18.13 の意味論（第 3 巡のレビューの指摘）: 記録のある分を 1 本足しても、
+    その分より前の約定・評価は
+    変わらない（未来の足を読まない）。20:40〜21:00 を無記録にした run と、その中の 20:50
+    にだけ損切りに届く
+    1 分足を足した run を比べる。"""
+    tail = (_span("20:40", "22:00"),)
+    base = _run(tmp_path / "base", unrecorded=tail)
+    added = _run(
+        tmp_path / "added",
+        unrecorded=(_span("20:40", "20:50"), _span("20:51", "22:00")),
+        prices={_at("20:50"): ("150.000", "150.000", "148.900", "149.000")},
+    )
+    cut = _at("20:50")
+
+    def before(output: Mt5RunOutput, table: TraceTable, column: str) -> list[object]:
+        # run の識別子は snapshot の識別子から決まるので比べない（入力の 1 分足が違う）。
+        return [
+            {key: value for key, value in flatten_row(row).items() if key != "run_id"}
+            for row in output.rows(table)
+            if str(flatten_row(row)[column]) < str(cut)
+        ]
+
+    assert before(base, TraceTable.FILLS, "processed_at_time") == before(
+        added, TraceTable.FILLS, "processed_at_time"
+    )
+    assert before(base, TraceTable.EVALUATIONS, "decision_time") == before(
+        added, TraceTable.EVALUATIONS, "decision_time"
+    )
+    assert len(_fills(added)) == len(_fills(base)) + 1
+
+
+def test_a_stop_gap_is_processed_before_a_waiting_market_order() -> None:
+    """D06 §18.4 の順 1・順 2（第 3 巡のレビューの指摘）: 同じ再開の分では、
+    既存の建玉のギャップの損切りを、
+    待っていた成行（新規・戦略の決済）の約定より先に処理する。"""
+    from types import SimpleNamespace
+    from typing import Any
+
+    from odyssey_fx.backtest.domain.orders import OrderSide, ScheduledOpen
+    from odyssey_fx.backtest.domain.positions import ProtectionState
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.marketdata.domain.bar import BarKey
+    from tests.fixtures.backtest.harness import COST_MODEL, EXECUTION_SERIES
+
+    minute = _at("20:33")
+    key = BarKey(series=EXECUTION_SERIES, bar_start=_at("20:30"))
+    position = SimpleNamespace(
+        side=OrderSide.BUY,
+        protection=ProtectionState(
+            version=1,
+            stop_loss=_price("149.000"),
+            effective_from=BarKey(series=EXECUTION_SERIES, bar_start=DECISION),
+        ),
+    )
+    order = SimpleNamespace(
+        execution=SimpleNamespace(eligibility=ScheduledOpen(bar_key=key, open_time=_at("20:30"))),
+        is_entry=False,
+    )
+    calls: list[str] = []
+    engine: Any = object.__new__(BacktestEngine)
+    engine._minutes = SimpleNamespace(
+        resumption_at=lambda moment: SimpleNamespace(unrecorded_minutes=3),
+        minute_bar_at=lambda moment: None,
+    )
+    engine._execution = SimpleNamespace(
+        open_of=lambda bar_key: _price("148.620"),
+        bar=lambda bar_key: SimpleNamespace(first_observed_at=minute),
+    )
+    engine._cost_model = COST_MODEL
+    engine._context = SimpleNamespace(
+        ledger=SimpleNamespace(
+            open_positions=lambda: [position] if "stop" not in calls else [],
+            pending_orders=lambda: [order],
+        )
+    )
+    engine._close_at_open = lambda *args, **kwargs: calls.append("stop")
+    engine._fill_strategy_close = lambda *args, **kwargs: calls.append("close_order")
+    engine._fill_entry = lambda *args, **kwargs: calls.append("entry")
+    engine._record_snapshot = lambda at: None
+    engine._phase_execution_open(SimpleNamespace(next=lambda phase: None), key)
+    assert calls == ["stop", "close_order"]
