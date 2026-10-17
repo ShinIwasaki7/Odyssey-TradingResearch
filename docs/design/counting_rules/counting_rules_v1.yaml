@@ -26,7 +26,7 @@ calendar:
   holiday_exceptions:
     file: tools/survey/oanda_holiday_exceptions_2026-10-16.json
     sha256: 2c85a0936fa0c377568fa054f02268779cfaceeb4371c1ddf65e312af6186604
-  declared_as: null  # どの識別と版のカレンダーとして宣言するか（要決定 D12-93。Y4）。中身は上の 2 つの和
+  declared_as: null  # どの識別と版のカレンダーとして宣言するか（要決定 D12-93。Y4）。中身は上の 2 つの和集合（版 2 より広いクリスマスの 4 日は取引日単位の休場に置き換える。D03 §15.6 の 1 (v)）
 
 minute_status_order: [closed, acquisition_shortfall, recorded, unrecorded]  # D03 §15.2。1 分に 1 つ、この順に判定
 
