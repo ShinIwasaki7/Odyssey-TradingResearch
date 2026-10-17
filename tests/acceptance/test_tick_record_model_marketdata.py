@@ -13,7 +13,7 @@ as-of ビュー・公開フィード・`build_mt5_run_parts` で読む。値は�
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -33,7 +33,7 @@ from odyssey_fx.marketdata.application.publication import (
     build_feed,
     build_publication_log,
 )
-from odyssey_fx.marketdata.application.read_readiness import read_resets
+from odyssey_fx.marketdata.application.read_readiness import ReadReset, read_resets
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
@@ -522,39 +522,10 @@ def _read(view: AsOfView, spec: ReadWindowSpec, at: UtcTime) -> object:
     return view.history(HOURLY, window, at, end_offset_bars=spec.exclude_latest_bars)
 
 
-@pytest.mark.parametrize(
-    "run",
-    [
-        # run の開始前（01-20 22:00Z）に起きて run の中まで影響する全分無記録の 1 日。
-        _span("2026-01-21T06:00:00Z", "2026-01-23T00:00:00Z"),
-        # 日中の 2 本（11:00・12:00 の 1 時間足）だけの全分無記録。
-        _span("2026-01-08T06:00:00Z", "2026-01-09T00:00:00Z"),
-    ],
-)
-@pytest.mark.parametrize("spec", _SPECS, ids=lambda spec: f"{spec.kind.value}-{spec.sort_key()}")
-def test_history_resets_match_the_runtime_reads(
-    tmp_path: Path, spec: ReadWindowSpec, run: Interval
+def _assert_rows_match_reads(
+    view: AsOfView, spec: ReadWindowSpec, rows: Sequence[ReadReset], run: Interval
 ) -> None:
-    """D12-127（人間の決定の原文は D12 §0.1.30.1）: 本数窓・末尾から除く本数のある本数窓・経過時間の
-    窓・最新足だけの 4 種で、実行時の読み取りの準備不足の判定と表22 の記録が一致する。
-
-    - 実行時に準備不足（`WARMUP_INSUFFICIENT`）を返す時刻は、どれかの行の
-      `[insufficient_from, ready_at)` の中にある。
-    - 行の期間の中では読み取りは足を返さず、期間の外では足を返す。
-    - 各行の `insufficient_from` で準備不足を返し、`ready_at` で足を返し、その直前は返さない。
-    """
-    pending, snapshot = _snapshot(tmp_path)
-    view = _view(pending, snapshot)
-    observation = Mt5Observation.from_snapshot(snapshot)
-    assert observation is not None
-    rows = read_resets(
-        _schedules(snapshot)[HOURLY],
-        spec,
-        _bars_of(pending)[HOURLY],
-        observation.no_record[HOURLY],
-        run,
-    )
-    assert rows
+    """実行時の読み取りの判定と表22 の行が一致すること（D12-127・D12-128）。"""
     tiny = timedelta(microseconds=1)
     warmup = MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
 
@@ -594,6 +565,42 @@ def test_history_resets_match_the_runtime_reads(
     assert all(row.ready_at is None or row.ready_at > run.start for row in rows)
 
 
+@pytest.mark.parametrize(
+    "run",
+    [
+        # run の開始前（01-20 22:00Z）に起きて run の中まで影響する全分無記録の 1 日。
+        _span("2026-01-21T06:00:00Z", "2026-01-23T00:00:00Z"),
+        # 日中の 2 本（11:00・12:00 の 1 時間足）だけの全分無記録。
+        _span("2026-01-08T06:00:00Z", "2026-01-09T00:00:00Z"),
+    ],
+)
+@pytest.mark.parametrize("spec", _SPECS, ids=lambda spec: f"{spec.kind.value}-{spec.sort_key()}")
+def test_history_resets_match_the_runtime_reads(
+    tmp_path: Path, spec: ReadWindowSpec, run: Interval
+) -> None:
+    """D12-127（人間の決定の原文は D12 §0.1.30.1）: 本数窓・末尾から除く本数のある本数窓・経過時間の
+    窓・最新足だけの 4 種で、実行時の読み取りの準備不足の判定と表22 の記録が一致する。
+
+    - 実行時に準備不足（`WARMUP_INSUFFICIENT`）を返す時刻は、どれかの行の
+      `[insufficient_from, ready_at)` の中にある。
+    - 行の期間の中では読み取りは足を返さず、期間の外では足を返す。
+    - 各行の `insufficient_from` で準備不足を返し、`ready_at` で足を返し、その直前は返さない。
+    """
+    pending, snapshot = _snapshot(tmp_path)
+    view = _view(pending, snapshot)
+    observation = Mt5Observation.from_snapshot(snapshot)
+    assert observation is not None
+    rows = read_resets(
+        _schedules(snapshot)[HOURLY],
+        spec,
+        _bars_of(pending)[HOURLY],
+        observation.no_record[HOURLY],
+        run,
+    )
+    assert rows
+    _assert_rows_match_reads(view, spec, rows, run)
+
+
 def test_history_resets_cover_duration_window_reads_in_the_run(tmp_path: Path) -> None:
     """D12-112（第 4 巡の指摘）: 経過時間の窓だけで読む系列も表22・run manifest の件数に載る。
     経過時間は本数に換算せず `window_duration` に持つ（D12-127）。"""
@@ -629,3 +636,37 @@ def test_history_resets_cover_duration_window_reads_in_the_run(tmp_path: Path) -
     assert duration_rows
     assert {row.window_duration for row in duration_rows} == {timedelta(hours=30)}
     assert all(row.window_bars is None for row in duration_rows)
+
+
+def test_one_no_record_bar_can_make_two_insufficient_periods(tmp_path: Path) -> None:
+    """D12-128（人間の決定の原文は D12 §0.1.30.3）: 1 時間足 10:00〜11:00 だけが全分無記録で「3
+    本窓・
+    末尾 2 本除外」で読むと、不足期間は 11:00〜12:00（基準の足が無記録）と
+    13:00〜16:00（窓が無記録の足を
+    含む）の 2 つで、不足期間 1 つに 1 行。読める 12:00〜13:00 は不足にしない。
+    主キーは不足になる時刻を
+    含むので重ならない。"""
+    table = m5.write_rule_files(tmp_path)
+    rows_in = m5.minute_rows(
+        CALENDAR,
+        _span("2026-01-04T22:00:00Z", "2026-01-09T22:00:00Z"),
+        unrecorded=(_span("2026-01-08T10:00:00Z", "2026-01-08T11:00:00Z"),),
+    )
+    pending = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, rows_in)])
+    snapshot = m5.readable(pending)
+    observation = Mt5Observation.from_snapshot(snapshot)
+    assert observation is not None
+    spec = ReadWindowSpec(kind=ReadKind.BARS, bars=3, exclude_latest_bars=2)
+    run = _span("2026-01-08T06:00:00Z", "2026-01-09T00:00:00Z")
+    rows = read_resets(
+        _schedules(snapshot)[HOURLY],
+        spec,
+        _bars_of(pending)[HOURLY],
+        observation.no_record[HOURLY],
+        run,
+    )
+    assert [(row.no_record_bar_start, row.insufficient_from, row.ready_at) for row in rows] == [
+        (_t("2026-01-08T10:00:00Z"), _t("2026-01-08T11:00:00Z"), _t("2026-01-08T12:00:00Z")),
+        (_t("2026-01-08T10:00:00Z"), _t("2026-01-08T13:00:00Z"), _t("2026-01-08T16:00:00Z")),
+    ]
+    _assert_rows_match_reads(_view(pending, snapshot), spec, rows, run)

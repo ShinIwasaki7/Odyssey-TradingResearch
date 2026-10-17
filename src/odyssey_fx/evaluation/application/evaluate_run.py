@@ -330,6 +330,8 @@ _PRIMARY_KEYS: Final[dict[TraceTable, tuple[str, ...]]] = {
         "window_bars",
         "exclude_latest_bars",
         "window_duration",
+        # D12-128: 同じ無記録の足・同じ窓から不足期間が 2 つ以上生じうるので、不足になる時刻も鍵。
+        "insufficient_from",
     ),
 }
 

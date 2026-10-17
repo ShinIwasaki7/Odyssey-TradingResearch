@@ -171,7 +171,8 @@ class HistoryResetRow:
     （`window_bars`。本数窓だけ）・末尾から除く本数（`exclude_latest_bars`）・経過時間
     （`window_duration`。経過時間の窓だけ）で区別する。経過時間の窓を本数に換算しない。
     主キーは `(series, no_record_bar_key, window_kind, window_bars, exclude_latest_bars,
-    window_duration)`。
+    window_duration, insufficient_from)`（D12-128: 同じ無記録の足・同じ窓から不足期間が 2 つ以上
+    生じうるので、不足期間 1 つに 1 行）。
 
     `insufficient_from` はこの無記録の足のせいで読み取りが初めて準備不足を返す時刻、`ready_bar_key`
     / `ready_at` は読み取りが実際に足を返すようになる時の期待される最新足とその時刻（後に続く無記録

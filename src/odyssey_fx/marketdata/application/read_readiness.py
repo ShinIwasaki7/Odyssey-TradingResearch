@@ -35,7 +35,10 @@ _TINY = timedelta(microseconds=1)
 
 @dataclass(frozen=True, slots=True)
 class ReadReset:
-    """表22 の 1 行の中身（系列と窓は呼び出し側が持つ）。"""
+    """表22 の 1 行の中身（系列と窓は呼び出し側が持つ）。
+
+    不足期間 1 つに 1 行（D12-128）。同じ無記録の足でも、間に読める期間を挟めば別の行になる。
+    """
 
     no_record_bar_start: UtcTime
     insufficient_from: UtcTime
