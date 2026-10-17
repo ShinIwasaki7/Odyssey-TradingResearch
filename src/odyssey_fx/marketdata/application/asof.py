@@ -312,6 +312,10 @@ class AsOfView:
         if bars_view.starts_before_data(series, expected.bar_start):
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         if self._is_no_record(series, expected.bar_start):
+            # 予定の公開時刻より前は、作られた足が未公開のときと同じ答え（未来を読まない。D03
+            # §15.7）。
+            if not self._scheduled_end_passed(series, expected.bar_start, at):
+                return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         bars_view.require_covered(series, expected.bar_start)
         found = self._first_visible(series, expected.bar_start, at)
@@ -405,6 +409,8 @@ class AsOfView:
         if bars_view.starts_before_data(series, base_bar_start):
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         if self._is_no_record(series, base_bar_start):
+            if not self._scheduled_end_passed(series, base_bar_start, at):
+                return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         bars_view.require_covered(series, base_bar_start)
         if self._first_visible(series, base_bar_start, at) is None:
@@ -508,10 +514,14 @@ class AsOfView:
             # 区別する（上位設計書 §4.3.10）。
             if bars_view.starts_before_data(series, start):
                 return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            # 全分無記録の足を含む窓は準備不足（D03 §15.7、D12-84・D12-90 (a)）。
-            if self._is_no_record(series, start):
+            # 全分無記録の足を含む窓は準備不足（D03 §15.7、D12-84・D12-90 (a)）。ただしその足の
+            # 予定の公開時刻より前は、未公開の足と同じく入力不足のまま（未来を読まない）。
+            if self._is_no_record(series, start) and self._scheduled_end_passed(series, start, at):
                 return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         for start in wanted:
+            if self._is_no_record(series, start):
+                # まだ公開されていない無記録の足。snapshot の範囲の中なので構造エラーにしない。
+                return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
             bars_view.require_covered(series, start)
         visibility = self._series_visibility(series)
         collected: list[Bar] = []

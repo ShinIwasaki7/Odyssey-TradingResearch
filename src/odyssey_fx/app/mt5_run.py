@@ -36,7 +36,7 @@ from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleMark, TimeRuleTable, TimeRuleTableRef
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, ResolvedMarketSource
-from odyssey_fx.strategy.declarations.read_spec import BarsWindow, HistoryWindow
+from odyssey_fx.strategy.declarations.read_spec import BarsWindow, DurationWindow, HistoryWindow
 
 __all__ = [
     "DEFAULT_APPROVED_LIST",
@@ -116,6 +116,20 @@ def strategy_windows(compiled: CompiledStrategy) -> dict[SeriesId, set[int]]:
     ビューが同じ規則で行う）。
     """
     out: dict[SeriesId, set[int]] = {}
+    for series, windows in strategy_reads(compiled).items():
+        counts = {item for item in windows if isinstance(item, int)}
+        if counts:
+            out[series] = counts
+    return out
+
+
+def strategy_reads(compiled: CompiledStrategy) -> dict[SeriesId, set[int | timedelta]]:
+    """戦略が読む市場データの系列と、その窓（本数、または経過時間）。
+
+    能力検査の取得不足の照合と被覆の報告は、経過時間の窓だけで読む系列も含めてここから作る
+    （D06 §18.9 の 2・4）。
+    """
+    out: dict[SeriesId, set[int | timedelta]] = {}
     for component in compiled.components:
         for plan in component.input_plans.values():
             for source in plan.sources:
@@ -126,13 +140,16 @@ def strategy_windows(compiled: CompiledStrategy) -> dict[SeriesId, set[int]]:
                 read = plan.read_spec
                 if isinstance(read, HistoryWindow):
                     offset = read.exclude_latest_bars
+                item: int | timedelta
                 if window is None:
-                    count = 1
+                    item = 1
                 elif isinstance(window, BarsWindow) and isinstance(window.count, int):
-                    count = window.count + offset
-                else:
+                    item = window.count + offset
+                elif isinstance(window, DurationWindow):
+                    item = window.duration
+                else:  # pragma: no cover - コンパイラが解決済みの窓だけを渡す
                     continue
-                out.setdefault(source.series, set()).add(count)
+                out.setdefault(source.series, set()).add(item)
     return out
 
 
@@ -370,15 +387,27 @@ def build_mt5_run_parts(
                 observation, series, minute_series, run_interval, bars_of.get(series, ())
             )
         )
-    for series, windows in sorted(
-        strategy_windows(compiled).items(), key=lambda item: str(item[0])
-    ):
+    for series, reads in sorted(strategy_reads(compiled).items(), key=lambda item: str(item[0])):
         if series in executed:
             continue
         schedule = schedules.get(series)
         if schedule is None:
             continue
-        start = _lookback_start(schedule, run_interval.start, max(windows))
+        counts = [item for item in reads if isinstance(item, int)]
+        durations = [item for item in reads if isinstance(item, timedelta)]
+        starts = [run_interval.start]
+        if counts:
+            starts.append(_lookback_start(schedule, run_interval.start, max(counts)))
+        if durations:
+            # 経過時間の窓は末尾の足の終わりから遡るので、足 1 本ぶんの余裕を足して数える。
+            starts.append(
+                _lookback_start(
+                    schedule,
+                    run_interval.start - max(durations),
+                    1,
+                )
+            )
+        start = min(starts, key=lambda value: value.value)
         reports.append(
             _series_report(
                 observation,

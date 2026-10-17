@@ -14,9 +14,11 @@ as-of ビュー・公開フィード・`build_mt5_run_parts` で読む。値は�
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
-from odyssey_fx.app.mt5_run import build_mt5_run_parts
+from odyssey_fx.app.mt5_run import build_mt5_run_parts, strategy_reads
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
@@ -30,6 +32,8 @@ from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.readiness import ScheduledBar, history_resets
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource
+from odyssey_fx.strategy.declarations.read_spec import DurationWindow
 from tests.fixtures.backtest.harness import EXECUTION_SERIES, compiled_strategy
 from tests.fixtures.mt5 import market as m5
 from tests.fixtures.synthetic import market
@@ -248,3 +252,57 @@ def test_c7_a_bar_is_not_readable_before_its_publication_time(tmp_path: Path) ->
         if event.kind is PublicationKind.PUBLICATION and event.series.timeframe.id == "1m"
     ]
     assert daily_publications == []  # 1 分足は戦略へ配送しない（D06 §18.2）
+
+
+def test_c7_a_no_record_bar_is_not_known_before_its_scheduled_publication(tmp_path: Path) -> None:
+    """C-7（D03 §15.7・§15.5。第 1 巡のレビューの指摘）:
+    全分無記録の足が準備不足として見えるのは、その足の
+    予定の公開時刻（区間の終わり＋通常遅延）以後だけ。それより前は、作られた足が未公開のときと同じ答え
+    （最新足は `LATEST_BAR_UNAVAILABLE`、窓は `INPUT_MISSING_OR_INVALID`）で、
+    記録の有無を先に知らせない。"""
+    pending, snapshot = _snapshot(tmp_path)
+    delayed = {
+        series: replace(schedule, normal_publication_delay=timedelta(minutes=5))
+        for series, schedule in _schedules(snapshot).items()
+    }
+    view = AsOfView(
+        snapshot=snapshot,
+        allowed_partitions=frozenset(pending.partition_bars),
+        schedules=delayed,
+        partition_bars=pending.partition_bars,
+    )
+    bar_end = _t("2026-01-21T22:00:00Z")
+    before = bar_end + timedelta(minutes=4)
+    assert view.latest_available(DAILY, before) == MissingInput(
+        MissingInputReason.LATEST_BAR_UNAVAILABLE
+    )
+    assert view.history(DAILY, BarsWindow(3), before) == MissingInput(
+        MissingInputReason.INPUT_MISSING_OR_INVALID
+    )
+    after = bar_end + timedelta(minutes=5)
+    warmup = MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+    assert view.latest_available(DAILY, after) == warmup
+    assert view.history(DAILY, BarsWindow(3), after) == warmup
+
+
+def test_duration_window_reads_are_checked_for_shortfall() -> None:
+    """D06 §18.9 の 2・4（第 1 巡のレビューの指摘）: 経過時間の窓だけで読む系列も、
+    能力検査の取得不足の照合と
+    被覆の報告の対象に入る（表22 の窓の本数には入れない）。"""
+    compiled = compiled_strategy()
+    component = compiled.components[0]
+    name, plan = next(iter(component.input_plans.items()))
+    duration = DurationWindow(duration=timedelta(hours=30))
+    changed_plan = replace(plan, resolved_window=duration)
+    changed = replace(
+        compiled,
+        components=(
+            replace(component, input_plans={**component.input_plans, name: changed_plan}),
+            *compiled.components[1:],
+        ),
+    )
+    series = next(
+        source.series for source in plan.sources if isinstance(source, ResolvedMarketSource)
+    )
+    reads = strategy_reads(changed)
+    assert timedelta(hours=30) in reads[series]
