@@ -52,9 +52,26 @@ log "Python と MetaTrader5 のパッケージを入れる"
 ssm_ps "$INSTANCE_ID" 1800 "$work/py.ps1"
 
 # AWS CLI v2（py.ps1 は Python が入っていれば途中で終わるので、別のスクリプトにする）。
+# 人間の決定 2026-10-17 の③④（D12 付録 K-18）: 正常に動く 2.x が入っていれば入れ直さない。新しく入れるのは
+# 2.38.1 に固定。どちらの場合も、実際に使う正確な版をログに残す。msiexec の 3010（導入済み・再起動が必要）は
+# 通常の失敗と区別して表示し、ここで止める（自動の再起動・続行はしない）。
 awscli_install_ps >"$work/awscli.ps1"
-log "AWS CLI v2 を入れる（既に入っていれば入れない）"
-ssm_ps "$INSTANCE_ID" 900 "$work/awscli.ps1"
+log "AWS CLI v2 を入れる（正常に動く 2.x が既に入っていれば入れない）"
+if ! awscli_out=$(ssm_ps "$INSTANCE_ID" 900 "$work/awscli.ps1"); then
+  printf '%s\n' "$awscli_out"
+  if [[ "$awscli_out" == *AWSCLI_RESTART_REQUIRED* ]]; then
+    die "AWS CLI v2 は導入済み・再起動が必要（msiexec の終了コード 3010。導入の失敗ではない）。自動では再起動も続行もしない。人間が Windows を再起動した後に、20_prepare.sh --execute をもう一度実行する（入っていれば入れ直さずに先へ進む）"
+  fi
+  die "AWS CLI v2 の導入に失敗した（上の出力を確かめる）。準備を止めた"
+fi
+printf '%s\n' "$awscli_out"
+awscli_ver=$(printf '%s\n' "$awscli_out" | grep -oE 'aws-cli/[0-9]+\.[0-9]+\.[0-9]+' | tail -n 1 || true)
+[[ -n "$awscli_ver" ]] || die "AWS CLI の版を出力から読めない（上の出力を確かめる）"
+if [[ "$awscli_out" == *"already installed"* ]]; then
+  log "使う AWS CLI の版: ${awscli_ver}（導入済みのものを使う。入れ直していない）"
+else
+  log "使う AWS CLI の版: ${awscli_ver}（今回入れた。固定の版 ${AWSCLI_VERSION}）"
+fi
 
 # 道具を base64 で分けて送る（SSM の引数の大きさの制限のため）。
 log "試験の道具を置く"

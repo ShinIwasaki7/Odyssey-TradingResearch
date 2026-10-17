@@ -68,9 +68,11 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 | 問題（付録 K-17 の記録） | 直したこと |
 |---|---|
 | `38_full_fetch.sh` の 62 行目 `tr -dc 'a-z0-9' </dev/urandom \| head -c 8` が、毎回終了コード 141 で止まった（K-17.4 の 2）。head が読み終えると tr が強制終了の合図（SIGPIPE）を受け、`set -o pipefail` で止まる | 乱数 8 桁を `lib.sh` の `random_suffix8` で作る。`od -An -N4 -tx1 /dev/urandom \| tr -d ' \n'`（od が 4 バイトだけ読んで自分で終わり、下流の tr は入力を最後まで読む。下流が先に読むのをやめる箇所が無いので SIGPIPE は起きない）。小文字の 16 進数 8 桁で、バケット名の規則（`assert_probe_bucket` の `[a-z0-9]{8}`）に入る |
-| Windows に AWS CLI が無く、AWS Tools for PowerShell の読み込みが 300 秒超で、S3 の道具の確認（120 秒）に間に合わない見込みだった。手作業で AWS CLI v2 を入れた（K-17.4 の 1） | `20_prepare.sh` で AWS CLI v2 を入れる（`lib.sh` の `awscli_install_ps`）。`aws.exe` があり `aws --version` が `aws-cli/2.` で始まれば入れない。無ければ版を固定した MSI を取り、SHA-256 と Authenticode の署名（状態が Valid、署名者が O=Amazon Web Services, Inc.）を確かめてから `msiexec /i … /qn /norestart` で入れ、`aws --version` を確かめる。`38` の確認の 120 秒は変えていない |
-| `90_teardown.sh` の `s3api wait bucket-not-exists`（5 秒 × 20 回）が「Max attempts exceeded」で止まり、直後の head-bucket は 404 だった。もう一度実行して片付けた（K-17.6） | 自分で head-bucket を繰り返す（`lib.sh` の `wait_bucket_absent`。10 秒 × 30 回 = 5 分まで。`S3_DELETE_WAIT_SECONDS`・`S3_DELETE_WAIT_ATTEMPTS`）。404 で成功とし、毎回の応答（200・403 など）を記録する。上限まで 404 にならなければ、記録 `s3_bucket.env` を残し、残りの確認を表示してから終了コード 1 で終わる（もう一度実行すれば、404 なら記録を退避して終わる） |
+| Windows に AWS CLI が無く、AWS Tools for PowerShell の読み込みが 300 秒超で、S3 の道具の確認（120 秒）に間に合わない見込みだった。手作業で AWS CLI v2 を入れた（K-17.4 の 1） | `20_prepare.sh` で AWS CLI v2 を入れる（`lib.sh` の `awscli_install_ps`）。`aws.exe` があり `aws --version` が `aws-cli/2.` で始まれば（正常に動く 2.x なら版を問わず）入れ直さない。無ければ版を固定した MSI（2.38.1）を取り、SHA-256 と Authenticode の署名（状態が Valid、署名者が O=Amazon Web Services, Inc.）を確かめてから `msiexec /i … /qn /norestart` で入れ、`aws --version` を確かめる。どちらの場合も、実際に使う正確な版（例 `aws-cli/2.38.1`）をログに残す。msiexec の終了コード 3010 は「導入済み・再起動が必要」と通常の失敗（例 1603「導入に失敗」）と区別して表示し、準備を止める（自動の再起動・続行はしない。人間が Windows を再起動した後に `20_prepare.sh --execute` をもう一度実行する）。`38` の確認の 120 秒は変えていない |
+| `90_teardown.sh` の `s3api wait bucket-not-exists`（5 秒 × 20 回）が「Max attempts exceeded」で止まり、直後の head-bucket は 404 だった。もう一度実行して片付けた（K-17.6） | 自分で head-bucket を繰り返す（`lib.sh` の `wait_bucket_absent`。間隔 10 秒・最大 30 回。`S3_DELETE_WAIT_SECONDS`・`S3_DELETE_WAIT_ATTEMPTS`。待ちの合計は約 5 分だが、head-bucket の通信の時間を含まないので、**厳密な「5 分以内」の保証ではない**）。404 で成功とし、毎回の応答（200・403 など）を記録する。上限まで 404 にならなければ、記録 `s3_bucket.env` を残し、残りの確認を表示してから終了コード 1 で終わる（もう一度実行すれば、404 なら記録を退避して終わる） |
 | （同じ箇所で見つけた関連の不具合）以前は、片付けの最初と残りの確認で head-bucket の失敗をすべて「バケットは無い」と扱っていた。403（権限の不足など）でも記録を退避していた | `s3_bucket_state` で 200（ある）・404（無い）・それ以外（不明）を分ける。不明のときは消さず、記録を残し、残りの確認に「不明」と出して終了コード 1 |
+
+上の 4 点（削除の後の待ち方、403 などの扱い、msiexec の 3010、導入済みの AWS CLI の版）は、2026-10-17 に人間が運用規則として決めた（D12 本文 第0.1.27節に原文、付録 K-18 に規則）。403 などは「バケットの有無が不明」とし、削除の前に不明なら削除せず記録を残して異常終了、削除の後に不明なら上限まで確かめ直し、404 が無ければ記録を残して異常終了する。
 
 `wait bucket-not-exists` がどの応答で終わらなかったのか（S3 の削除の反映の遅れか、403 などか）は、K-17.6 に記録が無く、**原因は確かめていない**。直した道具は毎回の応答を記録するので、次に起きたときは原因が分かる。
 
@@ -80,12 +82,13 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 - `38_full_fetch.sh --pairs USDJPY --execute` をバケットの記録が無い状態で実行し、乱数の行を通ってバケットの作成（`s3api create-bucket`、東京リージョン）と `s3_bucket.env` の記録まで進む。修正前のスクリプトでは同じテストが終了コード 141 で失敗する（確認済み）。
 - `90_teardown.sh --execute` の分岐: 消した後に 403 → 200 → 404 で成功し記録を退避する／403 が続くと 3 回で止まり、記録を残し、残りの確認に「不明」と出して終了コード 1／最初から 404 なら消す操作をせずに記録を退避する／最初が 403 なら消さずに止まる／`--verify` で 404 を「0」と出す。修正前のスクリプトでは、偽の aws が `wait bucket-not-exists` に K-17.6 と同じ失敗を返すので、成功の分岐のテストが失敗する（確認済み）。
 - `20_prepare.sh --execute` が、AWS CLI の導入の PowerShell を SSM で 1 回送り、その中に版を固定した URL・SHA-256・署名の確認・msiexec がこの順にある。`--execute` なしでは何も送らない。
-- AWS CLI の導入の PowerShell の分岐（`pwsh` があるときだけ。GitHub Actions の ubuntu-latest で実行。作業役の Mac には `pwsh` が無いので飛ばす）: 入っていなければ取得 → SHA-256 → 署名 → msiexec の順に進む／入っていれば何もしない／SHA-256 の不一致・署名の状態が Valid でない・署名者が違うときは msiexec を呼ばずに止まる／msiexec が失敗すれば止まる。`Invoke-WebRequest`・`Get-FileHash`・`Get-AuthenticodeSignature`・`Start-Process` は偽物、Windows のパスは一時フォルダに置き換える。
+- `20_prepare.sh --execute` の応答の分岐: 3010 の応答では「導入済み・再起動が必要」と表示し、再起動の後の再実行を案内して終了コード 1 で止まり、道具の配置へ進まない／通常の失敗では「導入に失敗」と表示して止まる／成功では実際に使う版（導入済みの 2.31.7、新規の 2.38.1 の 2 例）をログに残して先へ進む。
+- AWS CLI の導入の PowerShell の分岐（`pwsh` があるときだけ。GitHub Actions の ubuntu-latest で実行。作業役の Mac には `pwsh` が無いので飛ばす）: 入っていなければ取得 → SHA-256 → 署名 → msiexec の順に進む／入っていれば何もしない／SHA-256 の不一致・署名の状態が Valid でない・署名者が違うときは msiexec を呼ばずに止まる／msiexec が失敗（1603）すれば「install failed」で止まる／3010 では `AWSCLI_RESTART_REQUIRED` の行を出して止まり、版の確認へ進まない。`Invoke-WebRequest`・`Get-FileHash`・`Get-AuthenticodeSignature`・`Start-Process` は偽物、Windows のパスは一時フォルダに置き換える。
 
 ### 実環境（AWS・Windows）では未確認の範囲
 
 - 実際の S3 の削除の後の head-bucket の応答の並びと、10 秒 × 30 回で 404 を確かめられるか。AWS CLI v2 のエラー文の形（`(404)`・`Not Found`）は偽の aws が真似ただけ。
-- Windows Server 2022 の Windows PowerShell 5.1（SSM の `AWS-RunPowerShellScript`）での導入のスクリプトの動作。本物の `Get-AuthenticodeSignature` の Subject の書式（`O=` の値が引用符付きか否かの両方を受けるようにした）、msiexec の終了コード（3010 の「再起動が要る」も失敗と扱う）、SSM の 900 秒の制限で足りるか。
+- Windows Server 2022 の Windows PowerShell 5.1（SSM の `AWS-RunPowerShellScript`）での導入のスクリプトの動作。本物の `Get-AuthenticodeSignature` の Subject の書式（`O=` の値が引用符付きか否かの両方を受けるようにした）、本物の msiexec が 3010 を返す条件と、そのときの SSM の出力に `AWSCLI_RESTART_REQUIRED` の行が残るか、SSM の 900 秒の制限で足りるか。
 - MSI の SHA-256 は Mac で取得して計算しただけで、この道具で Windows に入れてはいない（K-17.4 の 1 の手作業の記録と値が一致することだけ確かめた）。
 - `38_full_fetch.sh` のバケットの作成より後（SSM・S3 への置き方・回収）は今回変えておらず、今回のテストでも通していない（K-17 の実施で動いた）。
 

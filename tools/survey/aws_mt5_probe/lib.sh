@@ -41,7 +41,8 @@ readonly S3_BUCKET_PREFIX="${PROBE_NAME}-"
 readonly S3_KEY_PREFIX="full"
 # S3 の一時バケットを消した後、消えた（head-bucket が 404）と確かめるまでの待ち方（90_teardown.sh）。
 # 付録 K-17.6: `s3api wait bucket-not-exists`（5 秒 × 20 回）は「Max attempts exceeded」で止まったが、
-# 直後の head-bucket は 404 だった。間隔 10 秒 × 30 回（5 分）に延ばし、毎回の応答を記録する。
+# 直後の head-bucket は 404 だった。間隔 10 秒 × 最大 30 回に延ばし、毎回の応答を記録する（人間の決定 2026-10-17 の①。
+# D12 付録 K-18）。待ちの合計は約 5 分だが、head-bucket の通信の時間を含まないので、厳密な「5 分以内」の保証ではない。
 readonly S3_DELETE_WAIT_SECONDS="${S3_DELETE_WAIT_SECONDS:-10}"
 readonly S3_DELETE_WAIT_ATTEMPTS="${S3_DELETE_WAIT_ATTEMPTS:-30}"
 
@@ -263,7 +264,13 @@ if (\$have) {
   if (-not (\$subject.Contains('O=${AWSCLI_SIGNER_ORG}') -or \$subject.Contains('O="${AWSCLI_SIGNER_ORG}"'))) { throw "AWS CLI MSI signer: \$subject" }
   "aws-cli msi: sha256 ok, signature Valid (\$subject)"
   \$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', \$msi, '/qn', '/norestart' -Wait -PassThru
-  if (\$p.ExitCode -ne 0) { throw "msiexec exit \$(\$p.ExitCode)" }
+  if (\$p.ExitCode -eq 3010) {
+    # 3010 は「導入は成功、完了には再起動が必要」。通常の失敗と区別して表示し、自動の再起動・続行はしない
+    # （人間の決定 2026-10-17 の③。D12 付録 K-18）。20_prepare.sh がこの行を見て再起動の後の再実行を案内する。
+    'AWSCLI_RESTART_REQUIRED: msiexec exit 3010 (installed, restart required). Not restarting or continuing automatically.'
+    throw 'msiexec exit 3010: installed, restart required'
+  }
+  if (\$p.ExitCode -ne 0) { throw "msiexec exit \$(\$p.ExitCode): install failed" }
   Remove-Item -LiteralPath \$msi
   if (-not (Test-Path -LiteralPath \$cli)) { throw "aws.exe not found after install: \$cli" }
   \$have = (& \$cli --version | Out-String).Trim()
@@ -289,7 +296,9 @@ ssm_ps() {
   local id="$1" timeout="$2" file="$3" params cmd_id status out err
   params=$("$PY_MAC" -I -c 'import json,sys; print(json.dumps({"commands": open(sys.argv[1], encoding="utf-8").read().splitlines(), "executionTimeout": [sys.argv[2]]}))' "$file" "$timeout")
   cmd_id=$(aws_p ssm send-command --instance-ids "$id" --document-name "AWS-RunPowerShellScript" \
-    --timeout-seconds 600 --parameters "$params" --query "Command.CommandId" --output text)
+    --timeout-seconds 600 --parameters "$params" --query "Command.CommandId" --output text) || true
+  # 呼び出し側が $(...) や if の中で使うと set -e が効かないので、送れなかったときに状態の確認を回し続けないよう、ここで止める。
+  [[ -n "$cmd_id" && "$cmd_id" != "None" ]] || { log "SSM のコマンドを送れなかった"; return 1; }
   status="Pending"
   while [[ "$status" == "Pending" || "$status" == "InProgress" || "$status" == "Delayed" ]]; do
     sleep 3

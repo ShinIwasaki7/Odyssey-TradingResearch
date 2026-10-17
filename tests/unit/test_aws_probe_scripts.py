@@ -110,8 +110,16 @@ elif cmd == "ssm send-command":
         sys.exit(2)
     print(f"cmd-{n}")
 elif cmd == "ssm get-command-invocation":
+    # AWS CLI の導入のスクリプト（AWSCLIV2 を含む）だけ、
+    # scenario の awscli_status・awscli_out で応答する
+    n = int(opt("--command-id").split("-")[1])
+    sent = (d / f"ssm_{n:03d}.json").read_text(encoding="utf-8")
+    status, out = "Success", "ok"
+    if "AWSCLIV2" in sent:
+        status = sc.get("awscli_status", "Success")
+        out = sc.get("awscli_out", "aws-cli: already installed, skip: aws-cli/2.38.1 Python/3.13")
     q = opt("--query")
-    print({"Status": "Success", "StandardOutputContent": "ok"}.get(q, "None"))
+    print({"Status": status, "StandardOutputContent": out}.get(q, "None"))
 else:
     print("unexpected aws call: " + " ".join(args), file=sys.stderr)
     sys.exit(2)
@@ -514,4 +522,85 @@ def test_awscli_ps_refuses_to_install_an_unverified_msi(
 def test_awscli_ps_fails_when_msiexec_fails(tmp_path: Path) -> None:
     r, log = _run_awscli_ps(tmp_path, msi_exit=1603)
     assert r.returncode != 0
-    assert "msiexec exit 1603" in r.stdout + r.stderr
+    assert "msiexec exit 1603: install failed" in r.stdout + r.stderr
+    assert "AWSCLI_RESTART_REQUIRED" not in r.stdout  # 通常の失敗は再起動が必要とは表示しない
+
+
+@needs_bash
+@needs_pwsh
+def test_awscli_ps_stops_on_3010_and_reports_restart_required(tmp_path: Path) -> None:
+    # 人間の決定 2026-10-17 の③: 3010 は「導入済み・再起動が必要」と区別して表示し、止まる
+    r, log = _run_awscli_ps(tmp_path, msi_exit=3010)
+    assert r.returncode != 0
+    assert "AWSCLI_RESTART_REQUIRED: msiexec exit 3010 (installed, restart required)" in r.stdout
+    assert "msiexec exit 3010: installed, restart required" in r.stdout + r.stderr
+    assert "aws-cli: installed:" not in r.stdout  # 続行して版の確認へ進まない
+    assert sum(x.startswith("install ") for x in log) == 1  # 入れ直し・再起動の操作をしない
+
+
+# --- 20_prepare.sh の側（SSM の応答を偽の aws で返す） ---
+
+
+def _prepare_with(tmp_path: Path, scenario: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    env = _env(tmp_path, scenario)
+    _write_state(tmp_path)
+    return _run("20_prepare.sh", ["--execute"], env)
+
+
+def _sent_after_awscli(tmp_path: Path) -> list[str]:
+    scripts = _prepare_scripts(tmp_path)
+    i = next(k for k, s in enumerate(scripts) if "AWSCLIV2" in s)
+    return scripts[i + 1 :]
+
+
+@needs_bash
+def test_prepare_stops_on_3010_and_guides_a_human_restart(tmp_path: Path) -> None:
+    out = (
+        "AWSCLI_RESTART_REQUIRED: msiexec exit 3010 (installed, restart required). "
+        "Not restarting or continuing automatically."
+    )
+    r = _prepare_with(tmp_path, {"awscli_status": "Failed", "awscli_out": out})
+    assert r.returncode == 1
+    assert "導入済み・再起動が必要（msiexec の終了コード 3010。導入の失敗ではない）" in r.stderr
+    assert "自動では再起動も続行もしない" in r.stderr
+    assert "人間が Windows を再起動した後に、20_prepare.sh --execute をもう一度実行する" in r.stderr
+    assert "導入に失敗した" not in r.stderr
+    assert _sent_after_awscli(tmp_path) == []  # 道具の配置などへ続行しない
+    calls = _calls(tmp_path)
+    assert not any("reboot" in " ".join(c).lower() for c in calls)  # 再起動の操作をしない
+
+
+@needs_bash
+def test_prepare_stops_on_an_ordinary_install_failure(tmp_path: Path) -> None:
+    r = _prepare_with(
+        tmp_path, {"awscli_status": "Failed", "awscli_out": "msiexec exit 1603: install failed"}
+    )
+    assert r.returncode == 1
+    assert "AWS CLI v2 の導入に失敗した" in r.stderr
+    assert "再起動が必要" not in r.stderr
+    assert _sent_after_awscli(tmp_path) == []
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("awscli_out", "expected"),
+    [
+        (
+            "aws-cli: already installed, skip: aws-cli/2.31.7 Python/3.13 Windows/2022",
+            "使う AWS CLI の版: aws-cli/2.31.7（導入済みのものを使う。入れ直していない）",
+        ),
+        (
+            "aws-cli msi: sha256 ok, signature Valid (CN=x)\n"
+            "aws-cli: installed: aws-cli/2.38.1 Python/3.13 Windows/2022",
+            "使う AWS CLI の版: aws-cli/2.38.1（今回入れた。固定の版 2.38.1）",
+        ),
+    ],
+)
+def test_prepare_logs_the_exact_awscli_version_in_use(
+    tmp_path: Path, awscli_out: str, expected: str
+) -> None:
+    # 人間の決定 2026-10-17 の④: 導入済みでも新規でも、実際に使う正確な版をログに残す
+    r = _prepare_with(tmp_path, {"awscli_out": awscli_out})
+    assert r.returncode == 0, r.stderr
+    assert expected in r.stderr
+    assert _sent_after_awscli(tmp_path)  # 版を記録した後、道具の配置へ進む
