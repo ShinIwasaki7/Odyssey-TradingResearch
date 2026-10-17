@@ -12,19 +12,29 @@ check_deadline
 assert_tagged_instance "$INSTANCE_ID"
 
 tool_sha=$(sha256_of "$PROBE_TOOL")
+autostop_at=$(( LAUNCHED_AT_EPOCH + PROBE_SHUTDOWN_SECONDS ))
+autostop_utc=$("$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$autostop_at")
 cat >&2 <<INFO
 == 準備の計画（${INSTANCE_ID}）
-  1. SSM の接続を待つ
+  1. SSM の接続を待ち、Windows の中の自動の停止を ${autostop_utc}（起動 + $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分）に予約し直す（実行のたび）
   2. Python のインストーラー（${PY_INSTALLER_URL}）を取り、SHA-256 ${PY_INSTALLER_SHA256} を確かめ、全ユーザーに入れる
   3. pip で ${MT5_PY_PACKAGE} を入れ、import できるかを確かめる（端末にはつながない）
-  4. 試験の道具 mt5_api_probe.py（SHA-256 ${tool_sha}）を C:\\probe\\ に置き、同じ SHA-256 かを確かめる
-  5. MT5 の端末: ${MT5_INSTALLER_URL:-入れない（人間が RDP の中でマイページから入れる）}
+  4. AWS CLI v2（S3 に置く道具。付録 K-17.4 の 1）: 既に入っていれば入れない。入れるときは
+     ${AWSCLI_MSI_URL} を取り、SHA-256 ${AWSCLI_MSI_SHA256} と
+     署名（有効・署名者 ${AWSCLI_SIGNER_ORG}）を確かめてから msiexec で入れる
+  5. 試験の道具 mt5_api_probe.py（SHA-256 ${tool_sha}）を C:\\probe\\ に置き、同じ SHA-256 かを確かめる
+  6. MT5 の端末: ${MT5_INSTALLER_URL:-入れない（人間が RDP の中でマイページから入れる）}
 INFO
 [[ "$EXECUTE" == 1 ]] || { echo "(dry-run) 何もしていない。" >&2; exit 0; }
 
 wait_ssm_online "$INSTANCE_ID"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+
+# 自動の停止を承認済みの時刻に予約し直す（実行のたび。再起動で消えた予約を戻す。人間の決定 2026-10-17 の (A)）。
+autostop_ps "$autostop_at" >"$work/autostop.ps1"
+log "Windows の中の自動の停止を ${autostop_utc}（起動 + $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分）に予約し直す"
+ssm_ps "$INSTANCE_ID" 120 "$work/autostop.ps1"
 
 cat >"$work/py.ps1" <<PS
 \$ErrorActionPreference = 'Stop'
@@ -47,6 +57,28 @@ if (\$LASTEXITCODE -ne 0) { throw "import MetaTrader5 failed" }
 PS
 log "Python と MetaTrader5 のパッケージを入れる"
 ssm_ps "$INSTANCE_ID" 1800 "$work/py.ps1"
+
+# AWS CLI v2（py.ps1 は Python が入っていれば途中で終わるので、別のスクリプトにする）。
+# 人間の決定 2026-10-17 の③④（D12 付録 K-18）: 正常に動く 2.x が入っていれば入れ直さない。新しく入れるのは
+# 2.38.1 に固定。どちらの場合も、実際に使う正確な版をログに残す。msiexec の 3010（導入済み・再起動が必要）は
+# 通常の失敗と区別して表示し、ここで止める（自動の再起動・続行はしない）。
+awscli_install_ps >"$work/awscli.ps1"
+log "AWS CLI v2 を入れる（正常に動く 2.x が既に入っていれば入れない）"
+if ! awscli_out=$(ssm_ps "$INSTANCE_ID" 900 "$work/awscli.ps1"); then
+  printf '%s\n' "$awscli_out"
+  if [[ "$awscli_out" == *AWSCLI_RESTART_REQUIRED* ]]; then
+    die "AWS CLI v2 は導入済み・再起動が必要（msiexec の終了コード 3010。導入の失敗ではない）。自動では再起動も続行もしない。人間が Windows を再起動した後に、20_prepare.sh --execute をもう一度実行する（再実行は、再起動で消えた自動の停止を起動 + 4 時間 30 分に予約し直し、AWS CLI は入っていれば入れ直さずに先へ進む）"
+  fi
+  die "AWS CLI v2 の導入に失敗した（上の出力を確かめる）。準備を止めた"
+fi
+printf '%s\n' "$awscli_out"
+awscli_ver=$(printf '%s\n' "$awscli_out" | grep -oE 'aws-cli/[0-9]+\.[0-9]+\.[0-9]+' | tail -n 1 || true)
+[[ -n "$awscli_ver" ]] || die "AWS CLI の版を出力から読めない（上の出力を確かめる）"
+if [[ "$awscli_out" == *"already installed"* ]]; then
+  log "使う AWS CLI の版: ${awscli_ver}（導入済みのものを使う。入れ直していない）"
+else
+  log "使う AWS CLI の版: ${awscli_ver}（今回入れた。固定の版 ${AWSCLI_VERSION}）"
+fi
 
 # 道具を base64 で分けて送る（SSM の引数の大きさの制限のため）。
 log "試験の道具を置く"
