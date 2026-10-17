@@ -60,6 +60,17 @@ class CheckKind(Enum):
     ZERO_VOLUME_SPAN = "ZERO_VOLUME_SPAN"
     #: DST 切替週の足数・境界が期待と異なる。
     DST_BOUNDARY_ANOMALY = "DST_BOUNDARY_ANOMALY"
+    # --- MT5 経路だけで出る 5 種（D03 §15.6 の 2）。どれも人間の分類の対象にしない。
+    #: 無記録の分の連続 1 区間（1 分足の系列）。原因を分類しない（D12-71）。
+    UNRECORDED_MINUTES = "UNRECORDED_MINUTES"
+    #: 上位足のうち、記録ありの分が 0 で作らなかった足。
+    NO_RECORD_BAR = "NO_RECORD_BAR"
+    #: 取得不足の区間と、それを含むため作らなかった上位足（理由の (a)〜(d)）。
+    ACQUISITION_SHORTFALL = "ACQUISITION_SHORTFALL"
+    #: 感度の検証の candidate の組で、変換するとカレンダーの外に出た 1 分足（系列・週・件数）。
+    CANDIDATE_OUT_OF_CALENDAR = "CANDIDATE_OUT_OF_CALENDAR"
+    #: 被覆率が 1 未満の上位足（系列ごとの件数と分布の要約。足ごとの値は partition の列）。
+    PARTIAL_COVERAGE_BAR = "PARTIAL_COVERAGE_BAR"
 
 
 #: 各検査種別の既定の重大度（D03 §3.9 の表）。
@@ -75,6 +86,11 @@ DEFAULT_SEVERITY: Mapping[CheckKind, Severity] = MappingProxyType(
         CheckKind.SOURCE_TRANSITION: Severity.INFO,
         CheckKind.ZERO_VOLUME_SPAN: Severity.INFO,
         CheckKind.DST_BOUNDARY_ANOMALY: Severity.WARN,
+        CheckKind.UNRECORDED_MINUTES: Severity.INFO,
+        CheckKind.NO_RECORD_BAR: Severity.INFO,
+        CheckKind.ACQUISITION_SHORTFALL: Severity.WARN,
+        CheckKind.CANDIDATE_OUT_OF_CALENDAR: Severity.INFO,
+        CheckKind.PARTIAL_COVERAGE_BAR: Severity.INFO,
     }
 )
 

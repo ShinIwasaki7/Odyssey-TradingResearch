@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 
+from odyssey_fx.app.mt5_run import publication_rows
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.account import AccountSpec
 from odyssey_fx.backtest.domain.policies import (
@@ -62,6 +63,7 @@ from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 from tests.fixtures.strategy.fakes import FakeMarketDataView
 from tests.fixtures.strategy.strategy_a import SIGNAL_SERIES, TIMEFRAMES, strategy_a
+from tests.fixtures.synthetic import market
 from tests.fixtures.synthetic.market import TF_15M, USDJPY, series
 from tests.fixtures.synthetic.market import calendar as build_calendar
 
@@ -415,12 +417,27 @@ def build_run(
     )
     trace_sink = CollectingTraceSink()
     result_writer = CollectingResultWriter()
+    feed = FakeFeed(signal_bars, execution_bars)
+    # 表20（公開記録。D06 §9.2 v1.11）は本番の合成と同じ関数で作る。
+    published = publication_rows(
+        feed,
+        {bar.key: bar for bar in (*signal_bars, *execution_bars)},
+        {
+            SIGNAL_SERIES: SeriesSchedule(
+                series=SIGNAL_SERIES, timeframe_def=market.TF_1H, calendar=calendar
+            ),
+            EXECUTION_SERIES: SeriesSchedule(
+                series=EXECUTION_SERIES, timeframe_def=TF_15M, calendar=calendar
+            ),
+        },
+        run_interval,
+    )
     use_case = RunBacktest(
         runtime=evaluator,
         context=context,
         output_sink=sink,
         allocator=allocator,
-        feed=FakeFeed(signal_bars, execution_bars),
+        feed=feed,
         execution_series=FakeExecutionSeries(
             execution_bars if execution_view_bars is None else execution_view_bars,
             schedule=SeriesSchedule(
@@ -445,6 +462,7 @@ def build_run(
         git_dirty=False,
         timeframe_refs=TIMEFRAME_REFS,
         intrabar_series=None if intrabar is None else FakeIntrabarSeries(intrabar),
+        publication_rows=published,
     )
     return RunSetup(
         use_case=use_case,

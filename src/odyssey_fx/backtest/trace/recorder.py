@@ -64,7 +64,8 @@ from odyssey_fx.common.ids import (
 from odyssey_fx.common.money import Money, Price, PriceOffset, Quantity
 from odyssey_fx.common.reason import Reason
 from odyssey_fx.common.refs import PolicyRef, SnapshotRef
-from odyssey_fx.common.time import Interval, PhaseRank, ProcessingPoint
+from odyssey_fx.common.time import Interval, PhaseRank, ProcessingPoint, UtcTime
+from odyssey_fx.marketdata.domain.bar import BarKey
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.declarations.refs import MarketDataField
 from odyssey_fx.strategy.records.records import OutputRecord
@@ -117,6 +118,65 @@ class TraceTable(Enum):
     INPUT_SUBSTITUTIONS = "INPUT_SUBSTITUTIONS"
     CONFIRMATION_ATTEMPTS = "CONFIRMATION_ATTEMPTS"
     VALIDITY_RECHECKS = "VALIDITY_RECHECKS"
+    #: 表20 公開記録（D06 §9.2 v1.11、MT5 経路の被覆の列は §18.10）。
+    PUBLICATIONS = "PUBLICATIONS"
+    #: 表21 再開の記録（D06 §18.10）。HistData の経路の run では 0 行。
+    RESUMPTIONS = "RESUMPTIONS"
+    #: 表22 準備のやり直し（D06 §18.10）。HistData の経路の run では 0 行。
+    HISTORY_RESETS = "HISTORY_RESETS"
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationRow:
+    """表20 の 1 行（D06 §9.2 v1.11 の `PublicationRecord` ＋ D06 §18.10 の被覆の列）。
+
+    戦略へ公開した足 1 本につき 1 行。被覆の列は MT5 経路の上位足だけが持ち、HistData の経路では
+    `None`（表の形は経路によらず同じ。D06 §18.10）。
+    """
+
+    bar_key: BarKey
+    bar_end: UtcTime
+    scheduled_at: UtcTime
+    available_at: UtcTime
+    expected_minutes: int | None = None
+    recorded_minutes: int | None = None
+    first_observed_at: UtcTime | None = None
+    last_observed_at: UtcTime | None = None
+    time_rule_row: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResumptionRow:
+    """表21 の 1 行（D06 §18.10）: 執行系列の再開の分 1 つ。
+
+    `previous_close` は直前に記録のある分の終値、`resume_open` は再開の分の始値、`gap` はその差
+    （始値 − 終値）。直前に記録のある分が無ければ（データの最初）`None`。価格は run 成果物（版管理の
+    外）にだけ残る（D07 §28.3）。
+    """
+
+    series: SeriesId
+    minute: UtcTime
+    unrecorded_from: UtcTime
+    unrecorded_minutes: int
+    resume_open: Price
+    previous_close: Price | None = None
+    gap: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryResetRow:
+    """表22 の 1 行（D06 §18.10）: 戦略が読む系列の無記録の足 1 本 × 窓の本数。
+
+    `ready_bar_key` / `ready_at`
+    は準備が実際に再び整う足とその公開時刻（データの終わりまで整わなければ
+    `None`）。
+    """
+
+    series: SeriesId
+    no_record_bar_key: BarKey
+    window_bars: int
+    ready_bar_key: BarKey | None = None
+    ready_at: UtcTime | None = None
 
 
 class EvidenceKind(Enum):
@@ -647,6 +707,9 @@ _TABLE_TYPES: Final[Mapping[TraceTable, tuple[type, tuple[tuple[str, type], ...]
         ),
     ),
     TraceTable.EVIDENCE: (EvidenceRecord, ()),
+    TraceTable.PUBLICATIONS: (PublicationRow, ()),
+    TraceTable.RESUMPTIONS: (ResumptionRow, ()),
+    TraceTable.HISTORY_RESETS: (HistoryResetRow, ()),
 }
 
 #: 型をここから参照できない11表の列。理由は2つある。

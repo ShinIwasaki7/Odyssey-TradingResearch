@@ -243,6 +243,22 @@ def _allowed_coverage(
             continue
         by_series.setdefault(partition_id.series, []).append(record.interval)
 
+    # MT5 経路（D03 §15.6 の 4）: 作られた足の範囲の外にも、snapshot
+    # の範囲の中の無記録の足（作られない
+    # 足）がありうる。系列の partition をすべて許可しているときに限り、取得の範囲（台帳の範囲）まで
+    # 覆いを広げる。許可しない partition がある系列は広げない（封印期間へ漏らさない。D03 §6.1）。
+    mt5 = snapshot.manifest.conversion.mt5
+    if mt5 is not None:
+        for series, intervals in list(by_series.items()):
+            records = [
+                record for record in snapshot.manifest.partitions if record.series_id == series
+            ]
+            if any(record.partition_id not in allowed_partitions for record in records):
+                continue
+            acquisition = mt5.acquisition_of(series.symbol)
+            if acquisition is None:
+                continue
+            by_series[series] = [*intervals, acquisition.data_interval]
     coverage: dict[SeriesId, tuple[Interval, ...]] = {}
     for series, intervals in by_series.items():
         merged: list[Interval] = []
@@ -362,6 +378,7 @@ def build_feed(
     execution_series: frozenset[SeriesId] = frozenset(),
     publication_log: PublicationLog | None = None,
     phase_ranks: Mapping[PublicationKind, PhaseRank] | None = None,
+    internal_series: frozenset[SeriesId] = frozenset(),
 ) -> PublicationFeed:
     """実行区間内の公開イベント列を組み立てる（D03 §7.1）。
 
@@ -376,6 +393,14 @@ def build_feed(
 
     `execution_series` に挙げた系列だけが執行系列のイベントを生む。`publication_log` を
     渡すとその実現時刻を使い、渡さなければ通常の公開予定（足の終了時刻＋通常遅延）を使う。
+
+    `internal_series` に挙げた系列（MT5 経路の解像度階層の 1 分足。D06 §18.2）は、約定の解決が
+    執行系列のビューの外から読む系列で、戦略へ配送しない。公開・予定境界のイベントを出さない
+    （1 分ごとに判断時点を作らない）。
+
+    **MT5 経路の `ExecutionOpen`**（D03 §15.5）: 被覆の属性を持つ執行足は、その足の最初の観測の時刻
+    （`first_observed_at`。始値の分が記録ありなら `bar_start` と同じ）に出す。全分無記録の執行足は
+    作られないので出さない。
 
     並びは `(発生時刻, イベント種別の固定順, 系列順)`。同じ時刻に複数の系列・種別が並んでも
     順序が一意に決まる。
@@ -412,6 +437,8 @@ def build_feed(
     # partition を持つ系列**に限る。実行区間に足の終了時刻が入るものを拾うため、区間の
     # 開始より1本ぶん手前から期待足を数える。
     for series in sorted(boundary_series, key=str):
+        if series in internal_series:
+            continue
         scheduled_series = schedules.get(series)
         if scheduled_series is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
@@ -435,6 +462,8 @@ def build_feed(
             )
 
     for series in readable.series():
+        if series in internal_series:
+            continue
         schedule = schedules.get(series)
         if schedule is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
@@ -449,11 +478,11 @@ def build_feed(
                 )
             if _within_run(run_interval, available):
                 events.append(Publication(series=series, bar_key=bar.key, available_at=available))
-            # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。
-            if is_execution and run_interval.contains(bar.bar_start):
-                events.append(
-                    ExecutionOpen(series=series, bar_key=bar.key, open_time=bar.bar_start)
-                )
+            # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。MT5 経路では最初の観測の
+            # 時刻に出す（D03 §15.5）。
+            open_time = bar.first_observed_at
+            if is_execution and run_interval.contains(open_time):
+                events.append(ExecutionOpen(series=series, bar_key=bar.key, open_time=open_time))
 
     ordered = tuple(
         sorted(

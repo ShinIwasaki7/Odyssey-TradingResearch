@@ -21,6 +21,7 @@ from odyssey_fx.common.time import Interval, ProcessingPoint, UtcTime
 from odyssey_fx.marketdata.domain.bar import BarKey
 
 __all__ = [
+    "GapKind",
     "BarExecutionInterval",
     "CostEntry",
     "CostKind",
@@ -120,6 +121,20 @@ class CostEntry:
             )
 
 
+class GapKind(Enum):
+    """再開の分での約定の区分（D06 §18.10 の表9 の列 `gap_kind`）。
+
+    - `STOP_GAP`: 再開の分の始値が損切りを越えた（その始値で、決済側の滑りを不利に。D06 §18.4
+    の順 1）。
+    - `TAKE_PROFIT_GAP`: 再開の分の始値が利確を越えた（利確の水準を基準価格に。D06 §18.7）。
+    - `DEFERRED_FILL`: 候補の始値の分が無記録で、待っていた成行が再開の分の始値で約定した（順 2）。
+    """
+
+    STOP_GAP = "STOP_GAP"
+    TAKE_PROFIT_GAP = "TAKE_PROFIT_GAP"
+    DEFERRED_FILL = "DEFERRED_FILL"
+
+
 @dataclass(frozen=True, slots=True)
 class FillRecord:
     """約定の事実（上位設計書 §4.7.15 C）。不変。
@@ -138,10 +153,28 @@ class FillRecord:
     quantity: Quantity
     costs: tuple[CostEntry, ...]
     evidence_ref: EvidenceRef
+    #: 再開の分での約定なら直前の無記録の分数（D06 §18.10）。そうでなければ `None`。
+    resumed_after_unrecorded_minutes: int | None = None
+    #: 再開の分での約定の区分（D06 §18.10）。そうでなければ `None`。
+    gap_kind: GapKind | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):
             raise KernelValueError("FillRecord.run_id must be a RunId")
+        if self.gap_kind is not None and not isinstance(self.gap_kind, GapKind):
+            raise KernelValueError("FillRecord.gap_kind must be a GapKind or None")
+        minutes = self.resumed_after_unrecorded_minutes
+        if minutes is not None and (
+            isinstance(minutes, bool) or not isinstance(minutes, int) or minutes < 1
+        ):
+            raise KernelValueError(
+                "FillRecord.resumed_after_unrecorded_minutes must be a positive int or None"
+            )
+        if (self.gap_kind is None) != (minutes is None):
+            raise KernelValueError(
+                "a resumption fill carries both the unrecorded minutes and the gap kind"
+                " (D06 §18.10)"
+            )
         if not isinstance(self.fill_id, FillId):
             raise KernelValueError("FillRecord.fill_id must be a FillId")
         if not isinstance(self.event_id, EventId):

@@ -97,6 +97,14 @@ def test_the_run_command_reproduces_the_engine_trace(
     assert run_id != str(output.result.run_id)
     assert output.result.status is RunStatus.COMPLETED
     for table in TraceTable:
+        if table is TraceTable.PUBLICATIONS:
+            # 表20（公開記録）は snapshot が持つ全系列の公開を載せる。エンジン直呼びの組み立ては
+            # 戦略が読む 3 系列だけを配送するので、同じ系列の行どうしで比べる（4 時間足は
+            # コマンド経由だけにある）。
+            published = {row["bar_key_series"] for row in engine[table.value]}
+            rows = [row for row in command[table.value] if row["bar_key_series"] in published]
+            assert rows == engine[table.value], table
+            continue
         assert command[table.value] == engine[table.value], table
     # 比較が空の表どうしで成り立っただけにならないよう、検証戦略 B の記録が出ていることも見る。
     assert command[TraceTable.EVALUATIONS.value]

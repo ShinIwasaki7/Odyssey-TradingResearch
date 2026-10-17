@@ -49,11 +49,16 @@ from odyssey_fx.marketdata.domain.classification import (
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRecord
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef
 
 __all__ = [
     "Approval",
     "BasisDeclaration",
     "ConversionRecord",
+    "Mt5AcquisitionRecord",
+    "Mt5ConversionRecord",
+    "Mt5FailedSpan",
+    "SeriesCoverageCounts",
     "DeclarationRecord",
     "LegacyAccessRecord",
     "LegacyObservation",
@@ -172,6 +177,119 @@ class SourceFile:
 
 
 @dataclass(frozen=True, slots=True)
+class Mt5FailedSpan:
+    """取得できなかった要求の区間（UTC）と理由（D03 §15.2 の取得不足 (b)・(d)）。"""
+
+    interval: Interval
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.interval, Interval):
+            raise MarketDataValueError("Mt5FailedSpan.interval must be an Interval")
+        _require_non_empty_str(self.reason, "Mt5FailedSpan.reason")
+
+    def payload(self) -> Mapping[str, Any]:
+        return {"interval": self.interval, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
+class Mt5AcquisitionRecord:
+    """銘柄ごとの取得の範囲（D03 §15.3 の 5）。
+
+    `data_interval` は台帳が扱う範囲（取得の範囲の最初から最後まで。その前はデータの開始前）、
+    `acquired` は取得記録の要求区間を表で UTC に直した区間の和（状態が取得済みのもの）、
+    `failed` は取得できなかった要求の区間と理由。どれも UTC。
+    """
+
+    symbol: Symbol
+    data_interval: Interval
+    acquired: tuple[Interval, ...]
+    failed: tuple[Mt5FailedSpan, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.symbol, Symbol):
+            raise MarketDataValueError("Mt5AcquisitionRecord.symbol must be a Symbol")
+        if not isinstance(self.data_interval, Interval):
+            raise MarketDataValueError("Mt5AcquisitionRecord.data_interval must be an Interval")
+        if not isinstance(self.acquired, tuple) or not all(
+            isinstance(item, Interval) for item in self.acquired
+        ):
+            raise MarketDataValueError("Mt5AcquisitionRecord.acquired must be a tuple of Interval")
+        if not isinstance(self.failed, tuple) or not all(
+            isinstance(item, Mt5FailedSpan) for item in self.failed
+        ):
+            raise MarketDataValueError(
+                "Mt5AcquisitionRecord.failed must be a tuple of Mt5FailedSpan"
+            )
+
+    def payload(self) -> Mapping[str, Any]:
+        return {
+            "acquired": self.acquired,
+            "data_interval": self.data_interval,
+            "failed": tuple(item.payload() for item in self.failed),
+            "symbol": self.symbol,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Mt5ConversionRecord:
+    """MT5 経路の変換の記録（D03 §15.6 の 4。`SnapshotId` の対象）。
+
+    経路・列対応の宣言の版・取得記録（`manifest.json`）の SHA-256・時刻の規則の表の参照（識別・版・
+    SHA-256・変換の組）・銘柄ごとの取得の範囲・週ごとの境界の検査の件数を持つ。カレンダーの識別と版と
+    集約規則の版（`m1_coverage_v1`）は `ConversionRecord` の既存の項目に書く。
+    **数え方の規則のファイルの SHA-256 は入れない**（D03 §15.6 の 4・§15.12）。
+    """
+
+    route: str
+    column_mapping: str
+    fetch_manifest_sha256: str
+    time_rule_table: TimeRuleTableRef
+    acquisitions: tuple[Mt5AcquisitionRecord, ...]
+    weeks_checked: int = 0
+    weeks_failed: int = 0
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.route, "Mt5ConversionRecord.route")
+        _require_non_empty_str(self.column_mapping, "Mt5ConversionRecord.column_mapping")
+        ContentDigest.sha256(self.fetch_manifest_sha256)
+        if not isinstance(self.time_rule_table, TimeRuleTableRef):
+            raise MarketDataValueError(
+                "Mt5ConversionRecord.time_rule_table must be a TimeRuleTableRef"
+            )
+        if not isinstance(self.acquisitions, tuple) or not all(
+            isinstance(item, Mt5AcquisitionRecord) for item in self.acquisitions
+        ):
+            raise MarketDataValueError(
+                "Mt5ConversionRecord.acquisitions must be a tuple of Mt5AcquisitionRecord"
+            )
+        normalized = tuple(sorted(self.acquisitions, key=lambda item: str(item.symbol)))
+        if normalized != self.acquisitions:
+            object.__setattr__(self, "acquisitions", normalized)
+        _require_non_negative_int(self.weeks_checked, "Mt5ConversionRecord.weeks_checked")
+        _require_non_negative_int(self.weeks_failed, "Mt5ConversionRecord.weeks_failed")
+
+    def acquisition_of(self, symbol: Symbol) -> Mt5AcquisitionRecord | None:
+        """銘柄の取得の範囲（無ければ `None`）。"""
+        for item in self.acquisitions:
+            if item.symbol == symbol:
+                return item
+        return None
+
+    def payload(self) -> Mapping[str, Any]:
+        """識別子と manifest に書く形。"""
+        return {
+            "acquisitions": tuple(item.payload() for item in self.acquisitions),
+            "column_mapping": self.column_mapping,
+            "fetch_manifest_sha256": self.fetch_manifest_sha256,
+            "route": self.route,
+            "time_rule_table": self.time_rule_table.payload(),
+            "weeks_checked": self.weeks_checked,
+            "weeks_failed": self.weeks_failed,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ConversionRecord:
     """変換の版の記録（D03 §3.7）。
 
@@ -190,6 +308,8 @@ class ConversionRecord:
     calendar_id: str
     calendar_version: int
     time_label_correction: TimeLabelCorrectionRecord | None = None
+    #: MT5 経路の記録（D03 §15.6 の 4）。HistData 経路は `None` で、識別子の対象に鍵ごと現れない。
+    mt5: Mt5ConversionRecord | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.code_version, "ConversionRecord.code_version")
@@ -212,6 +332,13 @@ class ConversionRecord:
             raise MarketDataValueError(
                 "ConversionRecord.time_label_correction must be a TimeLabelCorrectionRecord"
             )
+        if self.mt5 is not None and not isinstance(self.mt5, Mt5ConversionRecord):
+            raise MarketDataValueError("ConversionRecord.mt5 must be a Mt5ConversionRecord")
+        if self.mt5 is not None and self.time_label_correction is not None:
+            raise MarketDataValueError(
+                "the MT5 route does not apply a time label correction; its times come from the"
+                " time rule table (D03 §15.1)"
+            )
 
     def identity_payload(self) -> Mapping[str, Any]:
         """`SnapshotId` のダイジェスト対象としての形（D03 §3.7.1）。
@@ -228,7 +355,14 @@ class ConversionRecord:
         }
         if self.time_label_correction is not None:
             payload["time_label_correction"] = self.time_label_correction.payload()
+        if self.mt5 is not None:
+            payload["mt5"] = self.mt5.payload()
         return payload
+
+    @property
+    def is_mt5(self) -> bool:
+        """MT5 経路の snapshot か（D06 §18.1 の適用範囲）。"""
+        return self.mt5 is not None
 
     def with_calendar(self, calendar_id: str, calendar_version: int) -> ConversionRecord:
         """カレンダーの識別と版だけを置き換えた記録（確定段階の再実行。D03 §4 の 9）。
@@ -243,6 +377,7 @@ class ConversionRecord:
             calendar_id=calendar_id,
             calendar_version=calendar_version,
             time_label_correction=self.time_label_correction,
+            mt5=self.mt5,
         )
 
 
@@ -314,13 +449,41 @@ class PartitionRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SeriesCoverageCounts:
+    """MT5 経路の系列ごとの件数（D03 §15.6 の 4。件数だけで価格を含めない）。"""
+
+    unrecorded_minutes: int
+    shortfall_minutes: int
+    built_bars: int
+    partial_bars: int
+    no_record_bars: int
+    shortfall_bars: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "unrecorded_minutes",
+            "shortfall_minutes",
+            "built_bars",
+            "partial_bars",
+            "no_record_bars",
+            "shortfall_bars",
+        ):
+            _require_non_negative_int(getattr(self, name), f"SeriesCoverageCounts.{name}")
+
+
+@dataclass(frozen=True, slots=True)
 class SeriesManifest:
-    """系列1件の記録（D03 §3.7）。"""
+    """系列1件の記録（D03 §3.7）。
+
+    `coverage_counts` は MT5 経路だけが持つ（D03 §15.6 の 4）。HistData 経路では `None` で、
+    識別子の対象（`identity_payload`）に鍵ごと現れない（既存の snapshot の識別子は変わらない）。
+    """
 
     series_id: SeriesId
     covered_interval: Interval
     bar_count: int
     partitions: tuple[PartitionId, ...] = ()
+    coverage_counts: SeriesCoverageCounts | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.series_id, SeriesId):
@@ -342,6 +505,24 @@ class SeriesManifest:
         )
         if normalized != self.partitions:
             object.__setattr__(self, "partitions", normalized)
+        if self.coverage_counts is not None and not isinstance(
+            self.coverage_counts, SeriesCoverageCounts
+        ):
+            raise MarketDataValueError(
+                "SeriesManifest.coverage_counts must be SeriesCoverageCounts"
+            )
+
+    def identity_payload(self) -> Mapping[str, Any]:
+        """`SnapshotId` の対象の形（dataclass の符号化と同じ鍵。件数が無ければ鍵を足さない）。"""
+        payload: dict[str, Any] = {
+            "bar_count": self.bar_count,
+            "covered_interval": self.covered_interval,
+            "partitions": self.partitions,
+            "series_id": self.series_id,
+        }
+        if self.coverage_counts is not None:
+            payload["coverage_counts"] = self.coverage_counts
+        return payload
 
     def sort_key(self) -> str:
         """D03 §3.7.1 の整列鍵（`SeriesId` の文字列）。"""
@@ -535,7 +716,7 @@ class SnapshotManifest:
             "partitions": self.partitions,
             "provisional_report_ref": self.provisional_report_ref,
             "resolved_classifications": self.resolved_classifications,
-            "series": self.series,
+            "series": tuple(record.identity_payload() for record in self.series),
             "sources": self.sources,
         }
 

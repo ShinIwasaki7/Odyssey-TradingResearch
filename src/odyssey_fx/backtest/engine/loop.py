@@ -47,6 +47,7 @@ from odyssey_fx.backtest.domain.fills import (
     ExactExecutionTime,
     ExecutionTime,
     FillRecord,
+    GapKind,
 )
 from odyssey_fx.backtest.domain.orders import (
     AcceptedCloseTerms,
@@ -71,6 +72,7 @@ from odyssey_fx.backtest.domain.policies import (
     ExecutionPolicy,
     RiskPolicy,
     RunConfig,
+    SpreadModel,
 )
 from odyssey_fx.backtest.domain.positions import (
     Position,
@@ -103,8 +105,10 @@ from odyssey_fx.backtest.execution.emergency import (
 from odyssey_fx.backtest.execution.fill_model import fill_price
 from odyssey_fx.backtest.execution.protection_hits import (
     ChildBars,
+    IntrabarResolution,
     ResolutionMethod,
     resolve_intrabar,
+    touches,
 )
 from odyssey_fx.backtest.portfolio.conversion import (
     ConversionUnavailable,
@@ -129,6 +133,7 @@ from odyssey_fx.backtest.trace.recorder import (
     EvidenceRecord,
     ManagementApplication,
     MarketObservationRef,
+    ResumptionRow,
     SubstitutionOwner,
     TraceTable,
 )
@@ -208,6 +213,7 @@ __all__ = [
     "EngineContext",
     "ExecutionSeries",
     "IntrabarSeries",
+    "MinuteObservation",
     "PublicationFeed",
     "PublicationEventView",
     "TraceOutputSink",
@@ -300,6 +306,45 @@ class IntrabarSeries(Protocol):
     """
 
     def bars_in(self, series: SeriesId, interval: Interval) -> tuple[Bar, ...]: ...
+
+
+@runtime_checkable
+class ResumptionView(Protocol):
+    """再開の分 1 つ（D06 §18.4）。"""
+
+    @property
+    def minute(self) -> UtcTime: ...
+
+    @property
+    def unrecorded_from(self) -> UtcTime: ...
+
+    @property
+    def unrecorded_minutes(self) -> int: ...
+
+
+@runtime_checkable
+class MinuteObservation(Protocol):
+    """MT5 経路の執行系列の銘柄の 1 分足と無記録の分（D06 §18.3〜§18.5）。
+
+    渡されたとき（MT5 経路の snapshot の run）だけ、エンジンは無記録の分では判定せず、再開の分で
+    ギャップ・待っていた成行を処理し、無記録の分を含む執行足を 1 分足で走査する。HistData の経路では
+    渡さない（`None`）ので、第7節の規則のまま動く（D06 §18.1）。
+    """
+
+    @property
+    def minute_series(self) -> SeriesId: ...
+
+    def minute_bars_in(self, interval: Interval) -> tuple[Bar, ...]: ...
+
+    def minute_bar_at(self, minute: UtcTime) -> Bar | None: ...
+
+    def last_bar_before(self, moment: UtcTime) -> Bar | None: ...
+
+    def resumption_at(self, minute: UtcTime) -> ResumptionView | None: ...
+
+    def resumptions_in(self, interval: Interval) -> Sequence[ResumptionView]: ...
+
+    def is_unrecorded(self, minute: UtcTime) -> bool: ...
 
 
 #: カレンダーは `marketdata.domain` の型をそのまま受ける（D01 §4）。使う操作は
@@ -436,8 +481,15 @@ class BacktestEngine:
         intrabar_series: IntrabarSeries | None = None,
         strategy_priority: int = 0,
         phases: PhaseSet = BACKTEST_PHASES,
+        minutes: MinuteObservation | None = None,
     ) -> None:
         self._config = config
+        self._minutes = minutes
+        # 執行足の途中の分で開いた建玉の、約定の分（D06 §18.5。その足では約定の分から判定する）。
+        self._entry_minute: dict[PositionId, UtcTime] = {}
+        # 「再開」群の件数（D06 §18.10）。
+        self._gap_counts: dict[GapKind, int] = dict.fromkeys(GapKind, 0)
+        self._expired_in_unrecorded = 0
         self._compiled = compiled
         self._runtime = runtime
         self._context = context
@@ -533,6 +585,21 @@ class BacktestEngine:
         """現在の台帳（テストと最終集計が読む）。"""
         return self._context.ledger
 
+    @property
+    def gap_counts(self) -> dict[GapKind, int]:
+        """再開の分での約定の区分ごとの件数（D06 §18.10 の「再開」群）。"""
+        return dict(self._gap_counts)
+
+    @property
+    def expired_in_unrecorded_count(self) -> int:
+        """無記録の中で期限切れになった注文の数（D06 §18.10）。"""
+        return self._expired_in_unrecorded
+
+    @property
+    def resumption_count(self) -> int:
+        """表21 の行数（run 区間の執行系列の再開の分の数）。"""
+        return len(self._rows[TraceTable.RESUMPTIONS])
+
     # --- 実行 ---------------------------------------------------------------
 
     def execute(self) -> None:
@@ -542,6 +609,7 @@ class BacktestEngine:
             self._failure = self._capability.reason
             return
         run_end = self._config.run_interval.end
+        self._seed_last_complete()
         grouped = self._group_events()
         for decision_time in sorted(grouped, key=lambda moment: moment.value):
             if decision_time >= run_end:
@@ -557,6 +625,36 @@ class BacktestEngine:
         except _RunFailure as failure:
             self._fail(run_end, failure)
         self._finalize_tables()
+
+    def _seed_last_complete(self) -> None:
+        """MT5 経路: run の開始の直前の執行足が全分無記録なら、
+        最後に作られた執行足を「最新の執行足」に
+        する（D06 §18.9 の 5、D12-91 (a)）。
+
+        run の開始と同時に終わる執行足が作られていれば、その `ExecutionBarComplete` が run の最初の
+        判断時点で `_last_complete` を埋める（HistData の経路と同じ）。
+        作られていない（全分無記録）と、
+        参照価格・評価価格の出どころが無いまま受付が `DATA_ERROR` になるので、
+        最後に記録のある分を含む
+        執行足（終値はその分の終値、観測時刻はその分の開始）を使う。約定には使わない。
+        """
+        if self._minutes is None:
+            return
+        start = self._config.run_interval.start
+        last_minute = self._minutes.last_bar_before(start)
+        if last_minute is None:
+            return
+        probe = last_minute.bar_start - timedelta(days=1)
+        for _ in range(200):
+            key = self._execution.next_bar_key_after(probe)
+            if key is None or key.bar_start > last_minute.bar_start:
+                return
+            bar = self._execution.bar(key)
+            if bar is not None and bar.bar_start <= last_minute.bar_start < bar.bar_end:
+                if bar.bar_end < start:
+                    self._last_complete = bar
+                return
+            probe = key.bar_start
 
     def _group_events(self) -> dict[UtcTime, _DecisionEvents]:
         """公開イベントを判断時刻ごとにまとめる（D06 §4.2・§4.3）。"""
@@ -696,6 +794,9 @@ class BacktestEngine:
             if position.protection.effective_from.bar_start > bar.bar_start:
                 # その足の開始前に有効だった保護水準だけを判定の対象にする（D06 §7.3）。
                 continue
+            if self._needs_minute_scan(position, bar):
+                self._scan_minutes(clock, position, bar)
+                continue
             self._resolve_protection(clock, position, bar)
 
     def _resolve_protection(self, clock: PhaseClock, position: Position, bar: Bar) -> None:
@@ -742,6 +843,165 @@ class BacktestEngine:
             scanned=tuple(visited),
         )
         self._emit(TraceTable.INTRABAR_RESOLUTIONS, resolution)
+
+    def _needs_minute_scan(self, position: Position, bar: Bar) -> bool:
+        """執行足を 1 分足で走査するか（D06 §18.5）。
+
+        執行足に無記録の分が 1 つでもあるとき、またはその足の中で再開の分（始値の分より後）の約定が
+        あったときは、親の 4 本値の高値・安値で始めず 1 分足を時刻の順に走査する（親の高値・安値は
+        無記録の分の前後の飛びを含み、どちらに先に届いたかもギャップの始値も表せない。ADR-0030）。
+        """
+        if self._minutes is None or bar.coverage is None:
+            return False
+        if not bar.coverage.is_fully_observed:
+            return True
+        entry = self._entry_minute.get(position.position_id)
+        return entry is not None and bar.bar_start < entry < bar.bar_end
+
+    def _scan_minutes(self, clock: PhaseClock, position: Position, bar: Bar) -> None:
+        """1 分足を時刻の順に走査して保護水準の到達を決める（D06 §18.4 の順 6・§18.5・§18.6）。
+
+        - 再開の分（無記録の直後の最初の記録のある分）では、まず始値のギャップを見る（順 1）。
+        損切りを
+          越えていれば始値で（決済側の滑りを不利に）、利確を越えていれば利確の水準で決済する。ただし
+          執行足の最初の観測の分（`ExecutionOpen` の分）のギャップは始値の段で処理済みなので見ない。
+        - その他の分では高値・安値で到達を見る。同じ分で両方に届けば損切り
+          （`UNRESOLVED_SL_PRIORITY`。ADR-0030）。
+        - 執行足の途中で開いた建玉は、約定した分から判定する（約定より前の分は見ない）。
+        """
+        assert self._minutes is not None  # noqa: S101 - _needs_minute_scan が保証する
+        entry = self._entry_minute.get(position.position_id)
+        start = entry if entry is not None and bar.bar_start < entry else bar.bar_start
+        scanned = self._minutes.minute_bars_in(Interval(start=start, end=bar.bar_end))
+        if not scanned:
+            return
+        protection = position.protection
+        spread = self._cost_model.spread_model
+        any_stop = any(touches(position.side, protection, item, spread)[0] for item in scanned)
+        any_take = any(touches(position.side, protection, item, spread)[1] for item in scanned)
+        open_minute = bar.first_observed_at
+        visited: list[Bar] = []
+        for minute_bar in scanned:
+            visited.append(minute_bar)
+            if minute_bar.bar_start != open_minute and minute_bar.bar_start != entry:
+                resumption = self._minutes.resumption_at(minute_bar.bar_start)
+                if resumption is not None and self._gap_close(
+                    clock,
+                    position,
+                    bar,
+                    minute_bar,
+                    resumption.unrecorded_minutes,
+                    phase=PHASE_EXECUTION_BAR_COMPLETE,
+                ):
+                    return
+            stop_hit, take_hit = touches(position.side, protection, minute_bar, spread)
+            if not stop_hit and not take_hit:
+                continue
+            if stop_hit and take_hit:
+                method = ResolutionMethod.UNRESOLVED_SL_PRIORITY
+                verdict = CloseCause.STOP_LOSS
+            else:
+                method = (
+                    ResolutionMethod.RESOLVED_BY_CHILD
+                    if any_stop and any_take
+                    else ResolutionMethod.SINGLE_HIT
+                )
+                verdict = CloseCause.STOP_LOSS if stop_hit else CloseCause.TAKE_PROFIT
+            if method is not ResolutionMethod.SINGLE_HIT:
+                self._conflicts += 1
+                if method is ResolutionMethod.UNRESOLVED_SL_PRIORITY:
+                    self._unresolved += 1
+            level = (
+                protection.stop_loss if verdict is CloseCause.STOP_LOSS else protection.take_profit
+            )
+            if level is None:  # pragma: no cover - 利確が無ければ利確には触れない
+                raise KernelValueError("a take profit verdict requires a take profit level")
+            fill_id = self._allocator.next(FillId)
+            self._engine_close(
+                clock,
+                position=position,
+                cause=verdict,
+                phase=PHASE_EXECUTION_BAR_COMPLETE,
+                base_price=level,
+                spread_applied=False,
+                execution_time=BarExecutionInterval(
+                    bar_key=minute_bar.key, interval=minute_bar.interval
+                ),
+                eligibility=ProtectionHit(
+                    position_id=position.position_id,
+                    protection_version=protection.version,
+                    execution_bar_key=bar.key,
+                ),
+                fill_id=fill_id,
+                scanned=tuple(visited),
+            )
+            self._emit(
+                TraceTable.INTRABAR_RESOLUTIONS,
+                IntrabarResolution(
+                    position_id=position.position_id,
+                    parent_bar_key=bar.key,
+                    method=method,
+                    series_used=(bar.series, self._minutes.minute_series),
+                    verdict=verdict,
+                    fill_id=fill_id,
+                    resolved_child_bar_key=(
+                        minute_bar.key if method is ResolutionMethod.RESOLVED_BY_CHILD else None
+                    ),
+                ),
+            )
+            return
+
+    def _gap_close(
+        self,
+        clock: PhaseClock,
+        position: Position,
+        bar: Bar,
+        minute_bar: Bar,
+        unrecorded_minutes: int,
+        *,
+        phase: str,
+    ) -> bool:
+        """再開の分の始値のギャップで決済する（D06 §18.4 の順 1、§18.7）。決済したら真。
+
+        損切りを越えた始値はその始値を基準に（決済側の滑りを不利な向きに）、利確を越えた始値は
+        利確の水準を基準価格にする（有利な側の滑りは取らない。D12-77 (a)）。始値は 1 つの側にしか
+        無いので、損切りと利確を同時に越えることは無い。
+        """
+        protection = position.protection
+        open_price = minute_bar.open
+        spread = self._cost_model.spread_model
+        side = OrderSide.SELL if position.side is OrderSide.BUY else OrderSide.BUY
+        if gap_breaches_stop(position.side, protection, open_price, spread):
+            base, spread_applied = protection_base_price(
+                side, protection.stop_loss, open_price, spread
+            )
+            cause = CloseCause.STOP_LOSS
+            kind = GapKind.STOP_GAP
+        elif protection.take_profit is not None and _gap_reaches_take_profit(
+            position.side, protection.take_profit, open_price, spread
+        ):
+            base, spread_applied = protection.take_profit, False
+            cause = CloseCause.TAKE_PROFIT
+            kind = GapKind.TAKE_PROFIT_GAP
+        else:
+            return False
+        self._engine_close(
+            clock,
+            position=position,
+            cause=cause,
+            phase=phase,
+            base_price=base,
+            spread_applied=spread_applied,
+            execution_time=ExactExecutionTime(time=minute_bar.bar_start),
+            eligibility=ProtectionHit(
+                position_id=position.position_id,
+                protection_version=protection.version,
+                execution_bar_key=bar.key,
+            ),
+            fill_id=self._allocator.next(FillId),
+            gap=(kind, unrecorded_minutes),
+        )
+        return True
 
     def _child_bars(self) -> ChildBars | None:
         if self._intrabar is None:
@@ -801,6 +1061,12 @@ class BacktestEngine:
         for order in self._context.ledger.pending_orders():
             if order.expires_at > decision_time:
                 continue
+            in_unrecorded: bool | None = None
+            if self._minutes is not None:
+                # 期限が来た直前の分が無記録か（D06 §18.10 の表8 の列。D12-86 の記録）。
+                in_unrecorded = self._minutes.is_unrecorded(_minute_floor(order.expires_at - _TINY))
+                if in_unrecorded:
+                    self._expired_in_unrecorded += 1
             event = OrderEvent(
                 event_id=self._allocator.next(EventId),
                 order_id=order.order_id,
@@ -808,6 +1074,7 @@ class BacktestEngine:
                 to_status=OrderStatus.EXPIRED,
                 at=clock.next(PHASE_ORDER_EXPIRY),
                 reason=Reason(ReasonCode.EXPIRED),
+                expired_in_unrecorded=in_unrecorded,
             )
             self._context.ledger = commit_order_termination(self._context.ledger, event=event)
             self._emit(TraceTable.ORDER_EVENTS, event)
@@ -1188,7 +1455,7 @@ class BacktestEngine:
             ReferenceQuote(
                 price=price,
                 basis=PriceBasis.ASK if derived else PriceBasis.BID,
-                observed_at=bar.interval.end,
+                observed_at=bar.close_observed_at,  # MT5 経路は最後に記録のある分（D12-91 (a)）
                 derived_from_spread=derived,
                 source_bar=bar.key,
             ),
@@ -1243,7 +1510,14 @@ class BacktestEngine:
         末尾の判断時点では始値を実行しない（D06 §10.1）ので、候補が run_end **ちょうど**の
         注文は欠損ではなく末尾の取消（`RUN_END`）で終わる。末尾で欠損として扱うのは、候補が
         run_end より**前**なのに `PENDING` のまま残っている注文だけである。
+
+        **MT5 経路では検査しない**（D06 §18.1・§18.3、D12-85）。候補の足が無いのは全分無記録の足
+        （作られない足）か、始値の分が無記録で `ExecutionOpen` が最初の観測の時刻に来る足であり、
+        どちらも欠損ではない。取得不足は実行前の能力検査で止まっている（D06 §18.9）。待っている
+        注文は次に記録のある分で約定するか、期限で切れる（D06 §18.4）。
         """
+        if self._minutes is not None:
+            return
         for order in self._context.ledger.pending_orders():
             eligibility = order.execution.eligibility
             if not isinstance(eligibility, ScheduledOpen):
@@ -1266,6 +1540,16 @@ class BacktestEngine:
             raise _RunFailure(
                 self._data_error(bar_key, "execution bar open is missing"), PHASE_EXECUTION_OPEN
             )
+        # MT5 経路では始値の時刻は最初の観測の分（D03 §15.5）。それが再開の分なら、第18.4節の
+        # 順で処理する（ギャップの利確、待っていた成行の記録）。
+        open_time = bar_key.bar_start
+        resumed: int | None = None
+        if self._minutes is not None:
+            bar = self._execution.bar(bar_key)
+            if bar is not None:
+                open_time = bar.first_observed_at
+            resumption = self._minutes.resumption_at(open_time)
+            resumed = None if resumption is None else resumption.unrecorded_minutes
 
         # 手順1: 既存建玉の gap 決済。
         for position in self._context.ledger.open_positions():
@@ -1274,26 +1558,74 @@ class BacktestEngine:
             if gap_breaches_stop(
                 position.side, position.protection, open_price, self._cost_model.spread_model
             ):
-                self._close_at_open(clock, position, bar_key, open_price, CloseCause.STOP_LOSS)
+                self._close_at_open(
+                    clock,
+                    position,
+                    bar_key,
+                    open_price,
+                    CloseCause.STOP_LOSS,
+                    open_time=open_time,
+                    gap=None if resumed is None else (GapKind.STOP_GAP, resumed),
+                )
+            elif (
+                resumed is not None
+                and position.protection.take_profit is not None
+                and _gap_reaches_take_profit(
+                    position.side,
+                    position.protection.take_profit,
+                    open_price,
+                    self._cost_model.spread_model,
+                )
+            ):
+                # 再開の分の始値が利確を越えた（D06 §18.4 の順 1・§18.7）。利確の水準で約定。
+                minute_bar = self._minutes.minute_bar_at(open_time) if self._minutes else None
+                bar = self._execution.bar(bar_key)
+                if minute_bar is not None and bar is not None:
+                    self._gap_close(
+                        clock, position, bar, minute_bar, resumed, phase=PHASE_EXECUTION_OPEN
+                    )
 
         opened: list[RuntimeEventNotice] = []
         # 手順2・3: 適格な成行注文の約定と建玉の初期化。
         for order in self._context.ledger.pending_orders():
             eligibility = order.execution.eligibility
-            if not isinstance(eligibility, ScheduledOpen) or eligibility.bar_key != bar_key:
+            if not isinstance(eligibility, ScheduledOpen):
                 continue
+            if self._minutes is None:
+                if eligibility.bar_key != bar_key:
+                    continue
+            elif eligibility.open_time > open_time:
+                # 受付時に固定した候補の始値より前の分では約定しない（D06 §18.4 の順 2）。
+                continue
+            gap = (
+                (GapKind.DEFERRED_FILL, resumed)
+                if resumed is not None and eligibility.open_time < open_time
+                else None
+            )
             if order.is_entry:
-                notice = self._fill_entry(clock, order, bar_key, open_price)
+                notice = self._fill_entry(
+                    clock, order, bar_key, open_price, open_time=open_time, gap=gap
+                )
                 if notice is not None:
                     opened.append(notice)
             else:
-                self._fill_strategy_close(clock, order, bar_key, open_price)
+                self._fill_strategy_close(
+                    clock, order, bar_key, open_price, open_time=open_time, gap=gap
+                )
         self._record_snapshot(clock.next(PHASE_EXECUTION_OPEN))
         return opened
 
     def _fill_entry(
-        self, clock: PhaseClock, order: AcceptedOrder, bar_key: BarKey, open_price: Price
+        self,
+        clock: PhaseClock,
+        order: AcceptedOrder,
+        bar_key: BarKey,
+        open_price: Price,
+        *,
+        open_time: UtcTime | None = None,
+        gap: tuple[GapKind, int] | None = None,
     ) -> RuntimeEventNotice | None:
+        open_time = bar_key.bar_start if open_time is None else open_time
         terms = order.terms
         if not isinstance(terms, AcceptedEntryTerms):  # pragma: no cover - is_entry が保証する
             raise KernelValueError("an entry fill requires entry terms")
@@ -1323,7 +1655,7 @@ class BacktestEngine:
             order_id=order.order_id,
             position_id=position_id,
             processed_at=at,
-            execution_time=ExactExecutionTime(time=bar_key.bar_start),
+            execution_time=ExactExecutionTime(time=open_time),
             price=price,
             quantity=order.quantity,
             costs=costs,
@@ -1334,8 +1666,10 @@ class BacktestEngine:
                 position_id=position_id,
                 conversion_paths=(self._identity_path(at.time),),
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
-                market_refs=self._fill_market_refs(bar_key, MarketDataField.OPEN),
+                market_refs=self._open_market_refs(bar_key, open_time),
             ),
+            resumed_after_unrecorded_minutes=None if gap is None else gap[1],
+            gap_kind=None if gap is None else gap[0],
         )
         protection = ProtectionState(
             version=1,
@@ -1382,6 +1716,11 @@ class BacktestEngine:
         self._measurements[position_id] = self._risk_measurement(position, allocation, at)
         self._emit(TraceTable.FILLS, fill)
         self._emit(TraceTable.ORDER_EVENTS, event)
+        if gap is not None:
+            self._gap_counts[gap[0]] += 1
+        if open_time != bar_key.bar_start:
+            # 執行足の途中の分で開いた建玉は、その足では約定の分から判定する（D06 §18.5）。
+            self._entry_minute[position_id] = open_time
 
         # 手順4: 約定直後の gap は損切り到達として処理する（緊急決済に分類しない）。
         if gap_breaches_stop(position.side, protection, open_price, self._cost_model.spread_model):
@@ -1394,12 +1733,16 @@ class BacktestEngine:
                     f" limit {terms.adverse_fill_limit} at {at.time}, but the gap stop-loss close"
                     " was executed instead of a second, emergency close (D06 §7.5 の手順6)"
                 )
-            self._close_at_open(clock, position, bar_key, open_price, CloseCause.STOP_LOSS)
+            self._close_at_open(
+                clock, position, bar_key, open_price, CloseCause.STOP_LOSS, open_time=open_time
+            )
             return None
         # 手順5: 約定ずれ超過なら緊急決済。比べるのは受付時に固定した許容不利価格で、
         # 実行ポリシーの Δ を読み直さない（丸める前の広い幅で比べることになる）。
         if needs_emergency_close(price, terms.adverse_fill_limit, order.side):
-            self._emergency_close(clock, position, bar_key, open_price, fill_id, event_id)
+            self._emergency_close(
+                clock, position, bar_key, open_price, fill_id, event_id, open_time=open_time
+            )
             return None
         opportunity_id = self._opportunity_of(order)
         if opportunity_id is None:  # pragma: no cover - エントリーは必ず機会を持つ
@@ -1455,8 +1798,16 @@ class BacktestEngine:
         return Money(_ZERO, self._config.account.currency)
 
     def _fill_strategy_close(
-        self, clock: PhaseClock, order: AcceptedOrder, bar_key: BarKey, open_price: Price
+        self,
+        clock: PhaseClock,
+        order: AcceptedOrder,
+        bar_key: BarKey,
+        open_price: Price,
+        *,
+        open_time: UtcTime | None = None,
+        gap: tuple[GapKind, int] | None = None,
     ) -> None:
+        open_time = bar_key.bar_start if open_time is None else open_time
         terms = order.terms
         if not isinstance(terms, AcceptedCloseTerms):  # pragma: no cover
             raise KernelValueError("a close fill requires close terms")
@@ -1485,8 +1836,9 @@ class BacktestEngine:
             position=position,
             price=price,
             at=at,
-            execution_time=ExactExecutionTime(time=bar_key.bar_start),
+            execution_time=ExactExecutionTime(time=open_time),
             spread_applied=True,
+            gap=gap,
         )
 
     def _close_at_open(
@@ -1496,8 +1848,13 @@ class BacktestEngine:
         bar_key: BarKey,
         open_price: Price,
         cause: CloseCause,
+        *,
+        open_time: UtcTime | None = None,
+        gap: tuple[GapKind, int] | None = None,
     ) -> None:
-        """始値が保護水準を飛び越えた場合の決済（D06 §7.5 の手順1・4）。"""
+        """始値が保護水準を飛び越えた場合の決済（D06 §7.5 の手順1・4、MT5 経路は §18.4 の順 1・
+        4）。"""
+        open_time = bar_key.bar_start if open_time is None else open_time
         side = OrderSide.SELL if position.side is OrderSide.BUY else OrderSide.BUY
         base, spread_applied = protection_base_price(
             side, position.protection.stop_loss, open_price, self._cost_model.spread_model
@@ -1509,13 +1866,14 @@ class BacktestEngine:
             phase=PHASE_EXECUTION_OPEN,
             base_price=base,
             spread_applied=spread_applied,
-            execution_time=ExactExecutionTime(time=bar_key.bar_start),
+            execution_time=ExactExecutionTime(time=open_time),
             eligibility=ProtectionHit(
                 position_id=position.position_id,
                 protection_version=position.protection.version,
                 execution_bar_key=bar_key,
             ),
             fill_id=self._allocator.next(FillId),
+            gap=gap,
         )
 
     def _emergency_close(
@@ -1526,6 +1884,8 @@ class BacktestEngine:
         open_price: Price,
         trigger_fill_id: FillId,
         open_event_id: EventId,
+        *,
+        open_time: UtcTime | None = None,
     ) -> None:
         """約定ずれ超過による緊急決済（D06 §7.5 の手順5）。
 
@@ -1540,7 +1900,9 @@ class BacktestEngine:
             phase=PHASE_EXECUTION_OPEN,
             base_price=open_price,
             spread_applied=True,
-            execution_time=ExactExecutionTime(time=bar_key.bar_start),
+            execution_time=ExactExecutionTime(
+                time=bar_key.bar_start if open_time is None else open_time
+            ),
             eligibility=ImmediateAfterFill(
                 trigger_fill_id=trigger_fill_id, open_event_id=open_event_id
             ),
@@ -1560,6 +1922,7 @@ class BacktestEngine:
         eligibility: ProtectionHit | ImmediateAfterFill,
         fill_id: FillId,
         scanned: tuple[Bar, ...] = (),
+        gap: tuple[GapKind, int] | None = None,
     ) -> None:
         """エンジンが生成する即時決済（D06 §4.4・§6.2・§7.3・§7.5）。
 
@@ -1620,6 +1983,7 @@ class BacktestEngine:
             acceptance_event=outcome.acceptance_event,
             fill_id=fill_id,
             scanned=scanned,
+            gap=gap,
         )
 
     def _settle(
@@ -1634,6 +1998,7 @@ class BacktestEngine:
         acceptance_event: OrderEvent | None = None,
         fill_id: FillId | None = None,
         scanned: tuple[Bar, ...] = (),
+        gap: tuple[GapKind, int] | None = None,
     ) -> None:
         """決済の約定を確定する（D06 §4.4 の確定単位4・5）。"""
         fill_id = self._allocator.next(FillId) if fill_id is None else fill_id
@@ -1671,7 +2036,11 @@ class BacktestEngine:
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
                 market_refs=self._execution_market_refs(execution_time, scanned),
             ),
+            resumed_after_unrecorded_minutes=None if gap is None else gap[1],
+            gap_kind=None if gap is None else gap[0],
         )
+        if gap is not None:
+            self._gap_counts[gap[0]] += 1
         with localcontext(kernel_context()):
             direction = decimal_from_int(1 if position.side is OrderSide.BUY else -1)
             gross = Money(
@@ -2149,6 +2518,7 @@ class BacktestEngine:
         状態が変わるたびに行を足すと同じ主キーの行が複数できてしまう。run の終わりに
         最終状態を1件ずつ書く。
         """
+        self._emit_resumptions()
         ledger = self._context.ledger
         for reservation_id, reservation in sorted(
             ledger.reservations.items(), key=lambda item: item[0].seq
@@ -2187,6 +2557,36 @@ class BacktestEngine:
                             self._measurements.get(position_id),
                         ),
                     ),
+                ),
+            )
+
+    def _emit_resumptions(self) -> None:
+        """表21: run 区間の執行系列の再開の分をすべて載せる（D06 §18.10）。
+
+        建玉・注文が無かった分も載せる（後から件数を数え直せるようにする）。
+        """
+        if self._minutes is None:
+            return
+        interval = self._config.run_interval
+        for resumption in self._minutes.resumptions_in(interval):
+            minute_bar = self._minutes.minute_bar_at(resumption.minute)
+            if minute_bar is None:  # pragma: no cover - resumptions_in は記録のある分だけ返す
+                continue
+            previous = self._minutes.last_bar_before(resumption.unrecorded_from)
+            gap: Decimal | None = None
+            if previous is not None:
+                with localcontext(kernel_context()):
+                    gap = minute_bar.open.value - previous.close.value
+            self._emit(
+                TraceTable.RESUMPTIONS,
+                ResumptionRow(
+                    series=self._minutes.minute_series,
+                    minute=resumption.minute,
+                    unrecorded_from=resumption.unrecorded_from,
+                    unrecorded_minutes=resumption.unrecorded_minutes,
+                    resume_open=minute_bar.open,
+                    previous_close=None if previous is None else previous.close,
+                    gap=gap,
                 ),
             )
 
@@ -2232,6 +2632,16 @@ class BacktestEngine:
         self._emit(TraceTable.EVIDENCE, record)
         return EvidenceRef(evidence_id=identifier)
 
+    def _open_market_refs(
+        self, bar_key: BarKey, open_time: UtcTime
+    ) -> tuple[MarketObservationRef, ...]:
+        """始値で約定したときの根拠。MT5 経路で始値の分が足の途中なら、その 1 分足の始値。"""
+        if self._minutes is not None and open_time != bar_key.bar_start:
+            minute_bar = self._minutes.minute_bar_at(open_time)
+            if minute_bar is not None:
+                return (self._market_ref(minute_bar, MarketDataField.OPEN),)
+        return self._fill_market_refs(bar_key, MarketDataField.OPEN)
+
     def _fill_market_refs(
         self, bar_key: BarKey, field: MarketDataField
     ) -> tuple[MarketObservationRef, ...]:
@@ -2252,8 +2662,23 @@ class BacktestEngine:
         ので載せない。
         """
         if isinstance(execution_time, ExactExecutionTime):
+            if self._minutes is not None:
+                minute_bar = self._minutes.minute_bar_at(execution_time.time)
+                if minute_bar is not None:
+                    return (self._market_ref(minute_bar, MarketDataField.OPEN),)
             key = self._execution.next_bar_key_after(execution_time.time - _TINY)
             return () if key is None else self._fill_market_refs(key, MarketDataField.OPEN)
+        if (
+            self._minutes is not None
+            and execution_time.bar_key.series == self._minutes.minute_series
+        ):
+            # MT5 経路の 1 分足の走査で決まった到達（D06 §18.5）。根拠は走査した 1 分足。
+            minute_refs = [
+                self._market_ref(child, field)
+                for child in scanned
+                for field in (MarketDataField.HIGH, MarketDataField.LOW)
+            ]
+            return tuple(minute_refs)
         bar = self._execution.bar(execution_time.bar_key)
         if bar is None:  # pragma: no cover - 到達判定はその足を読んでいる
             return ()
@@ -2302,3 +2727,17 @@ def _decision_row(decision: AttemptDecision) -> CompositeRow:
     受け付けた行でも拒否理由の列が（`None` として）並ぶようにする。
     """
     return CompositeRow(primary=decision, variants=(AttemptAccepted, AttemptRejected))
+
+
+def _minute_floor(moment: UtcTime) -> UtcTime:
+    """その時刻を含む 1 分の開始。"""
+    return UtcTime(moment.value.replace(second=0, microsecond=0))
+
+
+def _gap_reaches_take_profit(
+    side: OrderSide, take_profit: Price, open_bid: Price, spread_model: SpreadModel
+) -> bool:
+    """始値が利確を越えているか（D06 §18.4 の順 1）。買い建玉は bid、売り建玉は ask で比べる。"""
+    if side is OrderSide.BUY:
+        return open_bid >= take_profit
+    return spread_model.ask_from_bid(open_bid) <= take_profit

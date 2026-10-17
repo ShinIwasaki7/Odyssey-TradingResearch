@@ -432,10 +432,19 @@ class FillDiagnostic:
     reference_observed_at: UtcTime | None
     accepted_at: UtcTime
     filled_at: UtcTime
+    #: 再開の分での約定の無記録の分数と区分（D07 §28.3。D06 §18.10 の表9 の列の写し）。
+    #: HistData の経路と再開の分でない約定では `None`（表の形は経路によらず同じ）。
+    resumed_after_unrecorded_minutes: int | None = None
+    gap_kind: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.fill_id, FillId):
             raise KernelValueError("FillDiagnostic.fill_id must be a FillId")
+        if (self.gap_kind is None) != (self.resumed_after_unrecorded_minutes is None):
+            raise KernelValueError(
+                "FillDiagnostic keeps the unrecorded minutes exactly when the fill has a gap kind"
+                " (D07 §28.3)"
+            )
         if not isinstance(self.order_id, OrderId):
             raise KernelValueError("FillDiagnostic.order_id must be an OrderId")
         if not isinstance(self.acceptance_to_fill, timedelta):
@@ -467,6 +476,14 @@ class CategoryKind(Enum):
     CLOSE_CAUSE = "CLOSE_CAUSE"
     INTRABAR_METHOD = "INTRABAR_METHOD"
     EVALUATION_REQUEST_FINAL_OUTCOME = "EVALUATION_REQUEST_FINAL_OUTCOME"
+    # --- MT5 経路の記録（D07 §28.3）。HistData の経路の評価にも置き、値は 0（表の形を変えない）。
+    #: 被覆率 1 未満の足の公開の数。鍵は `ALL`（全系列の計）と系列ごと（表20）。
+    PARTIAL_COVERAGE_PUBLICATION = "PARTIAL_COVERAGE_PUBLICATION"
+    #: 再開の分での約定の数（区分ごと。run manifest の「再開」群から）。
+    RESUMPTION_FILL = "RESUMPTION_FILL"
+    #: 無記録に関わる出来事の数（再開の分・無記録の中の期限切れ・
+    #: 準備のやり直しの回数と期間の分数）。
+    UNRECORDED_EVENT = "UNRECORDED_EVENT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -569,6 +586,14 @@ CATEGORY_KEYS: Final[dict[CategoryKind, tuple[str, ...]]] = {
     CategoryKind.INTRABAR_METHOD: INTRABAR_METHOD_KEYS,
     # 語彙は記録単位の集計と同じ5語（D05 §6.4。D07 §6.3）。
     CategoryKind.EVALUATION_REQUEST_FINAL_OUTCOME: EVALUATION_OUTCOME_KEYS,
+    CategoryKind.PARTIAL_COVERAGE_PUBLICATION: ("ALL",),
+    CategoryKind.RESUMPTION_FILL: ("STOP_GAP", "TAKE_PROFIT_GAP", "DEFERRED_FILL"),
+    CategoryKind.UNRECORDED_EVENT: (
+        "RESUMPTIONS",
+        "EXPIRED_IN_UNRECORDED",
+        "HISTORY_RESETS",
+        "HISTORY_RESET_MINUTES",
+    ),
 }
 
 #: 指標ごとの値の種別（D07 §5.2 の「種別」欄）。

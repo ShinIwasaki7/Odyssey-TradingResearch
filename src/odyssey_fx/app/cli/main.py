@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import TextIO
 
 from odyssey_fx.app import composition
+from odyssey_fx.app import mt5 as mt5_app
 from odyssey_fx.app.cli import summary
 from odyssey_fx.app.config import (
     ClassificationDecisionFile,
@@ -94,6 +95,7 @@ from odyssey_fx.marketdata.application.acceptance import (
     requires_rerun,
 )
 from odyssey_fx.marketdata.application.classification import require_recorded_classification
+from odyssey_fx.marketdata.application.mt5_acceptance import reaccept_mt5
 from odyssey_fx.marketdata.application.ports import SnapshotStore
 from odyssey_fx.marketdata.application.refill_fetch import fetch_plan
 from odyssey_fx.marketdata.application.refill_plan import create_plan
@@ -113,6 +115,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
     PartitionId,
     SnapshotManifest,
 )
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 
@@ -170,6 +173,37 @@ def build_parser() -> argparse.ArgumentParser:
             "原データと合わせる補充分のディレクトリ（data/raw/market/refill/<refill_id>。"
             "0 回以上。D03 §14.11）。指定しなければ従来の受入れ"
         ),
+    )
+
+    accept_mt5 = data.add_parser(
+        "accept-mt5",
+        help="OANDA MT5 API の 1 分足を受け入れて暫定 snapshot を作る（D03 §15.3）",
+    )
+    accept_mt5.add_argument("--fetch-date", required=True, help="取得日（例 2026-10-16）")
+    accept_mt5.add_argument("--symbol", required=True, help="通貨（例 USDJPY）")
+    accept_mt5.add_argument(
+        "--variant",
+        choices=("standard", "candidate"),
+        default="standard",
+        help="時刻の規則の表の変換の組（D12-92 (a)。既定は standard）",
+    )
+    accept_mt5.add_argument(
+        "--months",
+        nargs="*",
+        default=None,
+        help="受け入れる年月（API の時刻。例 2018-12 2019-01）。省略するとすべて",
+    )
+    accept_mt5.add_argument(
+        "--raw-root",
+        type=Path,
+        default=None,
+        help="原データの基点（既定は列対応の宣言の root。例 data/raw/oanda_mt5）",
+    )
+    accept_mt5.add_argument(
+        "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
+    )
+    accept_mt5.add_argument(
+        "--repo-root", type=Path, default=Path("."), help="リポジトリの位置（規則のファイルの基点）"
     )
 
     classify = data.add_parser(
@@ -595,6 +629,45 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
     return _EXIT_OK
 
 
+def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
+    """MT5 経路の受入れの 1〜8（D03 §15.3）。規則のファイルは数え方の規則が指すものを読む。"""
+    rules = mt5_app.load_mt5_rules(args.repo_root)
+    datasource = mt5_app.load_datasource(args.repo_root)
+    raw_root = args.raw_root if args.raw_root is not None else args.repo_root / datasource.root
+    months = (
+        None if args.months is None else [(int(text[:4]), int(text[5:7])) for text in args.months]
+    )
+    created_at = composition.now_utc()
+    pending = mt5_app.accept_mt5_in_memory(
+        rules=rules,
+        datasource=datasource,
+        raw_dir=raw_root / args.fetch_date,
+        symbol=Symbol(args.symbol),
+        variant=TimeRuleVariant(args.variant),
+        created_at=created_at,
+        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        code_version=composition.code_version(),
+        months=months,
+        docs_manifest_copy=args.repo_root / datasource.docs_copy_for(args.fetch_date),
+    )
+    provisional = str(pending.provisional_id)
+    store = composition.snapshot_store(args.out)
+    _write_snapshot(store, f"{PENDING_DIRECTORY}/{provisional}", pending, pending.manifest)
+    out.line(f"暫定の識別子（provisional_id）: {provisional}")
+    out.line(
+        f"時刻の規則の表: {rules.table.table_id} 版 {rules.table.version}"
+        f"（{rules.table.sha256}）、変換の組 {args.variant}"
+    )
+    out.line(
+        f"数え方の規則: {rules.counting.rules_id} 版 {rules.counting.version}"
+        f"（{rules.counting.sha256}）"
+    )
+    out.line(f"カレンダー: {rules.calendar.id} 版 {rules.calendar.version}")
+    out.lines(summary.series_lines(pending.manifest))
+    out.lines(summary.findings_lines(pending.report))
+    return _EXIT_OK
+
+
 # --- classify ---------------------------------------------------------------
 
 
@@ -673,14 +746,25 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
         # **原ファイルを読み直さない**。読み直すと、人間が分類の根拠にした報告には無かった
         # 内容（原ファイルの差し替え・価格の書き換え・設定の変更）が最終 snapshot に
         # 入りうる。
-        final = reaccept_with_calendar(
-            provisional,
-            calendar=calendar,
-            timeframe_defs=load_timeframes(args.timeframes),
-            boundaries=INITIAL_ACCESS_BOUNDARIES,
-            aggregation_targets=composition.AGGREGATION_TARGETS,
-            excluded=excluded,
-        )
+        if manifest.conversion.mt5 is not None:
+            # MT5 経路: 1 分足と取得の範囲を再利用して区分と上位足を作り直す（D03 §15.3 の 8）。
+            final = reaccept_mt5(
+                provisional,
+                calendar=calendar,
+                timeframe_defs=load_timeframes(args.timeframes),
+                targets=mt5_app.load_mt5_rules(Path(".")).targets,
+                boundaries=INITIAL_ACCESS_BOUNDARIES,
+                excluded=excluded,
+            )
+        else:
+            final = reaccept_with_calendar(
+                provisional,
+                calendar=calendar,
+                timeframe_defs=load_timeframes(args.timeframes),
+                boundaries=INITIAL_ACCESS_BOUNDARIES,
+                aggregation_targets=composition.AGGREGATION_TARGETS,
+                excluded=excluded,
+            )
         # 突き合わせは暫定報告と再実行後の報告の和集合に対して行う。再実行が新たな警告を
         # 生んだ場合は、未分類として列挙されて失敗する（D03 §4 の反復的な分類）。
         finalized = finalize(final, decisions, provisional=provisional)
@@ -1343,6 +1427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out = _Writer(sys.stdout)
     handlers: dict[str, Callable[[argparse.Namespace, _Writer], int]] = {
         "accept": _run_accept,
+        "accept-mt5": _run_accept_mt5,
         "classify": _run_classify,
         "approve": _run_approve,
         "refill_plan": _run_refill_plan,

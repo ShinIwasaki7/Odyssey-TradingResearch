@@ -26,6 +26,7 @@ from functools import cache
 from pathlib import Path
 from typing import Final
 
+from odyssey_fx.app.mt5_run import publication_rows
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
@@ -237,14 +238,30 @@ def build_case(
     )
     trace_sink = CollectingTraceSink()
     result_writer = CollectingResultWriter()
+    # 公開イベントの並び（D03 §7.1 の系列順: 名目長の降順）。同じ時刻のイベントは
+    # 渡した順に並ぶので、日足 → 1時間足 → 15分足（執行系列）の順に渡す。
+    feed = FakeFeed((*bars[DAILY_SERIES], *bars[HOURLY_SERIES]), bars[M15_SERIES])
+    # 表20（公開記録。D06 §9.2 v1.11）はコマンド経由の run と同じ関数で作る。
+    schedules = {
+        series: SeriesSchedule(series=series, timeframe_def=definition, calendar=calendar)
+        for series, definition in (
+            (DAILY_SERIES, market.TF_1D_NY17),
+            (HOURLY_SERIES, market.TF_1H),
+            (M15_SERIES, market.TF_15M),
+        )
+    }
+    published = publication_rows(
+        feed,
+        {bar.key: bar for items in bars.values() for bar in items},
+        schedules,
+        RUN_INTERVAL,
+    )
     use_case = RunBacktest(
         runtime=evaluator,
         context=context,
         output_sink=sink,
         allocator=allocator,
-        # 公開イベントの並び（D03 §7.1 の系列順: 名目長の降順）。同じ時刻のイベントは
-        # 渡した順に並ぶので、日足 → 1時間足 → 15分足（執行系列）の順に渡す。
-        feed=FakeFeed((*bars[DAILY_SERIES], *bars[HOURLY_SERIES]), bars[M15_SERIES]),
+        feed=feed,
         execution_series=FakeExecutionSeries(
             bars[M15_SERIES],
             schedule=SeriesSchedule(
@@ -268,6 +285,7 @@ def build_case(
         git_commit="0" * 40,
         git_dirty=False,
         timeframe_refs=_TIMEFRAME_REFS,
+        publication_rows=published,
     )
     result = use_case.run(config, compiled)
     assert result_writer.manifest is not None
