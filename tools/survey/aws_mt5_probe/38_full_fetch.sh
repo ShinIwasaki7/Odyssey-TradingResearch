@@ -75,16 +75,19 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # Windows から S3 に置く道具（インスタンスのロールの権限で置く。AWS CLI か AWS Tools for PowerShell）。
+# 20_prepare.sh が入れて版をログに残した固定の場所の AWS CLI v2 を最優先で使い（人間の決定 2026-10-17 の④:
+# 実際に使う版をログに残す。D12 付録 K-18）、無いときだけ PATH 上の aws、次に AWS Tools for PowerShell に落ちる。
+# 確認の段で、実際に使う aws の場所と版を表示する。
 # shellcheck disable=SC2016  # PowerShell の変数（$aws）なので bash では展開しない
 s3_client_ps='
 $aws = $null
 $c = Get-Command aws -ErrorAction SilentlyContinue
-if ($c) { $aws = $c.Source } elseif (Test-Path "C:\Program Files\Amazon\AWSCLIV2\aws.exe") { $aws = "C:\Program Files\Amazon\AWSCLIV2\aws.exe" }
+if (Test-Path "C:\Program Files\Amazon\AWSCLIV2\aws.exe") { $aws = "C:\Program Files\Amazon\AWSCLIV2\aws.exe" } elseif ($c) { $aws = $c.Source }
 if (-not $aws -and -not (Get-Command Write-S3Object -ErrorAction SilentlyContinue)) { throw "no S3 client (AWS CLI / AWS Tools for PowerShell) on this instance" }
 '
 # shellcheck disable=SC2016  # 同上
 printf '%s\n%s\n%s\n' "\$ErrorActionPreference = 'Stop'" "$s3_client_ps" \
-  'if ($aws) { "s3 client: aws-cli $aws" } else { "s3 client: Write-S3Object" }' >"$work/client.ps1"
+  'if ($aws) { "s3 client: $aws $((& $aws --version | Out-String).Trim())" } else { "s3 client: Write-S3Object" }' >"$work/client.ps1"
 ssm_ps "$INSTANCE_ID" 120 "$work/client.ps1"
 
 upload_pair() {  # upload_pair <通貨>

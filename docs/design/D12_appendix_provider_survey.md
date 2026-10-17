@@ -2470,7 +2470,7 @@ URL の `info/<番号>` は `https://www.oanda.jp/info/<番号>`。
 | ① S3 の一時バケットの削除の後の確認 | 間隔 10 秒・最大 30 回、head-bucket で確かめる。404 を確かめた時点で成功。上限に達したら記録を残して異常終了する。待ちの合計は約 5 分だが、**通信の時間を含む厳密な「5 分以内」の保証ではない** | `lib.sh` の `wait_bucket_absent`、`S3_DELETE_WAIT_SECONDS=10`・`S3_DELETE_WAIT_ATTEMPTS=30`。上限では `s3_bucket.env` を残し、残りの確認を表示して終了コード 1（`90_teardown.sh`） |
 | ② 403 などの扱い | 「バケットの有無が不明」とする。削除の前に不明なら削除の操作を行わず、記録を残して異常終了する。削除の後に不明なら上限まで確かめ直し、404 を確かめられなければ記録を残して異常終了する | `lib.sh` の `s3_bucket_state`（200 = ある、404 = 無い、それ以外 = 不明）。`90_teardown.sh` の `teardown_bucket` |
 | ③ msiexec の終了コード 3010 | 準備の処理を止める。3010 は「導入は成功、完了には再起動が必要」なので、通常の導入の失敗と区別して「導入済み・再起動が必要」と表示する。自動の再起動・自動の続行はせず、人間が再起動した後に準備のスクリプトをもう一度実行するよう案内する | `lib.sh` の `awscli_install_ps` が `AWSCLI_RESTART_REQUIRED` の行を出して止まり、`20_prepare.sh` がそれを見て案内を表示し、終了コード 1 で止まる。回帰テストあり |
-| ④ 導入済みの AWS CLI の版 | 正常に動く 2.x（`aws --version` が成功し `aws-cli/2.` で始まる）なら、版を問わず入れ直さない。新しく入れるのは 2.38.1 に固定する。導入済みの場合も、実際に使う正確な版をログに残す | `lib.sh` の `AWSCLI_VERSION`・`AWSCLI_MSI_URL`・`AWSCLI_MSI_SHA256`。`20_prepare.sh` が「使う AWS CLI の版: aws-cli/x.y.z」をログに出す |
+| ④ 導入済みの AWS CLI の版 | 正常に動く 2.x（`aws --version` が成功し `aws-cli/2.` で始まる）なら、版を問わず入れ直さない。新しく入れるのは 2.38.1 に固定する。導入済みの場合も、実際に使う正確な版をログに残す | `lib.sh` の `AWSCLI_VERSION`・`AWSCLI_MSI_URL`・`AWSCLI_MSI_SHA256`。`20_prepare.sh` が「使う AWS CLI の版: aws-cli/x.y.z」をログに出す。`38_full_fetch.sh` はこの固定の場所の aws を PATH 上の aws より先に選び、S3 の道具の確認で実際に使う aws の場所と版を表示する |
 
 - 見送った任意の改善（原文のとおり）: 署名者の確認が Subject の文字列の部分一致であること、削除の操作（`s3 rm`・`delete-bucket`）の失敗の分岐に回帰テストが無いこと。理由は PR #83 の本文。
 

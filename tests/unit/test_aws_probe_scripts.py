@@ -259,6 +259,14 @@ def test_full_fetch_execute_creates_a_valid_bucket_without_sigpipe(tmp_path: Pat
     assert f"S3_BUCKET={name}" in s3env and "FETCH_DATE=2026-10-16" in s3env
     assert "S3 の一時バケットを作った" in r.stderr
     assert any(c[:2] == ["ssm", "send-command"] for c in _calls(tmp_path))  # 作成の後の段まで進んだ
+    # S3 の道具の確認: 20_prepare.sh が入れて版を記録した固定の場所の aws を、
+    # PATH 上の aws より先に選び、実際に使う aws の場所と版を表示する（人間の決定 2026-10-17 の④）
+    client = "\n".join(
+        json.loads((tmp_path / "fake_aws" / "ssm_000.json").read_text(encoding="utf-8"))["commands"]
+    )
+    fixed = client.index(r'if (Test-Path "C:\Program Files\Amazon\AWSCLIV2\aws.exe")')
+    assert fixed < client.index("elseif ($c) { $aws = $c.Source }")
+    assert '"s3 client: $aws $((& $aws --version | Out-String).Trim())"' in client
 
 
 # --- 2. 90_teardown.sh の S3 の削除の確認（付録 K-17.6） --------------------------------------
