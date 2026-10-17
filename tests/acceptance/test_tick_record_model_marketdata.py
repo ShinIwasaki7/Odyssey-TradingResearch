@@ -26,18 +26,25 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.acceptance import PendingSnapshot
 from odyssey_fx.marketdata.application.asof import AsOfView, BarsWindow, MissingInput
+from odyssey_fx.marketdata.application.asof import DurationWindow as AsOfDurationWindow
 from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
 from odyssey_fx.marketdata.application.publication import (
     PublicationKind,
     build_feed,
     build_publication_log,
 )
+from odyssey_fx.marketdata.application.read_readiness import read_resets
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation
 from odyssey_fx.marketdata.domain.integrity import CheckKind
-from odyssey_fx.marketdata.domain.readiness import ScheduledBar, history_resets
+from odyssey_fx.marketdata.domain.readiness import (
+    ReadKind,
+    ReadWindowSpec,
+    ScheduledBar,
+    history_resets,
+)
 from odyssey_fx.marketdata.domain.schedule import (
     DelayScenario,
     FixedSeriesDelay,
@@ -46,6 +53,7 @@ from odyssey_fx.marketdata.domain.schedule import (
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource
+from odyssey_fx.strategy.declarations.read_spec import BarsWindow as ReadBarsWindow
 from odyssey_fx.strategy.declarations.read_spec import DurationWindow
 from tests.fixtures.backtest.harness import EXECUTION_SERIES, compiled_strategy
 from tests.fixtures.mt5 import market as m5
@@ -214,11 +222,22 @@ def test_c2_the_run_records_history_resets_and_keeps_going(tmp_path: Path) -> No
         run_interval=_span("2026-01-21T00:00:00Z", "2026-01-23T00:00:00Z"),
         repo_root=tmp_path,
     )
-    rows = [row for row in parts.history_resets if row.series == HOURLY and row.window_bars == 21]
+    rows = [
+        row
+        for row in parts.history_resets
+        if row.series == HOURLY
+        and row.window_kind == "BARS"
+        and row.window_bars == 20
+        and row.exclude_latest_bars == 1
+    ]
     assert len(rows) == 24
     assert {row.ready_at for row in rows} == {_t("2026-01-22T19:00:00Z")}
-    latest_only = [row for row in parts.history_resets if row.window_bars == 1]
+    # 準備不足になる時刻は、その足が基準の足（期待される最新足）になる区間の終わり（D12-127）。
+    first = min(rows, key=lambda row: row.no_record_bar_key.bar_start.value)
+    assert first.insufficient_from == _t("2026-01-20T23:00:00Z")
+    latest_only = [row for row in parts.history_resets if row.window_kind == "LATEST"]
     assert {row.ready_at for row in latest_only} == {_t("2026-01-21T23:00:00Z")}
+    assert all(row.window_bars is None for row in latest_only)
 
 
 def test_c7_a_bar_is_not_readable_before_its_publication_time(tmp_path: Path) -> None:
@@ -302,7 +321,8 @@ def test_c7_a_no_record_bar_is_not_known_before_its_scheduled_publication(tmp_pa
 def test_duration_window_reads_are_checked_for_shortfall() -> None:
     """D06 §18.9 の 2・4（第 1 巡のレビューの指摘）: 経過時間の窓だけで読む系列も、
     能力検査の取得不足の照合と
-    被覆の報告の対象に入る（表22 の窓の本数には入れない）。"""
+    被覆の報告の対象に入る（表22 の行は
+    `test_history_resets_cover_duration_window_reads_in_the_run`）。"""
     compiled = compiled_strategy()
     component = compiled.components[0]
     name, plan = next(iter(component.input_plans.items()))
@@ -397,7 +417,11 @@ def test_c2_history_reset_ready_bar_is_found_after_the_run(tmp_path: Path) -> No
         run_interval=_span("2026-01-21T00:00:00Z", "2026-01-22T12:00:00Z"),
         repo_root=tmp_path,
     )
-    rows = [row for row in parts.history_resets if row.series == HOURLY and row.window_bars == 21]
+    rows = [
+        row
+        for row in parts.history_resets
+        if row.series == HOURLY and row.window_kind == "BARS" and row.window_bars == 20
+    ]
     assert rows
     assert {row.ready_at for row in rows} == {_t("2026-01-22T19:00:00Z")}
 
@@ -473,3 +497,135 @@ def test_the_unrecorded_tail_is_cut_at_the_permitted_period(tmp_path: Path) -> N
             allowed=research,
             boundaries=boundaries,
         )
+
+
+_SPECS = (
+    ReadWindowSpec(kind=ReadKind.BARS, bars=5),
+    ReadWindowSpec(kind=ReadKind.BARS, bars=3, exclude_latest_bars=2),
+    ReadWindowSpec(kind=ReadKind.DURATION, duration=timedelta(hours=6)),
+    ReadWindowSpec(kind=ReadKind.DURATION, duration=timedelta(hours=4), exclude_latest_bars=1),
+    ReadWindowSpec(kind=ReadKind.LATEST),
+)
+
+
+def _read(view: AsOfView, spec: ReadWindowSpec, at: UtcTime) -> object:
+    """戦略ランタイムが実行時に行う読み取り（`latest_available` か `history`）。"""
+    if spec.kind is ReadKind.LATEST:
+        return view.latest_available(HOURLY, at)
+    window: BarsWindow | AsOfDurationWindow
+    if spec.kind is ReadKind.BARS:
+        assert spec.bars is not None
+        window = BarsWindow(spec.bars)
+    else:
+        assert spec.duration is not None
+        window = AsOfDurationWindow(spec.duration)
+    return view.history(HOURLY, window, at, end_offset_bars=spec.exclude_latest_bars)
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        # run の開始前（01-20 22:00Z）に起きて run の中まで影響する全分無記録の 1 日。
+        _span("2026-01-21T06:00:00Z", "2026-01-23T00:00:00Z"),
+        # 日中の 2 本（11:00・12:00 の 1 時間足）だけの全分無記録。
+        _span("2026-01-08T06:00:00Z", "2026-01-09T00:00:00Z"),
+    ],
+)
+@pytest.mark.parametrize("spec", _SPECS, ids=lambda spec: f"{spec.kind.value}-{spec.sort_key()}")
+def test_history_resets_match_the_runtime_reads(
+    tmp_path: Path, spec: ReadWindowSpec, run: Interval
+) -> None:
+    """D12-127（人間の決定の原文は D12 §0.1.30.1）: 本数窓・末尾から除く本数のある本数窓・経過時間の
+    窓・最新足だけの 4 種で、実行時の読み取りの準備不足の判定と表22 の記録が一致する。
+
+    - 実行時に準備不足（`WARMUP_INSUFFICIENT`）を返す時刻は、どれかの行の
+      `[insufficient_from, ready_at)` の中にある。
+    - 行の期間の中では読み取りは足を返さず、期間の外では足を返す。
+    - 各行の `insufficient_from` で準備不足を返し、`ready_at` で足を返し、その直前は返さない。
+    """
+    pending, snapshot = _snapshot(tmp_path)
+    view = _view(pending, snapshot)
+    observation = Mt5Observation.from_snapshot(snapshot)
+    assert observation is not None
+    rows = read_resets(
+        _schedules(snapshot)[HOURLY],
+        spec,
+        _bars_of(pending)[HOURLY],
+        observation.no_record[HOURLY],
+        run,
+    )
+    assert rows
+    tiny = timedelta(microseconds=1)
+    warmup = MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+
+    def in_rows(at: UtcTime) -> bool:
+        return any(
+            row.insufficient_from <= at and (row.ready_at is None or at < row.ready_at)
+            for row in rows
+        )
+
+    def succeeded(value: object) -> bool:
+        return isinstance(value, (Bar, tuple))
+
+    moments: list[UtcTime] = []
+    probe = run.start
+    while probe <= run.end:
+        moments.append(probe)
+        probe = probe + timedelta(minutes=30)
+    for row in rows:
+        moments.extend([row.insufficient_from, row.insufficient_from - tiny])
+        if row.ready_at is not None:
+            moments.extend([row.ready_at, row.ready_at - tiny])
+    for at in moments:
+        value = _read(view, spec, at)
+        if value == warmup:
+            assert in_rows(at), (at, value)
+        if in_rows(at):
+            assert not succeeded(value), (at, value)
+        elif run.start - timedelta(days=2) <= at:
+            assert succeeded(value), (at, value)
+    for row in rows:
+        assert _read(view, spec, row.insufficient_from) == warmup
+        assert row.ready_at is not None
+        assert succeeded(_read(view, spec, row.ready_at))
+        assert not succeeded(_read(view, spec, row.ready_at - tiny))
+    # 準備不足になる時刻は run の終わり以前、復帰は run の始まりより後（run に効く行だけ）。
+    assert all(row.insufficient_from <= run.end for row in rows)
+    assert all(row.ready_at is None or row.ready_at > run.start for row in rows)
+
+
+def test_history_resets_cover_duration_window_reads_in_the_run(tmp_path: Path) -> None:
+    """D12-112（第 4 巡の指摘）: 経過時間の窓だけで読む系列も表22・run manifest の件数に載る。
+    経過時間は本数に換算せず `window_duration` に持つ（D12-127）。"""
+    pending, snapshot = _snapshot(tmp_path)
+    observation = Mt5Observation.from_snapshot(snapshot)
+    assert observation is not None
+    compiled = compiled_strategy()
+    component = compiled.components[0]
+    changed_plans = {}
+    for name, plan in component.input_plans.items():
+        if isinstance(plan.resolved_window, ReadBarsWindow):
+            changed_plans[name] = replace(
+                plan, resolved_window=DurationWindow(duration=timedelta(hours=30))
+            )
+        else:
+            changed_plans[name] = plan
+    changed = replace(
+        compiled,
+        components=(replace(component, input_plans=changed_plans), *compiled.components[1:]),
+    )
+    parts = build_mt5_run_parts(
+        observation=observation,
+        compiled=changed,
+        execution_series=EXECUTION_SERIES,
+        hierarchy=(EXECUTION_SERIES,),
+        schedules=_schedules(snapshot),
+        bars_of=_bars_of(pending),
+        calendar=CALENDAR,
+        run_interval=_span("2026-01-21T00:00:00Z", "2026-01-23T00:00:00Z"),
+        repo_root=tmp_path,
+    )
+    duration_rows = [row for row in parts.history_resets if row.window_kind == "DURATION"]
+    assert duration_rows
+    assert {row.window_duration for row in duration_rows} == {timedelta(hours=30)}
+    assert all(row.window_bars is None for row in duration_rows)

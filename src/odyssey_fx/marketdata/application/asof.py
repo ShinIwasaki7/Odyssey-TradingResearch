@@ -51,6 +51,7 @@ __all__ = [
     "ExecutionSeriesView",
     "HistoryWindowLike",
     "MissingInput",
+    "window_starts",
 ]
 
 #: 予定上の足を先へ辿る上限の本数。開場中の足が1本も無いまま進む区間は休場であり、
@@ -375,6 +376,12 @@ class AsOfView:
         expected = self.expected_latest_key(series, at)
         if expected is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        # 基準の足（期待される最新足）が全分無記録で予定の公開時刻を過ぎていれば、末尾から除く
+        # 本数があっても準備不足（D03 §15.7「窓か基準の足がその日足を含む」。D12-127）。
+        if self._is_no_record(series, expected.bar_start) and self._scheduled_end_passed(
+            series, expected.bar_start, at
+        ):
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         return self._window_from(series, window, expected.bar_start, at, end_offset_bars)
 
     def history_ending_at(
@@ -489,29 +496,12 @@ class AsOfView:
     ) -> tuple[Bar, ...] | MissingInput:
         """基準の足から窓を切る（`history` と `history_ending_at` に共通の手順）。"""
         schedule = self._schedule(series)
-        # 期待される足の開始時刻を新しい順に並べる。欠損を飛ばさず、期待どおりの並びを作る。
-        expected_starts = _expected_starts_backwards(
-            schedule, base_start, _needed_bars(window, end_offset_bars)
-        )
-        if expected_starts is None:
+        selected = window_starts(schedule, window, base_start, end_offset_bars)
+        if selected is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-        if end_offset_bars:
-            if len(expected_starts) <= end_offset_bars:
-                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            expected_starts = expected_starts[end_offset_bars:]
-
-        wanted: tuple[UtcTime, ...]
-        if isinstance(window, BarsWindowLike):
-            if len(expected_starts) < window.count:
-                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            wanted = expected_starts[: window.count]
-        else:
-            selected = _duration_selection(schedule, expected_starts, window)
-            if selected is None:
-                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            if not selected:
-                return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
-            wanted = selected
+        if not selected:
+            return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+        wanted: tuple[UtcTime, ...] = selected
 
         bars_view = self._bars()
         for start in wanted:
@@ -628,6 +618,35 @@ def _require_window(window: HistoryWindowLike) -> None:
     raise MarketDataValueError(
         f"history() window must expose a bar count or a duration, got {type(window).__name__}"
     )
+
+
+def window_starts(
+    schedule: SeriesSchedule,
+    window: HistoryWindowLike,
+    base_start: UtcTime,
+    end_offset_bars: int,
+) -> tuple[UtcTime, ...] | None:
+    """基準の足から読む窓の期待足の開始時刻（新しい順。D03 §6.2）。
+
+    データ開始前まで遡っても揃わなければ `None`（助走不足）。経過時間の窓が空（全期間休場）なら
+    空のタプル。`history`・`history_ending_at` と、表22 の準備不足の時刻の計算（D12-127）が同じ
+    関数を使う（読み取りの条件と記録を一致させる）。
+    """
+    # 期待される足の開始時刻を新しい順に並べる。欠損を飛ばさず、期待どおりの並びを作る。
+    expected_starts = _expected_starts_backwards(
+        schedule, base_start, _needed_bars(window, end_offset_bars)
+    )
+    if expected_starts is None:
+        return None
+    if end_offset_bars:
+        if len(expected_starts) <= end_offset_bars:
+            return None
+        expected_starts = expected_starts[end_offset_bars:]
+    if isinstance(window, BarsWindowLike):
+        if len(expected_starts) < window.count:
+            return None
+        return expected_starts[: window.count]
+    return _duration_selection(schedule, expected_starts, window)
 
 
 def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:

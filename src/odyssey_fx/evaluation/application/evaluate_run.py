@@ -284,7 +284,11 @@ _COLUMNS: Final[dict[TraceTable, tuple[tuple[str, ColumnValueKind], ...]]] = {
     TraceTable.HISTORY_RESETS: (
         ("series", _STRING),
         ("no_record_bar_key_bar_start", _TIME),
+        ("window_kind", _STRING),
+        ("insufficient_from", _TIME),
         ("window_bars", _INT),
+        ("exclude_latest_bars", _INT),
+        ("window_duration", _STRING),
         ("ready_at", _TIME),
     ),
 }
@@ -319,7 +323,14 @@ _PRIMARY_KEYS: Final[dict[TraceTable, tuple[str, ...]]] = {
     TraceTable.LEDGER_SNAPSHOTS: ("at_time", "at_phase", "at_sequence"),
     TraceTable.PUBLICATIONS: ("bar_key_series", "bar_key_bar_start"),
     TraceTable.RESUMPTIONS: ("series", "minute"),
-    TraceTable.HISTORY_RESETS: ("series", "no_record_bar_key_bar_start", "window_bars"),
+    TraceTable.HISTORY_RESETS: (
+        "series",
+        "no_record_bar_key_bar_start",
+        "window_kind",
+        "window_bars",
+        "exclude_latest_bars",
+        "window_duration",
+    ),
 }
 
 
@@ -384,6 +395,9 @@ _NULLABLE: Final[frozenset[tuple[TraceTable, str]]] = frozenset(
         (TraceTable.PUBLICATIONS, "expected_minutes"),
         (TraceTable.PUBLICATIONS, "recorded_minutes"),
         (TraceTable.HISTORY_RESETS, "ready_at"),
+        # D12-127: 本数は本数窓だけ、経過時間は経過時間の窓だけが持つ。
+        (TraceTable.HISTORY_RESETS, "window_bars"),
+        (TraceTable.HISTORY_RESETS, "window_duration"),
     }
 )
 
@@ -1840,14 +1854,15 @@ def _build_categories(
 def _history_reset_minutes(rows: Sequence[Mapping[str, str | None]], manifest: RunManifest) -> int:
     """準備の期間の合計（分。D07 §28.3、D12-120）。
 
-    表22 の各行の「無記録の足の開始から準備が実際に整う公開時刻まで」を run 区間との重なりに
-    切り詰め、和集合で数える（同じ期間を重ねて数えない）。整わないまま run が終わる行は run の
-    終わりまで。正確な時刻は表22 の行（無記録の足の `bar_key` と `ready_at`）から辿れる。
+    表22 の各行の「準備不足になる時刻（`insufficient_from`）から復帰する時刻（`ready_at`）まで」
+    （D12-127: 実際の読み取りの条件と一致させた時刻）を run 区間との重なりに切り詰め、和集合で
+    数える（同じ期間を重ねて数えない）。復帰しないまま run が終わる行は run の終わりまで。正確な
+    時刻は表22 の行から辿れる。
     """
     run = manifest.config.run_interval
     spans: list[tuple[datetime, datetime]] = []
     for row in rows:
-        start = _time(row, "no_record_bar_key_bar_start").value
+        start = _time(row, "insufficient_from").value
         ready = row.get("ready_at")
         end = run.end.value if ready is None else _time(row, "ready_at").value
         spans.append((start, end))

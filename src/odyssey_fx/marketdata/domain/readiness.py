@@ -12,21 +12,76 @@
 - 準備が整う時刻は、必要な本数の最後の足の公開時刻（`available_at`。D03 §15.5・§15.7）。
 
 本モジュールは足の列（予定の足を時刻順に並べ、作られたかどうかと公開時刻を添えたもの）から、
-無記録の足ごとの「準備が実際に再び整う足」を決める。run の開始時に表22 を作るエンジンと、全期間の
-集計の道具（PR-B）が同じ関数を使う（D12 §11.13 の 5・15）。窓の本数は呼び出し側（戦略の宣言、または
-集計の道具が照合した数え方の規則の `warmup.daily_bars`）から受け取り、本モジュールは本数を持たない
-（D12-88）。
+無記録の足ごとの「準備が実際に再び整う足」を決める（全期間の集計の道具（PR-B）が使う。D12 §11.13 の
+5・15）。窓の本数は呼び出し側（集計の道具が照合した数え方の規則の `warmup.daily_bars`）
+から受け取り、
+本モジュールは本数を持たない（D12-88）。run の表22 は、読み取りの窓（`ReadWindowSpec`）ごとに実際の
+読み取りの条件から時刻を導く `marketdata.application.read_readiness` が作る（D12-127）。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import timedelta
+from enum import Enum
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 
-__all__ = ["ScheduledBar", "HistoryReset", "history_resets", "ready_index_after"]
+__all__ = [
+    "HistoryReset",
+    "ReadKind",
+    "ReadWindowSpec",
+    "ScheduledBar",
+    "history_resets",
+    "ready_index_after",
+]
+
+
+class ReadKind(Enum):
+    """戦略の読み取りの窓の種類（D06 §18.10 の表22 の `window_kind`。D12-127）。"""
+
+    BARS = "BARS"  # 本数窓（`history`）
+    DURATION = "DURATION"  # 経過時間の窓（`history`）
+    LATEST = "LATEST"  # 最新足だけ（`latest_available`）
+
+
+@dataclass(frozen=True, slots=True)
+class ReadWindowSpec:
+    """表22 の 1 行が指す読み取りの窓（D12-127: 窓の種類・本数・末尾から除く本数・経過時間）。
+
+    経過時間の窓は本数に換算しない（D12-127「経過時間窓を固定本数へ換算する方法は採りません」）。
+    最新足だけの読み取りは本数・経過時間を持たない。
+    """
+
+    kind: ReadKind
+    bars: int | None = None
+    exclude_latest_bars: int = 0
+    duration: timedelta | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, ReadKind):
+            raise MarketDataValueError("ReadWindowSpec.kind must be a ReadKind")
+        if isinstance(self.exclude_latest_bars, bool) or self.exclude_latest_bars < 0:
+            raise MarketDataValueError("ReadWindowSpec.exclude_latest_bars must be >= 0")
+        if self.kind is ReadKind.BARS:
+            if self.bars is None or self.bars < 1 or self.duration is not None:
+                raise MarketDataValueError("a BARS window needs bars >= 1 and no duration")
+        elif self.kind is ReadKind.DURATION:
+            if self.duration is None or self.duration <= timedelta(0) or self.bars is not None:
+                raise MarketDataValueError("a DURATION window needs a positive duration, no bars")
+        elif self.bars is not None or self.duration is not None or self.exclude_latest_bars:
+            raise MarketDataValueError("a LATEST read has no bars, duration or excluded bars")
+
+    def sort_key(self) -> tuple[str, int, int, float]:
+        """並びの鍵（種類・本数・末尾から除く本数・経過時間）。"""
+        return (
+            self.kind.value,
+            -1 if self.bars is None else self.bars,
+            self.exclude_latest_bars,
+            -1.0 if self.duration is None else self.duration.total_seconds(),
+        )
 
 
 @dataclass(frozen=True, slots=True)

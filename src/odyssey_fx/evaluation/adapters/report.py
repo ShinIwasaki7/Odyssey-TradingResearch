@@ -475,6 +475,20 @@ _MARK_NAMES: Final = {
 }
 
 
+def _window_text(row: Mapping[str, str | None]) -> str:
+    """表22 の窓の表示（D12-127: 種類・本数・末尾から除く本数・経過時間）。"""
+    kind = row.get("window_kind") or ""
+    exclude = row.get("exclude_latest_bars") or "0"
+    suffix = "" if exclude == "0" else f"（末尾から {exclude} 本除く）"
+    if kind == "BARS":
+        return f"本数 {row.get('window_bars') or ''}{suffix}"
+    if kind == "DURATION":
+        return f"経過時間 {row.get('window_duration') or ''} 秒{suffix}"
+    if kind == "LATEST":
+        return "最新足だけ"
+    return kind
+
+
 def _coverage_lines(inputs: _Inputs) -> list[str]:
     """データの被覆（D07 §28.3）。run manifest の能力検査の報告と「再開」群、表22 から作る。
 
@@ -551,12 +565,19 @@ def _coverage_lines(inputs: _Inputs) -> list[str]:
         lines.append("")
         lines.extend(
             _table(
-                ["系列", "無記録の足", "窓の本数", "準備が再び整った公開時刻"],
+                [
+                    "系列",
+                    "無記録の足",
+                    "窓",
+                    "準備不足になった時刻",
+                    "準備が再び整った時刻",
+                ],
                 [
                     [
                         row.get("series") or "",
                         row.get("no_record_bar_key_bar_start") or "",
-                        row.get("window_bars") or "",
+                        _window_text(row),
+                        row.get("insufficient_from") or "",
                         row.get("ready_at") or "データの終わりまで整わない",
                     ]
                     for row in inputs.history_resets

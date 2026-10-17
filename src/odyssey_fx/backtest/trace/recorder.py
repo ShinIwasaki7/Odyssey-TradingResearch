@@ -165,16 +165,27 @@ class ResumptionRow:
 
 @dataclass(frozen=True, slots=True)
 class HistoryResetRow:
-    """表22 の 1 行（D06 §18.10）: 戦略が読む系列の無記録の足 1 本 × 窓の本数。
+    """表22 の 1 行（D06 §18.10、D12-127）: 戦略が読む系列の無記録の足 1 本 × 読み取りの窓 1 つ。
 
-    `ready_bar_key` / `ready_at`
-    は準備が実際に再び整う足とその公開時刻（データの終わりまで整わなければ
-    `None`）。
+    窓は種類（`window_kind`: `BARS` 本数窓・`DURATION` 経過時間の窓・`LATEST` 最新足だけ）・本数
+    （`window_bars`。本数窓だけ）・末尾から除く本数（`exclude_latest_bars`）・経過時間
+    （`window_duration`。経過時間の窓だけ）で区別する。経過時間の窓を本数に換算しない。
+    主キーは `(series, no_record_bar_key, window_kind, window_bars, exclude_latest_bars,
+    window_duration)`。
+
+    `insufficient_from` はこの無記録の足のせいで読み取りが初めて準備不足を返す時刻、`ready_bar_key`
+    / `ready_at` は読み取りが実際に足を返すようになる時の期待される最新足とその時刻（後に続く無記録
+    の足も考えた結果。データの終わりまで復帰しなければ `None`）。どちらも as-of ビューの読み取りの
+    条件・カレンダー・公開遅延から導く。
     """
 
     series: SeriesId
     no_record_bar_key: BarKey
-    window_bars: int
+    window_kind: str
+    insufficient_from: UtcTime
+    window_bars: int | None = None
+    exclude_latest_bars: int = 0
+    window_duration: timedelta | None = None
     ready_bar_key: BarKey | None = None
     ready_at: UtcTime | None = None
 

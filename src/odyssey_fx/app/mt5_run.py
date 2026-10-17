@@ -28,16 +28,22 @@ from odyssey_fx.backtest.trace.recorder import HistoryResetRow, PublicationRow
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.mt5_observation import Mt5MinuteView, Mt5Observation
 from odyssey_fx.marketdata.application.publication import PublicationKind
+from odyssey_fx.marketdata.application.read_readiness import read_resets
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
-from odyssey_fx.marketdata.domain.readiness import ScheduledBar, history_resets
+from odyssey_fx.marketdata.domain.readiness import ReadKind, ReadWindowSpec
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleMark, TimeRuleTable, TimeRuleTableRef
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy, ResolvedMarketSource
-from odyssey_fx.strategy.declarations.read_spec import BarsWindow, DurationWindow, HistoryWindow
+from odyssey_fx.strategy.declarations.read_spec import (
+    BarsWindow,
+    DurationWindow,
+    HistoryWindow,
+    LatestAvailable,
+)
 
 __all__ = [
     "DEFAULT_APPROVED_LIST",
@@ -121,18 +127,40 @@ def publication_rows(
     return tuple(rows)
 
 
-def strategy_windows(compiled: CompiledStrategy) -> dict[SeriesId, set[int]]:
-    """戦略が読む市場データの系列と、その窓の本数（D06 §18.10 の表22 の「窓の本数」）。
+def strategy_windows(compiled: CompiledStrategy) -> dict[SeriesId, set[ReadWindowSpec]]:
+    """戦略が読む市場データの系列と、その読み取りの窓（D06 §18.10 の表22、D12-127）。
 
-    本数窓（`BarsWindow`）は本数＋末尾から除く本数、最新足だけを読む入力は 1 本。経過時間の窓は
-    本数に直せない（足の長さが変わる）ので表22 に載せない（準備の判定は as-of
-    ビューが同じ規則で行う）。
+    最新足だけを読む入力は `LATEST`、履歴窓は本数窓（`BARS`）か経過時間の窓（`DURATION`）と末尾から
+    除く本数。経過時間の窓は本数に換算しない。届いた出来事・文脈の読み取りは窓を持たないので入れない。
     """
-    out: dict[SeriesId, set[int]] = {}
-    for series, windows in strategy_reads(compiled).items():
-        counts = {item for item in windows if isinstance(item, int)}
-        if counts:
-            out[series] = counts
+    out: dict[SeriesId, set[ReadWindowSpec]] = {}
+    for component in compiled.components:
+        for plan in component.input_plans.values():
+            read = plan.read_spec
+            spec: ReadWindowSpec
+            if isinstance(read, LatestAvailable):
+                spec = ReadWindowSpec(kind=ReadKind.LATEST)
+            elif isinstance(read, HistoryWindow):
+                window = plan.resolved_window
+                if isinstance(window, BarsWindow) and isinstance(window.count, int):
+                    spec = ReadWindowSpec(
+                        kind=ReadKind.BARS,
+                        bars=window.count,
+                        exclude_latest_bars=read.exclude_latest_bars,
+                    )
+                elif isinstance(window, DurationWindow):
+                    spec = ReadWindowSpec(
+                        kind=ReadKind.DURATION,
+                        duration=window.duration,
+                        exclude_latest_bars=read.exclude_latest_bars,
+                    )
+                else:  # pragma: no cover - コンパイラが解決済みの窓だけを渡す
+                    continue
+            else:
+                continue
+            for source in plan.sources:
+                if isinstance(source, ResolvedMarketSource):
+                    out.setdefault(source.series, set()).add(spec)
     return out
 
 
@@ -166,52 +194,6 @@ def strategy_reads(compiled: CompiledStrategy) -> dict[SeriesId, set[int | timed
     return out
 
 
-def _scheduled_bars(
-    schedule: SeriesSchedule,
-    bars: Sequence[Bar],
-    no_record: frozenset[UtcTime],
-    *,
-    start: UtcTime,
-    end: UtcTime,
-    published: Mapping[BarKey, UtcTime] | None = None,
-) -> list[ScheduledBar]:
-    """予定の足の列。公開時刻は公開記録（遅延シナリオ込み）があればそれ、無ければ通常の予定。"""
-    built = {bar.bar_start: bar for bar in bars}
-    realized = published or {}
-
-    def available(bar_start: UtcTime, bar_end: UtcTime) -> UtcTime:
-        recorded = realized.get(BarKey(series=schedule.series, bar_start=bar_start))
-        return recorded if recorded is not None else schedule.scheduled_at(bar_end)
-
-    out: list[ScheduledBar] = []
-    for bar_start in schedule.calendar.expected_bar_starts(
-        schedule.timeframe_def, Interval(start=start, end=end)
-    ):
-        interval = schedule.timeframe_def.expected_interval(schedule.calendar, bar_start)
-        if interval is None:  # pragma: no cover
-            continue
-        found = built.get(bar_start)
-        if found is None and bar_start not in no_record:
-            # 作られず、無記録の足でもない（取得不足、またはデータの範囲の外）。準備の連続を切る。
-            out.append(
-                ScheduledBar(
-                    bar_start=bar_start,
-                    available_at=available(bar_start, interval.end),
-                    built=False,
-                )
-            )
-            continue
-        out.append(
-            ScheduledBar(
-                bar_start=bar_start,
-                available_at=available(bar_start, interval.end),
-                built=found is not None,
-                no_record=found is None,
-            )
-        )
-    return out
-
-
 def _history_reset_rows(
     observation: Mt5Observation,
     compiled: CompiledStrategy,
@@ -220,42 +202,32 @@ def _history_reset_rows(
     run_interval: Interval,
     published: Mapping[BarKey, UtcTime] | None = None,
 ) -> tuple[HistoryResetRow, ...]:
-    """表22（D06 §18.10）。run の準備に効く無記録の足（公開の予定が run の終わり以前で、準備が
-    整うのが run の始まりより後、またはデータの終わりまで整わないもの）だけを載せる。"""
+    """表22（D06 §18.10、D12-112・D12-119・D12-127）。
+
+    戦略が読む系列 × 読み取りの窓ごとに、全分無記録の足のせいで読み取りが準備不足になる時刻と
+    復帰する時刻を、as-of ビューと同じ読み取りの条件から導く（`read_resets`）。run の準備に効く行
+    （run の開始前に起きて run の中まで影響するものを含む）だけを載せる。
+    """
     rows: list[HistoryResetRow] = []
-    for series, windows in sorted(
-        strategy_windows(compiled).items(), key=lambda item: str(item[0])
-    ):
+    for series, specs in sorted(strategy_windows(compiled).items(), key=lambda item: str(item[0])):
         schedule = schedules.get(series)
         bars = bars_of.get(series, ())
-        if schedule is None or not bars:
-            continue
         no_record = observation.no_record.get(series, frozenset())
-        if not no_record:
+        if schedule is None or not bars or not no_record:
             continue
-        sequence = _scheduled_bars(
-            schedule,
-            bars,
-            no_record,
-            start=bars[0].bar_start,
-            # 準備が実際に整う足は run の後にもありうる（D06 §18.10「実際に準備が整う足」）。
-            # snapshot の最後の足まで並べ、run の終わりで打ち切らない。
-            end=max(run_interval.end, bars[-1].bar_end, key=lambda value: value.value),
-            published=published,
-        )
-        for window in sorted(windows):
-            for reset in history_resets(sequence, window):
-                if reset.no_record_available_at > run_interval.end:
-                    continue
-                if reset.ready_at is not None and reset.ready_at <= run_interval.start:
-                    continue
+        for spec in sorted(specs, key=lambda item: item.sort_key()):
+            for reset in read_resets(schedule, spec, bars, no_record, run_interval, published):
                 rows.append(
                     HistoryResetRow(
                         series=series,
                         no_record_bar_key=BarKey(
                             series=series, bar_start=reset.no_record_bar_start
                         ),
-                        window_bars=window,
+                        window_kind=spec.kind.value,
+                        insufficient_from=reset.insufficient_from,
+                        window_bars=spec.bars,
+                        exclude_latest_bars=spec.exclude_latest_bars,
+                        window_duration=spec.duration,
                         ready_bar_key=None
                         if reset.ready_bar_start is None
                         else BarKey(series=series, bar_start=reset.ready_bar_start),
