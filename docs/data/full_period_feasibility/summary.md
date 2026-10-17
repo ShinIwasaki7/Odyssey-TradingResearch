@@ -6,7 +6,7 @@
 - 価格は読んでいない・載せていない（件数・時刻・被覆率・ハッシュだけ）。戦略の成績は読んでいない。2024 年以降は参照していない。原データは変えていない。
 - 部分観測の日足（被覆率 1 未満）は「完全」と呼ばない。必要本数 60 本 は現在の戦略（検証戦略 B の日足の EMA）の必要履歴で、基盤全体の品質基準ではない。
 - 組 `standard` は時刻の規則の表の標準仮説、`candidate` は候補を持つ行をすべて候補の変換に替えた組（感度の検証。D12-92 (a)）。
-- **標準の組（`standard`）: 確定**（休場帯の足を人間が分類。D12 §0.1.29（D12-99・D12-100、2026-10-17）、原文 `human_decision_2026-10-17_pr85_final_aggregation.md`（SHA-256 `629cd32881483d2150cc82af633f8bb229e9d519cb9266e36a9e424b9c3a6ac6`））。**仮置き: 0 件**（集計の読み方 6 件は同じ決定で確定）。
+- **標準の組（`standard`）: 確定**（休場帯の足を人間が分類。D12 §0.1.29（D12-99・D12-100、2026-10-17）、原文 `docs/data/full_period_feasibility/human_decision_2026-10-17_pr85_final_aggregation.md`（SHA-256 `629cd32881483d2150cc82af633f8bb229e9d519cb9266e36a9e424b9c3a6ac6`））。**仮置き: 0 件**（集計の読み方 6 件は同じ決定で確定）。
 
 ## 1. 通貨ごとの研究対象区間（使える範囲）と使えない範囲
 
@@ -114,7 +114,7 @@
 | GBPJPY | 47 | なし | 77／754 |
 | USDCHF | 63 | なし | 72／746 |
 | AUDJPY | 45 | なし | 78／755 |
-| GBPUSD | 50 | なし | 78／754 |
+| GBPUSD | 51 | なし | 78／754 |
 | AUDUSD | 58 | なし | 73／749 |
 
 - `standard` でカレンダーの外に出た足は休場帯の足（`UNEXPECTED_BAR`）で、人間の分類の対象（D12-94 (a)）。`candidate` で外に出た足は足の生成に使わず件数だけを報告する（D12-97 (a)）。週ごとの件数は `out_of_calendar_bars.csv`。
@@ -162,13 +162,13 @@
 ## 7. 再現方法
 
 ```
-uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility --decision-file human_decision_2026-10-17_pr85_final_aggregation.md --decision-ref D12 §0.1.29（D12-99・D12-100、2026-10-17）
+uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility --decision-file docs/data/full_period_feasibility/human_decision_2026-10-17_pr85_final_aggregation.md --decision-ref 'D12 §0.1.29（D12-99・D12-100、2026-10-17）'
 ```
 
 - 原データの置き場（リポジトリの根から）: `data/raw/oanda_mt5/2026-10-16`（変更しない）
-- 対象のコミット: `d27e926d1308078c1980d2a854dba4012809bdcb`
-- 道具の SHA-256: `4c007967f5846b86ff19fb5c2c02cc62f282522b6a5fa99455265755c9c6d69b`（共通部分 `full_period_feasibility.py`: `9d258bf81616883c40e33e84db2751d501b34fe61adb98555cefd5cb1bb05f88`）
-- 実行時刻（UTC）: 2026-10-17T10:52:44+00:00 〜 2026-10-17T10:57:24+00:00
+- 対象のコミット: `53e40bc6ce5f365643fffd5fedd98e3303f08de8`
+- 道具の SHA-256: `4d25bed5114e9bfcb502b266264a182b7ab5bbafef4926a5dfa46add1712d8d0`（共通部分 `full_period_feasibility.py`: `9d258bf81616883c40e33e84db2751d501b34fe61adb98555cefd5cb1bb05f88`）
+- 実行時刻（UTC）: 2026-10-17T12:47:29+00:00 〜 2026-10-17T12:52:32+00:00
 - 入力・出力の一覧とハッシュは `manifest.json`。
 
 ## 8. ファイル
@@ -187,7 +187,7 @@ uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-1
 | `segments.csv` | 連続区間すべての開始・終了・日足本数・開始と終了の理由 | 16 |
 | `warmup_resets.csv` | 準備のやり直しの箇所・理由・準備が再び整う公開時刻 | 16 |
 | `research_windows.csv` | 準備完了後の研究対象区間と日足本数 | 16 |
-| `candidate_differences.csv` | 標準と候補で結果が変わる日足・件数・区間 | 1,022 |
+| `candidate_differences.csv` | 標準と候補で結果が変わる日足・件数・区間 | 1,795 |
 | `common_windows.csv` | 8 通貨共通の研究対象区間（参考） | 2 |
 | `manifest.json` | 入力のハッシュ・コマンド・実行時刻・出力の行数 | — |
 | `prelim_2026-10-17/` | 規則の確定前の先行統計（記録として残す。最終の判断には使わない） | — |
