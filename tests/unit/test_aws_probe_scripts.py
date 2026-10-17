@@ -443,6 +443,7 @@ def _run_awscli_ps(
     status: str = "Valid",
     subject: str = 'CN="Amazon Web Services, Inc.", O="Amazon Web Services, Inc.", C=US',
     msi_exit: int = 0,
+    installed_script: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     ps = _awscli_ps(tmp_path / "prep")
     win = tmp_path / "win"
@@ -454,6 +455,9 @@ def _run_awscli_ps(
     assert "C:\\" not in ps
     if installed:
         cli.write_text(f"#!/bin/sh\necho '{VERSION_OUT}'\n", encoding="utf-8")
+        cli.chmod(0o755)
+    if installed_script is not None:  # 固定の場所に別の aws（版違い・壊れたもの）が入っている
+        cli.write_text(f"#!/bin/sh\n{installed_script}\n", encoding="utf-8")
         cli.chmod(0o755)
     (win / "mocks.ps1").write_text(MOCKS_PS, encoding="utf-8")
     (win / "install.ps1").write_text(ps, encoding="utf-8")
@@ -727,3 +731,80 @@ def test_autostop_ps_refuses_when_the_time_has_passed(tmp_path: Path) -> None:
     assert r.returncode != 0
     assert "auto stop time already reached or too close" in r.stdout + r.stderr
     assert log == []  # 既存の予約も取り消さない
+
+
+# --- 第 5 巡の指摘: 人間が決めた値・条件をテストで固定する（実装の振る舞いは変えない） ---
+
+
+@needs_bash
+@needs_pwsh
+def test_awscli_ps_keeps_an_installed_2x_of_another_version(tmp_path: Path) -> None:
+    # 決定④: 正常に動く 2.x なら版を問わず入れ直さない（固定の版 2.38.1 でなくてもよい）
+    r, log = _run_awscli_ps(
+        tmp_path, installed_script="echo 'aws-cli/2.31.7 Python/3.12 Windows/2022'"
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == []  # 取得・検証・msiexec のどれも呼ばない
+    assert "aws-cli: already installed, skip: aws-cli/2.31.7" in r.stdout
+
+
+@needs_bash
+@needs_pwsh
+@pytest.mark.parametrize(
+    "installed_script",
+    [
+        "echo 'aws-cli/1.29.0 Python/3.11 Windows/10 botocore/1.31.0'",  # 1.x は 2.x ではない
+        "echo 'broken' >&2; exit 1",  # --version が失敗する
+    ],
+)
+def test_awscli_ps_reinstalls_when_the_installed_one_is_not_a_working_2x(
+    tmp_path: Path, installed_script: str
+) -> None:
+    r, log = _run_awscli_ps(tmp_path, installed_script=installed_script)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "already installed" not in r.stdout
+    assert log[0] == "download https://awscli.amazonaws.com/AWSCLIV2-2.38.1.msi"
+    assert any(x.startswith("install msiexec.exe /i ") for x in log)
+    assert "aws-cli: installed: aws-cli/2.38.1" in r.stdout  # 新しく入れるのは 2.38.1
+
+
+@needs_bash
+def test_delete_wait_defaults_are_10_seconds_and_30_attempts(tmp_path: Path) -> None:
+    # 決定①: 間隔 10 秒・最大 30 回。テストの他の箇所は環境変数で短くしているので、
+    # 既定値をここで固定する
+    env = _env(tmp_path, {})
+    env.pop("S3_DELETE_WAIT_SECONDS", None)
+    env.pop("S3_DELETE_WAIT_ATTEMPTS", None)
+    lib = SCRIPTS / "lib.sh"
+    r = subprocess.run(
+        ["bash", "-c", f'source "{lib}"; echo "$S3_DELETE_WAIT_SECONDS $S3_DELETE_WAIT_ATTEMPTS"'],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["10", "30"]
+
+
+@needs_bash
+@needs_pwsh
+def test_autostop_ps_refuses_when_less_than_60_seconds_remain(tmp_path: Path) -> None:
+    # 残り 30 秒（60 秒未満）では予約しない。既存の予約も取り消さない
+    at = int(datetime.now(tz=UTC).timestamp()) + 30
+    r, log = _run_autostop_ps(tmp_path, at)
+    assert r.returncode != 0
+    assert "auto stop time already reached or too close" in r.stdout + r.stderr
+    assert log == []
+
+
+@needs_bash
+@needs_pwsh
+def test_autostop_ps_schedules_when_more_than_60_seconds_remain(tmp_path: Path) -> None:
+    at = int(datetime.now(tz=UTC).timestamp()) + 150
+    r, log = _run_autostop_ps(tmp_path, at)
+    assert r.returncode == 0, r.stdout + r.stderr
+    m = re.fullmatch(r"shutdown /s /t (\d+) /c .*", log[1])
+    assert m is not None, log
+    assert 60 <= int(m.group(1)) <= 150
