@@ -1176,6 +1176,16 @@ def _n(value: int) -> str:
 def render_final_summary(result: FinalResult, record: Mapping[str, Any]) -> str:
     """最終集計の要約（Markdown）。数はすべて出力の CSV と同じ値から作る。"""
     inputs = record["inputs"]
+    decision = record.get("decisions")
+    status_lines = (
+        [
+            f"- **標準の組（`standard`）: 確定**（休場帯の足を人間が分類。{decision['ref']}、"
+            f"原文 `{decision['file']}`（SHA-256 `{decision['sha256']}`））。"
+            "**仮置き: 0 件**（集計の読み方 6 件は同じ決定で確定）。",
+        ]
+        if decision
+        else ["- 標準の組（`standard`）: 休場帯の足の人間の分類待ち（下の 4 節）。"]
+    )
     lines: list[str] = [
         "# 全期間のデータ上の実行可能性 — 最終集計（8 通貨 × 2017〜2023）",
         "",
@@ -1192,6 +1202,7 @@ def render_final_summary(result: FinalResult, record: Mapping[str, Any]) -> str:
         "基盤全体の品質基準ではない。",
         "- 組 `standard` は時刻の規則の表の標準仮説、`candidate` は候補を持つ行をすべて候補の変換に"
         "替えた組（感度の検証。D12-92 (a)）。",
+        *status_lines,
         "",
         "## 1. 通貨ごとの研究対象区間（使える範囲）と使えない範囲",
         "",
@@ -1311,8 +1322,15 @@ def render_final_summary(result: FinalResult, record: Mapping[str, Any]) -> str:
         "（D12-97 (a)）。"
         "週ごとの件数は `out_of_calendar_bars.csv`。",
         "",
-        "**人間の分類が要る足**（`standard` の休場帯の足。D03 §15.3 の 4・D12-94 (a)。分類するまで"
-        "`standard` の組の snapshot は確定しない。この集計ではその足を足の生成に使っていない）:",
+        (
+            f"**分類済みの足**（`standard` の休場帯の足。{decision['ref']} で人間が「セッション外の"
+            "データ異常」と分類し、使わずに `standard` の組を確定した。表の次の版の検討材料として"
+            "D12 §11.7.10 に記録）:"
+            if decision
+            else "**人間の分類が要る足**（`standard` の休場帯の足。D03 §15.3 の 4・D12-94 (a)。"
+            "分類するまで `standard` の組の snapshot は確定しない。この集計ではその足を"
+            "足の生成に使っていない）:"
+        ),
         "",
         "| 週（NY の日曜） | 足の数（8 通貨の計） | 通貨ごと |",
         "|---|---|---|",
@@ -1414,7 +1432,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--docs-manifest", default=str(DOCS_MANIFEST_DEFAULT))
     parser.add_argument("--timeframes", default=str(TIMEFRAMES_DEFAULT))
     parser.add_argument("--out-dir", default=str(OUT_DIR_DEFAULT))
+    parser.add_argument(
+        "--decision-file",
+        default="",
+        help="休場帯の足の分類などの人間の決定の原文のファイル（SHA-256 を記録する）",
+    )
+    parser.add_argument(
+        "--decision-ref", default="", help="決定の記録の場所（例: D12 §0.1.29、D12-99・D12-100）"
+    )
     return parser
+
+
+def decision_record(file_arg: str, ref: str) -> dict[str, str] | None:
+    """人間の決定の参照（原文のファイル名と SHA-256、設計書の節）。無ければ None。"""
+    if not file_arg and not ref:
+        return None
+    if not file_arg or not ref:
+        raise FeasibilityError("--decision-file と --decision-ref は両方を渡す")
+    path = Path(file_arg)
+    return {"ref": ref, "file": path.name, "sha256": sha256_file(path)}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1433,6 +1469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         calendar = load_calendar(rules.calendar_file)
         timeframes = load_timeframes(Path(args.timeframes))
         pairs = [p for p in args.pairs.split(",") if p] or list(FULL_PAIRS)
+        decision = decision_record(args.decision_file, args.decision_ref)
         result = run_final(root, pairs, rules, conversions, calendar, timeframes)
     except FeasibilityError as exc:
         print(f"誤り: {exc}", file=sys.stderr)
@@ -1453,10 +1490,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "command": " ".join(
             [
                 "uv run python -m tools.survey.full_period_final",
-                *(root_label(x) for x in sys.argv[1:]),
+                *(
+                    Path(x).name
+                    if args.decision_file and x == args.decision_file
+                    else root_label(x)
+                    for x in sys.argv[1:]
+                ),
             ]
         ),
         "raw_root": root_label(str(root)),
+        "decisions": decision,
         "started_at_utc": started.isoformat(timespec="seconds"),
         "finished_at_utc": finished.isoformat(timespec="seconds"),
         "inputs": {

@@ -276,6 +276,20 @@ def test_closure_days_are_weekdays_without_daily_bar() -> None:
     assert fin.closure_days(labels) == ["2017-12-25"]
 
 
+def test_decision_record_hashes_original_and_requires_both(tmp_path: Path) -> None:
+    original = tmp_path / "human_decision.md"
+    original.write_text("回答: 「よい（推奨）」\n", encoding="utf-8")
+    record = fin.decision_record(str(original), "D12 §0.1.29")
+    assert record == {
+        "ref": "D12 §0.1.29",
+        "file": "human_decision.md",
+        "sha256": sha256_file(original),
+    }
+    assert fin.decision_record("", "") is None
+    with pytest.raises(FeasibilityError):
+        fin.decision_record(str(original), "")
+
+
 # --- 第 1 巡のレビューの指摘への回帰テスト ------------------------------------------------
 
 
