@@ -10,7 +10,14 @@ from typing import Any
 import pytest
 
 from tools.survey import full_period_final as fin
-from tools.survey.full_period_feasibility import FeasibilityError, MinuteStatus, iso, sha256_file
+from tools.survey.full_period_feasibility import (
+    FeasibilityError,
+    FileWindow,
+    MinuteStatus,
+    PairSeries,
+    iso,
+    sha256_file,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES = ROOT / "docs/design/counting_rules/counting_rules_v1.yaml"
@@ -149,7 +156,7 @@ def _pv(
         utc_times=[],
         bars={},
         outside_by_week=Counter(),
-        shortfall_reasons=[],
+        uninterpretable_bars=0,
         data_start=0,
     )
     pv.days = days
@@ -267,3 +274,114 @@ def test_week_sunday_groups_ny_trading_week() -> None:
 def test_closure_days_are_weekdays_without_daily_bar() -> None:
     labels = {d for d in _labels(2600, date(2017, 1, 2))} - {"2017-12-25"}
     assert fin.closure_days(labels) == ["2017-12-25"]
+
+
+# --- 第 1 巡のレビューの指摘への回帰テスト ------------------------------------------------
+
+
+def _window(pair: str, lo: str, hi: str, *, acquired: bool, reason: str = "") -> FileWindow:
+    return FileWindow(
+        rid=f"F-{pair}-{lo}",
+        pair=pair,
+        year=int(lo[:4]),
+        month=int(lo[5:7]),
+        lo_api=_e(f"{lo}T00:00:00"),
+        hi_api=_e(f"{hi}T00:00:00"),
+        acquired=acquired,
+        reason=reason,
+    )
+
+
+def _aggregate(series: PairSeries, expected: list[int]) -> fin.PairVariant:
+    standard, _ = fin.load_time_rule_table(TABLE, APPROVED)
+    return fin.aggregate_pair_variant(series, standard, expected, {"1m": []}, ["1m"])
+
+
+def test_failed_first_month_is_shortfall_not_data_start() -> None:
+    series = PairSeries(pair="USDJPY")
+    series.windows = [
+        _window("USDJPY", "2017-01-01", "2017-02-01", acquired=False, reason="状態 error"),
+        _window("USDJPY", "2017-02-01", "2017-03-01", acquired=True),
+    ]
+    feb = _e("2017-02-06T00:00:00")  # API の時刻（UTC は −2 時間）
+    series.times_api = [feb]
+    jan_minute = _e("2017-01-10T10:00:00")
+    feb_minutes = [feb - 2 * 3600, feb - 2 * 3600 + 60]
+    pv = _aggregate(series, [jan_minute, *feb_minutes])
+    assert pv.data_start == _e("2016-12-31T22:00:00")
+    assert pv.status.shortfall == [jan_minute]  # 失敗した月は取得不足（データの開始前ではない）
+    assert pv.status.recorded == [feb_minutes[0]]
+    assert pv.status.no_record == [feb_minutes[1]]
+
+
+def test_pair_not_in_table_is_shortfall_not_crash() -> None:
+    series = PairSeries(pair="NZDUSD")
+    series.windows = [_window("NZDUSD", "2017-02-01", "2017-03-01", acquired=True)]
+    series.times_api = [_e("2017-02-06T00:00:00")]
+    minute = _e("2017-02-06T10:00:00")
+    pv = _aggregate(series, [minute])
+    assert pv.uninterpretable_bars == 1
+    assert pv.status.shortfall == [minute]
+    assert pv.status.recorded == []
+
+
+def test_acquired_range_end_uses_last_inside_instant() -> None:
+    series = PairSeries(pair="USDJPY")
+    series.windows = [_window("USDJPY", "2023-12-01", "2024-01-01", acquired=True)]
+    standard, _ = fin.load_time_rule_table(TABLE, APPROVED)
+    _, acquired, _, _ = fin.convert_with_table(series, standard)
+    assert acquired == [(_e("2023-11-30T22:00:00"), _e("2023-12-31T22:00:00"))]
+
+
+def _table_with(tmp_path: Path, old: str, new: str) -> tuple[Path, Path]:
+    text = TABLE.read_text(encoding="utf-8")
+    assert old in text
+    table = tmp_path / "table.yaml"
+    table.write_text(text.replace(old, new, 1), encoding="utf-8")
+    approved = tmp_path / "approved.yaml"
+    approved.write_text(
+        APPROVED.read_text(encoding="utf-8").replace(
+            "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+            sha256_file(table),
+        ),
+        encoding="utf-8",
+    )
+    return table, approved
+
+
+def test_time_rule_table_rejects_gap(tmp_path: Path) -> None:
+    table, approved = _table_with(
+        tmp_path, "{from: 2017-03-26, to: 2017-10-29}", "{from: 2017-04-02, to: 2017-10-29}"
+    )
+    with pytest.raises(FeasibilityError, match="T2"):
+        fin.load_time_rule_table(table, approved)
+
+
+def test_time_rule_table_rejects_non_sunday_boundary(tmp_path: Path) -> None:
+    # 行 1・2 の 2017 年の春の終わりと行 9 の始まりを同じ月曜にずらす（隙間なし、日曜でない）
+    text_old = "{from: 2017-03-12, to: 2017-03-26}"
+    table, approved = _table_with(tmp_path, text_old, "{from: 2017-03-12, to: 2017-03-27}")
+    text = table.read_text(encoding="utf-8")
+    text = text.replace(text_old, "{from: 2017-03-12, to: 2017-03-27}")
+    text = text.replace("{from: 2017-03-26, to: 2017-10-29}", "{from: 2017-03-27, to: 2017-10-29}")
+    table.write_text(text, encoding="utf-8")
+    approved.write_text(
+        APPROVED.read_text(encoding="utf-8").replace(
+            "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+            sha256_file(table),
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(FeasibilityError, match="T3"):
+        fin.load_time_rule_table(table, approved)
+
+
+def test_time_rule_table_rejects_candidate_on_confirmed_row(tmp_path: Path) -> None:
+    old = "    mark: confirmed\n    standard: {name: 米国式, offset_hours: 3}\n    candidates: []"
+    new = (
+        "    mark: confirmed\n    standard: {name: 米国式, offset_hours: 3}\n"
+        "    candidates:\n      - {name: 欧州式, offset_hours: 2}"
+    )
+    table, approved = _table_with(tmp_path, old, new)
+    with pytest.raises(FeasibilityError, match="T5"):
+        fin.load_time_rule_table(table, approved)

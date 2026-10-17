@@ -71,7 +71,6 @@ from tools.survey.full_period_feasibility import (
     _utc,
     _write_csv,
     classify_minutes,
-    convert_series,
     coverage_row,
     iso,
     long_run_rows,
@@ -269,6 +268,20 @@ class TableConversion:
         day = datetime.fromtimestamp(api_epoch, UTC).date()
         return self.hours_of(self.period(pair, day))
 
+    def offset_or_none(self, pair: str, api_epoch: int) -> int | None:
+        """表が覆わない通貨・日なら None（取得不足 (d)「時刻を解釈できない」）。"""
+        try:
+            return self.offset_hours(pair, api_epoch)
+        except FeasibilityError:
+            return None
+
+    def max_offset_hours(self) -> int:
+        return max(
+            max(p.standard_hours, p.candidate_hours or p.standard_hours)
+            for periods in self.periods.values()
+            for p in periods
+        )
+
     def row_of_utc(self, pair: str, utc_epoch: int) -> RulePeriod:
         """取引時間の中の分の行（UTC の暦日で引いても同じ行。D03 §15.9 の 3・T4）。"""
         return self.period(pair, datetime.fromtimestamp(utc_epoch, UTC).date())
@@ -440,8 +453,8 @@ class PairVariant:
     utc_times: list[int]
     bars: dict[str, list[BarStat]]
     outside_by_week: Counter[str]
-    shortfall_reasons: list[tuple[int, int, str]]
     data_start: int
+    uninterpretable_bars: int  # 時刻の規則の表が覆わない日の足（取得不足 (d)。使わない）
     days: list[dict[str, Any]] = field(default_factory=list)
     segments: list[dict[str, Any]] = field(default_factory=list)
     resets: list[dict[str, Any]] = field(default_factory=list)
@@ -457,6 +470,68 @@ def _week_sunday(utc_epoch: int) -> str:
     return sunday.isoformat()
 
 
+DAY = 86400
+
+
+def convert_with_table(
+    series: PairSeries, conversion: TableConversion
+) -> tuple[list[int], list[tuple[int, int]], int, int]:
+    """API の生の時刻を表の変換で UTC に直す（生の時刻は変えない。D03 §15.3 の 3・5）。
+
+    返り値は (UTC の時刻の列, 取得の範囲（UTC の区間の列）, データの開始, 解釈できない足の数)。
+
+    - 表が覆わない通貨・日（取得不足 (d)）の足は使わず数え、その日は取得の範囲から外す
+      （存在すべき分は取得不足として数える。集計全体は止めない。D03 §15.2）。
+    - 取得に失敗した月（取得不足 (b)）は取得の範囲に入れない。
+    - データの開始は、要求したすべての区間（失敗した月を含む）の最初を UTC に直した時刻。
+      表が覆わない日なら、表の変換の最大で直す（取得不足をデータの開始前に読み替えない向き）。
+    """
+    pair = series.pair
+    cache: dict[int, int | None] = {}
+
+    def offset(t: int) -> int | None:
+        day = t // DAY
+        if day not in cache:
+            cache[day] = conversion.offset_or_none(pair, t)
+        return cache[day]
+
+    utc: list[int] = []
+    uninterpretable = 0
+    for t in series.times_api:
+        hours = offset(t)
+        if hours is None:
+            uninterpretable += 1
+            continue
+        utc.append(t - hours * 3600)
+    if any(b <= a for a, b in zip(utc, utc[1:], strict=False)):
+        raise FeasibilityError(f"{pair}: {conversion.name} の変換で時刻の順が崩れる")
+    acquired: list[tuple[int, int]] = []
+    for window in series.windows:
+        if not window.acquired:
+            continue
+        piece: int | None = None
+        for day_start in range(window.lo_api, window.hi_api, DAY):
+            covered = offset(day_start) is not None
+            if covered and piece is None:
+                piece = day_start
+            if not covered and piece is not None:
+                acquired.append(_to_utc_span(piece, day_start, offset))
+                piece = None
+        if piece is not None:
+            acquired.append(_to_utc_span(piece, window.hi_api, offset))
+    max_shift = conversion.max_offset_hours() * 3600
+    starts = []
+    for window in series.windows:
+        hours = offset(window.lo_api)
+        starts.append(window.lo_api - (hours * 3600 if hours is not None else max_shift))
+    return utc, sorted(acquired), min(starts), uninterpretable
+
+
+def _to_utc_span(lo: int, hi: int, offset: Any) -> tuple[int, int]:
+    """API の区間 [lo, hi) を UTC に直す。終わりは区間の中の最後の時刻の変換で引く。"""
+    return lo - int(offset(lo)) * 3600, hi - int(offset(hi - 1)) * 3600
+
+
 def aggregate_pair_variant(
     series: PairSeries,
     conversion: TableConversion,
@@ -464,11 +539,9 @@ def aggregate_pair_variant(
     intervals: Mapping[str, Sequence[tuple[int, int]]],
     timeframes_order: Sequence[str],
 ) -> PairVariant:
-    utc, acquired, shortfall_windows = convert_series(series, conversion)
-    if not acquired:
-        raise FeasibilityError(f"{series.pair}: 取得済みの区間が無い")
-    data_start = min(a[0] for a in acquired)
-    # 取得の範囲の最初より前はデータの開始前（取得不足に数えない。D03 §15.2）
+    utc, acquired, data_start, uninterpretable = convert_with_table(series, conversion)
+    # 取得の範囲の最初（要求したすべての区間の最初。取得に失敗した月も含む）より前は
+    # データの開始前（取得不足に数えない。D03 §15.2 の順 2 (a)・§15.3 の 5）
     usable = expected[bisect.bisect_left(expected, data_start) :]
     status = classify_minutes(series.pair, conversion.name, utc, acquired, usable, set())
     lo, hi = period_bounds()
@@ -481,8 +554,8 @@ def aggregate_pair_variant(
         utc_times=utc,
         bars=bars,
         outside_by_week=outside,
-        shortfall_reasons=shortfall_windows,
         data_start=data_start,
+        uninterpretable_bars=uninterpretable,
     )
 
 
@@ -516,9 +589,11 @@ def classify_days(
     """§3-B「生成できる日足・部分観測の日足・全日無記録・取得不足の数」と被覆率（日足ごと）。"""
     rows: list[dict[str, Any]] = []
     for bar in pv.bars[DAILY]:
-        period = conversion.row_of_utc(
-            pv.pair, pv.status.expected[bisect.bisect_left(pv.status.expected, bar.start)]
-        )
+        first_minute = pv.status.expected[bisect.bisect_left(pv.status.expected, bar.start)]
+        try:
+            period: RulePeriod | None = conversion.row_of_utc(pv.pair, first_minute)
+        except FeasibilityError:
+            period = None  # 表が覆わない日（取得不足 (d)）
         rows.append(
             {
                 "pair": pv.pair,
@@ -527,8 +602,8 @@ def classify_days(
                 "interval_start_utc": iso(bar.start),
                 "interval_end_utc": iso(bar.end),
                 "published_at_utc": iso(bar.end),
-                "time_rule_row": period.row,
-                "time_rule_mark": period.mark,
+                "time_rule_row": period.row if period else "",
+                "time_rule_mark": period.mark if period else "",
                 "expected_minutes": bar.expected,
                 "recorded_minutes": bar.recorded,
                 "unrecorded_minutes": bar.unrecorded,
@@ -744,6 +819,7 @@ BAR_COUNT_COLUMNS: tuple[str, ...] = (
     "built_bars",
     "min_coverage_built",
     "unrecorded_minutes",
+    "time_not_interpretable_bars",
 )
 #: 被覆率の分布の刻み（表示のためで閾値ではない。D12-87）。下端を含み上端を含まない。
 COVERAGE_BINS: tuple[tuple[str, float, float], ...] = (
@@ -791,6 +867,7 @@ def bar_count_rows(pv: PairVariant) -> list[dict[str, Any]]:
                 "built_bars": kinds["full"] + kinds["partial"],
                 "min_coverage_built": _ratio(min(built) if built else None),
                 "unrecorded_minutes": sum(b.unrecorded for b in bars if not b.shortfall),
+                "time_not_interpretable_bars": pv.uninterpretable_bars,
             }
         )
     return rows
@@ -1121,23 +1198,25 @@ def render_final_summary(result: FinalResult, record: Mapping[str, Any]) -> str:
         "研究対象区間は、準備に必要な日足の最後の 1 本の公開時刻から、連続区間の終わりまで"
         "（準備の期間を含めない）。",
         "",
-        "| 通貨 | 組 | 連続区間 | 研究対象区間（UTC） | 研究対象の日足 | うち準備のやり直し中 | "
-        "やり直し | 準備の期間の日足 | 無記録の日 | 取得不足の日 |",
+        "| 通貨 | 組 | 連続区間（番号/数） | 研究対象区間（UTC） | 研究対象の日足 | "
+        "うち準備のやり直し中 | やり直し | 準備の期間の日足 | 無記録の日（区間の中） | "
+        "取得不足の日（通貨全体） |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for pair, variants in result.per_pair.items():
         for name, pv in variants.items():
-            kinds = Counter(d["day_class"] for d in pv.days)
-            built = kinds["full"] + kinds["partial"]
+            shortfall_days = sum(1 for d in pv.days if d["day_class"] == "shortfall")
+            segments = {s["segment_id"]: s for s in pv.segments}
             for w in pv.windows:
-                warm = built - int(w["research_daily_bars"])
+                seg = segments[w["segment_id"]]
+                warm = int(seg["built_daily_bars"]) - int(w["research_daily_bars"])
                 lines.append(
-                    f"| {pair} | {name} | {len(pv.segments)} | "
+                    f"| {pair} | {name} | {w['segment_id']}/{len(pv.segments)} | "
                     f"{w['research_start_utc'] or '—'} 〜 {w['research_end_utc'] or '—'} | "
                     f"{_n(int(w['research_daily_bars']))} | "
                     f"{w['research_daily_bars_while_rewarming']} | "
-                    f"{w['warmup_resets']} | {_n(warm)} | {kinds['no_record']} | "
-                    f"{kinds['shortfall']} |"
+                    f"{w['warmup_resets']} | {_n(warm)} | {seg['no_record_days']} | "
+                    f"{shortfall_days} |"
                 )
     resets = sorted({r["trading_day"] for pv in _all(result) for r in pv.resets})
     lines += [

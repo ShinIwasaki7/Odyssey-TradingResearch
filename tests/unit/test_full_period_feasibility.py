@@ -129,6 +129,14 @@ def test_convert_series_keeps_raw_times(tmp_path: Path) -> None:
     assert shortfall == []
 
 
+def test_convert_series_window_end_uses_last_inside_instant(tmp_path: Path) -> None:
+    # 2020-11-01（日曜）は米国の夏時間の終わり。10 月の区間の終わりは 10 月 31 日（夏 +3）で直す
+    entry = _write_month(tmp_path, "USDJPY", 2020, 10, [])
+    series = fpf.read_pair(tmp_path, {"files": {entry["rid"]: entry}}, "USDJPY")
+    _, windows, _ = fpf.convert_series(series, fpf.FamilyConversion(fpf.ClockFamily.US))
+    assert fpf.iso(windows[0][1]) == "2020-10-31T21:00Z"
+
+
 # --- 分の状態と統計 -----------------------------------------------------------------
 
 
