@@ -1,0 +1,221 @@
+# 期間別の時刻の規則の表 版 1（OANDA MT5 API の 1 分足。8 通貨 × 2017-01-01〜2023-12-31）
+#
+# 正本の内容: D12 §11.7.10 の「期間別の時刻の規則の表 版 1」（9 行）。人間の承認: 第 14 回（D12-48。
+# 探索研究の前提として承認）、第 17 回（D12-70。判定条件 版 2 で再承認）。本ファイルは表を 1 ファイルに
+# した版付きの記録（D12-47 (a)）で、行・区分・標準仮説・候補・根拠は D12 §11.7.10 と同じ。食い違えば
+# D12 §11.7.10 と人間の決定の原文（D12 §0.1.16〜§0.1.24）が正本。
+#
+# このファイルのバイト列の SHA-256 を、承認済みの表の一覧（approved_time_rule_tables.yaml）・D12 §0.1.26・
+# データ配置の決定記録（ADR-0013）に書く。1 バイトでも変えたら別の版（版 2）として新しいファイルを作り、
+# 人間の承認とハッシュの記録をやり直す（D12-48。前の版での結果は採用の根拠にしない）。
+#
+# 読み方（D03 §15.9）:
+# - 変換 offset_hours は「API の時刻 − UTC」の時間数。UTC = API の時刻 − offset_hours。
+# - 期間 periods は暦日の半開区間 [from, to)。境目はすべて夏時間の切替の日曜（00:00）で、週末の休場の中にある。
+# - 表を引く鍵は API の生の時刻の暦日（変換の前）。取引時間の中の分では、UTC の暦日で引いても同じ行になる
+#   （切替の日曜の 00:00 の前後 3 時間はどちらの時刻でも週末の休場の中にあるため。D03 §15.9 の検査 T4）。
+# - to の 2024-01-01 は研究期間の終わりを表す排他の境界で、2024 年以降のデータを指さない。
+# - 本ファイルの読込・検証は app.config が行う（ADR-0018。人間が承認する宣言なので YAML）。
+
+schema_version: 1
+
+id: oanda_mt5_time_rules
+version: 1
+judgment_criteria_version: 2  # 確認済みへ移す判定条件の版（D12 §11.7.9。D12-65 (b)・D12-70）
+source_section: "D12 §11.7.10（表 版 1）"
+approval:
+  decisions: ["D12-48（第 14 回、2026-10-16）", "D12-70（第 17 回、2026-10-16）"]
+  note: "第 14 回の原文「時刻規則表 版1は、探索研究の前提として承認してよいと考えます。」、第 17 回の原文「承認する（推奨）」"
+conversion_definition: "API の時刻 − UTC（時間）"
+lookup_key: "API の生の時刻の暦日"
+coverage:
+  pairs: [USDJPY, EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+  from: 2017-01-01
+  to: 2024-01-01
+marks:
+  confirmed: "確認済み"
+  assumed_same: "仮定付き（候補の間で変換が同じ）"
+  assumed_differs: "仮定付き（候補の間で変換が違う）"
+
+rows:
+  - row: 1
+    pairs: [USDJPY]
+    label: "USDJPY × 2017・2019 年の春の米欧の間"
+    periods:
+      - {from: 2017-03-12, to: 2017-03-26}
+      - {from: 2019-03-10, to: 2019-03-31}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 欧州式, offset_hours: 2}
+    candidates:
+      - {name: 米国式, offset_hours: 3}
+    evidence:
+      discriminating: "金曜の閉場 5 週末 +2（付録 K-11）"
+      opening_position: "開場 5 週末 +3（説明 X でも説明できる）"
+      price_auxiliary: "bid の差の統計は +2（火曜 5 つ、K-11 の週末の両側）。ask の 1 つ（2019-03-17 の月曜の側）だけ +3（記録）"
+    observed_scope: "K-11 の 5 週末と火曜"
+    extension_assumption: "区間の中の観察していない日"
+    decision: "第 13 回（D12-54）"
+
+  - row: 2
+    pairs: [EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "他の 7 通貨 × 行 1 と同じ期間"
+    periods:
+      - {from: 2017-03-12, to: 2017-03-26}
+      - {from: 2019-03-10, to: 2019-03-31}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 欧州式, offset_hours: 2}
+    candidates:
+      - {name: 米国式, offset_hours: 3}
+    evidence:
+      discriminating: "なし"
+      opening_position: "2019 年は E4 で USDJPY と同じ境界（C5 により直接確認にしない）"
+      price_auxiliary: "EURJPY・EURUSD・GBPJPY 2019-03-19 の差の統計 +2（差のみの証拠）。他の 4 通貨と 2017 年は配布 CSV が無く比較材料なし（C8 により仮定付きのまま）"
+    observed_scope: "なし（2017 年は観察なし）"
+    extension_assumption: "USDJPY の行 1 を他の通貨へ広げる（仮定。「欧州式が確認できた」という意味にしない）"
+    decision: "第 13 回（D12-54）を全通貨の期間に当てる（第 13 回の続き その 2 の質問 1 (a)）"
+
+  - row: 3
+    pairs: [USDJPY]
+    label: "USDJPY × 2023 年の春の米欧の間"
+    periods:
+      - {from: 2023-03-12, to: 2023-03-26}
+    status: 確認済み
+    mark: confirmed
+    standard: {name: 米国式, offset_hours: 3}
+    candidates: []
+    evidence:
+      discriminating: "配布 CSV と 4 値の完全一致 +3（2023-03-14、115/115。C2-b）"
+      opening_position: "S2 の週末の開場 +3"
+      price_auxiliary: "—"
+    observed_scope: "2023-03-14 を含む週"
+    extension_assumption: "2023-03-19 からの週（直接の観察なし。D12-59 で区間全体を確認済みとした）"
+    decision: "D12-59 (a)"
+
+  - row: 4
+    pairs: [EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "他の 7 通貨 × 行 3 と同じ期間"
+    periods:
+      - {from: 2023-03-12, to: 2023-03-26}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 米国式, offset_hours: 3}
+    candidates:
+      - {name: 欧州式, offset_hours: 2}
+    evidence:
+      discriminating: "なし"
+      opening_position: "2023 年の S2 の週末の E4"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "USDJPY の行 3 を広げる"
+    decision: "D12-59 (a)"
+
+  - row: 5
+    pairs: [USDJPY, EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2017・2019 年の秋の米欧の間"
+    periods:
+      - {from: 2017-10-29, to: 2017-11-05}
+      - {from: 2019-10-27, to: 2019-11-03}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 欧州式, offset_hours: 2}
+    candidates:
+      - {name: 米国式, offset_hours: 3}
+    evidence:
+      discriminating: "なし"
+      opening_position: "S4 の週末の開場 +3（USDJPY）"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "同じ年の春（行 1）を秋へ広げる"
+    decision: "D12-56 (a)（D12-46 の標準仮説を変更）"
+
+  - row: 6
+    pairs: [USDJPY, EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2018 年の春・秋の米欧の間"
+    periods:
+      - {from: 2018-03-11, to: 2018-03-25}
+      - {from: 2018-10-28, to: 2018-11-04}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 欧州式, offset_hours: 2}
+    candidates:
+      - {name: 米国式, offset_hours: 3}
+    evidence:
+      discriminating: "なし"
+      opening_position: "S2・S4 の週末の開場 +3（USDJPY）"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "2017・2019 年から挟んで広げる"
+    decision: "D12-57 (a)（D12-45 の標準仮説を変更）"
+
+  - row: 7
+    pairs: [USDJPY, EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2020〜2022 年の春・秋の米欧の間、2023 年の秋の米欧の間"
+    periods:
+      - {from: 2020-03-08, to: 2020-03-29}
+      - {from: 2020-10-25, to: 2020-11-01}
+      - {from: 2021-03-14, to: 2021-03-28}
+      - {from: 2021-10-31, to: 2021-11-07}
+      - {from: 2022-03-13, to: 2022-03-27}
+      - {from: 2022-10-30, to: 2022-11-06}
+      - {from: 2023-10-29, to: 2023-11-05}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 米国式, offset_hours: 3}
+    candidates:
+      - {name: 欧州式, offset_hours: 2}
+    evidence:
+      discriminating: "なし"
+      opening_position: "S2・S4 の週末の開場 +3（USDJPY、2023 年は他の通貨も）"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "2023 年の春（行 3）から広げる"
+    decision: "D12-58 (a)（D12-45 のまま）"
+
+  - row: 8
+    pairs: [USDJPY, EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2017〜2023 年の両方冬の週"
+    periods:
+      - {from: 2017-01-01, to: 2017-03-12}
+      - {from: 2017-11-05, to: 2018-03-11}
+      - {from: 2018-11-04, to: 2019-03-10}
+      - {from: 2019-11-03, to: 2020-03-08}
+      - {from: 2020-11-01, to: 2021-03-14}
+      - {from: 2021-11-07, to: 2022-03-13}
+      - {from: 2022-11-06, to: 2023-03-12}
+      - {from: 2023-11-05, to: 2024-01-01}
+    status: 仮定付き
+    mark: assumed_same
+    standard: {name: 両方冬（米国式・欧州式とも同じ）, offset_hours: 2}
+    candidates: []
+    evidence:
+      discriminating: "金曜の閉場 +2、2023-03-07 の完全一致 +2（USDJPY）"
+      opening_position: "開場 +2"
+      price_auxiliary: "bid の差の統計 +2"
+    observed_scope: "USDJPY の観察した週、他の通貨は E4 の週"
+    extension_assumption: "観察していない週・年・通貨"
+    decision: "D12-53 (b)"
+
+  - row: 9
+    pairs: [USDJPY, EURJPY, EURUSD, AUDJPY, GBPJPY, USDCHF, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2017〜2023 年の両方夏の週"
+    periods:
+      - {from: 2017-03-26, to: 2017-10-29}
+      - {from: 2018-03-25, to: 2018-10-28}
+      - {from: 2019-03-31, to: 2019-10-27}
+      - {from: 2020-03-29, to: 2020-10-25}
+      - {from: 2021-03-28, to: 2021-10-31}
+      - {from: 2022-03-27, to: 2022-10-30}
+      - {from: 2023-03-26, to: 2023-10-29}
+    status: 仮定付き
+    mark: assumed_same
+    standard: {name: 両方夏（米国式・欧州式とも同じ）, offset_hours: 3}
+    candidates: []
+    evidence:
+      discriminating: "金曜の閉場 +3"
+      opening_position: "開場 +3"
+      price_auxiliary: "bid の差の統計 +3（2017-03-28）"
+    observed_scope: "USDJPY の観察した週、他の通貨は E4 の週"
+    extension_assumption: "観察していない週・年・通貨"
+    decision: "D12-53 (b)"
