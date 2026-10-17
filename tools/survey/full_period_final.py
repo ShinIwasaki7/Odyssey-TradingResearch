@@ -1232,6 +1232,13 @@ def render_final_summary(result: FinalResult, record: Mapping[str, Any]) -> str:
         "（D12-97 (a)）。"
         "週ごとの件数は `out_of_calendar_bars.csv`。",
         "",
+        "**人間の分類が要る足**（`standard` の休場帯の足。D03 §15.3 の 4・D12-94 (a)。分類するまで"
+        "`standard` の組の snapshot は確定しない。この集計ではその足を足の生成に使っていない）:",
+        "",
+        "| 週（NY の日曜） | 足の数（8 通貨の計） | 通貨ごと |",
+        "|---|---|---|",
+        *_unexpected_rows(result),
+        "",
         "## 5. 8 通貨共通の研究対象区間（参考。`common_windows.csv`）",
         "",
         "| 組 | 開始（UTC） | 終わり（UTC） | 取引日 | 全通貨で日足あり | どれかの通貨で日足なし | "
@@ -1298,6 +1305,21 @@ def render_final_summary(result: FinalResult, record: Mapping[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _unexpected_rows(result: FinalResult) -> list[str]:
+    weeks: dict[str, dict[str, int]] = {}
+    for pair, variants in result.per_pair.items():
+        for week, n in variants[STANDARD].outside_by_week.items():
+            weeks.setdefault(week, {})[pair] = n
+    if not weeks:
+        return ["| なし | 0 | — |"]
+    return [
+        f"| {week} | {sum(per.values())} | "
+        + "、".join(f"{p} {n}" for p, n in sorted(per.items()))
+        + " |"
+        for week, per in sorted(weeks.items())
+    ]
 
 
 def result_need(result: FinalResult) -> str:
