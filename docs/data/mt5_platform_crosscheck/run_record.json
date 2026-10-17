@@ -1,6 +1,6 @@
 {
  "tool": "tools/survey/mt5_platform_crosscheck.py",
- "target_commit": "c8be2386ed6e9c1894852ee48cbecc80e23c0566",
+ "target_commit": "66d22fdd9fd229a8b7246e21a900065a37ff66bc",
  "command": "uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置き場>/2026-10-16 --feasibility-csv <道具の daily_coverage.csv> --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 --out-dir docs/data/mt5_platform_crosscheck",
  "raw_root": "2026-10-16",
  "pairs": [
@@ -27,23 +27,25 @@
  },
  "summary": {
   "USDJPY": {
-   "trading_days": 126,
-   "matched": 126,
+   "trading_days": 127,
+   "matched": 127,
    "mismatched": [],
    "classes": {
     "partial": 87,
     "fully_observed": 38,
+    "closed": 1,
     "no_record": 1
    },
    "history_resets": 1
   },
   "EURUSD": {
-   "trading_days": 126,
-   "matched": 126,
+   "trading_days": 127,
+   "matched": 127,
    "mismatched": [],
    "classes": {
     "partial": 90,
     "fully_observed": 35,
+    "closed": 1,
     "no_record": 1
    },
    "history_resets": 1

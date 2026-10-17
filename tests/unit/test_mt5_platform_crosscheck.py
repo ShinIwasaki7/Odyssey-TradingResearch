@@ -59,3 +59,39 @@ def test_a_day_only_on_the_tool_side_is_a_mismatch() -> None:
         ("2018-12-25T22:00Z", False),
         ("2018-12-26T22:00Z", True),
     ]
+
+
+def test_a_tool_day_with_no_expected_minutes_matches_a_closure() -> None:
+    """道具の行で存在すべき分が 0 の日（休場の定義で全分が外れた日）は、
+    基盤に日足が無いことと一致する。"""
+    platform = {
+        "2018-12-25T22:00Z": _PlatformDay(
+            interval=Interval(
+                start=UtcTime.parse("2018-12-25T22:00:00Z"),
+                end=UtcTime.parse("2018-12-26T22:00:00Z"),
+            ),
+            bar_class="partial",
+            expected=1430,
+            recorded=1430 - 5,
+            shortfall=0,
+            first_observed="2018-12-25T22:10Z",
+        ),
+        "2018-12-23T22:00Z": _PlatformDay(
+            interval=Interval(
+                start=UtcTime.parse("2018-12-23T22:00:00Z"),
+                end=UtcTime.parse("2018-12-24T22:00:00Z"),
+            ),
+            bar_class="partial",
+            expected=1440,
+            recorded=1439,
+            shortfall=0,
+            first_observed="2018-12-23T22:00Z",
+        ),
+    }
+    closed = _tool("2018-12-24T22:00Z", "2018-12-25T08:00Z", 0)
+    closed["expected_minutes"] = "0"
+    closed["no_record_minutes"] = "0"
+    rows = compare_days("USDJPY", platform, [closed])
+    matched = [row for row in rows if row["interval_start_utc"] == "2018-12-24T22:00Z"]
+    assert matched[0]["platform_class"] == "closed"
+    assert matched[0]["match"] is True

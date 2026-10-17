@@ -172,7 +172,9 @@ def compare_days(
     すべて出力し、片方にしか無い取引日は不一致にする（休場の日はどちらの側にも取引日として現れない）。
     """
     out: list[dict[str, Any]] = []
-    tool_by_start = {row["interval_start_utc"]: row for row in tool_rows}
+    tool_by_start: dict[str, Mapping[str, str]] = {
+        row["interval_start_utc"]: row for row in tool_rows
+    }
     if platform:
         lo = min(platform)
         hi = max(_iso(day.interval.end) for day in platform.values())
@@ -185,44 +187,49 @@ def compare_days(
         extra = []
     for start in extra:
         theirs = tool_by_start[start]
+        tool_class = _tool_class(theirs)
+        # 道具の行で存在すべき分が 0（休場の定義で全分が外れた日。道具はカレンダー 版 2
+        # の日足の区間を
+        # 使うので行が残る）は、基盤に日足が無いこと（`fx_ny17_oanda` 版 1 で休場）と同じ意味。
+        closed = tool_class == "closed"
         out.append(
             {
                 "pair": pair,
                 "trading_day": theirs["trading_day"],
                 "interval_start_utc": start,
                 "interval_end_utc": theirs["interval_end_utc"],
-                "platform_class": "",
-                "tool_class": _tool_class(theirs),
+                "platform_class": "closed" if closed else "",
+                "tool_class": tool_class,
                 "tool_expected": int(theirs["expected_minutes"]),
                 "tool_recorded": int(theirs["recorded_minutes"]),
                 "tool_unrecorded": int(theirs["no_record_minutes"]),
                 "tool_shortfall": int(theirs["shortfall_minutes"]),
                 "tool_first_observed": theirs["first_recorded_utc"],
-                "match": False,
+                "match": closed,
             }
         )
     for start in sorted(platform):
         mine = platform[start]
-        theirs = tool_by_start.get(start)
+        found = tool_by_start.get(start)
         record: dict[str, Any] = {
             "pair": pair,
-            "trading_day": "" if theirs is None else theirs["trading_day"],
+            "trading_day": "" if found is None else found["trading_day"],
             "interval_start_utc": start,
-            "interval_end_utc": "" if theirs is None else theirs["interval_end_utc"],
+            "interval_end_utc": "" if found is None else found["interval_end_utc"],
             "platform_class": mine.bar_class,
-            "tool_class": "" if theirs is None else _tool_class(theirs),
+            "tool_class": "" if found is None else _tool_class(found),
             "platform_expected": mine.expected,
-            "tool_expected": "" if theirs is None else int(theirs["expected_minutes"]),
+            "tool_expected": "" if found is None else int(found["expected_minutes"]),
             "platform_recorded": mine.recorded,
-            "tool_recorded": "" if theirs is None else int(theirs["recorded_minutes"]),
+            "tool_recorded": "" if found is None else int(found["recorded_minutes"]),
             "platform_unrecorded": mine.expected - mine.recorded if mine.expected >= 0 else -1,
-            "tool_unrecorded": "" if theirs is None else int(theirs["no_record_minutes"]),
+            "tool_unrecorded": "" if found is None else int(found["no_record_minutes"]),
             "platform_shortfall": mine.shortfall,
-            "tool_shortfall": "" if theirs is None else int(theirs["shortfall_minutes"]),
+            "tool_shortfall": "" if found is None else int(found["shortfall_minutes"]),
             "platform_first_observed": mine.first_observed,
-            "tool_first_observed": "" if theirs is None else theirs["first_recorded_utc"],
+            "tool_first_observed": "" if found is None else found["first_recorded_utc"],
         }
-        record["match"] = theirs is not None and all(
+        record["match"] = found is not None and all(
             record[f"platform_{name}"] == record[f"tool_{name}"]
             for name in (
                 "class",
