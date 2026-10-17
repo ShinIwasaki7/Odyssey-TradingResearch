@@ -28,6 +28,7 @@ from typing import Final, Protocol, runtime_checkable
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import UtcTime
+from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
 from odyssey_fx.marketdata.application.snapshot_access import (
     PartitionedBars,
     ReadableSnapshot,
@@ -50,6 +51,7 @@ __all__ = [
     "ExecutionSeriesView",
     "HistoryWindowLike",
     "MissingInput",
+    "window_starts",
 ]
 
 #: 予定上の足を先へ辿る上限の本数。開場中の足が1本も無いまま進む区間は休場であり、
@@ -151,6 +153,9 @@ class AsOfView:
     _visibility: dict[SeriesId, _SeriesVisibility] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
+    _no_record: Mapping[SeriesId, frozenset[UtcTime]] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.publication_log, PublicationLog):
@@ -187,11 +192,29 @@ class AsOfView:
             self, "_readable", readable_surface(self.partition_bars, self.allowed_partitions)
         )
         object.__setattr__(self, "_visibility", {})
+        # MT5 経路の全分無記録の足（D03 §15.7）。HistData の経路では空（従来の読み方のまま）。
+        observation = Mt5Observation.from_snapshot(self.snapshot)
+        object.__setattr__(
+            self,
+            "_no_record",
+            MappingProxyType({}) if observation is None else observation.no_record,
+        )
 
     @property
     def manifest(self) -> SnapshotManifest:
         """読んでいる snapshot の manifest。"""
         return self.snapshot.manifest
+
+    def _is_no_record(self, series: SeriesId, bar_start: UtcTime) -> bool:
+        """全分無記録の足（作られなかった足）か（D03 §15.7。MT5 経路だけ）。
+
+        その足を必要とする読み取りは、どの操作でも「準備不足」（`WARMUP_INSUFFICIENT`）を返す
+        （D12-84、日中の時間足も同じ。D12-90 (a)）。`INPUT_MISSING_OR_INVALID`・
+        `LATEST_BAR_UNAVAILABLE` にしないのは、作られない足の公開を待つ経路（待機）に入れないため。
+        判定は期待される足の列の中でだけ行うので、足の予定の公開時刻より前には現れない（未来を
+        読まない）。
+        """
+        return bar_start in self._no_record.get(series, frozenset())
 
     # --- 内部 ---------------------------------------------------------------
 
@@ -232,6 +255,20 @@ class AsOfView:
                 f" scheduled time {scheduled}; delays are non-negative (D03 §3.5・§3.6)"
             )
         return recorded
+
+    def _scheduled_end_passed(self, series: SeriesId, bar_start: UtcTime, at: UtcTime) -> bool:
+        """足の予定の公開時刻が `at` 以前か（区間が終わるまで全分無記録とは決まらない。D03
+        §15.7）。"""
+        # 遅延シナリオを当てた公開時刻（公開記録）があればそれを使う（D03
+        # §15.7「遅延シナリオ込み」）。
+        recorded = self._recorded_at.get(BarKey(series=series, bar_start=bar_start))
+        if recorded is not None:
+            return recorded <= at
+        definition = self._schedule(series).timeframe_def
+        interval = definition.expected_interval(self._schedule(series).calendar, bar_start)
+        if interval is None:
+            return False
+        return self._schedule(series).scheduled_at(interval.end) <= at
 
     def _series_visibility(self, series: SeriesId) -> _SeriesVisibility:
         """系列の足と利用可能時刻の索引（系列ごとに初回の読み取りで1度だけ作る）。
@@ -280,6 +317,12 @@ class AsOfView:
         bars_view = self._bars()
         if bars_view.starts_before_data(series, expected.bar_start):
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        if self._is_no_record(series, expected.bar_start):
+            # 予定の公開時刻より前は、作られた足が未公開のときと同じ答え（未来を読まない。D03
+            # §15.7）。
+            if not self._scheduled_end_passed(series, expected.bar_start, at):
+                return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         bars_view.require_covered(series, expected.bar_start)
         found = self._first_visible(series, expected.bar_start, at)
         if found is not None:
@@ -290,6 +333,10 @@ class AsOfView:
         """指定した足（D03 §6.2）。`available_at > at` なら不可視。"""
         _require_utc(at, "bar")
         _require_utc(bar_start, "bar")
+        if self._is_no_record(series, bar_start) and self._scheduled_end_passed(
+            series, bar_start, at
+        ):
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         self._bars().require_covered(series, bar_start)
         found = self._first_visible(series, bar_start, at)
         if found is not None:
@@ -329,6 +376,12 @@ class AsOfView:
         expected = self.expected_latest_key(series, at)
         if expected is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        # 基準の足（期待される最新足）が全分無記録で予定の公開時刻を過ぎていれば、末尾から除く
+        # 本数があっても準備不足（D03 §15.7「窓か基準の足がその日足を含む」。D12-127）。
+        if self._is_no_record(series, expected.bar_start) and self._scheduled_end_passed(
+            series, expected.bar_start, at
+        ):
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         return self._window_from(series, window, expected.bar_start, at, end_offset_bars)
 
     def history_ending_at(
@@ -366,6 +419,10 @@ class AsOfView:
             )
         bars_view = self._bars()
         if bars_view.starts_before_data(series, base_bar_start):
+            return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        if self._is_no_record(series, base_bar_start):
+            if not self._scheduled_end_passed(series, base_bar_start, at):
+                return MissingInput(MissingInputReason.LATEST_BAR_UNAVAILABLE)
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
         bars_view.require_covered(series, base_bar_start)
         if self._first_visible(series, base_bar_start, at) is None:
@@ -417,6 +474,11 @@ class AsOfView:
                     return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
                 if bars_view.starts_before_data(series, interval.start):
                     return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+                if self._is_no_record(series, interval.start) and self._scheduled_end_passed(
+                    series, interval.start, at
+                ):
+                    # その足より古い足へ遡って返さない（D03 §15.7）。
+                    return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
                 bars_view.require_covered(series, interval.start)
                 found = visibility.last_visible(interval.start, at)
                 if found is not None:
@@ -434,29 +496,12 @@ class AsOfView:
     ) -> tuple[Bar, ...] | MissingInput:
         """基準の足から窓を切る（`history` と `history_ending_at` に共通の手順）。"""
         schedule = self._schedule(series)
-        # 期待される足の開始時刻を新しい順に並べる。欠損を飛ばさず、期待どおりの並びを作る。
-        expected_starts = _expected_starts_backwards(
-            schedule, base_start, _needed_bars(window, end_offset_bars)
-        )
-        if expected_starts is None:
+        selected = window_starts(schedule, window, base_start, end_offset_bars)
+        if selected is None:
             return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-        if end_offset_bars:
-            if len(expected_starts) <= end_offset_bars:
-                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            expected_starts = expected_starts[end_offset_bars:]
-
-        wanted: tuple[UtcTime, ...]
-        if isinstance(window, BarsWindowLike):
-            if len(expected_starts) < window.count:
-                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            wanted = expected_starts[: window.count]
-        else:
-            selected = _duration_selection(schedule, expected_starts, window)
-            if selected is None:
-                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
-            if not selected:
-                return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
-            wanted = selected
+        if not selected:
+            return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
+        wanted: tuple[UtcTime, ...] = selected
 
         bars_view = self._bars()
         for start in wanted:
@@ -464,6 +509,14 @@ class AsOfView:
             # 区別する（上位設計書 §4.3.10）。
             if bars_view.starts_before_data(series, start):
                 return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+            # 全分無記録の足を含む窓は準備不足（D03 §15.7、D12-84・D12-90 (a)）。ただしその足の
+            # 予定の公開時刻より前は、未公開の足と同じく入力不足のまま（未来を読まない）。
+            if self._is_no_record(series, start) and self._scheduled_end_passed(series, start, at):
+                return MissingInput(MissingInputReason.WARMUP_INSUFFICIENT)
+        for start in wanted:
+            if self._is_no_record(series, start):
+                # まだ公開されていない無記録の足。snapshot の範囲の中なので構造エラーにしない。
+                return MissingInput(MissingInputReason.INPUT_MISSING_OR_INVALID)
             bars_view.require_covered(series, start)
         visibility = self._series_visibility(series)
         collected: list[Bar] = []
@@ -565,6 +618,35 @@ def _require_window(window: HistoryWindowLike) -> None:
     raise MarketDataValueError(
         f"history() window must expose a bar count or a duration, got {type(window).__name__}"
     )
+
+
+def window_starts(
+    schedule: SeriesSchedule,
+    window: HistoryWindowLike,
+    base_start: UtcTime,
+    end_offset_bars: int,
+) -> tuple[UtcTime, ...] | None:
+    """基準の足から読む窓の期待足の開始時刻（新しい順。D03 §6.2）。
+
+    データ開始前まで遡っても揃わなければ `None`（助走不足）。経過時間の窓が空（全期間休場）なら
+    空のタプル。`history`・`history_ending_at` と、表22 の準備不足の時刻の計算（D12-127）が同じ
+    関数を使う（読み取りの条件と記録を一致させる）。
+    """
+    # 期待される足の開始時刻を新しい順に並べる。欠損を飛ばさず、期待どおりの並びを作る。
+    expected_starts = _expected_starts_backwards(
+        schedule, base_start, _needed_bars(window, end_offset_bars)
+    )
+    if expected_starts is None:
+        return None
+    if end_offset_bars:
+        if len(expected_starts) <= end_offset_bars:
+            return None
+        expected_starts = expected_starts[end_offset_bars:]
+    if isinstance(window, BarsWindowLike):
+        if len(expected_starts) < window.count:
+            return None
+        return expected_starts[: window.count]
+    return _duration_selection(schedule, expected_starts, window)
 
 
 def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:

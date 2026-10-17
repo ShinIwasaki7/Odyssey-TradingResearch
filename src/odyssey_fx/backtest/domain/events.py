@@ -126,10 +126,20 @@ class OrderEvent:
     at: ProcessingPoint
     reason: Reason | None = None
     fill_id: FillId | None = None
+    #: 期限切れの行で、期限が無記録の中で来たか（D06 §18.10 の表8 の列）。MT5 経路の期限切れの
+    #: 行だけが真偽値を持ち、それ以外は `None`。
+    expired_in_unrecorded: bool | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, EventId):
             raise KernelValueError("OrderEvent.event_id must be an EventId")
+        if self.expired_in_unrecorded is not None:
+            if not isinstance(self.expired_in_unrecorded, bool):
+                raise KernelValueError("OrderEvent.expired_in_unrecorded must be a bool or None")
+            if self.to_status is not OrderStatus.EXPIRED:
+                raise KernelValueError(
+                    "OrderEvent.expired_in_unrecorded is recorded on expiry rows only (D06 §18.10)"
+                )
         if not isinstance(self.order_id, OrderId):
             raise KernelValueError("OrderEvent.order_id must be an OrderId")
         if self.from_status is not None and not isinstance(self.from_status, OrderStatus):

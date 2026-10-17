@@ -33,6 +33,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.application.partition_digest import (
     PARTITION_COLUMNS,
+    columns_for,
     partition_digest_hex,
     partition_row,
 )
@@ -45,7 +46,13 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     ReadableSnapshot,
 )
 from odyssey_fx.marketdata.domain.access import AccessClass
-from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
+from odyssey_fx.marketdata.domain.bar import (
+    Bar,
+    BarCoverage,
+    MinuteSource,
+    Provenance,
+    ProvenanceKind,
+)
 from odyssey_fx.marketdata.domain.classification import (
     ClassificationDecision,
     ClassificationOutcome,
@@ -70,13 +77,18 @@ from odyssey_fx.marketdata.domain.snapshot import (
     DeclarationRecord,
     LegacyAccessRecord,
     LegacyObservation,
+    Mt5AcquisitionRecord,
+    Mt5ConversionRecord,
+    Mt5FailedSpan,
     PartitionId,
     PartitionRecord,
+    SeriesCoverageCounts,
     SeriesManifest,
     SnapshotManifest,
     SourceFile,
 )
 from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRecord
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef, TimeRuleVariant
 
 __all__ = ["MANIFEST_SCHEMA_VERSION", "ParquetSnapshotStore", "manifest_payload"]
 
@@ -132,6 +144,94 @@ def _interval_from_payload(payload: Mapping[str, Any]) -> Interval:
     )
 
 
+def _mt5_payload(mt5: Mt5ConversionRecord) -> Mapping[str, Any]:
+    """MT5 経路の変換の記録の JSON の形（D03 §15.6 の 4）。"""
+    table = mt5.time_rule_table
+    return {
+        "acquisitions": [
+            {
+                "acquired": [_interval_payload(item) for item in record.acquired],
+                "data_interval": _interval_payload(record.data_interval),
+                "failed": [
+                    {"interval": _interval_payload(item.interval), "reason": item.reason}
+                    for item in record.failed
+                ],
+                "symbol": str(record.symbol),
+            }
+            for record in mt5.acquisitions
+        ],
+        "column_mapping": mt5.column_mapping,
+        "fetch_manifest_sha256": mt5.fetch_manifest_sha256,
+        "route": mt5.route,
+        "time_rule_table": {
+            "sha256": table.sha256,
+            "table_id": table.table_id,
+            "variant": table.variant.value,
+            "version": table.version,
+        },
+        "weeks_checked": mt5.weeks_checked,
+        "weeks_failed": mt5.weeks_failed,
+        **({"months": list(mt5.months)} if mt5.months else {}),
+    }
+
+
+def _mt5_from_payload(payload: Mapping[str, Any]) -> Mt5ConversionRecord:
+    table = payload["time_rule_table"]
+    return Mt5ConversionRecord(
+        route=str(payload["route"]),
+        column_mapping=str(payload["column_mapping"]),
+        fetch_manifest_sha256=str(payload["fetch_manifest_sha256"]),
+        time_rule_table=TimeRuleTableRef(
+            table_id=str(table["table_id"]),
+            version=int(table["version"]),
+            sha256=str(table["sha256"]),
+            variant=TimeRuleVariant(str(table["variant"])),
+        ),
+        acquisitions=tuple(
+            Mt5AcquisitionRecord(
+                symbol=Symbol(str(record["symbol"])),
+                data_interval=_interval_from_payload(record["data_interval"]),
+                acquired=tuple(_interval_from_payload(item) for item in record["acquired"]),
+                failed=tuple(
+                    Mt5FailedSpan(
+                        interval=_interval_from_payload(item["interval"]),
+                        reason=str(item["reason"]),
+                    )
+                    for item in record["failed"]
+                ),
+            )
+            for record in payload["acquisitions"]
+        ),
+        weeks_checked=int(payload["weeks_checked"]),
+        weeks_failed=int(payload["weeks_failed"]),
+        months=tuple(str(item) for item in payload.get("months", ())),
+    )
+
+
+_COVERAGE_COUNT_KEYS = (
+    "built_bars",
+    "no_record_bars",
+    "partial_bars",
+    "shortfall_bars",
+    "shortfall_minutes",
+    "unrecorded_minutes",
+)
+
+
+def _series_record_payload(record: SeriesManifest) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "bar_count": record.bar_count,
+        "covered_interval": _interval_payload(record.covered_interval),
+        "partitions": [_partition_payload(partition) for partition in record.partitions],
+        "series_id": _series_payload(record.series_id),
+    }
+    if record.coverage_counts is not None:
+        payload["coverage_counts"] = {
+            key: getattr(record.coverage_counts, key) for key in _COVERAGE_COUNT_KEYS
+        }
+    return payload
+
+
 def _partition_payload(partition_id: PartitionId) -> Mapping[str, Any]:
     return {
         "access_class": partition_id.access_class.value,
@@ -162,7 +262,7 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             "verified": manifest.basis_declaration.verified,
         },
         # 補正の記録が無ければ従来の 5 項目だけ（D03 §3.7 の v1.19）。識別子の対象と同じ形。
-        "conversion": dict(manifest.conversion.identity_payload()),
+        "conversion": _conversion_payload(manifest.conversion),
         "integrity_report_ref": _digest_payload(manifest.integrity_report_ref),
         "provisional_report_ref": _digest_payload(provisional_ref),
         "sources": [
@@ -179,15 +279,7 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             }
             for source in manifest.sources
         ],
-        "series": [
-            {
-                "bar_count": record.bar_count,
-                "covered_interval": _interval_payload(record.covered_interval),
-                "partitions": [_partition_payload(partition) for partition in record.partitions],
-                "series_id": _series_payload(record.series_id),
-            }
-            for record in manifest.series
-        ],
+        "series": [_series_record_payload(record) for record in manifest.series],
         "partitions": [
             {
                 "bar_count": record.bar_count,
@@ -239,6 +331,14 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             "approved_by": manifest.approval.approved_by,
             "comment": manifest.approval.comment,
         }
+    return payload
+
+
+def _conversion_payload(conversion: ConversionRecord) -> Mapping[str, Any]:
+    """`conversion` の JSON の形。MT5 経路の記録は JSON の形に直して書く。"""
+    payload = dict(conversion.identity_payload())
+    if conversion.mt5 is not None:
+        payload["mt5"] = _mt5_payload(conversion.mt5)
     return payload
 
 
@@ -301,6 +401,7 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
             else TimeLabelCorrectionRecord.from_payload(
                 conversion["time_label_correction"], "manifest.conversion.time_label_correction"
             ),
+            mt5=None if "mt5" not in conversion else _mt5_from_payload(conversion["mt5"]),
         ),
         series=tuple(
             SeriesManifest(
@@ -309,6 +410,11 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
                 bar_count=int(record["bar_count"]),
                 partitions=tuple(
                     _partition_from_payload(partition) for partition in record["partitions"]
+                ),
+                coverage_counts=None
+                if "coverage_counts" not in record
+                else SeriesCoverageCounts(
+                    **{key: int(record["coverage_counts"][key]) for key in _COVERAGE_COUNT_KEYS}
                 ),
             )
             for record in payload["series"]
@@ -518,12 +624,16 @@ class ParquetSnapshotStore:
         target.mkdir(parents=True, exist_ok=True)
         ordered = sorted(bars, key=lambda bar: bar.bar_start.value)
         rows = [partition_row(bar) for bar in ordered]
+        # 列は足の属性で決まる（MT5 経路の足は被覆・1 分足の列を足す。D03 §15.6 の 3）。
+        # 1 つの partition の足は同じ経路・同じ系列なので、列も同じでなければならない。
+        columns = columns_for(ordered[0]) if ordered else PARTITION_COLUMNS
+        if any(columns_for(bar) != columns for bar in ordered):
+            raise MarketDataValueError(
+                f"partition {partition_id} mixes bars with and without the MT5 attributes"
+            )
         frame = pl.DataFrame(
-            {
-                column: [row[index] for row in rows]
-                for index, column in enumerate(PARTITION_COLUMNS)
-            },
-            schema=dict.fromkeys(PARTITION_COLUMNS, pl.String),
+            {column: [row[index] for row in rows] for index, column in enumerate(columns)},
+            schema=dict.fromkeys(columns, pl.String),
         )
         frame.write_parquet(target / _PARTITION_FILE)
 
@@ -574,9 +684,31 @@ class ParquetSnapshotStore:
                 )
             return value
 
+        has_coverage = "expected_minutes" in frame.columns
+        has_minute = "api_time" in frame.columns
         bars: list[Bar] = []
         for record in frame.iter_rows(named=True):
             volume = volume_of(str(record["volume"]))
+            coverage = (
+                BarCoverage(
+                    expected_minutes=int(record["expected_minutes"]),
+                    recorded_minutes=int(record["recorded_minutes"]),
+                    first_observed_at=utc(str(record["first_observed_at"])),
+                    last_observed_at=utc(str(record["last_observed_at"])),
+                    time_rule_row=int(record["time_rule_row"]),
+                )
+                if has_coverage
+                else None
+            )
+            minute = (
+                MinuteSource(
+                    api_time=int(record["api_time"]),
+                    time_rule_row=int(record["time_rule_row"]),
+                    spread=int(record["spread"]),
+                )
+                if has_minute
+                else None
+            )
             bars.append(
                 Bar(
                     series=series,
@@ -593,6 +725,8 @@ class ParquetSnapshotStore:
                     provenance=provenance(
                         str(record["provenance_kind"]), str(record["provenance_ref"])
                     ),
+                    coverage=coverage,
+                    minute=minute,
                 )
             )
         # DataFrame はここで捨てる（D01 §2.2 規則1）。

@@ -1,0 +1,62 @@
+# 時間足定義 版 2（D03 §3.2・§9・§15.4）
+#
+# 版 1（timeframes_v1.yaml。変えていない）に、OANDA MT5 API の 1 分足の経路の時間足 1m（名目 1 分の固定 UTC 整列）を
+# 足した（D12 §11.8.1 の A-1、D03 §15.4）。他の 4 つの定義は版 1 と同じ内容・同じ版で、HistData の経路は版 1 を読む。
+#
+# `common.TimeframeRef` が指す定義の本体。足境界の決め方は2種類ある。
+#
+# - fixed_utc: UTC のエポックから名目長の整数倍で区切る（15m、1h）。足の長さは常に名目長。
+# - session:   現地時刻の起点から区切り、夏時間（DST）を含む zoneinfo の規則で UTC へ変換
+#              する。固定 UTC 時刻は書かない。切替日の日足は 23h / 25h、4h 足は 3h / 5h に
+#              なる（D03 §3.2）。
+#
+# nominal_length は表示と履歴窓の概算にだけ使い、足の検証には使わない。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+timeframes:
+  # MT5 経路の 1 分足（D03 §15.3）。上位足はすべてこの 1 分足から直接作る（D03 §15.4）。
+  - id: 1m
+    version: 1
+    nominal_length: PT1M
+    alignment:
+      kind: fixed_utc
+
+  - id: 15m
+    version: 1
+    nominal_length: PT15M
+    alignment:
+      kind: fixed_utc
+
+  - id: 1h
+    version: 1
+    nominal_length: PT1H
+    alignment:
+      kind: fixed_utc
+
+  # ニューヨーク現地 17/21/01/05/09/13 時を起点とする 4時間足。
+  - id: 4h_ny17
+    version: 1
+    nominal_length: PT4H
+    alignment:
+      kind: session
+      tz: America/New_York
+      anchors_local:
+        - "01:00:00"
+        - "05:00:00"
+        - "09:00:00"
+        - "13:00:00"
+        - "17:00:00"
+        - "21:00:00"
+
+  # ニューヨーク現地 17 時から翌 17 時までの日足。
+  - id: 1d_ny17
+    version: 1
+    nominal_length: P1D
+    alignment:
+      kind: session
+      tz: America/New_York
+      anchors_local:
+        - "17:00:00"

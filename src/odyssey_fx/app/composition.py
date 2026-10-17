@@ -44,6 +44,7 @@ from odyssey_fx.app.config.research_policy import (
     load_research_policy_registry,
     research_policy_registry_path,
 )
+from odyssey_fx.app.mt5_run import build_mt5_run_parts, publication_rows
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
@@ -149,8 +150,13 @@ from odyssey_fx.marketdata.application.acceptance import (
 )
 from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSION, aggregate
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
+from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
-from odyssey_fx.marketdata.application.publication import build_feed, build_publication_log
+from odyssey_fx.marketdata.application.publication import (
+    PublicationFeed,
+    build_feed,
+    build_publication_log,
+)
 from odyssey_fx.marketdata.application.refill_finalize import (
     REFILL_SOURCE_ROOT,
     FinalizeReport,
@@ -910,6 +916,8 @@ class _RunPlan:
     git_commit: str
     git_dirty: bool
     publication_log: PublicationLog
+    #: リポジトリの基点（MT5 経路の run が承認済みの時刻の規則の表の一覧を読む。D06 §18.9 の 3）。
+    repo_root: Path = Path(".")
 
 
 def _plan_run(
@@ -993,6 +1001,7 @@ def _plan_run(
         git_commit=commit,
         git_dirty=dirty,
         publication_log=publication_log,
+        repo_root=repo_root,
     )
 
 
@@ -1019,16 +1028,52 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
         partition_bars=verified,
         schedule=inputs.schedules[experiment.execution_series],
     )
-    feed = build_feed(
-        inputs.snapshot,
-        inputs.allowed_partitions,
-        verified,
+    levels = experiment.execution_policy.resolution_hierarchy.levels
+    bars_of = {series: inputs.bars_of(series) for series in inputs.schedules}
+    # MT5 経路の snapshot なら、約定の側の 1 分足のビュー・被覆の報告・表22 を組み立てる
+    # （D06 §18.2・§18.9・§18.10）。HistData の経路では何も足さない（D06 §18.1）。
+    observation = Mt5Observation.from_snapshot(inputs.snapshot)
+    mt5_parts = (
+        None
+        if observation is None
+        else build_mt5_run_parts(
+            observation=observation,
+            compiled=plan.compiled,
+            execution_series=experiment.execution_series,
+            hierarchy=levels,
+            schedules=inputs.schedules,
+            bars_of=bars_of,
+            calendar=plan.calendar,
+            run_interval=experiment.run_interval,
+            repo_root=plan.repo_root,
+            publication_log=plan.publication_log,
+        )
+    )
+    # 取得不足のある MT5 経路の run は能力検査で止まる（D06 §18.9 の 2）。取得不足の区間へは公開
+    # フィードの覆いを広げない（D12-113）ので、フィードは組み立てず空にする（実行しない）。
+    feed = (
+        PublicationFeed(events=())
+        if mt5_parts is not None and mt5_parts.has_shortfall
+        else build_feed(
+            inputs.snapshot,
+            inputs.allowed_partitions,
+            verified,
+            inputs.schedules,
+            experiment.run_interval,
+            execution_series=frozenset({experiment.execution_series}),
+            publication_log=plan.publication_log,
+            internal_series=frozenset() if mt5_parts is None else mt5_parts.internal_series,
+            # 受入れ（`data accept-mt5`・`data accept`）が partition を分けたときと同じ境界
+            # （D12-113）。
+            access_boundaries=INITIAL_ACCESS_BOUNDARIES,
+        )
+    )
+    published = publication_rows(
+        feed,
+        {bar.key: bar for bars in bars_of.values() for bar in bars},
         inputs.schedules,
         experiment.run_interval,
-        execution_series=frozenset({experiment.execution_series}),
-        publication_log=plan.publication_log,
     )
-    levels = experiment.execution_policy.resolution_hierarchy.levels
     intrabar = (
         None
         if len(levels) < 2
@@ -1070,6 +1115,10 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
         git_dirty=plan.git_dirty,
         intrabar_series=intrabar,
         timeframe_refs=plan.timeframe_refs,
+        minutes=None if mt5_parts is None else mt5_parts.minutes,
+        mt5_capability=None if mt5_parts is None else mt5_parts.capability,
+        publication_rows=published,
+        history_resets=() if mt5_parts is None else mt5_parts.history_resets,
     )
 
 

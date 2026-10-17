@@ -31,6 +31,7 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 
 __all__ = [
     "ChildBars",
+    "ExcusedSpans",
     "IntrabarResolution",
     "ResolutionMethod",
     "hierarchy_checks",
@@ -40,6 +41,10 @@ __all__ = [
 
 #: 親足の区間を覆う下位足を時系列順に返す関数（`engine` がポートから供給する）。
 ChildBars = Callable[[SeriesId, Interval], tuple[Bar, ...]]
+
+#: MT5 経路で、子の系列の足が無くても被覆の欠けに数えない区間（無記録の分と休場の分）を返す関数
+#: （D06 §18.2 の検査 1 の読み方）。取得不足の分は返さない（欠けとして残り、不合格になる）。
+ExcusedSpans = Callable[[SeriesId, Interval], tuple[Interval, ...]]
 
 
 class ResolutionMethod(Enum):
@@ -214,10 +219,15 @@ def hierarchy_checks(
     hierarchy: ResolutionHierarchy,
     parent_bars: tuple[Bar, ...],
     child_bars: ChildBars | None = None,
+    excused: ExcusedSpans | None = None,
 ) -> tuple[HierarchyCheckResult, ...]:
     """階層の適合検査1〜4（D06 §7.4）。検査5（存在）は完全性検査の結果から作る。
 
     検査は「下位足が宣言されている場合」にだけ走る。階層が1段なら空の組を返す。
+
+    `excused` を渡すと（MT5 経路。D06 §18.2）、検査 1（被覆）は親の区間のうち子の足が無い区間から
+    無記録の分と休場の分を除いて欠けを数え、検査 3（足境界）は子の足が親の区間の中に収まることを
+    見る（始まり・終わりの分が無記録でも合格）。
     """
     if len(hierarchy.levels) < 2 or child_bars is None:
         return ()
@@ -231,18 +241,34 @@ def hierarchy_checks(
         next_parents: list[Bar] = []
         for parent in current:
             children = child_bars(child_series, parent.interval)
-            results.extend(_checks_for_parent(parent_series, child_series, parent, children))
+            allowed = () if excused is None else excused(child_series, parent.interval)
+            results.extend(
+                _checks_for_parent(
+                    parent_series,
+                    child_series,
+                    parent,
+                    children,
+                    excused=allowed if excused is not None else None,
+                )
+            )
             next_parents.extend(children)
         current = tuple(next_parents)
     return tuple(results)
 
 
 def _checks_for_parent(
-    parent_series: SeriesId, child_series: SeriesId, parent: Bar, children: tuple[Bar, ...]
+    parent_series: SeriesId,
+    child_series: SeriesId,
+    parent: Bar,
+    children: tuple[Bar, ...],
+    *,
+    excused: tuple[Interval, ...] | None = None,
 ) -> tuple[HierarchyCheckResult, ...]:
     """1本の親足についての検査1〜4。"""
     intervals = tuple(child.interval for child in children)
     gaps, overlaps = _coverage(parent.interval, intervals)
+    if excused is not None:
+        gaps = _subtract_spans(gaps, excused)
     coverage = HierarchyCheckResult(
         check="coverage",
         passed=bool(children) and not gaps and not overlaps,
@@ -271,7 +297,20 @@ def _checks_for_parent(
     )
     boundary_child = None
     observed_boundary = parent.interval.start
-    if children:
+    if children and excused is not None:
+        # MT5 経路: 子の足が親の区間に収まれば合格（始まり・終わりの分は無記録でありうる）。
+        observed_boundary = children[0].interval.start
+        outside = next(
+            (
+                child
+                for child in children
+                if child.interval.start < parent.interval.start
+                or parent.interval.end < child.interval.end
+            ),
+            None,
+        )
+        boundary_child = outside
+    elif children:
         observed_boundary = children[0].interval.start
         if children[0].interval.start != parent.interval.start:
             boundary_child = children[0]
@@ -304,6 +343,25 @@ def _checks_for_parent(
         ),
     )
     return (coverage, basis, boundary, availability)
+
+
+def _subtract_spans(
+    gaps: tuple[Interval, ...], excused: tuple[Interval, ...]
+) -> tuple[Interval, ...]:
+    """欠けの区間から、欠けに数えない区間を取り除く。"""
+    remaining = list(gaps)
+    for cut in excused:
+        updated: list[Interval] = []
+        for part in remaining:
+            if not part.overlaps(cut):
+                updated.append(part)
+                continue
+            if part.start < cut.start:
+                updated.append(Interval(start=part.start, end=cut.start))
+            if cut.end < part.end:
+                updated.append(Interval(start=cut.end, end=part.end))
+        remaining = updated
+    return tuple(remaining)
 
 
 def _coverage(

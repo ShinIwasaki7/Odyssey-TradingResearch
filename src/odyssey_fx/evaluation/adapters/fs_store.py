@@ -37,8 +37,11 @@ from odyssey_fx.backtest.domain.policies import (
     RunConfig,
 )
 from odyssey_fx.backtest.trace.manifest import (
+    CoverageCapability,
     DataCapabilityReport,
+    ResumptionCounts,
     RunManifest,
+    SeriesCoverageReport,
     config_digest_of,
 )
 from odyssey_fx.backtest.trace.recorder import (
@@ -193,6 +196,7 @@ from odyssey_fx.marketdata.domain.integrity import (
     Severity,
 )
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef, TimeRuleVariant
 from odyssey_fx.strategy.declarations.specs import (
     BoolValue,
     FloatValue,
@@ -677,7 +681,115 @@ def _manifest_payload(manifest: RunManifest) -> dict[str, Any]:
         "status": manifest.status,
         "reason": None if manifest.reason is None else manifest.reason.code.value,
         "warnings": list(manifest.warnings),
+        # MT5 経路の入力群と「再開」群（D06 §18.10）。HistData の経路では表の参照が null で、
+        # 件数は 0（表の形を経路で変えない）。
+        "time_rule_table_ref": None
+        if manifest.time_rule_table_ref is None
+        else dict(manifest.time_rule_table_ref.payload()),
+        "resumption_counts": _resumption_payload(manifest.resumption_counts),
     }
+
+
+_RESUMPTION_KEYS = (
+    "resumptions",
+    "stop_gap_fills",
+    "take_profit_gap_fills",
+    "deferred_fills",
+    "expired_in_unrecorded",
+    "history_resets",
+)
+
+
+def _resumption_payload(counts: ResumptionCounts) -> dict[str, int]:
+    return {key: getattr(counts, key) for key in _RESUMPTION_KEYS}
+
+
+def _resumption_of(payload: Mapping[str, Any] | None) -> ResumptionCounts:
+    if payload is None:
+        return ResumptionCounts()
+    return ResumptionCounts(**{key: int(payload[key]) for key in _RESUMPTION_KEYS})
+
+
+def _table_ref_of(payload: Mapping[str, Any] | None) -> TimeRuleTableRef | None:
+    if payload is None:
+        return None
+    return TimeRuleTableRef(
+        table_id=str(payload["table_id"]),
+        version=int(payload["version"]),
+        sha256=str(payload["sha256"]),
+        variant=TimeRuleVariant(str(payload["variant"])),
+    )
+
+
+def _interval_payload(interval: Interval) -> dict[str, str]:
+    return {"start": str(interval.start), "end": str(interval.end)}
+
+
+def _coverage_payload(coverage: CoverageCapability | None) -> dict[str, Any] | None:
+    """MT5 経路の被覆の報告（D06 §18.9 の 3・4）。件数・時刻・ハッシュだけで価格を含めない。"""
+    if coverage is None:
+        return None
+    return {
+        "time_rule_table": dict(coverage.time_rule_table.payload()),
+        "approved_list_sha256": coverage.approved_list_sha256,
+        "table_approved": coverage.table_approved,
+        "mark_days": [{"mark": mark, "days": days} for mark, days in coverage.mark_days],
+        "series": [
+            {
+                "series": str(item.series),
+                "interval": _interval_payload(item.interval),
+                "unrecorded_minutes": item.unrecorded_minutes,
+                "unrecorded_runs": item.unrecorded_runs,
+                "longest_unrecorded_minutes": item.longest_unrecorded_minutes,
+                "longest_unrecorded": None
+                if item.longest_unrecorded is None
+                else _interval_payload(item.longest_unrecorded),
+                "partial_bars": item.partial_bars,
+                "no_record_bars": item.no_record_bars,
+                "min_coverage": item.min_coverage,
+                "shortfall": [
+                    {"interval": _interval_payload(interval), "reasons": reasons}
+                    for interval, reasons in item.shortfall
+                ],
+            }
+            for item in coverage.series
+        ],
+    }
+
+
+def _coverage_of(
+    payload: Mapping[str, Any] | None, timeframes: Mapping[str, TimeframeRef]
+) -> CoverageCapability | None:
+    if payload is None:
+        return None
+    table = _table_ref_of(payload["time_rule_table"])
+    assert table is not None  # noqa: S101 - 被覆の報告は必ず表の参照を持つ
+    return CoverageCapability(
+        time_rule_table=table,
+        approved_list_sha256=str(payload["approved_list_sha256"]),
+        table_approved=bool(payload["table_approved"]),
+        mark_days=tuple((str(item["mark"]), int(item["days"])) for item in payload["mark_days"]),
+        series=tuple(
+            SeriesCoverageReport(
+                series=_series_of(item["series"], timeframes),
+                interval=_interval_of(item["interval"]),
+                unrecorded_minutes=int(item["unrecorded_minutes"]),
+                unrecorded_runs=int(item["unrecorded_runs"]),
+                longest_unrecorded_minutes=int(item["longest_unrecorded_minutes"]),
+                longest_unrecorded=None
+                if item["longest_unrecorded"] is None
+                else _interval_of(item["longest_unrecorded"]),
+                partial_bars=int(item["partial_bars"]),
+                no_record_bars=int(item["no_record_bars"]),
+                min_coverage=item["min_coverage"],
+                shortfall=tuple(
+                    (_interval_of(entry["interval"]), str(entry["reasons"]))
+                    for entry in item["shortfall"]
+                ),
+            )
+            for item in payload["series"]
+        ),
+    )
 
 
 def _capability_payload(report: DataCapabilityReport) -> dict[str, Any]:
@@ -694,6 +806,7 @@ def _capability_payload(report: DataCapabilityReport) -> dict[str, Any]:
         "integrity": [canonical_text(result) for result in report.integrity.results],
         "hierarchy_checks": [canonical_text(check) for check in report.hierarchy_checks],
         "diagnostics": list(report.diagnostics),
+        "coverage": _coverage_payload(report.coverage),
     }
 
 
@@ -894,6 +1007,7 @@ def _capability_report_of(
         runnable=bool(payload["runnable"]),
         reason=_reason_of(payload.get("reason")),
         diagnostics=tuple(payload.get("diagnostics", ())),
+        coverage=_coverage_of(payload.get("coverage"), timeframes),
     )
 
 
@@ -992,6 +1106,8 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
         git_dirty=bool(payload["git_dirty"]),
         reason=_reason_of(payload.get("reason")),
         warnings=tuple(payload.get("warnings", ())),
+        time_rule_table_ref=_table_ref_of(payload.get("time_rule_table_ref")),
+        resumption_counts=_resumption_of(payload.get("resumption_counts")),
     )
 
 
@@ -1386,6 +1502,9 @@ def _evaluation_payload(manifest: EvaluationManifest) -> dict[str, Any]:
         "warning_failure_count": manifest.warning_failure_count,
         "unreadable_check_count": manifest.unreadable_check_count,
         "result_digest": manifest.result_digest.hex,
+        "time_rule_table_ref": None
+        if manifest.time_rule_table_ref is None
+        else dict(manifest.time_rule_table_ref.payload()),
     }
 
 

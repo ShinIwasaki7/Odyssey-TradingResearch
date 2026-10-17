@@ -23,6 +23,7 @@ from odyssey_fx.common.money import CurrencyCode
 from odyssey_fx.common.reason import Reason
 from odyssey_fx.common.refs import CodeDigest, ContentDigest
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef
 
 __all__ = [
     "METRIC_SET_VERSION",
@@ -161,6 +162,10 @@ class EvaluationManifest:
     fatal_failure_count: int
     warning_failure_count: int
     unreadable_check_count: int
+    #: 時刻の規則の表の参照（D07 §28.3。run manifest から写す照合用の項目で、
+    #: 結果ダイジェストの入力に
+    #: 入れない）。HistData の経路の run・run manifest が読めないときは `None`。
+    time_rule_table_ref: TimeRuleTableRef | None = None
 
     def __post_init__(self) -> None:
         for name, expected in (

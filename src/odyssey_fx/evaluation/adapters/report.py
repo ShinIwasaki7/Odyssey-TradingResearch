@@ -340,6 +340,8 @@ class _Inputs:
     run_manifest: RunManifest | str | None
     evaluation: _Evaluation | str | None
     experiment_dir_text: str
+    #: 判断履歴の表22（準備のやり直し）の行（D07 §28.3。読めなければ空）。
+    history_resets: tuple[Mapping[str, str | None], ...] = ()
 
 
 def _conclusion(inputs: _Inputs) -> str:
@@ -463,6 +465,125 @@ def _capability_lines(run_manifest: RunManifest) -> list[str]:
     if report.diagnostics:
         lines.append("- 不合格の理由（能力検査の診断）:")
         lines.extend(f"  - {item}" for item in report.diagnostics)
+    return lines
+
+
+_MARK_NAMES: Final = {
+    "confirmed": "確認済み",
+    "assumed_same": "仮定付き（候補の間で変換が同じ）",
+    "assumed_differs": "仮定付き（候補の間で変換が違う）",
+}
+
+
+def _window_text(row: Mapping[str, str | None]) -> str:
+    """表22 の窓の表示（D12-127: 種類・本数・末尾から除く本数・経過時間）。"""
+    kind = row.get("window_kind") or ""
+    exclude = row.get("exclude_latest_bars") or "0"
+    suffix = "" if exclude == "0" else f"（末尾から {exclude} 本除く）"
+    if kind == "BARS":
+        return f"本数 {row.get('window_bars') or ''}{suffix}"
+    if kind == "DURATION":
+        return f"経過時間 {row.get('window_duration') or ''} 秒{suffix}"
+    if kind == "LATEST":
+        return "最新足だけ"
+    return kind
+
+
+def _coverage_lines(inputs: _Inputs) -> list[str]:
+    """データの被覆（D07 §28.3）。run manifest の能力検査の報告と「再開」群、表22 から作る。
+
+    件数・時刻・ハッシュだけで、価格は書かない（2026-10-17 の指示 4）。
+    """
+    run_manifest = inputs.run_manifest
+    if not isinstance(run_manifest, RunManifest):
+        return ["run manifest を読めないので表示しない。"]
+    coverage = run_manifest.capability_report.coverage
+    if coverage is None:
+        return [
+            "この run の snapshot は MT5 経路ではない（無記録の分・部分観測の足の記録は無い。"
+            "D06 §18.1）。"
+        ]
+    table = coverage.time_rule_table
+    lines = [
+        f"- 時刻の規則の表: {_code(table.table_id)} 版 {table.version}"
+        f"（SHA-256 {_code(table.sha256)}）、変換の組 {_code(table.variant.value)}、"
+        f"承認済みの一覧での照合: {'承認済み' if coverage.table_approved else '承認済みでない'}"
+        f"（一覧の SHA-256 {_code(coverage.approved_list_sha256)}。記録だけ）",
+    ]
+    if coverage.mark_days:
+        lines.append(
+            # D12-126: 「実行通貨・run 区間の UTC 暦日数」と明示し、
+            # 全入力の確実性を表す数とは扱わない。
+            f"- 実行通貨（{_code(str(run_manifest.config.execution_series.symbol))}）・run 区間の"
+            " UTC 暦日数（区分の印ごと。執行する通貨の表の行で数えた日数で、戦略が読む全入力の"
+            "確実性を表す数ではない）: "
+            + "、".join(
+                f"{_MARK_NAMES.get(mark, mark)} {days} 日" for mark, days in coverage.mark_days
+            )
+        )
+    counts = run_manifest.resumption_counts
+    lines.append(
+        f"- 再開の分 {counts.resumptions} 件（ギャップの損切り {counts.stop_gap_fills}・"
+        f"ギャップの利確 {counts.take_profit_gap_fills}・"
+        f"待っていた成行の約定 {counts.deferred_fills}）、"
+        f"無記録の中で期限切れになった注文 {counts.expired_in_unrecorded} 件、"
+        f"準備のやり直し {counts.history_resets} 件"
+    )
+    lines.append("")
+    lines.extend(
+        _table(
+            [
+                "系列",
+                "区間",
+                "無記録の分数",
+                "無記録の区間の数",
+                "最長（分）",
+                "部分観測の足",
+                "無記録の足",
+                "被覆率の最小",
+                "取得不足",
+            ],
+            [
+                [
+                    str(item.series),
+                    f"{item.interval.start}〜{item.interval.end}",
+                    item.unrecorded_minutes,
+                    item.unrecorded_runs,
+                    item.longest_unrecorded_minutes,
+                    item.partial_bars,
+                    item.no_record_bars,
+                    "—" if item.min_coverage is None else item.min_coverage,
+                    len(item.shortfall),
+                ]
+                for item in coverage.series
+            ],
+        )
+    )
+    if inputs.history_resets:
+        lines.append("")
+        lines.append("準備のやり直し（判断履歴の表22）:")
+        lines.append("")
+        lines.extend(
+            _table(
+                [
+                    "系列",
+                    "無記録の足",
+                    "窓",
+                    "準備不足になった時刻",
+                    "準備が再び整った時刻",
+                ],
+                [
+                    [
+                        row.get("series") or "",
+                        row.get("no_record_bar_key_bar_start") or "",
+                        _window_text(row),
+                        row.get("insufficient_from") or "",
+                        row.get("ready_at") or "データの終わりまで整わない",
+                    ]
+                    for row in inputs.history_resets
+                ],
+            )
+        )
     return lines
 
 
@@ -703,7 +824,8 @@ def _render(inputs: _Inputs) -> str:
         ["## 3. 値なしの指標", "", *_unavailable_lines(inputs)],
         ["## 4. 指標", "", *_metric_lines(inputs)],
         ["## 5. 集計", "", *_category_lines(inputs)],
-        ["## 6. 設定と入力の特定", "", *_identity_lines(inputs)],
+        ["## 6. データの被覆", "", *_coverage_lines(inputs)],
+        ["## 7. 設定と入力の特定", "", *_identity_lines(inputs)],
     ]
     text = "\n\n".join("\n".join(section).rstrip("\n") for section in sections)
     return text + "\n"
@@ -725,10 +847,14 @@ def build_report(experiment_dir: Path, artifacts_root: Path) -> str:
         )
     run_manifest: RunManifest | str | None = None
     evaluation: _Evaluation | str | None = None
+    resets: tuple[Mapping[str, str | None], ...] = ()
     if outcome is not None and outcome.run_id is not None:
         run_manifest = _read_run_manifest(artifacts_root, outcome)
         if outcome.run_evaluation_id is not None:
             evaluation = _read_evaluation(artifacts_root, outcome)
+        resets_path = Path(artifacts_root) / "runs" / str(outcome.run_id) / "HISTORY_RESETS.parquet"
+        if resets_path.is_file():
+            resets = _read_rows(resets_path)
     return _render(
         _Inputs(
             manifest=manifest,
@@ -738,6 +864,7 @@ def build_report(experiment_dir: Path, artifacts_root: Path) -> str:
             experiment_dir_text=(
                 f"runs/experiments/{manifest.experiment_name}/v{manifest.experiment_version}"
             ),
+            history_resets=resets,
         )
     )
 

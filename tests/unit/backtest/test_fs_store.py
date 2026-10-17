@@ -172,13 +172,17 @@ def _write(root: Path) -> tuple[RunOutput, Path]:
     return output, run_directory(root, output.result.run_id)
 
 
-def test_all_nineteen_tables_are_written(tmp_path: Path) -> None:
-    """D06 §9.2: 書き出す表は段階2 の15件と段階3 の4件（表16〜19）の19件。"""
+def test_all_twenty_two_tables_are_written(tmp_path: Path) -> None:
+    """D06 §9.2: 書き出す表は段階2 の15件・段階3 の4件（表16〜19）・表20〜22（D06 §9.2 v1.11・
+    §18.10）の22件。
+
+    表21・22 は HistData の経路の run では 0 行でも、同じ形で書く（D06 §18.10）。
+    """
     _, directory = _write(tmp_path)
 
     written = sorted(path.name for path in directory.glob("*.parquet"))
     assert written == sorted(f"{table.value}.parquet" for table in TraceTable)
-    assert len(written) == 19
+    assert len(written) == 22
 
 
 def test_strategy_a_writes_no_stage3_rows() -> None:
@@ -290,6 +294,9 @@ def test_the_declared_columns_match_the_real_rows(tmp_path: Path) -> None:
     output, _ = _write(tmp_path)
 
     for table in TraceTable:
+        if table in (TraceTable.RESUMPTIONS, TraceTable.HISTORY_RESETS):
+            # MT5 経路の run だけが行を持つ（列は正本の型から決まる。D06 §18.10）。
+            continue
         rows = _rows(output, table)
         assert rows, f"{table.value} should have at least one row in this run"
         for row in rows:

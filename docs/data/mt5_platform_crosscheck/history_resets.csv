@@ -1,0 +1,5 @@
+pair,variant,no_record_day_start_utc,window_kind,window_bars,platform_insufficient_from,tool_not_ready_from,platform_ready_at,tool_ready_again_at,ready_compared,match
+USDJPY,standard,2022-12-25T22:00Z,BARS,60,2022-12-26T22:00Z,2022-12-26T22:00Z,範囲の外,2023-03-20T21:00Z,False,True
+USDJPY,candidate,2022-12-25T22:00Z,BARS,60,2022-12-26T22:00Z,2022-12-26T22:00Z,範囲の外,2023-03-20T21:00Z,False,True
+EURUSD,standard,2022-12-25T22:00Z,BARS,60,2022-12-26T22:00Z,2022-12-26T22:00Z,範囲の外,2023-03-20T21:00Z,False,True
+EURUSD,candidate,2022-12-25T22:00Z,BARS,60,2022-12-26T22:00Z,2022-12-26T22:00Z,範囲の外,2023-03-20T21:00Z,False,True

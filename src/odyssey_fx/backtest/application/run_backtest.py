@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, localcontext
 
@@ -25,6 +26,7 @@ from odyssey_fx.backtest.application.ports import (
     ResultWriter,
     TraceSink,
 )
+from odyssey_fx.backtest.domain.fills import GapKind
 from odyssey_fx.backtest.domain.policies import (
     ConversionPolicy,
     CostModel,
@@ -33,15 +35,22 @@ from odyssey_fx.backtest.domain.policies import (
     RiskPolicy,
     RunConfig,
 )
-from odyssey_fx.backtest.engine.loop import BacktestEngine, EngineContext, TraceOutputSink
+from odyssey_fx.backtest.engine.loop import (
+    BacktestEngine,
+    EngineContext,
+    MinuteObservation,
+    TraceOutputSink,
+)
 from odyssey_fx.backtest.engine.phases import BACKTEST_PHASES
-from odyssey_fx.backtest.execution.protection_hits import hierarchy_checks
+from odyssey_fx.backtest.execution.protection_hits import ExcusedSpans, hierarchy_checks
 from odyssey_fx.backtest.trace.manifest import (
+    CoverageCapability,
     DataCapabilityReport,
+    ResumptionCounts,
     RunManifest,
     config_digest_of,
 )
-from odyssey_fx.backtest.trace.recorder import TraceTable
+from odyssey_fx.backtest.trace.recorder import HistoryResetRow, PublicationRow, TraceTable
 from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import IdAllocator
@@ -55,13 +64,27 @@ from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.runtime.ports import StrategyRuntime
 
-__all__ = ["RunBacktest", "capability_report"]
+__all__ = ["Mt5Capability", "RunBacktest", "capability_report"]
 
 _ZERO = decimal_from_int(0)
 
 
 #: 「判断時刻と同じ時刻に始まる足も候補に含める」ための最小の後戻り（`engine.loop` と同じ）。
 _TINY = timedelta(microseconds=1)
+
+
+@dataclass(frozen=True, slots=True)
+class Mt5Capability:
+    """MT5 経路の能力検査の材料（D06 §18.9）。合成（`app`）が snapshot と規則のファイルから作る。
+
+    - `coverage`: 被覆の報告（系列ごとの無記録・部分観測・無記録の足・取得不足、表の参照と承認の
+      照合の結果、区分の印ごとの日数）。系列ごとの区間は執行に使う系列なら run 区間、戦略が読む系列
+      なら履歴の分を含む区間（D06 §18.9 の 2）。
+    - `excused`: 解像度階層の適合検査で欠けに数えない区間（無記録の分と休場の分）を返す関数。
+    """
+
+    coverage: CoverageCapability
+    excused: ExcusedSpans
 
 
 def _first_scheduled_open_is_missing(config: RunConfig, series: ExecutionSeries) -> bool:
@@ -89,8 +112,20 @@ def capability_report(
     symbol_spec: SymbolSpec,
     intrabar_series: IntrabarSeries | None = None,
     execution_series: ExecutionSeries | None = None,
+    mt5: Mt5Capability | None = None,
 ) -> DataCapabilityReport:
-    """実行前のデータ能力検査（D06 §10.5）。合格・不合格のどちらでも全体を保存する。"""
+    """実行前のデータ能力検査（D06 §10.5、MT5 経路は §18.9）。合格・
+    不合格のどちらでも全体を保存する。
+
+    MT5 経路（`mt5` を渡したとき）の読み方（D06 §18.9）:
+
+    - 「存在すべき足の欠落」の代わりに**取得不足**を照合する。無記録の分・無記録の足・部分観測の足
+      では実行不可にしない。取得不足を無記録に読み替えない（D12-80）。
+    - 時刻の規則の表が承認済みの一覧に無い（または取り消された）snapshot は実行不可（D12-48）。
+    - 「run 区間の最初の予定の執行足が実データにあること」は「run 区間に取得不足が無いこと」と
+      読む（最初の執行足が無記録の足であることは正当にありうる。作られた足が 0 本でも実行可能）。
+    - 解像度階層の適合検査は無記録の分・休場の分を欠けに数えない（D06 §18.2）。
+    """
     reasons: list[str] = []
     compiled_match = compiled.compiled_ref == config.compiled_ref
     if not compiled_match:
@@ -132,7 +167,23 @@ def capability_report(
             "the snapshot is missing expected bars on the series the execution model reads:"
             f" {', '.join(sorted({str(result.series) for result in missing}))}"
         )
-    if execution_series is not None and _first_scheduled_open_is_missing(config, execution_series):
+    if mt5 is not None:
+        coverage = mt5.coverage
+        if not coverage.table_approved:
+            reasons.append(
+                f"the time rule table {coverage.time_rule_table.table_id}"
+                f" v{coverage.time_rule_table.version} ({coverage.time_rule_table.sha256}) is not"
+                " in the approved list or was revoked (D12-48, D06 §18.9 の 3)"
+            )
+        for report in coverage.series:
+            for interval, reasons_text in report.shortfall:
+                reasons.append(
+                    f"acquisition shortfall on {report.series} in {interval} ({reasons_text});"
+                    " a shortfall is not read as unrecorded minutes (D12-80, D06 §18.9 の 2)"
+                )
+    elif execution_series is not None and _first_scheduled_open_is_missing(
+        config, execution_series
+    ):
         # 系列そのものが空でも、完全性検査に欠落が1件も載らないことがある（比べる相手の
         # 足が無いため）。run 区間の最初の予定の足が実データに無ければ、そもそも1本も
         # 執行できない。
@@ -175,8 +226,9 @@ def capability_report(
                 hierarchy,
                 intrabar_series.bars_in(hierarchy.levels[0], config.run_interval),
                 intrabar_series.bars_in,
+                excused=None if mt5 is None else mt5.excused,
             )
-            if not checks:
+            if not checks and mt5 is None:
                 reasons.append(
                     "the execution series has no bars in the run interval to check the hierarchy"
                 )
@@ -190,6 +242,7 @@ def capability_report(
         runnable=runnable,
         reason=None if runnable else Reason(ReasonCode.DATA_ERROR),
         diagnostics=tuple(reasons),
+        coverage=None if mt5 is None else mt5.coverage,
     )
 
 
@@ -224,6 +277,10 @@ class RunBacktest:
         intrabar_series: IntrabarSeries | None = None,
         timeframe_refs: tuple[TimeframeRef, ...] = (),
         strategy_priority: int = 0,
+        minutes: MinuteObservation | None = None,
+        mt5_capability: Mt5Capability | None = None,
+        publication_rows: tuple[PublicationRow, ...] = (),
+        history_resets: tuple[HistoryResetRow, ...] = (),
     ) -> None:
         """実行に要るポートとポリシー、そして**実行の出どころ**を受け取る。
 
@@ -257,6 +314,10 @@ class RunBacktest:
         self._intrabar = intrabar_series
         self._timeframe_refs = timeframe_refs
         self._priority = strategy_priority
+        self._minutes = minutes
+        self._mt5 = mt5_capability
+        self._publication_rows = publication_rows
+        self._history_resets = history_resets
 
     def config_digest(self, config: RunConfig) -> ConfigDigest:
         """この実行の `ConfigDigest`（D06 §9.3）。
@@ -294,6 +355,7 @@ class RunBacktest:
             symbol_spec=self._symbol_spec,
             intrabar_series=self._intrabar,
             execution_series=self._execution_series,
+            mt5=self._mt5,
         )
         engine = BacktestEngine(
             config=config,
@@ -313,12 +375,27 @@ class RunBacktest:
             capability_report=report,
             intrabar_series=self._intrabar,
             strategy_priority=self._priority,
+            minutes=self._minutes,
         )
         engine.execute()
 
-        rows = engine.rows
+        rows = dict(engine.rows)
+        # 表20（公開記録）と表22（準備のやり直し）は run の開始の時に snapshot と戦略の宣言から
+        # 決定的に作ったもの（D06 §9.2 v1.11・§18.10）。能力検査で止まった run には書かない。
+        if report.runnable:
+            rows[TraceTable.PUBLICATIONS] = self._publication_rows
+            rows[TraceTable.HISTORY_RESETS] = self._history_resets
         for table in TraceTable:
             self._trace_sink.write(table, rows[table])
+        gaps = engine.gap_counts
+        counts = ResumptionCounts(
+            resumptions=engine.resumption_count,
+            stop_gap_fills=gaps[GapKind.STOP_GAP],
+            take_profit_gap_fills=gaps[GapKind.TAKE_PROFIT_GAP],
+            deferred_fills=gaps[GapKind.DEFERRED_FILL],
+            expired_in_unrecorded=engine.expired_in_unrecorded_count,
+            history_resets=len(rows[TraceTable.HISTORY_RESETS]),
+        )
 
         manifest = RunManifest(
             run_id=self._allocator.run_id,
@@ -344,6 +421,8 @@ class RunBacktest:
             timeframe_def_refs=self._timeframe_refs,
             reason=engine.failure_reason,
             warnings=engine.warnings,
+            time_rule_table_ref=None if self._mt5 is None else self._mt5.coverage.time_rule_table,
+            resumption_counts=counts,
         )
         result = BacktestResult(
             run_id=self._allocator.run_id,

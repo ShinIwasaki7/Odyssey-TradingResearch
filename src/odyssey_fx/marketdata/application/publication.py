@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
 from types import MappingProxyType
 
@@ -36,8 +37,14 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     readable_surface,
     require_readable_snapshot,
 )
+from odyssey_fx.marketdata.domain.access import (
+    INITIAL_ACCESS_BOUNDARIES,
+    AccessBoundaries,
+    AccessClass,
+)
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
+from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog, PublicationRecord
 from odyssey_fx.marketdata.domain.schedule import DelayScenario, SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -228,21 +235,90 @@ def _boundary_search_window(schedule: SeriesSchedule, run_interval: Interval) ->
     )
 
 
+_TINY = timedelta(microseconds=1)
+
+
+def _class_limits(
+    boundaries: AccessBoundaries, access_class: AccessClass
+) -> tuple[UtcTime | None, UtcTime | None]:
+    """アクセス分類の期間（閲覧が許可される範囲）の端（D03 §3.8）。所属は足の `bar_end` で決まる。
+
+    研究履歴は `bar_end < research_until` なので、覆いの終わりは `research_until` の直前まで
+    （`research_until` に終わる足は封印期間）。
+    """
+    if access_class is AccessClass.RESEARCH_HISTORY:
+        return None, boundaries.research_until - _TINY
+    if access_class is AccessClass.LEGACY_HOLDOUT:
+        return boundaries.research_until, boundaries.holdout_until - _TINY
+    return boundaries.holdout_until, None
+
+
+def _extended_by_unrecorded_ends(
+    snapshot: ReadableSnapshot,
+    partition_id: PartitionId,
+    interval: Interval,
+    boundaries: AccessBoundaries,
+) -> Interval:
+    """MT5 経路: 許可された partition の覆いを、足が作られなかった端へ広げる（D12-113）。
+
+    広げるのは「取得済みで無記録と確認でき、かつ研究への利用が許可された期間」だけ（人間の
+    決定の原文は D12 §0.1.30）。取得の範囲（台帳の範囲。`data_interval`）と閲覧が許可される範囲
+    （その partition のアクセス分類の期間）を区別し、両方の内側に限る。取得不足の区間
+    （`ACQUISITION_SHORTFALL`）の手前で止める（無記録と確認できない）。休場の分は足が存在しない
+    区間なので、そのまま含めてよい。
+    """
+    mt5 = snapshot.manifest.conversion.mt5
+    if mt5 is None:
+        return interval
+    acquisition = mt5.acquisition_of(partition_id.series.symbol)
+    if acquisition is None:
+        return interval
+    class_lo, class_hi = _class_limits(boundaries, partition_id.access_class)
+    lo = acquisition.data_interval.start
+    hi = acquisition.data_interval.end
+    if class_lo is not None and lo < class_lo:
+        lo = class_lo
+    if class_hi is not None and class_hi < hi:
+        hi = class_hi
+    shortfall = [
+        result.interval
+        for result in snapshot.report.results
+        if result.kind is CheckKind.ACQUISITION_SHORTFALL
+        and result.series.symbol == partition_id.series.symbol
+    ]
+    for span in shortfall:
+        if span.end > interval.end and span.start < hi:
+            hi = max(span.start, interval.end, key=lambda value: value.value)
+        if span.start < interval.start and span.end > lo:
+            lo = min(span.end, interval.start, key=lambda value: value.value)
+    start = lo if lo < interval.start else interval.start
+    end = hi if interval.end < hi else interval.end
+    return Interval(start=start, end=end)
+
+
 def _allowed_coverage(
-    snapshot: ReadableSnapshot, allowed_partitions: frozenset[PartitionId]
+    snapshot: ReadableSnapshot,
+    allowed_partitions: frozenset[PartitionId],
+    boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
 ) -> Mapping[SeriesId, tuple[Interval, ...]]:
     """系列ごとに、許可された partition が覆う区間を求める（D03 §6.1）。
 
     同じ系列で複数の partition が許可されている場合、隣接・重複する区間はつなげる。
     研究期間と封印期間が連続して許可されていれば、その全体が1つの区間になる。
+
+    MT5 経路（D03 §15.6 の 4）では、作られた足の範囲の外にも snapshot の範囲の中の無記録の足
+    （作られない足）がありうるので、partition ごとに、取得済みで無記録と確認でき閲覧が許可された
+    端まで覆いを広げる（`_extended_by_unrecorded_ends`。D12-113）。`boundaries` は受入れで
+    partition を分けたときと同じアクセス分類の境界。
     """
     by_series: dict[SeriesId, list[Interval]] = {}
     for partition_id in allowed_partitions:
         record = snapshot.manifest.partition_record(partition_id)
         if record is None:  # pragma: no cover - 関門が先に拒否する
             continue
-        by_series.setdefault(partition_id.series, []).append(record.interval)
-
+        by_series.setdefault(partition_id.series, []).append(
+            _extended_by_unrecorded_ends(snapshot, partition_id, record.interval, boundaries)
+        )
     coverage: dict[SeriesId, tuple[Interval, ...]] = {}
     for series, intervals in by_series.items():
         merged: list[Interval] = []
@@ -260,6 +336,7 @@ def _require_run_interval_inside_allowed(
     snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
     run_interval: Interval,
+    boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
 ) -> tuple[SeriesId, ...]:
     """実行区間が許可 partition の区間に収まることを確かめ、境界を出す系列を返す。
 
@@ -268,7 +345,7 @@ def _require_run_interval_inside_allowed(
     区間を封印期間に取れば、封印期間の判断が動き出す。区間の検査は構築時に行い、通らない
     要求は `HoldoutAccessViolation`（構造エラー）で止める（D03 §6.1）。
     """
-    coverage = _allowed_coverage(snapshot, allowed_partitions)
+    coverage = _allowed_coverage(snapshot, allowed_partitions, boundaries)
     if not coverage:
         raise HoldoutAccessViolation(
             "no partition was granted to this feed; there is no period it may cover (D03 §6.1)"
@@ -301,6 +378,17 @@ def _within_run(run_interval: Interval, moment: UtcTime) -> bool:
     ある。判定を分けているのはこのためで、同じ述語を使い回してはいけない。
     """
     return run_interval.start <= moment <= run_interval.end
+
+
+def _no_record_intervals(snapshot: ReadableSnapshot, series: SeriesId) -> tuple[Interval, ...]:
+    """MT5 経路の snapshot の全分無記録の足の区間（HistData の経路では空）。"""
+    if snapshot.manifest.conversion.mt5 is None:
+        return ()
+    return tuple(
+        result.interval
+        for result in snapshot.report.results
+        if result.kind is CheckKind.NO_RECORD_BAR and result.series == series
+    )
 
 
 def build_publication_log(
@@ -349,6 +437,25 @@ def build_publication_log(
                     available_at=available,
                 )
             )
+        # MT5 経路: 全分無記録の足（作られない足）にも、
+        # 遅延シナリオを当てた予定の公開時刻を記録する。
+        # as-of ビューは、この時刻より前にその足を「準備不足」として見せない（D03 §15.7「予定の公開
+        # 時刻（区間の終わり。遅延シナリオ込み）以後」）。公開フィードのイベントにはしない。
+        for interval in _no_record_intervals(snapshot, series):
+            scheduled = schedule.scheduled_at(interval.end)
+            available = (
+                scheduled
+                if scenario is None
+                else scenario.available_at(schedule, interval.start, interval.end)
+            )
+            records.append(
+                PublicationRecord(
+                    bar_key=BarKey(series=series, bar_start=interval.start),
+                    bar_end=interval.end,
+                    scheduled_at=scheduled,
+                    available_at=available,
+                )
+            )
     return PublicationLog(records=tuple(records))
 
 
@@ -362,6 +469,8 @@ def build_feed(
     execution_series: frozenset[SeriesId] = frozenset(),
     publication_log: PublicationLog | None = None,
     phase_ranks: Mapping[PublicationKind, PhaseRank] | None = None,
+    internal_series: frozenset[SeriesId] = frozenset(),
+    access_boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
 ) -> PublicationFeed:
     """実行区間内の公開イベント列を組み立てる（D03 §7.1）。
 
@@ -376,6 +485,14 @@ def build_feed(
 
     `execution_series` に挙げた系列だけが執行系列のイベントを生む。`publication_log` を
     渡すとその実現時刻を使い、渡さなければ通常の公開予定（足の終了時刻＋通常遅延）を使う。
+
+    `internal_series` に挙げた系列（MT5 経路の解像度階層の 1 分足。D06 §18.2）は、約定の解決が
+    執行系列のビューの外から読む系列で、戦略へ配送しない。公開・予定境界のイベントを出さない
+    （1 分ごとに判断時点を作らない）。
+
+    **MT5 経路の `ExecutionOpen`**（D03 §15.5）: 被覆の属性を持つ執行足は、その足の最初の観測の時刻
+    （`first_observed_at`。始値の分が記録ありなら `bar_start` と同じ）に出す。全分無記録の執行足は
+    作られないので出さない。
 
     並びは `(発生時刻, イベント種別の固定順, 系列順)`。同じ時刻に複数の系列・種別が並んでも
     順序が一意に決まる。
@@ -397,7 +514,7 @@ def build_feed(
     readable = readable_surface(frozen, allowed_partitions)
     schedules = MappingProxyType(dict(schedules))
     boundary_series = _require_run_interval_inside_allowed(
-        snapshot, allowed_partitions, run_interval
+        snapshot, allowed_partitions, run_interval, access_boundaries
     )
 
     events: list[PublicationEvent] = []
@@ -412,6 +529,8 @@ def build_feed(
     # partition を持つ系列**に限る。実行区間に足の終了時刻が入るものを拾うため、区間の
     # 開始より1本ぶん手前から期待足を数える。
     for series in sorted(boundary_series, key=str):
+        if series in internal_series:
+            continue
         scheduled_series = schedules.get(series)
         if scheduled_series is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
@@ -435,6 +554,8 @@ def build_feed(
             )
 
     for series in readable.series():
+        if series in internal_series:
+            continue
         schedule = schedules.get(series)
         if schedule is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
@@ -449,11 +570,11 @@ def build_feed(
                 )
             if _within_run(run_interval, available):
                 events.append(Publication(series=series, bar_key=bar.key, available_at=available))
-            # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。
-            if is_execution and run_interval.contains(bar.bar_start):
-                events.append(
-                    ExecutionOpen(series=series, bar_key=bar.key, open_time=bar.bar_start)
-                )
+            # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。MT5 経路では最初の観測の
+            # 時刻に出す（D03 §15.5）。
+            open_time = bar.first_observed_at
+            if is_execution and run_interval.contains(open_time):
+                events.append(ExecutionOpen(series=series, bar_key=bar.key, open_time=open_time))
 
     ordered = tuple(
         sorted(
