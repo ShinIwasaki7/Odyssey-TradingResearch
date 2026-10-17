@@ -38,6 +38,7 @@ from odyssey_fx.marketdata.application.snapshot_access import (
 )
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
+from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog, PublicationRecord
 from odyssey_fx.marketdata.domain.schedule import DelayScenario, SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -319,6 +320,17 @@ def _within_run(run_interval: Interval, moment: UtcTime) -> bool:
     return run_interval.start <= moment <= run_interval.end
 
 
+def _no_record_intervals(snapshot: ReadableSnapshot, series: SeriesId) -> tuple[Interval, ...]:
+    """MT5 経路の snapshot の全分無記録の足の区間（HistData の経路では空）。"""
+    if snapshot.manifest.conversion.mt5 is None:
+        return ()
+    return tuple(
+        result.interval
+        for result in snapshot.report.results
+        if result.kind is CheckKind.NO_RECORD_BAR and result.series == series
+    )
+
+
 def build_publication_log(
     snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
@@ -361,6 +373,25 @@ def build_publication_log(
                 PublicationRecord(
                     bar_key=bar.key,
                     bar_end=bar.bar_end,
+                    scheduled_at=scheduled,
+                    available_at=available,
+                )
+            )
+        # MT5 経路: 全分無記録の足（作られない足）にも、
+        # 遅延シナリオを当てた予定の公開時刻を記録する。
+        # as-of ビューは、この時刻より前にその足を「準備不足」として見せない（D03 §15.7「予定の公開
+        # 時刻（区間の終わり。遅延シナリオ込み）以後」）。公開フィードのイベントにはしない。
+        for interval in _no_record_intervals(snapshot, series):
+            scheduled = schedule.scheduled_at(interval.end)
+            available = (
+                scheduled
+                if scenario is None
+                else scenario.available_at(schedule, interval.start, interval.end)
+            )
+            records.append(
+                PublicationRecord(
+                    bar_key=BarKey(series=series, bar_start=interval.start),
+                    bar_end=interval.end,
                     scheduled_at=scheduled,
                     available_at=available,
                 )

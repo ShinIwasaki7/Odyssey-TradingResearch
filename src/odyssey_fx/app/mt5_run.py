@@ -31,6 +31,7 @@ from odyssey_fx.marketdata.application.publication import PublicationKind
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.readiness import ScheduledBar, history_resets
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
@@ -160,8 +161,16 @@ def _scheduled_bars(
     *,
     start: UtcTime,
     end: UtcTime,
+    published: Mapping[BarKey, UtcTime] | None = None,
 ) -> list[ScheduledBar]:
+    """予定の足の列。公開時刻は公開記録（遅延シナリオ込み）があればそれ、無ければ通常の予定。"""
     built = {bar.bar_start: bar for bar in bars}
+    realized = published or {}
+
+    def available(bar_start: UtcTime, bar_end: UtcTime) -> UtcTime:
+        recorded = realized.get(BarKey(series=schedule.series, bar_start=bar_start))
+        return recorded if recorded is not None else schedule.scheduled_at(bar_end)
+
     out: list[ScheduledBar] = []
     for bar_start in schedule.calendar.expected_bar_starts(
         schedule.timeframe_def, Interval(start=start, end=end)
@@ -175,7 +184,7 @@ def _scheduled_bars(
             out.append(
                 ScheduledBar(
                     bar_start=bar_start,
-                    available_at=schedule.scheduled_at(interval.end),
+                    available_at=available(bar_start, interval.end),
                     built=False,
                 )
             )
@@ -183,7 +192,7 @@ def _scheduled_bars(
         out.append(
             ScheduledBar(
                 bar_start=bar_start,
-                available_at=schedule.scheduled_at(interval.end),
+                available_at=available(bar_start, interval.end),
                 built=found is not None,
                 no_record=found is None,
             )
@@ -197,6 +206,7 @@ def _history_reset_rows(
     schedules: Mapping[SeriesId, SeriesSchedule],
     bars_of: Mapping[SeriesId, tuple[Bar, ...]],
     run_interval: Interval,
+    published: Mapping[BarKey, UtcTime] | None = None,
 ) -> tuple[HistoryResetRow, ...]:
     """表22（D06 §18.10）。run の準備に効く無記録の足（公開の予定が run の終わり以前で、準備が
     整うのが run の始まりより後、またはデータの終わりまで整わないもの）だけを載せる。"""
@@ -212,7 +222,12 @@ def _history_reset_rows(
         if not no_record:
             continue
         sequence = _scheduled_bars(
-            schedule, bars, no_record, start=bars[0].bar_start, end=run_interval.end
+            schedule,
+            bars,
+            no_record,
+            start=bars[0].bar_start,
+            end=run_interval.end,
+            published=published,
         )
         for window in sorted(windows):
             for reset in history_resets(sequence, window):
@@ -251,6 +266,21 @@ def _lookback_start(schedule: SeriesSchedule, start: UtcTime, count: int) -> Utc
                 break
         probe = definition.boundaries(probe - _TINY).start
     return earliest
+
+
+def _reads_start(
+    schedule: SeriesSchedule, reads: Iterable[int | timedelta], start: UtcTime
+) -> UtcTime:
+    """戦略の窓が遡る最初の足の開始（能力検査の履歴の分。D06 §18.9 の 2）。"""
+    counts = [item for item in reads if isinstance(item, int)]
+    durations = [item for item in reads if isinstance(item, timedelta)]
+    starts = [start]
+    if counts:
+        starts.append(_lookback_start(schedule, start, max(counts)))
+    if durations:
+        # 経過時間の窓は末尾の足の終わりから遡るので、足 1 本ぶんの余裕を足して数える。
+        starts.append(_lookback_start(schedule, start - max(durations), 1))
+    return min(starts, key=lambda value: value.value)
 
 
 def _merge_shortfall(
@@ -363,6 +393,7 @@ def build_mt5_run_parts(
     run_interval: Interval,
     repo_root: Path,
     approved_list: Path = DEFAULT_APPROVED_LIST,
+    publication_log: PublicationLog | None = None,
 ) -> Mt5RunParts:
     """MT5 経路の run の部品を組み立てる（D06 §18.2・§18.9・§18.10）。"""
     minute_candidates = [
@@ -381,33 +412,31 @@ def build_mt5_run_parts(
     table, approved = _load_table(repo_root, approved_path, observation.table_ref)
     reports: list[SeriesCoverageReport] = []
     executed = [execution_series, *(item for item in hierarchy if item != execution_series)]
+    reads = strategy_reads(compiled)
     for series in executed:
+        # 執行系列を戦略も読むなら、履歴の分も照合と報告の区間に入れる（D06 §18.9 の 2・4）。
+        schedule = schedules.get(series)
+        start = (
+            _reads_start(schedule, reads[series], run_interval.start)
+            if schedule is not None and series in reads
+            else run_interval.start
+        )
         reports.append(
             _series_report(
-                observation, series, minute_series, run_interval, bars_of.get(series, ())
+                observation,
+                series,
+                minute_series,
+                Interval(start=start, end=run_interval.end),
+                bars_of.get(series, ()),
             )
         )
-    for series, reads in sorted(strategy_reads(compiled).items(), key=lambda item: str(item[0])):
+    for series, series_reads in sorted(reads.items(), key=lambda item: str(item[0])):
         if series in executed:
             continue
         schedule = schedules.get(series)
         if schedule is None:
             continue
-        counts = [item for item in reads if isinstance(item, int)]
-        durations = [item for item in reads if isinstance(item, timedelta)]
-        starts = [run_interval.start]
-        if counts:
-            starts.append(_lookback_start(schedule, run_interval.start, max(counts)))
-        if durations:
-            # 経過時間の窓は末尾の足の終わりから遡るので、足 1 本ぶんの余裕を足して数える。
-            starts.append(
-                _lookback_start(
-                    schedule,
-                    run_interval.start - max(durations),
-                    1,
-                )
-            )
-        start = min(starts, key=lambda value: value.value)
+        start = _reads_start(schedule, series_reads, run_interval.start)
         reports.append(
             _series_report(
                 observation,
@@ -432,6 +461,15 @@ def build_mt5_run_parts(
             bars=bars_of.get(minute_series, ()),
         ),
         capability=Mt5Capability(coverage=coverage, excused=excused),
-        history_resets=_history_reset_rows(observation, compiled, schedules, bars_of, run_interval),
+        history_resets=_history_reset_rows(
+            observation,
+            compiled,
+            schedules,
+            bars_of,
+            run_interval,
+            published=None
+            if publication_log is None
+            else {record.bar_key: record.available_at for record in publication_log.records},
+        ),
         minute_series=minute_series,
     )

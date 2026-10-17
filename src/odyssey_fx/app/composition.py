@@ -1042,6 +1042,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
             calendar=plan.calendar,
             run_interval=experiment.run_interval,
             repo_root=plan.repo_root,
+            publication_log=plan.publication_log,
         )
     )
     feed = build_feed(

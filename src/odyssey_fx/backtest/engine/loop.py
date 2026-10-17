@@ -641,6 +641,10 @@ class BacktestEngine:
         if self._minutes is None:
             return
         start = self._config.run_interval.start
+        # 補うのは run の開始の直前の分が無記録のときだけ。休場（週末など）の後では補わない（足が
+        # 存在しない区間であり、全分無記録の執行足ではない。D03 §15.4）。
+        if not self._minutes.is_unrecorded(start - timedelta(minutes=1)):
+            return
         last_minute = self._minutes.last_bar_before(start)
         if last_minute is None:
             return

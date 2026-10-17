@@ -25,12 +25,20 @@ from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.acceptance import PendingSnapshot
 from odyssey_fx.marketdata.application.asof import AsOfView, BarsWindow, MissingInput
 from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
-from odyssey_fx.marketdata.application.publication import PublicationKind, build_feed
+from odyssey_fx.marketdata.application.publication import (
+    PublicationKind,
+    build_feed,
+    build_publication_log,
+)
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.readiness import ScheduledBar, history_resets
-from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
+from odyssey_fx.marketdata.domain.schedule import (
+    DelayScenario,
+    FixedSeriesDelay,
+    SeriesSchedule,
+)
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource
 from odyssey_fx.strategy.declarations.read_spec import DurationWindow
@@ -306,3 +314,60 @@ def test_duration_window_reads_are_checked_for_shortfall() -> None:
     )
     reads = strategy_reads(changed)
     assert timedelta(hours=30) in reads[series]
+
+
+def test_c7_a_no_record_bar_follows_the_delay_scenario(tmp_path: Path) -> None:
+    """C-7（D03 §15.7「予定の公開時刻（遅延シナリオ込み）以後」。第 2 巡のレビューの指摘）:
+    遅延シナリオで
+    日足の公開を 2 時間遅らせると、全分無記録の日足が準備不足として見えるのも 2 時間後から。"""
+    pending, snapshot = _snapshot(tmp_path)
+    schedules = _schedules(snapshot)
+    scenario = DelayScenario(
+        id="d1_2h",
+        version=1,
+        rules=(FixedSeriesDelay(series=DAILY, delay=timedelta(hours=2)),),
+    )
+    log = build_publication_log(
+        snapshot, frozenset(pending.partition_bars), pending.partition_bars, schedules, scenario
+    )
+    view = AsOfView(
+        snapshot=snapshot,
+        allowed_partitions=frozenset(pending.partition_bars),
+        schedules=schedules,
+        partition_bars=pending.partition_bars,
+        publication_log=log,
+    )
+    bar_end = _t("2026-01-21T22:00:00Z")
+    assert view.latest_available(DAILY, bar_end + timedelta(hours=1)) == MissingInput(
+        MissingInputReason.LATEST_BAR_UNAVAILABLE
+    )
+    assert view.latest_available(DAILY, bar_end + timedelta(hours=2)) == MissingInput(
+        MissingInputReason.WARMUP_INSUFFICIENT
+    )
+
+
+def test_an_execution_series_read_by_the_strategy_is_checked_over_its_history(
+    tmp_path: Path,
+) -> None:
+    """D06 §18.9 の 2・4（第 2 巡のレビューの指摘）: 執行に使う系列を戦略も履歴窓で読むなら、
+    その系列の
+    報告と取得不足の照合の区間は run 区間だけでなく、窓が遡る履歴の分を含む。"""
+    pending, snapshot = _snapshot(tmp_path)
+    observation = Mt5Observation.from_snapshot(snapshot)
+    assert observation is not None
+    run = _span("2026-01-22T00:00:00Z", "2026-01-22T06:00:00Z")
+    parts = build_mt5_run_parts(
+        observation=observation,
+        compiled=compiled_strategy(),
+        execution_series=HOURLY,
+        hierarchy=(HOURLY,),
+        schedules=_schedules(snapshot),
+        bars_of=_bars_of(pending),
+        calendar=CALENDAR,
+        run_interval=run,
+        repo_root=tmp_path,
+    )
+    (report,) = [item for item in parts.capability.coverage.series if item.series == HOURLY]
+    # 窓 21 本（20 本＋末尾から除く 1 本）を遡る。
+    assert report.interval.start == _t("2026-01-21T03:00:00Z")
+    assert report.interval.end == run.end

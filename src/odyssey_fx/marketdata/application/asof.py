@@ -258,6 +258,11 @@ class AsOfView:
     def _scheduled_end_passed(self, series: SeriesId, bar_start: UtcTime, at: UtcTime) -> bool:
         """足の予定の公開時刻が `at` 以前か（区間が終わるまで全分無記録とは決まらない。D03
         §15.7）。"""
+        # 遅延シナリオを当てた公開時刻（公開記録）があればそれを使う（D03
+        # §15.7「遅延シナリオ込み」）。
+        recorded = self._recorded_at.get(BarKey(series=series, bar_start=bar_start))
+        if recorded is not None:
+            return recorded <= at
         definition = self._schedule(series).timeframe_def
         interval = definition.expected_interval(self._schedule(series).calendar, bar_start)
         if interval is None:

@@ -519,3 +519,41 @@ def test_c6_a_shortfall_run_is_rejected_by_the_evaluation(tmp_path: Path) -> Non
     report = _evaluate(output, tmp_path / "eval")
     assert report.status is EvaluationStatus.REJECTED
     assert report.metrics == ()
+
+
+def test_the_last_execution_bar_is_not_carried_over_a_closure() -> None:
+    """D06 §18.9 の 5（第 2 巡のレビューの指摘）: run の開始の直前の分が休場（週末）なら、
+    前の週の執行足を
+    「最新の執行足」に補わない（全分無記録の執行足ではないため。15 分足 1 段の run と同じ）。
+    直前の分が
+    無記録なら補う。"""
+    from types import SimpleNamespace
+    from typing import Any
+
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+
+    friday_bar = SimpleNamespace(
+        bar_start=_at("21:45"), bar_end=_at("22:00"), key=SimpleNamespace(bar_start=_at("21:45"))
+    )
+    minute = SimpleNamespace(bar_start=_at("21:59"))
+
+    def engine(start: UtcTime, unrecorded: bool) -> object:
+        made: Any = object.__new__(BacktestEngine)
+        made._config = SimpleNamespace(run_interval=SimpleNamespace(start=start))
+        made._minutes = SimpleNamespace(
+            is_unrecorded=lambda moment: unrecorded,
+            last_bar_before=lambda moment: minute,
+        )
+        made._execution = SimpleNamespace(
+            next_bar_key_after=lambda moment: (
+                friday_bar.key if moment < friday_bar.bar_start else None
+            ),
+            bar=lambda key: friday_bar,
+        )
+        made._last_complete = None
+        made._seed_last_complete()
+        return made._last_complete
+
+    sunday_open = UtcTime.parse("2026-01-25T22:00:00Z")
+    assert engine(sunday_open, unrecorded=False) is None
+    assert engine(_at("22:30"), unrecorded=True) is friday_bar

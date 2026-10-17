@@ -165,9 +165,42 @@ def _platform_days(
 def compare_days(
     pair: str, platform: Mapping[str, _PlatformDay], tool_rows: Sequence[Mapping[str, str]]
 ) -> list[dict[str, Any]]:
-    """取引日ごとに比べる（基盤の日足の区間の開始と道具の `interval_start_utc` で対応づける）。"""
+    """取引日ごとに比べる（基盤の日足の区間の開始と道具の `interval_start_utc` で対応づける）。
+
+    **両方向で比べる**: 基盤の取引日の範囲（最初の日足の開始から最後の日足の終わりまで）
+    に入る道具の行は
+    すべて出力し、片方にしか無い取引日は不一致にする（休場の日はどちらの側にも取引日として現れない）。
+    """
     out: list[dict[str, Any]] = []
     tool_by_start = {row["interval_start_utc"]: row for row in tool_rows}
+    if platform:
+        lo = min(platform)
+        hi = max(_iso(day.interval.end) for day in platform.values())
+        extra = [
+            start
+            for start, row in tool_by_start.items()
+            if start not in platform and lo <= start and row["interval_end_utc"] <= hi
+        ]
+    else:
+        extra = []
+    for start in extra:
+        theirs = tool_by_start[start]
+        out.append(
+            {
+                "pair": pair,
+                "trading_day": theirs["trading_day"],
+                "interval_start_utc": start,
+                "interval_end_utc": theirs["interval_end_utc"],
+                "platform_class": "",
+                "tool_class": _tool_class(theirs),
+                "tool_expected": int(theirs["expected_minutes"]),
+                "tool_recorded": int(theirs["recorded_minutes"]),
+                "tool_unrecorded": int(theirs["no_record_minutes"]),
+                "tool_shortfall": int(theirs["shortfall_minutes"]),
+                "tool_first_observed": theirs["first_recorded_utc"],
+                "match": False,
+            }
+        )
     for start in sorted(platform):
         mine = platform[start]
         theirs = tool_by_start.get(start)
@@ -201,6 +234,7 @@ def compare_days(
             )
         )
         out.append(record)
+    out.sort(key=lambda row: str(row["interval_start_utc"]))
     return out
 
 
