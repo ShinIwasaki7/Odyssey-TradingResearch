@@ -27,6 +27,7 @@ calendar:
   holiday_exceptions:
     file: tools/survey/oanda_holiday_exceptions_2026-10-16.json
     sha256: 2c85a0936fa0c377568fa054f02268779cfaceeb4371c1ddf65e312af6186604
+  v2_2017_year_end_closures: null  # 版 2 の 2017-12-25・2018-01-01 の宣言を引き継ぐか（要決定 D12-98。Y9）
   declared_as: null  # どの識別と版のカレンダーとして宣言するか（要決定 D12-93。Y4）。中身は上の 2 つの和集合（版 2 より広いクリスマスの 4 日は取引日単位の休場に置き換える。D03 §15.6 の 1 (v)）
 
 minute_status_order: [closed, acquisition_shortfall, recorded, unrecorded]  # D03 §15.2。1 分に 1 つ、この順に判定
@@ -50,7 +51,7 @@ warmup:
   # 現在の戦略（検証戦略 B）の必要履歴の写し。基盤全体の品質基準ではない（D12-88）。集計の道具だけが使い、
   # 基盤の実装は戦略の宣言の窓で数える（D03 §15.12）。道具は daily_bars_source の値と一致を確かめる
   daily_bars: 60
-  daily_bars_source: "configs/strategies/strategy_b_v1.yaml の window_bars"
+  daily_bars_source: "configs/strategies/strategy_b_v1.yaml の components の instance_id daily_ema（入力 USDJPY/1d_ny17/bid）の parameters.window_bars"
   partial_daily_bar_counts: true  # D12-82
   closure_day_breaks_continuity: false  # D12-83
   all_no_record_scheduled_day_resets: true  # D12-84（例外なし。2022-12-26 も同じ。D03 §15.7）
