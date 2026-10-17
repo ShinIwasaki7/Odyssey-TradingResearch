@@ -238,6 +238,26 @@ wait_bucket_absent() {  # wait_bucket_absent <bucket>
   return 1
 }
 
+# Windows の中の自動の停止を、承認済みの時刻（起動の時刻 + PROBE_SHUTDOWN_SECONDS = 4 時間 30 分）に予約し直す
+# PowerShell（20_prepare.sh が実行のたびに SSM で送る。人間の決定 2026-10-17 の (A)。D12 付録 K-18 の⑤）。
+# 起動の時の予約（10_launch.sh の user-data の shutdown /s /t）は初回の起動で 1 回だけ動き、再起動（msiexec の
+# 3010 の後など）で消えるため。起動の時刻は Mac の状態のファイルの LAUNCHED_AT_EPOCH（10_launch.sh が run-instances
+# の直後に記録。load_state が無ければ止める）。残りの秒数は Windows の時計で計算する。既存の予約を shutdown /a で
+# 取り消してから予約するので、何度実行しても予約は 1 つで、時刻は同じ（冪等）。残りが 60 秒未満なら予約せずに止める。
+autostop_ps() {  # autostop_ps <停止の時刻（UNIX 秒）>
+  local at="$1"
+  cat <<PS
+\$ErrorActionPreference = 'Stop'
+\$at = [DateTimeOffset]::FromUnixTimeSeconds(${at})
+\$t = [int][math]::Floor((\$at - [DateTimeOffset]::UtcNow).TotalSeconds)
+if (\$t -lt 60) { throw "auto stop time already reached or too close: \$(\$at.UtcDateTime.ToString('u')) (\$t s)" }
+cmd /c "shutdown /a >nul 2>&1"
+shutdown /s /t \$t /c "odyssey-mt5-probe auto stop (launch + $(( PROBE_SHUTDOWN_SECONDS / 60 ))m, rescheduled)"
+if (\$LASTEXITCODE -ne 0) { throw "shutdown /s failed: \$LASTEXITCODE" }
+"auto stop scheduled: \$(\$at.UtcDateTime.ToString('u')) (in \$t s)"
+PS
+}
+
 # AWS CLI v2 を Windows に入れる PowerShell（20_prepare.sh が SSM で実行する）。既に入っていれば入れない。
 # 入れるときは、版を固定した公式の MSI を取り、SHA-256 と Authenticode の署名（有効で、署名者が Amazon）を
 # 確かめてから msiexec で入れ、`aws --version` が aws-cli/2. で始まることを確かめる。

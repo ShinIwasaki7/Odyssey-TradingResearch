@@ -12,9 +12,11 @@ check_deadline
 assert_tagged_instance "$INSTANCE_ID"
 
 tool_sha=$(sha256_of "$PROBE_TOOL")
+autostop_at=$(( LAUNCHED_AT_EPOCH + PROBE_SHUTDOWN_SECONDS ))
+autostop_utc=$("$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$autostop_at")
 cat >&2 <<INFO
 == 準備の計画（${INSTANCE_ID}）
-  1. SSM の接続を待つ
+  1. SSM の接続を待ち、Windows の中の自動の停止を ${autostop_utc}（起動 + $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分）に予約し直す（実行のたび）
   2. Python のインストーラー（${PY_INSTALLER_URL}）を取り、SHA-256 ${PY_INSTALLER_SHA256} を確かめ、全ユーザーに入れる
   3. pip で ${MT5_PY_PACKAGE} を入れ、import できるかを確かめる（端末にはつながない）
   4. AWS CLI v2（S3 に置く道具。付録 K-17.4 の 1）: 既に入っていれば入れない。入れるときは
@@ -28,6 +30,11 @@ INFO
 wait_ssm_online "$INSTANCE_ID"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+
+# 自動の停止を承認済みの時刻に予約し直す（実行のたび。再起動で消えた予約を戻す。人間の決定 2026-10-17 の (A)）。
+autostop_ps "$autostop_at" >"$work/autostop.ps1"
+log "Windows の中の自動の停止を ${autostop_utc}（起動 + $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分）に予約し直す"
+ssm_ps "$INSTANCE_ID" 120 "$work/autostop.ps1"
 
 cat >"$work/py.ps1" <<PS
 \$ErrorActionPreference = 'Stop'
@@ -60,7 +67,7 @@ log "AWS CLI v2 を入れる（正常に動く 2.x が既に入っていれば�
 if ! awscli_out=$(ssm_ps "$INSTANCE_ID" 900 "$work/awscli.ps1"); then
   printf '%s\n' "$awscli_out"
   if [[ "$awscli_out" == *AWSCLI_RESTART_REQUIRED* ]]; then
-    die "AWS CLI v2 は導入済み・再起動が必要（msiexec の終了コード 3010。導入の失敗ではない）。自動では再起動も続行もしない。人間が Windows を再起動した後に、20_prepare.sh --execute をもう一度実行する（入っていれば入れ直さずに先へ進む）"
+    die "AWS CLI v2 は導入済み・再起動が必要（msiexec の終了コード 3010。導入の失敗ではない）。自動では再起動も続行もしない。人間が Windows を再起動した後に、20_prepare.sh --execute をもう一度実行する（再実行は、再起動で消えた自動の停止を起動 + 4 時間 30 分に予約し直し、AWS CLI は入っていれば入れ直さずに先へ進む）"
   fi
   die "AWS CLI v2 の導入に失敗した（上の出力を確かめる）。準備を止めた"
 fi

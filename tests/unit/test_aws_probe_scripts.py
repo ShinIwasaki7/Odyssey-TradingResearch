@@ -612,3 +612,118 @@ def test_prepare_logs_the_exact_awscli_version_in_use(
     assert r.returncode == 0, r.stderr
     assert expected in r.stderr
     assert _sent_after_awscli(tmp_path)  # 版を記録した後、道具の配置へ進む
+
+
+# --- 20_prepare.sh の自動の停止の予約し直し（人間の決定 2026-10-17 の (A)。付録 K-18 の⑤） ---
+
+
+def _launched_at(tmp_path: Path) -> int:
+    text = (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8")
+    m = re.search(r"LAUNCHED_AT_EPOCH=(\d+)", text)
+    assert m is not None
+    return int(m.group(1))
+
+
+def _autostop_scripts(tmp_path: Path) -> list[str]:
+    return [s for s in _prepare_scripts(tmp_path) if "FromUnixTimeSeconds" in s]
+
+
+@needs_bash
+def test_prepare_restores_the_autostop_after_a_3010_restart(tmp_path: Path) -> None:
+    """3010 で止まる → 人間が再起動（予約が消える）→ 再実行で同じ時刻に予約し直す。"""
+    out_3010 = "AWSCLI_RESTART_REQUIRED: msiexec exit 3010 (installed, restart required)."
+    first = _prepare_with(tmp_path, {"awscli_status": "Failed", "awscli_out": out_3010})
+    assert first.returncode == 1
+    deadline = _launched_at(tmp_path) + 16200  # 起動 + 4 時間 30 分
+    scripts = _prepare_scripts(tmp_path)
+    stops = _autostop_scripts(tmp_path)
+    assert len(stops) == 1
+    # 予約し直しは AWS CLI の導入より前（3010 で止まる回にも予約が入る）
+    awscli_at = next(i for i, s in enumerate(scripts) if "AWSCLIV2" in s)
+    assert scripts.index(stops[0]) < awscli_at
+    # 再起動の後の再実行（同じ起動。状態のファイルと偽の aws の記録は同じ）
+    (tmp_path / "fake_aws" / "scenario.json").write_text("{}", encoding="utf-8")
+    env = _env(tmp_path / "rerun", {})
+    env.update(RESULT_ROOT=str(tmp_path / "probe_root"), FAKE_AWS_DIR=str(tmp_path / "fake_aws"))
+    second = _run("20_prepare.sh", ["--execute"], env)
+    assert second.returncode == 0, second.stderr
+    stops = _autostop_scripts(tmp_path)
+    assert len(stops) == 2  # 実行のたびに予約し直す
+    for s in stops:
+        assert f"FromUnixTimeSeconds({deadline})" in s  # 時刻は 2 回とも同じ（冪等）
+        assert s.index('cmd /c "shutdown /a') < s.index("shutdown /s /t $t")  # 既存の予約を取り消す
+    assert "Windows の中の自動の停止を" in second.stderr
+    assert "に予約し直す" in second.stderr
+
+
+@needs_bash
+def test_prepare_dry_run_shows_the_autostop_time(tmp_path: Path) -> None:
+    env = _env(tmp_path, {})
+    _write_state(tmp_path)
+    r = _run("20_prepare.sh", [], env)
+    assert r.returncode == 0, r.stderr
+    expected = datetime.fromtimestamp(_launched_at(tmp_path) + 16200, tz=UTC)
+    assert f"自動の停止を {expected.strftime('%Y-%m-%dT%H:%M:%SZ')}（起動 + 270 分）" in r.stderr
+    assert not any(c[0] == "ssm" for c in _calls(tmp_path))
+
+
+MOCKS_SHUTDOWN_PS = r"""
+function shutdown { Add-Content -LiteralPath $env:MOCK_LOG ("shutdown " + ($args -join ' '))
+  $global:LASTEXITCODE = 0 }
+function cmd { Add-Content -LiteralPath $env:MOCK_LOG ("cmd " + ($args -join ' '))
+  $global:LASTEXITCODE = 0 }
+"""
+
+
+def _run_autostop_ps(tmp_path: Path, at: int) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    env = _env(tmp_path / "prep", {})
+    _write_state(tmp_path / "prep")
+    r = _run("20_prepare.sh", ["--execute"], env)
+    assert r.returncode == 0, r.stderr
+    (ps,) = _autostop_scripts(tmp_path / "prep")
+    ps = re.sub(r"FromUnixTimeSeconds\(\d+\)", f"FromUnixTimeSeconds({at})", ps)
+    win = tmp_path / "win"
+    win.mkdir()
+    (win / "mocks.ps1").write_text(MOCKS_SHUTDOWN_PS, encoding="utf-8")
+    (win / "autostop.ps1").write_text(ps, encoding="utf-8")
+    log = win / "mock.log"
+    log.write_text("", encoding="utf-8")
+    penv = dict(os.environ, MOCK_LOG=str(log))
+    p = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f". '{win / 'mocks.ps1'}'; . '{win / 'autostop.ps1'}'",
+        ],
+        env=penv,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    return p, log.read_text(encoding="utf-8").splitlines()
+
+
+@needs_bash
+@needs_pwsh
+def test_autostop_ps_cancels_then_schedules_the_remaining_seconds(tmp_path: Path) -> None:
+    at = int(datetime.now(tz=UTC).timestamp()) + 3600
+    r, log = _run_autostop_ps(tmp_path, at)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log[0] == "cmd /c shutdown /a >nul 2>&1"
+    m = re.fullmatch(r"shutdown /s /t (\d+) /c odyssey-mt5-probe auto stop .*", log[1])
+    assert m is not None, log
+    assert 3500 <= int(m.group(1)) <= 3600
+    assert "auto stop scheduled:" in r.stdout
+
+
+@needs_bash
+@needs_pwsh
+def test_autostop_ps_refuses_when_the_time_has_passed(tmp_path: Path) -> None:
+    at = int(datetime.now(tz=UTC).timestamp()) - 10
+    r, log = _run_autostop_ps(tmp_path, at)
+    assert r.returncode != 0
+    assert "auto stop time already reached or too close" in r.stdout + r.stderr
+    assert log == []  # 既存の予約も取り消さない

@@ -11,7 +11,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 | `00_check.sh` | なし | プロファイルの確認、AMI の特定、人間の事前作業（SSM 用のロール・Budgets）の確認、起動の権限の試し（EC2 の `--dry-run`）、費用の再見積 |
 | `10_launch.sh --execute` | **始まる** | セキュリティグループ（RDP を人間の IP だけ）・キーペアを作り、t3.medium を 1 台起動。司令塔の「起動してよい」の後だけ |
 | `95_deadline_guard.sh` | — | 起動から 4 時間（全期間取得。前回の最後の調査は 2 時間）で `90_teardown.sh --execute` を実行する見張り（Mac で裏で動かす） |
-| `20_prepare.sh --execute` | 続く | Python 3.12.10・MetaTrader5 5.0.6231・AWS CLI v2（2.38.1。既に入っていれば入れない）を入れ、試験の道具を `C:\probe\` に置く。RDP の接続先とパスワードの出し方を表示 |
+| `20_prepare.sh --execute` | 続く | 実行のたびに Windows の中の自動の停止を起動 + 4 時間 30 分に予約し直す（再起動で消えた予約を戻す）。Python 3.12.10・MetaTrader5 5.0.6231・AWS CLI v2（2.38.1。既に入っていれば入れない）を入れ、試験の道具を `C:\probe\` に置く。RDP の接続先とパスワードの出し方を表示 |
 | （人間） | 続く | RDP で接続し、OANDA のマイページから MT5 の端末を入れてログインし、チャートを閉じ、RDP を「切断」する（付録 K-2） |
 | `30_run_probe.sh [段] --execute` | 続く | 試験の道具を実行。段は `usdjpy-time`（既定）・`usdjpy-range`・`others` |
 | `40_collect.sh <段> --execute` | 続く | 結果を回収し `data/raw/oanda_mt5_probe/<試験の日付>/<段>/` に置き、SHA-256 の一覧を作る |
@@ -72,7 +72,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 | `90_teardown.sh` の `s3api wait bucket-not-exists`（5 秒 × 20 回）が「Max attempts exceeded」で止まり、直後の head-bucket は 404 だった。もう一度実行して片付けた（K-17.6） | 自分で head-bucket を繰り返す（`lib.sh` の `wait_bucket_absent`。間隔 10 秒・最大 30 回。`S3_DELETE_WAIT_SECONDS`・`S3_DELETE_WAIT_ATTEMPTS`。待ちの合計は約 5 分だが、head-bucket の通信の時間を含まないので、**厳密な「5 分以内」の保証ではない**）。404 で成功とし、毎回の応答（200・403 など）を記録する。上限まで 404 にならなければ、記録 `s3_bucket.env` を残し、残りの確認を表示してから終了コード 1 で終わる（もう一度実行すれば、404 なら記録を退避して終わる） |
 | （同じ箇所で見つけた関連の不具合）以前は、片付けの最初と残りの確認で head-bucket の失敗をすべて「バケットは無い」と扱っていた。403（権限の不足など）でも記録を退避していた | `s3_bucket_state` で 200（ある）・404（無い）・それ以外（不明）を分ける。不明のときは消さず、記録を残し、残りの確認に「不明」と出して終了コード 1 |
 
-上の 4 点（削除の後の待ち方、403 などの扱い、msiexec の 3010、導入済みの AWS CLI の版）は、2026-10-17 に人間が運用規則として決めた（D12 本文 第0.1.27節に原文、付録 K-18 に規則）。403 などは「バケットの有無が不明」とし、削除の前に不明なら削除せず記録を残して異常終了、削除の後に不明なら上限まで確かめ直し、404 が無ければ記録を残して異常終了する。
+上の 4 点（削除の後の待ち方、403 などの扱い、msiexec の 3010、導入済みの AWS CLI の版）と、3010 の後の再起動で消える自動の停止の予約を `20_prepare.sh` の実行のたびに起動 + 4 時間 30 分へ予約し直すこと（`lib.sh` の `autostop_ps`。起動の時刻は状態のファイルの `LAUNCHED_AT_EPOCH`、`shutdown /a` の後に `shutdown /s /t`、残り 60 秒未満なら止める）は、2026-10-17 に人間が運用規則として決めた（D12 本文 第0.1.27節に原文、付録 K-18 に規則）。403 などは「バケットの有無が不明」とし、削除の前に不明なら削除せず記録を残して異常終了、削除の後に不明なら上限まで確かめ直し、404 が無ければ記録を残して異常終了する。
 
 `wait bucket-not-exists` がどの応答で終わらなかったのか（S3 の削除の反映の遅れか、403 などか）は、K-17.6 に記録が無く、**原因は確かめていない**。直した道具は毎回の応答を記録するので、次に起きたときは原因が分かる。
 
@@ -82,11 +82,13 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 - `38_full_fetch.sh --pairs USDJPY --execute` をバケットの記録が無い状態で実行し、乱数の行を通ってバケットの作成（`s3api create-bucket`、東京リージョン）と `s3_bucket.env` の記録まで進む。修正前のスクリプトでは同じテストが終了コード 141 で失敗する（確認済み）。
 - `90_teardown.sh --execute` の分岐: 消した後に 403 → 200 → 404 で成功し記録を退避する／403 が続くと 3 回で止まり、記録を残し、残りの確認に「不明」と出して終了コード 1／最初から 404 なら消す操作をせずに記録を退避する／最初が 403 なら消さずに止まる／`--verify` で 404 を「0」と出す。修正前のスクリプトでは、偽の aws が `wait bucket-not-exists` に K-17.6 と同じ失敗を返すので、成功の分岐のテストが失敗する（確認済み）。
 - `20_prepare.sh --execute` が、AWS CLI の導入の PowerShell を SSM で 1 回送り、その中に版を固定した URL・SHA-256・署名の確認・msiexec がこの順にある。`--execute` なしでは何も送らない。
+- 自動の停止の予約し直し: 3010 で止まる回にも AWS CLI の導入より前に予約が送られ、再実行で同じ時刻（起動 + 16,200 秒）の予約がもう一度送られる。`pwsh` のテストで、`shutdown /a` の後に残りの秒数で `shutdown /s /t` を呼ぶこと、時刻を過ぎていれば何も呼ばずに止まることを確かめる。
 - `20_prepare.sh --execute` の応答の分岐: 3010 の応答では「導入済み・再起動が必要」と表示し、再起動の後の再実行を案内して終了コード 1 で止まり、道具の配置へ進まない／通常の失敗では「導入に失敗」と表示して止まる／成功では実際に使う版（導入済みの 2.31.7、新規の 2.38.1 の 2 例）をログに残して先へ進む。
 - AWS CLI の導入の PowerShell の分岐（`pwsh` があるときだけ。GitHub Actions の ubuntu-latest で実行。作業役の Mac には `pwsh` が無いので飛ばす）: 入っていなければ取得 → SHA-256 → 署名 → msiexec の順に進む／入っていれば何もしない／SHA-256 の不一致・署名の状態が Valid でない・署名者が違うときは msiexec を呼ばずに止まる／msiexec が失敗（1603）すれば「install failed」で止まる／3010 では `AWSCLI_RESTART_REQUIRED` の行を出して止まり、版の確認へ進まない。`Invoke-WebRequest`・`Get-FileHash`・`Get-AuthenticodeSignature`・`Start-Process` は偽物、Windows のパスは一時フォルダに置き換える。
 
 ### 実環境（AWS・Windows）では未確認の範囲
 
+- Windows Server の本物の `shutdown /a`・`shutdown /s /t` が、SSM の実行者（SYSTEM）から期待どおり予約を置き換えるか。再起動で起動の時の予約が消えることはコードを読んで確かめた事実で、実環境では試していない。
 - 実際の S3 の削除の後の head-bucket の応答の並びと、10 秒 × 30 回で 404 を確かめられるか。AWS CLI v2 のエラー文の形（`(404)`・`Not Found`）は偽の aws が真似ただけ。
 - Windows Server 2022 の Windows PowerShell 5.1（SSM の `AWS-RunPowerShellScript`）での導入のスクリプトの動作。本物の `Get-AuthenticodeSignature` の Subject の書式（`O=` の値が引用符付きか否かの両方を受けるようにした）、本物の msiexec が 3010 を返す条件と、そのときの SSM の出力に `AWSCLI_RESTART_REQUIRED` の行が残るか、SSM の 900 秒の制限で足りるか。
 - MSI の SHA-256 は Mac で取得して計算しただけで、この道具で Windows に入れてはいない（K-17.4 の 1 の手作業の記録と値が一致することだけ確かめた）。
