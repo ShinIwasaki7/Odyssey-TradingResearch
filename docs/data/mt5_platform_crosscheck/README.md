@@ -36,7 +36,7 @@
 uv run python -m tools.survey.mt5_platform_crosscheck \
   --root <原データの置き場>/data/raw/oanda_mt5/2026-10-16 \
   --feasibility-dir docs/data/full_period_feasibility \
-  --feasibility-ref "main 8c7e6eb docs/data/full_period_feasibility (PR #85 final)" \
+  --feasibility-ref "PR #85 final outputs at 8c7e6eb (docs/data/full_period_feasibility)" \
   --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 \
   --out-dir docs/data/mt5_platform_crosscheck
 ```

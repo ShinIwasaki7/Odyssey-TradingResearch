@@ -1,6 +1,6 @@
 {
  "tool": "tools/survey/mt5_platform_crosscheck.py",
- "target_commit": "15eb6f47b15a0f8b97bbfcb0dec95865964bf2cc",
+ "target_commit": "5f697034c1248ed97822e0c3adf68945034f325f",
  "command": "uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置き場>/2026-10-16 --feasibility-dir docs/data/full_period_feasibility --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 --variants standard candidate --out-dir docs/data/mt5_platform_crosscheck",
  "raw_root": "2026-10-16",
  "pairs": [
@@ -19,7 +19,7 @@
   "2023-01",
   "2023-02"
  ],
- "feasibility_ref": "main 8c7e6eb docs/data/full_period_feasibility (PR #85 final)",
+ "feasibility_ref": "PR #85 final outputs at 8c7e6eb (docs/data/full_period_feasibility)",
  "feasibility_sha256": {
   "daily_bars.csv": "661cc7e60e34bed1390cff585c0f391b1b9c0a77ad266818f2891a7547d2295a",
   "no_record_bars.csv": "c4cd5758ec0aa5612ecce2caeb99a56cdeb885b1068f27d574cbfc140abeff85",
