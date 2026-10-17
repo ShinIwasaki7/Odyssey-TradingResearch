@@ -1,11 +1,15 @@
 {
  "tool": "tools/survey/mt5_platform_crosscheck.py",
- "target_commit": "a72acf4f281373b9396f9bac7d23c512aa21062f",
- "command": "uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置き場>/2026-10-16 --feasibility-csv <道具の daily_coverage.csv> --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 --out-dir docs/data/mt5_platform_crosscheck",
+ "target_commit": "15eb6f47b15a0f8b97bbfcb0dec95865964bf2cc",
+ "command": "uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置き場>/2026-10-16 --feasibility-dir docs/data/full_period_feasibility --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 --variants standard candidate --out-dir docs/data/mt5_platform_crosscheck",
  "raw_root": "2026-10-16",
  "pairs": [
   "USDJPY",
   "EURUSD"
+ ],
+ "variants": [
+  "standard",
+  "candidate"
  ],
  "months_api_time": [
   "2018-12",
@@ -15,9 +19,12 @@
   "2023-01",
   "2023-02"
  ],
- "clock_compared": "eu_clock",
- "feasibility_csv_sha256": "35e7b8684523f26a16005cd5c71b56d2789b5b449354347d2c4d9534cebe0437",
- "feasibility_csv_ref": "PR #85 analysis/full-period-feasibility 3180d70 docs/data/full_period_feasibility/daily_coverage.csv",
+ "feasibility_ref": "main 8c7e6eb docs/data/full_period_feasibility (PR #85 final)",
+ "feasibility_sha256": {
+  "daily_bars.csv": "661cc7e60e34bed1390cff585c0f391b1b9c0a77ad266818f2891a7547d2295a",
+  "no_record_bars.csv": "c4cd5758ec0aa5612ecce2caeb99a56cdeb885b1068f27d574cbfc140abeff85",
+  "warmup_resets.csv": "84f63b25a1ecb9150ebf7171db4f71b6c1b70828a251644e1bd6ea3b013f6af1"
+ },
  "rules": {
   "counting_rules_sha256": "fa98eef8cec035a4564b849bc4098d1488aee968bc3a5c2d44efb3ba75ca6444",
   "time_rule_table_sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
@@ -26,30 +33,78 @@
   "warmup_daily_bars": 60
  },
  "summary": {
-  "USDJPY": {
-   "trading_days": 127,
-   "matched": 127,
+  "USDJPY/standard": {
+   "trading_days": 126,
+   "matched": 126,
    "mismatched": [],
    "classes": {
     "partial": 87,
     "fully_observed": 38,
-    "closed": 1,
     "no_record": 1
    },
-   "history_resets": 1
+   "no_record_bars": {
+    "compared": 212,
+    "matched": 212
+   },
+   "history_resets": {
+    "compared": 1,
+    "matched": 1
+   }
   },
-  "EURUSD": {
-   "trading_days": 127,
-   "matched": 127,
+  "USDJPY/candidate": {
+   "trading_days": 126,
+   "matched": 126,
+   "mismatched": [],
+   "classes": {
+    "partial": 87,
+    "fully_observed": 38,
+    "no_record": 1
+   },
+   "no_record_bars": {
+    "compared": 212,
+    "matched": 212
+   },
+   "history_resets": {
+    "compared": 1,
+    "matched": 1
+   }
+  },
+  "EURUSD/standard": {
+   "trading_days": 126,
+   "matched": 126,
    "mismatched": [],
    "classes": {
     "partial": 90,
     "fully_observed": 35,
-    "closed": 1,
     "no_record": 1
    },
-   "history_resets": 1
+   "no_record_bars": {
+    "compared": 214,
+    "matched": 214
+   },
+   "history_resets": {
+    "compared": 1,
+    "matched": 1
+   }
+  },
+  "EURUSD/candidate": {
+   "trading_days": 126,
+   "matched": 126,
+   "mismatched": [],
+   "classes": {
+    "partial": 90,
+    "fully_observed": 35,
+    "no_record": 1
+   },
+   "no_record_bars": {
+    "compared": 214,
+    "matched": 214
+   },
+   "history_resets": {
+    "compared": 1,
+    "matched": 1
+   }
   }
  },
- "prices": "読んでいない値は無いが、出力には件数・時刻だけを書いた（価格は出さない）"
+ "prices": "出力には件数・時刻だけを書いた（価格は出さない）"
 }
