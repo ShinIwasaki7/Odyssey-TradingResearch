@@ -137,6 +137,7 @@ def _env(tmp_path: Path, scenario: dict[str, object]) -> dict[str, str]:
     (tmp_path / "probe_root" / "_state").mkdir(parents=True)
     (tmp_path / "home").mkdir()
     env = dict(os.environ)
+    env.pop("MT5_INSTALLER_URL", None)
     env.update(
         PATH=f"{bin_dir}:{env['PATH']}",
         HOME=str(tmp_path / "home"),
@@ -389,6 +390,7 @@ def test_prepare_dry_run_shows_the_awscli_step_and_sends_nothing(tmp_path: Path)
     r = _run("20_prepare.sh", [], env)
     assert r.returncode == 0, r.stderr
     assert "AWS CLI v2" in r.stderr and MSI_SHA256 in r.stderr
+    assert "  6. MT5 の端末: 入れない" in r.stderr
     assert not any(c[0] == "ssm" for c in _calls(tmp_path))
 
 

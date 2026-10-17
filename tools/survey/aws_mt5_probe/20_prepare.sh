@@ -21,7 +21,7 @@ cat >&2 <<INFO
      ${AWSCLI_MSI_URL} を取り、SHA-256 ${AWSCLI_MSI_SHA256} と
      署名（有効・署名者 ${AWSCLI_SIGNER_ORG}）を確かめてから msiexec で入れる
   5. 試験の道具 mt5_api_probe.py（SHA-256 ${tool_sha}）を C:\\probe\\ に置き、同じ SHA-256 かを確かめる
-  6. MT5 の端末:${MT5_INSTALLER_URL:-入れない（人間が RDP の中でマイページから入れる）}
+  6. MT5 の端末: ${MT5_INSTALLER_URL:-入れない（人間が RDP の中でマイページから入れる）}
 INFO
 [[ "$EXECUTE" == 1 ]] || { echo "(dry-run) 何もしていない。" >&2; exit 0; }
 
