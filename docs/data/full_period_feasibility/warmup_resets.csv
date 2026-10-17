@@ -1,0 +1,17 @@
+pair,variant,segment_id,trading_day,reason,built_bars_before_reset,was_ready_before,not_ready_from_utc,ready_again_at_utc,not_ready_hours
+USDJPY,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+USDJPY,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+EURJPY,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+EURJPY,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+EURUSD,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+EURUSD,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+GBPJPY,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+GBPJPY,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+USDCHF,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+USDCHF,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+AUDJPY,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+AUDJPY,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+GBPUSD,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+GBPUSD,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+AUDUSD,standard,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00
+AUDUSD,candidate,1,2022-12-26,all_no_record_scheduled_day,1552,True,2022-12-26T22:00Z,2023-03-20T21:00Z,2015.00

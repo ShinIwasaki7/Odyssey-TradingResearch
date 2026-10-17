@@ -1,0 +1,80 @@
+{
+ "tool": "tools/survey/full_period_final.py",
+ "tool_version": 1,
+ "tool_sha256": "927bf3e8d9e3219449bf4015873b6aa52f2dee21f288a50983f34c52bfadcd3f",
+ "shared_tool_sha256": "9d258bf81616883c40e33e84db2751d501b34fe61adb98555cefd5cb1bb05f88",
+ "stage": "final（§3-B の 9 項目。データ上の実行可能性。エンジンの動作・約定の再現性は確かめていない）",
+ "target_commit": "c1588b34e3d74834b6bdbbdb9d3b447a200ba0d3",
+ "command": "uv run python -m tools.survey.full_period_final --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility",
+ "raw_root": "data/raw/oanda_mt5/2026-10-16",
+ "started_at_utc": "2026-10-17T06:18:11+00:00",
+ "finished_at_utc": "2026-10-17T06:26:08+00:00",
+ "inputs": {
+  "fetch_manifest": {
+   "path": "docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json",
+   "sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53"
+  },
+  "fetch_log_sha256": "0868f4bd0840f41b7bda2c3d7a6b37aaee9dba52af424b7b54da7de53088d9fa",
+  "counting_rules": {
+   "path": "docs/design/counting_rules/counting_rules_v1.yaml",
+   "id": "oanda_mt5_counting_rules",
+   "version": 1,
+   "sha256": "fa98eef8cec035a4564b849bc4098d1488aee968bc3a5c2d44efb3ba75ca6444"
+  },
+  "time_rule_table": {
+   "path": "docs/design/time_rules/time_rule_table_v1.yaml",
+   "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3"
+  },
+  "approved_time_rule_tables": {
+   "path": "docs/design/time_rules/approved_time_rule_tables.yaml",
+   "sha256": "2a4eee10144764ac228e102ef56965615463ff60d2abf54d6240d39e0bf0d90b"
+  },
+  "calendar": {
+   "path": "configs/calendars/fx_ny17_oanda_v1.yaml",
+   "id": "fx_ny17_oanda",
+   "version": 1,
+   "sha256": "a9da0d9ae6b3246b5bb67757a7b6cb4ac50e5a012c96a5c4a075bc1148a79b96"
+  },
+  "timeframes": {
+   "path": "configs/calendars/timeframes_v1.yaml",
+   "sha256": "231d01c542cf5c152303770ed8832003702850380d0f7386467105c774710c81"
+  },
+  "warmup_source": "configs/strategies/strategy_b_v1.yaml の components の instance_id daily_ema（入力 USDJPY/1d_ny17/bid）の parameters.window_bars"
+ },
+ "pairs": [
+  "USDJPY",
+  "EURJPY",
+  "EURUSD",
+  "GBPJPY",
+  "USDCHF",
+  "AUDJPY",
+  "GBPUSD",
+  "AUDUSD"
+ ],
+ "variants": [
+  "standard",
+  "candidate"
+ ],
+ "period_utc": [
+  "2017-01-01T00:00:00+00:00",
+  "2024-01-01T00:00:00+00:00"
+ ],
+ "outputs": {
+  "coverage_by_pair.csv": 8,
+  "bar_counts.csv": 64,
+  "daily_bars.csv": 29056,
+  "coverage_distribution.csv": 64,
+  "no_record_run_distribution.csv": 112,
+  "long_no_record_runs.csv": 190,
+  "monthly_stats.csv": 1344,
+  "no_record_bars.csv": 6046,
+  "out_of_calendar_bars.csv": 144,
+  "segments.csv": 16,
+  "warmup_resets.csv": 16,
+  "research_windows.csv": 16,
+  "candidate_differences.csv": 1022,
+  "common_windows.csv": 2
+ },
+ "prices": "読んでいない・出力していない（CSV の 1 列目の時刻だけ）",
+ "strategy_results": "読んでいない"
+}
