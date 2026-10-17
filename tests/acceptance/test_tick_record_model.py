@@ -60,9 +60,10 @@ from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.series import SeriesId
-from tests.fixtures.backtest.harness import CODE_DIGEST, run_backtest
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
+from tests.fixtures.backtest.harness import CODE_DIGEST, compiled_strategy, run_backtest
 from tests.fixtures.mt5 import market as m5
-from tests.fixtures.mt5.run import Mt5RunOutput, run_mt5
+from tests.fixtures.mt5.run import MINUTE_SERIES, Mt5RunOutput, run_mt5
 from tests.fixtures.synthetic import market
 
 CALENDAR = market.calendar()
@@ -648,3 +649,60 @@ def test_a_stop_gap_is_processed_before_a_waiting_market_order() -> None:
     engine._record_snapshot = lambda at: None
     engine._phase_execution_open(SimpleNamespace(next=lambda phase: None), key)
     assert calls == ["stop", "close_order"]
+
+
+def _reading_minutes(compiled: CompiledStrategy) -> CompiledStrategy:
+    """検証戦略 A の 1 時間足の入力と足の確定の起動をすべて 1 分足に替えた解決済み設定（1 分足を
+    宣言した戦略）。"""
+    from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource
+    from odyssey_fx.strategy.declarations.evaluation import OnBarClose
+
+    components = []
+    for component in compiled.components:
+        plans = {}
+        for name, plan in component.input_plans.items():
+            sources = tuple(
+                replace(source, series=MINUTE_SERIES)
+                if isinstance(source, ResolvedMarketSource)
+                else source
+                for source in plan.sources
+            )
+            plans[name] = replace(plan, sources=sources)
+        triggers = tuple(
+            replace(trigger, series=MINUTE_SERIES) if isinstance(trigger, OnBarClose) else trigger
+            for trigger in component.triggers
+        )
+        components.append(replace(component, input_plans=plans, triggers=triggers))
+    return replace(compiled, components=tuple(components))
+
+
+def test_minute_series_is_published_only_when_the_strategy_declares_it(tmp_path: Path) -> None:
+    """D12-111 (a)（D06 §18.2・§18.10。人間の決定の原文は D12 §0.1.30）: 戦略が 1
+    分足を宣言していなければ
+    1 分足の公開を止め（表20 に 1 分足の行が無い）、宣言していれば公開する（1
+    分足が毎分公開されて表20 に
+    載り、能力検査の報告に 1 分足の系列が履歴の分を含めて載る）。"""
+    table = m5.write_rule_files(tmp_path)
+    rows = m5.minute_rows(CALENDAR, DATA, prices=_signal_prices())
+    pending = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, rows)])
+    snapshot = m5.readable(pending)
+    plain = run_mt5(snapshot, pending, CALENDAR, RUN, tmp_path)
+    plain_rows = [r for r in plain.rows(TraceTable.PUBLICATIONS) if isinstance(r, PublicationRow)]
+    assert not [r for r in plain_rows if r.bar_key.series == MINUTE_SERIES]
+
+    compiled = _reading_minutes(compiled_strategy())
+    minutes = run_mt5(snapshot, pending, CALENDAR, RUN, tmp_path, compiled=compiled)
+    minute_rows = [
+        r
+        for r in minutes.rows(TraceTable.PUBLICATIONS)
+        if isinstance(r, PublicationRow) and r.bar_key.series == MINUTE_SERIES
+    ]
+    # run 区間の公開時刻 20:00〜21:00 の毎分（19:59〜20:59 の足の 61 本）。
+    assert len(minute_rows) == 61
+    decision_times = {
+        flatten_row(row)["decision_time"] for row in minutes.rows(TraceTable.EVALUATIONS)
+    }
+    assert len(decision_times) > 30  # 毎分の判断時点で評価が起動する
+    coverage = minutes.result.capability_report.coverage
+    assert coverage is not None
+    assert MINUTE_SERIES in {item.series for item in coverage.series}

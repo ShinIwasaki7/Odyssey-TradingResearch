@@ -62,6 +62,9 @@ class Mt5RunParts:
     capability: Mt5Capability
     history_resets: tuple[HistoryResetRow, ...]
     minute_series: SeriesId
+    #: 公開フィードで戦略へ配送しない系列（D12-111: 戦略が 1 分足を宣言していなければ 1
+    #: 分足を止める）。
+    internal_series: frozenset[SeriesId] = frozenset()
 
 
 def publication_rows(
@@ -474,4 +477,6 @@ def build_mt5_run_parts(
             else {record.bar_key: record.available_at for record in publication_log.records},
         ),
         minute_series=minute_series,
+        # D12-111 (a): 戦略が 1 分足を宣言していなければ止め、宣言していれば公開する（D06 §18.2）。
+        internal_series=frozenset() if minute_series in reads else frozenset({minute_series}),
     )

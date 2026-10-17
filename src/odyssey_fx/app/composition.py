@@ -1053,7 +1053,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
         experiment.run_interval,
         execution_series=frozenset({experiment.execution_series}),
         publication_log=plan.publication_log,
-        internal_series=frozenset() if mt5_parts is None else frozenset({mt5_parts.minute_series}),
+        internal_series=frozenset() if mt5_parts is None else mt5_parts.internal_series,
     )
     published = publication_rows(
         feed,

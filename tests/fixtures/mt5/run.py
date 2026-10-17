@@ -33,6 +33,7 @@ from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.declarations.definition import StrategyDefinition
 from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 from tests.fixtures.backtest.harness import (
@@ -90,6 +91,7 @@ def run_mt5(
     *,
     definition: StrategyDefinition | None = None,
     artifacts_root: Path | None = None,
+    compiled: CompiledStrategy | None = None,
 ) -> Mt5RunOutput:
     """MT5 経路の snapshot で run を 1 回通す。`artifacts_root` を渡すと成果物をファイルに書く。"""
     partition_bars = dict(pending.partition_bars)
@@ -109,7 +111,7 @@ def run_mt5(
                 (*bars_of.get(partition_id.series, ()), *bars), key=lambda bar: bar.bar_start.value
             )
         )
-    compiled = compiled_strategy(definition)
+    compiled = compiled_strategy(definition) if compiled is None else compiled
     observation = Mt5Observation.from_snapshot(snapshot)
     assert observation is not None
     hierarchy = (EXECUTION_SERIES, MINUTE_SERIES)
@@ -131,7 +133,7 @@ def run_mt5(
         schedules,
         run_interval,
         execution_series=frozenset({EXECUTION_SERIES}),
-        internal_series=frozenset({parts.minute_series}),
+        internal_series=parts.internal_series,
     )
     published = publication_rows(
         feed, {bar.key: bar for bars in bars_of.values() for bar in bars}, schedules, run_interval
