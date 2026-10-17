@@ -492,6 +492,9 @@ class BacktestEngine:
         self._entry_minute: dict[PositionId, UtcTime] = {}
         #: 執行足の途中の再開の分の判断時点で、ギャップまで処理し終えた分（建玉ごと。D12-115）。
         self._scanned_through: dict[PositionId, UtcTime] = {}
+        #: 損切りの更新で置き換えられ、新しい水準が有効になるまで有効な保護水準（建玉ごと。D06 §8.3:
+        #: 更新は次の執行足から有効なので、それまでの足は前の水準で判定する）。
+        self._prior_protection: dict[PositionId, ProtectionState] = {}
         # 「再開」群の件数（D06 §18.10）。
         self._gap_counts: dict[GapKind, int] = dict.fromkeys(GapKind, 0)
         self._expired_in_unrecorded = 0
@@ -841,9 +844,11 @@ class BacktestEngine:
                 PHASE_EXECUTION_BAR_COMPLETE,
             )
         self._last_complete = bar
-        for position in self._context.ledger.open_positions():
-            if position.protection.effective_from.bar_start > bar.bar_start:
-                # その足の開始前に有効だった保護水準だけを判定の対象にする（D06 §7.3）。
+        for current in self._context.ledger.open_positions():
+            # その足の開始前に有効だった保護水準だけを判定の対象にする（D06 §7.3）。更新が次の足
+            # から有効なら、この足は前の水準で判定する（D06 §8.3）。
+            position = self._effective_view(current, bar.bar_start)
+            if position is None:
                 continue
             if self._needs_minute_scan(position, bar):
                 self._scan_minutes(clock, position, bar)
@@ -860,8 +865,9 @@ class BacktestEngine:
         bar = self._execution_bar_containing(minute)
         if bar is None:  # pragma: no cover - 判断時点を足すときに確かめている
             return
-        for position in self._context.ledger.open_positions():
-            if position.protection.effective_from.bar_start > bar.bar_start:
+        for current in self._context.ledger.open_positions():
+            position = self._effective_view(current, bar.bar_start)
+            if position is None:
                 continue
             self._scan_minutes(clock, position, bar, until=minute, phase=PHASE_EXECUTION_OPEN)
         self._record_snapshot(clock.next(PHASE_EXECUTION_OPEN))
@@ -1647,8 +1653,9 @@ class BacktestEngine:
             resumed = None if resumption is None else resumption.unrecorded_minutes
 
         # 手順1: 既存建玉の gap 決済。
-        for position in self._context.ledger.open_positions():
-            if position.protection.effective_from.bar_start > bar_key.bar_start:
+        for current in self._context.ledger.open_positions():
+            position = self._effective_view(current, bar_key.bar_start)
+            if position is None:
                 continue
             if gap_breaches_stop(
                 position.side, position.protection, open_price, self._cost_model.spread_model
@@ -2156,7 +2163,8 @@ class BacktestEngine:
             entry_fill_id=position.entry_fill_id,
             entry_price=position.entry_price,
             opened_at=position.opened_at,
-            protection=position.protection,
+            # 判定に使った水準ではなく、台帳の最新の保護水準を残す（建玉の表の最終状態）。
+            protection=self._context.ledger.positions[position.position_id].protection,
             status=PositionStatus.CLOSED,
             close_fill_id=fill_id,
             realized=gross - commission,
@@ -2341,8 +2349,28 @@ class BacktestEngine:
             )
         return None
 
+    def _effective_view(self, position: Position, bar_start: UtcTime) -> Position | None:
+        """`bar_start` に始まる執行足の判定に使う保護水準を持つ建玉（無ければ `None`）。
+
+        台帳の保護水準が次の足から有効（損切りの更新。D06 §8.3）なら、置き換えられる前の水準を
+        その足まで使う（判定から外さない。§18.4 の順 1・§18.5）。
+        """
+        current = position.protection
+        if current.effective_from.bar_start <= bar_start:
+            return position
+        prior = self._prior_protection.get(position.position_id)
+        if prior is not None and prior.effective_from.bar_start <= bar_start:
+            return replace(position, protection=prior)
+        return None
+
     def _replace_protection(self, position: Position, protection: ProtectionState) -> None:
-        """建玉の保護水準を差し替えた台帳へ参照を移す（D06 §4.4 の1文の差し替え）。"""
+        """建玉の保護水準を差し替えた台帳へ参照を移す（D06 §4.4 の1文の差し替え）。
+
+        新しい水準が今の水準より後の足から有効なら、今の水準を有効になるまで残す（D06 §8.3）。
+        """
+        previous = position.protection
+        if previous.effective_from.bar_start < protection.effective_from.bar_start:
+            self._prior_protection[position.position_id] = previous
         updated = Position(
             position_id=position.position_id,
             account_id=position.account_id,

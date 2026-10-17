@@ -27,6 +27,7 @@ import json
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -571,7 +572,6 @@ def test_the_last_execution_bar_is_not_carried_over_a_closure() -> None:
     直前の分が
     無記録なら補う。"""
     from types import SimpleNamespace
-    from typing import Any
 
     from odyssey_fx.backtest.engine.loop import BacktestEngine
 
@@ -639,7 +639,6 @@ def test_a_stop_gap_is_processed_before_a_waiting_market_order() -> None:
     既存の建玉のギャップの損切りを、
     待っていた成行（新規・戦略の決済）の約定より先に処理する。"""
     from types import SimpleNamespace
-    from typing import Any
 
     from odyssey_fx.backtest.domain.orders import OrderSide, ScheduledOpen
     from odyssey_fx.backtest.domain.positions import ProtectionState
@@ -796,3 +795,105 @@ def test_levels_reached_in_different_minutes_are_resolved_by_the_minute_bars(
     ]
     assert resolution.method is ResolutionMethod.RESOLVED_BY_CHILD
     assert output.manifest.unresolved_intrabar_count == 0
+
+
+def _with_stop_update(
+    monkeypatch: pytest.MonkeyPatch, *, stop: str, updated: str, effective: str
+) -> None:
+    """判断時点 20:30 の処理の後に、建玉の損切りを `stop`（その足から有効）にし、さらに
+    `updated` へ更新する（`effective` の執行足から有効。D06 §8.3）。戦略の出力を経ずに、エンジンの
+    保護水準の差し替え（`_replace_protection`）を直接呼ぶ。"""
+    from odyssey_fx.backtest.domain.positions import ProtectionState
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.marketdata.domain.bar import BarKey
+    from tests.fixtures.backtest.harness import EXECUTION_SERIES
+
+    original = BacktestEngine._decision_point
+
+    def wrapped(self: Any, decision_time: UtcTime, events: Any, *, is_run_end: bool) -> None:
+        original(self, decision_time, events, is_run_end=is_run_end)
+        if decision_time != _at("20:30"):
+            return
+        for position in self._context.ledger.open_positions():
+            now = ProtectionState(
+                version=position.protection.version + 1,
+                stop_loss=_price(stop),
+                effective_from=BarKey(series=EXECUTION_SERIES, bar_start=_at("20:30")),
+                take_profit=position.protection.take_profit,
+            )
+            self._replace_protection(position, now)
+            current = self._context.ledger.positions[position.position_id]
+            later = ProtectionState(
+                version=now.version + 1,
+                stop_loss=_price(updated),
+                effective_from=BarKey(series=EXECUTION_SERIES, bar_start=_at(effective)),
+                take_profit=position.protection.take_profit,
+            )
+            self._replace_protection(current, later)
+
+    monkeypatch.setattr(BacktestEngine, "_decision_point", wrapped)
+
+
+def test_a_future_stop_update_keeps_the_current_level_at_a_mid_bar_resumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """人間のレビュー（2026-10-17、head 4d8be21 の 1）の再現: 買い建玉の損切り 149.900
+    を「20:45 から
+    149.950 へ」更新しても、執行足 `[20:30,20:45)` の再開の分 20:38 の始値 148.620 は前の水準
+    149.900
+    で判定する（D06 §8.3・§18.4 の順 1・§18.5）。決済は始値 148.620 に滑り 0.010 で 148.610。
+    更新を理由に建玉を判定から外すと、損失を飛ばして後の足の 149.940 で決済してしまう。価格は人工
+    データの例示値。"""
+    _with_stop_update(monkeypatch, stop="149.900", updated="149.950", effective="20:45")
+    flat = ("150.000", "150.000", "150.000", "150.000")
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={
+            **{_at(f"20:{minute:02d}"): flat for minute in range(30, 34)},
+            _at("20:38"): ("148.620", "148.700", "148.600", "148.650"),
+        },
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("148.610")
+    assert close.execution_time == ExactExecutionTime(time=_at("20:38"))
+    assert close.gap_kind is GapKind.STOP_GAP
+    assert close.processed_at.time == _at("20:38")
+
+
+def test_a_future_stop_update_takes_effect_from_its_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じ更新で、執行足 `[20:30,20:45)` に損切りへ届かなければ、20:45 からの足は新しい水準
+    149.950 で判定する（20:45 の安値 149.900 で到達し、滑り 0.010 で 149.940）。"""
+    _with_stop_update(monkeypatch, stop="149.900", updated="149.950", effective="20:45")
+    flat = ("150.000", "150.000", "150.000", "150.000")
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={_at(f"20:{minute:02d}"): flat for minute in range(30, 45)},
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("149.940")
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:45")
+
+
+def test_a_run_with_an_all_unrecorded_hour_is_evaluated(tmp_path: Path) -> None:
+    """人間のレビュー（2026-10-17、head 4d8be21 の 2）の再現: 検証戦略 A に 1 時間分の全分無記録
+    （20:00〜21:00）を入れた run は正常に終わり、表22 の最新足の窓の行（本数・経過時間が空）を
+    含めて評価まで通る（D06 §18.10、D07 §28.3）。"""
+    output = _run(tmp_path, unrecorded=(_span("20:00", "21:00"),))
+    assert output.result.status is RunStatus.COMPLETED
+    from odyssey_fx.backtest.trace.recorder import HistoryResetRow
+
+    resets = [
+        row for row in output.rows(TraceTable.HISTORY_RESETS) if isinstance(row, HistoryResetRow)
+    ]
+    latest = [row for row in resets if row.window_kind == "LATEST"]
+    assert latest
+    assert all(row.window_bars is None and row.window_duration is None for row in latest)
+    report = _evaluate(output, tmp_path / "eval")
+    assert report.status is EvaluationStatus.COMPLETED
+    counts = {(row.category.value, row.key): row.count for row in report.categories}
+    assert counts[("UNRECORDED_EVENT", "HISTORY_RESETS")] == len(resets)

@@ -1550,7 +1550,11 @@ def _normalized_key(column: str, value: str | None, kind: ColumnValueKind) -> st
     に見える。読み出したあとは型へ直して使うので、重複の判定だけ文字列で行うと、**判定は
     通るのに使う側では同じ値**になる行が残り、並びで結果が変わる（D07 §9.1 の条件1）。
     """
-    text = "" if value is None else value
+    if value is None or value == "":
+        # 正当な空値（表22 の最新足・経過時間の窓の `window_bars` など。D06 §18.10、D07 §28.3）は
+        # 空のまま比べる。空を許さない列は必須列の検査が拒む。
+        return ""
+    text = value
     id_type = _ID_TYPES.get(column)
     if id_type is not None:
         return str(id_type.parse(text))
