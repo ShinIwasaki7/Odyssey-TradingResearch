@@ -1,6 +1,6 @@
 {
  "tool": "tools/survey/mt5_platform_crosscheck.py",
- "target_commit": "e61adf1bf553209d81ee54f583cac317d3264a7c",
+ "target_commit": "705a9b28a2a1b63a16591b9504aa98d41967db21",
  "command": "uv run python -m tools.survey.mt5_platform_crosscheck --root <原データの置き場>/2026-10-16 --feasibility-csv <道具の daily_coverage.csv> --pairs USDJPY EURUSD --months 2018-12 2019-01 2019-02 2022-12 2023-01 2023-02 --out-dir docs/data/mt5_platform_crosscheck",
  "raw_root": "2026-10-16",
  "pairs": [
