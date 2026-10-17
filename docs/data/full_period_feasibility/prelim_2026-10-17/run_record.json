@@ -1,0 +1,55 @@
+{
+ "tool": "tools/survey/full_period_feasibility.py",
+ "tool_version": 1,
+ "tool_sha256": "a4275c6c20a3b7f78d0ab5b3c74551686c9b93a4a5e3953cdd144b9e8b38a441",
+ "stage": "prelim（数え方の設計 PR-A に依存しない先行統計。最終判定ではない）",
+ "target_commit": "7c1ba7f149ce4345d7208c6bbda5b7d81b8b2490",
+ "command": "uv run python -m tools.survey.full_period_feasibility prelim --root data/raw/oanda_mt5/2026-10-16 --out-dir docs/data/full_period_feasibility",
+ "raw_root": "data/raw/oanda_mt5/2026-10-16",
+ "inputs": {
+  "manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+  "manifest_docs_copy": "docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json",
+  "fetch_log_sha256": "0868f4bd0840f41b7bda2c3d7a6b37aaee9dba52af424b7b54da7de53088d9fa",
+  "calendar": {
+   "path": "configs/calendars/fx_ny17_v2.yaml",
+   "sha256": "eb639afe5caeff3ee573fd28d7dda402acbc4f250af931ad3976b411061782d1"
+  },
+  "timeframes": {
+   "path": "configs/calendars/timeframes_v1.yaml",
+   "sha256": "231d01c542cf5c152303770ed8832003702850380d0f7386467105c774710c81"
+  },
+  "holiday_definition": {
+   "path": "tools/survey/oanda_holiday_exceptions_2026-10-16.json",
+   "sha256": "2c85a0936fa0c377568fa054f02268779cfaceeb4371c1ddf65e312af6186604"
+  },
+  "time_rule_table": "候補の時計（欧州式・米国式）を全期間に当てた。表 版 1 の行・標準・候補の欄は mt5_gap_aggregate.time_rule（表 版 1 の写し）の参考。表のファイルとハッシュは PR-A で確定",
+  "counting_rules": "未確定（PR-A）"
+ },
+ "pairs": [
+  "USDJPY",
+  "EURJPY",
+  "EURUSD",
+  "GBPJPY",
+  "USDCHF",
+  "AUDJPY",
+  "GBPUSD",
+  "AUDUSD"
+ ],
+ "period_utc": [
+  "2017-01-01T00:00:00+00:00",
+  "2024-01-01T00:00:00+00:00"
+ ],
+ "verify": {
+  "files_checked": 672,
+  "problems": []
+ },
+ "outputs": {
+  "coverage_by_pair.csv": 8,
+  "monthly_stats.csv": 1344,
+  "no_record_run_distribution.csv": 112,
+  "long_no_record_runs.csv": 190,
+  "daily_coverage.csv": 29120,
+  "candidate_divergent_spans.csv": 112
+ },
+ "prices": "読んでいない・出力していない（CSV の 1 列目の時刻だけ）"
+}
