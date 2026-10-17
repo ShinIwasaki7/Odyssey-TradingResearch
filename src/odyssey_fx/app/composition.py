@@ -152,7 +152,11 @@ from odyssey_fx.marketdata.application.aggregation import AGGREGATION_RULE_VERSI
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
 from odyssey_fx.marketdata.application.ports import RawBarSource, SnapshotStore
-from odyssey_fx.marketdata.application.publication import build_feed, build_publication_log
+from odyssey_fx.marketdata.application.publication import (
+    PublicationFeed,
+    build_feed,
+    build_publication_log,
+)
 from odyssey_fx.marketdata.application.refill_finalize import (
     REFILL_SOURCE_ROOT,
     FinalizeReport,
@@ -1045,15 +1049,24 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
             publication_log=plan.publication_log,
         )
     )
-    feed = build_feed(
-        inputs.snapshot,
-        inputs.allowed_partitions,
-        verified,
-        inputs.schedules,
-        experiment.run_interval,
-        execution_series=frozenset({experiment.execution_series}),
-        publication_log=plan.publication_log,
-        internal_series=frozenset() if mt5_parts is None else mt5_parts.internal_series,
+    # 取得不足のある MT5 経路の run は能力検査で止まる（D06 §18.9 の 2）。取得不足の区間へは公開
+    # フィードの覆いを広げない（D12-113）ので、フィードは組み立てず空にする（実行しない）。
+    feed = (
+        PublicationFeed(events=())
+        if mt5_parts is not None and mt5_parts.has_shortfall
+        else build_feed(
+            inputs.snapshot,
+            inputs.allowed_partitions,
+            verified,
+            inputs.schedules,
+            experiment.run_interval,
+            execution_series=frozenset({experiment.execution_series}),
+            publication_log=plan.publication_log,
+            internal_series=frozenset() if mt5_parts is None else mt5_parts.internal_series,
+            # 受入れ（`data accept-mt5`・`data accept`）が partition を分けたときと同じ境界
+            # （D12-113）。
+            access_boundaries=INITIAL_ACCESS_BOUNDARIES,
+        )
     )
     published = publication_rows(
         feed,

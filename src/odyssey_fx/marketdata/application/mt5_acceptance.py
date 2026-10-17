@@ -27,7 +27,8 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from odyssey_fx.common.money import Price, decimal_from_int, decimal_from_str
 from odyssey_fx.common.refs import ContentDigest
@@ -88,6 +89,7 @@ __all__ = [
     "acquisition_of",
     "build_mt5_pending",
     "convert_minutes",
+    "months_of",
     "reaccept_mt5",
     "verify_fetch_files",
 ]
@@ -420,19 +422,30 @@ def _in_sessions(starts: Sequence[int], sessions: Sequence[tuple[int, int]], min
     return index >= 0 and minute < sessions[index][1]
 
 
-def _week_of(calendar: TradingCalendar, minute: int) -> Interval:
-    """休場帯の足を数える週（週の開場の現地時刻から 7 日。D12-97 (a) の「週ごと」）。"""
-    local = utc(minute).value.astimezone(calendar.tz)
-    open_weekday = calendar.weekly_open.weekday
-    days_back = (local.weekday() - open_weekday) % 7
-    anchor_day = local.date() - timedelta(days=days_back)
-    anchor = datetime.combine(anchor_day, calendar.weekly_open.at, calendar.tz)
-    if anchor > local:
-        anchor = datetime.combine(
-            anchor_day - timedelta(days=7), calendar.weekly_open.at, calendar.tz
-        )
-    start = UtcTime(anchor.astimezone(UTC))
-    return Interval(start=start, end=UtcTime((anchor + timedelta(days=7)).astimezone(UTC)))
+#: 週の区切りの暦（D12-123: 集計 PR と同じ NY 暦の日曜〜土曜）。
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def months_of(entries: Iterable[Mt5FetchEntry]) -> tuple[str, ...]:
+    """要求の年月（API の時刻の要求の始まりの `YYYY-MM`。昇順・重複なし。D12-125）。"""
+    found = {
+        datetime.fromtimestamp(entry.requested_from_api, UTC).strftime("%Y-%m") for entry in entries
+    }
+    return tuple(sorted(found))
+
+
+def _week_of(minute: int) -> Interval:
+    """休場帯の足を数える週（D12-97 (a) の「週ごと」）。
+
+    NY 暦の日曜 0:00 から次の日曜 0:00 まで（日曜〜土曜）。全期間の集計（PR #85）の週と揃える
+    （D12-123。人間の決定の原文は D12 §0.1.30）。
+    """
+    local = utc(minute).value.astimezone(_NEW_YORK)
+    # 日曜（weekday 6）まで戻る。
+    sunday = local.date() - timedelta(days=(local.weekday() + 1) % 7)
+    start = datetime.combine(sunday, time(0, 0), _NEW_YORK)
+    end = datetime.combine(sunday + timedelta(days=7), time(0, 0), _NEW_YORK)
+    return Interval(start=UtcTime(start.astimezone(UTC)), end=UtcTime(end.astimezone(UTC)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,7 +483,7 @@ def _build_series(
         minute = epoch(bar.bar_start)
         if not acquisition.data_start <= minute < acquisition.data_end:
             continue
-        week = _week_of(calendar, minute)
+        week = _week_of(minute)
         weeks_with_data.add(week)
         if _in_sessions(session_starts, sessions, minute):
             kept.append(bar)
@@ -720,6 +733,7 @@ def build_mt5_pending(
             acquisitions=(acquisition.record(),),
             weeks_checked=built.weeks_checked,
             weeks_failed=built.weeks_failed,
+            months=months_of(own),
         ),
     )
     return _assemble(
@@ -787,6 +801,7 @@ def reaccept_mt5(
         acquisitions=mt5.acquisitions,
         weeks_checked=built.weeks_checked,
         weeks_failed=built.weeks_failed,
+        months=mt5.months,
     )
     new_conversion = ConversionRecord(
         code_version=conversion.code_version,

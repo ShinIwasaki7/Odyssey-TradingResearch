@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
 from types import MappingProxyType
 
@@ -35,6 +36,11 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     ReadableSnapshot,
     readable_surface,
     require_readable_snapshot,
+)
+from odyssey_fx.marketdata.domain.access import (
+    INITIAL_ACCESS_BOUNDARIES,
+    AccessBoundaries,
+    AccessClass,
 )
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
 from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
@@ -229,37 +235,90 @@ def _boundary_search_window(schedule: SeriesSchedule, run_interval: Interval) ->
     )
 
 
+_TINY = timedelta(microseconds=1)
+
+
+def _class_limits(
+    boundaries: AccessBoundaries, access_class: AccessClass
+) -> tuple[UtcTime | None, UtcTime | None]:
+    """アクセス分類の期間（閲覧が許可される範囲）の端（D03 §3.8）。所属は足の `bar_end` で決まる。
+
+    研究履歴は `bar_end < research_until` なので、覆いの終わりは `research_until` の直前まで
+    （`research_until` に終わる足は封印期間）。
+    """
+    if access_class is AccessClass.RESEARCH_HISTORY:
+        return None, boundaries.research_until - _TINY
+    if access_class is AccessClass.LEGACY_HOLDOUT:
+        return boundaries.research_until, boundaries.holdout_until - _TINY
+    return boundaries.holdout_until, None
+
+
+def _extended_by_unrecorded_ends(
+    snapshot: ReadableSnapshot,
+    partition_id: PartitionId,
+    interval: Interval,
+    boundaries: AccessBoundaries,
+) -> Interval:
+    """MT5 経路: 許可された partition の覆いを、足が作られなかった端へ広げる（D12-113）。
+
+    広げるのは「取得済みで無記録と確認でき、かつ研究への利用が許可された期間」だけ（人間の
+    決定の原文は D12 §0.1.30）。取得の範囲（台帳の範囲。`data_interval`）と閲覧が許可される範囲
+    （その partition のアクセス分類の期間）を区別し、両方の内側に限る。取得不足の区間
+    （`ACQUISITION_SHORTFALL`）の手前で止める（無記録と確認できない）。休場の分は足が存在しない
+    区間なので、そのまま含めてよい。
+    """
+    mt5 = snapshot.manifest.conversion.mt5
+    if mt5 is None:
+        return interval
+    acquisition = mt5.acquisition_of(partition_id.series.symbol)
+    if acquisition is None:
+        return interval
+    class_lo, class_hi = _class_limits(boundaries, partition_id.access_class)
+    lo = acquisition.data_interval.start
+    hi = acquisition.data_interval.end
+    if class_lo is not None and lo < class_lo:
+        lo = class_lo
+    if class_hi is not None and class_hi < hi:
+        hi = class_hi
+    shortfall = [
+        result.interval
+        for result in snapshot.report.results
+        if result.kind is CheckKind.ACQUISITION_SHORTFALL
+        and result.series.symbol == partition_id.series.symbol
+    ]
+    for span in shortfall:
+        if span.end > interval.end and span.start < hi:
+            hi = max(span.start, interval.end, key=lambda value: value.value)
+        if span.start < interval.start and span.end > lo:
+            lo = min(span.end, interval.start, key=lambda value: value.value)
+    start = lo if lo < interval.start else interval.start
+    end = hi if interval.end < hi else interval.end
+    return Interval(start=start, end=end)
+
+
 def _allowed_coverage(
-    snapshot: ReadableSnapshot, allowed_partitions: frozenset[PartitionId]
+    snapshot: ReadableSnapshot,
+    allowed_partitions: frozenset[PartitionId],
+    boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
 ) -> Mapping[SeriesId, tuple[Interval, ...]]:
     """系列ごとに、許可された partition が覆う区間を求める（D03 §6.1）。
 
     同じ系列で複数の partition が許可されている場合、隣接・重複する区間はつなげる。
     研究期間と封印期間が連続して許可されていれば、その全体が1つの区間になる。
+
+    MT5 経路（D03 §15.6 の 4）では、作られた足の範囲の外にも snapshot の範囲の中の無記録の足
+    （作られない足）がありうるので、partition ごとに、取得済みで無記録と確認でき閲覧が許可された
+    端まで覆いを広げる（`_extended_by_unrecorded_ends`。D12-113）。`boundaries` は受入れで
+    partition を分けたときと同じアクセス分類の境界。
     """
     by_series: dict[SeriesId, list[Interval]] = {}
     for partition_id in allowed_partitions:
         record = snapshot.manifest.partition_record(partition_id)
         if record is None:  # pragma: no cover - 関門が先に拒否する
             continue
-        by_series.setdefault(partition_id.series, []).append(record.interval)
-
-    # MT5 経路（D03 §15.6 の 4）: 作られた足の範囲の外にも、snapshot
-    # の範囲の中の無記録の足（作られない
-    # 足）がありうる。系列の partition をすべて許可しているときに限り、取得の範囲（台帳の範囲）まで
-    # 覆いを広げる。許可しない partition がある系列は広げない（封印期間へ漏らさない。D03 §6.1）。
-    mt5 = snapshot.manifest.conversion.mt5
-    if mt5 is not None:
-        for series, intervals in list(by_series.items()):
-            records = [
-                record for record in snapshot.manifest.partitions if record.series_id == series
-            ]
-            if any(record.partition_id not in allowed_partitions for record in records):
-                continue
-            acquisition = mt5.acquisition_of(series.symbol)
-            if acquisition is None:
-                continue
-            by_series[series] = [*intervals, acquisition.data_interval]
+        by_series.setdefault(partition_id.series, []).append(
+            _extended_by_unrecorded_ends(snapshot, partition_id, record.interval, boundaries)
+        )
     coverage: dict[SeriesId, tuple[Interval, ...]] = {}
     for series, intervals in by_series.items():
         merged: list[Interval] = []
@@ -277,6 +336,7 @@ def _require_run_interval_inside_allowed(
     snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
     run_interval: Interval,
+    boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
 ) -> tuple[SeriesId, ...]:
     """実行区間が許可 partition の区間に収まることを確かめ、境界を出す系列を返す。
 
@@ -285,7 +345,7 @@ def _require_run_interval_inside_allowed(
     区間を封印期間に取れば、封印期間の判断が動き出す。区間の検査は構築時に行い、通らない
     要求は `HoldoutAccessViolation`（構造エラー）で止める（D03 §6.1）。
     """
-    coverage = _allowed_coverage(snapshot, allowed_partitions)
+    coverage = _allowed_coverage(snapshot, allowed_partitions, boundaries)
     if not coverage:
         raise HoldoutAccessViolation(
             "no partition was granted to this feed; there is no period it may cover (D03 §6.1)"
@@ -410,6 +470,7 @@ def build_feed(
     publication_log: PublicationLog | None = None,
     phase_ranks: Mapping[PublicationKind, PhaseRank] | None = None,
     internal_series: frozenset[SeriesId] = frozenset(),
+    access_boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
 ) -> PublicationFeed:
     """実行区間内の公開イベント列を組み立てる（D03 §7.1）。
 
@@ -453,7 +514,7 @@ def build_feed(
     readable = readable_surface(frozen, allowed_partitions)
     schedules = MappingProxyType(dict(schedules))
     boundary_series = _require_run_interval_inside_allowed(
-        snapshot, allowed_partitions, run_interval
+        snapshot, allowed_partitions, run_interval, access_boundaries
     )
 
     events: list[PublicationEvent] = []

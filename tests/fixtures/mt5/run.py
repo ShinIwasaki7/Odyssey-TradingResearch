@@ -26,7 +26,7 @@ from odyssey_fx.evaluation.adapters.fs_store import FileSystemResultWriter, File
 from odyssey_fx.marketdata.application.acceptance import PendingSnapshot
 from odyssey_fx.marketdata.application.asof import AsOfView, ExecutionSeriesView
 from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
-from odyssey_fx.marketdata.application.publication import build_feed
+from odyssey_fx.marketdata.application.publication import PublicationFeed, build_feed
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
@@ -55,7 +55,7 @@ from tests.fixtures.backtest.harness import (
     calendar_ref_of,
     compiled_strategy,
 )
-from tests.fixtures.mt5.market import TIMEFRAME_DEFS
+from tests.fixtures.mt5.market import BOUNDARIES, TIMEFRAME_DEFS
 
 __all__ = ["MINUTE_SERIES", "MT5_TIMEFRAME_REFS", "Mt5RunOutput", "run_mt5"]
 
@@ -126,14 +126,19 @@ def run_mt5(
         run_interval=run_interval,
         repo_root=rules_root,
     )
-    feed = build_feed(
-        snapshot,
-        allowed,
-        partition_bars,
-        schedules,
-        run_interval,
-        execution_series=frozenset({EXECUTION_SERIES}),
-        internal_series=parts.internal_series,
+    feed = (
+        PublicationFeed(events=())
+        if parts.has_shortfall
+        else build_feed(
+            snapshot,
+            allowed,
+            partition_bars,
+            schedules,
+            run_interval,
+            execution_series=frozenset({EXECUTION_SERIES}),
+            internal_series=parts.internal_series,
+            access_boundaries=BOUNDARIES,
+        )
     )
     published = publication_rows(
         feed, {bar.key: bar for bars in bars_of.values() for bar in bars}, schedules, run_interval

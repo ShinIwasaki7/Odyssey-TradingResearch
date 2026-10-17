@@ -239,6 +239,10 @@ class Mt5ConversionRecord:
     SHA-256・変換の組）・銘柄ごとの取得の範囲・週ごとの境界の検査の件数を持つ。カレンダーの識別と版と
     集約規則の版（`m1_coverage_v1`）は `ConversionRecord` の既存の項目に書く。
     **数え方の規則のファイルの SHA-256 は入れない**（D03 §15.6 の 4・§15.12）。
+
+    `months` は受け入れた要求の年月（API の時刻の `YYYY-MM`。昇順）。受入れの指示で年月を省いた
+    ときも、実際に受け入れた年月を書く（D12-125: 使用した月・変換の組・規則の版・入力ハッシュ・
+    分類を成果物から特定でき、省略値も実際に解決した値を残す。人間の決定の原文は D12 §0.1.30）。
     """
 
     route: str
@@ -248,9 +252,16 @@ class Mt5ConversionRecord:
     acquisitions: tuple[Mt5AcquisitionRecord, ...]
     weeks_checked: int = 0
     weeks_failed: int = 0
+    months: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.route, "Mt5ConversionRecord.route")
+        if not isinstance(self.months, tuple) or not all(
+            isinstance(item, str) and len(item) == 7 and item[4] == "-" for item in self.months
+        ):
+            raise MarketDataValueError("Mt5ConversionRecord.months must be a tuple of 'YYYY-MM'")
+        if tuple(sorted(set(self.months))) != self.months:
+            raise MarketDataValueError("Mt5ConversionRecord.months must be sorted and unique")
         _require_non_empty_str(self.column_mapping, "Mt5ConversionRecord.column_mapping")
         ContentDigest.sha256(self.fetch_manifest_sha256)
         if not isinstance(self.time_rule_table, TimeRuleTableRef):
@@ -286,6 +297,8 @@ class Mt5ConversionRecord:
             "time_rule_table": self.time_rule_table.payload(),
             "weeks_checked": self.weeks_checked,
             "weeks_failed": self.weeks_failed,
+            # 年月の記録の無い記録（この項目より前）と識別子を変えないよう、空なら書かない。
+            **({"months": self.months} if self.months else {}),
         }
 
 

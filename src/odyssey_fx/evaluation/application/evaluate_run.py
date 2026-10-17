@@ -1838,10 +1838,11 @@ def _build_categories(
 
 
 def _history_reset_minutes(rows: Sequence[Mapping[str, str | None]], manifest: RunManifest) -> int:
-    """準備の期間の合計（分。D07 §28.3）。
+    """準備の期間の合計（分。D07 §28.3、D12-120）。
 
-    表22 の各行の「無記録の足の開始から準備が実際に整う公開時刻まで」を run 区間に切り詰め、
-    和集合で数える（同じ期間を重ねて数えない）。整わないまま run が終わる行は run の終わりまで。
+    表22 の各行の「無記録の足の開始から準備が実際に整う公開時刻まで」を run 区間との重なりに
+    切り詰め、和集合で数える（同じ期間を重ねて数えない）。整わないまま run が終わる行は run の
+    終わりまで。正確な時刻は表22 の行（無記録の足の `bar_key` と `ready_at`）から辿れる。
     """
     run = manifest.config.run_interval
     spans: list[tuple[datetime, datetime]] = []
@@ -1849,19 +1850,27 @@ def _history_reset_minutes(rows: Sequence[Mapping[str, str | None]], manifest: R
         start = _time(row, "no_record_bar_key_bar_start").value
         ready = row.get("ready_at")
         end = run.end.value if ready is None else _time(row, "ready_at").value
-        start = max(start, run.start.value)
-        end = min(end, run.end.value)
-        if start < end:
-            spans.append((start, end))
+        spans.append((start, end))
+    return union_minutes(spans, run.start.value, run.end.value)
+
+
+def union_minutes(spans: Sequence[tuple[datetime, datetime]], lo: datetime, hi: datetime) -> int:
+    """期間の列の `[lo, hi)` との重なりの和集合の長さ（分）。
+
+    整数分への丸めは**切り捨て**（和集合の合計の秒を 60 で割った商。D12-120）。
+    """
+    clipped = sorted(
+        (max(start, lo), min(end, hi)) for start, end in spans if max(start, lo) < min(end, hi)
+    )
     total = timedelta(0)
     cursor: datetime | None = None
-    for start, end in sorted(spans):
+    for start, end in clipped:
         if cursor is not None and start < cursor:
             start = cursor
         if start < end:
             total += end - start
             cursor = end
-    return int(total / timedelta(minutes=1))
+    return total // timedelta(minutes=1)
 
 
 def _final_outcomes_by_request(rows: Sequence[Mapping[str, str | None]]) -> tuple[str, ...]:

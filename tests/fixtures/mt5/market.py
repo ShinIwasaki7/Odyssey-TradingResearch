@@ -191,14 +191,23 @@ def _month_bounds(year: int, month: int) -> tuple[int, int]:
     return int(start.timestamp()), int(end.timestamp())
 
 
+#: 人工データのアクセス分類の境界（2026 年は研究履歴）。公開フィードにも同じ境界を渡す。
+BOUNDARIES = AccessBoundaries(
+    research_until=UtcTime.parse("2027-01-01T00:00:00Z"),
+    holdout_until=UtcTime.parse("2028-01-01T00:00:00Z"),
+)
+
+
 def build_pending(
     calendar: TradingCalendar,
     table: TimeRuleTable,
     months: Sequence[MonthSpec],
     *,
     variant: TimeRuleVariant = TimeRuleVariant.STANDARD,
+    boundaries: AccessBoundaries | None = None,
 ) -> PendingSnapshot:
     """人工の取得記録と行から MT5 経路の暫定 snapshot を作る（本番の受入れの関数を呼ぶ）。"""
+    boundaries = BOUNDARIES if boundaries is None else boundaries
     entries: list[Mt5FetchEntry] = []
     files: dict[str, Mt5ReadFile] = {}
     for spec in months:
@@ -242,10 +251,7 @@ def build_pending(
         minute_def=TF_1M,
         timeframe_defs=TIMEFRAME_DEFS,
         targets=TARGETS,
-        boundaries=AccessBoundaries(
-            research_until=UtcTime.parse("2027-01-01T00:00:00Z"),
-            holdout_until=UtcTime.parse("2028-01-01T00:00:00Z"),
-        ),
+        boundaries=boundaries,
         basis_declaration=BasisDeclaration(value=PriceBasis.BID, verified=False),
         code_version="synthetic",
     )

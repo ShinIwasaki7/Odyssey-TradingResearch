@@ -163,6 +163,10 @@ def test_candidate_variant_excludes_out_of_calendar_bars_and_reports_them(tmp_pa
     reports = [r for r in pending.report.results if r.kind is CheckKind.CANDIDATE_OUT_OF_CALENDAR]
     assert len(reports) == 1
     assert dict(reports[0].detail)["bars"] == "1"
+    # D12-123: 週は NY 暦の日曜 0:00〜次の日曜 0:00（集計 PR と同じ日曜〜土曜）。
+    assert reports[0].interval == Interval(
+        start=UtcTime.parse("2026-01-04T05:00:00Z"), end=UtcTime.parse("2026-01-11T05:00:00Z")
+    )
     assert not [r for r in pending.report.results if r.kind is CheckKind.UNEXPECTED_BAR]
     minute_bars = [
         bar
@@ -193,3 +197,30 @@ def test_manifest_round_trips_and_the_table_hash_changes_the_snapshot_id(tmp_pat
     )
     assert candidate.manifest.snapshot_id() != pending.manifest.snapshot_id()
     assert all(record.coverage_counts is not None for record in pending.manifest.series)
+
+
+def test_the_manifest_records_the_months_variant_rules_and_input_hashes(tmp_path: Path) -> None:
+    """D12-125（人間の決定の原文は D12 §0.1.30）: 使用した月・変換の組・規則の版・入力ハッシュを
+    成果物（manifest）から特定でき、変換の組を省いたときも実際に解決した値（standard）が残る。
+    分類は確定の時に `resolved_classifications` に残る（`test_out_of_session_bars_in_standard_need_
+    classification`）。"""
+    table = m5.write_rule_files(tmp_path)
+    pending = m5.build_pending(
+        CALENDAR, table, [m5.MonthSpec(2026, 1, _rows()), m5.MonthSpec(2026, 2, ())]
+    )
+    store = ParquetSnapshotStore(root=tmp_path / "snapshots")
+    store.write_manifest("p", pending.manifest)
+    manifest = store.read_manifest("p")
+    mt5 = manifest.conversion.mt5
+    assert mt5 is not None
+    assert mt5.months == ("2026-01", "2026-02")
+    assert mt5.time_rule_table.variant is TimeRuleVariant.STANDARD
+    assert mt5.time_rule_table.sha256 == table.sha256
+    assert manifest.conversion.calendar_id == CALENDAR.id
+    assert all(len(source.sha256) == 64 for source in manifest.sources)
+    assert len(mt5.fetch_manifest_sha256) == 64
+    # 年月が変われば識別子も変わる。
+    only_january = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, _rows())])
+    assert only_january.manifest.conversion.mt5 is not None
+    assert only_january.manifest.conversion.mt5.months == ("2026-01",)
+    assert only_january.manifest.snapshot_id() != pending.manifest.snapshot_id()

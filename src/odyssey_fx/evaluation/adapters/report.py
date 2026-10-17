@@ -498,7 +498,11 @@ def _coverage_lines(inputs: _Inputs) -> list[str]:
     ]
     if coverage.mark_days:
         lines.append(
-            "- run 区間の暦日の区分の印: "
+            # D12-126: 「実行通貨・run 区間の UTC 暦日数」と明示し、
+            # 全入力の確実性を表す数とは扱わない。
+            f"- 実行通貨（{_code(str(run_manifest.config.execution_series.symbol))}）・run 区間の"
+            " UTC 暦日数（区分の印ごと。執行する通貨の表の行で数えた日数で、戦略が読む全入力の"
+            "確実性を表す数ではない）: "
             + "、".join(
                 f"{_MARK_NAMES.get(mark, mark)} {days} 日" for mark, days in coverage.mark_days
             )

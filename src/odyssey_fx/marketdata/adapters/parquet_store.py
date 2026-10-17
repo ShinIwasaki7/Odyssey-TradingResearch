@@ -171,6 +171,7 @@ def _mt5_payload(mt5: Mt5ConversionRecord) -> Mapping[str, Any]:
         },
         "weeks_checked": mt5.weeks_checked,
         "weeks_failed": mt5.weeks_failed,
+        **({"months": list(mt5.months)} if mt5.months else {}),
     }
 
 
@@ -203,6 +204,7 @@ def _mt5_from_payload(payload: Mapping[str, Any]) -> Mt5ConversionRecord:
         ),
         weeks_checked=int(payload["weeks_checked"]),
         weeks_failed=int(payload["weeks_failed"]),
+        months=tuple(str(item) for item in payload.get("months", ())),
     )
 
 

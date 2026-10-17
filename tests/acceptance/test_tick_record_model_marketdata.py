@@ -18,6 +18,8 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from odyssey_fx.app.mt5_run import build_mt5_run_parts, strategy_reads
 from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import Interval, UtcTime
@@ -31,7 +33,9 @@ from odyssey_fx.marketdata.application.publication import (
     build_publication_log,
 )
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
+from odyssey_fx.marketdata.domain.access import AccessBoundaries, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation
 from odyssey_fx.marketdata.domain.integrity import CheckKind
 from odyssey_fx.marketdata.domain.readiness import ScheduledBar, history_resets
 from odyssey_fx.marketdata.domain.schedule import (
@@ -40,6 +44,7 @@ from odyssey_fx.marketdata.domain.schedule import (
     SeriesSchedule,
 )
 from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource
 from odyssey_fx.strategy.declarations.read_spec import DurationWindow
 from tests.fixtures.backtest.harness import EXECUTION_SERIES, compiled_strategy
@@ -245,6 +250,7 @@ def test_c7_a_bar_is_not_readable_before_its_publication_time(tmp_path: Path) ->
         _span("2026-01-08T09:00:00Z", "2026-01-08T14:00:00Z"),
         execution_series=frozenset({M15}),
         internal_series=frozenset({market.series(timeframe_id="1m")}),
+        access_boundaries=m5.BOUNDARIES,
     )
     opens = {
         event.bar_key.bar_start: event.at
@@ -394,3 +400,76 @@ def test_c2_history_reset_ready_bar_is_found_after_the_run(tmp_path: Path) -> No
     rows = [row for row in parts.history_resets if row.series == HOURLY and row.window_bars == 21]
     assert rows
     assert {row.ready_at for row in rows} == {_t("2026-01-22T19:00:00Z")}
+
+
+def _tail_snapshot(
+    tmp_path: Path, boundaries: AccessBoundaries | None = None
+) -> tuple[PendingSnapshot, ReadableSnapshot]:
+    """2026-01-30 の 12:00Z から閉場までが無記録（末尾の足が作られない）。2 月は取得不足。"""
+    table = m5.write_rule_files(tmp_path)
+    rows = m5.minute_rows(
+        CALENDAR,
+        _span("2026-01-26T22:00:00Z", "2026-01-30T22:00:00Z"),
+        unrecorded=(_span("2026-01-30T12:00:00Z", "2026-01-30T22:00:00Z"),),
+    )
+    pending = m5.build_pending(
+        CALENDAR,
+        table,
+        [m5.MonthSpec(2026, 1, rows), m5.MonthSpec(2026, 2, (), status="failed")],
+        boundaries=boundaries,
+    )
+    return pending, m5.readable(pending)
+
+
+def _feed(
+    pending: PendingSnapshot,
+    snapshot: ReadableSnapshot,
+    run: Interval,
+    *,
+    allowed: frozenset[PartitionId] | None = None,
+    boundaries: AccessBoundaries = m5.BOUNDARIES,
+) -> None:
+    granted = frozenset(pending.partition_bars) if allowed is None else allowed
+    build_feed(
+        snapshot,
+        granted,
+        {key: bars for key, bars in pending.partition_bars.items() if key in granted},
+        _schedules(snapshot),
+        run,
+        execution_series=frozenset({M15}),
+        internal_series=frozenset({market.series(timeframe_id="1m")}),
+        access_boundaries=boundaries,
+    )
+
+
+def test_the_run_may_cover_an_unrecorded_tail_but_not_a_shortfall(tmp_path: Path) -> None:
+    """D12-113（人間の決定の原文は D12 §0.1.30）: 足が作られなかった端も、取得済みで無記録と
+    確認できれば run に含める。取得不足（2 月）は無記録と確認できないので含めない。"""
+    pending, snapshot = _tail_snapshot(tmp_path)
+    _feed(pending, snapshot, _span("2026-01-30T10:00:00Z", "2026-01-30T20:00:00Z"))
+    # 週末の休場（足が存在しない区間）を挟んでも、取得の範囲の中なら含められる。
+    _feed(pending, snapshot, _span("2026-01-30T10:00:00Z", "2026-01-31T21:00:00Z"))
+    with pytest.raises(HoldoutAccessViolation):
+        _feed(pending, snapshot, _span("2026-01-30T10:00:00Z", "2026-02-02T01:00:00Z"))
+
+
+def test_the_unrecorded_tail_is_cut_at_the_permitted_period(tmp_path: Path) -> None:
+    """D12-113: 取得の範囲と閲覧が許可される範囲は別。研究履歴の partition だけを許可したとき、
+    無記録の端へ広げるのは研究履歴の期間（`research_until` の前）までで、封印期間へ漏らさない。"""
+    boundaries = AccessBoundaries(
+        research_until=_t("2026-01-30T15:00:00Z"), holdout_until=_t("2027-01-01T00:00:00Z")
+    )
+    pending, snapshot = _tail_snapshot(tmp_path, boundaries)
+    research = frozenset(
+        key for key in pending.partition_bars if key.access_class is AccessClass.RESEARCH_HISTORY
+    )
+    run = _span("2026-01-30T10:00:00Z", "2026-01-30T14:00:00Z")
+    _feed(pending, snapshot, run, allowed=research, boundaries=boundaries)
+    with pytest.raises(HoldoutAccessViolation):
+        _feed(
+            pending,
+            snapshot,
+            _span("2026-01-30T10:00:00Z", "2026-01-30T16:00:00Z"),
+            allowed=research,
+            boundaries=boundaries,
+        )

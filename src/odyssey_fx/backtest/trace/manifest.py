@@ -66,8 +66,9 @@ class CoverageCapability:
 
     `approved_list_sha256` は承認済みの表の一覧の SHA-256 で、**記録だけ**（`ConfigDigest`・
     `RunId` の
-    対象にしない）。`mark_days` は区分の印ごとの日数（確認済み／仮定付き（同じ）
-    ／仮定付き（違う））。
+    対象にしない）。`mark_days` は**実行通貨・run 区間の UTC 暦日数**を区分の印（確認済み／
+    仮定付き（同じ）／仮定付き（違う））ごとに数えたもの。執行する通貨の表の行で数え、戦略が読む
+    全入力の確実性を表す数とは扱わない（D12-126。人間の決定の原文は D12 §0.1.30）。
     """
 
     time_rule_table: TimeRuleTableRef

@@ -663,6 +663,11 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
         f"（{rules.counting.sha256}）"
     )
     out.line(f"カレンダー: {rules.calendar.id} 版 {rules.calendar.version}")
+    # 省いた指示も実際に解決した値を出す（D12-125）。年月は manifest にも残る。
+    mt5_record = pending.manifest.conversion.mt5
+    used = () if mt5_record is None else mt5_record.months
+    out.line(f"受け入れた年月（API の時刻）: {' '.join(used) if used else 'なし'}")
+    out.line(f"原データの置き場: {(raw_root / args.fetch_date).as_posix()}")
     out.lines(summary.series_lines(pending.manifest))
     out.lines(summary.findings_lines(pending.report))
     return _EXIT_OK

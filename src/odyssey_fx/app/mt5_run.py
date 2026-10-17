@@ -66,6 +66,15 @@ class Mt5RunParts:
     #: 分足を止める）。
     internal_series: frozenset[SeriesId] = frozenset()
 
+    @property
+    def has_shortfall(self) -> bool:
+        """能力検査の報告に取得不足があるか（その run は実行前に止まる。D06 §18.9 の 2）。
+
+        取得不足の区間は「無記録と確認できる」区間ではないので、公開フィードの覆いを広げない
+        （D12-113）。合成はこのとき公開フィードを組み立てず、能力検査の不合格で run を止める。
+        """
+        return any(report.shortfall for report in self.capability.coverage.series)
+
 
 def publication_rows(
     feed: Iterable[PublicationEventView],
@@ -340,7 +349,10 @@ def _series_report(
 def _mark_days(
     table: TimeRuleTable | None, symbol: str, interval: Interval
 ) -> tuple[tuple[str, int], ...]:
-    """run 区間の暦日（UTC）を区分の印ごとに数える（D06 §18.9 の 4）。"""
+    """実行通貨・run 区間の UTC 暦日数を区分の印ごとに数える（D06 §18.9 の 4、D12-126）。
+
+    全入力の確実性を表す数ではない（執行する通貨の表の行だけで数える）。
+    """
     if table is None:
         return ()
     counts = dict.fromkeys((mark.value for mark in TimeRuleMark), 0)

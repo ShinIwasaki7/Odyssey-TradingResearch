@@ -246,6 +246,41 @@ def test_c4_a_mid_bar_resumption_below_the_stop_closes_at_the_gapped_open(tmp_pa
     assert close.gap_kind is GapKind.STOP_GAP
     assert close.resumed_after_unrecorded_minutes == 4
     assert output.manifest.resumption_counts.stop_gap_fills == 1
+    # D12-115: 執行足の途中の再開でも、再開の分の判断時点（20:38）で処理する（執行足の終わり
+    # 20:45 まで待たない）。処理点は始値の段。
+    assert close.processed_at.time == _at("20:38")
+    assert close.processed_at.phase.name == "EXECUTION_OPEN"
+
+
+def test_a_hit_before_a_mid_bar_resumption_is_processed_at_the_resumption(
+    tmp_path: Path,
+) -> None:
+    """D12-115: 再開の分の判断時点では、その分より前の確定した 1 分足の到達を先に見る。
+
+    20:31 の安値が損切り 149.000 に届き、20:34〜20:37 が無記録、再開の分 20:38 の始値は損切りより
+    下。決済は 20:31 の損切りの到達（ギャップではない）で、処理するのは再開の分 20:38 の判断時点。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={
+            _at("20:31"): ("150.000", "150.000", "148.900", "149.500"),
+            _at("20:38"): ("148.620", "148.700", "148.600", "148.650"),
+        },
+    )
+    entry, close = _fills(output)
+    assert close.gap_kind is None
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:31")
+    assert close.price == _price("148.990")
+    assert close.processed_at.time == _at("20:38")
+    (resolution,) = [
+        row
+        for row in output.rows(TraceTable.INTRABAR_RESOLUTIONS)
+        if isinstance(row, IntrabarResolution)
+    ]
+    # 片側（損切り）だけの到達（D12-117）。20:38 より後の分は読まない。
+    assert resolution.method is ResolutionMethod.SINGLE_HIT
 
 
 def test_c4_resumption_at_the_start_of_an_execution_bar_uses_the_first_observed_open(
@@ -706,3 +741,58 @@ def test_minute_series_is_published_only_when_the_strategy_declares_it(tmp_path:
     coverage = minutes.result.capability_report.coverage
     assert coverage is not None
     assert MINUTE_SERIES in {item.series for item in coverage.series}
+
+
+def test_mark_days_are_the_execution_symbol_utc_calendar_days(tmp_path: Path) -> None:
+    """D12-126（人間の決定の原文は D12 §0.1.30）: 区分の印ごとの日数は「実行通貨・run 区間の UTC
+    暦日数」で、レポートもそう明示し、全入力の確実性を表す数とは書かない。"""
+    from typing import Any, cast
+
+    from odyssey_fx.evaluation.adapters.report import _coverage_lines, _Inputs
+
+    output = _run(tmp_path, unrecorded=())
+    coverage = output.manifest.capability_report.coverage
+    assert coverage is not None
+    # run 区間 20:00〜21:00 は UTC の 1 暦日。
+    assert sum(days for _, days in coverage.mark_days) == 1
+    lines = _coverage_lines(
+        _Inputs(
+            manifest=cast(Any, None),
+            outcome=None,
+            run_manifest=output.manifest,
+            evaluation=None,
+            experiment_dir_text="",
+        )
+    )
+    (line,) = [item for item in lines if "暦日数" in item]
+    assert "実行通貨（`USDJPY`）・run 区間の UTC 暦日数" in line
+    assert "確実性を表す数ではない" in line
+
+
+def test_levels_reached_in_different_minutes_are_resolved_by_the_minute_bars(
+    tmp_path: Path,
+) -> None:
+    """D12-117（人間の決定の原文は D12 §0.1.30）: 別々の分で損切りと利確に届き、到達の順が 1 分足で
+    分かれば `RESOLVED_BY_CHILD`（下位足で解決）。先に届いた損切り（20:40）で決済する。
+
+    20:34〜20:35 を無記録にして 1 分足の走査にし、20:40 の安値が損切り、20:42 の高値が利確に届く。
+    執行足の終わり（20:45）の走査なので、執行足の中の分はすべて確定している。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:36"),),
+        prices={
+            _at("20:40"): ("150.000", "150.000", "148.900", "149.500"),
+            _at("20:42"): ("150.000", "152.500", "150.000", "150.000"),
+        },
+    )
+    entry, close = _fills(output)
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:40")
+    (resolution,) = [
+        row
+        for row in output.rows(TraceTable.INTRABAR_RESOLUTIONS)
+        if isinstance(row, IntrabarResolution)
+    ]
+    assert resolution.method is ResolutionMethod.RESOLVED_BY_CHILD
+    assert output.manifest.unresolved_intrabar_count == 0

@@ -436,6 +436,9 @@ class _DecisionEvents:
     publications: tuple[BarKey, ...] = ()
     boundaries: tuple[tuple[BarKey, UtcTime], ...] = ()
     execution_open: BarKey | None = None
+    #: MT5 経路の執行足の途中の再開の分（D12-115: 再開の分の判断時点で既存の建玉のギャップを処理し、
+    #: 建玉だけでも判断時点を作る）。
+    resumption: UtcTime | None = None
 
 
 class _RunFailure(Exception):
@@ -487,6 +490,8 @@ class BacktestEngine:
         self._minutes = minutes
         # 執行足の途中の分で開いた建玉の、約定の分（D06 §18.5。その足では約定の分から判定する）。
         self._entry_minute: dict[PositionId, UtcTime] = {}
+        #: 執行足の途中の再開の分の判断時点で、ギャップまで処理し終えた分（建玉ごと。D12-115）。
+        self._scanned_through: dict[PositionId, UtcTime] = {}
         # 「再開」群の件数（D06 §18.10）。
         self._gap_counts: dict[GapKind, int] = dict.fromkeys(GapKind, 0)
         self._expired_in_unrecorded = 0
@@ -611,9 +616,16 @@ class BacktestEngine:
         run_end = self._config.run_interval.end
         self._seed_last_complete()
         grouped = self._group_events()
+        self._add_mid_bar_resumptions(grouped)
         for decision_time in sorted(grouped, key=lambda moment: moment.value):
             if decision_time >= run_end:
                 break
+            events = grouped[decision_time]
+            if events == _DecisionEvents(resumption=decision_time) and not (
+                self._context.ledger.open_positions()
+            ):
+                # 執行足の途中の再開の分だけの判断時点は、建玉があるときだけ作る（D12-115）。
+                continue
             try:
                 self._decision_point(decision_time, grouped[decision_time], is_run_end=False)
             except _RunFailure as failure:
@@ -659,6 +671,39 @@ class BacktestEngine:
                     self._last_complete = bar
                 return
             probe = key.bar_start
+
+    def _add_mid_bar_resumptions(self, grouped: dict[UtcTime, _DecisionEvents]) -> None:
+        """MT5 経路: 執行足の途中の再開の分を判断時点に足す（D06 §18.5、D12-115）。
+
+        執行足の最初の観測の分（`ExecutionOpen` の分）は始値の段で処理するので足さない。それ以外の
+        再開の分で、既存の建玉のギャップをその分の判断時点で処理する（人間の決定「再開の分の判断
+        時点で処理する（建玉だけでも判断時点を作る）」。原文は D12 §0.1.30）。
+        """
+        if self._minutes is None:
+            return
+        run = self._config.run_interval
+        for resumption in self._minutes.resumptions_in(run):
+            minute = resumption.minute
+            if not (run.start <= minute < run.end):
+                continue
+            bar = self._execution_bar_containing(minute)
+            if bar is None or bar.first_observed_at == minute:
+                continue
+            grouped[minute] = replace(grouped.get(minute, _DecisionEvents()), resumption=minute)
+
+    def _execution_bar_containing(self, minute: UtcTime) -> Bar | None:
+        """`minute` を含む作られた執行足（無ければ `None`）。"""
+        probe = minute - timedelta(days=1)
+        found: Bar | None = None
+        for _ in range(2000):
+            key = self._execution.next_bar_key_after(probe)
+            if key is None or key.bar_start > minute:
+                break
+            bar = self._execution.bar(key)
+            if bar is not None and bar.bar_start <= minute < bar.bar_end:
+                found = bar
+            probe = key.bar_start
+        return found
 
     def _group_events(self) -> dict[UtcTime, _DecisionEvents]:
         """公開イベントを判断時刻ごとにまとめる（D06 §4.2・§4.3）。"""
@@ -772,6 +817,8 @@ class BacktestEngine:
         if not is_run_end:
             if events.execution_open is not None:
                 opened = self._phase_execution_open(clock, events.execution_open)
+            elif events.resumption is not None:
+                self._phase_mid_bar_resumption(clock, events.resumption)
 
         post = self._phase_post_fill_evaluation(
             clock, notices, tuple(opened), is_run_end=is_run_end
@@ -802,6 +849,22 @@ class BacktestEngine:
                 self._scan_minutes(clock, position, bar)
                 continue
             self._resolve_protection(clock, position, bar)
+
+    def _phase_mid_bar_resumption(self, clock: PhaseClock, minute: UtcTime) -> None:
+        """執行足の途中の再開の分の判断時点（D06 §18.4 の順 1・§18.5、D12-115）。
+
+        その分より前の 1 分足を時刻の順に走査して到達を見て（高値・安値。既に確定した分だけ）、
+        到達が無ければ再開の分の始値のギャップを見る。処理点は始値の段（rank 11）。その分の
+        高値・安値はまだ確定していないので、執行足の終わりの走査で見る。
+        """
+        bar = self._execution_bar_containing(minute)
+        if bar is None:  # pragma: no cover - 判断時点を足すときに確かめている
+            return
+        for position in self._context.ledger.open_positions():
+            if position.protection.effective_from.bar_start > bar.bar_start:
+                continue
+            self._scan_minutes(clock, position, bar, until=minute, phase=PHASE_EXECUTION_OPEN)
+        self._record_snapshot(clock.next(PHASE_EXECUTION_OPEN))
 
     def _resolve_protection(self, clock: PhaseClock, position: Position, bar: Bar) -> None:
         fill_id = self._allocator.next(FillId)
@@ -862,7 +925,15 @@ class BacktestEngine:
         entry = self._entry_minute.get(position.position_id)
         return entry is not None and bar.bar_start < entry < bar.bar_end
 
-    def _scan_minutes(self, clock: PhaseClock, position: Position, bar: Bar) -> None:
+    def _scan_minutes(
+        self,
+        clock: PhaseClock,
+        position: Position,
+        bar: Bar,
+        *,
+        until: UtcTime | None = None,
+        phase: str = PHASE_EXECUTION_BAR_COMPLETE,
+    ) -> None:
         """1 分足を時刻の順に走査して保護水準の到達を決める（D06 §18.4 の順 6・§18.5・§18.6）。
 
         - 再開の分（無記録の直後の最初の記録のある分）では、まず始値のギャップを見る（順 1）。
@@ -872,12 +943,19 @@ class BacktestEngine:
         - その他の分では高値・安値で到達を見る。同じ分で両方に届けば損切り
           （`UNRESOLVED_SL_PRIORITY`。ADR-0030）。
         - 執行足の途中で開いた建玉は、約定した分から判定する（約定より前の分は見ない）。
+        - `until` を渡したとき（執行足の途中の再開の分の判断時点。D12-115）は、
+        その分より前の分だけを
+          走査し、到達が無ければ `until` の分の始値のギャップを見る。ギャップを処理し終えた分は
+          執行足の終わりの走査でギャップを見直さない。到達の方法の印は、その時点で確定している分
+          だけから決める（未来の分を読まない）。
         """
         assert self._minutes is not None  # noqa: S101 - _needs_minute_scan が保証する
         entry = self._entry_minute.get(position.position_id)
         start = entry if entry is not None and bar.bar_start < entry else bar.bar_start
-        scanned = self._minutes.minute_bars_in(Interval(start=start, end=bar.bar_end))
-        if not scanned:
+        end = bar.bar_end if until is None else until
+        scanned = self._minutes.minute_bars_in(Interval(start=start, end=end))
+        through = self._scanned_through.get(position.position_id)
+        if not scanned and until is None:
             return
         protection = position.protection
         spread = self._cost_model.spread_model
@@ -887,7 +965,11 @@ class BacktestEngine:
         visited: list[Bar] = []
         for minute_bar in scanned:
             visited.append(minute_bar)
-            if minute_bar.bar_start != open_minute and minute_bar.bar_start != entry:
+            if (
+                minute_bar.bar_start != open_minute
+                and minute_bar.bar_start != entry
+                and (through is None or through < minute_bar.bar_start)
+            ):
                 resumption = self._minutes.resumption_at(minute_bar.bar_start)
                 if resumption is not None and self._gap_close(
                     clock,
@@ -895,7 +977,7 @@ class BacktestEngine:
                     bar,
                     minute_bar,
                     resumption.unrecorded_minutes,
-                    phase=PHASE_EXECUTION_BAR_COMPLETE,
+                    phase=phase,
                 ):
                     return
             stop_hit, take_hit = touches(position.side, protection, minute_bar, spread)
@@ -925,7 +1007,7 @@ class BacktestEngine:
                 clock,
                 position=position,
                 cause=verdict,
-                phase=PHASE_EXECUTION_BAR_COMPLETE,
+                phase=phase,
                 base_price=level,
                 spread_applied=False,
                 execution_time=BarExecutionInterval(
@@ -954,6 +1036,15 @@ class BacktestEngine:
                 ),
             )
             return
+        if until is None:
+            return
+        # 再開の分の始値のギャップ（D06 §18.4 の順 1）。
+        self._scanned_through[position.position_id] = until
+        resumed = self._minutes.minute_bar_at(until)
+        resumption = self._minutes.resumption_at(until)
+        if resumed is None or resumption is None or until in (open_minute, entry):
+            return  # pragma: no cover - 判断時点は記録のある再開の分にだけ作る
+        self._gap_close(clock, position, bar, resumed, resumption.unrecorded_minutes, phase=phase)
 
     def _gap_close(
         self,
