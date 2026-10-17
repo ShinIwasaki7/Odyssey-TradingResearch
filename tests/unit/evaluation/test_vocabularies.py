@@ -119,8 +119,9 @@ def test_the_columns_read_by_the_evaluation_exist_in_the_trace() -> None:
 
 
 def test_every_table_is_read_with_the_run_identifier_first() -> None:
-    """9表すべてで `run_id` を先頭の必須列として要求する（D07 §4.2）。"""
-    assert len(INPUT_TABLES) == 9
+    """12表すべてで `run_id` を先頭の必須列として要求する（D07 §4.2、v2.12 で表20〜22 を足した）
+    。"""
+    assert len(INPUT_TABLES) == 12
     for table in INPUT_TABLES:
         specs = COLUMN_SPECS[table]
         assert specs[0].column == "run_id"

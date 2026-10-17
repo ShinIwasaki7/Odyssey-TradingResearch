@@ -28,7 +28,7 @@ from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
-__all__ = ["Bar", "BarKey", "Provenance", "ProvenanceKind"]
+__all__ = ["Bar", "BarCoverage", "BarKey", "MinuteSource", "Provenance", "ProvenanceKind"]
 
 
 class ProvenanceKind(Enum):
@@ -43,6 +43,8 @@ class ProvenanceKind(Enum):
     DUKASCOPY = "dukascopy"
     AGGREGATED = "aggregated"
     DUKASCOPY_REFILL = "dukascopy_refill"
+    #: OANDA MT5 API の 1 分足（D03 §15.3。出来高は「出来高不明」で 0 を置く。D12-31）。
+    OANDA_MT5 = "oanda_mt5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +65,82 @@ class Provenance:
             raise MarketDataValueError(
                 f"Provenance.source_ref must be a non-empty str, got {self.source_ref!r}"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class BarCoverage:
+    """上位足の被覆の属性（D03 §15.4。MT5 経路の上位足だけが持つ）。
+
+    - `expected_minutes`: 被覆率の分母。足の区間の中で足が存在すべき分（休場の分を除く）の数。
+    - `recorded_minutes`: 区間の中で記録ありの分の数。作った足には取得不足の分が無いので、
+      `expected_minutes - recorded_minutes` はすべて無記録の分。
+    - `first_observed_at` / `last_observed_at`: 区間の中で最初・最後に記録のある 1 分足の開始時刻。
+    - `time_rule_row`: 構成分が入る時刻の規則の表の行（足の中で行は混じらない。D03 §15.4）。
+
+    被覆率に閾値は置かない（D12-87）。被覆率が 1 未満の足は「部分観測の足」で、「完全」とは
+    呼ばない（`is_fully_observed` が偽）。
+    """
+
+    expected_minutes: int
+    recorded_minutes: int
+    first_observed_at: UtcTime
+    last_observed_at: UtcTime
+    time_rule_row: int
+
+    def __post_init__(self) -> None:
+        for name in ("expected_minutes", "recorded_minutes", "time_rule_row"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MarketDataValueError(f"BarCoverage.{name} must be an int, got {value!r}")
+        if self.recorded_minutes < 1:
+            raise MarketDataValueError(
+                "BarCoverage.recorded_minutes must be >= 1; a bar with no recorded minute is"
+                " not built (D03 §15.4)"
+            )
+        if self.recorded_minutes > self.expected_minutes:
+            raise MarketDataValueError(
+                f"BarCoverage.recorded_minutes ({self.recorded_minutes}) exceeds expected_minutes"
+                f" ({self.expected_minutes})"
+            )
+        if self.time_rule_row < 1:
+            raise MarketDataValueError("BarCoverage.time_rule_row must be >= 1")
+        for name in ("first_observed_at", "last_observed_at"):
+            if not isinstance(getattr(self, name), UtcTime):
+                raise MarketDataValueError(f"BarCoverage.{name} must be a UtcTime")
+        if self.last_observed_at < self.first_observed_at:
+            raise MarketDataValueError("BarCoverage.last_observed_at precedes first_observed_at")
+
+    @property
+    def unrecorded_minutes(self) -> int:
+        """無記録の分数（D03 §15.4）。"""
+        return self.expected_minutes - self.recorded_minutes
+
+    @property
+    def is_fully_observed(self) -> bool:
+        """被覆率 1（全分観測の足）か。部分観測の足を「完全」と呼ばない（D12-87）。"""
+        return self.recorded_minutes == self.expected_minutes
+
+
+@dataclass(frozen=True, slots=True)
+class MinuteSource:
+    """MT5 経路の 1 分足が持つ出所の属性（D03 §15.3 の 2・3、§15.6 の 3）。
+
+    - `api_time`: API の生の時刻（epoch 秒）。変えずに保存する（D12-40・D12-47）。
+    - `time_rule_row`: 変換に使った時刻の規則の表の行。
+    - `spread`: API の `spread` 列（診断用。約定に使わない。D12-27）。
+    """
+
+    api_time: int
+    time_rule_row: int
+    spread: int
+
+    def __post_init__(self) -> None:
+        for name in ("api_time", "time_rule_row", "spread"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MarketDataValueError(f"MinuteSource.{name} must be an int, got {value!r}")
+        if self.time_rule_row < 1:
+            raise MarketDataValueError("MinuteSource.time_rule_row must be >= 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +177,10 @@ class Bar:
     volume: Decimal
     available_at: UtcTime
     provenance: Provenance
+    #: 上位足の被覆の属性（MT5 経路だけ。HistData 経路と 1 分足は `None`。D03 §15.4）。
+    coverage: BarCoverage | None = None
+    #: MT5 経路の 1 分足の出所の属性（それ以外は `None`。D03 §15.3）。
+    minute: MinuteSource | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.series, SeriesId):
@@ -139,6 +221,23 @@ class Bar:
                 f" bar_end={self.interval.end};"
                 " a confirmed value must not be visible before the bar ends (D03 §3.3)"
             )
+        if self.coverage is not None:
+            if not isinstance(self.coverage, BarCoverage):
+                raise MarketDataValueError("Bar.coverage must be a BarCoverage or None")
+            if self.minute is not None:
+                raise MarketDataValueError(
+                    "a bar carries either coverage (an upper bar) or a minute source (a 1m bar)"
+                )
+            if not (
+                self.interval.start <= self.coverage.first_observed_at
+                and self.coverage.last_observed_at < self.interval.end
+            ):
+                raise MarketDataValueError(
+                    f"Bar.coverage observations {self.coverage.first_observed_at} .."
+                    f" {self.coverage.last_observed_at} fall outside {self.interval} (D03 §15.4)"
+                )
+        if self.minute is not None and not isinstance(self.minute, MinuteSource):
+            raise MarketDataValueError("Bar.minute must be a MinuteSource or None")
 
     # --- 便宜プロパティ -----------------------------------------------------
 
@@ -156,6 +255,22 @@ class Bar:
     def key(self) -> BarKey:
         """自然キー（D03 §3.3）。"""
         return BarKey(series=self.series, bar_start=self.bar_start)
+
+    @property
+    def first_observed_at(self) -> UtcTime:
+        """区間の中で最初に観測のある時刻（D03 §15.5）。被覆の属性が無い足は `bar_start`。"""
+        return self.bar_start if self.coverage is None else self.coverage.first_observed_at
+
+    @property
+    def close_observed_at(self) -> UtcTime:
+        """終値の観測時刻（D06 §18.9 の 5、D12-91 (a)）。
+
+        被覆の属性がある足（MT5 経路）は、終値を取った最後に記録のある 1 分足の開始時刻
+        （`last_observed_at`）。属性の無い足（HistData 経路）は従来どおり `bar_end`。
+        """
+        if self.coverage is None:
+            return self.bar_end
+        return self.coverage.last_observed_at
 
     # --- 検証 ---------------------------------------------------------------
 

@@ -23,11 +23,71 @@ from odyssey_fx.common.reason import Reason
 from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
 from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import SymbolSpecRef
-from odyssey_fx.common.time import PhaseSet
+from odyssey_fx.common.time import Interval, PhaseSet
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef
 
-__all__ = ["DataCapabilityReport", "RunManifest", "config_digest_of"]
+__all__ = [
+    "CoverageCapability",
+    "DataCapabilityReport",
+    "ResumptionCounts",
+    "RunManifest",
+    "SeriesCoverageReport",
+    "config_digest_of",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesCoverageReport:
+    """能力検査の報告の系列ごとの被覆（D06 §18.9 の 4。件数・時刻だけで価格を含めない）。
+
+    `interval` は報告の対象の区間（執行に使う系列は run 区間、戦略が読む系列は履歴の分を含む区間）。
+    `min_coverage` は部分観測を含む作った足の被覆率の最小値（`記録あり/存在すべき` の分数の文字列。
+    作った足が無ければ `None`）。`shortfall` は取得不足の区間と理由。
+    """
+
+    series: SeriesId
+    interval: Interval
+    unrecorded_minutes: int
+    unrecorded_runs: int
+    longest_unrecorded_minutes: int
+    longest_unrecorded: Interval | None
+    partial_bars: int
+    no_record_bars: int
+    min_coverage: str | None
+    shortfall: tuple[tuple[Interval, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageCapability:
+    """MT5 経路の能力検査の報告に足す項目（D06 §18.9 の 3・4）。
+
+    `approved_list_sha256` は承認済みの表の一覧の SHA-256 で、**記録だけ**（`ConfigDigest`・
+    `RunId` の
+    対象にしない）。`mark_days` は**実行通貨・run 区間の UTC 暦日数**を区分の印（確認済み／
+    仮定付き（同じ）／仮定付き（違う））ごとに数えたもの。執行する通貨の表の行で数え、戦略が読む
+    全入力の確実性を表す数とは扱わない（D12-126。人間の決定の原文は D12 §0.1.30）。
+    """
+
+    time_rule_table: TimeRuleTableRef
+    approved_list_sha256: str
+    table_approved: bool
+    series: tuple[SeriesCoverageReport, ...]
+    mark_days: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResumptionCounts:
+    """run manifest の「再開」群（D06 §18.10）。"""
+
+    resumptions: int = 0
+    stop_gap_fills: int = 0
+    take_profit_gap_fills: int = 0
+    deferred_fills: int = 0
+    expired_in_unrecorded: int = 0
+    history_resets: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +106,10 @@ class DataCapabilityReport:
     runnable: bool = True
     reason: Reason | None = None
     diagnostics: tuple[str, ...] = ()
+    coverage: CoverageCapability | None = None
     """不合格の理由を1件ずつ書いた文（D06 §10.5 の手順6「不合格の個別結果を落とさない」）。
+
+    `coverage` は MT5 経路の被覆の報告（D06 §18.9 の 3・4）。HistData の経路では `None`。
 
     銘柄仕様の食い違い・許容不利約定幅の不足・下位足を走査する手段の不在といった不合格は、
     完全性検査にも階層の検査にも現れない。理由コードだけを残すと、判断履歴からは
@@ -142,6 +205,11 @@ class RunManifest:
     git_dirty: bool = False
     reason: Reason | None = None
     warnings: tuple[str, ...] = field(default=())
+    #: 時刻の規則の表の参照（D06 §18.10 の入力群。snapshot の識別子から決まるので `ConfigDigest` を
+    #: 変えない）。HistData の経路では `None`。
+    time_rule_table_ref: TimeRuleTableRef | None = None
+    #: 「再開」群の件数（D06 §18.10）。HistData の経路の run でも 0 の件数を持つ。
+    resumption_counts: ResumptionCounts = field(default_factory=ResumptionCounts)
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, RunId):

@@ -1,0 +1,899 @@
+"""配布 tick 記録を再現するモデルの受入検証（2026-10-17 の指示 3-C の 7 項目。D12 §11.13 の
+C-1〜C-7）。
+
+人工の 1 分足（API の時刻 = UTC + 2 時間）を本番の受入れ（`build_mt5_pending`）で snapshot
+にし、本番の
+部品（as-of ビュー・公開フィード・`build_mt5_run_parts`・`RunBacktest`）で検証戦略 A の run を通す。
+
+共通の場面（`tests/fixtures/mt5/run.py`。値は人工）: 金曜 2026-01-23 20:00Z に検証戦略 A
+が買いの突破を
+判断する。1 時間足は 1 分足から作られ、窓 20 本の高値 150.000・安値 149.000、突破の足の終値
+150.040。
+
+- 受付: 参照価格は直前に作られた執行足 `[19:45,20:00)` の終値 150.040（ask 150.060）。損切り
+149.000。
+  注文の有効期限は 20 分（20:20）。
+- 約定: 候補の始値の分 20:00 の始値 bid 150.000 → ask 150.020 → 滑り 0.010 → 150.030。
+  利確は `150.030 + 2 × (150.030 − 149.000) = 152.090`。
+- 20:00 以後の 1 分足は既定の 4 値（150.000 / 150.100 / 149.900 / 150.000）で、損切りにも利確にも
+  触れない。場面ごとに無記録の分と 4 値を差し替える。
+
+各テストの docstring に対応する受入検証の番号（C-1〜C-7）を書く。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from datetime import timedelta
+from pathlib import Path
+from typing import Any
+
+import polars as pl
+import pytest
+
+from odyssey_fx.backtest.domain.events import OrderEvent
+from odyssey_fx.backtest.domain.fills import (
+    BarExecutionInterval,
+    ExactExecutionTime,
+    FillRecord,
+    GapKind,
+)
+from odyssey_fx.backtest.domain.orders import AcceptedEntryTerms, AcceptedOrder, OrderStatus
+from odyssey_fx.backtest.execution.protection_hits import IntrabarResolution, ResolutionMethod
+from odyssey_fx.backtest.trace.recorder import (
+    PublicationRow,
+    ResumptionRow,
+    TraceTable,
+    flatten_row,
+)
+from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
+from odyssey_fx.common.money import Price, decimal_from_str
+from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.evaluation.adapters.fs_store import (
+    FileSystemResultRepository,
+    FileSystemResultWriter,
+    FileSystemTraceSink,
+)
+from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
+from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
+from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.integrity import CheckKind
+from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
+from tests.fixtures.backtest.harness import CODE_DIGEST, compiled_strategy, run_backtest
+from tests.fixtures.mt5 import market as m5
+from tests.fixtures.mt5.run import MINUTE_SERIES, Mt5RunOutput, run_mt5
+from tests.fixtures.synthetic import market
+
+CALENDAR = market.calendar()
+DECISION = UtcTime.parse("2026-01-23T20:00:00Z")
+RUN = Interval(start=DECISION, end=UtcTime.parse("2026-01-23T21:00:00Z"))
+#: 1 分足を作る区間（窓の 20 時間＋余裕。木曜 NY 17:00 から金曜の閉場まで）。
+DATA = Interval(
+    start=UtcTime.parse("2026-01-22T22:00:00Z"), end=UtcTime.parse("2026-01-23T22:00:00Z")
+)
+FLAT = ("149.005", "149.005", "149.005", "149.005")
+
+
+def _at(text: str) -> UtcTime:
+    return UtcTime.parse(f"2026-01-23T{text}:00Z")
+
+
+def _price(text: str) -> Price:
+    return Price(decimal_from_str(text))
+
+
+def _signal_prices() -> dict[UtcTime, tuple[str, str, str, str]]:
+    """20:00 より前の 1 分足の 4 値（1 時間足の窓と突破の足を作る）。"""
+    prices: dict[UtcTime, tuple[str, str, str, str]] = {}
+    moment = DATA.start
+    while moment < DECISION:
+        prices[moment] = FLAT
+        moment = moment + timedelta(minutes=1)
+    hour = UtcTime.parse("2026-01-22T23:00:00Z")
+    while hour < _at("19:00"):
+        prices[hour] = ("149.005", "150.000", "149.000", "149.005")
+        hour = hour + timedelta(hours=1)
+    moment = _at("19:00")
+    while moment < DECISION:
+        prices[moment] = ("149.900", "149.900", "149.900", "149.900")
+        moment = moment + timedelta(minutes=1)
+    prices[_at("19:00")] = ("149.900", "150.100", "149.800", "149.900")
+    prices[_at("19:59")] = ("149.900", "150.040", "149.900", "150.040")
+    return prices
+
+
+def _run(
+    tmp_path: Path,
+    *,
+    unrecorded: tuple[Interval, ...] = (),
+    prices: dict[UtcTime, tuple[str, str, str, str]] | None = None,
+    artifacts: bool = False,
+) -> Mt5RunOutput:
+    table = m5.write_rule_files(tmp_path)
+    merged = _signal_prices()
+    merged.update(prices or {})
+    rows = m5.minute_rows(CALENDAR, DATA, unrecorded=unrecorded, prices=merged)
+    pending = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, rows)])
+    return run_mt5(
+        m5.readable(pending),
+        pending,
+        CALENDAR,
+        RUN,
+        tmp_path,
+        artifacts_root=tmp_path if artifacts else None,
+    )
+
+
+def _fills(output: Mt5RunOutput) -> list[FillRecord]:
+    return [row for row in output.rows(TraceTable.FILLS) if isinstance(row, FillRecord)]
+
+
+def _span(start: str, end: str) -> Interval:
+    return Interval(start=_at(start), end=_at(end))
+
+
+def test_baseline_fills_at_the_scheduled_open(tmp_path: Path) -> None:
+    """場面の基準: 無記録が無ければ、候補の始値 20:00 で 150.030 に約定し、run
+    の末尾まで建玉が残る。"""
+    output = _run(tmp_path)
+    assert output.result.status is RunStatus.COMPLETED
+    (entry,) = _fills(output)
+    assert entry.price == _price("150.030")
+    assert entry.execution_time == ExactExecutionTime(time=DECISION)
+    assert entry.gap_kind is None
+    assert output.manifest.resumption_counts.resumptions == 0
+    # D12-91 (a): 受付の参照価格は観測時刻つき（MT5 経路は最後に記録のある分の開始）。
+    (order,) = [row for row in output.rows(TraceTable.ORDERS) if isinstance(row, AcceptedOrder)]
+    assert isinstance(order.terms, AcceptedEntryTerms)
+    assert order.terms.reference_quote.observed_at == _at("19:59")
+
+
+def test_reference_quote_after_an_all_unrecorded_bar_keeps_the_last_observation(
+    tmp_path: Path,
+) -> None:
+    """D12-91 (a)（D06 §18.9 の 5）: 直前の執行足が全分無記録なら、最後に記録のある分の終値を、
+    その観測
+    時刻とともに参照価格に使う（約定には使わない）。19:45〜19:59 を無記録にすると、
+    参照価格の出どころは
+    `[19:30,19:45)` の足で、観測時刻は 19:44（突破の終値は 19:44 の分に置く）。"""
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("19:45", "20:00"),),
+        prices={_at("19:44"): ("149.900", "150.040", "149.900", "150.040")},
+    )
+    orders = [row for row in output.rows(TraceTable.ORDERS) if isinstance(row, AcceptedOrder)]
+    assert orders
+    assert isinstance(orders[0].terms, AcceptedEntryTerms)
+    assert orders[0].terms.reference_quote.observed_at == _at("19:44")
+    source = orders[0].terms.reference_quote.source_bar
+    assert source is not None and source.bar_start == _at("19:30")
+
+
+def test_c3_an_order_that_expires_while_unrecorded_never_fills_after_resumption(
+    tmp_path: Path,
+) -> None:
+    """C-3（D12-86、D06 §18.4 の順 0）: 無記録の中で期限（20:20）が来た注文は、再開の分（20:25）
+    でも約定しない。
+
+    20:00〜20:24 を無記録にする。執行足 `[20:00,20:15)` は全分無記録で作られず、`[20:15,20:30)` の
+    `ExecutionOpen` は最初の観測の分 20:25 に来る。その判断時点の期限切れ（rank 2）が約定（rank
+    11）より
+    先に注文を `EXPIRED` にし、表8 の `expired_in_unrecorded` が真になる。run
+    は止まらない（D12-85）。
+    """
+    output = _run(tmp_path, unrecorded=(_span("20:00", "20:25"),))
+    assert output.result.status is RunStatus.COMPLETED
+    assert _fills(output) == []
+    expiries = [
+        row
+        for row in output.rows(TraceTable.ORDER_EVENTS)
+        if isinstance(row, OrderEvent) and row.to_status is OrderStatus.EXPIRED
+    ]
+    assert len(expiries) == 1
+    assert expiries[0].expired_in_unrecorded is True
+    assert expiries[0].at.time == _at("20:25")
+    counts = output.manifest.resumption_counts
+    assert counts.expired_in_unrecorded == 1
+    assert counts.deferred_fills == 0
+    resumptions = [
+        row for row in output.rows(TraceTable.RESUMPTIONS) if isinstance(row, ResumptionRow)
+    ]
+    assert [(row.minute, row.unrecorded_minutes) for row in resumptions] == [(_at("20:25"), 25)]
+
+
+def test_c3_companion_a_pending_order_fills_at_the_first_recorded_minute_before_expiry(
+    tmp_path: Path,
+) -> None:
+    """C-3 の対（D06 §18.4 の順 2、D12-95 (a)）: 期限の前に再開すれば、
+    待っていた成行は再開の分の始値で約定する。
+
+    20:00〜20:07 を無記録にする。執行足 `[20:00,20:15)` の始値は最初の観測の分 20:08 の始値で、
+    約定の時刻は
+    20:08、区分は `DEFERRED_FILL`、無記録の分数は 8。約定の後の処理（約定通知と初期の利確）は
+    20:08 の
+    判断時点で行う。
+    """
+    output = _run(tmp_path, unrecorded=(_span("20:00", "20:08"),))
+    (entry,) = _fills(output)
+    assert entry.execution_time == ExactExecutionTime(time=_at("20:08"))
+    assert entry.processed_at.time == _at("20:08")
+    assert entry.gap_kind is GapKind.DEFERRED_FILL
+    assert entry.resumed_after_unrecorded_minutes == 8
+    assert entry.price == _price("150.030")
+    assert output.manifest.resumption_counts.deferred_fills == 1
+
+
+def test_c4_a_mid_bar_resumption_below_the_stop_closes_at_the_gapped_open(tmp_path: Path) -> None:
+    """C-4（D06 §18.4 の順 1・§18.5・§18.7）: 執行足の途中の再開でも、
+    損切りを飛び越えた始値で処理する。
+
+    建玉（20:00 に 150.030）の後、執行足 `[20:30,20:45)` の 20:34〜20:37 を無記録にし、再開の分
+    20:38 の
+    始値を 148.620（損切り 149.000 より下）にする。決済は到達できない損切りの価格ではなく、始値
+    bid 148.620 に
+    決済の滑り 0.010 を不利に当てて 148.610。約定の時刻は 20:38、区分は `STOP_GAP`。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={_at("20:38"): ("148.620", "148.700", "148.600", "148.650")},
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("148.610")
+    assert close.execution_time == ExactExecutionTime(time=_at("20:38"))
+    assert close.gap_kind is GapKind.STOP_GAP
+    assert close.resumed_after_unrecorded_minutes == 4
+    assert output.manifest.resumption_counts.stop_gap_fills == 1
+    # D12-115: 執行足の途中の再開でも、再開の分の判断時点（20:38）で処理する（執行足の終わり
+    # 20:45 まで待たない）。処理点は始値の段。
+    assert close.processed_at.time == _at("20:38")
+    assert close.processed_at.phase.name == "EXECUTION_OPEN"
+
+
+def test_a_hit_before_a_mid_bar_resumption_is_processed_at_the_resumption(
+    tmp_path: Path,
+) -> None:
+    """D12-115: 再開の分の判断時点では、その分より前の確定した 1 分足の到達を先に見る。
+
+    20:31 の安値が損切り 149.000 に届き、20:34〜20:37 が無記録、再開の分 20:38 の始値は損切りより
+    下。決済は 20:31 の損切りの到達（ギャップではない）で、処理するのは再開の分 20:38 の判断時点。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={
+            _at("20:31"): ("150.000", "150.000", "148.900", "149.500"),
+            _at("20:38"): ("148.620", "148.700", "148.600", "148.650"),
+        },
+    )
+    entry, close = _fills(output)
+    assert close.gap_kind is None
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:31")
+    assert close.price == _price("148.990")
+    assert close.processed_at.time == _at("20:38")
+    (resolution,) = [
+        row
+        for row in output.rows(TraceTable.INTRABAR_RESOLUTIONS)
+        if isinstance(row, IntrabarResolution)
+    ]
+    # 片側（損切り）だけの到達（D12-117）。20:38 より後の分は読まない。
+    assert resolution.method is ResolutionMethod.SINGLE_HIT
+
+
+def test_c4_resumption_at_the_start_of_an_execution_bar_uses_the_first_observed_open(
+    tmp_path: Path,
+) -> None:
+    """C-4（D03 §15.5、D06 §18.5）: 執行足の始値の分が無記録なら、最初の記録のある分（20:33）
+    の始値で処理する。"""
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:30", "20:33"),),
+        prices={_at("20:33"): ("148.620", "148.700", "148.600", "148.650")},
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("148.610")
+    assert close.execution_time == ExactExecutionTime(time=_at("20:33"))
+    assert close.processed_at.time == _at("20:33")
+    assert close.gap_kind is GapKind.STOP_GAP
+
+
+def test_c5_both_levels_in_one_minute_after_resumption_take_the_stop(tmp_path: Path) -> None:
+    """C-5（ADR-0030、D06 §18.6）: 再開の後の 1 分足で利確・損切りの両方に届き順序が不明なら損切り。
+
+    20:34〜20:35 を無記録にし、再開の分 20:36 の始値は 150.000（ギャップなし）、高値 152.500・
+    安値 148.500
+    （利確 152.090 と損切り 149.000 の両方）。最小解像度の 1 分足でも順序が分からないので
+    `UNRESOLVED_SL_PRIORITY` で損切り。約定は損切り 149.000 に滑り 0.010 で 148.990。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:36"),),
+        prices={_at("20:36"): ("150.000", "152.500", "148.500", "150.000")},
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("148.990")
+    assert close.gap_kind is None
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:36")
+    (resolution,) = [
+        row
+        for row in output.rows(TraceTable.INTRABAR_RESOLUTIONS)
+        if isinstance(row, IntrabarResolution)
+    ]
+    assert resolution.method is ResolutionMethod.UNRESOLVED_SL_PRIORITY
+    assert output.manifest.unresolved_intrabar_count == 1
+
+
+def test_take_profit_gap_uses_the_level_not_the_open(tmp_path: Path) -> None:
+    """D06 §18.7（D12-77 (a)）: 再開の分の始値が利確を越えたら、
+    利確の水準を基準価格にする（有利な滑りを取らない）。"""
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={_at("20:38"): ("153.000", "153.100", "152.900", "153.000")},
+    )
+    entry, close = _fills(output)
+    assert close.gap_kind is GapKind.TAKE_PROFIT_GAP
+    assert close.price == _price("152.080")  # 利確 152.090 に決済の滑り 0.010 を不利に
+
+
+def test_unrecorded_tail_keeps_the_position_and_completes(tmp_path: Path) -> None:
+    """D12-85・D12-91 (a)（D06 §18.11）: 末尾の執行足が全分無記録でも建玉を消さず、
+    最後に記録のある分の
+    終値で評価して `COMPLETED`。架空の決済をしない。"""
+    output = _run(tmp_path, unrecorded=(_span("20:40", "22:00"),))
+    assert output.result.status is RunStatus.COMPLETED
+    assert len(_fills(output)) == 1
+    assert len(output.context.ledger.open_positions()) == 1
+
+
+def test_c6_an_acquisition_shortfall_is_rejected_not_read_as_unrecorded(tmp_path: Path) -> None:
+    """C-6（D12-80、D06 §18.9）: 取得不足は無記録に読み替えられず、
+    必要入力不足として実行前に拒否される。
+
+    2026-01 の要求を「取得していない」（状態 `failed`）にし、前後の月は取得済みにする。1
+    月の取引時間の分は
+    取得不足 (b) で、無記録（`UNRECORDED_MINUTES`）には一切ならず、その分を含む上位足は
+    `NO_RECORD_BAR`
+    ではなく `ACQUISITION_SHORTFALL`。run は `FAILED_CAPABILITY` で、理由に取得不足の区間が出る。
+    """
+    table = m5.write_rule_files(tmp_path)
+    december = m5.minute_rows(
+        CALENDAR,
+        Interval(
+            start=UtcTime.parse("2025-12-29T22:00:00Z"), end=UtcTime.parse("2025-12-30T22:00:00Z")
+        ),
+    )
+    february = m5.minute_rows(
+        CALENDAR,
+        Interval(
+            start=UtcTime.parse("2026-02-02T22:00:00Z"), end=UtcTime.parse("2026-02-03T22:00:00Z")
+        ),
+    )
+    pending = m5.build_pending(
+        CALENDAR,
+        table,
+        [
+            m5.MonthSpec(2025, 12, december),
+            m5.MonthSpec(2026, 1, (), status="failed"),
+            m5.MonthSpec(2026, 2, february),
+        ],
+    )
+    january = Interval(
+        start=UtcTime.parse("2026-01-01T00:00:00Z"), end=UtcTime.parse("2026-01-31T00:00:00Z")
+    )
+    in_january = [r for r in pending.report.results if r.interval.overlaps(january)]
+    assert not [r for r in in_january if r.kind is CheckKind.UNRECORDED_MINUTES]
+    assert not [r for r in in_january if r.kind is CheckKind.NO_RECORD_BAR]
+    shortfall = [r for r in in_january if r.kind is CheckKind.ACQUISITION_SHORTFALL]
+    assert shortfall
+    assert {dict(r.detail)["reasons"] for r in shortfall} == {"request_failed_or_not_fetched"}
+
+    output = run_mt5(m5.readable(pending), pending, CALENDAR, RUN, tmp_path)
+    assert output.result.status is RunStatus.FAILED_CAPABILITY
+    assert any(
+        "acquisition shortfall" in text for text in output.result.capability_report.diagnostics
+    )
+    assert _fills(output) == []
+
+
+def test_c6_a_revoked_time_rule_table_is_not_runnable(tmp_path: Path) -> None:
+    """D12-48（D06 §18.9 の 3）: 承認を取り消した時刻の規則の表で作った snapshot の run
+    は実行前に止まる。"""
+    table = m5.write_rule_files(tmp_path, revoked="2026-10-17 取り消し（人工）")
+    rows = m5.minute_rows(CALENDAR, DATA, prices=_signal_prices())
+    pending = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, rows)])
+    output = run_mt5(m5.readable(pending), pending, CALENDAR, RUN, tmp_path)
+    assert output.result.status is RunStatus.FAILED_CAPABILITY
+    coverage = output.result.capability_report.coverage
+    assert coverage is not None and coverage.table_approved is False
+
+
+def test_c1_partial_bar_coverage_reaches_the_run_artifacts(tmp_path: Path) -> None:
+    """C-1（D12-82・D12-87、D06 §18.10、D07 §28.3）: 部分観測の足を作り、被覆情報が run
+    の成果物まで残る。
+
+    20:34〜20:37 の無記録で、1 時間足 `[20:00,21:00)` は 60 分のうち 56
+    分の部分観測の足になる（作られ、
+    「完全」とは呼ばない）。その公開（21:00 = run の末尾）が表20 の Parquet に
+    `expected_minutes` 60・
+    `recorded_minutes` 56・最初と最後の観測の時刻つきで残り、run manifest
+    の能力検査の報告にも部分観測の
+    足の数が残る。
+    """
+    output = _run(tmp_path, unrecorded=(_span("20:34", "20:38"),), artifacts=True)
+    rows = [row for row in output.rows(TraceTable.PUBLICATIONS) if isinstance(row, PublicationRow)]
+    hourly = [
+        row
+        for row in rows
+        if row.bar_key.series.timeframe.id == "1h" and row.bar_key.bar_start == DECISION
+    ]
+    assert len(hourly) == 1
+    assert (hourly[0].expected_minutes, hourly[0].recorded_minutes) == (60, 56)
+    run_dir = tmp_path / "runs" / str(output.result.run_id)
+    frame = pl.read_parquet(run_dir / "PUBLICATIONS.parquet")
+    record = frame.filter(
+        (pl.col("bar_key_bar_start") == str(DECISION))
+        & (pl.col("bar_key_series") == "USDJPY/1h/bid")
+    ).to_dicts()
+    assert len(record) == 1
+    assert record[0]["expected_minutes"] == 60
+    assert record[0]["recorded_minutes"] == 56
+    assert record[0]["first_observed_at"] == str(DECISION)
+    assert record[0]["last_observed_at"] == str(_at("20:59"))
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    coverage = manifest["capability_report"]["coverage"]
+    execution = [item for item in coverage["series"] if item["series"] == "USDJPY/15m/bid"]
+    assert execution[0]["partial_bars"] == 1
+    assert execution[0]["unrecorded_minutes"] == 4
+    assert manifest["time_rule_table_ref"]["variant"] == "standard"
+
+
+@pytest.mark.parametrize("minute", ["20:05", "20:44"])
+def test_unrecorded_minutes_do_not_trigger_protection(tmp_path: Path, minute: str) -> None:
+    """D06 §18.3（D12-76）: 無記録の分では判定しない。
+    無記録の分の価格は入力に無いので結果に効かない。"""
+    start = _at(minute)
+    output = _run(tmp_path, unrecorded=(Interval(start=start, end=start + timedelta(minutes=2)),))
+    assert len(_fills(output)) == 1
+
+
+def test_fully_recorded_mt5_run_matches_the_single_level_run(tmp_path: Path) -> None:
+    """D06 §18.13 の意味論: 全分記録ありの 1 分足から作った 15 分足の MT5 経路の run と、同じ
+    15 分足を
+    15 分足 1 段で回した run は、損切りと利確の両方に届く足が無ければ約定（時刻・価格）
+    と損益が同じ。
+
+    比べるのは同じ人工データから同じテストで作る 2 つの run（既存の固定出力とは比べない）。損切りに
+    届く足を 20:40 に置く。
+    """
+    prices = {_at("20:40"): ("150.000", "150.000", "148.900", "149.000")}
+    mt5 = _run(tmp_path, prices=prices)
+    table = m5.write_rule_files(tmp_path / "plain")
+    merged = _signal_prices()
+    merged.update(prices)
+    pending = m5.build_pending(
+        CALENDAR, table, [m5.MonthSpec(2026, 1, m5.minute_rows(CALENDAR, DATA, prices=merged))]
+    )
+
+    def plain(series: SeriesId) -> list[Bar]:
+        return [
+            replace(bar, coverage=None)
+            for pid, bars in pending.partition_bars.items()
+            if pid.series == series
+            for bar in sorted(bars, key=lambda item: item.bar_start.value)
+        ]
+
+    single = run_backtest(
+        signal_bars=plain(market.series(timeframe_id="1h")),
+        execution_bars=plain(market.series(timeframe_id="15m")),
+        run_interval=RUN,
+    )
+    mt5_fills = [(fill.execution_time, fill.price) for fill in _fills(mt5)]
+    single_fills = [
+        (fill.execution_time, fill.price)
+        for fill in single.rows(TraceTable.FILLS)
+        if isinstance(fill, FillRecord)
+    ]
+    assert len(mt5_fills) == 2
+    assert [price for _, price in mt5_fills] == [price for _, price in single_fills]
+    assert mt5_fills[0][0] == single_fills[0][0]
+    # 2 件目（損切りの決済）の時刻も同じ（全分記録ありの執行足は親の 4 本値で判定する。D06 §18.5）。
+    assert mt5_fills == single_fills
+    assert mt5.context.ledger.balance == single.context.ledger.balance
+
+
+def _evaluate(output: Mt5RunOutput, root: Path) -> EvaluationReport:
+    """run の成果物をファイルに書き、単一 run の評価（D07）を本物の読み出し口で通す。"""
+    sink = FileSystemTraceSink(root=root, run_id=output.result.run_id)
+    for table in TraceTable:
+        sink.write(table, output.rows(table))
+    FileSystemResultWriter(root=root).write(output.result, output.manifest)
+    repository = FileSystemResultRepository(root=root)
+    result = repository.read_result(output.result.run_id)
+    assert isinstance(result, BacktestResult)
+    return EvaluateRun(evaluation_code_digest=CODE_DIGEST).evaluate(
+        result, repository, METRIC_SET_VERSION, CALENDAR
+    )
+
+
+def test_c1_coverage_reaches_the_evaluation(tmp_path: Path) -> None:
+    """C-1（D07 §28.3）: 部分観測の足の公開・再開の分・
+    再開の分での約定が評価の集計と約定の診断まで残る。
+
+    評価 manifest は時刻の規則の表の参照を写す（結果ダイジェストには入れない）。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={_at("20:38"): ("148.620", "148.700", "148.600", "148.650")},
+    )
+    report = _evaluate(output, tmp_path / "eval")
+    assert report.status is EvaluationStatus.COMPLETED
+    counts = {(row.category.value, row.key): row.count for row in report.categories}
+    assert counts[("PARTIAL_COVERAGE_PUBLICATION", "ALL")] >= 1
+    assert counts[("PARTIAL_COVERAGE_PUBLICATION", "USDJPY/15m/bid")] == 1
+    assert counts[("RESUMPTION_FILL", "STOP_GAP")] == 1
+    assert counts[("UNRECORDED_EVENT", "RESUMPTIONS")] == 1
+    gaps = [row for row in report.fill_diagnostics if row.gap_kind is not None]
+    assert [(row.gap_kind, row.resumed_after_unrecorded_minutes) for row in gaps] == [
+        ("STOP_GAP", 4)
+    ]
+    assert report.manifest.time_rule_table_ref is not None
+    assert report.manifest.time_rule_table_ref.variant.value == "standard"
+
+
+def test_c6_a_shortfall_run_is_rejected_by_the_evaluation(tmp_path: Path) -> None:
+    """C-6（D07 §28.1）: 取得不足で `FAILED_CAPABILITY` の run は評価が
+    `REJECTED`（指標を作らない）。"""
+    table = m5.write_rule_files(tmp_path)
+    rows = m5.minute_rows(CALENDAR, DATA, prices=_signal_prices())
+    pending = m5.build_pending(
+        CALENDAR,
+        table,
+        [m5.MonthSpec(2026, 1, rows), m5.MonthSpec(2026, 2, (), status="failed")],
+    )
+    run = Interval(start=DECISION, end=UtcTime.parse("2026-02-02T01:00:00Z"))
+    output = run_mt5(m5.readable(pending), pending, CALENDAR, run, tmp_path)
+    assert output.result.status is RunStatus.FAILED_CAPABILITY
+    report = _evaluate(output, tmp_path / "eval")
+    assert report.status is EvaluationStatus.REJECTED
+    assert report.metrics == ()
+
+
+def test_the_last_execution_bar_is_not_carried_over_a_closure() -> None:
+    """D06 §18.9 の 5（第 2 巡のレビューの指摘）: run の開始の直前の分が休場（週末）なら、
+    前の週の執行足を
+    「最新の執行足」に補わない（全分無記録の執行足ではないため。15 分足 1 段の run と同じ）。
+    直前の分が
+    無記録なら補う。"""
+    from types import SimpleNamespace
+
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+
+    friday_bar = SimpleNamespace(
+        bar_start=_at("21:45"), bar_end=_at("22:00"), key=SimpleNamespace(bar_start=_at("21:45"))
+    )
+    minute = SimpleNamespace(bar_start=_at("21:59"))
+
+    def engine(start: UtcTime, unrecorded: bool) -> object:
+        made: Any = object.__new__(BacktestEngine)
+        made._config = SimpleNamespace(run_interval=SimpleNamespace(start=start))
+        made._minutes = SimpleNamespace(
+            is_unrecorded=lambda moment: unrecorded,
+            last_bar_before=lambda moment: minute,
+        )
+        made._execution = SimpleNamespace(
+            next_bar_key_after=lambda moment: (
+                friday_bar.key if moment < friday_bar.bar_start else None
+            ),
+            bar=lambda key: friday_bar,
+        )
+        made._last_complete = None
+        made._seed_last_complete()
+        return made._last_complete
+
+    sunday_open = UtcTime.parse("2026-01-25T22:00:00Z")
+    assert engine(sunday_open, unrecorded=False) is None
+    assert engine(_at("22:30"), unrecorded=True) is friday_bar
+
+
+def test_adding_a_later_minute_does_not_change_earlier_decisions(tmp_path: Path) -> None:
+    """D06 §18.13 の意味論（第 3 巡のレビューの指摘）: 記録のある分を 1 本足しても、
+    その分より前の約定・評価は
+    変わらない（未来の足を読まない）。20:40〜21:00 を無記録にした run と、その中の 20:50
+    にだけ損切りに届く
+    1 分足を足した run を比べる。"""
+    tail = (_span("20:40", "22:00"),)
+    base = _run(tmp_path / "base", unrecorded=tail)
+    added = _run(
+        tmp_path / "added",
+        unrecorded=(_span("20:40", "20:50"), _span("20:51", "22:00")),
+        prices={_at("20:50"): ("150.000", "150.000", "148.900", "149.000")},
+    )
+    cut = _at("20:50")
+
+    def before(output: Mt5RunOutput, table: TraceTable, column: str) -> list[object]:
+        # run の識別子は snapshot の識別子から決まるので比べない（入力の 1 分足が違う）。
+        return [
+            {key: value for key, value in flatten_row(row).items() if key != "run_id"}
+            for row in output.rows(table)
+            if str(flatten_row(row)[column]) < str(cut)
+        ]
+
+    assert before(base, TraceTable.FILLS, "processed_at_time") == before(
+        added, TraceTable.FILLS, "processed_at_time"
+    )
+    assert before(base, TraceTable.EVALUATIONS, "decision_time") == before(
+        added, TraceTable.EVALUATIONS, "decision_time"
+    )
+    assert len(_fills(added)) == len(_fills(base)) + 1
+
+
+def test_a_stop_gap_is_processed_before_a_waiting_market_order() -> None:
+    """D06 §18.4 の順 1・順 2（第 3 巡のレビューの指摘）: 同じ再開の分では、
+    既存の建玉のギャップの損切りを、
+    待っていた成行（新規・戦略の決済）の約定より先に処理する。"""
+    from types import SimpleNamespace
+
+    from odyssey_fx.backtest.domain.orders import OrderSide, ScheduledOpen
+    from odyssey_fx.backtest.domain.positions import ProtectionState
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.marketdata.domain.bar import BarKey
+    from tests.fixtures.backtest.harness import COST_MODEL, EXECUTION_SERIES
+
+    minute = _at("20:33")
+    key = BarKey(series=EXECUTION_SERIES, bar_start=_at("20:30"))
+    position = SimpleNamespace(
+        side=OrderSide.BUY,
+        protection=ProtectionState(
+            version=1,
+            stop_loss=_price("149.000"),
+            effective_from=BarKey(series=EXECUTION_SERIES, bar_start=DECISION),
+        ),
+    )
+    order = SimpleNamespace(
+        execution=SimpleNamespace(eligibility=ScheduledOpen(bar_key=key, open_time=_at("20:30"))),
+        is_entry=False,
+    )
+    calls: list[str] = []
+    engine: Any = object.__new__(BacktestEngine)
+    engine._minutes = SimpleNamespace(
+        resumption_at=lambda moment: SimpleNamespace(unrecorded_minutes=3),
+        minute_bar_at=lambda moment: None,
+    )
+    engine._execution = SimpleNamespace(
+        open_of=lambda bar_key: _price("148.620"),
+        bar=lambda bar_key: SimpleNamespace(first_observed_at=minute),
+    )
+    engine._cost_model = COST_MODEL
+    engine._context = SimpleNamespace(
+        ledger=SimpleNamespace(
+            open_positions=lambda: [position] if "stop" not in calls else [],
+            pending_orders=lambda: [order],
+        )
+    )
+    engine._close_at_open = lambda *args, **kwargs: calls.append("stop")
+    engine._fill_strategy_close = lambda *args, **kwargs: calls.append("close_order")
+    engine._fill_entry = lambda *args, **kwargs: calls.append("entry")
+    engine._record_snapshot = lambda at: None
+    engine._phase_execution_open(SimpleNamespace(next=lambda phase: None), key)
+    assert calls == ["stop", "close_order"]
+
+
+def _reading_minutes(compiled: CompiledStrategy) -> CompiledStrategy:
+    """検証戦略 A の 1 時間足の入力と足の確定の起動をすべて 1 分足に替えた解決済み設定（1 分足を
+    宣言した戦略）。"""
+    from odyssey_fx.strategy.compiler.compiled import ResolvedMarketSource
+    from odyssey_fx.strategy.declarations.evaluation import OnBarClose
+
+    components = []
+    for component in compiled.components:
+        plans = {}
+        for name, plan in component.input_plans.items():
+            sources = tuple(
+                replace(source, series=MINUTE_SERIES)
+                if isinstance(source, ResolvedMarketSource)
+                else source
+                for source in plan.sources
+            )
+            plans[name] = replace(plan, sources=sources)
+        triggers = tuple(
+            replace(trigger, series=MINUTE_SERIES) if isinstance(trigger, OnBarClose) else trigger
+            for trigger in component.triggers
+        )
+        components.append(replace(component, input_plans=plans, triggers=triggers))
+    return replace(compiled, components=tuple(components))
+
+
+def test_minute_series_is_published_only_when_the_strategy_declares_it(tmp_path: Path) -> None:
+    """D12-111 (a)（D06 §18.2・§18.10。人間の決定の原文は D12 §0.1.30）: 戦略が 1
+    分足を宣言していなければ
+    1 分足の公開を止め（表20 に 1 分足の行が無い）、宣言していれば公開する（1
+    分足が毎分公開されて表20 に
+    載り、能力検査の報告に 1 分足の系列が履歴の分を含めて載る）。"""
+    table = m5.write_rule_files(tmp_path)
+    rows = m5.minute_rows(CALENDAR, DATA, prices=_signal_prices())
+    pending = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, rows)])
+    snapshot = m5.readable(pending)
+    plain = run_mt5(snapshot, pending, CALENDAR, RUN, tmp_path)
+    plain_rows = [r for r in plain.rows(TraceTable.PUBLICATIONS) if isinstance(r, PublicationRow)]
+    assert not [r for r in plain_rows if r.bar_key.series == MINUTE_SERIES]
+
+    compiled = _reading_minutes(compiled_strategy())
+    minutes = run_mt5(snapshot, pending, CALENDAR, RUN, tmp_path, compiled=compiled)
+    minute_rows = [
+        r
+        for r in minutes.rows(TraceTable.PUBLICATIONS)
+        if isinstance(r, PublicationRow) and r.bar_key.series == MINUTE_SERIES
+    ]
+    # run 区間の公開時刻 20:00〜21:00 の毎分（19:59〜20:59 の足の 61 本）。
+    assert len(minute_rows) == 61
+    decision_times = {
+        flatten_row(row)["decision_time"] for row in minutes.rows(TraceTable.EVALUATIONS)
+    }
+    assert len(decision_times) > 30  # 毎分の判断時点で評価が起動する
+    coverage = minutes.result.capability_report.coverage
+    assert coverage is not None
+    assert MINUTE_SERIES in {item.series for item in coverage.series}
+
+
+def test_mark_days_are_the_execution_symbol_utc_calendar_days(tmp_path: Path) -> None:
+    """D12-126（人間の決定の原文は D12 §0.1.30）: 区分の印ごとの日数は「実行通貨・run 区間の UTC
+    暦日数」で、レポートもそう明示し、全入力の確実性を表す数とは書かない。"""
+    from typing import Any, cast
+
+    from odyssey_fx.evaluation.adapters.report import _coverage_lines, _Inputs
+
+    output = _run(tmp_path, unrecorded=())
+    coverage = output.manifest.capability_report.coverage
+    assert coverage is not None
+    # run 区間 20:00〜21:00 は UTC の 1 暦日。
+    assert sum(days for _, days in coverage.mark_days) == 1
+    lines = _coverage_lines(
+        _Inputs(
+            manifest=cast(Any, None),
+            outcome=None,
+            run_manifest=output.manifest,
+            evaluation=None,
+            experiment_dir_text="",
+        )
+    )
+    (line,) = [item for item in lines if "暦日数" in item]
+    assert "実行通貨（`USDJPY`）・run 区間の UTC 暦日数" in line
+    assert "確実性を表す数ではない" in line
+
+
+def test_levels_reached_in_different_minutes_are_resolved_by_the_minute_bars(
+    tmp_path: Path,
+) -> None:
+    """D12-117（人間の決定の原文は D12 §0.1.30）: 別々の分で損切りと利確に届き、到達の順が 1 分足で
+    分かれば `RESOLVED_BY_CHILD`（下位足で解決）。先に届いた損切り（20:40）で決済する。
+
+    20:34〜20:35 を無記録にして 1 分足の走査にし、20:40 の安値が損切り、20:42 の高値が利確に届く。
+    執行足の終わり（20:45）の走査なので、執行足の中の分はすべて確定している。
+    """
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:36"),),
+        prices={
+            _at("20:40"): ("150.000", "150.000", "148.900", "149.500"),
+            _at("20:42"): ("150.000", "152.500", "150.000", "150.000"),
+        },
+    )
+    entry, close = _fills(output)
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:40")
+    (resolution,) = [
+        row
+        for row in output.rows(TraceTable.INTRABAR_RESOLUTIONS)
+        if isinstance(row, IntrabarResolution)
+    ]
+    assert resolution.method is ResolutionMethod.RESOLVED_BY_CHILD
+    assert output.manifest.unresolved_intrabar_count == 0
+
+
+def _with_stop_update(
+    monkeypatch: pytest.MonkeyPatch, *, stop: str, updated: str, effective: str
+) -> None:
+    """判断時点 20:30 の処理の後に、建玉の損切りを `stop`（その足から有効）にし、さらに
+    `updated` へ更新する（`effective` の執行足から有効。D06 §8.3）。戦略の出力を経ずに、エンジンの
+    保護水準の差し替え（`_replace_protection`）を直接呼ぶ。"""
+    from odyssey_fx.backtest.domain.positions import ProtectionState
+    from odyssey_fx.backtest.engine.loop import BacktestEngine
+    from odyssey_fx.marketdata.domain.bar import BarKey
+    from tests.fixtures.backtest.harness import EXECUTION_SERIES
+
+    original = BacktestEngine._decision_point
+
+    def wrapped(self: Any, decision_time: UtcTime, events: Any, *, is_run_end: bool) -> None:
+        original(self, decision_time, events, is_run_end=is_run_end)
+        if decision_time != _at("20:30"):
+            return
+        for position in self._context.ledger.open_positions():
+            now = ProtectionState(
+                version=position.protection.version + 1,
+                stop_loss=_price(stop),
+                effective_from=BarKey(series=EXECUTION_SERIES, bar_start=_at("20:30")),
+                take_profit=position.protection.take_profit,
+            )
+            self._replace_protection(position, now)
+            current = self._context.ledger.positions[position.position_id]
+            later = ProtectionState(
+                version=now.version + 1,
+                stop_loss=_price(updated),
+                effective_from=BarKey(series=EXECUTION_SERIES, bar_start=_at(effective)),
+                take_profit=position.protection.take_profit,
+            )
+            self._replace_protection(current, later)
+
+    monkeypatch.setattr(BacktestEngine, "_decision_point", wrapped)
+
+
+def test_a_future_stop_update_keeps_the_current_level_at_a_mid_bar_resumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """人間のレビュー（2026-10-17、head 4d8be21 の 1）の再現: 買い建玉の損切り 149.900
+    を「20:45 から
+    149.950 へ」更新しても、執行足 `[20:30,20:45)` の再開の分 20:38 の始値 148.620 は前の水準
+    149.900
+    で判定する（D06 §8.3・§18.4 の順 1・§18.5）。決済は始値 148.620 に滑り 0.010 で 148.610。
+    更新を理由に建玉を判定から外すと、損失を飛ばして後の足の 149.940 で決済してしまう。価格は人工
+    データの例示値。"""
+    _with_stop_update(monkeypatch, stop="149.900", updated="149.950", effective="20:45")
+    flat = ("150.000", "150.000", "150.000", "150.000")
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={
+            **{_at(f"20:{minute:02d}"): flat for minute in range(30, 34)},
+            _at("20:38"): ("148.620", "148.700", "148.600", "148.650"),
+        },
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("148.610")
+    assert close.execution_time == ExactExecutionTime(time=_at("20:38"))
+    assert close.gap_kind is GapKind.STOP_GAP
+    assert close.processed_at.time == _at("20:38")
+
+
+def test_a_future_stop_update_takes_effect_from_its_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じ更新で、執行足 `[20:30,20:45)` に損切りへ届かなければ、20:45 からの足は新しい水準
+    149.950 で判定する（20:45 の安値 149.900 で到達し、滑り 0.010 で 149.940）。"""
+    _with_stop_update(monkeypatch, stop="149.900", updated="149.950", effective="20:45")
+    flat = ("150.000", "150.000", "150.000", "150.000")
+    output = _run(
+        tmp_path,
+        unrecorded=(_span("20:34", "20:38"),),
+        prices={_at(f"20:{minute:02d}"): flat for minute in range(30, 45)},
+    )
+    entry, close = _fills(output)
+    assert close.price == _price("149.940")
+    assert isinstance(close.execution_time, BarExecutionInterval)
+    assert close.execution_time.interval.start == _at("20:45")
+
+
+def test_a_run_with_an_all_unrecorded_hour_is_evaluated(tmp_path: Path) -> None:
+    """人間のレビュー（2026-10-17、head 4d8be21 の 2）の再現: 検証戦略 A に 1 時間分の全分無記録
+    （20:00〜21:00）を入れた run は正常に終わり、表22 の最新足の窓の行（本数・経過時間が空）を
+    含めて評価まで通る（D06 §18.10、D07 §28.3）。"""
+    output = _run(tmp_path, unrecorded=(_span("20:00", "21:00"),))
+    assert output.result.status is RunStatus.COMPLETED
+    from odyssey_fx.backtest.trace.recorder import HistoryResetRow
+
+    resets = [
+        row for row in output.rows(TraceTable.HISTORY_RESETS) if isinstance(row, HistoryResetRow)
+    ]
+    latest = [row for row in resets if row.window_kind == "LATEST"]
+    assert latest
+    assert all(row.window_bars is None and row.window_duration is None for row in latest)
+    report = _evaluate(output, tmp_path / "eval")
+    assert report.status is EvaluationStatus.COMPLETED
+    counts = {(row.category.value, row.key): row.count for row in report.categories}
+    assert counts[("UNRECORDED_EVENT", "HISTORY_RESETS")] == len(resets)

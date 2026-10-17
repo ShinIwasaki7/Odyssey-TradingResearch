@@ -17,7 +17,14 @@ from collections.abc import Iterable
 
 from odyssey_fx.marketdata.domain.bar import Bar
 
-__all__ = ["PARTITION_COLUMNS", "partition_digest_hex", "partition_row"]
+__all__ = [
+    "COVERAGE_COLUMNS",
+    "MINUTE_COLUMNS",
+    "PARTITION_COLUMNS",
+    "columns_for",
+    "partition_digest_hex",
+    "partition_row",
+]
 
 #: ダイジェストに入れる列の順序。保存形式の列順と同じで、変えると既存の記録と一致しなくなる。
 PARTITION_COLUMNS = (
@@ -33,6 +40,29 @@ PARTITION_COLUMNS = (
     "provenance_ref",
 )
 
+#: MT5 経路の上位足に足す列（D03 §15.6 の 3）。被覆の属性を持つ足だけの列で、HistData 経路の足の
+#: 行には現れない（既存の partition のダイジェストを変えないため）。
+COVERAGE_COLUMNS = (
+    "expected_minutes",
+    "recorded_minutes",
+    "first_observed_at",
+    "last_observed_at",
+    "time_rule_row",
+)
+
+#: MT5 経路の 1 分足に足す列（D03 §15.6 の 3。`spread` は診断用）。
+MINUTE_COLUMNS = ("api_time", "time_rule_row", "spread")
+
+
+def columns_for(bar: Bar) -> tuple[str, ...]:
+    """足 1 本の行の列名（属性の有無で決まる）。"""
+    if bar.coverage is not None:
+        return PARTITION_COLUMNS + COVERAGE_COLUMNS
+    if bar.minute is not None:
+        return PARTITION_COLUMNS + MINUTE_COLUMNS
+    return PARTITION_COLUMNS
+
+
 #: 列の区切り（ASCII の unit separator、0x1F）。価格・時刻の文字列には現れない。
 _UNIT_SEPARATOR = "\x1f"
 
@@ -46,7 +76,7 @@ def partition_row(bar: Bar) -> tuple[str, ...]:
     価格・出来高は文字列のままにする。浮動小数を経由すると、書いた値と読んだ値が一致
     しなくなる（ADR-0012）。
     """
-    return (
+    base = (
         str(bar.bar_start),
         str(bar.bar_end),
         str(bar.open.value),
@@ -58,6 +88,22 @@ def partition_row(bar: Bar) -> tuple[str, ...]:
         bar.provenance.kind.value,
         bar.provenance.source_ref,
     )
+    if bar.coverage is not None:
+        coverage = bar.coverage
+        return base + (
+            str(coverage.expected_minutes),
+            str(coverage.recorded_minutes),
+            str(coverage.first_observed_at),
+            str(coverage.last_observed_at),
+            str(coverage.time_rule_row),
+        )
+    if bar.minute is not None:
+        return base + (
+            str(bar.minute.api_time),
+            str(bar.minute.time_rule_row),
+            str(bar.minute.spread),
+        )
+    return base
 
 
 def partition_digest_hex(bars: Iterable[Bar]) -> str:

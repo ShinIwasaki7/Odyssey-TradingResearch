@@ -157,6 +157,11 @@ INPUT_TABLES: Final[tuple[TraceTable, ...]] = (
     TraceTable.POSITIONS,
     TraceTable.INTRABAR_RESOLUTIONS,
     TraceTable.LEDGER_SNAPSHOTS,
+    # v2.12（D07 §28.3）: 表20・21・22。HistData の経路の run でも読む（表21・22 は 0 行、表20 の
+    # 被覆の列は空）。
+    TraceTable.PUBLICATIONS,
+    TraceTable.RESUMPTIONS,
+    TraceTable.HISTORY_RESETS,
 )
 
 #: 約定1件の区分別の費用の列（D06 §9.2 の表9、Q12 決定）。`(区分, 金額の列, 通貨の列)`。
@@ -232,6 +237,9 @@ _COLUMNS: Final[dict[TraceTable, tuple[tuple[str, ColumnValueKind], ...]]] = {
             for _, amount, currency in _FILL_COST_COLUMNS
             for column in ((amount, _DECIMAL), (currency, _STRING))
         ),
+        # v2.12: 再開の分での約定（D07 §28.3）。
+        ("resumed_after_unrecorded_minutes", _INT),
+        ("gap_kind", _ENUM),
     ),
     TraceTable.POSITIONS: (
         ("position_id", _STRING),
@@ -261,6 +269,27 @@ _COLUMNS: Final[dict[TraceTable, tuple[tuple[str, ColumnValueKind], ...]]] = {
         ("balance_currency", _STRING),
         ("equity_amount", _DECIMAL),
         ("equity_currency", _STRING),
+    ),
+    TraceTable.PUBLICATIONS: (
+        ("bar_key_series", _STRING),
+        ("bar_key_bar_start", _TIME),
+        ("expected_minutes", _INT),
+        ("recorded_minutes", _INT),
+    ),
+    TraceTable.RESUMPTIONS: (
+        ("series", _STRING),
+        ("minute", _TIME),
+        ("unrecorded_minutes", _INT),
+    ),
+    TraceTable.HISTORY_RESETS: (
+        ("series", _STRING),
+        ("no_record_bar_key_bar_start", _TIME),
+        ("window_kind", _STRING),
+        ("insufficient_from", _TIME),
+        ("window_bars", _INT),
+        ("exclude_latest_bars", _INT),
+        ("window_duration", _STRING),
+        ("ready_at", _TIME),
     ),
 }
 
@@ -292,6 +321,18 @@ _PRIMARY_KEYS: Final[dict[TraceTable, tuple[str, ...]]] = {
     TraceTable.POSITIONS: ("position_id",),
     TraceTable.INTRABAR_RESOLUTIONS: ("fill_id",),
     TraceTable.LEDGER_SNAPSHOTS: ("at_time", "at_phase", "at_sequence"),
+    TraceTable.PUBLICATIONS: ("bar_key_series", "bar_key_bar_start"),
+    TraceTable.RESUMPTIONS: ("series", "minute"),
+    TraceTable.HISTORY_RESETS: (
+        "series",
+        "no_record_bar_key_bar_start",
+        "window_kind",
+        "window_bars",
+        "exclude_latest_bars",
+        "window_duration",
+        # D12-128: 同じ無記録の足・同じ窓から不足期間が 2 つ以上生じうるので、不足になる時刻も鍵。
+        "insufficient_from",
+    ),
 }
 
 
@@ -349,6 +390,16 @@ _NULLABLE: Final[frozenset[tuple[TraceTable, str]]] = frozenset(
         (TraceTable.POSITIONS, "realized_amount"),
         (TraceTable.POSITIONS, "realized_currency"),
         (TraceTable.INTRABAR_RESOLUTIONS, "position_id"),
+        # v2.12（D07 §28.3）: MT5 経路でない run・再開の分でない約定・データの終わりまで準備が
+        # 整わない行では空。
+        (TraceTable.FILLS, "resumed_after_unrecorded_minutes"),
+        (TraceTable.FILLS, "gap_kind"),
+        (TraceTable.PUBLICATIONS, "expected_minutes"),
+        (TraceTable.PUBLICATIONS, "recorded_minutes"),
+        (TraceTable.HISTORY_RESETS, "ready_at"),
+        # D12-127: 本数は本数窓だけ、経過時間は経過時間の窓だけが持つ。
+        (TraceTable.HISTORY_RESETS, "window_bars"),
+        (TraceTable.HISTORY_RESETS, "window_duration"),
     }
 )
 
@@ -936,7 +987,7 @@ class EvaluateRun:
             run_phases = context.phases
             trades = _build_trades(reads, run_phases)
             diagnostics = _build_fill_diagnostics(reads)
-            categories = _build_categories(reads)
+            categories = _build_categories(reads, context.run_manifest)
             metrics = _build_metrics(
                 result, context.run_manifest, reads, run_phases, trades, calendar
             )
@@ -978,6 +1029,7 @@ class EvaluateRun:
             fatal_failure_count=fatal,
             warning_failure_count=warnings,
             unreadable_check_count=unreadable_checks,
+            time_rule_table_ref=None if manifest is None else manifest.time_rule_table_ref,
         )
         return EvaluationReport(
             manifest=evaluation_manifest,
@@ -1500,7 +1552,11 @@ def _normalized_key(column: str, value: str | None, kind: ColumnValueKind) -> st
     に見える。読み出したあとは型へ直して使うので、重複の判定だけ文字列で行うと、**判定は
     通るのに使う側では同じ値**になる行が残り、並びで結果が変わる（D07 §9.1 の条件1）。
     """
-    text = "" if value is None else value
+    if value is None or value == "":
+        # 正当な空値（表22 の最新足・経過時間の窓の `window_bars` など。D06 §18.10、D07 §28.3）は
+        # 空のまま比べる。空を許さない列は必須列の検査が拒む。
+        return ""
+    text = value
     id_type = _ID_TYPES.get(column)
     if id_type is not None:
         return str(id_type.parse(text))
@@ -1710,6 +1766,12 @@ def _build_fill_diagnostics(reads: Mapping[TraceTable, _Rows]) -> tuple[FillDiag
                 reference_observed_at=observed_at,
                 accepted_at=_time(order, "accepted_at_time"),
                 filled_at=filled_at,
+                resumed_after_unrecorded_minutes=(
+                    None
+                    if row.get("resumed_after_unrecorded_minutes") is None
+                    else int(_text(row, "resumed_after_unrecorded_minutes"))
+                ),
+                gap_kind=row.get("gap_kind"),
             )
         )
     built.sort(key=lambda item: item.fill_id.seq)
@@ -1719,7 +1781,9 @@ def _build_fill_diagnostics(reads: Mapping[TraceTable, _Rows]) -> tuple[FillDiag
 # --- 集計（D07 §6.1・§6.3）----------------------------------------------------
 
 
-def _build_categories(reads: Mapping[TraceTable, _Rows]) -> tuple[CategoryCount, ...]:
+def _build_categories(
+    reads: Mapping[TraceTable, _Rows], manifest: RunManifest | None = None
+) -> tuple[CategoryCount, ...]:
     """8種の集計（D07 §6.1・§6.3）。**語彙が有限の集計は0件の鍵も行として出す**。
 
     出さないと「一度も起きなかった」と「集計していない」を後から区別できない。
@@ -1764,11 +1828,70 @@ def _build_categories(reads: Mapping[TraceTable, _Rows]) -> tuple[CategoryCount,
     for row in reads[TraceTable.INTRABAR_RESOLUTIONS].records:
         _tally(counts, CategoryKind.INTRABAR_METHOD, row.get("method"))
 
+    # --- MT5 経路の記録（D07 §28.3）。値の判定には使わない。
+    for row in reads[TraceTable.PUBLICATIONS].records:
+        expected = row.get("expected_minutes")
+        recorded = row.get("recorded_minutes")
+        if expected is None or recorded is None or int(recorded) >= int(expected):
+            continue
+        _tally(counts, CategoryKind.PARTIAL_COVERAGE_PUBLICATION, "ALL")
+        _tally(counts, CategoryKind.PARTIAL_COVERAGE_PUBLICATION, row.get("bar_key_series"))
+    if manifest is not None:
+        resumption = manifest.resumption_counts
+        fills = counts[CategoryKind.RESUMPTION_FILL]
+        fills["STOP_GAP"] = resumption.stop_gap_fills
+        fills["TAKE_PROFIT_GAP"] = resumption.take_profit_gap_fills
+        fills["DEFERRED_FILL"] = resumption.deferred_fills
+        events = counts[CategoryKind.UNRECORDED_EVENT]
+        events["RESUMPTIONS"] = resumption.resumptions
+        events["EXPIRED_IN_UNRECORDED"] = resumption.expired_in_unrecorded
+        events["HISTORY_RESETS"] = resumption.history_resets
+        events["HISTORY_RESET_MINUTES"] = _history_reset_minutes(
+            reads[TraceTable.HISTORY_RESETS].records, manifest
+        )
+
     return tuple(
         CategoryCount(category=kind, key=key, count=counts[kind][key])
         for kind in CategoryKind
         for key in _category_order(kind, counts[kind])
     )
+
+
+def _history_reset_minutes(rows: Sequence[Mapping[str, str | None]], manifest: RunManifest) -> int:
+    """準備の期間の合計（分。D07 §28.3、D12-120）。
+
+    表22 の各行の「準備不足になる時刻（`insufficient_from`）から復帰する時刻（`ready_at`）まで」
+    （D12-127: 実際の読み取りの条件と一致させた時刻）を run 区間との重なりに切り詰め、和集合で
+    数える（同じ期間を重ねて数えない）。復帰しないまま run が終わる行は run の終わりまで。正確な
+    時刻は表22 の行から辿れる。
+    """
+    run = manifest.config.run_interval
+    spans: list[tuple[datetime, datetime]] = []
+    for row in rows:
+        start = _time(row, "insufficient_from").value
+        ready = row.get("ready_at")
+        end = run.end.value if ready is None else _time(row, "ready_at").value
+        spans.append((start, end))
+    return union_minutes(spans, run.start.value, run.end.value)
+
+
+def union_minutes(spans: Sequence[tuple[datetime, datetime]], lo: datetime, hi: datetime) -> int:
+    """期間の列の `[lo, hi)` との重なりの和集合の長さ（分）。
+
+    整数分への丸めは**切り捨て**（和集合の合計の秒を 60 で割った商。D12-120）。
+    """
+    clipped = sorted(
+        (max(start, lo), min(end, hi)) for start, end in spans if max(start, lo) < min(end, hi)
+    )
+    total = timedelta(0)
+    cursor: datetime | None = None
+    for start, end in clipped:
+        if cursor is not None and start < cursor:
+            start = cursor
+        if start < end:
+            total += end - start
+            cursor = end
+    return total // timedelta(minutes=1)
 
 
 def _final_outcomes_by_request(rows: Sequence[Mapping[str, str | None]]) -> tuple[str, ...]:

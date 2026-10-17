@@ -1,0 +1,38 @@
+# 列対応の宣言 oanda_mt5_m1 v1（OANDA MT5 API の 1 分足の経路。D03 §15.1・§15.3 の 2）
+#
+# 原データは data/raw/oanda_mt5/<取得日>/<通貨>/<通貨>_<YYYY-MM>_m1.csv.gz（ADR-0013）と、取得記録
+# data/raw/oanda_mt5/<取得日>/manifest.json（版管理の写しは docs/data/oanda_mt5_full_fetch_<取得日>/manifest.json）。
+#
+# - 時刻は API の生の時刻（epoch 秒）。UTC への変換は時刻の規則の表が決め、本ファイルは規約を推測しない
+#   （D03 §15.3 の 3、D12-47・D12-48）。
+# - 価格の 4 列だけを価格に使う。tick_volume・real_volume は出来高として使わず「出来高不明」（D12-31）。
+# - spread は約定に使わず、1 分足の partition の診断用の列に残す（D12-27）。
+# - 価格基準は bid の宣言（chart_mode 0 の記録。D12-26）。ファイルから検証できる事実ではないので verified は偽。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+
+id: oanda_mt5_m1
+version: 1
+route: oanda_mt5_m1
+
+root: data/raw/oanda_mt5
+fetch_manifest: manifest.json
+docs_manifest_copy: "docs/data/oanda_mt5_full_fetch_{fetch_date}/manifest.json"
+
+columns:
+  - time
+  - open
+  - high
+  - low
+  - close
+  - tick_volume
+  - spread
+  - real_volume
+
+minute_timeframe: 1m
+
+basis_declaration:
+  value: bid
+  verified: false
