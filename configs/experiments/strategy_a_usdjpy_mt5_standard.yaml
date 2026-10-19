@@ -1,0 +1,79 @@
+# 検証戦略 A の MT5 経路の単一実行・USDJPY・標準の組（standard）（書式 v2。D07 §18・§28、D12 §12.5）
+#
+# 順 3（検証戦略 A・B の機構確認と再現）の設定。人間の決定（2026-10-20。原文は D12 §0.1.34）:
+# run 区間は snapshot の全区間（決定 1）、研究ポリシーは第 1 版（決定 8）。採否の判断はしない。
+#
+# - snapshot は順 2 で承認した 標準の組（standard） の snapshot（D12 §12.4。
+#   `docs/data/usdjpy_step2_acceptance/README.md`）。実体は git 管理外の `data/snapshots/`。
+# - 取引カレンダーと時間足の定義は、snapshot を受け入れ・確定したときと同じ版
+#   （`fx_ny17_oanda` 版 1、`timeframes_v2`）。違えば run は実行前に止まる（D03 §3.7）。
+# - 解像度階層は MT5 経路の形 `[USDJPY/15m/bid, USDJPY/1m/bid]`（D06 §18.2）。
+# - run 区間は snapshot の 15 分足の区間そのまま（manifest の記録
+#   2017-01-01T22:00Z〜2023-12-29T22:00Z）。
+# - 戦略・ポリシー・費用・口座は既存の単一実行の設定（`strategy_a_*` の書式 v2）と同じ値。
+#   違いは `id`・`hypothesis`・取引カレンダー・時間足の定義・`snapshot`・`run_interval`・
+#   `resolution_hierarchy` だけ。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**数値は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: strategy_a_usdjpy_mt5_standard
+version: 1
+
+hypothesis: "検証戦略 A の規則を MT5 経路の USDJPY 標準の組（standard）の snapshot の全区間で 1 回実行し、準備のやり直し・記録・再現の機構を確かめる（採否の判断はしない）"
+
+research_policy: {id: "research_policy", version: 1}
+
+strategy: "configs/strategies/strategy_a_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+snapshot: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+
+run_interval:
+  start: "2017-01-01T22:00:00Z"
+  end: "2023-12-29T22:00:00Z"
+
+execution_series: "USDJPY/15m/bid"
+
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+  - "USDJPY/1m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+evaluation: {metric_set_version: 2}
+
+search_plan: "NONE"
+split: "NONE"
