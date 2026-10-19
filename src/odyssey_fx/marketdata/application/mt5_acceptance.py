@@ -19,6 +19,9 @@
 7. 上位足の生成（`m1_aggregation.aggregate_from_minutes`）。
 8. 以降（アクセス分類と partition、暫定 manifest、分類と確定）は D03 §4 のまま。
 
+負のスプレッド（`spread` < 0）は受入れを失敗させず、snapshot に入る 1 分足の連続区間を
+`NEGATIVE_SPREAD`（WARN、記録のみ）に載せる（D03 §15.3 の 4・§15.6 の 2 v1.25。D12-131）。
+
 人間の分類の対象は既存の明示集合のまま（MT5 経路で現れうるのは `UNEXPECTED_BAR` だけ）。
 `MISSING_EXPECTED_BAR` は出さない（存在すべき足が無い理由は無記録か取得不足に機械で決まる）。
 """
@@ -90,6 +93,7 @@ __all__ = [
     "build_mt5_pending",
     "convert_minutes",
     "months_of",
+    "negative_spread_findings",
     "reaccept_mt5",
     "verify_fetch_files",
 ]
@@ -448,6 +452,37 @@ def _week_of(minute: int) -> Interval:
     return Interval(start=UtcTime(start.astimezone(UTC)), end=UtcTime(end.astimezone(UTC)))
 
 
+def negative_spread_findings(
+    minute_series: SeriesId, minute_bars: Iterable[Bar]
+) -> tuple[CheckResult, ...]:
+    """負のスプレッドの連続区間を `NEGATIVE_SPREAD`（WARN、記録のみ）にする。
+
+    D03 §15.6 の 2 v1.25。数えるのは渡された足（snapshot に入る 1 分足）だけ（D12 §12.8 の
+    追加 A の決定）。隣り合う UTC の分の足がどちらも負のときだけ 1 区間につなぐ（間に無記録の分・
+    休場・負でない分があれば別の区間）。detail は分数だけで、spread の値は書かない（原値は
+    partition の列が正本）。受入れを失敗させない（D12-131）。
+    """
+    runs: list[tuple[int, int]] = []
+    for minute in sorted(
+        epoch(bar.bar_start)
+        for bar in minute_bars
+        if bar.minute is not None and bar.minute.negative_spread
+    ):
+        if runs and runs[-1][1] == minute:
+            runs[-1] = (runs[-1][0], minute + MINUTE)
+        else:
+            runs.append((minute, minute + MINUTE))
+    return tuple(
+        CheckResult.create(
+            CheckKind.NEGATIVE_SPREAD,
+            minute_series,
+            Interval(start=utc(lo), end=utc(hi)),
+            detail={"minutes": str((hi - lo) // MINUTE)},
+        )
+        for lo, hi in runs
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _Mt5Built:
     """系列ごとの足・台帳・検査結果。"""
@@ -504,6 +539,7 @@ def _build_series(
                 detail={"reason": "outside_declared_sessions"},
             )
         )
+    findings.extend(negative_spread_findings(minute_series, kept))
     for week, count in sorted(outside_by_week.items(), key=lambda item: item[0].start.value):
         findings.append(
             CheckResult.create(

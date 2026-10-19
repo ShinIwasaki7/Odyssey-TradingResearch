@@ -148,13 +148,16 @@ def minute_rows(
     *,
     unrecorded: Iterable[Interval] = (),
     prices: Mapping[UtcTime, tuple[str, str, str, str]] | None = None,
+    spreads: Mapping[UtcTime, int] | None = None,
 ) -> tuple[Mt5RawRow, ...]:
     """`window` の中のセッションの分ごとに 1 分足の行を作る（API の時刻 = UTC + 2 時間）。
 
-    `unrecorded` に入る分は行を作らない（無記録）。`prices` で分ごとの 4 値を差し替える。
+    `unrecorded` に入る分は行を作らない（無記録）。`prices` で分ごとの 4 値を、`spreads` で分ごとの
+    `spread` を差し替える（既定は 3）。
     """
     holes = tuple(unrecorded)
     overrides = dict(prices or {})
+    spread_overrides = dict(spreads or {})
     rows: list[Mt5RawRow] = []
     for session in calendar.sessions(window):
         moment = session.start
@@ -168,7 +171,7 @@ def minute_rows(
                         high=values[1],
                         low=values[2],
                         close=values[3],
-                        spread=3,
+                        spread=spread_overrides.get(moment, 3),
                     )
                 )
             moment = moment + timedelta(minutes=1)

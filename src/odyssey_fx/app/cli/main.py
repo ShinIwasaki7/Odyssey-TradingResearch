@@ -670,6 +670,8 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
     out.line(f"原データの置き場: {(raw_root / args.fetch_date).as_posix()}")
     out.lines(summary.series_lines(pending.manifest))
     out.lines(summary.findings_lines(pending.report))
+    # 観測できない項目の一覧は画面出力にだけ毎回出す（D03 §15.6 の 5。検査報告には入れない）。
+    out.lines(summary.unobservable_lines())
     return _EXIT_OK
 
 
@@ -807,6 +809,9 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
         "確定しただけでは読めない。`odyssey-fx data approve` で承認を記入するまで、"
         " as-of ビュー・公開フィードから読み取り対象にならない（D03 §3.7.1 の 3）"
     )
+    if finalized.manifest.conversion.mt5 is not None:
+        # MT5 経路の snapshot だけ（D03 §15.6 の 5。一覧は MT5 経路の 1 分足についての記述）。
+        out.lines(summary.unobservable_lines())
     return _EXIT_OK
 
 
