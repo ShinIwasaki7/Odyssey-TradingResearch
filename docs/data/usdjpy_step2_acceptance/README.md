@@ -4,12 +4,13 @@
 （取得日 2026-10-16、2017-01〜2023-12 の 84 か月）を、時刻の変換の組ごとに 1 つずつ snapshot（受け入れたデータの
 固定した版）にした。手順は D12 §12.4（決定 D12-136 (a)）。
 
-- **この一覧は人間の承認の材料**。承認（`odyssey-fx data approve`）は実行していない。2 つの snapshot はどちらも
-  「確定済み・未承認」で、承認するまで研究の読み取りの対象にならない（D03 §3.7.1 の 3）。
+- **この一覧は人間の承認の材料**。人間は 2026-10-19 に 2 つの snapshot をどちらも「承認する」と決めた（原文は
+  D12 §0.1.33）。承認の記録は §5。承認するまでは研究の読み取りの対象にならない（D03 §3.7.1 の 3）。
 - 書いてあるのは件数・時刻・被覆・ハッシュ・分類だけ。実価格と戦略の成績は読んでも書いてもいない。2024 年以降の
   データには触れていない。原データは読むだけで変えていない（受入れの前後でファイルの更新時刻と大きさが同じ）。
-- 負のスプレッドの件数はこの一覧に書かない（D12 §12.8 の仮置き 7 の決定「書かない」）。件数と該当箇所は各組の
-  検査報告（種別 `NEGATIVE_SPREAD`）にある。
+- 負のスプレッドの件数の行はこの一覧に置かない（D12 §12.8 の仮置き 7 の決定「書かない」）。負のスプレッドが続く
+  区間は、あれば各組の検査報告に種別 `NEGATIVE_SPREAD` として 1 区間 1 件で載る。今回の両組の検査報告には
+  `NEGATIVE_SPREAD` の項目が無い（該当する区間が無かった）。
 - 版管理の外: snapshot の本体（`data/snapshots/<識別子>/*/bars.parquet`。価格を含む）と原データ
   （`data/raw/oanda_mt5/2026-10-16/`）。版管理の中: 各 snapshot の `manifest.json`・`integrity_report.json`
   （標準の組は暫定の報告 `integrity_report_provisional.json` も）、本ディレクトリの分類ファイル・画面出力・本書。
@@ -64,6 +65,10 @@
 
 ### 1.2 検査報告の種別ごとの件数
 
+検査報告の各項目には重さが付く（D03 §3.9・§15.6 の 2）: **INFO** は記録だけ（受入れも確定も止めない）、**WARN** は
+注意の記録で、種別によっては人間の分類が済むまで確定しない（下の表では休場帯の足だけが分類必須）、**ERROR** は
+受入れの失敗（何も書かずに止まる）。
+
 | 種別（重さ） | 系列 | standard 暫定 | standard 確定 | candidate |
 |---|---|---|---|---|
 | 無記録の分の連続 `UNRECORDED_MINUTES`（INFO） | 1 分足 | 4,675 | 4,675 | 4,678 |
@@ -74,7 +79,8 @@
 | 合計（ERROR／WARN／INFO） | — | 0／77／5,014 | 0／0／5,014 | 0／0／5,080 |
 
 各組の画面出力（観測できない項目の一覧を含む）は `standard/accept_stdout.txt`・`standard/classify_stdout.txt`・
-`candidate/accept_stdout.txt`・`candidate/classify_stdout.txt`。
+`candidate/accept_stdout.txt`・`candidate/classify_stdout.txt`。受入れの画面出力の「原データの置き場」の行だけは、
+作業機のホームディレクトリの絶対パスを `<本体の作業ディレクトリ>` に置き換えた（他の行は出力のまま）。
 
 ## 2. 分類ファイルの要約（標準の組。価格なし）
 
@@ -135,8 +141,23 @@
      --decisions docs/data/usdjpy_step2_acceptance/candidate/classification.yaml \
      --timeframes configs/calendars/timeframes_v2.yaml --out data/snapshots
    ```
-4. 承認（**未実行**。人間の決定の後。snapshot の本体はこの作業ツリーの `data/snapshots/` にだけあるので、同じ場所で実行する）:
+4. 承認（人間の決定「承認する」（D12 §0.1.33）の後。snapshot の本体はこの作業ツリーの `data/snapshots/` にだけあるので、同じ場所で実行する。結果は §5）:
    ```
    uv run odyssey-fx data approve --snapshot ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622 --by ShinIwasaki7 --out data/snapshots
    uv run odyssey-fx data approve --snapshot f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca --by ShinIwasaki7 --out data/snapshots
    ```
+
+## 5. 承認の記録
+
+人間の決定（2026-10-19。原文は D12 §0.1.33）: 標準・候補の 2 つの snapshot をどちらも「承認する」。仮置き 5 件もすべて
+推奨（現状）で決まった（D12 §12.4 の末尾「順 2 の実行で決めた運用」）。
+
+| 組 | 識別子 | 承認者 | 承認の時刻（UTC） | 承認時の head | 承認後の `manifest.json` の SHA-256 | 識別子の変化 |
+|---|---|---|---|---|---|---|
+| 標準 | `ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622` | ShinIwasaki7 | 2026-10-19T13:04:00.979215Z | `894c47e346e3eb5196dacea72881b9272104af15` | `efb311850c6fcc38d77a0f9fea774949bb56f8ae4ca4efe9d50f3ed63f637ee8` | 無し（manifest から再計算した識別子がディレクトリ名と一致） |
+| 候補 | `f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca` | — | **未実行** | — | — | — |
+
+- 承認で manifest に足されたのは、承認の記録（承認者・時刻・コメント（空））と価格基準の宣言の記録（宣言者・時刻。基準は
+  bid、検証済みではない）だけ。識別子・検査報告・partition は変わらない。
+- 候補の組の承認コマンドは、実装役の作業環境の権限の判定で拒否されたので実行していない（拒否を回避する操作はしていない）。
+  人間が実行するか、権限を与えた後に実行する。コマンドは §4 の 4。
