@@ -16,8 +16,9 @@ __all__ = [
     "UNOBSERVABLE_ITEMS",
     "UNOBSERVABLE_LIST_ID",
     "UNOBSERVABLE_LIST_VERSION",
+    "UNOBSERVABLE_TITLE",
     "UnobservableItem",
-    "unobservable_heading",
+    "unobservable_identity",
 ]
 
 #: 一覧の識別。
@@ -61,9 +62,10 @@ UNOBSERVABLE_ITEMS: tuple[UnobservableItem, ...] = (
 )
 
 
-def unobservable_heading() -> str:
-    """一覧の見出し（識別と版を含む）。画面出力とレポートで同じ文字列を使う。"""
-    return (
-        f"観測できない項目（1 分足では保証しない。一覧 {UNOBSERVABLE_LIST_ID}"
-        f" 版 {UNOBSERVABLE_LIST_VERSION}）"
-    )
+#: 一覧の小見出し（D07 §28.3 v2.13 の「観測できない項目（1 分足では保証しない）」）。
+UNOBSERVABLE_TITLE = "観測できない項目（1 分足では保証しない）"
+
+
+def unobservable_identity() -> str:
+    """一覧の識別と版の 1 行（小見出しの下に書く。D07 §28.3 v2.13）。"""
+    return f"一覧 `{UNOBSERVABLE_LIST_ID}` 版 {UNOBSERVABLE_LIST_VERSION}"

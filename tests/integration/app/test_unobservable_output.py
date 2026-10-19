@@ -1,7 +1,8 @@
 """観測できない項目の一覧の画面出力（D03 §15.6 の 5 v1.25、D12-132 (a)、D12 §12.8-6 の決定）。
 
 - 一覧は識別と版の見出しと、表 2 の 8 行（T1・T3・T4 だけ決定の文言）を持つ。
-- MT5 経路の snapshot を分類（`classify`）で確定すると、画面出力の末尾に一覧が出る。
+- MT5 経路の受入れ（`accept-mt5`）と、MT5 経路の snapshot の分類（`classify`）の画面出力の末尾に
+  一覧が出る。
 - 一覧は検査報告のファイルには入らない（報告のダイジェストと識別子は一覧で変わらない）。
 
 人工データだけを使う（実価格・成績は読まない）。HistData 経路の分類で出ないことは
@@ -11,9 +12,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from odyssey_fx.app import mt5 as mt5_app
 from odyssey_fx.app.cli import summary
 from odyssey_fx.app.cli.main import _write_snapshot, main
 from odyssey_fx.common.time import Interval, UtcTime
@@ -23,7 +27,8 @@ from odyssey_fx.marketdata.domain.unobservable import (
     UNOBSERVABLE_ITEMS,
     UNOBSERVABLE_LIST_ID,
     UNOBSERVABLE_LIST_VERSION,
-    unobservable_heading,
+    UNOBSERVABLE_TITLE,
+    unobservable_identity,
 )
 from tests.fixtures.mt5 import market as m5
 from tests.fixtures.synthetic import market
@@ -65,8 +70,8 @@ def test_the_list_has_the_decided_rows_and_wording() -> None:
 
 def test_the_summary_lines_carry_the_heading_and_every_row() -> None:
     lines = summary.unobservable_lines()
-    assert f"{unobservable_heading()}:" in lines
-    assert "版 1" in unobservable_heading()
+    assert f"{UNOBSERVABLE_TITLE}（{unobservable_identity()}）:" in lines
+    assert unobservable_identity() == "一覧 `mt5_m1_unobservable` 版 1"
     for item in UNOBSERVABLE_ITEMS:
         assert f"  {item.condition}: {item.item}" in lines
 
@@ -104,7 +109,7 @@ def test_classify_of_an_mt5_snapshot_prints_the_list_and_the_report_does_not_car
     )
     assert code == 0
     printed = capsys.readouterr().out.splitlines()
-    heading = printed.index(f"{unobservable_heading()}:")
+    heading = printed.index(f"{UNOBSERVABLE_TITLE}（{unobservable_identity()}）:")
     assert printed[heading + 1 :] == [
         f"  {item.condition}: {item.item}" for item in UNOBSERVABLE_ITEMS
     ]
@@ -113,3 +118,54 @@ def test_classify_of_an_mt5_snapshot_prints_the_list_and_the_report_does_not_car
     assert report_text == integrity_report_text(pending.report)
     assert "観測できない項目" not in report_text
     assert "NEGATIVE_SPREAD" in report_text
+
+
+def test_accept_mt5_prints_the_list_at_the_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D03 §15.6 の 5: 受入れ（`accept-mt5`）の画面出力の末尾に一覧が毎回出る。
+
+    規則のファイル・原データの読込は人工の値に差し替え、受入れの関数は人工の行で作った暫定
+    snapshot を返す（CLI の表示と書き出しだけを確かめる）。
+    """
+    table = m5.write_rule_files(tmp_path)
+    rows = m5.minute_rows(CALENDAR, WEEK)
+    pending = m5.build_pending(CALENDAR, table, [m5.MonthSpec(2026, 1, rows)])
+    rules = SimpleNamespace(
+        table=SimpleNamespace(table_id="synthetic", version=1, sha256="a" * 64),
+        counting=SimpleNamespace(rules_id="synthetic", version=1, sha256="b" * 64),
+        calendar=SimpleNamespace(id=CALENDAR.id, version=CALENDAR.version),
+    )
+    datasource = SimpleNamespace(
+        root=Path("raw"), docs_copy_for=lambda fetch_date: Path(f"docs/{fetch_date}.json")
+    )
+
+    def accepted(**_: Any) -> object:
+        return pending
+
+    monkeypatch.setattr(mt5_app, "load_mt5_rules", lambda root: rules)
+    monkeypatch.setattr(mt5_app, "load_datasource", lambda root: datasource)
+    monkeypatch.setattr(mt5_app, "accept_mt5_in_memory", accepted)
+    capsys.readouterr()
+    code = main(
+        [
+            "data",
+            "accept-mt5",
+            "--fetch-date",
+            "2026-10-16",
+            "--symbol",
+            "USDJPY",
+            "--variant",
+            "standard",
+            "--out",
+            str(tmp_path / "data/snapshots"),
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+    assert code == 0
+    printed = capsys.readouterr().out.splitlines()
+    heading = printed.index(f"{UNOBSERVABLE_TITLE}（{unobservable_identity()}）:")
+    assert printed[heading + 1 :] == [
+        f"  {item.condition}: {item.item}" for item in UNOBSERVABLE_ITEMS
+    ]

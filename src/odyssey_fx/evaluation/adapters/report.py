@@ -61,7 +61,11 @@ from odyssey_fx.evaluation.domain.status import (
     ConsistencyCheckResult,
     EvaluationStatus,
 )
-from odyssey_fx.marketdata.domain.unobservable import UNOBSERVABLE_ITEMS, unobservable_heading
+from odyssey_fx.marketdata.domain.unobservable import (
+    UNOBSERVABLE_ITEMS,
+    UNOBSERVABLE_TITLE,
+    unobservable_identity,
+)
 
 __all__ = [
     "ReportWrite",
@@ -597,7 +601,9 @@ def _unobservable_lines() -> list[str]:
     """
     return [
         "",
-        f"### {unobservable_heading()}",
+        f"### {UNOBSERVABLE_TITLE}",
+        "",
+        unobservable_identity(),
         "",
         *_table(
             ["条件", "観測できない項目"],

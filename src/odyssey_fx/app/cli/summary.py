@@ -31,7 +31,11 @@ from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.refill import RefillPlan
 from odyssey_fx.marketdata.domain.refill_manifest import RefillManifest
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
-from odyssey_fx.marketdata.domain.unobservable import UNOBSERVABLE_ITEMS, unobservable_heading
+from odyssey_fx.marketdata.domain.unobservable import (
+    UNOBSERVABLE_ITEMS,
+    UNOBSERVABLE_TITLE,
+    unobservable_identity,
+)
 
 __all__ = [
     "category_lines",
@@ -60,7 +64,7 @@ def unobservable_lines() -> list[str]:
     MT5 経路の受入れ・分類の画面出力の末尾に毎回出す。検査報告のファイルには入れない
     （D12 §12.8-6 の 2 の決定「画面出力にだけ毎回出す」。原文は D12 §0.1.32）。
     """
-    lines = ["", f"{unobservable_heading()}:"]
+    lines = ["", f"{UNOBSERVABLE_TITLE}（{unobservable_identity()}）:"]
     lines.extend(f"  {item.condition}: {item.item}" for item in UNOBSERVABLE_ITEMS)
     return lines
 

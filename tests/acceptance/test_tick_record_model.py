@@ -778,7 +778,10 @@ def test_the_coverage_section_ends_with_the_unobservable_list_for_mt5_runs(
     from typing import Any, cast
 
     from odyssey_fx.evaluation.adapters.report import _coverage_lines, _Inputs
-    from odyssey_fx.marketdata.domain.unobservable import UNOBSERVABLE_ITEMS, unobservable_heading
+    from odyssey_fx.marketdata.domain.unobservable import (
+        UNOBSERVABLE_ITEMS,
+        UNOBSERVABLE_TITLE,
+    )
 
     output = _run(tmp_path, unrecorded=())
 
@@ -794,9 +797,11 @@ def test_the_coverage_section_ends_with_the_unobservable_list_for_mt5_runs(
         )
 
     lines = lines_for(output.manifest)
-    heading = lines.index(f"### {unobservable_heading()}")
-    assert "版 1" in lines[heading]
-    assert lines[heading + 2 :] == [
+    heading = lines.index(f"### {UNOBSERVABLE_TITLE}")
+    assert lines[heading] == "### 観測できない項目（1 分足では保証しない）"
+    # 識別と版は小見出しの下に書く（D07 §28.3 v2.13）。
+    assert lines[heading + 2] == "一覧 `mt5_m1_unobservable` 版 1"
+    assert lines[heading + 4 :] == [
         "| 条件 | 観測できない項目 |",
         "|---|---|",
         *[f"| {item.condition} | {item.item} |" for item in UNOBSERVABLE_ITEMS],
