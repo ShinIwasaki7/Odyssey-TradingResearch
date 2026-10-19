@@ -326,8 +326,9 @@ def test_classify_settles_the_snapshot(workspace: Path) -> None:
 def test_classify_of_a_histdata_snapshot_does_not_print_the_unobservable_list(
     workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """D03 §15.6 の 5 v1.25（実装 PR の仮置き 1）: 観測できない項目の一覧は MT5 経路の 1 分足に
-    ついての記述なので、HistData 経路の分類の画面出力には出さない。"""
+    """D03 §15.6 の 5 v1.25（PR #90 の仮置き 1 への決定「MT5 経路だけ」。D12 §0.1.32 の
+    5 回目）: 観測できない項目の一覧は MT5 経路の 1 分足についての記述なので、HistData 経路の
+    分類の画面出力には出さない。"""
     assert _accept(workspace) == 0
     pending = _pending_id(workspace)
     store = ParquetSnapshotStore(root=workspace / "data/snapshots")
