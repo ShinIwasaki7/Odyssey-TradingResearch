@@ -768,6 +768,51 @@ def test_mark_days_are_the_execution_symbol_utc_calendar_days(tmp_path: Path) ->
     assert "確実性を表す数ではない" in line
 
 
+def test_the_coverage_section_ends_with_the_unobservable_list_for_mt5_runs(
+    tmp_path: Path,
+) -> None:
+    """D07 §28.3 v2.13（D12 §12.8-6 の 3 の決定）: MT5 経路の run のレポートの節 6 の末尾に、
+    観測できない項目の小見出しと固定の一覧（識別と版付き）を出す。被覆の記録の無い run には
+    出さない。"""
+    import dataclasses
+    from typing import Any, cast
+
+    from odyssey_fx.evaluation.adapters.report import _coverage_lines, _Inputs
+    from odyssey_fx.marketdata.domain.unobservable import (
+        UNOBSERVABLE_ITEMS,
+        UNOBSERVABLE_TITLE,
+    )
+
+    output = _run(tmp_path, unrecorded=())
+
+    def lines_for(manifest: Any) -> list[str]:
+        return _coverage_lines(
+            _Inputs(
+                manifest=cast(Any, None),
+                outcome=None,
+                run_manifest=manifest,
+                evaluation=None,
+                experiment_dir_text="",
+            )
+        )
+
+    lines = lines_for(output.manifest)
+    heading = lines.index(f"### {UNOBSERVABLE_TITLE}")
+    assert lines[heading] == "### 観測できない項目（1 分足では保証しない）"
+    # 識別と版は小見出しの下に書く（D07 §28.3 v2.13）。
+    assert lines[heading + 2] == "一覧 `mt5_m1_unobservable` 版 1"
+    assert lines[heading + 4 :] == [
+        "| 条件 | 観測できない項目 |",
+        "|---|---|",
+        *[f"| {item.condition} | {item.item} |" for item in UNOBSERVABLE_ITEMS],
+    ]
+    histdata_like = dataclasses.replace(
+        output.manifest,
+        capability_report=dataclasses.replace(output.manifest.capability_report, coverage=None),
+    )
+    assert not [item for item in lines_for(histdata_like) if "観測できない項目" in item]
+
+
 def test_levels_reached_in_different_minutes_are_resolved_by_the_minute_bars(
     tmp_path: Path,
 ) -> None:

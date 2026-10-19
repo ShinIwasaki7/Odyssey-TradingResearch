@@ -20,8 +20,11 @@ from odyssey_fx.marketdata.domain.bar import Bar
 __all__ = [
     "COVERAGE_COLUMNS",
     "MINUTE_COLUMNS",
+    "NEGATIVE_SPREAD_FALSE",
+    "NEGATIVE_SPREAD_TRUE",
     "PARTITION_COLUMNS",
     "columns_for",
+    "negative_spread_text",
     "partition_digest_hex",
     "partition_row",
 ]
@@ -50,8 +53,18 @@ COVERAGE_COLUMNS = (
     "time_rule_row",
 )
 
-#: MT5 経路の 1 分足に足す列（D03 §15.6 の 3。`spread` は診断用）。
-MINUTE_COLUMNS = ("api_time", "time_rule_row", "spread")
+#: MT5 経路の 1 分足に足す列（D03 §15.6 の 3。`spread` は診断用）。`negative_spread` は
+#: `spread` < 0 の印（v1.25、D12-131。`spread` から導く値で、ダイジェストにも同じ並びで入る）。
+MINUTE_COLUMNS = ("api_time", "time_rule_row", "spread", "negative_spread")
+
+#: 印の列の値（他の列と同じく文字列で保存する）。
+NEGATIVE_SPREAD_TRUE = "true"
+NEGATIVE_SPREAD_FALSE = "false"
+
+
+def negative_spread_text(negative: bool) -> str:
+    """印の列の文字列（D03 §15.6 の 3 v1.25）。"""
+    return NEGATIVE_SPREAD_TRUE if negative else NEGATIVE_SPREAD_FALSE
 
 
 def columns_for(bar: Bar) -> tuple[str, ...]:
@@ -102,6 +115,7 @@ def partition_row(bar: Bar) -> tuple[str, ...]:
             str(bar.minute.api_time),
             str(bar.minute.time_rule_row),
             str(bar.minute.spread),
+            negative_spread_text(bar.minute.negative_spread),
         )
     return base
 

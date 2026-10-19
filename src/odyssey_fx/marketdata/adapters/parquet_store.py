@@ -34,6 +34,7 @@ from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.application.partition_digest import (
     PARTITION_COLUMNS,
     columns_for,
+    negative_spread_text,
     partition_digest_hex,
     partition_row,
 )
@@ -686,6 +687,13 @@ class ParquetSnapshotStore:
 
         has_coverage = "expected_minutes" in frame.columns
         has_minute = "api_time" in frame.columns
+        if has_minute and "negative_spread" not in frame.columns:
+            # D03 §15.6 の 3 v1.25: 1 分足の partition は印の列を持つ。無い partition は v1.25 より
+            # 前の形で、ダイジェストも今の算法と合わない（作り直す）。
+            raise MarketDataValueError(
+                f"{path} has no negative_spread column; 1m partitions carry it since"
+                " D03 v1.25 (D03 §15.6 の 3)"
+            )
         bars: list[Bar] = []
         for record in frame.iter_rows(named=True):
             volume = volume_of(str(record["volume"]))
@@ -709,6 +717,15 @@ class ParquetSnapshotStore:
                 if has_minute
                 else None
             )
+            if minute is not None and str(record["negative_spread"]) != negative_spread_text(
+                minute.negative_spread
+            ):
+                # 印は spread から導くので、ダイジェストの照合だけでは印の書き換えを検出できない
+                # （ダイジェストは足から再計算した印で取る）。読み込みで突き合わせる。
+                raise MarketDataValueError(
+                    f"{path}: negative_spread {record['negative_spread']!r} does not match"
+                    f" spread {minute.spread} at {record['bar_start']} (D03 §15.6 の 3)"
+                )
             bars.append(
                 Bar(
                     series=series,

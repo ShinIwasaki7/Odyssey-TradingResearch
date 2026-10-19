@@ -31,6 +31,11 @@ from odyssey_fx.marketdata.domain.integrity import IntegrityReport, Severity
 from odyssey_fx.marketdata.domain.refill import RefillPlan
 from odyssey_fx.marketdata.domain.refill_manifest import RefillManifest
 from odyssey_fx.marketdata.domain.snapshot import SnapshotManifest
+from odyssey_fx.marketdata.domain.unobservable import (
+    UNOBSERVABLE_ITEMS,
+    UNOBSERVABLE_TITLE,
+    unobservable_identity,
+)
 
 __all__ = [
     "category_lines",
@@ -48,8 +53,20 @@ __all__ = [
     "series_lines",
     "severity_totals",
     "trade_lines",
+    "unobservable_lines",
     "warning_summary_lines",
 ]
+
+
+def unobservable_lines() -> list[str]:
+    """観測できない項目の固定の一覧（D03 §15.6 の 5 v1.25。D12-132 (a)）。
+
+    MT5 経路の受入れ・分類の画面出力の末尾に毎回出す。検査報告のファイルには入れない
+    （D12 §12.8-6 の 2 の決定「画面出力にだけ毎回出す」。原文は D12 §0.1.32）。
+    """
+    lines = ["", f"{UNOBSERVABLE_TITLE}（{unobservable_identity()}）:"]
+    lines.extend(f"  {item.condition}: {item.item}" for item in UNOBSERVABLE_ITEMS)
+    return lines
 
 
 def series_lines(manifest: SnapshotManifest) -> list[str]:

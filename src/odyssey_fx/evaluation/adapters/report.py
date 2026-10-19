@@ -61,6 +61,11 @@ from odyssey_fx.evaluation.domain.status import (
     ConsistencyCheckResult,
     EvaluationStatus,
 )
+from odyssey_fx.marketdata.domain.unobservable import (
+    UNOBSERVABLE_ITEMS,
+    UNOBSERVABLE_TITLE,
+    unobservable_identity,
+)
 
 __all__ = [
     "ReportWrite",
@@ -584,7 +589,27 @@ def _coverage_lines(inputs: _Inputs) -> list[str]:
                 ],
             )
         )
+    lines.extend(_unobservable_lines())
     return lines
+
+
+def _unobservable_lines() -> list[str]:
+    """節 6 の末尾の「観測できない項目」（D07 §28.3 v2.13。D12-132 (a)）。
+
+    MT5 経路の run だけに出す。文言はコードの固定の一覧（版付き）から出す表示で、run 成果物から
+    読まない（D12 §12.8-6 の 3 の決定。原文は D12 §0.1.32）。
+    """
+    return [
+        "",
+        f"### {UNOBSERVABLE_TITLE}",
+        "",
+        unobservable_identity(),
+        "",
+        *_table(
+            ["条件", "観測できない項目"],
+            [[item.condition, item.item] for item in UNOBSERVABLE_ITEMS],
+        ),
+    ]
 
 
 def _why_lines(inputs: _Inputs) -> list[str]:

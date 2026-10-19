@@ -142,6 +142,15 @@ class MinuteSource:
         if self.time_rule_row < 1:
             raise MarketDataValueError("MinuteSource.time_rule_row must be >= 1")
 
+    @property
+    def negative_spread(self) -> bool:
+        """負のスプレッドの印（D03 §15.6 の 3 v1.25、D12-131）。
+
+        `spread` から導く値で、別に持たない（原値と印が食い違う状態を作らない）。負の 1 分足は
+        受入れを失敗させず、spread の正常な観測値の母集団に入れない。
+        """
+        return self.spread < 0
+
 
 @dataclass(frozen=True, slots=True)
 class BarKey:

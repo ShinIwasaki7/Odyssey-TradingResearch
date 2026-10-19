@@ -323,6 +323,21 @@ def test_classify_settles_the_snapshot(workspace: Path) -> None:
     assert not (workspace / "data/snapshots/_pending" / pending).exists()
 
 
+def test_classify_of_a_histdata_snapshot_does_not_print_the_unobservable_list(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D03 §15.6 の 5 v1.25（PR #90 の仮置き 1 への決定「MT5 経路だけ」。D12 §0.1.32 の
+    5 回目）: 観測できない項目の一覧は MT5 経路の 1 分足についての記述なので、HistData 経路の
+    分類の画面出力には出さない。"""
+    assert _accept(workspace) == 0
+    pending = _pending_id(workspace)
+    store = ParquetSnapshotStore(root=workspace / "data/snapshots")
+    decisions = _decisions_file(workspace, store, pending, "DATA_GAP")
+    capsys.readouterr()
+    assert _classify(workspace, pending, decisions) == 0
+    assert "観測できない項目" not in capsys.readouterr().out
+
+
 def test_the_classification_changes_the_snapshot_id(workspace: Path) -> None:
     """分類が異なれば別 snapshot である（D03 §3.7.1）。
 

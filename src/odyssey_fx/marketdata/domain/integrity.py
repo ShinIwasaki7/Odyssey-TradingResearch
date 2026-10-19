@@ -60,7 +60,7 @@ class CheckKind(Enum):
     ZERO_VOLUME_SPAN = "ZERO_VOLUME_SPAN"
     #: DST 切替週の足数・境界が期待と異なる。
     DST_BOUNDARY_ANOMALY = "DST_BOUNDARY_ANOMALY"
-    # --- MT5 経路だけで出る 5 種（D03 §15.6 の 2）。どれも人間の分類の対象にしない。
+    # --- MT5 経路だけで出る 6 種（D03 §15.6 の 2）。どれも人間の分類の対象にしない。
     #: 無記録の分の連続 1 区間（1 分足の系列）。原因を分類しない（D12-71）。
     UNRECORDED_MINUTES = "UNRECORDED_MINUTES"
     #: 上位足のうち、記録ありの分が 0 で作らなかった足。
@@ -71,6 +71,8 @@ class CheckKind(Enum):
     CANDIDATE_OUT_OF_CALENDAR = "CANDIDATE_OUT_OF_CALENDAR"
     #: 被覆率が 1 未満の上位足（系列ごとの件数と分布の要約。足ごとの値は partition の列）。
     PARTIAL_COVERAGE_BAR = "PARTIAL_COVERAGE_BAR"
+    #: `spread` が負の 1 分足が続く区間 1 つ（D03 §15.6 の 2 v1.25、D12-131）。失敗にしない。
+    NEGATIVE_SPREAD = "NEGATIVE_SPREAD"
 
 
 #: 各検査種別の既定の重大度（D03 §3.9 の表）。
@@ -91,6 +93,8 @@ DEFAULT_SEVERITY: Mapping[CheckKind, Severity] = MappingProxyType(
         CheckKind.ACQUISITION_SHORTFALL: Severity.WARN,
         CheckKind.CANDIDATE_OUT_OF_CALENDAR: Severity.INFO,
         CheckKind.PARTIAL_COVERAGE_BAR: Severity.INFO,
+        # 記録のみ。分類の対象（明示集合）には入れない（D12 §12.8-3 の決定。D03 §15.6 の 2）。
+        CheckKind.NEGATIVE_SPREAD: Severity.WARN,
     }
 )
 
