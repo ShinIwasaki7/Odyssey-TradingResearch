@@ -1,0 +1,48 @@
+# 分類ファイル（形式版 2。D03 §4 の 9・§10・§15.3 の 4）: 順 2 の USDJPY 標準の組（standard）。
+#
+# 対象: `odyssey-fx data accept-mt5 --fetch-date 2026-10-16 --symbol USDJPY --variant standard`
+# の暫定 snapshot（provisional_id 1522e8ed30edc1d4d8961a4a8772af3fd777ef3f050db51bf37eecf02abb7cc9）
+# の分類対象の警告 77 件。すべて休場帯の足（UNEXPECTED_BAR、系列 USDJPY/1m/bid、理由
+# outside_declared_sessions）で、他の分類対象の種別は 0 件。
+#
+# 分類の根拠: 人間の決定 D12-99（2026-10-17。D12 §0.1.29、原文は
+# docs/data/full_period_feasibility/human_decision_2026-10-17_pr85_final_aggregation.md）
+# 「セッション外のデータ異常として今回は使わず確定」。全期間の集計（PR #85）で USDJPY に
+# 現れた 3 週（2019-10-27 の週 57 本、2019-12-22 の週 10 本、2019-12-29 の週 10 本。週は NY 暦の
+# 日曜〜土曜）と、週・本数とも一致する。新しい種類の警告は無い。
+#
+# カレンダーは変えない。セッション外のデータ異常の分類で受入れの 5〜7 を再実行するので、暫定
+# snapshot と同じ fx_ny17_oanda 版 1 を指す（D03 v1.8 §10、2026-09-24 の人間の決定）。
+# 価格は含まない（区間の時刻と件数だけ）。区間は UTC の半開区間で、警告の区間を完全に含む。
+#
+# 実行（リポジトリの根で）:
+#   uv run odyssey-fx data classify --pending 1522e8ed30edc1d4d8961a4a8772af3fd777ef3f050db51bf37eecf02abb7cc9 \
+#     --decisions docs/data/usdjpy_step2_acceptance/standard/classification.yaml \
+#     --timeframes configs/calendars/timeframes_v2.yaml --out data/snapshots
+
+schema_version: 2
+calendar: configs/calendars/fx_ny17_oanda_v1.yaml
+
+decisions:
+  - kind: UNEXPECTED_BAR
+    interval: {start: "2019-11-01T21:00:00Z", end: "2019-11-01T21:58:00Z"}
+    series: [USDJPY/1m/bid]
+    outcome: OUT_OF_SESSION_DATA
+    note: >-
+      2019-10-27 の週（NY 暦の日曜）。金曜の閉場の後の約 1 時間の 1 分足 57 本（21:00〜21:55 の 55 本と
+      21:56〜21:58 の 2 本。21:55 の分は記録なし）。米国式なら営業時間に当たる観測の事実で、時刻の規則の表の
+      次の版の検討材料（D12 §11.7.10）。表 版 1 は変えない（D12-99・D12-135 (a)）
+  - kind: UNEXPECTED_BAR
+    interval: {start: "2019-12-25T22:00:00Z", end: "2019-12-25T22:10:00Z"}
+    series: [USDJPY/1m/bid]
+    outcome: OUT_OF_SESSION_DATA
+    note: >-
+      2019-12-22 の週。2019-12-26 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー
+      fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）
+  - kind: UNEXPECTED_BAR
+    interval: {start: "2020-01-01T22:00:00Z", end: "2020-01-01T22:10:00Z"}
+    series: [USDJPY/1m/bid]
+    outcome: OUT_OF_SESSION_DATA
+    note: >-
+      2019-12-29 の週。2020-01-02 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー
+      fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）
