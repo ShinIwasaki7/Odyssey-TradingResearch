@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from odyssey_fx.app.config.time_rules import load_time_rule_table as load_base_time_rule_table
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant
 from tools.survey import full_period_final as fin
 from tools.survey.full_period_feasibility import (
     FeasibilityError,
@@ -97,6 +99,53 @@ def test_load_time_rule_table_requires_approved_hash(tmp_path: Path) -> None:
     copy.write_text(TABLE.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     with pytest.raises(FeasibilityError, match="T1"):
         fin.load_time_rule_table(copy, APPROVED)
+
+
+def test_load_time_rule_table_uses_base_loader_on_every_day() -> None:
+    """集計の道具の変換の組は、基盤の読込（app.config）の表と全暦日で一致する（D03 §15.9 の 5）。"""
+    table = load_base_time_rule_table(TABLE, APPROVED)
+    conversions = fin.load_time_rule_table(TABLE, APPROVED)
+    assert [c.table_sha256 for c in conversions] == [table.sha256, table.sha256]
+    assert table.sha256 == sha256_file(TABLE)
+    day = date(2017, 1, 1)
+    checked = 0
+    while day < date(2024, 1, 1):
+        for pair in table.pairs:
+            row = table.row_for(pair, day)
+            assert row is not None
+            for conversion in conversions:
+                period = conversion.period(pair, day)
+                variant = TimeRuleVariant(conversion.name)
+                assert (period.row, period.mark) == (row.row, row.mark.value)
+                assert conversion.hours_of(period) == row.offset_hours(variant)
+                checked += 1
+        day += timedelta(days=1)
+    assert checked == 2556 * 8 * 2
+    standard, candidate = conversions
+    assert standard.max_offset_hours() == candidate.max_offset_hours() == 3
+
+
+def test_load_time_rule_table_rejects_what_the_base_loader_rejects(tmp_path: Path) -> None:
+    # 未宣言のキー（基盤の表の形の検査。以前の道具の自前の読込は黙って受け付けていた）
+    old = "    status: 確認済み\n"
+    table, approved = _table_with(tmp_path, old, old + "    note: x\n")
+    with pytest.raises(FeasibilityError, match="受け付けない"):
+        fin.load_time_rule_table(table, approved)
+
+
+def test_load_time_rule_table_rejects_two_candidates(tmp_path: Path) -> None:
+    old = (
+        "    candidates:\n      - {name: 米国式, offset_hours: 3}\n"
+        '    evidence:\n      discriminating: "金曜'
+    )
+    new = (
+        "    candidates:\n      - {name: 米国式, offset_hours: 3}\n"
+        "      - {name: 別, offset_hours: 4}\n"
+        '    evidence:\n      discriminating: "金曜'
+    )
+    table, approved = _table_with(tmp_path, old, new)
+    with pytest.raises(FeasibilityError, match="候補が 1 つでない"):
+        fin.load_time_rule_table(table, approved)
 
 
 # --- 足の区分 -----------------------------------------------------------------------
