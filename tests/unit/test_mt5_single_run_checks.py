@@ -2,30 +2,37 @@
 
 設計の正本は D12 §12.5.1【決定】。
 
-合成した run の成果物（実験の結末記録・run manifest・判断履歴の表・評価の記録・再現の判定）を
-一時ディレクトリに書き、判定 1〜4 の合格・不合格・確認不能の各分岐を確かめる。判断履歴の表には
-価格の列も置き、道具がそれを読まないこと（読み込みの列の指定から外していること）も確かめる。
+手で組み立てた run の成果物（実験の記録票と結末記録・run manifest・判断履歴の表・評価の記録・
+再現の判定・snapshot の manifest。エンジンで作った run ではない。決定 23）を一時ディレクトリに
+書き、判定 1〜4 の合格・不合格・確認不能・未判定の各分岐を確かめる。判断履歴の表には価格の列も
+置き、道具がそれを読まないこと（読み込みの列の指定から外していること）も確かめる。
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
 
+from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
 from tools.survey import mt5_single_run_checks as checks
+from tools.survey.full_period_feasibility import trading_days
 from tools.survey.mt5_single_run_checks import FAIL, NOT_EVALUATED, PASS, UNVERIFIABLE
 
+ROOT = Path(__file__).resolve().parents[2]
 RUN_ID = "a" * 64
 EVAL_ID = "b" * 64
 RESULT = "c" * 64
 SNAPSHOT = "d" * 64
 DAILY = "USDJPY/1d_ny17/bid"
 HOURLY = "USDJPY/1h/bid"
+NEW_YORK = ZoneInfo("America/New_York")
 TABLE = {
     "sha256": "e" * 64,
     "table_id": "oanda_mt5_time_rules",
@@ -46,26 +53,26 @@ _STRING_TABLES: Mapping[str, Sequence[str]] = {
         "insufficient_from",
         "ready_at",
     ),
-    "PUBLICATIONS": ("bar_key_series", "bar_key_bar_start", "available_at"),
+    "PUBLICATIONS": ("bar_key_series", "bar_key_bar_start", "bar_end", "available_at"),
     "POSITIONS": ("position_id", "opened_at_time", "status", "close_fill_id", "entry_price"),
-    "FILLS": ("fill_id", "processed_at_time", "price"),
-    "ORDERS": ("order_id", "accepted_at_time"),
+    "FILLS": ("fill_id", "order_id", "processed_at_time", "price"),
+    "ORDERS": (
+        "order_id",
+        "accepted_at_time",
+        "terms_kind",
+        "terms_cause",
+        "terms_reference_quote_price",
+    ),
     "ORDER_EVENTS": ("order_id", "to_status", "at_time"),
     "LEDGER_SNAPSHOTS": ("at_time", "balance_amount"),
 }
+_EXTRA_KINDS: Mapping[str, Mapping[str, Any]] = {
+    "EVALUATIONS": {"outcome_diagnoses": pl.List(pl.String)},
+    "HISTORY_RESETS": {"window_bars": pl.Int64, "exclude_latest_bars": pl.Int64},
+    "PUBLICATIONS": {"recorded_minutes": pl.Int64},
+}
 _SCHEMAS: Mapping[str, Mapping[str, Any]] = {
-    table: {
-        **{name: pl.String for name in names},
-        **(
-            {"outcome_diagnoses": pl.List(pl.String)}
-            if table == "EVALUATIONS"
-            else {"window_bars": pl.Int64, "exclude_latest_bars": pl.Int64}
-            if table == "HISTORY_RESETS"
-            else {"recorded_minutes": pl.Int64}
-            if table == "PUBLICATIONS"
-            else {}
-        ),
-    }
+    table: {**{name: pl.String for name in names}, **_EXTRA_KINDS.get(table, {})}
     for table, names in _STRING_TABLES.items()
 }
 
@@ -84,7 +91,12 @@ def _skip(time: str, reason: str = "WARMUP_INSUFFICIENT") -> dict[str, Any]:
 
 
 def _reset(
-    series: str, bar_start: str, start: str, ready: str | None, kind: str = "BARS", bars: int = 60
+    series: str,
+    bar_start: str,
+    start: str,
+    ready: str | None,
+    kind: str = "BARS",
+    bars: int = 2,
 ) -> dict[str, Any]:
     return {
         "series": series,
@@ -92,7 +104,7 @@ def _reset(
         "window_kind": kind,
         "window_bars": bars if kind == "BARS" else None,
         "exclude_latest_bars": 0,
-        "window_duration": None,
+        "window_duration": "P1D" if kind == "DURATION" else None,
         "insufficient_from": start,
         "ready_at": ready,
     }
@@ -104,8 +116,21 @@ def _publication(
     return {
         "bar_key_series": series,
         "bar_key_bar_start": bar_start,
+        "bar_end": available_at,
         "available_at": available_at,
         "recorded_minutes": recorded,
+    }
+
+
+def _order(
+    order_id: str, accepted: str, kind: str = "ENTRY_TERMS", cause: str | None = None
+) -> dict[str, Any]:
+    return {
+        "order_id": order_id,
+        "accepted_at_time": accepted,
+        "terms_kind": kind,
+        "terms_cause": cause,
+        "terms_reference_quote_price": "999",
     }
 
 
@@ -113,7 +138,7 @@ def _baseline_tables() -> dict[str, list[dict[str, Any]]]:
     """日足の準備のやり直しが 1 回あり、期間の始まりをまたぐ建玉と注文がある合格の run。"""
     return {
         "EVALUATIONS": [
-            _skip("2022-12-02T22:00:00Z"),  # データの開始の準備（窓の 1 本目の公開より前）
+            _skip("2022-12-02T22:00:00Z"),  # データの開始の準備（窓の本数目の公開より前）
             _skip("2022-12-27T22:00:00Z"),
             {
                 "evaluation_id": "EVAL-OK",
@@ -123,10 +148,8 @@ def _baseline_tables() -> dict[str, list[dict[str, Any]]]:
             },
         ],
         "HISTORY_RESETS": [
-            _reset(DAILY, "2022-12-25T22:00:00Z", RESET_FROM, RESET_READY, bars=2),
-            _reset(
-                DAILY, "2022-12-25T22:00:00Z", RESET_FROM, "2022-12-27T22:00:00Z", kind="LATEST"
-            ),
+            _reset(DAILY, "2022-12-25T22:00:00Z", RESET_FROM, RESET_READY),
+            _reset(DAILY, "2022-12-25T22:00:00Z", RESET_FROM, "2022-12-27T22:00:00Z", "LATEST"),
         ],
         "PUBLICATIONS": [
             _publication(DAILY, "2022-12-01T22:00:00Z", "2022-12-02T22:00:00Z"),
@@ -143,13 +166,29 @@ def _baseline_tables() -> dict[str, list[dict[str, Any]]]:
             }
         ],
         "FILLS": [
-            {"fill_id": "FIL-1", "processed_at_time": "2022-12-20T10:00:00Z", "price": "999"},
-            {"fill_id": "FIL-2", "processed_at_time": "2023-01-10T10:00:00Z", "price": "999"},
+            {
+                "fill_id": "FIL-1",
+                "order_id": "ORD-0",
+                "processed_at_time": "2022-12-20T10:00:00Z",
+                "price": "999",
+            },
+            {
+                "fill_id": "FIL-2",
+                "order_id": "ORD-2",
+                "processed_at_time": "2023-01-10T10:00:00Z",
+                "price": "999",
+            },
         ],
-        "ORDERS": [{"order_id": "ORD-1", "accepted_at_time": "2022-12-26T21:00:00Z"}],
+        "ORDERS": [
+            _order("ORD-0", "2022-12-20T09:00:00Z"),
+            _order("ORD-1", "2022-12-26T21:00:00Z"),
+            _order("ORD-2", "2023-01-10T10:00:00Z", "CLOSE_TERMS", "STOP_LOSS"),
+        ],
         "ORDER_EVENTS": [
             {"order_id": "ORD-1", "to_status": "PENDING", "at_time": "2022-12-26T21:00:00Z"},
-            {"order_id": "ORD-1", "to_status": "EXPIRED", "at_time": "2022-12-26T22:00:00Z"},
+            {"order_id": "ORD-1", "to_status": "FILLED", "at_time": "2022-12-27T10:00:00Z"},
+            {"order_id": "ORD-0", "to_status": "FILLED", "at_time": "2022-12-20T10:00:00Z"},
+            {"order_id": "ORD-2", "to_status": "FILLED", "at_time": "2023-01-10T10:00:00Z"},
         ],
         "LEDGER_SNAPSHOTS": [
             {"at_time": "2022-12-20T10:00:00Z", "balance_amount": "999"},
@@ -166,18 +205,33 @@ def _write_run(
     history_resets: int = 2,
     consistency: Sequence[str] = ("PASSED", "PASSED"),
     reproduction: str | None = "REPRODUCED",
+    snapshot_table: Mapping[str, Any] | None = TABLE,
+    experiment_snapshot: str = SNAPSHOT,
     run_id: str = RUN_ID,
-) -> tuple[Path, Path]:
-    """合成した成果物を書き、実験の版のディレクトリと再現の出力の基点を返す。"""
+) -> tuple[Path, Path, Path]:
+    """成果物を書き、実験の版のディレクトリ・再現の出力の基点・snapshot の基点を返す。"""
     out = root / "out"
     experiment = out / "runs" / "experiments" / "x" / "v1"
     run_dir = out / "runs" / run_id
     eval_dir = run_dir / "eval" / EVAL_ID
-    for path in (experiment, eval_dir):
+    snapshots = root / "snapshots"
+    for path in (experiment, eval_dir, snapshots / SNAPSHOT):
         path.mkdir(parents=True, exist_ok=True)
     (experiment / "experiment_outcome.json").write_text(
         json.dumps({"run_id": run_id, "run_evaluation_id": EVAL_ID, "result_digest": RESULT})
     )
+    (experiment / "experiment_manifest.json").write_text(
+        json.dumps({"snapshot_id": experiment_snapshot})
+    )
+    if snapshot_table is not None:
+        (snapshots / SNAPSHOT / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "snapshot_id": SNAPSHOT,
+                    "conversion": {"mt5": {"time_rule_table": snapshot_table}},
+                }
+            )
+        )
     config = {
         "run_interval": {"start": RUN_START, "end": RUN_END},
         "snapshot_ref": {"snapshot_id": SNAPSHOT},
@@ -195,7 +249,8 @@ def _write_run(
         )
     )
     for table, rows in (tables or _baseline_tables()).items():
-        pl.DataFrame(rows, schema=dict(_SCHEMAS[table])).write_parquet(run_dir / f"{table}.parquet")
+        frame = pl.DataFrame(rows, schema=dict(_SCHEMAS[table]))
+        frame.write_parquet(run_dir / f"{table}.parquet")
     (eval_dir / "evaluation.json").write_text(
         json.dumps(
             {
@@ -211,23 +266,14 @@ def _write_run(
     )
     pl.DataFrame(
         [
-            {
-                "check": f"C{i}",
-                "level": "FATAL",
-                "outcome": outcome,
-                "expected": "1",
-                "observed": "1",
-            }
-            for i, outcome in enumerate(consistency)
+            {"check": f"C{i}", "level": "FATAL", "outcome": item, "expected": "1", "observed": "1"}
+            for i, item in enumerate(consistency)
         ]
     ).write_parquet(eval_dir / "CONSISTENCY_CHECKS.parquet")
     resolved = counts or {"HISTORY_RESETS": history_resets, "HISTORY_RESET_MINUTES": 100}
-    pl.DataFrame(
-        [
-            {"category": "UNRECORDED_EVENT", "key": key, "count": value}
-            for key, value in resolved.items()
-        ]
-    ).write_parquet(eval_dir / "CATEGORY_COUNTS.parquet")
+    rows = [{"category": "UNRECORDED_EVENT", "key": k, "count": v} for k, v in resolved.items()]
+    rows.append({"category": "EVALUATION_OUTCOME", "key": "SKIPPED", "count": 7})
+    pl.DataFrame(rows).write_parquet(eval_dir / "CATEGORY_COUNTS.parquet")
     repro = root / "repro"
     if reproduction is not None:
         repro.mkdir(parents=True, exist_ok=True)
@@ -240,13 +286,13 @@ def _write_run(
                 }
             )
         )
-    return experiment, repro
+    return experiment, repro, snapshots
 
 
 def _load(tmp_path: Path, **kwargs: Any) -> checks.RunArtifacts:
-    experiment, repro = _write_run(tmp_path, **kwargs)
+    experiment, repro, snapshots = _write_run(tmp_path, **kwargs)
     reproduction = repro if kwargs.get("reproduction", "REPRODUCED") is not None else None
-    return checks.load_run("x", experiment, reproduction_dir=reproduction)
+    return checks.load_run("x", experiment, reproduction_dir=reproduction, snapshots=snapshots)
 
 
 # --- 読み込み ------------------------------------------------------------------------
@@ -257,7 +303,9 @@ def test_price_columns_are_not_read(tmp_path: Path) -> None:
     assert "price" not in run.tables["FILLS"][0]
     assert "entry_price" not in run.tables["POSITIONS"][0]
     assert "balance_amount" not in run.tables["LEDGER_SNAPSHOTS"][0]
+    assert "terms_reference_quote_price" not in run.tables["ORDERS"][0]
     assert run.consistency and set(run.consistency[0]) == {"check", "level", "outcome"}
+    assert set(run.unrecorded_event_counts) == {"HISTORY_RESETS", "HISTORY_RESET_MINUTES"}
 
 
 # --- 判定 1 ---------------------------------------------------------------------------
@@ -267,8 +315,9 @@ def test_check_1_passes_when_a_position_spans_the_reset(tmp_path: Path) -> None:
     result = checks.check_history_reset_scoring(_load(tmp_path))
     assert result["result"] == PASS
     assert result["detail"]["periods"] == [[RESET_FROM, RESET_READY]]
-    assert result["detail"]["target_series"] == DAILY
+    assert result["detail"]["target_series"] == [DAILY]
     assert result["detail"]["continuing_positions"] == 1
+    assert result["detail"]["continuing_orders"] == 1
 
 
 def test_check_1_is_unverifiable_without_a_spanning_position_or_order(tmp_path: Path) -> None:
@@ -281,35 +330,56 @@ def test_check_1_is_unverifiable_without_a_spanning_position_or_order(tmp_path: 
     assert result["parts"]["e_positions_orders_continue"] == UNVERIFIABLE
     assert (
         "test_c2_the_run_records_history_resets_and_keeps_going"
-        in result["detail"]["unverifiable_reason"]
+        in (result["detail"]["unverifiable_reason"])
     )
 
 
 @pytest.mark.parametrize("status", ["CANCELED", "EXPIRED"])
-def test_check_1_allows_a_cancellation_or_expiry_at_the_reset(tmp_path: Path, status: str) -> None:
-    """決定 14・17: 期間の始まりに起きてよい終了は取消・期限切れだけ。"""
+def test_check_1_counts_an_order_canceled_or_expired_at_the_reset_only(
+    tmp_path: Path, status: str
+) -> None:
+    """決定 14・25: 始まりの時刻の取消・期限切れは許し、継続にも終了にも数えない。"""
     tables = _baseline_tables()
-    tables["ORDER_EVENTS"][1]["to_status"] = status
+    tables["ORDER_EVENTS"][1].update(to_status=status, at_time=RESET_FROM)
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["result"] == PASS
+    assert result["result"] == PASS  # 建玉が続いている
+    assert result["detail"]["continuing_orders"] == 0
+    assert result["detail"]["canceled_or_expired_at_period_start"] == 1
     assert result["detail"]["ended_at_period_start"] == 0
 
 
 def test_check_1_fails_when_an_order_ends_otherwise_at_the_reset(tmp_path: Path) -> None:
     tables = _baseline_tables()
-    tables["ORDER_EVENTS"][1]["to_status"] = "FILLED"
+    tables["ORDER_EVENTS"][1]["at_time"] = RESET_FROM
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
     assert result["result"] == FAIL
     assert result["detail"]["ended_at_period_start"] == 1
 
 
-def test_check_1_fails_when_a_position_is_closed_at_the_reset(tmp_path: Path) -> None:
-    """建玉の決済（強制決済など）が期間の始まりの時刻にあれば不合格。"""
+@pytest.mark.parametrize(
+    ("cause", "expected", "key"),
+    [
+        ("EMERGENCY", FAIL, "ended_at_period_start"),
+        ("STOP_LOSS", PASS, "continuing_positions"),
+        (None, UNVERIFIABLE, "positions_with_unknown_close_cause"),
+    ],
+)
+def test_check_1_counts_only_a_forced_close_at_the_reset(
+    tmp_path: Path, cause: str | None, expected: str, key: str
+) -> None:
+    """決定 24: 始まりの時刻の決済は、強制決済だけを「消された」に数える。
+
+    強制決済と通常の決済を記録から区別できなければ確認不能。
+    """
     tables = _baseline_tables()
     tables["FILLS"][1]["processed_at_time"] = RESET_FROM
+    tables["ORDERS"][2]["terms_cause"] = cause
+    tables["ORDERS"] = tables["ORDERS"][::2]  # 継続する注文（ORD-1）を除き、建玉だけで判定する
+    tables["ORDER_EVENTS"] = [e for e in tables["ORDER_EVENTS"] if e["order_id"] != "ORD-1"]
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["result"] == FAIL
-    assert result["detail"]["ended_at_period_start"] == 1
+    assert result["parts"]["e_positions_orders_continue"] == expected
+    assert result["detail"][key] == 1
+    assert result["detail"]["continuing_orders"] == 0
 
 
 def test_check_1_fails_without_reset_rows_for_the_day(tmp_path: Path) -> None:
@@ -337,14 +407,16 @@ def test_check_1_uses_intraday_rows_for_a_strategy_without_daily_reads(tmp_path:
         ),
     ]
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["detail"]["target_series"] == "intraday"
+    assert result["detail"]["target_series"] == [HOURLY]
     assert result["detail"]["periods"] == [["2022-12-25T23:00:00Z", "2022-12-27T19:00:00Z"]]
 
 
 # --- 判定 2 ---------------------------------------------------------------------------
 
 
-def test_check_2_passes_and_excludes_the_initial_warmup(tmp_path: Path) -> None:
+def test_check_2_excludes_the_initial_warmup_and_flags_a_row_without_trigger(
+    tmp_path: Path,
+) -> None:
     result = checks.check_skips_match_resets(_load(tmp_path))
     assert result["parts"]["a_skips_inside_periods"] == PASS
     assert result["detail"]["excluded_initial_skips"] == 1
@@ -387,11 +459,28 @@ def test_check_2_ignores_skips_for_other_reasons(tmp_path: Path) -> None:
     assert result["result"] == PASS
 
 
-def test_check_2_is_unverifiable_when_the_windows_are_unknown(tmp_path: Path) -> None:
+def test_check_2_is_unverifiable_when_the_table_is_empty(tmp_path: Path) -> None:
     tables = _baseline_tables()
     tables["HISTORY_RESETS"] = []
     result = checks.check_skips_match_resets(_load(tmp_path, tables=tables, history_resets=0))
     assert result["parts"]["a_skips_inside_periods"] == UNVERIFIABLE
+
+
+def test_check_2_still_counts_skips_in_periods_when_a_window_is_unknown(tmp_path: Path) -> None:
+    """決定 18・21（第 1 巡の P1）: 窓が分からないとき (a) だけを確認不能にする。
+
+    (b) は期間の中の見送りを数えて判定する。
+    """
+    tables = _baseline_tables()
+    tables["HISTORY_RESETS"] = [
+        tables["HISTORY_RESETS"][0],
+        _reset(DAILY, "2022-12-25T22:00:00Z", RESET_FROM, RESET_READY, kind="DURATION"),
+    ]
+    result = checks.check_skips_match_resets(_load(tmp_path, tables=tables))
+    assert result["parts"]["a_skips_inside_periods"] == UNVERIFIABLE
+    assert result["parts"]["b_each_period_has_skip"] == PASS
+    assert result["detail"]["rows_with_skip"] == 2
+    assert result["result"] == UNVERIFIABLE
 
 
 # --- 判定 3 ---------------------------------------------------------------------------
@@ -420,45 +509,87 @@ def test_check_3_is_not_evaluated_without_a_reproduction(tmp_path: Path) -> None
     assert result["result"] == NOT_EVALUATED
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"snapshot_table": None},  # snapshot の manifest が読めない
+        {"snapshot_table": {**TABLE, "variant": "candidate"}},  # 変換の組が違う
+        {"experiment_snapshot": "0" * 64},  # 実験の記録票の snapshot が違う
+    ],
+)
+def test_check_3_fails_when_the_snapshot_does_not_match(
+    tmp_path: Path, kwargs: dict[str, Any]
+) -> None:
+    """決定 26（第 1 巡の P1）: snapshot の照合の相手が読めない・食い違うなら不合格。"""
+    result = checks.check_integrity(_load(tmp_path, **kwargs))
+    assert result["parts"]["b_manifest_matches"] == FAIL
+
+
 # --- 判定 4 ---------------------------------------------------------------------------
 
 
 def _daily_run(tmp_path: Path, name: str, recorded: Mapping[str, int]) -> checks.RunArtifacts:
     tables = _baseline_tables()
     tables["PUBLICATIONS"] = [
-        _publication(DAILY, start, start, minutes) for start, minutes in recorded.items()
+        _publication(DAILY, end, end, minutes) for end, minutes in recorded.items()
     ]
     return _load(tmp_path / name, tables=tables)
 
 
+def test_trading_day_label_uses_the_calendar_day_of_the_bar_end() -> None:
+    """決定 27: 区間の終わりの直前の NY の日付（夏時間・冬時間とも）。"""
+    summer = datetime(2017, 3, 13, 21, tzinfo=UTC)
+    winter = datetime(2017, 3, 10, 22, tzinfo=UTC)
+    assert checks.trading_day_label(summer, NEW_YORK) == "2017-03-13"
+    assert checks.trading_day_label(winter, NEW_YORK) == "2017-03-10"
+
+
+def test_trading_day_label_matches_the_aggregation_for_every_csv_day() -> None:
+    """決定 27: 順 2 の集計の 41 日がすべて、fx_ny17_oanda 版 1 の日足の区間の終わりから引ける。"""
+    calendar = load_calendar(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml")
+    timeframes = load_timeframes(ROOT / "configs/calendars/timeframes_v2.yaml")
+    expected = checks.read_daily_differences(
+        ROOT / "docs/data/full_period_feasibility/candidate_differences.csv"
+    )
+    assert len(expected) == 41
+    labels = {
+        checks.trading_day_label(datetime.fromtimestamp(day.end, UTC), calendar.tz): day.label
+        for day in trading_days(calendar, timeframes)
+    }
+    assert all(label == day for label, day in labels.items())
+    assert expected <= set(labels)
+
+
 def test_check_4_matches_the_aggregation(tmp_path: Path) -> None:
     standard = _daily_run(
-        tmp_path, "s", {"2017-03-12T21:00:00Z": 1374, "2017-03-13T21:00:00Z": 1440}
+        tmp_path, "s", {"2017-03-13T21:00:00Z": 1374, "2017-03-14T21:00:00Z": 1440}
     )
     candidate = _daily_run(
-        tmp_path, "c", {"2017-03-12T21:00:00Z": 1430, "2017-03-13T21:00:00Z": 1440}
+        tmp_path, "c", {"2017-03-13T21:00:00Z": 1430, "2017-03-14T21:00:00Z": 1440}
     )
-    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"})
+    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"}, NEW_YORK)
     assert result["result"] == PASS
     assert result["detail"]["differing_days"] == 1
 
 
 def test_check_4_fails_on_an_unexpected_difference(tmp_path: Path) -> None:
     standard = _daily_run(
-        tmp_path, "s", {"2017-03-12T21:00:00Z": 1374, "2017-03-13T21:00:00Z": 1440}
+        tmp_path, "s", {"2017-03-13T21:00:00Z": 1374, "2017-03-14T21:00:00Z": 1440}
     )
     candidate = _daily_run(
-        tmp_path, "c", {"2017-03-12T21:00:00Z": 1430, "2017-03-13T21:00:00Z": 1400}
+        tmp_path, "c", {"2017-03-13T21:00:00Z": 1430, "2017-03-14T21:00:00Z": 1400}
     )
-    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"})
+    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"}, NEW_YORK)
     assert result["result"] == FAIL
     assert result["detail"]["unexpected_days"] == ["2017-03-14"]
 
 
 def test_check_4_is_unverifiable_for_an_unpublished_day(tmp_path: Path) -> None:
-    standard = _daily_run(tmp_path, "s", {"2017-03-12T21:00:00Z": 1374})
-    candidate = _daily_run(tmp_path, "c", {"2017-03-12T21:00:00Z": 1430})
-    result = checks.check_daily_differences(standard, candidate, {"2017-03-13", "2017-03-20"})
+    standard = _daily_run(tmp_path, "s", {"2017-03-13T21:00:00Z": 1374})
+    candidate = _daily_run(tmp_path, "c", {"2017-03-13T21:00:00Z": 1430})
+    result = checks.check_daily_differences(
+        standard, candidate, {"2017-03-13", "2017-03-20"}, NEW_YORK
+    )
     assert result["result"] == UNVERIFIABLE
     assert result["detail"]["not_published_days"] == ["2017-03-20"]
 
@@ -481,13 +612,22 @@ def test_read_daily_differences_takes_the_recorded_minutes_rows(tmp_path: Path) 
 
 @pytest.mark.parametrize("with_pair", [False, True])
 def test_main_writes_only_results_counts_and_hashes(tmp_path: Path, with_pair: bool) -> None:
-    experiment, repro = _write_run(tmp_path)
+    experiment, repro, snapshots = _write_run(tmp_path)
     differences = tmp_path / "diff.csv"
     differences.write_text(
         "pair,scope,key,field,standard_value,candidate_value\n", encoding="utf-8"
     )
     out = tmp_path / "checks.json"
-    argv = ["--experiment", f"b_standard={experiment}", "--reproduction", f"b_standard={repro}"]
+    argv = [
+        "--experiment",
+        f"b_standard={experiment}",
+        "--reproduction",
+        f"b_standard={repro}",
+        "--snapshots",
+        str(snapshots),
+        "--calendar",
+        str(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml"),
+    ]
     if with_pair:
         argv += [
             "--experiment",
@@ -504,3 +644,10 @@ def test_main_writes_only_results_counts_and_hashes(tmp_path: Path, with_pair: b
     expected = PASS if with_pair else NOT_EVALUATED
     assert record["check_4_daily_differences"]["result"] == expected
     assert "999" not in out.read_text(encoding="utf-8")  # 合成の価格の値は出力に現れない
+
+
+def test_main_requires_the_snapshots_base(tmp_path: Path) -> None:
+    """第 1 巡の P1: snapshot の基点を省くと、照合しないまま合格にせず引数の誤りで止まる。"""
+    experiment, _, _ = _write_run(tmp_path)
+    with pytest.raises(SystemExit):
+        checks.main(["--experiment", f"x={experiment}", "--out", str(tmp_path / "o.json")])

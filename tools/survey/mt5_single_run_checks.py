@@ -26,6 +26,7 @@
         --pair-b b_standard b_candidate \\
         --differences docs/data/full_period_feasibility/candidate_differences.csv \\
         --snapshots data/snapshots \\
+        --calendar configs/calendars/fx_ny17_oanda_v1.yaml \\
         --out docs/data/usdjpy_step3_ab_runs/checks.json
 """
 
@@ -38,11 +39,13 @@ import json
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Final
 
 import polars as pl
+
+from odyssey_fx.app.config.calendars import load_calendar
 
 __all__ = [
     "FAIL",
@@ -69,6 +72,12 @@ RESET_DAY: Final = ("2022-12-25T22:00:00Z", "2022-12-26T22:00:00Z")
 DAILY_SERIES: Final = "USDJPY/1d_ny17/bid"
 #: 判定 4 で比べる被覆の列（D12 §12.5.1 の決定 4「記録のある分数だけ」）。
 COVERAGE_COLUMN: Final = "recorded_minutes"
+#: 判定 4 の取引日を決めるカレンダー（D12 §12.5.1、決定 27）。
+DEFAULT_CALENDAR: Final = "configs/calendars/fx_ny17_oanda_v1.yaml"
+#: システムによる強制決済の決済の契機（D06 §7.5 の緊急決済。D12 §12.5.1、決定 24）。
+FORCED_CLOSE_CAUSES: Final = frozenset({"EMERGENCY"})
+#: 通常の規則による決済の契機（保護水準・戦略の決済。D06 §7.3）。
+NORMAL_CLOSE_CAUSES: Final = frozenset({"STOP_LOSS", "TAKE_PROFIT", "STRATEGY_EXIT"})
 
 _WARMUP: Final = "WARMUP_INSUFFICIENT"
 _SKIPPED: Final = "SKIPPED"
@@ -91,10 +100,16 @@ TRACE_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
         "insufficient_from",
         "ready_at",
     ),
-    "PUBLICATIONS": ("bar_key_series", "bar_key_bar_start", "available_at", "recorded_minutes"),
+    "PUBLICATIONS": (
+        "bar_key_series",
+        "bar_key_bar_start",
+        "bar_end",
+        "available_at",
+        "recorded_minutes",
+    ),
     "POSITIONS": ("position_id", "opened_at_time", "status", "close_fill_id"),
-    "FILLS": ("fill_id", "processed_at_time"),
-    "ORDERS": ("order_id", "accepted_at_time"),
+    "FILLS": ("fill_id", "order_id", "processed_at_time"),
+    "ORDERS": ("order_id", "accepted_at_time", "terms_kind", "terms_cause"),
     "ORDER_EVENTS": ("order_id", "to_status", "at_time"),
     "LEDGER_SNAPSHOTS": ("at_time",),
 }
@@ -132,6 +147,10 @@ class RunArtifacts:
     unrecorded_event_counts: Mapping[str, int] = field(default_factory=dict)
     outcome: Mapping[str, Any] | None = None
     reproduction: Mapping[str, Any] | None = None
+    #: 実験の記録票の snapshot の識別子（D12 §12.5.1 の判定 3 (b)、決定 26）。
+    experiment_snapshot_id: str | None = None
+    #: snapshot の manifest の識別子と時刻の規則の表の参照（読めなければ `None`）。
+    snapshot_manifest_id: str | None = None
     snapshot_time_rule_table: Mapping[str, Any] | None = None
 
 
@@ -144,7 +163,7 @@ def load_run(
     experiment_dir: Path,
     *,
     reproduction_dir: Path | None = None,
-    snapshots: Path | None = None,
+    snapshots: Path,
 ) -> RunArtifacts:
     """実験の版のディレクトリから run・評価・結末記録・再現の判定を読む（価格の列は読まない）。"""
     outcome = json.loads((experiment_dir / "experiment_outcome.json").read_text(encoding="utf-8"))
@@ -169,21 +188,33 @@ def load_run(
         eval_dir = run_dir / "eval" / str(evaluation_id)
         evaluation = json.loads((eval_dir / "evaluation.json").read_text(encoding="utf-8"))
         consistency = _read_table(eval_dir / "CONSISTENCY_CHECKS.parquet", CONSISTENCY_COLUMNS)
-        for row in _read_table(eval_dir / "CATEGORY_COUNTS.parquet", ("category", "key", "count")):
-            if row["category"] == "UNRECORDED_EVENT":
-                unrecorded[str(row["key"])] = int(row["count"])
+        counts = (
+            pl.scan_parquet(eval_dir / "CATEGORY_COUNTS.parquet")
+            .select("category", "key", "count")
+            .filter(pl.col("category") == "UNRECORDED_EVENT")
+            .collect()
+        )
+        unrecorded = {str(row["key"]): int(row["count"]) for row in counts.to_dicts()}
     reproduction = None
     if reproduction_dir is not None:
         reproduction = json.loads(
             (reproduction_dir / "reproduction.json").read_text(encoding="utf-8")
         )
     snapshot_id = str(config["snapshot_ref"]["snapshot_id"])
+    experiment_manifest = experiment_dir / "experiment_manifest.json"
+    experiment_snapshot = (
+        json.loads(experiment_manifest.read_text(encoding="utf-8")).get("snapshot_id")
+        if experiment_manifest.is_file()
+        else None
+    )
+    snapshot_manifest_id = None
     snapshot_table = None
-    if snapshots is not None:
-        snapshot_manifest = json.loads(
-            (snapshots / snapshot_id / "manifest.json").read_text(encoding="utf-8")
-        )
-        snapshot_table = snapshot_manifest["conversion"]["mt5"]["time_rule_table"]
+    snapshot_path = snapshots / snapshot_id / "manifest.json"
+    if snapshot_path.is_file():  # 読めなければ判定 3 (b) を不合格にする（D12 §12.5.1）
+        snapshot_manifest = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot_manifest_id = snapshot_manifest.get("snapshot_id")
+        conversion = snapshot_manifest.get("conversion") or {}
+        snapshot_table = (conversion.get("mt5") or {}).get("time_rule_table")
     return RunArtifacts(
         name=name,
         run_id=str(manifest["run_id"]),
@@ -199,6 +230,8 @@ def load_run(
         unrecorded_event_counts=unrecorded,
         outcome=outcome,
         reproduction=reproduction,
+        experiment_snapshot_id=None if experiment_snapshot is None else str(experiment_snapshot),
+        snapshot_manifest_id=None if snapshot_manifest_id is None else str(snapshot_manifest_id),
         snapshot_time_rule_table=snapshot_table,
     )
 
@@ -265,8 +298,9 @@ def check_history_reset_scoring(
         if day_start <= _time(row["no_record_bar_key_bar_start"]) < day_end
     ]
     # 日足を読む戦略（B）は日足の窓の行、読まない戦略（A）はその日の無記録の足の行（決定 1）。
-    daily = [(start, stop) for start, stop, row in on_day if row["series"] == DAILY_SERIES]
-    targets = daily or [(start, stop) for start, stop, _ in on_day]
+    daily = [(start, stop, row) for start, stop, row in on_day if row["series"] == DAILY_SERIES]
+    chosen = daily or on_day
+    targets = [(start, stop) for start, stop, _ in chosen]
     parts: dict[str, str] = {"a_completed": PASS if run.status == _COMPLETED else FAIL}
     detail: dict[str, Any] = {"table22_rows": len(run.tables["HISTORY_RESETS"])}
     if not targets:
@@ -276,7 +310,7 @@ def check_history_reset_scoring(
     periods = [(max(s, run_start), min(e, run_end)) for s, e in _merge(targets)]
     periods = [(s, e) for s, e in periods if s < e]
     detail["target_rows"] = len(targets)
-    detail["target_series"] = DAILY_SERIES if daily else "intraday"
+    detail["target_series"] = sorted({row["series"] for _, _, row in chosen})
     detail["periods"] = [[_iso(s), _iso(e)] for s, e in periods]
     parts["b_reset_rows"] = PASS if periods else FAIL
 
@@ -297,52 +331,87 @@ def check_history_reset_scoring(
     detail["continuing_positions"] = sum(item["positions"] for item in continuation)
     detail["continuing_orders"] = sum(item["orders"] for item in continuation)
     detail["ended_at_period_start"] = sum(item["ended"] for item in continuation)
+    detail["canceled_or_expired_at_period_start"] = sum(
+        item["canceled_or_expired"] for item in continuation
+    )
+    detail["positions_with_unknown_close_cause"] = sum(item["unknown"] for item in continuation)
     if parts["e_positions_orders_continue"] == UNVERIFIABLE:
         detail["unverifiable_reason"] = (
-            "やり直しの期間の始まりをまたぐ建玉・注文が無い。根拠: tests/acceptance/"
+            "やり直しの期間の始まりをまたぐ建玉・注文が無いか、始まりの時刻の決済が強制決済か"
+            "どうかを記録から区別できない。根拠: tests/acceptance/"
             "test_tick_record_model_marketdata.py::test_c2_the_run_records_history_resets_and_keeps_going"
         )
     return {"result": _combine(parts.values()), "parts": parts, "detail": detail}
 
 
 def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
-    """期間の始まり `start` をまたぐ建玉・注文と、始まりの時刻での終了の有無。
+    """期間の始まり `start` をまたぐ建玉・注文と、始まりの時刻での終了の有無（判定 1 (e)）。
 
-    決定 14・17（D12 §12.5.1 の判定 1 (e)）: 期間の始まりの時刻に、対象の建玉・注文の取消・期限切れ
-    以外の終了の出来事（強制決済など）が無いこと。建玉はその時刻の決済（決済の約定）を、注文は
-    その時刻の取消・期限切れ以外の終了（約定など）を、終了の出来事として数える。
+    D12 §12.5.1（決定 14・17・24・25）: 期間の始まりの時刻に、取消・期限切れ以外の終了の出来事
+    （強制決済など）が無いこと。
+
+    - 注文: 始まりより前に受け付け、始まりの時点で終わっていない注文を数える。始まりの時刻に取消・
+      期限切れ以外で終わった（約定など）なら「消された」。始まりの時刻に取消・期限切れになった注文は
+      継続にも終了にも数えず、件数だけを出す（決定 25）。
+    - 建玉: 始まりより前に開き、始まりの時点で閉じていない建玉を数える。始まりの時刻の決済のうち、
+      システムによる強制決済（決済の契機 `EMERGENCY`）だけを「消された」に数え、通常の規則による決済
+      （保護水準・戦略の決済）は継続した建玉に数える。決済の契機を記録から読めなければ、その建玉は
+      確認不能（決定 24）。
     """
-    fills = {row["fill_id"]: _time(row["processed_at_time"]) for row in run.tables["FILLS"]}
-    positions = 0
-    ended = 0
+    fills = {row["fill_id"]: row for row in run.tables["FILLS"]}
+    causes = {
+        row["order_id"]: row.get("terms_cause")
+        for row in run.tables["ORDERS"]
+        if row.get("terms_kind") == "CLOSE_TERMS"
+    }
+    positions = ended = unknown = 0
     for row in run.tables["POSITIONS"]:
         opened = _time(row["opened_at_time"])
-        close_id = row.get("close_fill_id")
-        closed = fills.get(close_id) if close_id else None
-        if opened < start and (closed is None or closed >= start):
-            positions += 1
-            if closed == start:
+        close_fill = fills.get(row.get("close_fill_id") or "")
+        closed = None if close_fill is None else _time(close_fill["processed_at_time"])
+        if not (opened < start and (closed is None or closed >= start)):
+            continue
+        if closed == start and close_fill is not None:
+            cause = causes.get(close_fill.get("order_id") or "")
+            if cause in FORCED_CLOSE_CAUSES:
                 ended += 1
+                continue
+            if cause not in NORMAL_CLOSE_CAUSES:
+                unknown += 1
+                continue
+        positions += 1
     events: dict[str, list[tuple[datetime, str]]] = {}
     for row in run.tables["ORDER_EVENTS"]:
         events.setdefault(row["order_id"], []).append((_time(row["at_time"]), row["to_status"]))
-    orders = 0
+    orders = canceled_or_expired = 0
     for row in run.tables["ORDERS"]:
         accepted = _time(row["accepted_at_time"])
         history = sorted(events.get(row["order_id"], []))
         terminal = [(at, status) for at, status in history if status != "PENDING"]
-        finished = terminal[0][0] if terminal else None
-        if accepted < start and (finished is None or finished >= start):
-            orders += 1
-            if any(at == start and status not in _ALLOWED_ENDS for at, status in terminal):
+        finished = terminal[0] if terminal else None
+        if not (accepted < start and (finished is None or finished[0] >= start)):
+            continue
+        if finished is not None and finished[0] == start:
+            if finished[1] in _ALLOWED_ENDS:
+                canceled_or_expired += 1
+            else:
                 ended += 1
+            continue
+        orders += 1
     if ended:
         result = FAIL
-    elif positions or orders:
-        result = PASS
-    else:
+    elif unknown or not (positions or orders):
         result = UNVERIFIABLE
-    return {"result": result, "positions": positions, "orders": orders, "ended": ended}
+    else:
+        result = PASS
+    return {
+        "result": result,
+        "positions": positions,
+        "orders": orders,
+        "ended": ended,
+        "canceled_or_expired": canceled_or_expired,
+        "unknown": unknown,
+    }
 
 
 # --- 判定 2 -----------------------------------------------------------------------
@@ -394,13 +463,13 @@ def check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
     }
     parts: dict[str, str] = {}
     if readiness is None and skips:
-        # 窓が表22 から分からない（行が無い、または経過時間の窓がある）。
-        # 確認不能にする（D12 §12.5.1、決定 18）。
+        # 窓が表22 から分からない（行が無い・経過時間の窓がある・公開が窓の本数に満たない）。
+        # (a) だけを確認不能にし、(b) は期間の中の見送りをすべて数える（D12 §12.5.1、決定 18・21）。
         parts["a_skips_inside_periods"] = UNVERIFIABLE
         detail["unverifiable_reason"] = (
             "窓が表22 から分からず、データの開始の準備の範囲を決められない"
         )
-        considered: list[datetime] = []
+        considered = skips
     else:
         considered = [t for t in skips if readiness is None or t >= readiness]
         outside = [t for t in considered if not any(s <= t < e for s, e, _ in periods)]
@@ -464,15 +533,17 @@ def check_integrity(run: RunArtifacts) -> dict[str, Any]:
         else FAIL
     )
     outcome = run.outcome or {}
+    # 決定 26: 評価 manifest とは run_id と時刻の規則の表の参照を照合する。snapshot の識別子は
+    # run manifest・実験の記録票・snapshot の manifest の間で照合する。読めなければ不合格。
     matches = (
         evaluation.get("run_id") == run.run_id
         and outcome.get("run_id") == run.run_id
         and outcome.get("result_digest") == evaluation.get("result_digest")
         and evaluation.get("time_rule_table_ref") == run.time_rule_table_ref
-        and (
-            run.snapshot_time_rule_table is None
-            or dict(run.snapshot_time_rule_table) == dict(run.time_rule_table_ref)
-        )
+        and run.experiment_snapshot_id == run.snapshot_id
+        and run.snapshot_manifest_id == run.snapshot_id
+        and run.snapshot_time_rule_table is not None
+        and dict(run.snapshot_time_rule_table) == dict(run.time_rule_table_ref)
     )
     parts["b_manifest_matches"] = PASS if matches else FAIL
     if run.reproduction is None:
@@ -481,7 +552,7 @@ def check_integrity(run: RunArtifacts) -> dict[str, Any]:
         reproduced = (
             run.reproduction.get("verdict") == _REPRODUCED
             and run.reproduction.get("observed_run_id") == run.run_id
-            and run.reproduction.get("observed_result_digest") == evaluation.get("result_digest")
+            and run.reproduction.get("observed_result_digest") == outcome.get("result_digest")
         )
         parts["c_reproduced"] = PASS if reproduced else FAIL
     evaluated = [value for value in parts.values() if value != NOT_EVALUATED]
@@ -506,9 +577,14 @@ def check_integrity(run: RunArtifacts) -> dict[str, Any]:
 # --- 判定 4 -----------------------------------------------------------------------
 
 
-def _trading_day(bar_start: datetime) -> str:
-    """日足の区間の始まり（NY 17 時）から取引日（NY の暦日）を出す（区間の始まりの翌日）。"""
-    return (bar_start + timedelta(days=1)).date().isoformat()
+def trading_day_label(bar_end: datetime, tz: tzinfo) -> str:
+    """日足の取引日（D12 §12.5.1、決定 27）。
+
+    区間の終わりの直前（1 マイクロ秒前）のカレンダーの時間帯の日付。順 2 の集計
+    （`tools/survey/full_period_feasibility.py` の `trading_days`）の取引日と同じ規則で、
+    どちらも `fx_ny17_oanda` 版 1 の取引日を指す。
+    """
+    return (bar_end.astimezone(tz) - timedelta(microseconds=1)).date().isoformat()
 
 
 def read_daily_differences(path: Path, pair: str = "USDJPY") -> set[str]:
@@ -524,13 +600,13 @@ def read_daily_differences(path: Path, pair: str = "USDJPY") -> set[str]:
 
 
 def check_daily_differences(
-    standard: RunArtifacts, candidate: RunArtifacts, expected_days: set[str]
+    standard: RunArtifacts, candidate: RunArtifacts, expected_days: set[str], tz: tzinfo
 ) -> dict[str, Any]:
     """判定 4: 戦略 B の日足の `recorded_minutes` が違う取引日と、順 2 の集計の取引日の一致。"""
 
     def daily(run: RunArtifacts) -> dict[str, int]:
         return {
-            _trading_day(_time(row["bar_key_bar_start"])): int(row[COVERAGE_COLUMN])
+            trading_day_label(_time(row["bar_end"]), tz): int(row[COVERAGE_COLUMN])
             for row in run.tables["PUBLICATIONS"]
             if row["bar_key_series"] == DAILY_SERIES
         }
@@ -587,7 +663,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--pair-b", nargs=2, metavar=("STANDARD", "CANDIDATE"), help="判定 4 の戦略 B の 2 本"
     )
     parser.add_argument("--differences", help="順 2 の集計 candidate_differences.csv")
-    parser.add_argument("--snapshots", help="snapshot の基点（変換の組の照合に使う）")
+    parser.add_argument(
+        "--snapshots", required=True, help="snapshot の基点（判定 3 の snapshot の照合に使う）"
+    )
+    parser.add_argument(
+        "--calendar", default=DEFAULT_CALENDAR, help="判定 4 の取引日を決めるカレンダー"
+    )
     parser.add_argument("--out", required=True, help="結果の JSON の書き出し先")
     return parser
 
@@ -596,7 +677,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.monotonic()
     experiments = _pairs(args.experiment)
     reproductions = _pairs(args.reproduction)
-    snapshots = Path(args.snapshots) if args.snapshots else None
+    snapshots = Path(args.snapshots)
     runs = {
         name: load_run(name, path, reproduction_dir=reproductions.get(name), snapshots=snapshots)
         for name, path in experiments.items()
@@ -614,9 +695,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     check_4: dict[str, Any] = {"result": NOT_EVALUATED}
     if args.pair_b and args.differences:
         standard, candidate = (runs[name] for name in args.pair_b)
+        calendar_path = Path(args.calendar)
         check_4 = check_daily_differences(
-            standard, candidate, read_daily_differences(Path(args.differences))
+            standard,
+            candidate,
+            read_daily_differences(Path(args.differences)),
+            load_calendar(calendar_path).tz,
         )
+        check_4["calendar_sha256"] = _sha256(calendar_path)
         check_4["differences_sha256"] = _sha256(Path(args.differences))
     record = {
         "tool": "tools/survey/mt5_single_run_checks.py",
