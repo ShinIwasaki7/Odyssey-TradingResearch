@@ -7,8 +7,8 @@
   一覧に無い表、取り消された（`revoked` が null でない）表は受け付けない（検査 T1。D12-48）。
 - 表の構造の検査（T2・T3・T5）は domain の `TimeRuleTable` が構築時に行う。
 
-全期間の集計の道具（`tools/survey/full_period_feasibility.py` の `load_time_rule_table`）は
-この関数を呼べば、本番と同じ規則で変換の列を作れる（D03 §15.9 の 5、D12 §11.13 の 15）。
+全期間の集計の道具（`tools/survey/full_period_final.py` の `load_time_rule_table`）は
+この関数を呼んで、本番と同じ規則で変換の列を作る（D03 §15.9 の 5、D12 §11.13 の 15）。
 """
 
 from __future__ import annotations

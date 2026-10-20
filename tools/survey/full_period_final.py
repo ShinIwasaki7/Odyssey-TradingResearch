@@ -5,7 +5,8 @@
 
 - 数え方の規則: ``docs/design/counting_rules/counting_rules_v1.yaml``（``load_counting_rules``）
 - 時刻の規則の表: ``docs/design/time_rules/time_rule_table_v1.yaml``（``load_time_rule_table``。
-  承認済みの一覧 ``approved_time_rule_tables.yaml`` とハッシュを照合する。D03 §15.9 の T1）
+  読込と検査は基盤の ``app.config.time_rules.load_time_rule_table`` に任せる。承認済みの一覧
+  ``approved_time_rule_tables.yaml`` とハッシュを照合する。D03 §15.9 の T1）
 - 取引カレンダー: 規則ファイルの ``calendar.declared_as``（``fx_ny17_oanda`` 版 1。SHA-256 を照合）
 
 手順（D03 §15.2〜§15.7、D11 §12、D06 §18.9）:
@@ -50,9 +51,13 @@ from pathlib import Path
 from typing import Any
 
 from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
-from odyssey_fx.app.config.loader import load_yaml_mapping
+from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
+from odyssey_fx.app.config.time_rules import (
+    load_time_rule_table as load_approved_time_rule_table,
+)
 from odyssey_fx.common.time import Interval
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
+from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from tools.survey.full_period_feasibility import (
     COVERAGE_COLUMNS,
@@ -237,8 +242,7 @@ class RulePeriod:
     row: int
     start: date  # 含む
     end: date  # 含まない
-    status: str
-    mark: str
+    mark: str  # 区分の印（表の mark の値。表示と照合にだけ使う）
     standard_hours: int
     candidate_hours: int | None
 
@@ -289,62 +293,46 @@ class TableConversion:
 
 
 def load_time_rule_table(path: Path, approved_list: Path) -> list[TableConversion]:
-    """入力点 2: 時刻の規則の表を読み、[standard, candidate] の変換の組を返す（D03 §15.9）。
+    """入力点 2: 時刻の規則の表を読み、[standard, candidate] の変換の組を返す（D03 §15.9 の 5）。
 
-    検査: T1 承認済みの一覧に SHA-256 があり取り消されていない、T2 通貨ごとに期間が重ならず
-    対象期間を隙間なく覆う、T3 境目（両端を除く）が日曜、T5 区分と候補の対応。
+    読込と検査は基盤の ``app.config.time_rules.load_time_rule_table`` が行う（本番の受入れと同じ
+    規則。D03 §15.12「調査用の道具と本番実装で規則を別々に持たせない」）: T1 承認済みの一覧に
+    SHA-256・識別・版があり取り消されていない、T2 通貨ごとに期間が重ならず対象期間を隙間なく覆う、
+    T3 境目（両端を除く）が日曜、T5 区分と候補の対応、と表の形（未宣言のキーを拒否）。
+    基盤の検査の失敗は ``FeasibilityError`` に包んで返す（集計の道具の失敗の型をそろえる）。
+    必須のキーが無い表は基盤が ``ConfigError`` にするが、``KeyError`` が漏れても同じく包む
+    （終了コード 2 を保つ。人間の決定 2026-10-20 の 1）。
+
+    本関数が足すのは、``candidate`` の組の作り方（D12-92 (a)）が候補 1 つの行だけで決まっている
+    ことの検査（候補が 2 つ以上の行があれば読込で止める）と、通貨ごとの期間の並びへの組み替えだけ。
     """
-    digest = sha256_file(path)
-    approved = load_yaml_mapping(approved_list)
-    payload = load_yaml_mapping(path)
-    hits = [
-        t
-        for t in approved.get("tables", [])
-        if t.get("sha256") == digest
-        and t.get("id") == payload.get("id")
-        and t.get("version") == payload.get("version")
-    ]
-    if not hits or any(t.get("revoked") is not None for t in hits):
-        raise FeasibilityError(
-            f"{path} の SHA-256 が承認済みの一覧に無いか、取り消されている（T1）"
-        )
-    cov = payload["coverage"]
-    first, last = cov["from"], cov["to"]
-    per_pair: dict[str, list[RulePeriod]] = {p: [] for p in cov["pairs"]}
-    for row in payload["rows"]:
-        cands = row.get("candidates") or []
-        mark = str(row["mark"])
-        if (mark == "confirmed" or mark == "assumed_same") and cands:
-            raise FeasibilityError(f"表の行 {row['row']} は候補を持てない（T5）")
-        if mark == "assumed_differs" and len(cands) != 1:
+    try:
+        table = load_approved_time_rule_table(path, approved_list)
+    except (ConfigError, MarketDataValueError, KeyError) as exc:
+        raise FeasibilityError(f"{path} の時刻の規則の表を受け付けない: {exc}") from exc
+    per_pair: dict[str, list[RulePeriod]] = {pair: [] for pair in table.pairs}
+    for row in table.rows:
+        cands = row.candidate_offset_hours
+        if len(cands) > 1:
             raise FeasibilityError(
-                f"表の行 {row['row']} の候補が 1 つでない（T5。組の作り方が未定義）"
+                f"表の行 {row.row} の候補が 1 つでない（T5。組の作り方が未定義）"
             )
-        for pair in row["pairs"]:
-            for period in row["periods"]:
+        for pair in row.pairs:
+            for period in row.periods:
                 per_pair[pair].append(
                     RulePeriod(
-                        row=int(row["row"]),
-                        start=period["from"],
-                        end=period["to"],
-                        status=str(row["status"]),
-                        mark=mark,
-                        standard_hours=int(row["standard"]["offset_hours"]),
-                        candidate_hours=int(cands[0]["offset_hours"]) if cands else None,
+                        row=row.row,
+                        start=period.start,
+                        end=period.end,
+                        mark=row.mark.value,
+                        standard_hours=row.standard_offset_hours,
+                        candidate_hours=cands[0] if cands else None,
                     )
                 )
-    frozen: dict[str, tuple[RulePeriod, ...]] = {}
-    for pair, periods in per_pair.items():
-        periods.sort(key=lambda p: p.start)
-        if not periods or periods[0].start != first or periods[-1].end != last:
-            raise FeasibilityError(f"表が {pair} の対象期間の両端を覆わない（T2）")
-        for before, after in zip(periods, periods[1:], strict=False):
-            if before.end != after.start:
-                raise FeasibilityError(f"表の {pair} の期間に隙間か重なりがある（T2）")
-            if after.start.weekday() != 6:
-                raise FeasibilityError(f"表の {pair} の境目 {after.start} が日曜でない（T3）")
-        frozen[pair] = tuple(periods)
-    return [TableConversion(name, digest, frozen) for name in (STANDARD, CANDIDATE)]
+    frozen = {
+        pair: tuple(sorted(periods, key=lambda p: p.start)) for pair, periods in per_pair.items()
+    }
+    return [TableConversion(name, table.sha256, frozen) for name in (STANDARD, CANDIDATE)]
 
 
 # --- 足の区分 ---------------------------------------------------------------------
