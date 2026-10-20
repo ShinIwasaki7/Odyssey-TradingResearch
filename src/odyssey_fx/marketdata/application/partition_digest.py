@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from datetime import datetime
 
 from odyssey_fx.marketdata.domain.bar import Bar
 
@@ -89,15 +90,28 @@ def partition_row(bar: Bar) -> tuple[str, ...]:
     価格・出来高は文字列のままにする。浮動小数を経由すると、書いた値と読んだ値が一致
     しなくなる（ADR-0012）。
     """
+    end_text = str(bar.bar_end)
+    return _row(bar, str(bar.bar_start), end_text, _available_text(bar, end_text))
+
+
+def _available_text(bar: Bar, end_text: str) -> str:
+    """公開時刻の文字列（足の終了時刻と同じ時刻なら、その文字列を使い回す）。"""
+    if bar.available_at.value == bar.bar_end.value:
+        return end_text
+    return str(bar.available_at)
+
+
+def _row(bar: Bar, start_text: str, end_text: str, available_text: str) -> tuple[str, ...]:
+    """足1本の行（時刻の 3 列は呼び出し側が文字列にしたもの。同じ時刻は同じ文字列になる）。"""
     base = (
-        str(bar.bar_start),
-        str(bar.bar_end),
+        start_text,
+        end_text,
         str(bar.open.value),
         str(bar.high.value),
         str(bar.low.value),
         str(bar.close.value),
         str(bar.volume),
-        str(bar.available_at),
+        available_text,
         bar.provenance.kind.value,
         bar.provenance.source_ref,
     )
@@ -127,7 +141,18 @@ def partition_digest_hex(bars: Iterable[Bar]) -> str:
     （受入れの決定論性、D03 §4）。
     """
     hasher = hashlib.sha256()
+    # 時刻の文字列化は足ごとに 3 回あり、実データの 1 分足では照合の時間の大半を占める。足の
+    # 開始は直前の足の終了と、公開時刻は足の終了と同じ時刻であることが多いので、同じ時刻なら
+    # 作った文字列を使い回す（同じ時刻の文字列は同じなので、行の文字列とダイジェストは変わらない）。
+    previous_end: datetime | None = None
+    previous_end_text = ""
     for bar in sorted(bars, key=lambda item: item.bar_start.value):
-        hasher.update(_UNIT_SEPARATOR.join(partition_row(bar)).encode("utf-8"))
+        start = bar.bar_start.value
+        start_text = previous_end_text if start == previous_end else str(bar.bar_start)
+        end_text = str(bar.bar_end)
+        row = _row(bar, start_text, end_text, _available_text(bar, end_text))
+        hasher.update(_UNIT_SEPARATOR.join(row).encode("utf-8"))
         hasher.update(_RECORD_SEPARATOR)
+        previous_end = bar.bar_end.value
+        previous_end_text = end_text
     return hasher.hexdigest()

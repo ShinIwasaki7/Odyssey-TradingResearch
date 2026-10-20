@@ -122,3 +122,27 @@ def test_a_broken_bar_is_still_refused_by_the_bar_invariant(tmp_path: Path) -> N
     rows[0] = tuple(broken)
     with pytest.raises(MarketDataValueError, match="low <= min\\(open, close\\)"):
         _write(tmp_path, rows).read_partition("snap", PARTITION)
+
+
+def test_a_missing_column_fails_like_a_row_by_row_read(tmp_path: Path) -> None:
+    """列が無い表は、行ごとの辞書で読んだ場合と同じく、最初の行でその列名の `KeyError` になる。
+
+    読み込みは行ごとの辞書を作らず列を1度だけ写して引く（run の高速化の PR、人間の決定 1）。
+    """
+    rows = _rows()
+    target = tmp_path / "snap" / PARTITION.directory
+    target.mkdir(parents=True)
+    kept = tuple(column for column in PARTITION_COLUMNS if column != "provenance_ref")
+    frame = pl.DataFrame(
+        {column: [row[PARTITION_COLUMNS.index(column)] for row in rows] for column in kept},
+        schema=dict.fromkeys(kept, pl.String),
+    )
+    frame.write_parquet(target / "bars.parquet")
+    with pytest.raises(KeyError) as missing:
+        ParquetSnapshotStore(root=tmp_path).read_partition("snap", PARTITION)
+    assert missing.value.args == ("provenance_ref",)
+
+
+def test_an_empty_partition_reads_as_no_bars(tmp_path: Path) -> None:
+    store = _write(tmp_path, [])
+    assert store.read_partition("snap", PARTITION) == ()

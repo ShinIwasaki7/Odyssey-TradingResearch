@@ -18,6 +18,7 @@ snapshot になる（D03 §3.7.1）。
 
 from __future__ import annotations
 
+import bisect
 import platform
 import secrets
 import subprocess
@@ -27,6 +28,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import odyssey_fx
@@ -173,6 +175,7 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     PartitionedBars,
     ReadableSnapshot,
     VerifiedPartitionBars,
+    readable_surface,
 )
 from odyssey_fx.marketdata.domain.access import (
     INITIAL_ACCESS_BOUNDARIES,
@@ -708,14 +711,43 @@ class _IntrabarBars:
     """
 
     bars: Mapping[SeriesId, tuple[Bar, ...]]
+    #: 系列ごとの足の開始時刻（`bars` と同じ並び）。二分探索の索引で、構築時に1度だけ作る。
+    _starts: Mapping[SeriesId, tuple[datetime, ...]] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        # 二分探索は足が開始時刻の昇順に並んでいることを前提にする。読み出し層
+        # （`PartitionedBars`）が並べているが、崩れていれば間違った足を黙って返すことになるので、
+        # 構築時に1度だけ確かめ、崩れていれば止める（同じ開始時刻が並ぶことは妨げない）。
+        frozen = MappingProxyType(dict(self.bars))
+        starts: dict[SeriesId, tuple[datetime, ...]] = {}
+        for series, bars in frozen.items():
+            values = tuple(bar.bar_start.value for bar in bars)
+            for index in range(1, len(values)):
+                if values[index] < values[index - 1]:
+                    raise MarketDataValueError(
+                        f"the bars of {series} are not in ascending order of bar_start"
+                        f" ({bars[index].bar_start} follows {bars[index - 1].bar_start});"
+                        " the intrabar series needs them sorted (D06 §7.4)"
+                    )
+            starts[series] = values
+        object.__setattr__(self, "bars", frozen)
+        object.__setattr__(self, "_starts", MappingProxyType(starts))
 
     def bars_in(self, series: SeriesId, interval: Interval) -> tuple[Bar, ...]:
-        """区間に**収まる**下位足（D06 §7.4）。"""
-        return tuple(
-            bar
-            for bar in self.bars.get(series, ())
-            if interval.start <= bar.bar_start and bar.bar_end <= interval.end
-        )
+        """区間に**収まる**下位足（D06 §7.4）。
+
+        開始時刻が区間の始まり以上・区間の終わり未満の足を二分探索で切り出し、その中で終わりが
+        区間の終わり以下の足を返す。足は開始時刻の昇順で、終わりは開始より後（`Interval`）なので、
+        開始が区間の終わり以上の足は区間に収まらない。返す足と並びは、全件を先頭から走査して
+        「始まりが区間の始まり以上かつ終わりが区間の終わり以下」で選ぶのと同じである。
+        """
+        bars = self.bars.get(series, ())
+        starts = self._starts.get(series, ())
+        low = bisect.bisect_left(starts, interval.start.value)
+        high = bisect.bisect_left(starts, interval.end.value, lo=low)
+        return tuple(bar for bar in bars[low:high] if bar.bar_end <= interval.end)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1029,7 +1061,10 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
         schedule=inputs.schedules[experiment.execution_series],
     )
     levels = experiment.execution_policy.resolution_hierarchy.levels
-    bars_of = {series: inputs.bars_of(series) for series in inputs.schedules}
+    # 系列ごとの足は、as-of ビューが関門を通した写しから1度だけ作った読み取り面を使い回す
+    # （`inputs.bars_of` と同じ足・同じ並び。呼ぶたびに全 partition の足を並べ直さない）。
+    surface = readable_surface(verified, inputs.allowed_partitions)
+    bars_of = {series: surface.bars_or_empty(series) for series in inputs.schedules}
     # MT5 経路の snapshot なら、約定の側の 1 分足のビュー・被覆の報告・表22 を組み立てる
     # （D06 §18.2・§18.9・§18.10）。HistData の経路では何も足さない（D06 §18.1）。
     observation = Mt5Observation.from_snapshot(inputs.snapshot)
@@ -1077,7 +1112,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
     intrabar = (
         None
         if len(levels) < 2
-        else _IntrabarBars(bars={level: inputs.bars_of(level) for level in levels})
+        else _IntrabarBars(bars={level: surface.bars_or_empty(level) for level in levels})
     )
     allocator = IdAllocator(plan.run_id)
     output_sink = TraceOutputSink()
