@@ -515,6 +515,21 @@ def _report_from_payload(payload: Mapping[str, Any]) -> IntegrityReport:
     )
 
 
+class _MissingColumn(Sequence[Any]):
+    """partition の表に無い列（引いた所で行ごとの辞書と同じ `KeyError` を出す）。"""
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __getitem__(self, index: Any) -> Any:
+        raise KeyError(self._name)
+
+    def __len__(self) -> int:
+        return 0
+
+
 @dataclass(frozen=True, slots=True)
 class ParquetSnapshotStore:
     """partition の Parquet と manifest を扱う（D03 §8）。
@@ -695,53 +710,80 @@ class ParquetSnapshotStore:
                 " D03 v1.25 (D03 §15.6 の 3)"
             )
         bars: list[Bar] = []
-        for record in frame.iter_rows(named=True):
-            volume = volume_of(str(record["volume"]))
+        # 行ごとの辞書（`iter_rows(named=True)`）を作らず、列を1度だけ Python の列へ写して行の
+        # 位置で引く。値の型は行ごとの辞書と同じで、行ごとの解釈・検査の順序と、最初に失敗する
+        # 行・列も従来と同じである（無い列は、行ごとの辞書と同じく最初に引いた所で `KeyError`）。
+        columns = {name: frame.get_column(name).to_list() for name in frame.columns}
+
+        def column(name: str) -> Sequence[Any]:
+            return columns[name] if name in columns else _MissingColumn(name)
+
+        volume_column = column("volume")
+        bar_start_column = column("bar_start")
+        bar_end_column = column("bar_end")
+        open_column = column("open")
+        high_column = column("high")
+        low_column = column("low")
+        close_column = column("close")
+        available_column = column("available_at")
+        kind_column = column("provenance_kind")
+        ref_column = column("provenance_ref")
+        if has_coverage:
+            expected_column = column("expected_minutes")
+            recorded_column = column("recorded_minutes")
+            first_column = column("first_observed_at")
+            last_column = column("last_observed_at")
+            coverage_row_column = column("time_rule_row")
+        if has_minute:
+            api_time_column = column("api_time")
+            minute_row_column = column("time_rule_row")
+            spread_column = column("spread")
+            negative_column = column("negative_spread")
+        for row in range(frame.height):
+            volume = volume_of(str(volume_column[row]))
             coverage = (
                 BarCoverage(
-                    expected_minutes=int(record["expected_minutes"]),
-                    recorded_minutes=int(record["recorded_minutes"]),
-                    first_observed_at=utc(str(record["first_observed_at"])),
-                    last_observed_at=utc(str(record["last_observed_at"])),
-                    time_rule_row=int(record["time_rule_row"]),
+                    expected_minutes=int(expected_column[row]),
+                    recorded_minutes=int(recorded_column[row]),
+                    first_observed_at=utc(str(first_column[row])),
+                    last_observed_at=utc(str(last_column[row])),
+                    time_rule_row=int(coverage_row_column[row]),
                 )
                 if has_coverage
                 else None
             )
             minute = (
                 MinuteSource(
-                    api_time=int(record["api_time"]),
-                    time_rule_row=int(record["time_rule_row"]),
-                    spread=int(record["spread"]),
+                    api_time=int(api_time_column[row]),
+                    time_rule_row=int(minute_row_column[row]),
+                    spread=int(spread_column[row]),
                 )
                 if has_minute
                 else None
             )
-            if minute is not None and str(record["negative_spread"]) != negative_spread_text(
+            if minute is not None and str(negative_column[row]) != negative_spread_text(
                 minute.negative_spread
             ):
                 # 印は spread から導くので、ダイジェストの照合だけでは印の書き換えを検出できない
                 # （ダイジェストは足から再計算した印で取る）。読み込みで突き合わせる。
                 raise MarketDataValueError(
-                    f"{path}: negative_spread {record['negative_spread']!r} does not match"
-                    f" spread {minute.spread} at {record['bar_start']} (D03 §15.6 の 3)"
+                    f"{path}: negative_spread {negative_column[row]!r} does not match"
+                    f" spread {minute.spread} at {bar_start_column[row]} (D03 §15.6 の 3)"
                 )
             bars.append(
                 Bar(
                     series=series,
                     interval=Interval(
-                        start=utc(str(record["bar_start"])),
-                        end=utc(str(record["bar_end"])),
+                        start=utc(str(bar_start_column[row])),
+                        end=utc(str(bar_end_column[row])),
                     ),
-                    open=price(str(record["open"])),
-                    high=price(str(record["high"])),
-                    low=price(str(record["low"])),
-                    close=price(str(record["close"])),
+                    open=price(str(open_column[row])),
+                    high=price(str(high_column[row])),
+                    low=price(str(low_column[row])),
+                    close=price(str(close_column[row])),
                     volume=volume,
-                    available_at=utc(str(record["available_at"])),
-                    provenance=provenance(
-                        str(record["provenance_kind"]), str(record["provenance_ref"])
-                    ),
+                    available_at=utc(str(available_column[row])),
+                    provenance=provenance(str(kind_column[row]), str(ref_column[row])),
                     coverage=coverage,
                     minute=minute,
                 )

@@ -32,6 +32,12 @@ _PHASE_NAME_PATTERN: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
 #: `UtcTime.__str__` の秒までの書式（D02 §3.1）。
 _SECONDS_FORMAT: Final = "%Y-%m-%dT%H:%M:%S"
 
+#: `UtcTime.__str__` が `isoformat` の速い経路を使う最小の西暦（4 桁の年）。
+_ISOFORMAT_MIN_YEAR: Final = 1000
+
+#: UTC の `isoformat` の末尾（オフセット 0）。
+_UTC_OFFSET_SUFFIX: Final = "+00:00"
+
 #: `UtcTime.parse` が受け付ける文法（D02 §3.1）。照合は `fullmatch`。
 #: 小数部は1〜6桁に限る。`datetime.fromisoformat` は7桁以上を黙って6桁へ切り捨てるため、
 #: 正規表現で先に弾かないと別々の時刻が同じ値・同じダイジェストに潰れる。
@@ -154,9 +160,17 @@ class UtcTime:
     # --- 文字列化 -----------------------------------------------------------
 
     def __str__(self) -> str:
-        base = self.value.strftime(_SECONDS_FORMAT)
-        if self.value.microsecond:
-            return f"{base}.{self.value.microsecond:06d}Z"
+        value = self.value
+        if value.year >= _ISOFORMAT_MIN_YEAR:
+            # `isoformat` は `YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00` を返す（UTC のオフセット 0 は
+            # 構築時に保証済み）。末尾の `+00:00` を `Z` に替えると下の `strftime` の書式と同じ
+            # 文字列になり、`strftime` より速い（snapshot の照合で足ごとに何度も呼ばれる）。
+            return value.isoformat()[: -len(_UTC_OFFSET_SUFFIX)] + "Z"
+        # 西暦 1000 年より前は `strftime` の `%Y` が環境によって 4 桁に揃わないので、従来の書式の
+        # まま作る（`isoformat` は常に 4 桁で、文字列が変わってしまう）。
+        base = value.strftime(_SECONDS_FORMAT)
+        if value.microsecond:
+            return f"{base}.{value.microsecond:06d}Z"
         return f"{base}Z"
 
     def canonical_str(self) -> str:

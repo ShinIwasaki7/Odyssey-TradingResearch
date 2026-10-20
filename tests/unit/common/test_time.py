@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -417,3 +418,52 @@ def test_processing_point_str() -> None:
 def test_processing_point_does_not_order_against_other_types() -> None:
     with pytest.raises(TypeError):
         _ = _point(10, 0, 0) < UtcTime.from_components(2026, 3, 1)  # type: ignore[operator]
+
+
+# --- 文字列化の速い経路（run の高速化の PR、人間の決定 1）---------------------------
+
+
+def _strftime_reference(value: datetime) -> str:
+    """高速化前の `UtcTime.__str__`（`strftime` の書式）と同じ手順の参照実装。"""
+    base = value.strftime("%Y-%m-%dT%H:%M:%S")
+    if value.microsecond:
+        return f"{base}.{value.microsecond:06d}Z"
+    return f"{base}Z"
+
+
+def _sample_moments() -> list[datetime]:
+    generator = random.Random(20261020)
+    edges = [
+        datetime(1000, 1, 1, tzinfo=UTC),
+        datetime(1999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+        datetime(2016, 2, 29, 0, 0, 0, 1, tzinfo=UTC),
+        datetime(2023, 1, 8, 22, 0, tzinfo=UTC),
+        datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+        datetime(999, 12, 31, 23, 59, 59, tzinfo=UTC),
+        datetime(1, 1, 1, tzinfo=UTC),
+        datetime(2026, 3, 1, 12, 0, tzinfo=ZoneInfo("UTC")),
+        datetime(2026, 3, 1, 12, 0, 0, 5, tzinfo=ZoneInfo("UTC")),
+    ]
+    span = (datetime(9999, 12, 31, tzinfo=UTC) - datetime(1, 1, 1, tzinfo=UTC)).total_seconds()
+    randoms = []
+    for _ in range(2000):
+        moment = datetime(1, 1, 1, tzinfo=UTC) + timedelta(seconds=generator.random() * span)
+        if generator.random() < 0.5:
+            moment = moment.replace(microsecond=0)
+        randoms.append(moment)
+    return edges + randoms
+
+
+def test_utc_time_str_equals_the_strftime_format_for_every_year() -> None:
+    """`isoformat` の速い経路（西暦 1000 年以後）と `strftime` の経路（それより前）のどちらでも、
+    高速化前の `strftime` の書式と同じ文字列になる（ダイジェストのバイト列を変えない）。"""
+    for value in _sample_moments():
+        assert str(UtcTime(value)) == _strftime_reference(value), value
+
+
+def test_utc_time_str_is_unchanged_for_the_tz_objects_utc_time_accepts() -> None:
+    """`datetime.UTC` と `ZoneInfo("UTC")` のどちらの tz でも同じ文字列になる。"""
+    for microsecond in (0, 7, 999999):
+        a = UtcTime(datetime(2023, 1, 8, 22, 0, 0, microsecond, tzinfo=UTC))
+        b = UtcTime(datetime(2023, 1, 8, 22, 0, 0, microsecond, tzinfo=ZoneInfo("UTC")))
+        assert str(a) == str(b) == _strftime_reference(a.value)
