@@ -1,0 +1,352 @@
+{
+ "tool": "tools/survey/mt5_single_run_checks.py",
+ "tool_sha256": "971134caf48aecd5f613e9af801d2dabc0a125a42a2cfde4ae669deda173a3cb",
+ "runs": {
+  "a_standard": {
+   "run_id": "eda5db3efe9ddbde4d793d73422deed62f9773ddfdaf25115f1b421d970df8dd",
+   "snapshot_id": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+   "read_errors": {},
+   "missing_fields_on_load": [],
+   "run_interval": [
+    "2017-01-01T22:00:00Z",
+    "2023-12-29T22:00:00Z"
+   ],
+   "check_1_history_reset_scoring": {
+    "result": "UNVERIFIABLE",
+    "parts": {
+     "a_completed": "PASS",
+     "b_reset_rows": "PASS",
+     "c_scored": "UNVERIFIABLE",
+     "d_ledger_continues": "PASS",
+     "e_positions_orders_continue": "PASS"
+    },
+    "detail": {
+     "table22_rows": 114,
+     "target_rows": 48,
+     "target_series": [
+      "USDJPY/1h/bid"
+     ],
+     "periods": [
+      [
+       "2022-12-25T23:00:00Z",
+       "2022-12-27T19:00:00Z"
+      ]
+     ],
+     "history_resets_match_manifest": true,
+     "history_reset_minutes_total": 25500,
+     "c_unverifiable_reason": "期間ごとの準備のやり直しの分数が評価の集計に無く、run 全体の分数では 2022-12-26 の期間を判定できない（D12 §12.5.1、決定 31）。根拠: tests/acceptance/test_tick_record_model.py::test_a_run_with_an_all_unrecorded_hour_is_evaluated",
+     "continuing_positions": 1,
+     "continuing_orders": 0,
+     "ended_at_period_start": 0,
+     "canceled_or_expired_at_period_start": 0,
+     "positions_with_unknown_close_cause": 0,
+     "close_orders_judged_by_positions": 0,
+     "filled_orders_at_period_start": 0,
+     "orders_with_unknown_end": 0
+    }
+   },
+   "check_2_skips_match_resets": {
+    "result": "PASS",
+    "parts": {
+     "a_skips_inside_periods": "PASS",
+     "b_each_period_has_skip": "PASS"
+    },
+    "detail": {
+     "warmup_skips": 851,
+     "table22_rows": 114,
+     "initial_readiness_at": "2017-01-02T19:00:00Z",
+     "considered_skips": 811,
+     "excluded_initial_skips": 40,
+     "skips_outside_periods": 0,
+     "rows_with_skip": 114,
+     "rows_without_trigger": 0,
+     "rows_missing_skip": 0,
+     "rows_outside_run": 0
+    }
+   },
+   "check_3_integrity": {
+    "result": "PASS",
+    "parts": {
+     "a_consistency_checks": "PASS",
+     "b_manifest_matches": "PASS",
+     "c_reproduced": "PASS"
+    },
+    "detail": {
+     "consistency_checks": 13,
+     "consistency_failed": 0,
+     "invalid_fields": [],
+     "run_id": "eda5db3efe9ddbde4d793d73422deed62f9773ddfdaf25115f1b421d970df8dd",
+     "config_digest": "9b2cd6234274ed7c75476f80c38d10e89181fb546bc7da57137cb6483fa14229",
+     "result_digest": "85d7e015870d4812a056dd259c74f80fc69e63cc5e4ad98a5079b668b603d607",
+     "snapshot_id": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+     "time_rule_variant": "standard"
+    }
+   }
+  },
+  "a_candidate": {
+   "run_id": "e2de1c2c1333bf40e2a7e1d9115aff23cc4b963dbd49629ef20ce8807b980850",
+   "snapshot_id": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+   "read_errors": {},
+   "missing_fields_on_load": [],
+   "run_interval": [
+    "2017-01-01T22:00:00Z",
+    "2023-12-29T22:00:00Z"
+   ],
+   "check_1_history_reset_scoring": {
+    "result": "UNVERIFIABLE",
+    "parts": {
+     "a_completed": "PASS",
+     "b_reset_rows": "PASS",
+     "c_scored": "UNVERIFIABLE",
+     "d_ledger_continues": "PASS",
+     "e_positions_orders_continue": "PASS"
+    },
+    "detail": {
+     "table22_rows": 134,
+     "target_rows": 48,
+     "target_series": [
+      "USDJPY/1h/bid"
+     ],
+     "periods": [
+      [
+       "2022-12-25T23:00:00Z",
+       "2022-12-27T19:00:00Z"
+      ]
+     ],
+     "history_resets_match_manifest": true,
+     "history_reset_minutes_total": 64140,
+     "c_unverifiable_reason": "期間ごとの準備のやり直しの分数が評価の集計に無く、run 全体の分数では 2022-12-26 の期間を判定できない（D12 §12.5.1、決定 31）。根拠: tests/acceptance/test_tick_record_model.py::test_a_run_with_an_all_unrecorded_hour_is_evaluated",
+     "continuing_positions": 1,
+     "continuing_orders": 0,
+     "ended_at_period_start": 0,
+     "canceled_or_expired_at_period_start": 0,
+     "positions_with_unknown_close_cause": 0,
+     "close_orders_judged_by_positions": 0,
+     "filled_orders_at_period_start": 0,
+     "orders_with_unknown_end": 0
+    }
+   },
+   "check_2_skips_match_resets": {
+    "result": "PASS",
+    "parts": {
+     "a_skips_inside_periods": "PASS",
+     "b_each_period_has_skip": "PASS"
+    },
+    "detail": {
+     "warmup_skips": 1281,
+     "table22_rows": 134,
+     "initial_readiness_at": "2017-01-02T19:00:00Z",
+     "considered_skips": 1241,
+     "excluded_initial_skips": 40,
+     "skips_outside_periods": 0,
+     "rows_with_skip": 134,
+     "rows_without_trigger": 0,
+     "rows_missing_skip": 0,
+     "rows_outside_run": 0
+    }
+   },
+   "check_3_integrity": {
+    "result": "PASS",
+    "parts": {
+     "a_consistency_checks": "PASS",
+     "b_manifest_matches": "PASS",
+     "c_reproduced": "PASS"
+    },
+    "detail": {
+     "consistency_checks": 13,
+     "consistency_failed": 0,
+     "invalid_fields": [],
+     "run_id": "e2de1c2c1333bf40e2a7e1d9115aff23cc4b963dbd49629ef20ce8807b980850",
+     "config_digest": "f762f1c68282c546220d9de04e03988339a7ba167250a8b7b1522eac11d21138",
+     "result_digest": "46a1b2a4f8b8973ed9d519cf9bc84e9a8f8a8239cb7519b25c96b7b0f5b1ce47",
+     "snapshot_id": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+     "time_rule_variant": "candidate"
+    }
+   }
+  },
+  "b_standard": {
+   "run_id": "01338b82b1931b1ae54da986bc5b389040da5dfab72a7fe6be74f709c1958f31",
+   "snapshot_id": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+   "read_errors": {},
+   "missing_fields_on_load": [],
+   "run_interval": [
+    "2017-01-01T22:00:00Z",
+    "2023-12-29T22:00:00Z"
+   ],
+   "check_1_history_reset_scoring": {
+    "result": "UNVERIFIABLE",
+    "parts": {
+     "a_completed": "PASS",
+     "b_reset_rows": "PASS",
+     "c_scored": "UNVERIFIABLE",
+     "d_ledger_continues": "PASS",
+     "e_positions_orders_continue": "UNVERIFIABLE"
+    },
+    "detail": {
+     "table22_rows": 652,
+     "target_rows": 2,
+     "target_series": [
+      "USDJPY/1d_ny17/bid"
+     ],
+     "periods": [
+      [
+       "2022-12-26T22:00:00Z",
+       "2023-03-20T21:00:00Z"
+      ]
+     ],
+     "history_resets_match_manifest": true,
+     "history_reset_minutes_total": 168510,
+     "c_unverifiable_reason": "期間ごとの準備のやり直しの分数が評価の集計に無く、run 全体の分数では 2022-12-26 の期間を判定できない（D12 §12.5.1、決定 31）。根拠: tests/acceptance/test_tick_record_model.py::test_a_run_with_an_all_unrecorded_hour_is_evaluated",
+     "continuing_positions": 0,
+     "continuing_orders": 0,
+     "ended_at_period_start": 0,
+     "canceled_or_expired_at_period_start": 0,
+     "positions_with_unknown_close_cause": 0,
+     "close_orders_judged_by_positions": 0,
+     "filled_orders_at_period_start": 0,
+     "orders_with_unknown_end": 0,
+     "unverifiable_reason": "やり直しの期間の始まりをまたぐ建玉・注文が無いか、始まりの時刻の決済が強制決済かどうかを記録から区別できない。根拠: tests/acceptance/test_tick_record_model_marketdata.py::test_c2_the_run_records_history_resets_and_keeps_going"
+    }
+   },
+   "check_2_skips_match_resets": {
+    "result": "PASS",
+    "parts": {
+     "a_skips_inside_periods": "PASS",
+     "b_each_period_has_skip": "PASS"
+    },
+    "detail": {
+     "warmup_skips": 3719,
+     "table22_rows": 652,
+     "initial_readiness_at": "2017-03-24T21:00:00Z",
+     "considered_skips": 3380,
+     "excluded_initial_skips": 339,
+     "skips_outside_periods": 0,
+     "rows_with_skip": 652,
+     "rows_without_trigger": 0,
+     "rows_missing_skip": 0,
+     "rows_outside_run": 0
+    }
+   },
+   "check_3_integrity": {
+    "result": "PASS",
+    "parts": {
+     "a_consistency_checks": "PASS",
+     "b_manifest_matches": "PASS",
+     "c_reproduced": "PASS"
+    },
+    "detail": {
+     "consistency_checks": 13,
+     "consistency_failed": 0,
+     "invalid_fields": [],
+     "run_id": "01338b82b1931b1ae54da986bc5b389040da5dfab72a7fe6be74f709c1958f31",
+     "config_digest": "6c7bb7a9fe187f09ac0517b33db3416008688cb550cde0e2fd38bd236a34b62c",
+     "result_digest": "28134acf9eaa9ee1f8401e1fe091af93cfb32406c537230f826eb692af90ff2f",
+     "snapshot_id": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+     "time_rule_variant": "standard"
+    }
+   }
+  },
+  "b_candidate": {
+   "run_id": "b311f120c274272da82135069a5c7c4f37b7c7170f9072802ad641c99bf77488",
+   "snapshot_id": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+   "read_errors": {},
+   "missing_fields_on_load": [],
+   "run_interval": [
+    "2017-01-01T22:00:00Z",
+    "2023-12-29T22:00:00Z"
+   ],
+   "check_1_history_reset_scoring": {
+    "result": "UNVERIFIABLE",
+    "parts": {
+     "a_completed": "PASS",
+     "b_reset_rows": "PASS",
+     "c_scored": "UNVERIFIABLE",
+     "d_ledger_continues": "PASS",
+     "e_positions_orders_continue": "UNVERIFIABLE"
+    },
+    "detail": {
+     "table22_rows": 752,
+     "target_rows": 2,
+     "target_series": [
+      "USDJPY/1d_ny17/bid"
+     ],
+     "periods": [
+      [
+       "2022-12-26T22:00:00Z",
+       "2023-03-20T21:00:00Z"
+      ]
+     ],
+     "history_resets_match_manifest": true,
+     "history_reset_minutes_total": 206700,
+     "c_unverifiable_reason": "期間ごとの準備のやり直しの分数が評価の集計に無く、run 全体の分数では 2022-12-26 の期間を判定できない（D12 §12.5.1、決定 31）。根拠: tests/acceptance/test_tick_record_model.py::test_a_run_with_an_all_unrecorded_hour_is_evaluated",
+     "continuing_positions": 0,
+     "continuing_orders": 0,
+     "ended_at_period_start": 0,
+     "canceled_or_expired_at_period_start": 0,
+     "positions_with_unknown_close_cause": 0,
+     "close_orders_judged_by_positions": 0,
+     "filled_orders_at_period_start": 0,
+     "orders_with_unknown_end": 0,
+     "unverifiable_reason": "やり直しの期間の始まりをまたぐ建玉・注文が無いか、始まりの時刻の決済が強制決済かどうかを記録から区別できない。根拠: tests/acceptance/test_tick_record_model_marketdata.py::test_c2_the_run_records_history_resets_and_keeps_going"
+    }
+   },
+   "check_2_skips_match_resets": {
+    "result": "PASS",
+    "parts": {
+     "a_skips_inside_periods": "PASS",
+     "b_each_period_has_skip": "PASS"
+    },
+    "detail": {
+     "warmup_skips": 4553,
+     "table22_rows": 752,
+     "initial_readiness_at": "2017-03-24T21:00:00Z",
+     "considered_skips": 4297,
+     "excluded_initial_skips": 256,
+     "skips_outside_periods": 0,
+     "rows_with_skip": 752,
+     "rows_without_trigger": 0,
+     "rows_missing_skip": 0,
+     "rows_outside_run": 0
+    }
+   },
+   "check_3_integrity": {
+    "result": "PASS",
+    "parts": {
+     "a_consistency_checks": "PASS",
+     "b_manifest_matches": "PASS",
+     "c_reproduced": "PASS"
+    },
+    "detail": {
+     "consistency_checks": 13,
+     "consistency_failed": 0,
+     "invalid_fields": [],
+     "run_id": "b311f120c274272da82135069a5c7c4f37b7c7170f9072802ad641c99bf77488",
+     "config_digest": "891572b8425b7cbe7333ecddcbd02f9887fd6b8f8dbf34f554e69cd2d53ea20b",
+     "result_digest": "22e1d59d20a26306375ddb731d04886c4653c781fdcc53994ce05adc09103e4c",
+     "snapshot_id": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+     "time_rule_variant": "candidate"
+    }
+   }
+  }
+ },
+ "check_4_daily_differences": {
+  "result": "PASS",
+  "parts": {
+   "a_same_bars": "PASS",
+   "b_matches_aggregation": "PASS"
+  },
+  "detail": {
+   "daily_bars_standard": 1815,
+   "daily_bars_candidate": 1815,
+   "differing_days": 41,
+   "expected_days": 41,
+   "matched_days": 41,
+   "unexpected_days": [],
+   "missing_days": [],
+   "not_published_days": []
+  },
+  "calendar_sha256": "a9da0d9ae6b3246b5bb67757a7b6cb4ac50e5a012c96a5c4a075bc1148a79b96",
+  "differences_sha256": "4ae828d1c66b2eb45721730758dc08a820268a207d0eaac049651e2460ada9bd"
+ },
+ "elapsed_seconds": 23.0
+}
