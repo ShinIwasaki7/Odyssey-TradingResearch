@@ -72,7 +72,8 @@ COVERAGE_COLUMN: Final = "recorded_minutes"
 
 _WARMUP: Final = "WARMUP_INSUFFICIENT"
 _SKIPPED: Final = "SKIPPED"
-_CANCELED: Final = "CANCELED"
+#: 期間の始まりに起きてよい注文の終了（D12 §12.5.1 の判定 1 (e)。決定 14・17）。
+_ALLOWED_ENDS: Final = frozenset({"CANCELED", "EXPIRED"})
 _COMPLETED: Final = "COMPLETED"
 _REPRODUCED: Final = "REPRODUCED"
 _PASSED: Final = "PASSED"
@@ -295,7 +296,7 @@ def check_history_reset_scoring(
     parts["e_positions_orders_continue"] = _combine(item["result"] for item in continuation)
     detail["continuing_positions"] = sum(item["positions"] for item in continuation)
     detail["continuing_orders"] = sum(item["orders"] for item in continuation)
-    detail["canceled_at_period_start"] = sum(item["canceled"] for item in continuation)
+    detail["ended_at_period_start"] = sum(item["ended"] for item in continuation)
     if parts["e_positions_orders_continue"] == UNVERIFIABLE:
         detail["unverifiable_reason"] = (
             "やり直しの期間の始まりをまたぐ建玉・注文が無い。根拠: tests/acceptance/"
@@ -305,36 +306,43 @@ def check_history_reset_scoring(
 
 
 def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
-    """期間の始まり `start` をまたぐ建玉・注文と、始まりの時刻での取消の有無（PR の仮置き 1）。"""
+    """期間の始まり `start` をまたぐ建玉・注文と、始まりの時刻での終了の有無。
+
+    決定 14・17（D12 §12.5.1 の判定 1 (e)）: 期間の始まりの時刻に、対象の建玉・注文の取消・期限切れ
+    以外の終了の出来事（強制決済など）が無いこと。建玉はその時刻の決済（決済の約定）を、注文は
+    その時刻の取消・期限切れ以外の終了（約定など）を、終了の出来事として数える。
+    """
     fills = {row["fill_id"]: _time(row["processed_at_time"]) for row in run.tables["FILLS"]}
     positions = 0
+    ended = 0
     for row in run.tables["POSITIONS"]:
         opened = _time(row["opened_at_time"])
         close_id = row.get("close_fill_id")
         closed = fills.get(close_id) if close_id else None
         if opened < start and (closed is None or closed >= start):
             positions += 1
+            if closed == start:
+                ended += 1
     events: dict[str, list[tuple[datetime, str]]] = {}
     for row in run.tables["ORDER_EVENTS"]:
         events.setdefault(row["order_id"], []).append((_time(row["at_time"]), row["to_status"]))
     orders = 0
-    canceled = 0
     for row in run.tables["ORDERS"]:
         accepted = _time(row["accepted_at_time"])
         history = sorted(events.get(row["order_id"], []))
         terminal = [(at, status) for at, status in history if status != "PENDING"]
-        ended = terminal[0][0] if terminal else None
-        if accepted < start and (ended is None or ended >= start):
+        finished = terminal[0][0] if terminal else None
+        if accepted < start and (finished is None or finished >= start):
             orders += 1
-            if any(at == start and status == _CANCELED for at, status in terminal):
-                canceled += 1
-    if canceled:
+            if any(at == start and status not in _ALLOWED_ENDS for at, status in terminal):
+                ended += 1
+    if ended:
         result = FAIL
     elif positions or orders:
         result = PASS
     else:
         result = UNVERIFIABLE
-    return {"result": result, "positions": positions, "orders": orders, "canceled": canceled}
+    return {"result": result, "positions": positions, "orders": orders, "ended": ended}
 
 
 # --- 判定 2 -----------------------------------------------------------------------
@@ -351,7 +359,7 @@ def _initial_readiness(run: RunArtifacts) -> datetime | None:
             )
         elif kind == "LATEST":
             windows.add((row["series"], 1))
-        else:  # 経過時間の窓は本数に換算しない（D12-127）。PR の仮置き 2。
+        else:  # 経過時間の窓は本数に換算しない（D12-127）。確認不能にする（D12 §12.5.1、決定 18）。
             return None
     if not windows:
         return None
@@ -386,7 +394,8 @@ def check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
     }
     parts: dict[str, str] = {}
     if readiness is None and skips:
-        # 窓が表22 から分からない（行が無い、または経過時間の窓がある）。PR の仮置き 2。
+        # 窓が表22 から分からない（行が無い、または経過時間の窓がある）。
+        # 確認不能にする（D12 §12.5.1、決定 18）。
         parts["a_skips_inside_periods"] = UNVERIFIABLE
         detail["unverifiable_reason"] = (
             "窓が表22 から分からず、データの開始の準備の範囲を決められない"

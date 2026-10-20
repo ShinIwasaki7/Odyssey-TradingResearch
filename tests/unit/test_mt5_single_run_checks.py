@@ -285,12 +285,31 @@ def test_check_1_is_unverifiable_without_a_spanning_position_or_order(tmp_path: 
     )
 
 
-def test_check_1_fails_when_an_order_is_canceled_at_the_reset(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status", ["CANCELED", "EXPIRED"])
+def test_check_1_allows_a_cancellation_or_expiry_at_the_reset(tmp_path: Path, status: str) -> None:
+    """決定 14・17: 期間の始まりに起きてよい終了は取消・期限切れだけ。"""
     tables = _baseline_tables()
-    tables["ORDER_EVENTS"][1]["to_status"] = "CANCELED"
+    tables["ORDER_EVENTS"][1]["to_status"] = status
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["result"] == PASS
+    assert result["detail"]["ended_at_period_start"] == 0
+
+
+def test_check_1_fails_when_an_order_ends_otherwise_at_the_reset(tmp_path: Path) -> None:
+    tables = _baseline_tables()
+    tables["ORDER_EVENTS"][1]["to_status"] = "FILLED"
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
     assert result["result"] == FAIL
-    assert result["detail"]["canceled_at_period_start"] == 1
+    assert result["detail"]["ended_at_period_start"] == 1
+
+
+def test_check_1_fails_when_a_position_is_closed_at_the_reset(tmp_path: Path) -> None:
+    """建玉の決済（強制決済など）が期間の始まりの時刻にあれば不合格。"""
+    tables = _baseline_tables()
+    tables["FILLS"][1]["processed_at_time"] = RESET_FROM
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["result"] == FAIL
+    assert result["detail"]["ended_at_period_start"] == 1
 
 
 def test_check_1_fails_without_reset_rows_for_the_day(tmp_path: Path) -> None:
