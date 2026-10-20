@@ -607,7 +607,156 @@ def test_check_3_fails_when_the_snapshot_does_not_match(
 ) -> None:
     """決定 26（第 1 巡の P1）: snapshot の照合の相手が読めない・食い違うなら不合格。"""
     result = checks.check_integrity(_load(tmp_path, **kwargs))
+    assert result["result"] == FAIL
+    assert result["parts"].get("b_manifest_matches", FAIL) == FAIL
+
+
+# --- 必須項目の欠落と読込み失敗（人間レビュー 1 回目の P1。D12 §12.5.1 の共通の約束 v0.37） -------
+
+
+def _run_dir(tmp_path: Path) -> Path:
+    return tmp_path / "out" / "runs" / RUN_ID
+
+
+def _drop_key(path: Path, key: str) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload[key]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("relative", "key", "field"),
+    [
+        (
+            "out/runs/" + RUN_ID + "/eval/" + EVAL_ID + "/evaluation.json",
+            "result_digest",
+            "evaluation.result_digest",
+        ),
+        (
+            "out/runs/experiments/x/v1/experiment_outcome.json",
+            "result_digest",
+            "outcome.result_digest",
+        ),
+        (
+            "repro/reproduction.json",
+            "observed_result_digest",
+            "reproduction.observed_result_digest",
+        ),
+    ],
+)
+def test_check_3_fails_when_a_result_digest_is_missing(
+    tmp_path: Path, relative: str, key: str, field: str
+) -> None:
+    """人間の再現手順: ダイジェストを 1 つ消すと判定 3 は不合格（None 同士を一致と扱わない）。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    _drop_key(tmp_path / relative, key)
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    result = checks.check_integrity(run)
+    assert result["result"] == FAIL
+    assert field in result["detail"]["invalid_fields"]
+
+
+def test_check_3_fails_when_all_three_result_digests_are_missing(tmp_path: Path) -> None:
+    experiment, repro, snapshots = _write_run(tmp_path)
+    _drop_key(_run_dir(tmp_path) / "eval" / EVAL_ID / "evaluation.json", "result_digest")
+    _drop_key(experiment / "experiment_outcome.json", "result_digest")
+    _drop_key(repro / "reproduction.json", "observed_result_digest")
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    result = checks.check_integrity(run)
+    assert result["result"] == FAIL
     assert result["parts"]["b_manifest_matches"] == FAIL
+    assert result["parts"]["c_reproduced"] == FAIL
+
+
+def test_a_missing_evaluation_manifest_is_recorded_as_a_failure(tmp_path: Path) -> None:
+    """人間の再現手順: 評価 manifest を消しても止まらず、判定 3 を不合格として記録する。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    (_run_dir(tmp_path) / "eval" / EVAL_ID / "evaluation.json").unlink()
+    out = tmp_path / "checks.json"
+    argv = [
+        "--experiment",
+        f"x={experiment}",
+        "--reproduction",
+        f"x={repro}",
+        "--snapshots",
+        str(snapshots),
+        "--out",
+        str(out),
+    ]
+    assert checks.main(argv) == 1  # 判定を書き終えたうえで 0 以外
+    record = json.loads(out.read_text(encoding="utf-8"))["runs"]["x"]
+    assert record["check_3_integrity"]["result"] == FAIL
+    assert "x:evaluation" in record["check_3_integrity"]["detail"]["read_errors"]
+    # 残りの判定は続ける（評価 manifest を要らない判定 2 は読込みの失敗にならない）。
+    assert "read_errors" not in record["check_2_skips_match_resets"]["detail"]
+    assert record["check_2_skips_match_resets"]["result"] != FAIL
+
+
+@pytest.mark.parametrize(
+    ("check", "table"),
+    [
+        (checks.check_history_reset_scoring, "POSITIONS"),
+        (checks.check_skips_match_resets, "EVALUATIONS"),
+        (checks.check_history_reset_scoring, "HISTORY_RESETS"),
+    ],
+)
+def test_checks_fail_when_a_trace_table_is_missing(tmp_path: Path, check: Any, table: str) -> None:
+    experiment, repro, snapshots = _write_run(tmp_path)
+    (_run_dir(tmp_path) / f"{table}.parquet").unlink()
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    result = check(run)
+    assert result["result"] == FAIL
+    assert f"x:table:{table}" in result["detail"]["read_errors"]
+
+
+def test_check_2_fails_when_a_required_column_is_missing(tmp_path: Path) -> None:
+    experiment, repro, snapshots = _write_run(tmp_path)
+    path = _run_dir(tmp_path) / "EVALUATIONS.parquet"
+    pl.read_parquet(path).drop("decision_time").write_parquet(path)
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    assert checks.check_skips_match_resets(run)["result"] == FAIL
+
+
+def test_check_2_fails_on_a_missing_decision_time(tmp_path: Path) -> None:
+    tables = _baseline_tables()
+    tables["EVALUATIONS"][1]["decision_time"] = None
+    result = checks.check_skips_match_resets(_load(tmp_path, tables=tables))
+    assert result["result"] == FAIL
+    assert "invalid_values" in result["detail"]
+
+
+def test_check_1_fails_on_a_missing_time(tmp_path: Path) -> None:
+    tables = _baseline_tables()
+    tables["POSITIONS"][0]["opened_at_time"] = None
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["result"] == FAIL
+
+
+@pytest.mark.parametrize("key", ["time_rule_table_ref", "run_id", "status"])
+def test_all_checks_fail_when_the_run_manifest_is_incomplete(tmp_path: Path, key: str) -> None:
+    experiment, repro, snapshots = _write_run(tmp_path)
+    _drop_key(_run_dir(tmp_path) / "manifest.json", key)
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    assert "manifest" in run.errors
+    for check in (
+        checks.check_history_reset_scoring,
+        checks.check_skips_match_resets,
+        checks.check_integrity,
+    ):
+        assert check(run)["result"] == FAIL
+
+
+def test_all_checks_fail_when_the_outcome_is_unreadable(tmp_path: Path) -> None:
+    experiment, repro, snapshots = _write_run(tmp_path)
+    (experiment / "experiment_outcome.json").write_text("{not json", encoding="utf-8")
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    assert {"outcome", "manifest"} <= set(run.errors)
+    for check in (
+        checks.check_history_reset_scoring,
+        checks.check_skips_match_resets,
+        checks.check_integrity,
+    ):
+        assert check(run)["result"] == FAIL
 
 
 # --- 判定 4 ---------------------------------------------------------------------------
@@ -677,6 +826,39 @@ def test_check_4_is_unverifiable_for_an_unpublished_day(tmp_path: Path) -> None:
     )
     assert result["result"] == UNVERIFIABLE
     assert result["detail"]["not_published_days"] == ["2017-03-20"]
+
+
+def test_check_4_fails_on_a_missing_recorded_minutes(tmp_path: Path) -> None:
+    standard = _daily_run(tmp_path, "s", {"2017-03-13T21:00:00Z": 1374})
+    tables = _baseline_tables()
+    tables["PUBLICATIONS"] = [_publication(DAILY, "2017-03-13T21:00:00Z", "2017-03-13T21:00:00Z")]
+    tables["PUBLICATIONS"][0]["recorded_minutes"] = None
+    candidate = _load(tmp_path / "c", tables=tables)
+    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"}, NEW_YORK)
+    assert result["result"] == FAIL
+
+
+def test_check_4_fails_when_the_aggregation_is_unreadable(tmp_path: Path) -> None:
+    experiment, repro, snapshots = _write_run(tmp_path)
+    out = tmp_path / "checks.json"
+    argv = [
+        "--experiment",
+        f"b={experiment}",
+        "--snapshots",
+        str(snapshots),
+        "--pair-b",
+        "b",
+        "b",
+        "--differences",
+        str(tmp_path / "missing.csv"),
+        "--calendar",
+        str(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml"),
+        "--out",
+        str(out),
+    ]
+    assert checks.main(argv) == 1
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["check_4_daily_differences"]["result"] == FAIL
 
 
 def test_read_daily_differences_takes_the_recorded_minutes_rows(tmp_path: Path) -> None:

@@ -36,10 +36,11 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Final
 
@@ -127,9 +128,71 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+#: 16 進 64 文字のダイジェスト（run_id・result_digest・snapshot の識別子など）。
+_HEX64: Final = re.compile(r"^[0-9a-f]{64}$")
+#: 時刻の規則の表の変換の組（D03 §15.9 の 6）。
+_VARIANTS: Final = frozenset({"standard", "candidate"})
+#: 判定が成り立つには壊れていてはならない共通の入力（結末記録・run manifest）。
+_COMMON_SOURCES: Final = ("outcome", "manifest")
+#: 判定ごとに要る成果物（D12 §12.5.1 の共通の約束: 読めなければその判定は不合格）。
+REQUIRED_SOURCES: Final[Mapping[str, tuple[str, ...]]] = {
+    "check_1": (
+        *_COMMON_SOURCES,
+        "table:HISTORY_RESETS",
+        "table:LEDGER_SNAPSHOTS",
+        "table:POSITIONS",
+        "table:FILLS",
+        "table:ORDERS",
+        "table:ORDER_EVENTS",
+        "category_counts",
+    ),
+    "check_2": (
+        *_COMMON_SOURCES,
+        "table:EVALUATIONS",
+        "table:HISTORY_RESETS",
+        "table:PUBLICATIONS",
+    ),
+    "check_3": (
+        *_COMMON_SOURCES,
+        "evaluation",
+        "consistency",
+        "experiment_manifest",
+        "snapshot_manifest",
+        "reproduction",
+    ),
+    "check_4": (*_COMMON_SOURCES, "table:PUBLICATIONS"),
+}
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _is_hex64(value: object) -> bool:
+    return isinstance(value, str) and _HEX64.fullmatch(value) is not None
+
+
+def _is_table_ref(value: object) -> bool:
+    """時刻の規則の表の参照の形（識別・版・SHA-256・変換の組。D06 §18.10）。"""
+    return (
+        isinstance(value, Mapping)
+        and _is_hex64(value.get("sha256"))
+        and isinstance(value.get("table_id"), str)
+        and bool(value.get("table_id"))
+        and isinstance(value.get("version"), int)
+        and not isinstance(value.get("version"), bool)
+        and value.get("variant") in _VARIANTS
+    )
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 @dataclass(frozen=True)
 class RunArtifacts:
-    """1 本の run の成果物のうち、判定に使う部分（価格を含まない）。"""
+    """1 本の run の成果物のうち、判定に使う部分（価格を含まない）。
+
+    読めなかった成果物は `errors`（成果物の名前 → 理由）に残し、例外で止めない。その成果物を要る
+    判定は不合格になる（D12 §12.5.1 の共通の約束）。
+    """
 
     name: str
     run_id: str
@@ -150,6 +213,29 @@ class RunArtifacts:
     #: snapshot の manifest の識別子と時刻の規則の表の参照（読めなければ `None`）。
     snapshot_manifest_id: str | None = None
     snapshot_time_rule_table: Mapping[str, Any] | None = None
+    errors: Mapping[str, str] = field(default_factory=dict)
+
+
+#: 読込みで起きうる失敗（ファイル無し・JSON 不正・列不足・型の誤り）。
+_READ_ERRORS: Final = (
+    OSError,
+    ValueError,
+    KeyError,
+    TypeError,
+    AttributeError,
+    pl.exceptions.PolarsError,
+)
+
+
+def _describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path.name} が JSON の対象（辞書）でない")
+    return payload
 
 
 def _read_table(path: Path, columns: Sequence[str]) -> list[dict[str, Any]]:
@@ -163,65 +249,130 @@ def load_run(
     reproduction_dir: Path | None = None,
     snapshots: Path,
 ) -> RunArtifacts:
-    """実験の版のディレクトリから run・評価・結末記録・再現の判定を読む（価格の列は読まない）。"""
-    outcome = json.loads((experiment_dir / "experiment_outcome.json").read_text(encoding="utf-8"))
-    run_id = str(outcome["run_id"])
-    run_dir = experiment_dir.parents[2] / run_id
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    config = (
-        json.loads(manifest["config"])
-        if isinstance(manifest["config"], str)
-        else manifest["config"]
-    )
-    interval = config["run_interval"]
-    tables = {
-        table: _read_table(run_dir / f"{table}.parquet", columns)
-        for table, columns in TRACE_COLUMNS.items()
-    }
-    evaluation: Mapping[str, Any] | None = None
+    """実験の版のディレクトリから run・評価・結末記録・再現の判定を読む（価格の列は読まない）。
+
+    読めない成果物は例外で止めず、`errors` に理由を残す。
+    """
+    errors: dict[str, str] = {}
+    outcome: dict[str, Any] | None = None
+    run_dir: Path | None = None
+    try:
+        outcome = _read_json(experiment_dir / "experiment_outcome.json")
+        if not _is_hex64(outcome.get("run_id")):
+            raise ValueError("結末記録の run_id が 16 進 64 文字でない")
+        run_dir = experiment_dir.parents[2] / str(outcome["run_id"])
+    except _READ_ERRORS as exc:
+        errors["outcome"] = _describe(exc)
+
+    run_id = status = config_digest = snapshot_id = ""
+    run_interval = (_EPOCH, _EPOCH)
+    table_ref: Mapping[str, Any] = {}
+    reset_count = 0
+    if run_dir is None:
+        errors["manifest"] = "結末記録が読めず run の場所が分からない"
+    else:
+        try:
+            manifest = _read_json(run_dir / "manifest.json")
+            raw = manifest["config"]
+            config = json.loads(raw) if isinstance(raw, str) else raw
+            interval = config["run_interval"]
+            run_interval = (_time(interval["start"]), _time(interval["end"]))
+            run_id, status = manifest["run_id"], manifest["status"]
+            config_digest = manifest["config_digest"]
+            snapshot_id = config["snapshot_ref"]["snapshot_id"]
+            table_ref = manifest["time_rule_table_ref"]
+            reset_count = manifest["resumption_counts"]["history_resets"]
+            invalid = [
+                label
+                for label, ok in (
+                    ("run_id", _is_hex64(run_id)),
+                    ("status", isinstance(status, str) and bool(status)),
+                    ("config_digest", _is_hex64(config_digest)),
+                    ("snapshot_id", _is_hex64(snapshot_id)),
+                    ("time_rule_table_ref", _is_table_ref(table_ref)),
+                    ("resumption_counts.history_resets", _is_count(reset_count)),
+                    ("run_interval", run_interval[0] < run_interval[1]),
+                )
+                if not ok
+            ]
+            if invalid:
+                raise ValueError("run manifest の項目の形式が違う: " + ", ".join(invalid))
+        except _READ_ERRORS as exc:
+            errors["manifest"] = _describe(exc)
+
+    tables: dict[str, list[dict[str, Any]]] = {}
+    for table, columns in TRACE_COLUMNS.items():
+        try:
+            if run_dir is None:
+                raise FileNotFoundError("run の場所が分からない")
+            tables[table] = _read_table(run_dir / f"{table}.parquet", columns)
+        except _READ_ERRORS as exc:
+            errors[f"table:{table}"] = _describe(exc)
+            tables[table] = []
+
+    evaluation: dict[str, Any] | None = None
     consistency: list[dict[str, Any]] = []
     unrecorded: dict[str, int] = {}
-    evaluation_id = outcome.get("run_evaluation_id")
-    if evaluation_id:
-        eval_dir = run_dir / "eval" / str(evaluation_id)
-        evaluation = json.loads((eval_dir / "evaluation.json").read_text(encoding="utf-8"))
-        consistency = _read_table(eval_dir / "CONSISTENCY_CHECKS.parquet", CONSISTENCY_COLUMNS)
-        counts = (
-            pl.scan_parquet(eval_dir / "CATEGORY_COUNTS.parquet")
-            .select("category", "key", "count")
-            .filter(pl.col("category") == "UNRECORDED_EVENT")
-            .collect()
-        )
-        unrecorded = {str(row["key"]): int(row["count"]) for row in counts.to_dicts()}
+    evaluation_id = None if outcome is None else outcome.get("run_evaluation_id")
+    eval_dir = None
+    if run_dir is None or not isinstance(evaluation_id, str) or not evaluation_id:
+        reason = "結末記録に評価の識別子が無い"
+        for key in ("evaluation", "consistency", "category_counts"):
+            errors[key] = reason
+    else:
+        eval_dir = run_dir / "eval" / evaluation_id
+        try:
+            evaluation = _read_json(eval_dir / "evaluation.json")
+        except _READ_ERRORS as exc:
+            errors["evaluation"] = _describe(exc)
+        try:
+            consistency = _read_table(eval_dir / "CONSISTENCY_CHECKS.parquet", CONSISTENCY_COLUMNS)
+        except _READ_ERRORS as exc:
+            errors["consistency"] = _describe(exc)
+        try:
+            counts = (
+                pl.scan_parquet(eval_dir / "CATEGORY_COUNTS.parquet")
+                .select("category", "key", "count")
+                .filter(pl.col("category") == "UNRECORDED_EVENT")
+                .collect()
+            )
+            unrecorded = {str(row["key"]): int(row["count"]) for row in counts.to_dicts()}
+        except _READ_ERRORS as exc:
+            errors["category_counts"] = _describe(exc)
+
     reproduction = None
     if reproduction_dir is not None:
-        reproduction = json.loads(
-            (reproduction_dir / "reproduction.json").read_text(encoding="utf-8")
-        )
-    snapshot_id = str(config["snapshot_ref"]["snapshot_id"])
-    experiment_manifest = experiment_dir / "experiment_manifest.json"
-    experiment_snapshot = (
-        json.loads(experiment_manifest.read_text(encoding="utf-8")).get("snapshot_id")
-        if experiment_manifest.is_file()
-        else None
-    )
+        try:
+            reproduction = _read_json(reproduction_dir / "reproduction.json")
+        except _READ_ERRORS as exc:
+            errors["reproduction"] = _describe(exc)
+
+    experiment_snapshot = None
+    try:
+        experiment_snapshot = _read_json(experiment_dir / "experiment_manifest.json")["snapshot_id"]
+    except _READ_ERRORS as exc:
+        errors["experiment_manifest"] = _describe(exc)
+
     snapshot_manifest_id = None
     snapshot_table = None
-    snapshot_path = snapshots / snapshot_id / "manifest.json"
-    if snapshot_path.is_file():  # 読めなければ判定 3 (b) を不合格にする（D12 §12.5.1）
-        snapshot_manifest = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        snapshot_manifest_id = snapshot_manifest.get("snapshot_id")
-        conversion = snapshot_manifest.get("conversion") or {}
-        snapshot_table = (conversion.get("mt5") or {}).get("time_rule_table")
+    try:
+        if not _is_hex64(snapshot_id):
+            raise ValueError("run manifest の snapshot の識別子が読めない")
+        snapshot_manifest = _read_json(snapshots / snapshot_id / "manifest.json")
+        snapshot_manifest_id = snapshot_manifest["snapshot_id"]
+        snapshot_table = snapshot_manifest["conversion"]["mt5"]["time_rule_table"]
+    except _READ_ERRORS as exc:
+        errors["snapshot_manifest"] = _describe(exc)
+
     return RunArtifacts(
         name=name,
-        run_id=str(manifest["run_id"]),
-        status=str(manifest["status"]),
-        config_digest=str(manifest["config_digest"]),
-        snapshot_id=snapshot_id,
-        run_interval=(_time(interval["start"]), _time(interval["end"])),
-        time_rule_table_ref=manifest.get("time_rule_table_ref") or {},
-        history_reset_count=int((manifest.get("resumption_counts") or {}).get("history_resets", 0)),
+        run_id=str(run_id),
+        status=str(status),
+        config_digest=str(config_digest),
+        snapshot_id=str(snapshot_id),
+        run_interval=run_interval,
+        time_rule_table_ref=table_ref if isinstance(table_ref, Mapping) else {},
+        history_reset_count=reset_count if _is_count(reset_count) else 0,
         tables=tables,
         evaluation=evaluation,
         consistency=consistency,
@@ -231,7 +382,30 @@ def load_run(
         experiment_snapshot_id=None if experiment_snapshot is None else str(experiment_snapshot),
         snapshot_manifest_id=None if snapshot_manifest_id is None else str(snapshot_manifest_id),
         snapshot_time_rule_table=snapshot_table,
+        errors=errors,
     )
+
+
+def _guarded(
+    check: str, runs: Sequence[RunArtifacts], body: Callable[[], dict[str, Any]]
+) -> dict[str, Any]:
+    """判定の前に要る成果物が読めたかを確かめ、判定の中の形式の誤りも不合格として記録する。
+
+    D12 §12.5.1 の共通の約束（v0.37）: 必須項目の存在・形式を確かめてから比べ、読めなければ不合格。
+    例外で止めず、残りの判定を続ける。
+    """
+    failures = {
+        f"{run.name}:{source}": run.errors[source]
+        for run in runs
+        for source in REQUIRED_SOURCES[check]
+        if source in run.errors
+    }
+    if failures:
+        return {"result": FAIL, "parts": {}, "detail": {"read_errors": failures}}
+    try:
+        return body()
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        return {"result": FAIL, "parts": {}, "detail": {"invalid_values": _describe(exc)}}
 
 
 # --- 共通 -------------------------------------------------------------------------
@@ -281,7 +455,7 @@ def _is_warmup_skip(row: Mapping[str, Any]) -> bool:
 # --- 判定 1 -----------------------------------------------------------------------
 
 
-def check_history_reset_scoring(
+def _check_history_reset_scoring(
     run: RunArtifacts, reset_day: tuple[str, str] = RESET_DAY
 ) -> dict[str, Any]:
     """判定 1: 2022-12-26 の無記録の足による準備のやり直しの期間が採点に含まれ、建玉・注文が続く。
@@ -351,6 +525,13 @@ def check_history_reset_scoring(
             "test_tick_record_model_marketdata.py::test_c2_the_run_records_history_resets_and_keeps_going"
         )
     return {"result": _combine(parts.values()), "parts": parts, "detail": detail}
+
+
+def check_history_reset_scoring(
+    run: RunArtifacts, reset_day: tuple[str, str] = RESET_DAY
+) -> dict[str, Any]:
+    """判定 1（読めない成果物・形式の誤りは不合格。`_guarded`）。"""
+    return _guarded("check_1", [run], lambda: _check_history_reset_scoring(run, reset_day))
 
 
 def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
@@ -471,7 +652,7 @@ def _initial_readiness(run: RunArtifacts) -> datetime | None:
     return latest
 
 
-def check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
+def _check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
     """判定 2: 記録された「準備不足で見送り」と表22 の期間の一致。
 
     時刻だけで結び付ける（D12 §12.5.1 の決定 3）。
@@ -540,46 +721,121 @@ def check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
     return {"result": _combine(parts.values()), "parts": parts, "detail": detail}
 
 
+def check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
+    """判定 2（読めない成果物・形式の誤りは不合格。`_guarded`）。"""
+    return _guarded("check_2", [run], lambda: _check_skips_match_resets(run))
+
+
 # --- 判定 3 -----------------------------------------------------------------------
 
 
 def check_integrity(run: RunArtifacts) -> dict[str, Any]:
-    """判定 3: 評価の整合検査・manifest の突き合わせ・再現の判定（D07 §10.2・§21.1）。"""
+    """判定 3（読めない成果物は不合格。`_guarded`）。再現の判定を渡さなければ (c) は未判定。"""
+    required = REQUIRED_SOURCES["check_3"]
+    if run.reproduction is None and "reproduction" not in run.errors:
+        required = tuple(source for source in required if source != "reproduction")
+    failures = {f"{run.name}:{s}": run.errors[s] for s in required if s in run.errors}
+    if failures:
+        return {"result": FAIL, "parts": {}, "detail": {"read_errors": failures}}
+    try:
+        return _check_integrity(run)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        return {"result": FAIL, "parts": {}, "detail": {"invalid_values": _describe(exc)}}
+
+
+def _check_integrity(run: RunArtifacts) -> dict[str, Any]:
+    """判定 3: 評価の整合検査・manifest の突き合わせ・再現の判定（D07 §10.2・§21.1）。
+
+    比べる前に必須項目の存在と形式（16 進 64 文字のダイジェスト・時刻の規則の表の参照の形・件数）を
+    確かめる。欠けた項目・形式の違う項目は、その部分の不合格として名前を記録する（None 同士を一致と
+    扱わない。D12 §12.5.1 の共通の約束 v0.37）。
+    """
     parts: dict[str, str] = {}
     evaluation = run.evaluation or {}
-    failed = [row for row in run.consistency if row.get("outcome") != _PASSED]
-    parts["a_consistency_checks"] = (
-        PASS
-        if evaluation
-        and evaluation.get("status") == _COMPLETED
-        and run.consistency
-        and not failed
-        and not evaluation.get("fatal_failure_count")
-        and not evaluation.get("warning_failure_count")
-        and not evaluation.get("unreadable_check_count")
-        else FAIL
-    )
     outcome = run.outcome or {}
+    invalid: list[str] = []
+
+    def need(label: str, ok: bool) -> bool:
+        if not ok:
+            invalid.append(label)
+        return ok
+
+    failed = [row for row in run.consistency if row.get("outcome") != _PASSED]
+    a_ok = all(
+        [
+            need("evaluation.status", evaluation.get("status") == _COMPLETED),
+            need("consistency_checks", bool(run.consistency)),
+            need(
+                "evaluation.fatal_failure_count", _is_count(evaluation.get("fatal_failure_count"))
+            ),
+            need(
+                "evaluation.warning_failure_count",
+                _is_count(evaluation.get("warning_failure_count")),
+            ),
+            need(
+                "evaluation.unreadable_check_count",
+                _is_count(evaluation.get("unreadable_check_count")),
+            ),
+        ]
+    )
+    counts_zero = all(
+        evaluation.get(key) == 0
+        for key in ("fatal_failure_count", "warning_failure_count", "unreadable_check_count")
+    )
+    parts["a_consistency_checks"] = PASS if a_ok and not failed and counts_zero else FAIL
+
     # 決定 26: 評価 manifest とは run_id と時刻の規則の表の参照を照合する。snapshot の識別子は
     # run manifest・実験の記録票・snapshot の manifest の間で照合する。読めなければ不合格。
-    matches = (
-        evaluation.get("run_id") == run.run_id
-        and outcome.get("run_id") == run.run_id
-        and outcome.get("result_digest") == evaluation.get("result_digest")
-        and evaluation.get("time_rule_table_ref") == run.time_rule_table_ref
+    b_ok = all(
+        [
+            need("run_manifest.run_id", _is_hex64(run.run_id)),
+            need("evaluation.run_id", _is_hex64(evaluation.get("run_id"))),
+            need("outcome.run_id", _is_hex64(outcome.get("run_id"))),
+            need("outcome.result_digest", _is_hex64(outcome.get("result_digest"))),
+            need("evaluation.result_digest", _is_hex64(evaluation.get("result_digest"))),
+            need("run_manifest.time_rule_table_ref", _is_table_ref(run.time_rule_table_ref)),
+            need(
+                "evaluation.time_rule_table_ref",
+                _is_table_ref(evaluation.get("time_rule_table_ref")),
+            ),
+            need("run_manifest.snapshot_id", _is_hex64(run.snapshot_id)),
+            need("experiment_manifest.snapshot_id", _is_hex64(run.experiment_snapshot_id)),
+            need("snapshot_manifest.snapshot_id", _is_hex64(run.snapshot_manifest_id)),
+            need("snapshot_manifest.time_rule_table", _is_table_ref(run.snapshot_time_rule_table)),
+        ]
+    )
+    matches = b_ok and (
+        evaluation["run_id"] == run.run_id
+        and outcome["run_id"] == run.run_id
+        and outcome["result_digest"] == evaluation["result_digest"]
+        and dict(evaluation["time_rule_table_ref"]) == dict(run.time_rule_table_ref)
         and run.experiment_snapshot_id == run.snapshot_id
         and run.snapshot_manifest_id == run.snapshot_id
-        and run.snapshot_time_rule_table is not None
-        and dict(run.snapshot_time_rule_table) == dict(run.time_rule_table_ref)
+        and dict(run.snapshot_time_rule_table or {}) == dict(run.time_rule_table_ref)
     )
     parts["b_manifest_matches"] = PASS if matches else FAIL
+
     if run.reproduction is None:
         parts["c_reproduced"] = NOT_EVALUATED
     else:
-        reproduced = (
-            run.reproduction.get("verdict") == _REPRODUCED
-            and run.reproduction.get("observed_run_id") == run.run_id
-            and run.reproduction.get("observed_result_digest") == outcome.get("result_digest")
+        reproduction = run.reproduction
+        c_ok = all(
+            [
+                need("reproduction.verdict", isinstance(reproduction.get("verdict"), str)),
+                need(
+                    "reproduction.observed_run_id", _is_hex64(reproduction.get("observed_run_id"))
+                ),
+                need(
+                    "reproduction.observed_result_digest",
+                    _is_hex64(reproduction.get("observed_result_digest")),
+                ),
+                need("outcome.result_digest", _is_hex64(outcome.get("result_digest"))),
+            ]
+        )
+        reproduced = c_ok and (
+            reproduction["verdict"] == _REPRODUCED
+            and reproduction["observed_run_id"] == run.run_id
+            and reproduction["observed_result_digest"] == outcome["result_digest"]
         )
         parts["c_reproduced"] = PASS if reproduced else FAIL
     evaluated = [value for value in parts.values() if value != NOT_EVALUATED]
@@ -592,6 +848,7 @@ def check_integrity(run: RunArtifacts) -> dict[str, Any]:
         "detail": {
             "consistency_checks": len(run.consistency),
             "consistency_failed": len(failed),
+            "invalid_fields": sorted(set(invalid)),
             "run_id": run.run_id,
             "config_digest": run.config_digest,
             "result_digest": evaluation.get("result_digest"),
@@ -629,14 +886,29 @@ def read_daily_differences(path: Path, pair: str = "USDJPY") -> set[str]:
 def check_daily_differences(
     standard: RunArtifacts, candidate: RunArtifacts, expected_days: set[str], tz: tzinfo
 ) -> dict[str, Any]:
+    """判定 4（読めない成果物・形式の誤りは不合格。`_guarded`）。"""
+    return _guarded(
+        "check_4",
+        [standard, candidate],
+        lambda: _check_daily_differences(standard, candidate, expected_days, tz),
+    )
+
+
+def _check_daily_differences(
+    standard: RunArtifacts, candidate: RunArtifacts, expected_days: set[str], tz: tzinfo
+) -> dict[str, Any]:
     """判定 4: 戦略 B の日足の `recorded_minutes` が違う取引日と、順 2 の集計の取引日の一致。"""
 
     def daily(run: RunArtifacts) -> dict[str, int]:
-        return {
-            trading_day_label(_time(row["bar_end"]), tz): int(row[COVERAGE_COLUMN])
-            for row in run.tables["PUBLICATIONS"]
-            if row["bar_key_series"] == DAILY_SERIES
-        }
+        out: dict[str, int] = {}
+        for row in run.tables["PUBLICATIONS"]:
+            if row["bar_key_series"] != DAILY_SERIES:
+                continue
+            minutes = row[COVERAGE_COLUMN]
+            if not _is_count(minutes):  # 欠けた・形式の違う被覆は比べない（不合格）
+                raise ValueError(f"{run.name} の日足の {COVERAGE_COLUMN} が欠けているか形式が違う")
+            out[trading_day_label(_time(row["bar_end"]), tz)] = minutes
+        return out
 
     left, right = daily(standard), daily(candidate)
     same_keys = set(left) == set(right)
@@ -715,6 +987,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         results[name] = {
             "run_id": artifacts.run_id,
             "snapshot_id": artifacts.snapshot_id,
+            "read_errors": dict(artifacts.errors),
             "run_interval": [_iso(artifacts.run_interval[0]), _iso(artifacts.run_interval[1])],
             "check_1_history_reset_scoring": check_history_reset_scoring(artifacts),
             "check_2_skips_match_resets": check_skips_match_resets(artifacts),
@@ -725,15 +998,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if not args.calendar:  # 判定 4 を出すときだけ要る（既定値は置かない）
             raise SystemExit("判定 4 を出すには --calendar（fx_ny17_oanda 版 1）を渡すこと")
         standard, candidate = (runs[name] for name in args.pair_b)
-        calendar_path = Path(args.calendar)
-        check_4 = check_daily_differences(
-            standard,
-            candidate,
-            read_daily_differences(Path(args.differences)),
-            load_calendar(calendar_path).tz,
-        )
-        check_4["calendar_sha256"] = _sha256(calendar_path)
-        check_4["differences_sha256"] = _sha256(Path(args.differences))
+        calendar_path, differences_path = Path(args.calendar), Path(args.differences)
+        try:
+            expected = read_daily_differences(differences_path)
+            tz = load_calendar(calendar_path).tz
+        except Exception as exc:  # 集計・カレンダーが読めなければ判定 4 は不合格（止めない）
+            check_4 = {"result": FAIL, "parts": {}, "detail": {"read_errors": _describe(exc)}}
+        else:
+            check_4 = check_daily_differences(standard, candidate, expected, tz)
+            check_4["calendar_sha256"] = _sha256(calendar_path)
+            check_4["differences_sha256"] = _sha256(differences_path)
     record = {
         "tool": "tools/survey/mt5_single_run_checks.py",
         "tool_sha256": _sha256(Path(__file__)),
@@ -755,7 +1029,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     summary["check_4_daily_differences"] = record["check_4_daily_differences"]["result"]
     print(json.dumps(summary, ensure_ascii=False, indent=1))
-    return 0
+    # 読めない成果物があったときは、判定を書き終えたうえで 0 以外で終える。
+    unreadable = any(item["read_errors"] for item in record["runs"].values()) or bool(
+        record["check_4_daily_differences"].get("detail", {}).get("read_errors")
+    )
+    return 1 if unreadable else 0
 
 
 if __name__ == "__main__":  # pragma: no cover
