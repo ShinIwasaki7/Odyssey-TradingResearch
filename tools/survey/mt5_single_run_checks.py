@@ -72,8 +72,6 @@ RESET_DAY: Final = ("2022-12-25T22:00:00Z", "2022-12-26T22:00:00Z")
 DAILY_SERIES: Final = "USDJPY/1d_ny17/bid"
 #: 判定 4 で比べる被覆の列（D12 §12.5.1 の決定 4「記録のある分数だけ」）。
 COVERAGE_COLUMN: Final = "recorded_minutes"
-#: 判定 4 の取引日を決めるカレンダー（D12 §12.5.1、決定 27）。
-DEFAULT_CALENDAR: Final = "configs/calendars/fx_ny17_oanda_v1.yaml"
 #: システムによる強制決済の決済の契機（D06 §7.5 の緊急決済。D12 §12.5.1、決定 24）。
 FORCED_CLOSE_CAUSES: Final = frozenset({"EMERGENCY"})
 #: 通常の規則による決済の契機（保護水準・戦略の決済。D06 §7.3）。
@@ -335,6 +333,7 @@ def check_history_reset_scoring(
         item["canceled_or_expired"] for item in continuation
     )
     detail["positions_with_unknown_close_cause"] = sum(item["unknown"] for item in continuation)
+    detail["close_orders_judged_by_positions"] = sum(item["close_orders"] for item in continuation)
     if parts["e_positions_orders_continue"] == UNVERIFIABLE:
         detail["unverifiable_reason"] = (
             "やり直しの期間の始まりをまたぐ建玉・注文が無いか、始まりの時刻の決済が強制決済か"
@@ -347,16 +346,18 @@ def check_history_reset_scoring(
 def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
     """期間の始まり `start` をまたぐ建玉・注文と、始まりの時刻での終了の有無（判定 1 (e)）。
 
-    D12 §12.5.1（決定 14・17・24・25）: 期間の始まりの時刻に、取消・期限切れ以外の終了の出来事
-    （強制決済など）が無いこと。
+    D12 §12.5.1（決定 14・17・24・25・28）: 期間の始まりの時刻に、取消・期限切れ以外の終了の出来事
+    （強制決済など）が無いこと。「消された」に数えるのは、システムによる強制決済（決済の契機
+    `EMERGENCY`。決定 28）だけ。同じ出来事を二重に数えない。
 
-    - 注文: 始まりより前に受け付け、始まりの時点で終わっていない注文を数える。始まりの時刻に取消・
-      期限切れ以外で終わった（約定など）なら「消された」。始まりの時刻に取消・期限切れになった注文は
-      継続にも終了にも数えず、件数だけを出す（決定 25）。
-    - 建玉: 始まりより前に開き、始まりの時点で閉じていない建玉を数える。始まりの時刻の決済のうち、
-      システムによる強制決済（決済の契機 `EMERGENCY`）だけを「消された」に数え、通常の規則による決済
-      （保護水準・戦略の決済）は継続した建玉に数える。決済の契機を記録から読めなければ、その建玉は
-      確認不能（決定 24）。
+    - 建玉: 始まりより前に開き、始まりの時点で閉じていない建玉を数える。始まりの時刻の決済のうち
+      強制決済だけを「消された」に数え、通常の規則による決済（保護水準・戦略の決済）は継続に数える。
+      決済の契機・決済の約定を記録から読めなければ、その建玉は確認不能（決定 24）。
+    - 注文: 決済の注文（`CLOSE_TERMS`）は建玉の側で判定し、注文の側では数えない（強制決済を
+      二重に数えない。決定 24・28 を注文にも当てる）。それ以外の注文は、始まりより前に受け付け、
+      始まりの時点で終わっていないものを数える。始まりの時刻の約定は通常の決着として継続に数え、
+      取消・期限切れは継続にも終了にも数えず件数だけを出す（決定 25）。それ以外の状態で終わった
+      注文は確認不能。
     """
     fills = {row["fill_id"]: row for row in run.tables["FILLS"]}
     causes = {
@@ -367,7 +368,13 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
     positions = ended = unknown = 0
     for row in run.tables["POSITIONS"]:
         opened = _time(row["opened_at_time"])
-        close_fill = fills.get(row.get("close_fill_id") or "")
+        close_id = row.get("close_fill_id")
+        close_fill = fills.get(close_id) if close_id else None
+        if (close_id and close_fill is None) or (row.get("status") == "CLOSED" and not close_id):
+            # 決済の約定が読めない建玉は、閉じた時刻が分からないので継続に数えない（確認不能）。
+            if opened < start:
+                unknown += 1
+            continue
         closed = None if close_fill is None else _time(close_fill["processed_at_time"])
         if not (opened < start and (closed is None or closed >= start)):
             continue
@@ -383,7 +390,7 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
     events: dict[str, list[tuple[datetime, str]]] = {}
     for row in run.tables["ORDER_EVENTS"]:
         events.setdefault(row["order_id"], []).append((_time(row["at_time"]), row["to_status"]))
-    orders = canceled_or_expired = 0
+    orders = canceled_or_expired = close_orders = 0
     for row in run.tables["ORDERS"]:
         accepted = _time(row["accepted_at_time"])
         history = sorted(events.get(row["order_id"], []))
@@ -391,12 +398,16 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
         finished = terminal[0] if terminal else None
         if not (accepted < start and (finished is None or finished[0] >= start)):
             continue
+        if row.get("terms_kind") == "CLOSE_TERMS":
+            close_orders += 1
+            continue
         if finished is not None and finished[0] == start:
             if finished[1] in _ALLOWED_ENDS:
                 canceled_or_expired += 1
-            else:
-                ended += 1
-            continue
+                continue
+            if finished[1] != "FILLED":
+                unknown += 1
+                continue
         orders += 1
     if ended:
         result = FAIL
@@ -411,6 +422,7 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
         "ended": ended,
         "canceled_or_expired": canceled_or_expired,
         "unknown": unknown,
+        "close_orders": close_orders,
     }
 
 
@@ -487,7 +499,8 @@ def check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
         if start >= stop:
             outside_run += 1
             continue
-        if any(start <= t < stop for t in considered):
+        # (b) はデータの開始の準備の除外を当てず、見送りをすべて数える（除外は (a) だけ。決定 11）。
+        if any(start <= t < stop for t in skips):
             with_skip += 1
         elif not any(start <= t < stop for t in publications.get(row["series"], [])):
             without_trigger += 1
@@ -667,7 +680,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--snapshots", required=True, help="snapshot の基点（判定 3 の snapshot の照合に使う）"
     )
     parser.add_argument(
-        "--calendar", default=DEFAULT_CALENDAR, help="判定 4 の取引日を決めるカレンダー"
+        "--calendar",
+        required=True,
+        help="判定 4 の取引日を決めるカレンダー（fx_ny17_oanda 版 1。D12 §12.5.1、決定 27）",
     )
     parser.add_argument("--out", required=True, help="結果の JSON の書き出し先")
     return parser

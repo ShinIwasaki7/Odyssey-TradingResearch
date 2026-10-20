@@ -348,12 +348,46 @@ def test_check_1_counts_an_order_canceled_or_expired_at_the_reset_only(
     assert result["detail"]["ended_at_period_start"] == 0
 
 
-def test_check_1_fails_when_an_order_ends_otherwise_at_the_reset(tmp_path: Path) -> None:
+def test_check_1_counts_an_entry_order_filled_at_the_reset_as_continuing(tmp_path: Path) -> None:
+    """決定 24・28 を注文にも当てる（第 2 巡）: 始まりの時刻の約定は通常の決着。
+
+    「消された」に数えず、継続した注文に数える。
+    """
     tables = _baseline_tables()
     tables["ORDER_EVENTS"][1]["at_time"] = RESET_FROM
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["result"] == FAIL
-    assert result["detail"]["ended_at_period_start"] == 1
+    assert result["result"] == PASS
+    assert result["detail"]["ended_at_period_start"] == 0
+    assert result["detail"]["continuing_orders"] == 1
+
+
+@pytest.mark.parametrize(
+    ("cause", "expected", "ended"), [("STOP_LOSS", PASS, 0), ("EMERGENCY", FAIL, 1)]
+)
+def test_check_1_judges_a_close_order_at_the_reset_once_on_the_position(
+    tmp_path: Path, cause: str, expected: str, ended: int
+) -> None:
+    """第 2 巡 P2-1: 始まりより前に受け付けた決済の注文が始まりちょうどに約定しても、建玉の側で
+    1 回だけ判定する（通常の決済は継続、強制決済は 1 件だけ「消された」）。"""
+    tables = _baseline_tables()
+    tables["FILLS"][1]["processed_at_time"] = RESET_FROM
+    tables["ORDERS"][2].update(accepted_at_time="2022-12-26T21:45:00Z", terms_cause=cause)
+    tables["ORDER_EVENTS"][3]["at_time"] = RESET_FROM
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["parts"]["e_positions_orders_continue"] == expected
+    assert result["detail"]["ended_at_period_start"] == ended
+    assert result["detail"]["close_orders_judged_by_positions"] == 1
+
+
+def test_check_1_is_unverifiable_when_the_close_fill_is_missing(tmp_path: Path) -> None:
+    """第 2 巡 P3: 決済の約定が読めない建玉を黙って継続に数えない。"""
+    tables = _baseline_tables()
+    tables["FILLS"] = tables["FILLS"][:1]
+    tables["ORDERS"] = tables["ORDERS"][::2]
+    tables["ORDER_EVENTS"] = [e for e in tables["ORDER_EVENTS"] if e["order_id"] != "ORD-1"]
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["parts"]["e_positions_orders_continue"] == UNVERIFIABLE
+    assert result["detail"]["positions_with_unknown_close_cause"] == 1
 
 
 @pytest.mark.parametrize(
@@ -431,6 +465,29 @@ def test_check_2_passes_when_every_period_has_a_skip(tmp_path: Path) -> None:
     tables["HISTORY_RESETS"] = tables["HISTORY_RESETS"][:1]
     result = checks.check_skips_match_resets(_load(tmp_path, tables=tables, history_resets=1))
     assert result["result"] == PASS
+
+
+def test_check_2_counts_skips_before_the_initial_readiness_for_each_row(tmp_path: Path) -> None:
+    """第 2 巡 P1: データの開始の準備の除外は (a) だけ。(b) は除外前の見送りで各行の期間を数える。
+
+    戦略 B の run で、日足の窓（準備は 2 本目の日足の公開 2022-12-05T22:00Z）より前に、1 時間足の
+    無記録の足による 1 時間足の窓の行がある場合（実データでは 2017-03 の無記録の 1 時間足）。
+    """
+    tables = _baseline_tables()
+    tables["HISTORY_RESETS"] = [
+        tables["HISTORY_RESETS"][0],
+        _reset(
+            HOURLY, "2022-12-03T00:00:00Z", "2022-12-03T01:00:00Z", "2022-12-03T05:00:00Z", bars=3
+        ),
+    ]
+    tables["PUBLICATIONS"].append(
+        _publication(HOURLY, "2022-12-03T01:00:00Z", "2022-12-03T02:00:00Z")
+    )
+    tables["EVALUATIONS"].append(_skip("2022-12-03T02:00:00Z"))
+    result = checks.check_skips_match_resets(_load(tmp_path, tables=tables))
+    assert result["parts"]["b_each_period_has_skip"] == PASS
+    assert result["detail"]["rows_with_skip"] == 2
+    assert result["detail"]["rows_missing_skip"] == 0
 
 
 def test_check_2_fails_for_a_skip_outside_every_period(tmp_path: Path) -> None:
