@@ -364,14 +364,13 @@ def test_check_1_counts_an_entry_order_filled_at_the_reset_only(tmp_path: Path) 
     assert result["detail"]["filled_orders_at_period_start"] == 1
 
 
-def test_check_1_is_unverifiable_for_an_order_with_an_unknown_end(tmp_path: Path) -> None:
-    """第 3 巡 P3-2: 注文の未知の終わり方は、建玉の「契機が読めない」件数と分けて数える。"""
+def test_check_1_fails_for_an_order_status_outside_the_vocabulary(tmp_path: Path) -> None:
+    """人間レビュー 2 回目: 注文の状態が語彙の外なら、抽出の前に不合格（確認不能に回さない）。"""
     tables = _baseline_tables()
     tables["ORDER_EVENTS"][1].update(to_status="REJECTED", at_time=RESET_FROM)
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["parts"]["e_positions_orders_continue"] == UNVERIFIABLE
-    assert result["detail"]["orders_with_unknown_end"] == 1
-    assert result["detail"]["positions_with_unknown_close_cause"] == 0
+    assert result["result"] == FAIL
+    assert result["detail"]["invalid_fields"] == {"x:ORDER_EVENTS.to_status": 1}
 
 
 @pytest.mark.parametrize(
@@ -722,7 +721,172 @@ def test_check_2_fails_on_a_missing_decision_time(tmp_path: Path) -> None:
     tables["EVALUATIONS"][1]["decision_time"] = None
     result = checks.check_skips_match_resets(_load(tmp_path, tables=tables))
     assert result["result"] == FAIL
-    assert "invalid_values" in result["detail"]
+    assert result["detail"]["invalid_fields"] == {"x:EVALUATIONS.decision_time": 1}
+
+
+def test_check_2_fails_for_a_null_outcome_kind_outside_the_periods(tmp_path: Path) -> None:
+    """人間レビュー 2 回目の再現手順: 期間外の見送りの `outcome_kind` を null にしても、黙って
+    除かず不合格にする（以前は FAIL が PASS に変わった）。"""
+    tables = _baseline_tables()
+    tables["HISTORY_RESETS"] = tables["HISTORY_RESETS"][:1]
+    tables["EVALUATIONS"].append(_skip("2023-03-25T21:00:00Z"))
+    failing = checks.check_skips_match_resets(
+        _load(tmp_path / "a", tables=tables, history_resets=1)
+    )
+    assert failing["result"] == FAIL  # 期間外の見送り
+    tables["EVALUATIONS"][-1]["outcome_kind"] = None
+    result = checks.check_skips_match_resets(_load(tmp_path / "b", tables=tables, history_resets=1))
+    assert result["result"] == FAIL
+    assert result["detail"]["invalid_fields"] == {"x:EVALUATIONS.outcome_kind": 1}
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("outcome_kind", "DONE"),  # 語彙の外
+        ("outcome_diagnoses", ['{"reason": "SOMETHING"}']),  # 診断の理由が語彙の外
+        ("outcome_diagnoses", None),
+    ],
+)
+def test_check_2_fails_for_invalid_evaluation_values(
+    tmp_path: Path, column: str, value: Any
+) -> None:
+    tables = _baseline_tables()
+    tables["EVALUATIONS"][1][column] = value
+    result = checks.check_skips_match_resets(_load(tmp_path, tables=tables))
+    assert result["result"] == FAIL
+    assert f"x:EVALUATIONS.{column}" in result["detail"]["invalid_fields"]
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "value"),
+    [
+        ("HISTORY_RESETS", "window_kind", "WEEKS"),
+        ("HISTORY_RESETS", "insufficient_from", None),
+        ("POSITIONS", "status", None),
+        ("ORDERS", "terms_kind", "OTHER_TERMS"),
+        ("ORDERS", "terms_cause", "MARGIN_CALL"),
+        ("FILLS", "processed_at_time", "not-a-time"),
+        ("LEDGER_SNAPSHOTS", "at_time", None),
+    ],
+)
+def test_check_1_fails_for_invalid_trace_values(
+    tmp_path: Path, table: str, column: str, value: Any
+) -> None:
+    tables = _baseline_tables()
+    tables[table][0][column] = value
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["result"] == FAIL
+    assert f"x:{table}.{column}" in result["detail"]["invalid_fields"]
+
+
+def test_check_1_fails_when_the_reset_counts_are_missing_from_the_summary(tmp_path: Path) -> None:
+    """第 4 巡の敵対 P2-1: 評価の集計は読めても、準備のやり直しの件数・分数の行が無ければ不合格。"""
+    run = _load(tmp_path, counts={"OTHER": 1})
+    assert "category_counts.UNRECORDED_EVENT.HISTORY_RESETS" in run.field_problems
+    result = checks.check_history_reset_scoring(run)
+    assert result["result"] == FAIL
+    assert result["parts"]["required_fields"] == FAIL
+    assert result["detail"]["invalid_fields"] == [
+        "category_counts.UNRECORDED_EVENT.HISTORY_RESETS",
+        "category_counts.UNRECORDED_EVENT.HISTORY_RESET_MINUTES",
+    ]
+
+
+def test_check_1_fails_when_only_the_summary_is_missing(tmp_path: Path) -> None:
+    """第 4 巡の敵対 P2-2（決定 33）: 評価の集計だけが読めなくても判定 1 は不合格。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    (_run_dir(tmp_path) / "eval" / EVAL_ID / "CATEGORY_COUNTS.parquet").unlink()
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    assert set(run.errors) == {"category_counts"}
+    result = checks.check_history_reset_scoring(run)
+    assert result["result"] == FAIL
+    assert list(result["detail"]["read_errors"]) == ["x:category_counts"]
+    assert checks.check_integrity(run)["result"] == PASS  # 他の判定には影響しない
+
+
+def test_check_2_is_unverifiable_without_rows_to_compare(tmp_path: Path) -> None:
+    """第 4 巡 P3-1: 表22 が空で見送りも 0 件なら、何も比べずに合格にしない。"""
+    tables = _baseline_tables()
+    tables["HISTORY_RESETS"] = []
+    tables["EVALUATIONS"] = tables["EVALUATIONS"][2:]
+    result = checks.check_skips_match_resets(_load(tmp_path, tables=tables, history_resets=0))
+    assert result["parts"]["b_each_period_has_skip"] == UNVERIFIABLE
+    assert result["result"] == UNVERIFIABLE
+
+
+@pytest.mark.parametrize(
+    ("relative", "key", "value", "field"),
+    [
+        (
+            "out/runs/experiments/x/v1/experiment_outcome.json",
+            "result_digest",
+            "",
+            "outcome.result_digest",
+        ),
+        (
+            "out/runs/" + RUN_ID + "/eval/" + EVAL_ID + "/evaluation.json",
+            "time_rule_table_ref",
+            {"sha256": "e" * 64, "table_id": "t", "version": "1", "variant": "standard"},
+            "evaluation.time_rule_table_ref",
+        ),
+    ],
+)
+def test_check_3_fails_for_an_empty_digest_or_a_malformed_reference(
+    tmp_path: Path, relative: str, key: str, value: Any, field: str
+) -> None:
+    """第 4 巡 P3-6: 空文字列のダイジェスト・形の違う参照も不合格。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    path = tmp_path / relative
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[key] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    result = checks.check_integrity(run)
+    assert result["result"] == FAIL
+    assert field in result["detail"]["invalid_fields"]
+
+
+def test_check_3_fails_when_the_given_reproduction_is_missing(tmp_path: Path) -> None:
+    """第 4 巡 P3-6: 再現の出力を渡したのに reproduction.json が無ければ不合格。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    (repro / "reproduction.json").unlink()
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    result = checks.check_integrity(run)
+    assert result["result"] == FAIL
+    assert "x:reproduction" in result["detail"]["read_errors"]
+
+
+@pytest.mark.parametrize(("table", "column"), [("FILLS", "order_id"), ("ORDERS", "terms_cause")])
+def test_check_1_fails_when_a_trace_column_is_missing(
+    tmp_path: Path, table: str, column: str
+) -> None:
+    """第 4 巡 P3-6: 判定 1 が読む列の欠落。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    path = _run_dir(tmp_path) / f"{table}.parquet"
+    pl.read_parquet(path).drop(column).write_parquet(path)
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    result = checks.check_history_reset_scoring(run)
+    assert result["result"] == FAIL
+    assert f"x:table:{table}" in result["detail"]["read_errors"]
+
+
+def test_failure_texts_do_not_carry_paths_or_values(tmp_path: Path) -> None:
+    """第 4 巡 P3-5: 失敗の文面に絶対パス・値を書かない（ファイル名・種別・長さだけ）。"""
+    experiment, repro, snapshots = _write_run(tmp_path)
+    (_run_dir(tmp_path) / "eval" / EVAL_ID / "evaluation.json").unlink()
+    (_run_dir(tmp_path) / "LEDGER_SNAPSHOTS.parquet").write_text("broken", encoding="utf-8")
+    run = checks.load_run("x", experiment, reproduction_dir=repro, snapshots=snapshots)
+    texts = " ".join(run.errors.values())
+    assert str(tmp_path) not in texts
+    assert "evaluation.json" in run.errors["evaluation"]
+
+
+def test_a_shallow_experiment_path_is_recorded_as_a_read_failure(tmp_path: Path) -> None:
+    """第 4 巡 P3-2: 3 階層上が無い浅いパスでも止まらない。"""
+    shallow = Path("x")
+    run = checks.load_run("x", shallow, snapshots=tmp_path)
+    assert "outcome" in run.errors
 
 
 def test_check_1_fails_on_a_missing_time(tmp_path: Path) -> None:
@@ -861,6 +1025,47 @@ def test_check_4_fails_when_the_aggregation_is_unreadable(tmp_path: Path) -> Non
     assert record["check_4_daily_differences"]["result"] == FAIL
 
 
+def test_check_4_fails_when_there_is_nothing_to_compare(tmp_path: Path) -> None:
+    """第 4 巡の Sonnet P2-1: 比べる相手の取引日が 0 日、または日足が 0 本なら不合格。"""
+    standard = _daily_run(tmp_path, "s", {"2017-03-13T21:00:00Z": 1374})
+    candidate = _daily_run(tmp_path, "c", {"2017-03-13T21:00:00Z": 1374})
+    empty_aggregation = checks.check_daily_differences(standard, candidate, set(), NEW_YORK)
+    assert empty_aggregation["result"] == FAIL
+    assert empty_aggregation["detail"]["invalid_fields"] == ["aggregation_days"]
+    no_bars = _daily_run(tmp_path, "n", {})
+    result = checks.check_daily_differences(no_bars, no_bars, {"2017-03-13"}, NEW_YORK)
+    assert result["result"] == FAIL
+
+
+def test_an_empty_aggregation_file_is_a_read_failure(tmp_path: Path) -> None:
+    """人間レビュー 2 回目の再現手順: ヘッダーも無い空の CSV は、該当 0 件ではなく読込みの失敗。"""
+    experiment, _, snapshots = _write_run(tmp_path)
+    empty = tmp_path / "empty.csv"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="必須の列が無い"):
+        checks.read_daily_differences(empty)
+    out = tmp_path / "checks.json"
+    argv = [
+        "--experiment",
+        f"b={experiment}",
+        "--snapshots",
+        str(snapshots),
+        "--pair-b",
+        "b",
+        "b",
+        "--differences",
+        str(empty),
+        "--calendar",
+        str(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml"),
+        "--out",
+        str(out),
+    ]
+    assert checks.main(argv) == 1
+    check_4 = json.loads(out.read_text(encoding="utf-8"))["check_4_daily_differences"]
+    assert check_4["result"] == FAIL
+    assert "必須の列が無い" in check_4["detail"]["read_errors"]
+
+
 def test_read_daily_differences_takes_the_recorded_minutes_rows(tmp_path: Path) -> None:
     path = tmp_path / "diff.csv"
     path.write_text(
@@ -882,7 +1087,9 @@ def test_main_writes_only_results_counts_and_hashes(tmp_path: Path, with_pair: b
     experiment, repro, snapshots = _write_run(tmp_path)
     differences = tmp_path / "diff.csv"
     differences.write_text(
-        "pair,scope,key,field,standard_value,candidate_value\n", encoding="utf-8"
+        "pair,scope,key,field,standard_value,candidate_value\n"
+        "USDJPY,daily_bar,2022-12-27,recorded_minutes,1,2\n",
+        encoding="utf-8",
     )
     out = tmp_path / "checks.json"
     argv = [
@@ -908,7 +1115,8 @@ def test_main_writes_only_results_counts_and_hashes(tmp_path: Path, with_pair: b
     assert checks.main([*argv, "--out", str(out)]) == 0
     record = json.loads(out.read_text(encoding="utf-8"))
     assert record["runs"]["b_standard"]["check_3_integrity"]["result"] == PASS
-    expected = PASS if with_pair else NOT_EVALUATED
+    # 同じ run 同士は日足が違わないので、集計の 1 日と食い違う（判定の不合格。入力は壊れていない）。
+    expected = FAIL if with_pair else NOT_EVALUATED
     assert record["check_4_daily_differences"]["result"] == expected
     assert "999" not in out.read_text(encoding="utf-8")  # 合成の価格の値は出力に現れない
 

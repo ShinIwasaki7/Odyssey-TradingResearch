@@ -40,13 +40,17 @@ import re
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Final
 
 import polars as pl
 
 from odyssey_fx.app.config.calendars import load_calendar
+from odyssey_fx.backtest.domain.orders import CloseCause, OrderStatus
+from odyssey_fx.backtest.domain.positions import PositionStatus
+from odyssey_fx.evaluation.domain.metrics import EVALUATION_OUTCOME_KEYS, MISSING_INPUT_KEYS
+from odyssey_fx.marketdata.domain.readiness import ReadKind
 
 __all__ = [
     "FAIL",
@@ -69,6 +73,10 @@ NOT_EVALUATED: Final = "NOT_EVALUATED"
 
 #: 2022-12-26 の全分無記録の取引日（NY 17 時区切り。D11 §12.2、D12 §12.2 の行 2）。
 RESET_DAY: Final = ("2022-12-25T22:00:00Z", "2022-12-26T22:00:00Z")
+#: 順 2 の集計 `candidate_differences.csv` の必須の列（D12 §12.5.1 の判定 4）。
+DIFFERENCE_COLUMNS: Final = ("pair", "scope", "key", "field")
+#: 判定 1 が記録する評価の集計の必須項目（D07 §28.3 の `UNRECORDED_EVENT`。決定 31・33）。
+RESET_COUNT_KEYS: Final = ("HISTORY_RESETS", "HISTORY_RESET_MINUTES")
 #: 判定 4 で比べる日足の系列（D12 §12.5.1 の判定 4）。
 DAILY_SERIES: Final = "USDJPY/1d_ny17/bid"
 #: 判定 4 で比べる被覆の列（D12 §12.5.1 の決定 4「記録のある分数だけ」）。
@@ -214,6 +222,8 @@ class RunArtifacts:
     snapshot_manifest_id: str | None = None
     snapshot_time_rule_table: Mapping[str, Any] | None = None
     errors: Mapping[str, str] = field(default_factory=dict)
+    #: 読めたが必須項目が欠けていた成果物の項目名（判定が `invalid_fields` に書いて不合格にする）。
+    field_problems: tuple[str, ...] = ()
 
 
 #: 読込みで起きうる失敗（ファイル無し・JSON 不正・列不足・型の誤り）。
@@ -223,18 +233,32 @@ _READ_ERRORS: Final = (
     KeyError,
     TypeError,
     AttributeError,
+    IndexError,
     pl.exceptions.PolarsError,
 )
 
 
+class _FormatError(ValueError):
+    """道具が書いた形式の誤り（文面に値・パスを入れない）。"""
+
+
 def _describe(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {exc}"
+    """失敗の記録の文面（`checks.json` は版管理するので、値とパスを書かない）。
+
+    道具が書いた文面（`_FormatError`）はそのまま、ファイルの失敗はファイルの名前だけ、他の例外は
+    種別と文面の長さだけを書く（値の一部が文面に入りうるため。第 4 巡の所見）。
+    """
+    if isinstance(exc, _FormatError):
+        return f"FormatError: {exc}"
+    if isinstance(exc, OSError) and exc.filename:
+        return f"{type(exc).__name__}: {Path(str(exc.filename)).name}"
+    return f"{type(exc).__name__}（文面は記録しない。長さ {len(str(exc))}）"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError(f"{path.name} が JSON の対象（辞書）でない")
+        raise _FormatError(f"{path.name} が JSON の対象（辞書）でない")
     return payload
 
 
@@ -254,12 +278,13 @@ def load_run(
     読めない成果物は例外で止めず、`errors` に理由を残す。
     """
     errors: dict[str, str] = {}
+    field_problems: list[str] = []
     outcome: dict[str, Any] | None = None
     run_dir: Path | None = None
     try:
         outcome = _read_json(experiment_dir / "experiment_outcome.json")
         if not _is_hex64(outcome.get("run_id")):
-            raise ValueError("結末記録の run_id が 16 進 64 文字でない")
+            raise _FormatError("結末記録の run_id が 16 進 64 文字でない")
         run_dir = experiment_dir.parents[2] / str(outcome["run_id"])
     except _READ_ERRORS as exc:
         errors["outcome"] = _describe(exc)
@@ -296,7 +321,7 @@ def load_run(
                 if not ok
             ]
             if invalid:
-                raise ValueError("run manifest の項目の形式が違う: " + ", ".join(invalid))
+                raise _FormatError("run manifest の項目の形式が違う: " + ", ".join(invalid))
         except _READ_ERRORS as exc:
             errors["manifest"] = _describe(exc)
 
@@ -337,6 +362,11 @@ def load_run(
                 .collect()
             )
             unrecorded = {str(row["key"]): int(row["count"]) for row in counts.to_dicts()}
+            field_problems.extend(
+                f"category_counts.UNRECORDED_EVENT.{key}"
+                for key in RESET_COUNT_KEYS
+                if not _is_count(unrecorded.get(key))
+            )
         except _READ_ERRORS as exc:
             errors["category_counts"] = _describe(exc)
 
@@ -357,7 +387,7 @@ def load_run(
     snapshot_table = None
     try:
         if not _is_hex64(snapshot_id):
-            raise ValueError("run manifest の snapshot の識別子が読めない")
+            raise _FormatError("run manifest の snapshot の識別子が読めない")
         snapshot_manifest = _read_json(snapshots / snapshot_id / "manifest.json")
         snapshot_manifest_id = snapshot_manifest["snapshot_id"]
         snapshot_table = snapshot_manifest["conversion"]["mt5"]["time_rule_table"]
@@ -383,6 +413,7 @@ def load_run(
         snapshot_manifest_id=None if snapshot_manifest_id is None else str(snapshot_manifest_id),
         snapshot_time_rule_table=snapshot_table,
         errors=errors,
+        field_problems=tuple(field_problems),
     )
 
 
@@ -406,6 +437,127 @@ def _guarded(
         return body()
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         return {"result": FAIL, "parts": {}, "detail": {"invalid_values": _describe(exc)}}
+
+
+# --- 判断履歴の必須値の検査（人間レビュー 2 回目の P1。D12 §12.5.1 の共通の約束） -------------
+
+
+def _ok_time(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        _time(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _ok_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _or_null(rule: Callable[[object], bool]) -> Callable[[object], bool]:
+    return lambda value: value is None or rule(value)
+
+
+def _within(vocabulary: Iterable[str]) -> Callable[[object], bool]:
+    allowed = frozenset(vocabulary)
+    return lambda value: isinstance(value, str) and value in allowed
+
+
+def _ok_diagnoses(value: object) -> bool:
+    """評価の診断の列（空でもよい）。各要素は語彙の中の理由を持つ（D05 §6.3、D02 §8.3）。"""
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        try:
+            payload = json.loads(item) if isinstance(item, str) else item
+        except ValueError:
+            return False
+        if not isinstance(payload, dict) or payload.get("reason") not in MISSING_INPUT_KEYS:
+            return False
+    return True
+
+
+#: 判断履歴の表ごとの必須値の規則（null・語彙外を抽出の前に検査する）。語彙は src の定義から取る。
+ROW_RULES: Final[Mapping[str, Mapping[str, Callable[[object], bool]]]] = {
+    "EVALUATIONS": {
+        "evaluation_id": _ok_str,
+        "decision_time": _ok_time,
+        "outcome_kind": _within(EVALUATION_OUTCOME_KEYS),
+        "outcome_diagnoses": _ok_diagnoses,
+    },
+    "HISTORY_RESETS": {
+        "series": _ok_str,
+        "no_record_bar_key_bar_start": _ok_time,
+        "window_kind": _within(kind.value for kind in ReadKind),
+        "window_bars": _or_null(_is_count),
+        "exclude_latest_bars": _is_count,
+        "window_duration": _or_null(_ok_str),
+        "insufficient_from": _ok_time,
+        "ready_at": _or_null(_ok_time),
+    },
+    "PUBLICATIONS": {
+        "bar_key_series": _ok_str,
+        "bar_key_bar_start": _ok_time,
+        "bar_end": _ok_time,
+        "available_at": _ok_time,
+        "recorded_minutes": _or_null(_is_count),
+    },
+    "POSITIONS": {
+        "position_id": _ok_str,
+        "opened_at_time": _ok_time,
+        "status": _within(status.value for status in PositionStatus),
+        "close_fill_id": _or_null(_ok_str),
+    },
+    "FILLS": {"fill_id": _ok_str, "order_id": _ok_str, "processed_at_time": _ok_time},
+    "ORDERS": {
+        "order_id": _ok_str,
+        "accepted_at_time": _ok_time,
+        "terms_kind": _within(("ENTRY_TERMS", "CLOSE_TERMS")),
+        # 決済の契機が null の決済の注文は、決定 24 の「区別できない」（確認不能）として扱う。
+        "terms_cause": _or_null(_within(cause.value for cause in CloseCause)),
+    },
+    "ORDER_EVENTS": {
+        "order_id": _ok_str,
+        "to_status": _within(status.value for status in OrderStatus),
+        "at_time": _ok_time,
+    },
+    "LEDGER_SNAPSHOTS": {"at_time": _ok_time},
+}
+#: 判定ごとに検査する表。
+CHECK_TABLES: Final[Mapping[str, tuple[str, ...]]] = {
+    "check_1": (
+        "HISTORY_RESETS",
+        "LEDGER_SNAPSHOTS",
+        "POSITIONS",
+        "FILLS",
+        "ORDERS",
+        "ORDER_EVENTS",
+    ),
+    "check_2": ("EVALUATIONS", "HISTORY_RESETS", "PUBLICATIONS"),
+    "check_4": ("PUBLICATIONS",),
+}
+
+
+def invalid_row_fields(run: RunArtifacts, tables: Iterable[str]) -> dict[str, int]:
+    """必須値が null・語彙外・形式違いの行の数を「表.列」ごとに数える（無ければ空）。"""
+    problems: dict[str, int] = {}
+    for table in tables:
+        for row in run.tables[table]:
+            for column, rule in ROW_RULES[table].items():
+                if not rule(row.get(column)):
+                    key = f"{run.name}:{table}.{column}"
+                    problems[key] = problems.get(key, 0) + 1
+            if table == "HISTORY_RESETS" and row.get("window_kind") == "BARS":
+                if not _is_count(row.get("window_bars")):
+                    key = f"{run.name}:{table}.window_bars"
+                    problems[key] = problems.get(key, 0) + 1
+    return problems
+
+
+def _invalid_rows_result(problems: Mapping[str, int]) -> dict[str, Any]:
+    return {"result": FAIL, "parts": {}, "detail": {"invalid_fields": dict(problems)}}
 
 
 # --- 共通 -------------------------------------------------------------------------
@@ -462,6 +614,9 @@ def _check_history_reset_scoring(
 
     D11 §12.2、D06 §18.8。
     """
+    problems = invalid_row_fields(run, CHECK_TABLES["check_1"])
+    if problems:
+        return _invalid_rows_result(problems)
     run_start, run_end = run.run_interval
     day_start, day_end = _time(reset_day[0]), _time(reset_day[1])
     on_day = [
@@ -490,6 +645,10 @@ def _check_history_reset_scoring(
     # 決定 31: 期間ごとの準備のやり直しの分数は評価の集計に無く、表22 は戦略が読むすべての系列の
     # 無記録の足から出るので、run 全体の分数では 2022-12-26 の期間が採点に含まれるかを判定できない。
     counts = run.unrecorded_event_counts
+    absent = [key for key in RESET_COUNT_KEYS if not _is_count(counts.get(key))]
+    if absent:  # 読込みで確かめているが、ここでも欠けた値を記録だけに回さない（決定 32・33）
+        parts["required_fields"] = FAIL
+        detail["invalid_fields"] = [f"category_counts.UNRECORDED_EVENT.{key}" for key in absent]
     parts["c_scored"] = UNVERIFIABLE
     detail["history_resets_match_manifest"] = (
         counts.get("HISTORY_RESETS") == run.history_reset_count
@@ -657,6 +816,9 @@ def _check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
 
     時刻だけで結び付ける（D12 §12.5.1 の決定 3）。
     """
+    problems = invalid_row_fields(run, CHECK_TABLES["check_2"])
+    if problems:  # 抽出の前に検査する（null の結果区分の行を黙って除かない。人間レビュー 2 回目）
+        return _invalid_rows_result(problems)
     run_start, run_end = run.run_interval
     skips = [
         _time(row["decision_time"]) for row in run.tables["EVALUATIONS"] if _is_warmup_skip(row)
@@ -709,6 +871,10 @@ def _check_skips_match_resets(run: RunArtifacts) -> dict[str, Any]:
     )
     if missing:
         parts["b_each_period_has_skip"] = FAIL
+    elif not periods:
+        # 比べる行が無い（表22 が空）。何も比べずに合格にしない（決定 18・共通の約束）。
+        parts["b_each_period_has_skip"] = UNVERIFIABLE
+        detail.setdefault("unverifiable_reason", "表22 が空で、比べる行が無い")
     elif without_trigger:
         parts["b_each_period_has_skip"] = UNVERIFIABLE
         detail.setdefault(
@@ -874,13 +1040,25 @@ def trading_day_label(bar_end: datetime, tz: tzinfo) -> str:
 def read_daily_differences(path: Path, pair: str = "USDJPY") -> set[str]:
     """順 2 の集計の、組の間で被覆が変わる日足の取引日（`candidate_differences.csv`）。"""
     with path.open(encoding="utf-8", newline="") as handle:
-        return {
+        reader = csv.DictReader(handle)
+        missing = [name for name in DIFFERENCE_COLUMNS if name not in (reader.fieldnames or ())]
+        if (
+            missing
+        ):  # 壊れた入力（ヘッダーが無い・列が足りない）は読込みの失敗（該当 0 件と区別する）
+            raise _FormatError(f"{path.name} に必須の列が無い: " + ", ".join(missing))
+        days = {
             row["key"]
-            for row in csv.DictReader(handle)
+            for row in reader
             if row["pair"] == pair
             and row["scope"] == "daily_bar"
             and row["field"] == "recorded_minutes"
         }
+    for day in days:
+        try:
+            date.fromisoformat(day)
+        except (TypeError, ValueError):
+            raise _FormatError(f"{path.name} の取引日の形式が違う") from None
+    return days
 
 
 def check_daily_differences(
@@ -906,11 +1084,30 @@ def _check_daily_differences(
                 continue
             minutes = row[COVERAGE_COLUMN]
             if not _is_count(minutes):  # 欠けた・形式の違う被覆は比べない（不合格）
-                raise ValueError(f"{run.name} の日足の {COVERAGE_COLUMN} が欠けているか形式が違う")
+                raise _FormatError(
+                    f"{run.name} の日足の {COVERAGE_COLUMN} が欠けているか形式が違う"
+                )
             out[trading_day_label(_time(row["bar_end"]), tz)] = minutes
         return out
 
+    problems = {
+        **invalid_row_fields(standard, CHECK_TABLES["check_4"]),
+        **invalid_row_fields(candidate, CHECK_TABLES["check_4"]),
+    }
+    if problems:
+        return _invalid_rows_result(problems)
     left, right = daily(standard), daily(candidate)
+    empty = [
+        label
+        for label, value in (
+            ("aggregation_days", expected_days),
+            (f"{standard.name}.daily_bars", left),
+            (f"{candidate.name}.daily_bars", right),
+        )
+        if not value
+    ]
+    if empty:  # 空同士の一致を合格にしない（決定 32・33 の約束の適用。第 4 巡の所見）
+        return {"result": FAIL, "parts": {}, "detail": {"invalid_fields": empty}}
     same_keys = set(left) == set(right)
     differing = {day for day in set(left) & set(right) if left[day] != right[day]}
     not_published = {day for day in expected_days if day not in left or day not in right}
@@ -988,6 +1185,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "run_id": artifacts.run_id,
             "snapshot_id": artifacts.snapshot_id,
             "read_errors": dict(artifacts.errors),
+            "missing_fields_on_load": list(artifacts.field_problems),
             "run_interval": [_iso(artifacts.run_interval[0]), _iso(artifacts.run_interval[1])],
             "check_1_history_reset_scoring": check_history_reset_scoring(artifacts),
             "check_2_skips_match_resets": check_skips_match_resets(artifacts),
@@ -1029,11 +1227,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     summary["check_4_daily_differences"] = record["check_4_daily_differences"]["result"]
     print(json.dumps(summary, ensure_ascii=False, indent=1))
-    # 読めない成果物があったときは、判定を書き終えたうえで 0 以外で終える。
-    unreadable = any(item["read_errors"] for item in record["runs"].values()) or bool(
-        record["check_4_daily_differences"].get("detail", {}).get("read_errors")
+    # 読めない成果物・必須項目の欠落があれば、判定を書き終えたうえで 1 で終える。
+    return 1 if _has_input_problem(record) else 0
+
+
+def _has_input_problem(record: Mapping[str, Any]) -> bool:
+    checks = [
+        value
+        for item in record["runs"].values()
+        for key, value in item.items()
+        if key.startswith("check_")
+    ]
+    checks.append(record["check_4_daily_differences"])
+    flagged = ("read_errors", "invalid_values", "invalid_fields")
+    return any(item["read_errors"] for item in record["runs"].values()) or any(
+        check.get("detail", {}).get(key) for check in checks for key in flagged
     )
-    return 1 if unreadable else 0
 
 
 if __name__ == "__main__":  # pragma: no cover
