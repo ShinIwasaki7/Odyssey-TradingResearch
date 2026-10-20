@@ -311,9 +311,14 @@ def test_price_columns_are_not_read(tmp_path: Path) -> None:
 # --- 判定 1 ---------------------------------------------------------------------------
 
 
-def test_check_1_passes_when_a_position_spans_the_reset(tmp_path: Path) -> None:
+def test_check_1_continues_when_a_position_spans_the_reset(tmp_path: Path) -> None:
     result = checks.check_history_reset_scoring(_load(tmp_path))
-    assert result["result"] == PASS
+    parts = result["parts"]
+    assert [parts[k] for k in ("a_completed", "b_reset_rows", "d_ledger_continues")] == [PASS] * 3
+    assert parts["e_positions_orders_continue"] == PASS
+    # 決定 31: (c) は確認不能なので、判定 1 全体は合格にならない。
+    assert parts["c_scored"] == UNVERIFIABLE
+    assert result["result"] == UNVERIFIABLE
     assert result["detail"]["periods"] == [[RESET_FROM, RESET_READY]]
     assert result["detail"]["target_series"] == [DAILY]
     assert result["detail"]["continuing_positions"] == 1
@@ -342,23 +347,31 @@ def test_check_1_counts_an_order_canceled_or_expired_at_the_reset_only(
     tables = _baseline_tables()
     tables["ORDER_EVENTS"][1].update(to_status=status, at_time=RESET_FROM)
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["result"] == PASS  # 建玉が続いている
+    assert result["parts"]["e_positions_orders_continue"] == PASS  # 建玉が続いている
     assert result["detail"]["continuing_orders"] == 0
     assert result["detail"]["canceled_or_expired_at_period_start"] == 1
     assert result["detail"]["ended_at_period_start"] == 0
 
 
-def test_check_1_counts_an_entry_order_filled_at_the_reset_as_continuing(tmp_path: Path) -> None:
-    """決定 24・28 を注文にも当てる（第 2 巡）: 始まりの時刻の約定は通常の決着。
-
-    「消された」に数えず、継続した注文に数える。
-    """
+def test_check_1_counts_an_entry_order_filled_at_the_reset_only(tmp_path: Path) -> None:
+    """決定 29: 決済以外の注文の始まりの時刻の約定は、継続にも終了にも数えず件数だけを出す。"""
     tables = _baseline_tables()
     tables["ORDER_EVENTS"][1]["at_time"] = RESET_FROM
     result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
-    assert result["result"] == PASS
+    assert result["parts"]["e_positions_orders_continue"] == PASS  # 建玉が続いている
     assert result["detail"]["ended_at_period_start"] == 0
-    assert result["detail"]["continuing_orders"] == 1
+    assert result["detail"]["continuing_orders"] == 0
+    assert result["detail"]["filled_orders_at_period_start"] == 1
+
+
+def test_check_1_is_unverifiable_for_an_order_with_an_unknown_end(tmp_path: Path) -> None:
+    """第 3 巡 P3-2: 注文の未知の終わり方は、建玉の「契機が読めない」件数と分けて数える。"""
+    tables = _baseline_tables()
+    tables["ORDER_EVENTS"][1].update(to_status="REJECTED", at_time=RESET_FROM)
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["parts"]["e_positions_orders_continue"] == UNVERIFIABLE
+    assert result["detail"]["orders_with_unknown_end"] == 1
+    assert result["detail"]["positions_with_unknown_close_cause"] == 0
 
 
 @pytest.mark.parametrize(
@@ -424,10 +437,25 @@ def test_check_1_fails_without_reset_rows_for_the_day(tmp_path: Path) -> None:
     assert result["parts"]["b_reset_rows"] == FAIL
 
 
-def test_check_1_fails_when_the_reset_minutes_are_not_scored(tmp_path: Path) -> None:
-    counts = {"HISTORY_RESETS": 2, "HISTORY_RESET_MINUTES": 0}
+def test_check_1_scoring_of_the_period_is_unverifiable(tmp_path: Path) -> None:
+    """決定 31: run 全体の分数では 2022-12-26 の期間を判定できないので (c) は確認不能。"""
+    counts = {"HISTORY_RESETS": 2, "HISTORY_RESET_MINUTES": 100}
     result = checks.check_history_reset_scoring(_load(tmp_path, counts=counts))
-    assert result["parts"]["c_scored"] == FAIL
+    assert result["parts"]["c_scored"] == UNVERIFIABLE
+    assert (
+        "test_a_run_with_an_all_unrecorded_hour_is_evaluated"
+        in (result["detail"]["c_unverifiable_reason"])
+    )
+    assert result["detail"]["history_resets_match_manifest"] is True
+
+
+def test_check_1_does_not_clip_a_period_to_the_run(tmp_path: Path) -> None:
+    """第 3 巡 P2: 期間が run 区間の中に無ければ (b) は不合格。期間は切り詰めない。"""
+    tables = _baseline_tables()
+    tables["HISTORY_RESETS"][0]["ready_at"] = "2023-04-03T21:00:00Z"  # run の終わりより後
+    result = checks.check_history_reset_scoring(_load(tmp_path, tables=tables))
+    assert result["parts"]["b_reset_rows"] == FAIL
+    assert result["detail"]["periods"] == [[RESET_FROM, "2023-04-03T21:00:00Z"]]
 
 
 def test_check_1_uses_intraday_rows_for_a_strategy_without_daily_reads(tmp_path: Path) -> None:
@@ -701,6 +729,30 @@ def test_main_writes_only_results_counts_and_hashes(tmp_path: Path, with_pair: b
     expected = PASS if with_pair else NOT_EVALUATED
     assert record["check_4_daily_differences"]["result"] == expected
     assert "999" not in out.read_text(encoding="utf-8")  # 合成の価格の値は出力に現れない
+
+
+def test_main_requires_the_calendar_only_for_check_4(tmp_path: Path) -> None:
+    """第 3 巡 P3-3: 判定 4 を出さない実行では --calendar は要らない。出すときは必須。"""
+    experiment, _, snapshots = _write_run(tmp_path)
+    base = ["--experiment", f"x={experiment}", "--snapshots", str(snapshots)]
+    assert checks.main([*base, "--out", str(tmp_path / "a.json")]) == 0
+    differences = tmp_path / "diff.csv"
+    differences.write_text(
+        "pair,scope,key,field,standard_value,candidate_value\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit):
+        checks.main(
+            [
+                *base,
+                "--pair-b",
+                "x",
+                "x",
+                "--differences",
+                str(differences),
+                "--out",
+                str(tmp_path / "b.json"),
+            ]
+        )
 
 
 def test_main_requires_the_snapshots_base(tmp_path: Path) -> None:

@@ -305,19 +305,27 @@ def check_history_reset_scoring(
         parts["b_reset_rows"] = FAIL
         detail["target_rows"] = 0
         return {"result": FAIL, "parts": parts, "detail": detail}
-    periods = [(max(s, run_start), min(e, run_end)) for s, e in _merge(targets)]
-    periods = [(s, e) for s, e in periods if s < e]
+    # 期間は run 区間に切り詰めない。run 区間の中に無ければ (b) は不合格（第 3 巡）。
+    periods = _merge(targets)
     detail["target_rows"] = len(targets)
     detail["target_series"] = sorted({row["series"] for _, _, row in chosen})
     detail["periods"] = [[_iso(s), _iso(e)] for s, e in periods]
-    parts["b_reset_rows"] = PASS if periods else FAIL
+    inside = all(run_start <= s and e <= run_end for s, e in periods)
+    parts["b_reset_rows"] = PASS if inside else FAIL
 
+    # 決定 31: 期間ごとの準備のやり直しの分数は評価の集計に無く、表22 は戦略が読むすべての系列の
+    # 無記録の足から出るので、run 全体の分数では 2022-12-26 の期間が採点に含まれるかを判定できない。
     counts = run.unrecorded_event_counts
-    scored = (
+    parts["c_scored"] = UNVERIFIABLE
+    detail["history_resets_match_manifest"] = (
         counts.get("HISTORY_RESETS") == run.history_reset_count
-        and counts.get("HISTORY_RESET_MINUTES", 0) > 0
     )
-    parts["c_scored"] = PASS if scored else FAIL
+    detail["history_reset_minutes_total"] = counts.get("HISTORY_RESET_MINUTES")
+    detail["c_unverifiable_reason"] = (
+        "期間ごとの準備のやり直しの分数が評価の集計に無く、run 全体の分数では 2022-12-26 の期間を"
+        "判定できない（D12 §12.5.1、決定 31）。根拠: tests/acceptance/test_tick_record_model.py::"
+        "test_a_run_with_an_all_unrecorded_hour_is_evaluated"
+    )
 
     ledger_times = [_time(row["at_time"]) for row in run.tables["LEDGER_SNAPSHOTS"]]
     parts["d_ledger_continues"] = (
@@ -334,6 +342,8 @@ def check_history_reset_scoring(
     )
     detail["positions_with_unknown_close_cause"] = sum(item["unknown"] for item in continuation)
     detail["close_orders_judged_by_positions"] = sum(item["close_orders"] for item in continuation)
+    detail["filled_orders_at_period_start"] = sum(item["filled"] for item in continuation)
+    detail["orders_with_unknown_end"] = sum(item["unknown_orders"] for item in continuation)
     if parts["e_positions_orders_continue"] == UNVERIFIABLE:
         detail["unverifiable_reason"] = (
             "やり直しの期間の始まりをまたぐ建玉・注文が無いか、始まりの時刻の決済が強制決済か"
@@ -355,9 +365,9 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
       決済の契機・決済の約定を記録から読めなければ、その建玉は確認不能（決定 24）。
     - 注文: 決済の注文（`CLOSE_TERMS`）は建玉の側で判定し、注文の側では数えない（強制決済を
       二重に数えない。決定 24・28 を注文にも当てる）。それ以外の注文は、始まりより前に受け付け、
-      始まりの時点で終わっていないものを数える。始まりの時刻の約定は通常の決着として継続に数え、
-      取消・期限切れは継続にも終了にも数えず件数だけを出す（決定 25）。それ以外の状態で終わった
-      注文は確認不能。
+      始まりの時点で終わっていないものを数える。始まりの時刻の約定（決定 29）と取消・期限切れ
+      （決定 25）は、継続にも終了にも数えず件数だけを出す（約定で生じた建玉は建玉の側で判定する）。
+      それ以外の状態で終わった注文は確認不能（建玉の「契機が読めない」件数とは分けて数える）。
     """
     fills = {row["fill_id"]: row for row in run.tables["FILLS"]}
     causes = {
@@ -390,7 +400,7 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
     events: dict[str, list[tuple[datetime, str]]] = {}
     for row in run.tables["ORDER_EVENTS"]:
         events.setdefault(row["order_id"], []).append((_time(row["at_time"]), row["to_status"]))
-    orders = canceled_or_expired = close_orders = 0
+    orders = canceled_or_expired = close_orders = filled = unknown_orders = 0
     for row in run.tables["ORDERS"]:
         accepted = _time(row["accepted_at_time"])
         history = sorted(events.get(row["order_id"], []))
@@ -405,13 +415,15 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
             if finished[1] in _ALLOWED_ENDS:
                 canceled_or_expired += 1
                 continue
-            if finished[1] != "FILLED":
-                unknown += 1
-                continue
+            if finished[1] == "FILLED":
+                filled += 1
+            else:
+                unknown_orders += 1
+            continue
         orders += 1
     if ended:
         result = FAIL
-    elif unknown or not (positions or orders):
+    elif unknown or unknown_orders or not (positions or orders):
         result = UNVERIFIABLE
     else:
         result = PASS
@@ -423,6 +435,8 @@ def _continuation(run: RunArtifacts, start: datetime) -> dict[str, Any]:
         "canceled_or_expired": canceled_or_expired,
         "unknown": unknown,
         "close_orders": close_orders,
+        "filled": filled,
+        "unknown_orders": unknown_orders,
     }
 
 
@@ -681,7 +695,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--calendar",
-        required=True,
         help="判定 4 の取引日を決めるカレンダー（fx_ny17_oanda 版 1。D12 §12.5.1、決定 27）",
     )
     parser.add_argument("--out", required=True, help="結果の JSON の書き出し先")
@@ -709,6 +722,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         }
     check_4: dict[str, Any] = {"result": NOT_EVALUATED}
     if args.pair_b and args.differences:
+        if not args.calendar:  # 判定 4 を出すときだけ要る（既定値は置かない）
+            raise SystemExit("判定 4 を出すには --calendar（fx_ny17_oanda 版 1）を渡すこと")
         standard, candidate = (runs[name] for name in args.pair_b)
         calendar_path = Path(args.calendar)
         check_4 = check_daily_differences(
