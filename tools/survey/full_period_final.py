@@ -300,13 +300,15 @@ def load_time_rule_table(path: Path, approved_list: Path) -> list[TableConversio
     SHA-256・識別・版があり取り消されていない、T2 通貨ごとに期間が重ならず対象期間を隙間なく覆う、
     T3 境目（両端を除く）が日曜、T5 区分と候補の対応、と表の形（未宣言のキーを拒否）。
     基盤の検査の失敗は ``FeasibilityError`` に包んで返す（集計の道具の失敗の型をそろえる）。
+    必須のキーが無い表は基盤が ``ConfigError`` にするが、``KeyError`` が漏れても同じく包む
+    （終了コード 2 を保つ。人間の決定 2026-10-20 の 1）。
 
     本関数が足すのは、``candidate`` の組の作り方（D12-92 (a)）が候補 1 つの行だけで決まっている
     ことの検査（候補が 2 つ以上の行があれば読込で止める）と、通貨ごとの期間の並びへの組み替えだけ。
     """
     try:
         table = load_approved_time_rule_table(path, approved_list)
-    except (ConfigError, MarketDataValueError) as exc:
+    except (ConfigError, MarketDataValueError, KeyError) as exc:
         raise FeasibilityError(f"{path} の時刻の規則の表を受け付けない: {exc}") from exc
     per_pair: dict[str, list[RulePeriod]] = {pair: [] for pair in table.pairs}
     for row in table.rows:

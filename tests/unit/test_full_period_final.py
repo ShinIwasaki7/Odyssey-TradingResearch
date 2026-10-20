@@ -133,6 +133,13 @@ def test_load_time_rule_table_rejects_what_the_base_loader_rejects(tmp_path: Pat
         fin.load_time_rule_table(table, approved)
 
 
+def test_load_time_rule_table_wraps_missing_schema_version(tmp_path: Path) -> None:
+    # 必須のキーが無い表も FeasibilityError で止まる（終了コード 2。基盤は ConfigError を出す）
+    table, approved = _table_with(tmp_path, "schema_version: 1\n", "")
+    with pytest.raises(FeasibilityError, match="受け付けない"):
+        fin.load_time_rule_table(table, approved)
+
+
 def test_load_time_rule_table_rejects_two_candidates(tmp_path: Path) -> None:
     old = (
         "    candidates:\n      - {name: 米国式, offset_hours: 3}\n"
