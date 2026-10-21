@@ -1345,6 +1345,7 @@ class RunExperiment:
                     train_units.append(_train_unit(done[1]))
                 selection = select_trial(fold.fold_index, standard.selection, train_units)
                 saved = record.selections.get(fold.fold_index)
+                concluded = record.outcome_selections.get(fold.fold_index)
                 rows.append(
                     ReproductionRow(
                         item=ReproductionItem.SELECTION,
@@ -1355,10 +1356,14 @@ class RunExperiment:
                                 "selected_trial_index",
                                 None if saved is None else _hex(saved.selected_trial_index),
                             ),
+                            (
+                                "outcome_selected_trial_index",
+                                None if concluded is None else _hex(concluded.selected_trial_index),
+                            ),
                         ),
                         observed=(("selected_trial_index", _hex(selection.selected_trial_index)),),
                         verdict=ReproductionVerdict.REPRODUCED
-                        if saved == selection
+                        if saved == selection and concluded == selection
                         else ReproductionVerdict.RESULT_MISMATCH,
                     )
                 )
@@ -1455,9 +1460,17 @@ class RunExperiment:
         planner: SegmentPlanner,
         rerun: Callable[[RunConfig, CompiledStrategy, RunId], tuple[BacktestResult, _Evaluated]],
     ) -> list[ReproductionRow]:
-        """経路の区間を区間 0 から順にやり直し、残高を計算し直して照合する（仮置き 20）。"""
+        """経路の区間を区間 0 から順にやり直し、残高を計算し直して照合する（仮置き 20）。
+
+        各区間の `RunId`・結果のダイジェスト・終わりの残高を、区間の開始記録・終端の記録と、結末記録
+        の経路の要約の区間の行（`RunId`・初めと終わりの残高）の両方と照合する。最後に経路の終端と
+        最後の残高を結末記録と照合する（D13 §4.5 の「再現」）。
+        """
         rows: list[ReproductionRow] = []
+        concluded = {row.segment_index: row for row in record.outcome_path.segments}
         balance = _initial_balance(prepared, variant)
+        end = PathEnd.COMPLETED
+        final: Money | None = balance
         for segment in plan_segments(split.folds, selections):
             if segment.trial_index is None:
                 continue
@@ -1467,21 +1480,28 @@ class RunExperiment:
                 raise KernelValueError("a selected trial has compiled (D09 §7.4)")
             plan = planner.plan(variant, compiled, segment.interval, balance)
             start = record.segment_starts.get(segment.segment_index)
-            end = record.segment_ends.get(segment.segment_index)
+            saved = record.segment_ends.get(segment.segment_index)
+            row = concluded.get(segment.segment_index)
             result, evaluated = rerun(plan.config, compiled, plan.expected_run_id)
             summaries = result.summaries
             settled: Money | None = None
             if summaries is not None and evaluated.status is EvaluationStatus.COMPLETED:
                 settled = balance + summaries.realized + summaries.hypothetical_closed
-            if start is None or end is None:
+            if start is None or saved is None or row is None:
                 verdict = ReproductionVerdict.RESULT_MISMATCH
             elif (
                 start.expected_run_id != plan.expected_run_id
                 or start.config_digest != plan.config_digest
-                or end.run_id != result.run_id
+                or saved.run_id != result.run_id
+                or row.run_id != result.run_id
             ):
                 verdict = ReproductionVerdict.RUN_ID_MISMATCH
-            elif end.result_digest != evaluated.result_digest or end.settled_equity != settled:
+            elif (
+                saved.result_digest != evaluated.result_digest
+                or saved.settled_equity != settled
+                or row.initial_balance != balance
+                or row.end_balance != settled
+            ):
                 verdict = ReproductionVerdict.RESULT_MISMATCH
             else:
                 verdict = ReproductionVerdict.REPRODUCED
@@ -1491,29 +1511,61 @@ class RunExperiment:
                     variant=variant,
                     key=f"s{segment.segment_index}",
                     expected=(
-                        ("run_id", None if end is None else _hex(end.run_id)),
-                        ("result_digest", None if end is None else _hex(end.result_digest)),
-                        ("settled_balance", None if end is None else _hex(end.settled_equity)),
+                        ("run_id", None if saved is None else _hex(saved.run_id)),
+                        ("result_digest", None if saved is None else _hex(saved.result_digest)),
+                        ("settled_balance", None if saved is None else _hex(saved.settled_equity)),
+                        ("outcome_run_id", None if row is None else _hex(row.run_id)),
+                        (
+                            "outcome_initial_balance",
+                            None if row is None else _hex(row.initial_balance),
+                        ),
+                        ("outcome_end_balance", None if row is None else _hex(row.end_balance)),
                     ),
                     observed=(
                         ("run_id", _hex(result.run_id)),
                         ("result_digest", _hex(evaluated.result_digest)),
+                        ("initial_balance", _hex(balance)),
                         ("settled_balance", _hex(settled)),
                     ),
                     verdict=verdict,
                 )
             )
-            if settled is None or settled.amount <= 0:
+            if settled is None:
+                end, final = PathEnd.INCOMPLETE, None
                 break
-            balance = settled
-        if len([row for row in rows]) != len(record.segment_ends):
+            balance = final = settled
+            if settled.amount <= 0:
+                end = PathEnd.CAPITAL_LOST
+                break
+        outcome_path = record.outcome_path
+        rows.append(
+            ReproductionRow(
+                item=ReproductionItem.SEGMENT,
+                variant=variant,
+                key="end",
+                expected=(
+                    ("end", outcome_path.end.value),
+                    ("final_balance", _hex(outcome_path.final_balance)),
+                ),
+                observed=(("end", end.value), ("final_balance", _hex(final))),
+                verdict=ReproductionVerdict.REPRODUCED
+                if (outcome_path.end, outcome_path.final_balance) == (end, final)
+                else ReproductionVerdict.RESULT_MISMATCH,
+            )
+        )
+        reran = len(rows) - 1
+        recorded_runs = sum(1 for row in outcome_path.segments if row.run_id is not None)
+        if reran != len(record.segment_ends) or reran != recorded_runs:
             rows.append(
                 ReproductionRow(
                     item=ReproductionItem.SEGMENT,
                     variant=variant,
                     key="count",
-                    expected=(("segments", str(len(record.segment_ends))),),
-                    observed=(("segments", str(len(rows))),),
+                    expected=(
+                        ("segments", str(len(record.segment_ends))),
+                        ("outcome_segments", str(recorded_runs)),
+                    ),
+                    observed=(("segments", str(reran)),),
                     verdict=ReproductionVerdict.RESULT_MISMATCH,
                 )
             )
@@ -1877,12 +1929,20 @@ class ReproductionRow:
 
 @dataclass(frozen=True, slots=True)
 class RecordedSearch:
-    """組ごとの保存済みの探索の記録（再現の照合先）。"""
+    """組ごとの保存済みの探索の記録（再現の照合先）。
+
+    - `runs` / `selections` / `segment_starts` / `segment_ends`: `search/<組>/` の試行記録・
+      選定記録・区間の開始記録と終端の記録（実験の版のディレクトリから読んだもの）。
+    - `outcome_selections` / `outcome_path`: 結末記録の組の選定と経路の要約（D13 §4.5 の「再現」:
+      選定は選定記録と、区間の残高は開始・終端の記録と結末記録の両方と照合する）。
+    """
 
     runs: Mapping[TrialUnitKey, TrialRunRecord]
     selections: Mapping[int, FoldSelection]
     segment_starts: Mapping[int, PathSegmentStart]
     segment_ends: Mapping[int, PathSegmentEnd]
+    outcome_selections: Mapping[int, FoldSelection]
+    outcome_path: PathSummary
 
 
 #: 全体の判定に写す順（最初に当てはまる不一致。実装 PR の仮置き 57）。

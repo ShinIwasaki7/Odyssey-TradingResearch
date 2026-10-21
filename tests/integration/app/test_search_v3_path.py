@@ -31,6 +31,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -464,6 +465,68 @@ def test_a_changed_passed_balance_is_not_reproduced(setup: _Setup, tmp_path: Pat
     failed = [item for item in report["items"] if item["verdict"] != "REPRODUCED"]
     assert [(item["item"], item["variant"], item["key"]) for item in failed] == [
         ("SEGMENT", "standard", "s0")
+    ]
+
+
+def _reproduce_copied(setup: _Setup, copied: Path, tmp_path: Path) -> tuple[int, dict[str, Any]]:
+    """複製した成果物の基点の実験を再現し、終了コードと再現の報告を返す。"""
+    out = tmp_path / "reproduce"
+    code, output = _call(
+        [
+            "experiment",
+            "reproduce",
+            "--experiment-dir",
+            str(copied / "runs/experiments/v3_path/v1"),
+            "--snapshots",
+            str(setup.workspace.repo / "data/snapshots"),
+            "--out",
+            str(out),
+            "--repo-root",
+            str(setup.workspace.repo),
+        ]
+    )
+    assert (out / "reproduction.json").is_file(), output
+    report: dict[str, Any] = json.loads((out / "reproduction.json").read_text(encoding="utf-8"))
+    return code, report
+
+
+def _failed_items(report: dict[str, Any]) -> list[tuple[str, str, str]]:
+    return [
+        (item["item"], item["variant"], item["key"])
+        for item in report["items"]
+        if item["verdict"] != "REPRODUCED"
+    ]
+
+
+def test_a_missing_selection_record_is_not_reproduced(setup: _Setup, tmp_path: Path) -> None:
+    """選定記録が無ければ、結末記録の選定と一致しても選定の行は RESULT_MISMATCH（D13 §4.5 の
+    「再現」: 計算し直した選定は選定記録と照合する）。"""
+    copied = _copy_out(setup, tmp_path)
+    (copied / "runs/experiments/v3_path/v1/search/standard/selection_f0.json").unlink()
+    code, report = _reproduce_copied(setup, copied, tmp_path)
+    assert code == 6
+    assert report["verdict"] == "RESULT_MISMATCH"
+    assert _failed_items(report) == [("SELECTION", "standard", "f0")]
+
+
+def test_a_changed_balance_in_the_outcome_is_not_reproduced(setup: _Setup, tmp_path: Path) -> None:
+    """結末記録の経路の区間の残高と最後の残高を書き換えると、開始・終端の記録が正しくても区間の行と
+    経路の終端の行が RESULT_MISMATCH（D13 §4.5 の「再現」: 結末記録の値とも照合する）。"""
+    copied = _copy_out(setup, tmp_path)
+    outcome_path = copied / "runs/experiments/v3_path/v1/experiment_outcome.json"
+    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+    path = outcome["search"]["variants"]["standard"]["path"]
+    path["segments"][0]["end_balance"]["amount"] = "12345e0"
+    path["final_balance"]["amount"] = "12345e0"
+    outcome_path.write_text(
+        json.dumps(outcome, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    code, report = _reproduce_copied(setup, copied, tmp_path)
+    assert code == 6
+    assert report["verdict"] == "RESULT_MISMATCH"
+    assert _failed_items(report) == [
+        ("SEGMENT", "standard", "s0"),
+        ("SEGMENT", "standard", "end"),
     ]
 
 

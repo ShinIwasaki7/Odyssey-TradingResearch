@@ -83,6 +83,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     read_experiment_outcome,
     read_ledger_binding_records,
     read_path_records,
+    read_selections,
     read_trial_ledger_file,
     read_unit_records,
     reproduction_path,
@@ -2573,11 +2574,14 @@ def _reproduce_search(
         starts, ends = read_path_records(experiment_dir, variant)
         search = outcome.search
         assert search is not None  # noqa: S101  上で確かめた
+        concluded = search.variants.of(variant)
         return RecordedSearch(
             runs=runs,
-            selections={item.fold_index: item for item in search.variants.of(variant).selections},
+            selections=read_selections(experiment_dir, variant),
             segment_starts=starts,
             segment_ends=ends,
+            outcome_selections={item.fold_index: item for item in concluded.selections},
+            outcome_path=concluded.path,
         )
 
     try:
