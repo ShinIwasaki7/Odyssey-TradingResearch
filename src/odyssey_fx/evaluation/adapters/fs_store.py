@@ -45,6 +45,7 @@ from odyssey_fx.backtest.trace.manifest import (
     RunManifest,
     SeriesCoverageReport,
     config_digest_of,
+    legacy_config_digest_of,
 )
 from odyssey_fx.backtest.trace.recorder import (
     TraceTable,
@@ -1107,7 +1108,8 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
     エンコード文字列で保存されており（同節）、その表現は JSON 互換なのでそのまま読める。
     """
     timeframes = _timeframes_of(payload)
-    config = _run_config_of(_loads(payload["config"], "RunManifest.config"), timeframes)
+    raw_config = _loads(payload["config"], "RunManifest.config")
+    config = _run_config_of(raw_config, timeframes)
     symbol_spec = _loads(payload["symbol_spec_ref"], "RunManifest.symbol_spec_ref")
     symbol_spec_ref = SymbolSpecRef(
         symbol=Symbol(symbol_spec["symbol"]),
@@ -1116,7 +1118,9 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
     )
     timeframe_def_refs = tuple(TimeframeRef.parse(item) for item in payload["timeframe_def_refs"])
     stored_digest = ConfigDigest(_digest_of(payload["config_digest"], "ConfigDigest"))
-    recomputed = config_digest_of(
+    # 終わり方の項目の無い旧い manifest は、その項目が入る前の形で照合する（仮置き 62）。
+    digest_of = legacy_config_digest_of if "run_end" not in raw_config else config_digest_of
+    recomputed = digest_of(
         config,
         symbol_spec_ref=symbol_spec_ref,
         calendar_ref=payload["calendar_ref"],
