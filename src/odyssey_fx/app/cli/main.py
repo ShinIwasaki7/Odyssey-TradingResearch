@@ -1334,6 +1334,9 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
     search = result.search
     if search is not None:
         out.line(f"判定: {search.verdict.value}（評価基準の用途: {search.purpose.value}）")
+        # 組の判定の内訳（2026-10-21 改訂。D09 §7.12）。
+        for variant, item in search.variants.items():
+            out.line(f"  {variant.value} の組の判定: {item.verdict.value}")
         out.line(f"試行台帳の実行番号: {search.ledger_execution}")
         if result.failed_checks:
             out.line("事後検査に合格しなかった単位がある（どの単位かは試行記録にある。D09 §10.8）")
