@@ -25,6 +25,7 @@ from odyssey_fx.evaluation.domain.search import (
 )
 from odyssey_fx.evaluation.domain.splits import (
     FinalHoldoutSpec,
+    PartialFold,
     SplitKind,
     SplitSpec,
     SplitStandard,
@@ -34,6 +35,7 @@ from odyssey_fx.evaluation.domain.splits import (
     generate_folds,
     split_spec_of,
 )
+from odyssey_fx.evaluation.domain.variant import Variant
 from odyssey_fx.strategy.compiler.compiled import (
     CompileError,
     CompileRejection,
@@ -161,11 +163,16 @@ def test_an_assignment_is_sorted_and_rejects_a_repeated_parameter() -> None:
 def test_the_units_of_a_trial_cover_both_phases_of_every_fold() -> None:
     """コンパイルが通った試行は全 fold の選定区間と検証区間の単位を持つ（D09 §10.2・§10.5）。"""
     units = trial_units(2, 3)
-    assert [(unit.fold_index, unit.phase) for unit in units] == [
-        (0, TrialPhase.TRAIN),
-        (0, TrialPhase.VALIDATION),
-        (1, TrialPhase.TRAIN),
-        (1, TrialPhase.VALIDATION),
+    # 2026-10-21 改訂: 両組（標準 → 候補）の単位を持つ（D09 §6.2 の改訂。D13-15 (a)）。
+    assert [(unit.variant, unit.fold_index, unit.phase) for unit in units] == [
+        (variant, fold, phase)
+        for variant in (Variant.STANDARD, Variant.CANDIDATE)
+        for fold, phase in (
+            (0, TrialPhase.TRAIN),
+            (0, TrialPhase.VALIDATION),
+            (1, TrialPhase.TRAIN),
+            (1, TrialPhase.VALIDATION),
+        )
     ]
     assert {unit.trial_index for unit in units} == {3}
     assert sorted(units, key=lambda unit: unit.order) == list(units)
@@ -230,7 +237,12 @@ def test_a_trial_plan_refuses_another_trials_unit() -> None:
             compile_rejections=(),
             expected_config_digests=(
                 (
-                    TrialUnitKey(fold_index=0, phase=TrialPhase.TRAIN, trial_index=1),
+                    TrialUnitKey(
+                        variant=Variant.STANDARD,
+                        fold_index=0,
+                        phase=TrialPhase.TRAIN,
+                        trial_index=1,
+                    ),
                     _config_digest("d"),
                 ),
             ),
@@ -294,6 +306,7 @@ def _standard(purge_seconds: int = 0) -> SplitStandard:
         window=SplitWindow.ROLLING,
         purge_seconds=purge_seconds,
         min_folds=2,
+        partial_fold=PartialFold.AT_START,
     )
 
 

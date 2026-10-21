@@ -8,6 +8,7 @@ import pytest
 
 from odyssey_fx.app.cli.main import build_parser, main
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
+from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS
 
 #: 評価が受け取る取引カレンダー（D07 §4.1 v2.0 の `--calendar`）。
 CALENDAR = str(Path(__file__).resolve().parents[3] / "configs/calendars/fx_ny17_v1.yaml")
@@ -129,7 +130,8 @@ def test_an_unimplemented_metric_set_version_is_refused(
     """式のある版だけを受ける（D07 §5.5・§9.2）。
 
     版の番号だけを変えても評価は現在の版の式で走るので、通してしまうと「別の指標集合で
-    作った」と名乗る成果物ができる。実装が持つ指標集合は最新の1版だけである。
+    作った」と名乗る成果物ができる。実装が持つ指標集合は版 2 と版 3（2026-10-21 改訂。
+    実装 PR の仮置き 53）。
     """
     code = main(
         [
@@ -141,7 +143,7 @@ def test_an_unimplemented_metric_set_version_is_refused(
             "--out",
             str(tmp_path),
             "--metric-set-version",
-            str(METRIC_SET_VERSION + 1),
+            str(max(METRIC_SET_VERSIONS) + 1),
         ]
     )
     assert code == 1

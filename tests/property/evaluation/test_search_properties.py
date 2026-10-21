@@ -22,13 +22,14 @@ from odyssey_fx.evaluation.domain.search import (
     SelectionDirection,
     TrainUnitEvaluation,
     TrialStatus,
-    build_search_outcome,
     select_trial,
 )
 from tests.fixtures.evaluation.search_units import (
     evidence,
     in_fold,
+    judge,
     make_fold,
+    path_summary,
     standard,
     train_unit,
     validation_unit,
@@ -121,7 +122,8 @@ def test_search_outcome_is_deterministic_and_independent_of_fold_order(
             else validation_unit(selection.selected_trial_index, {TC: validation_trades[index]})
         )
         items.append(evidence(rule, make_fold(index), trains, unit))
-    first = build_search_outcome(rule, items, ledger_execution=1)
-    again = build_search_outcome(rule, items, ledger_execution=1)
-    reordered = build_search_outcome(rule, data.draw(st.permutations(items)), ledger_execution=1)
+    path = path_summary(len(items))
+    first = judge(rule, items, path)
+    again = judge(rule, items, path)
+    reordered = judge(rule, data.draw(st.permutations(items)), path)
     assert first == again == reordered

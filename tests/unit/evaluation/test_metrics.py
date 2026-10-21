@@ -19,6 +19,7 @@ from odyssey_fx.common.money import (
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.metrics import (
     METRIC_KINDS,
+    METRIC_SET_VERSIONS,
     AmountValue,
     CategoryCount,
     CategoryKind,
@@ -37,7 +38,9 @@ from odyssey_fx.evaluation.domain.metrics import (
     annualized_sharpe_ratio,
     average_trade_profit,
     max_drawdown,
+    max_drawdown_rate_peak,
     metric_caveats,
+    metric_ids_of,
     profit_factor,
     ratio_of,
     trade_outcome,
@@ -55,18 +58,46 @@ def _amounts(*values: str) -> list[Decimal]:
 
 
 def test_the_metric_set_has_exactly_the_nineteen_of_the_design() -> None:
-    """指標集合 v2 は19件（D07 §5.2 の15件＋§5.5 の4件）。並びは宣言順で固定する（§8.1）。"""
-    assert len(list(MetricId)) == 19
-    assert list(MetricId)[0] is MetricId.NET_PROFIT
-    assert list(MetricId)[14] is MetricId.NET_RETURN_RATE
-    assert list(MetricId)[15:] == [
+    """指標集合 v2 は19件（D07 §5.2 の15件＋§5.5 の4件）。並びは宣言順で固定する（§8.1）。
+
+    2026-10-21 改訂（D07 §5.6、実装 PR の仮置き 53）: 版 3 は #20 を足した 20 件で、実装は
+    版 2 と版 3 の両方を持つ。`MetricId` は 20 件で、#20 は宣言順の最後。
+    """
+    v2 = list(metric_ids_of(2))
+    assert len(v2) == 19
+    assert v2[0] is MetricId.NET_PROFIT
+    assert v2[14] is MetricId.NET_RETURN_RATE
+    assert v2[15:] == [
         MetricId.ANNUALIZED_RETURN,
         MetricId.ANNUALIZED_SHARPE_RATIO,
         MetricId.PROFIT_FACTOR,
         MetricId.AVERAGE_TRADE_PROFIT,
     ]
+    assert list(metric_ids_of(3)) == [*v2, MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK]
+    assert list(MetricId) == list(metric_ids_of(3))
+    assert METRIC_SET_VERSIONS == frozenset({2, 3})
+    with pytest.raises(KernelValueError):
+        metric_ids_of(1)
     assert set(METRIC_KINDS) == set(MetricId)
     assert METRIC_KINDS[MetricId.AVERAGE_TRADE_PROFIT] is MetricKind.AMOUNT
+    assert METRIC_KINDS[MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK] is MetricKind.RATIO
+
+
+def test_the_rate_peak_drawdown_takes_the_largest_fall_rate_not_the_largest_amount() -> None:
+    """#20（D07 §5.6）: 金額で最大の下落（#5）と率で最大の下落は別の時点になりうる。
+
+    人工の系列: 100 → 75（25% の下落、金額 25）→ 1000 → 800（20% の下落、金額 200）。#6 は金額で
+    最大の 200 をその時点の最高値 1000 で割った 0.2、#20 は率で最大の 0.25。
+    """
+    series = _amounts("100", "75", "1000", "800")
+    fall = max_drawdown(series)
+    assert fall is not None
+    assert ratio_of(fall.amount, fall.peak) == decimal_from_str("0.2")
+    assert max_drawdown_rate_peak(series) == decimal_from_str("0.25")
+    assert max_drawdown_rate_peak(()) is MetricUnavailableReason.NO_OBSERVATIONS
+    assert (
+        max_drawdown_rate_peak(_amounts("0", "1")) is MetricUnavailableReason.UNDEFINED_DENOMINATOR
+    )
 
 
 def test_the_drawdown_scan_finds_the_deepest_fall_and_its_peak() -> None:

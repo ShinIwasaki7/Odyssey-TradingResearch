@@ -18,6 +18,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from odyssey_fx.backtest.trace.result import RunStatus
+from odyssey_fx.common.ids import SnapshotId
 from odyssey_fx.common.money import CurrencyCode, Money, PriceOffset
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
@@ -35,7 +36,6 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     Unavailable,
 )
-from odyssey_fx.common.ids import SnapshotId
 from odyssey_fx.evaluation.domain.path import (
     PathEnd,
     PathSegmentRow,
@@ -230,7 +230,8 @@ def test_comparison_basis() -> FixedComparisonBasis:
     )
 
 
-#: 既定の経路の条件（経路の最大ドローダウン率 0.30 以下と、全体の純収益率 0 より大。版 3 と同じ形）。
+#: 既定の経路の条件（経路の最大ドローダウン率 0.30 以下と、全体の純収益率 0 より大。
+#: 版 3 と同じ形）。
 DEFAULT_PATH_RULE = PathRule(
     boundary=PathBoundary.CARRY_IF_SAME_TRIAL,
     floors=(MetricCondition(MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK, Comparator.LE, Decimal("0.30")),),

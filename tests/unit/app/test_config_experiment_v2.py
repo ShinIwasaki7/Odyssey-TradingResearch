@@ -30,11 +30,6 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.declarations.entry_policy import AwaitConfirmation, ImmediateEntry
 from tests.fixtures.acceptance.t02_run import CASES
-from tests.fixtures.evaluation.research_policies import (
-    append_registry_entry,
-    policy_v3_text,
-    write_policy,
-)
 from tests.fixtures.strategy.strategy_a import strategy_a
 from tests.fixtures.strategy.strategy_b import strategy_b
 
@@ -594,15 +589,12 @@ def test_a_single_run_experiment_may_point_at_any_registered_version(
 ) -> None:
     """単一実行の実験はどの版も指せ、評価基準は使わない（D07 §20.2 v2.9、D09 §10.9）。
 
-    版 2 はリポジトリの正本、版 3 はテストの中で作った試験用の版（登録簿にも作業場で載せる）。
+    版 2・版 3 ともリポジトリの正本（2026-10-21 改訂で版 3 を登録した。D13 §8.4 の (4)）。
+    単一実行の実験は版 3 の前提の記録・比較の前提と照合しない（照合は探索の実験だけ。D07 §18.6）。
     """
     root = _workspace(tmp_path)
-    if version == 2:
-        relative = "configs/policies/research/research_policy_v2.yaml"
-        (root / relative).write_bytes((REPO_ROOT / relative).read_bytes())
-    else:
-        write_policy(root, "research_policy", 3, policy_v3_text())
-        append_registry_entry(root, "research_policy", 3)
+    relative = f"configs/policies/research/research_policy_v{version}.yaml"
+    (root / relative).write_bytes((REPO_ROOT / relative).read_bytes())
     experiment = root / "configs/experiments/strategy_b_t02_d1_2s.yaml"
     text = experiment.read_text(encoding="utf-8")
     experiment.write_text(text.replace("version: 1}", f"version: {version}}}"), encoding="utf-8")

@@ -128,9 +128,20 @@ def write_search_experiment(
     axes: str = DEFAULT_AXES,
     max_trials: int = 4,
     final_holdout: str = "NONE",
-    candidate_snapshot: str = CANDIDATE_PLACEHOLDER,
+    candidate_snapshot: str | None = None,
 ) -> Path:
-    """作業場に探索の実験設定を書き、その位置を返す（元は作業場の `BASE_EXPERIMENT`）。"""
+    """作業場に探索の実験設定を書き、その位置を返す（元は作業場の `BASE_EXPERIMENT`）。
+
+    `candidate_snapshot` を省くと、作業場の `candidate_snapshot.txt`（`t02_workspace.
+    install_candidate` が書く）があればその識別子を、無ければ `CANDIDATE_PLACEHOLDER` を使う。
+    """
+    if candidate_snapshot is None:
+        marker = repo / "candidate_snapshot.txt"
+        candidate_snapshot = (
+            marker.read_text(encoding="utf-8").strip()
+            if marker.is_file()
+            else CANDIDATE_PLACEHOLDER
+        )
     base = (repo / BASE_EXPERIMENT).read_text(encoding="utf-8")
     path = repo / "configs/experiments" / name
     path.parent.mkdir(parents=True, exist_ok=True)
