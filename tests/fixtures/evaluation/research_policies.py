@@ -42,8 +42,19 @@ TEST_BASIS: Final = (
     f'      candidate: "{"2" * 64}"\n'
     '    target_series: ["USDJPY/15m/bid", "USDJPY/1h/bid"]\n'
     "    premises:\n"
-    '      - {name: calendar, version: 1, path: "configs/calendars/fx_ny17_v1.yaml",'
-    f' sha256: "{"3" * 64}"}}'
+    + "\n".join(
+        f'      - {{name: {name}, version: 1, path: "configs/premises/{name}.yaml",'
+        f' sha256: "{"3" * 64}"}}'
+        for name in (
+            "time_rule_table",
+            "approved_time_rule_tables",
+            "calendar",
+            "counting_rules",
+            "fetch_manifest",
+            "datasource",
+            "timeframes",
+        )
+    )
 )
 
 #: 試験用の比較の前提の固定（今の同梱の実験設定と同じ値）。

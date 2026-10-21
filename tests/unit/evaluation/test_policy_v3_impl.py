@@ -47,7 +47,11 @@ from odyssey_fx.evaluation.domain.path import (
     path_metrics,
     plan_segments,
 )
-from odyssey_fx.evaluation.domain.policy_basis import FixedComparisonBasis, PremiseFile
+from odyssey_fx.evaluation.domain.policy_basis import (
+    PREMISE_NAMES,
+    FixedComparisonBasis,
+    PremiseFile,
+)
 from odyssey_fx.evaluation.domain.search import (
     ChangeKind,
     ConditionOutcome,
@@ -76,7 +80,7 @@ from odyssey_fx.evaluation.domain.splits import (
 )
 from odyssey_fx.evaluation.domain.variant import Paired, Variant
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
-from tests.fixtures.evaluation import trial_ledger
+from tests.fixtures.evaluation import search_units, trial_ledger
 from tests.fixtures.evaluation.search_units import (
     evidence,
     judge,
@@ -521,6 +525,17 @@ def test_premise_files_need_a_known_name_and_a_sha256() -> None:
         PremiseFile(name="other", version=1, path="x.yaml", sha256="a" * 64)
     with pytest.raises(KernelValueError):
         PremiseFile(name="calendar", version=None, path="/abs.yaml", sha256="a" * 64)
+
+
+def test_the_basis_needs_every_premise_file() -> None:
+    """前提のファイルは 7 件すべてを書く（D13 §6.4。1 件でも欠ければ拒否）。"""
+    basis = search_units.test_basis()
+    assert {item.name for item in basis.premises} == PREMISE_NAMES
+    with pytest.raises(KernelValueError, match="time_rule_table"):
+        replace(
+            basis,
+            premises=tuple(item for item in basis.premises if item.name != "time_rule_table"),
+        )
 
 
 def test_the_fixed_comparison_basis_rejects_unsorted_limits() -> None:

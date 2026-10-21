@@ -114,6 +114,12 @@ class PolicyBasis:
         names = [item.name for item in self.premises]
         if len(set(names)) != len(names):
             raise KernelValueError(f"basis.premises に同じ名前の前提が 2 つある: {names}")
+        missing = sorted(PREMISE_NAMES - set(names))
+        if missing:
+            raise KernelValueError(
+                f"basis.premises に前提のファイル {missing} が無い（7 件すべてを書く。D13 §6.4。"
+                "実装 PR の仮置き 51）"
+            )
 
 
 def _require_rate(value: object, label: str, *, positive: bool) -> None:

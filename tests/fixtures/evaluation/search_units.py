@@ -43,6 +43,7 @@ from odyssey_fx.evaluation.domain.path import (
     path_metrics,
 )
 from odyssey_fx.evaluation.domain.policy_basis import (
+    PREMISE_NAMES,
     FixedComparisonBasis,
     PolicyBasis,
     PremiseFile,
@@ -206,10 +207,9 @@ def test_basis() -> PolicyBasis:
             candidate=SnapshotId(ContentDigest(algorithm="sha256", hex="2" * 64)),
         ),
         target_series=("USDJPY/15m/bid",),
-        premises=(
-            PremiseFile(
-                name="calendar", version=1, path="configs/calendars/x.yaml", sha256="3" * 64
-            ),
+        premises=tuple(
+            PremiseFile(name=name, version=1, path=f"configs/premises/{name}.yaml", sha256="3" * 64)
+            for name in sorted(PREMISE_NAMES)
         ),
     )
 
