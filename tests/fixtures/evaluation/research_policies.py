@@ -24,14 +24,52 @@ from odyssey_fx.common.time import UtcTime
 
 __all__ = [
     "DEFAULT_STANDARD_LINES",
+    "TEST_BASIS",
+    "TEST_COMPARISON_BASIS",
+    "TEST_PATH",
     "append_registry_entry",
     "policy_v3_text",
     "write_policy",
 ]
 
 #: 試験用の評価基準の群の既定の行（`evaluation_standard:` の下。字下げ込み）。キー名で差し替える。
+#: 試験用の前提の記録（研究ポリシー第 3 版の `basis`。2026-10-21 改訂。用途が機構の確認の版では
+#: 実験の snapshot と照合しないので、値は形だけの仮の値）。
+TEST_BASIS: Final = (
+    "  basis:\n"
+    "    snapshots:\n"
+    f'      standard: "{"1" * 64}"\n'
+    f'      candidate: "{"2" * 64}"\n'
+    '    target_series: ["USDJPY/15m/bid", "USDJPY/1h/bid"]\n'
+    "    premises:\n"
+    '      - {name: calendar, version: 1, path: "configs/calendars/fx_ny17_v1.yaml",'
+    f' sha256: "{"3" * 64}"}}'
+)
+
+#: 試験用の比較の前提の固定（今の同梱の実験設定と同じ値）。
+TEST_COMPARISON_BASIS: Final = (
+    "  comparison_basis:\n"
+    '    account: {currency: "JPY", initial_balance: "1000000"}\n'
+    '    risk_policy: {trial_risk_rate: "0.02", account_risk_cap: "0.20"}\n'
+    '    cost_model: {spread_offset: "0.02", commission_per_unit: "0.001",'
+    ' entry_slippage: "0.01", close_slippage: "0.01"}\n'
+    '    execution_policy: {entry_delay_bars: 0, adverse_fill_limits: {USDJPY: "0.05"}}'
+)
+
+#: 試験用の連続口座の検証経路の条件（指標集合 v2 の実験でも計れる純収益率だけで、必ず満たす
+#: 水準。経路の最低条件は置かない。2026-10-21 改訂）。
+TEST_PATH: Final = (
+    "    path:\n"
+    "      boundary: CARRY_IF_SAME_TRIAL\n"
+    "      floors: []\n"
+    "      aggregate:\n"
+    '        - {metric: NET_RETURN_RATE, comparator: GE, threshold: "-1"}'
+)
+
 DEFAULT_STANDARD_LINES: Final[dict[str, str]] = {
     "purpose": "  purpose: MECHANISM_CHECK",
+    "basis": TEST_BASIS,
+    "comparison_basis": TEST_COMPARISON_BASIS,
     "split": (
         "  split:\n"
         '    range: {start: "2015-01-04T22:00:00Z", end: "2015-01-16T22:00:00Z"}\n'
@@ -39,6 +77,7 @@ DEFAULT_STANDARD_LINES: Final[dict[str, str]] = {
         '    validation_length: "2d"\n'
         "    window: ROLLING\n"
         '    purge: "0s"\n'
+        "    partial_fold: AT_START\n"
         "    min_folds: 2"
     ),
     "selection": (
@@ -49,7 +88,8 @@ DEFAULT_STANDARD_LINES: Final[dict[str, str]] = {
         "    fold_floors:\n"
         '      - {metric: MAX_DRAWDOWN_MTM_RATE, comparator: LE, threshold: "0.2"}\n'
         "    aggregate:\n"
-        '      - {metric: NET_RETURN_RATE, statistic: MEDIAN, comparator: GE, threshold: "0"}'
+        '      - {metric: NET_RETURN_RATE, statistic: MEDIAN, comparator: GE, threshold: "0"}\n'
+        + TEST_PATH
     ),
     "sufficiency": (
         "  sufficiency:\n"

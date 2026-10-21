@@ -55,6 +55,8 @@ __all__ = [
     "INTRABAR_METHOD_KEYS",
     "METRIC_INPUTS",
     "METRIC_KINDS",
+    "METRIC_SET_V3_ADDED",
+    "METRIC_SET_VERSIONS",
     "MISSING_INPUT_KEYS",
     "OPPORTUNITY_TERMINAL_KEYS",
     "AmountValue",
@@ -79,6 +81,8 @@ __all__ = [
     "annualized_sharpe_ratio",
     "average_trade_profit",
     "max_drawdown",
+    "max_drawdown_rate_peak",
+    "metric_ids_of",
     "metric_caveats",
     "profit_factor",
     "ratio_of",
@@ -89,7 +93,9 @@ __all__ = [
 
 
 class MetricId(Enum):
-    """指標集合 v2 の19件（D07 §5.2 の15件＋§5.5 の4件）。
+    """指標集合 v2 の19件（D07 §5.2 の15件＋§5.5 の4件）と、v3 で足した #20（D07 §5.6）。
+
+    指標集合の版ごとに持つ指標は `metric_ids_of` が返す（v2 は #1〜#19、v3 は #1〜#20）。
 
     **宣言順が `METRICS` 表の整列鍵である**（D07 §8.1）。番号は D07 §5.2・§5.5 の
     #1〜#19 にそのまま対応するので、並べ替えない。
@@ -133,6 +139,9 @@ class MetricId(Enum):
     PROFIT_FACTOR = "PROFIT_FACTOR"
     #: #19 平均取引損益 `Σ trade_profit ÷ 完了取引数`（D07 §5.5）。
     AVERAGE_TRADE_PROFIT = "AVERAGE_TRADE_PROFIT"
+    #: #20 含み損益込みの「率で最大の下落」（指標集合 v3。D07 §5.6、2026-10-21 改訂。D13-6 (a)、
+    #: 仮置き 5・33）。`max((これまでの最大 equity − 現在の equity) ÷ これまでの最大 equity)`。
+    MAX_DRAWDOWN_MTM_RATE_PEAK = "MAX_DRAWDOWN_MTM_RATE_PEAK"
 
 
 class MetricKind(Enum):
@@ -617,6 +626,7 @@ METRIC_KINDS: Final[dict[MetricId, MetricKind]] = {
     MetricId.ANNUALIZED_SHARPE_RATIO: MetricKind.RATIO,
     MetricId.PROFIT_FACTOR: MetricKind.RATIO,
     MetricId.AVERAGE_TRADE_PROFIT: MetricKind.AMOUNT,
+    MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: MetricKind.RATIO,
 }
 
 #: 指標ごとに読む判断履歴の表（D07 §5.2・§5.5 の「入力」欄）。末尾の集計から取る指標は空。
@@ -643,6 +653,7 @@ METRIC_INPUTS: Final[dict[MetricId, tuple[TraceTable, ...]]] = {
     MetricId.ANNUALIZED_SHARPE_RATIO: (TraceTable.LEDGER_SNAPSHOTS,),
     MetricId.PROFIT_FACTOR: (TraceTable.FILLS, TraceTable.POSITIONS),
     MetricId.AVERAGE_TRADE_PROFIT: (TraceTable.FILLS, TraceTable.POSITIONS),
+    MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: (TraceTable.LEDGER_SNAPSHOTS,),
 }
 
 #: 未解決の足内競合が**無くても**付く注記（D07 §7.2 の表、v2.0 の §5.5・§7.3）。
@@ -685,7 +696,32 @@ _BASE_CAVEATS: Final[dict[MetricId, tuple[MetricCaveat, ...]]] = {
         MetricCaveat.SWAP_NOT_MODELED,
         MetricCaveat.OPEN_POSITION_EXCLUDED,
     ),
+    # 注記は #6 と同じ（D07 §5.6。改訂 PR の仮置き 33）。
+    MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: (),
 }
+
+#: 指標集合の版（D07 §5.5・§5.6）と、その版が持つ指標。版 3 は版 2 の19件に #20 を足した 20 件
+#: （2026-10-21 改訂）。実装は版 2 と版 3 の両方を持つ（実装 PR の仮置き 53、2026-10-22 の人間の
+#: 決定。既存の単一実行の実験は版 2 のまま動く）。
+METRIC_SET_V3_ADDED: Final[tuple[MetricId, ...]] = (MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK,)
+_METRIC_SETS: Final[dict[int, tuple[MetricId, ...]]] = {
+    2: tuple(item for item in MetricId if item not in METRIC_SET_V3_ADDED),
+    3: tuple(MetricId),
+}
+#: この実装が式を持つ指標集合の版。
+METRIC_SET_VERSIONS: Final[frozenset[int]] = frozenset(_METRIC_SETS)
+
+
+def metric_ids_of(metric_set_version: int) -> tuple[MetricId, ...]:
+    """指標集合の版が持つ指標（`MetricId` の宣言順）。持たない版は構造エラー。"""
+    found = _METRIC_SETS.get(metric_set_version)
+    if isinstance(metric_set_version, bool) or found is None:
+        raise KernelValueError(
+            f"the metric set version {metric_set_version!r} is not implemented; the implemented"
+            f" versions are {sorted(_METRIC_SETS)} (D07 §5.5・§5.6)"
+        )
+    return found
+
 
 #: 未解決の足内競合が1件でもあるときだけ足す注記（D07 §7.2、v2.0 の §5.5）。
 _UNRESOLVED_INTRABAR_METRICS: Final[frozenset[MetricId]] = frozenset(
@@ -741,6 +777,30 @@ def max_drawdown(values: Sequence[Decimal]) -> Drawdown | None:
         fall = peak - value
         if fall > best.amount:
             best = Drawdown(amount=fall, peak=peak)
+    return best
+
+
+def max_drawdown_rate_peak(values: Sequence[Decimal]) -> Decimal | MetricUnavailableReason:
+    """昇順に並んだ系列の「率で最大の下落」（D07 §5.6 の #20。2026-10-21 改訂）。
+
+    各点で `(これまでの最大値 − 現在値) ÷ これまでの最大値` を求め（除算は各点でカーネル精度の
+    1回）、その最大値を返す。これまでの最大値は最初の点から数える（#5 と同じ）。系列が空なら
+    `NO_OBSERVATIONS`、比を求める点でこれまでの最大値が 0 なら `UNDEFINED_DENOMINATOR`（#5・#6
+    と同じ理由。改訂 PR の仮置き 33）。独立口座の run と、連続口座の検証経路の区間をつないだ
+    系列（D07 §5.6）の両方に同じ式を当てる。
+    """
+    if not values:
+        return MetricUnavailableReason.NO_OBSERVATIONS
+    peak = values[0]
+    best = decimal_from_int(0)
+    for value in values:
+        if value > peak:
+            peak = value
+        if peak == 0:
+            return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+        rate = ratio_of(peak - value, peak)
+        if rate > best:
+            best = rate
     return best
 
 

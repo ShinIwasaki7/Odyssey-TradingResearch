@@ -35,6 +35,18 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     Unavailable,
 )
+from odyssey_fx.common.ids import SnapshotId
+from odyssey_fx.evaluation.domain.path import (
+    PathEnd,
+    PathSegmentRow,
+    PathSummary,
+    path_metrics,
+)
+from odyssey_fx.evaluation.domain.policy_basis import (
+    FixedComparisonBasis,
+    PolicyBasis,
+    PremiseFile,
+)
 from odyssey_fx.evaluation.domain.search import (
     AggregateCondition,
     Comparator,
@@ -43,6 +55,8 @@ from odyssey_fx.evaluation.domain.search import (
     FoldStatistic,
     FrequencyClass,
     MetricCondition,
+    PathBoundary,
+    PathRule,
     SelectionDirection,
     SelectionRule,
     StandardPurpose,
@@ -51,10 +65,13 @@ from odyssey_fx.evaluation.domain.search import (
     TrialStatus,
     ValidationRule,
     ValidationUnitEvaluation,
+    VariantOutcome,
+    build_variant_outcome,
     select_trial,
 )
-from odyssey_fx.evaluation.domain.splits import Fold, SplitStandard, SplitWindow
+from odyssey_fx.evaluation.domain.splits import Fold, PartialFold, SplitStandard, SplitWindow
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.evaluation.domain.variant import Paired, Variant
 
 JPY = CurrencyCode("JPY")
 DAY = 86_400
@@ -84,7 +101,7 @@ def _value(metric: MetricId, override: Override | None) -> MetricValue:
 
 
 def metric_rows(overrides: Mapping[MetricId, Override] | None = None) -> tuple[MetricRecord, ...]:
-    """指標集合 v2 の19件の行（宣言順）。"""
+    """指標集合 v3 の20件の行（宣言順。2026-10-21 改訂で #20 を足した）。"""
     given = dict(overrides or {})
     return tuple(
         MetricRecord(metric_id=item, value=_value(item, given.get(item))) for item in MetricId
@@ -181,6 +198,111 @@ def make_fold(fold_index: int, *, train_days: int = 365, validation_days: int = 
     )
 
 
+def test_basis() -> PolicyBasis:
+    """形だけを満たす前提の記録（2026-10-21 改訂。値はテスト用）。"""
+    return PolicyBasis(
+        snapshots=Paired(
+            standard=SnapshotId(ContentDigest(algorithm="sha256", hex="1" * 64)),
+            candidate=SnapshotId(ContentDigest(algorithm="sha256", hex="2" * 64)),
+        ),
+        target_series=("USDJPY/15m/bid",),
+        premises=(
+            PremiseFile(
+                name="calendar", version=1, path="configs/calendars/x.yaml", sha256="3" * 64
+            ),
+        ),
+    )
+
+
+def test_comparison_basis() -> FixedComparisonBasis:
+    """今の同梱の実験設定と同じ値の比較の前提の固定（テスト用）。"""
+    return FixedComparisonBasis(
+        currency="JPY",
+        initial_balance=Decimal("1000000"),
+        trial_risk_rate=Decimal("0.02"),
+        account_risk_cap=Decimal("0.20"),
+        spread_offset=Decimal("0.02"),
+        commission_per_unit=Decimal("0.001"),
+        entry_slippage=Decimal("0.01"),
+        close_slippage=Decimal("0.01"),
+        entry_delay_bars=0,
+        adverse_fill_limits=(("USDJPY", Decimal("0.05")),),
+    )
+
+
+#: 既定の経路の条件（経路の最大ドローダウン率 0.30 以下と、全体の純収益率 0 より大。版 3 と同じ形）。
+DEFAULT_PATH_RULE = PathRule(
+    boundary=PathBoundary.CARRY_IF_SAME_TRIAL,
+    floors=(MetricCondition(MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK, Comparator.LE, Decimal("0.30")),),
+    aggregate=(MetricCondition(MetricId.NET_RETURN_RATE, Comparator.GT, Decimal("0")),),
+)
+
+
+def path_summary(
+    fold_count: int,
+    *,
+    final: str = "1100000",
+    series: Sequence[str] = ("1000000", "1050000", "1100000"),
+    end: PathEnd = PathEnd.COMPLETED,
+) -> PathSummary:
+    """人工の経路の要約（各 fold を 1 区間とし、run の項目は持たない形だけの区間）。
+
+    経路の指標は `series`（初期残高の後の資産の点）と `final`（最後の残高）から計算する。
+    `end` が `INCOMPLETE` なら指標を持たず、最後の区間で止まった形にする。
+    """
+    initial = Money(Decimal("1000000"), JPY)
+    rows = tuple(
+        PathSegmentRow(
+            segment_index=index,
+            fold_indices=(index,),
+            trial_index=None,
+            interval=make_fold(index).validation,
+            initial_balance=initial,
+            end_balance=initial,
+            carried_boundaries=0,
+            settlement_count=0,
+            settlement_cost=None,
+            trade_count=None,
+            run_id=None,
+            run_reused=None,
+        )
+        for index in range(fold_count)
+    )
+    if end is PathEnd.INCOMPLETE:
+        return PathSummary(
+            segments=rows,
+            end=end,
+            end_segment=fold_count - 1,
+            end_reason="the segment run failed (test)",
+            metrics=(),
+            trade_count=None,
+            final_balance=None,
+        )
+    closing = Money(Decimal(final), JPY)
+    return PathSummary(
+        segments=rows,
+        end=end,
+        end_segment=None if end is PathEnd.COMPLETED else fold_count - 1,
+        end_reason=None if end is PathEnd.COMPLETED else "capital lost (test)",
+        metrics=path_metrics(initial, [Decimal(item) for item in series], closing),
+        trade_count=0,
+        final_balance=closing,
+    )
+
+
+def judge(
+    rule: EvaluationStandard,
+    folds: Sequence[FoldEvidence],
+    path: PathSummary | None = None,
+    *,
+    variant: Variant = Variant.STANDARD,
+) -> VariantOutcome:
+    """組 1 つの判定（経路を渡さなければ全区間を走り終えた人工の経路で判定する）。"""
+    return build_variant_outcome(
+        rule, variant, folds, path if path is not None else path_summary(len(folds))
+    )
+
+
 def standard(
     *,
     purpose: StandardPurpose = StandardPurpose.STANDARD,
@@ -190,6 +312,7 @@ def standard(
     floors: Sequence[MetricCondition] | None = None,
     aggregate: Sequence[AggregateCondition] | None = None,
     classes: Sequence[FrequencyClass] | None = None,
+    path: PathRule = DEFAULT_PATH_RULE,
 ) -> EvaluationStandard:
     """人工の評価基準。既定の最低条件は「含み込みの最大ドローダウン率 0.2 以下」、集約条件は
     「純収益率の中央値 0 より大」、頻度区分は1つ（fold ごと 5 件、合計 20 件）。"""
@@ -202,6 +325,7 @@ def standard(
             window=SplitWindow.ROLLING,
             purge_seconds=0,
             min_folds=1,
+            partial_fold=PartialFold.AT_START,
         ),
         selection=SelectionRule(
             metric=selection_metric, direction=direction, eligibility=tuple(eligibility)
@@ -223,7 +347,10 @@ def standard(
                     ),
                 )
             ),
+            path=path,
         ),
+        basis=test_basis(),
+        comparison_basis=test_comparison_basis(),
         sufficiency=SufficiencyRule(
             classes=tuple(
                 classes

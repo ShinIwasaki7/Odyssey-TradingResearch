@@ -75,15 +75,20 @@ from odyssey_fx.app.config.strategy_parts import parameter_value_of, parse_serie
 from odyssey_fx.app.config.symbols import load_symbol_spec, symbol_spec_files
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.refs import PolicyRef
+from odyssey_fx.common.ids import ExperimentId, SnapshotId
+from odyssey_fx.common.refs import ContentDigest, PolicyRef, SnapshotRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.evaluation.domain.metrics import metric_ids_of
 from odyssey_fx.evaluation.domain.research_policy import ResearchPolicy
 from odyssey_fx.evaluation.domain.search import (
+    ChangeKind,
     EvaluationStandard,
+    LineageSource,
     ParameterAxis,
     SearchPlan,
     SearchPlanKind,
+    StandardPurpose,
 )
 from odyssey_fx.evaluation.domain.splits import (
     FinalHoldoutSpec,
@@ -92,6 +97,7 @@ from odyssey_fx.evaluation.domain.splits import (
     check_final_holdout,
     split_spec_of,
 )
+from odyssey_fx.evaluation.domain.variant import Paired, Variant
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.schedule import (
     DelayRule,
@@ -117,6 +123,7 @@ __all__ = [
     "TEXT_ROLES",
     "ExperimentEnvironment",
     "ExperimentV2",
+    "LineageSetting",
     "ResearchPolicyRef",
     "SearchSetting",
     "experiment_schema_version",
@@ -207,11 +214,29 @@ class _DelayScenarioModel(StrictModel):
     ]
 
 
+class _SnapshotsModel(StrictModel):
+    standard: str
+    candidate: str
+
+
+class _LineageSourceModel(StrictModel):
+    experiment_id: str
+    execution: int
+
+
+class _LineageModel(StrictModel):
+    derived_from: str | _LineageSourceModel
+    change_kinds: list[str]
+    note: str
+
+
 class _ExperimentV2Model(RunBodyModel):
     schema_version: int
     id: str
     version: int
     hypothesis: str
+    snapshots: _SnapshotsModel | None = None
+    lineage: _LineageModel | None = None
     research_policy: _ResearchPolicyRefModel
     strategy: str
     environment: _EnvironmentModel
@@ -239,6 +264,20 @@ class ResearchPolicyRef:
 
 
 @dataclass(frozen=True, slots=True)
+class LineageSetting:
+    """探索の実験設定の系譜（D13 §7.1、D09 §10.10 の 2026-10-21 改訂。仮置き 9、実装 PR の仮置き
+    56・65）。
+
+    `derived_from` は元の実行（`NONE` と書けば `None`）。元の実行が台帳にあるかは、台帳を読む
+    合成が確かめる（無ければ設定の誤り）。`note` は理由の文（台帳にはダイジェストだけを残す）。
+    """
+
+    derived_from: LineageSource | None
+    change_kinds: tuple[ChangeKind, ...]
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class SearchSetting:
     """探索の実験の読込結果（D09 §5・§6.1・§10.2）。
 
@@ -246,12 +285,16 @@ class SearchSetting:
     - `split`: 研究ポリシーの期間分割の標準規則から生成した全 fold（`SplitSpec`）。
     - `final_holdout`: 最終検証の区間と目的。実験設定に `NONE` と書いたら `None`。
     - `standard`: 研究ポリシーの評価基準の群（版 3 以上）。
+    - `snapshots`: 両組の snapshot（2026-10-21 改訂。D13-15 (a)、仮置き 24）。
+    - `lineage`: 系譜（書かなければ `None`）。
     """
 
     plan: SearchPlan
     split: SplitSpec
     final_holdout: FinalHoldoutSpec | None
     standard: EvaluationStandard
+    snapshots: Paired[SnapshotRef]
+    lineage: LineageSetting | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +376,12 @@ class ExperimentV2:
                 "標準規則、各単位の実行区間は fold の区間である（D09 §6.2）"
             )
         return self.body.with_run_interval(self.run_interval)
+
+    def body_of(self, variant: Variant) -> RunBody:
+        """探索の実験の組ごとの実行の本体（snapshot だけが組で違う。D09 §6.2 の改訂）。"""
+        if self.search is None:
+            raise ConfigError("組ごとの実行の本体は探索の実験だけが持つ（D13-15 (a)）")
+        return self.body.with_snapshot(self.search.snapshots.of(variant))
 
 
 # --- 読込 -------------------------------------------------------------------
@@ -702,6 +751,32 @@ def _check_search_keys(model: _ExperimentV2Model, payload: Mapping[str, Any], pa
             "fold の区間・長さ・purge は研究ポリシーの評価基準が決める（D09 §5.5 の5・§6.1）"
         )
     searching = not isinstance(plan, str)
+    # snapshot の書式（2026-10-21 改訂。D07 §18.2、改訂 PR の仮置き 38 (a)、仮置き 24）。
+    if searching:
+        if "snapshot" in payload:
+            raise ConfigError(
+                f"{path}: 探索の実験には単数の `snapshot` を書けない。両組を"
+                " `snapshots: {standard, candidate}` で書く（D07 §18.2 の 2026-10-21 改訂。"
+                "D13-15 (a)）"
+            )
+        if model.snapshots is None:
+            raise ConfigError(
+                f"{path}: 探索の実験には `snapshots: {{standard, candidate}}` を書くこと"
+                "（片方の組だけで走らせる経路は無い。D13-15 (a)）"
+            )
+    else:
+        if "snapshots" in payload:
+            raise ConfigError(
+                f"{path}: 単一実行の実験には `snapshots` を書けない。単数の `snapshot` を書く"
+                "（改訂 PR の仮置き 38 (a)）"
+            )
+        if model.snapshot is None:
+            raise ConfigError(f"{path}: 単一実行の実験には `snapshot` を書くこと（D07 §18.2）")
+        if "lineage" in payload:
+            raise ConfigError(
+                f"{path}: `lineage`（系譜）は試行台帳に書く探索の実験だけに書ける"
+                "（D13 §7.1。実装 PR の仮置き 65）"
+            )
     if searching != (model.split != SPLIT_NONE):
         raise ConfigError(
             f"{path}: `search_plan` と `split` の片方だけが `NONE` である。探索だけ・分割だけの"
@@ -788,14 +863,156 @@ def _search_plan_of(
         raise ConfigError(f"{path}: `search_plan` を読めない: {exc}") from exc
 
 
+def _snapshot_ref(text: str, label: str, path: Path) -> SnapshotRef:
+    try:
+        return SnapshotRef(snapshot_id=SnapshotId(ContentDigest.sha256(text)))
+    except KernelValueError as exc:
+        raise ConfigError(
+            f"{path}: `{label}` は承認済み snapshot の識別子（16進64文字）を書くこと: {exc}"
+        ) from exc
+
+
+def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, path: Path) -> None:
+    """研究ポリシーの選定・条件の指標が実験の指標集合にあること（実装 PR の仮置き 53）。
+
+    版 3 の研究ポリシーの条件の指標 #20 は指標集合 v3 にしか無い（D07 §5.6）。指標集合に無い
+    指標で選定・判定はできないので、読込で拒否する（設定の誤り）。
+    """
+    available = set(metric_ids_of(metric_set_version))
+    used = [
+        standard.selection.metric,
+        *(item.metric for item in standard.selection.eligibility),
+        *(item.metric for item in standard.validation.fold_floors),
+        *(item.metric for item in standard.validation.aggregate),
+        *(item.metric for item in standard.validation.path.conditions),
+    ]
+    missing = sorted({item.value for item in used if item not in available})
+    if missing:
+        raise ConfigError(
+            f"{path}: 研究ポリシーの評価基準が使う指標 {missing} は指標集合の版"
+            f" {metric_set_version} に無い。`evaluation.metric_set_version` を、その指標を持つ版"
+            "（版 3 の研究ポリシーは指標集合 3）にすること（D07 §5.6。実装 PR の仮置き 53）"
+        )
+
+
+def _require_basis_match(
+    standard: EvaluationStandard, snapshots: Paired[SnapshotRef], path: Path
+) -> None:
+    """実験の両組の snapshot が研究ポリシーの前提の記録と役割ごとに一致すること（D13-16 (a)・
+    仮置き 21。用途 STANDARD の版だけ）。"""
+    expected = standard.basis.snapshots
+    for variant, ref in snapshots.items():
+        if ref.snapshot_id != expected.of(variant):
+            raise ConfigError(
+                f"{path}: `snapshots.{variant.value}` が {ref.snapshot_id} だが、研究ポリシーの"
+                f" 前提の記録 `basis.snapshots.{variant.value}` は {expected.of(variant)} である。"
+                "共通基準の判定に使う版を指す探索の実験は、前提の記録の snapshot を役割ごとに"
+                "そのまま使う（D13-16 (a)・仮置き 21、D07 §18.6 の 8）"
+            )
+
+
+def _require_comparison_match(standard: EvaluationStandard, body: RunBody, path: Path) -> None:
+    """実験設定の口座・リスク・費用・執行の値が研究ポリシーの比較の前提と一致すること
+    （D13-21 (a)・仮置き 12・18、D07 §18.6 の 8。用途 STANDARD の版だけ）。"""
+    fixed = standard.comparison_basis
+    spread = getattr(body.cost_model.spread_model, "offset", None)
+    observed: dict[str, object] = {
+        "account.currency": str(body.account.currency),
+        "account.initial_balance": body.account.initial_balance.amount,
+        "risk_policy.trial_risk_rate": body.risk_policy.trial_risk_rate,
+        "risk_policy.account_risk_cap": body.risk_policy.account_risk_cap,
+        "cost_model.spread_offset": None if spread is None else spread.value,
+        "cost_model.commission_per_unit": body.cost_model.commission_per_unit.amount,
+        "cost_model.entry_slippage": body.cost_model.entry_slippage.value,
+        "cost_model.close_slippage": body.cost_model.close_slippage.value,
+        "execution_policy.entry_delay_bars": body.execution_policy.entry_delay_bars,
+        "execution_policy.adverse_fill_limits": tuple(
+            sorted(
+                (str(symbol), limit.value)
+                for symbol, limit in body.execution_policy.adverse_fill_limits.items()
+            )
+        ),
+    }
+    expected: dict[str, object] = {
+        "account.currency": fixed.currency,
+        "account.initial_balance": fixed.initial_balance,
+        "risk_policy.trial_risk_rate": fixed.trial_risk_rate,
+        "risk_policy.account_risk_cap": fixed.account_risk_cap,
+        "cost_model.spread_offset": fixed.spread_offset,
+        "cost_model.commission_per_unit": fixed.commission_per_unit,
+        "cost_model.entry_slippage": fixed.entry_slippage,
+        "cost_model.close_slippage": fixed.close_slippage,
+        "execution_policy.entry_delay_bars": fixed.entry_delay_bars,
+        "execution_policy.adverse_fill_limits": fixed.adverse_fill_limits,
+    }
+    differing = [key for key in expected if observed[key] != expected[key]]
+    if differing:
+        details = "; ".join(
+            f"{key}: 実験設定 {observed[key]} / 研究ポリシー {expected[key]}" for key in differing
+        )
+        raise ConfigError(
+            f"{path}: 実験設定の値が研究ポリシーの比較の前提 `comparison_basis` と違う"
+            f"（{details}）。"
+            "共通基準の判定に使う版を指す探索の実験は、比較の前提の値をそのまま書く"
+            "（D13-21 (a)・仮置き 12・18、D07 §18.6 の 8）"
+        )
+
+
+def _lineage_of(model: _LineageModel | None, path: Path) -> LineageSetting | None:
+    """系譜を読む（D13 §7.1。仮置き 9、実装 PR の仮置き 56）。"""
+    if model is None:
+        return None
+    source: LineageSource | None = None
+    if isinstance(model.derived_from, str):
+        if model.derived_from != FINAL_HOLDOUT_NONE:
+            raise ConfigError(
+                f"{path}: `lineage.derived_from` は `NONE` か `{{experiment_id, execution}}` で"
+                "書くこと（D13 §7.1）"
+            )
+    else:
+        try:
+            source = LineageSource(
+                experiment_id=ExperimentId(ContentDigest.sha256(model.derived_from.experiment_id)),
+                execution=model.derived_from.execution,
+            )
+        except KernelValueError as exc:
+            raise ConfigError(f"{path}: `lineage.derived_from` を読めない: {exc}") from exc
+    kinds: list[ChangeKind] = []
+    for index, text in enumerate(model.change_kinds):
+        try:
+            kinds.append(ChangeKind(text))
+        except ValueError:
+            allowed = [item.value for item in ChangeKind]
+            raise ConfigError(
+                f"{path}: `lineage.change_kinds[{index}]` が {text!r} だが、書けるのは {allowed}"
+                "（D13 §7.1）"
+            ) from None
+    if len(set(kinds)) != len(kinds):
+        raise ConfigError(f"{path}: `lineage.change_kinds` に同じ種類が 2 つある")
+    if source is not None and not kinds:
+        raise ConfigError(
+            f"{path}: 元の実行のある系譜は `lineage.change_kinds` を 1 つ以上書くこと（D13 §7.1）"
+        )
+    if not model.note.strip():
+        raise ConfigError(f"{path}: `lineage.note`（変更の理由）が空である（D13 §7.1）")
+    return LineageSetting(derived_from=source, change_kinds=tuple(kinds), note=model.note)
+
+
 def _search_setting_of(
     model: _ExperimentV2Model,
     strategy: StrategyDefinition,
     registry: ComponentRegistry,
     policy: ResearchPolicy,
     path: Path,
+    body: RunBody,
 ) -> SearchSetting:
-    """探索の実験の探索計画・分割・最終検証を読む（D09 §5・§6.1・§5.5 の2・3・10）。"""
+    """探索の実験の探索計画・分割・最終検証を読む（D09 §5・§6.1・§5.5 の2・3・10）。
+
+    2026-10-21 改訂: 両組の snapshot を読み、用途によらず 2 つが異なることを確かめ（実装 PR の
+    仮置き 54）、研究ポリシーの評価基準が使う指標が実験の指標集合にあることを確かめる（仮置き
+    53）。用途 `STANDARD` の版では、両組の snapshot と前提の記録の役割ごとの一致（D13-16 (a)・
+    仮置き 21）と、比較の前提の一致（D13-21 (a)）も確かめる。どれも違えば設定の誤り。
+    """
     plan_model = model.search_plan
     if isinstance(plan_model, str):  # pragma: no cover - 呼び出し側が探索の実験だけを渡す
         raise ConfigError(f"{path}: 探索の実験ではない")
@@ -806,6 +1023,22 @@ def _search_setting_of(
             f" {policy.policy_id} v{policy.version} は評価基準を持たない"
             "（版 1・2 を指して評価基準を避ける経路を作らない。D09 §5.5 の10・§10.9）"
         )
+    pair = model.snapshots
+    if pair is None:  # pragma: no cover - `_check_search_keys` が拒否済み
+        raise ConfigError(f"{path}: 探索の実験には `snapshots` を書くこと")
+    snapshots = Paired(
+        standard=_snapshot_ref(pair.standard, "snapshots.standard", path),
+        candidate=_snapshot_ref(pair.candidate, "snapshots.candidate", path),
+    )
+    if snapshots.standard == snapshots.candidate:
+        raise ConfigError(
+            f"{path}: `snapshots.standard` と `snapshots.candidate` が同じ snapshot である。"
+            "標準・候補の両組は別の snapshot を指す（用途によらない。実装 PR の仮置き 54）"
+        )
+    _require_metric_set(standard, model.evaluation.metric_set_version, path)
+    if standard.purpose is StandardPurpose.STANDARD:
+        _require_basis_match(standard, snapshots, path)
+        _require_comparison_match(standard, body, path)
     plan = _search_plan_of(plan_model, strategy, registry, path)
     split = split_spec_of(standard.split)
     holdout: FinalHoldoutSpec | None = None
@@ -822,7 +1055,14 @@ def _search_setting_of(
             check_final_holdout(holdout, standard.split)
         except KernelValueError as exc:
             raise ConfigError(f"{path}: `final_holdout` を読めない: {exc}") from exc
-    return SearchSetting(plan=plan, split=split, final_holdout=holdout, standard=standard)
+    return SearchSetting(
+        plan=plan,
+        split=split,
+        final_holdout=holdout,
+        standard=standard,
+        snapshots=snapshots,
+        lineage=_lineage_of(model.lineage, path),
+    )
 
 
 def _assemble(
@@ -877,21 +1117,6 @@ def _assemble(
             registry_path=policy_registry_path,
         )
 
-    search: SearchSetting | None = None
-    run_interval: Interval | None = None
-    if isinstance(model.search_plan, str):
-        if model.run_interval is None:  # pragma: no cover - `_check_search_keys` が拒否済み
-            raise ConfigError(f"{path}: 単一実行の実験には `run_interval` を書くこと")
-        run_interval = run_interval_of(model.run_interval.start, model.run_interval.end, path)
-        run_intervals: tuple[Interval, ...] = (run_interval,)
-    else:
-        search = _search_setting_of(model, strategy, registry, policy, path)
-        # 探索の実験の run 区間は各単位の実行区間（fold の選定区間・検証区間）だけである。
-        # 評価範囲（`search.standard.split.range`）は run 区間として使わない（D09 §6.2）。
-        folds = search.split.folds
-        units = (interval for fold in folds for interval in (fold.train, fold.validation))
-        run_intervals = tuple(dict.fromkeys(units))
-
     if model.delay_scenario is None:
         delay_scenario = None
         delay_ref = NO_DELAY_REF
@@ -909,7 +1134,25 @@ def _assemble(
         strategy=strategy,
         delay_scenario=delay_scenario,
         delay_ref=delay_ref,
+        # 探索の実験は標準の組の snapshot で解決し、組ごとの本体は `ExperimentV2.body_of` で
+        # snapshot だけを差し替える（2026-10-21 改訂。D09 §6.2 の改訂）。
+        snapshot=None if model.snapshots is None else model.snapshots.standard,
     )
+    search: SearchSetting | None = None
+    run_interval: Interval | None = None
+    if isinstance(model.search_plan, str):
+        if model.run_interval is None:  # pragma: no cover - `_check_search_keys` が拒否済み
+            raise ConfigError(f"{path}: 単一実行の実験には `run_interval` を書くこと")
+        run_interval = run_interval_of(model.run_interval.start, model.run_interval.end, path)
+        run_intervals: tuple[Interval, ...] = (run_interval,)
+    else:
+        search = _search_setting_of(model, strategy, registry, policy, path, body)
+        # 探索の実験の run 区間は各単位の実行区間（fold の選定区間・検証区間）だけである。
+        # 評価範囲（`search.standard.split.range`）は run 区間として使わない（D09 §6.2）。
+        # 連続口座の検証経路の区間の実行区間は検証区間をつないだもので、上の区間の和に入る。
+        folds = search.split.folds
+        units = (interval for fold in folds for interval in (fold.train, fold.validation))
+        run_intervals = tuple(dict.fromkeys(units))
     if delay_scenario is not None:
         _reject_rules_hitting_nothing(
             delay_scenario, body, run_intervals, environment.calendar, timeframe_defs, path

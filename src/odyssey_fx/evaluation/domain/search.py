@@ -51,6 +51,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Final
 
 from odyssey_fx.backtest.domain.account import AccountSpec
+from odyssey_fx.backtest.domain.policies import RunEndMode
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
@@ -72,6 +73,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.evaluation.domain.metrics import (
     METRIC_KINDS,
+    METRIC_SET_VERSIONS,
     AmountValue,
     CountValue,
     MetricId,
@@ -81,10 +83,15 @@ from odyssey_fx.evaluation.domain.metrics import (
     MetricValue,
     RatioValue,
     Unavailable,
+    metric_ids_of,
 )
+from odyssey_fx.evaluation.domain.path import PATH_METRICS, PathEnd, PathSummary
+from odyssey_fx.evaluation.domain.policy_basis import FixedComparisonBasis, PolicyBasis
 from odyssey_fx.evaluation.domain.splits import FinalHoldoutSpec, Fold, SplitStandard
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef
 from odyssey_fx.strategy.compiler.compiled import CompileError
 from odyssey_fx.strategy.declarations.specs import (
     BoolValue,
@@ -106,12 +113,15 @@ __all__ = [
     "TRIAL_LEDGER_SCHEMA_VERSION",
     "AggregateCondition",
     "CandidateStatus",
+    "ChangeKind",
+    "CombinedVerdict",
     "ComparisonBasis",
     "Comparator",
     "ConditionOutcome",
     "ConditionResult",
     "ConditionScope",
     "EvaluationStandard",
+    "EvidenceAxis",
     "FoldEvidence",
     "FoldSelection",
     "FoldStatistic",
@@ -119,10 +129,16 @@ __all__ = [
     "FrequencyAssessment",
     "FrequencyClass",
     "LedgerCounts",
+    "LedgerResults",
+    "Lineage",
+    "LineageSource",
     "MetricCondition",
     "ParameterAssignment",
     "ParameterAxis",
+    "PathBoundary",
+    "PathRule",
     "PriorExecution",
+    "ProfitabilityAxis",
     "SearchOutcome",
     "SearchPlan",
     "SearchPlanKind",
@@ -147,10 +163,14 @@ __all__ = [
     "TrialUnitKey",
     "ValidationRule",
     "ValidationUnitEvaluation",
+    "VariantLedgerResult",
+    "VariantOutcome",
     "assess_frequency",
     "binding_mismatch",
     "build_search_outcome",
+    "build_variant_outcome",
     "candidate_status",
+    "combine_verdicts",
     "compile_rejections_of",
     "count_prior_executions",
     "count_trial_statuses",
@@ -164,6 +184,7 @@ __all__ = [
     "is_selectable_metric",
     "last_digest",
     "ledger_defect",
+    "lineage_of",
     "ledger_line_digest",
     "longest_idle_period",
     "median_of",
@@ -357,18 +378,66 @@ class SelectionRule:
         )
 
 
+class PathBoundary(Enum):
+    """連続口座の検証経路の境目の扱い（研究ポリシーの `validation.path.boundary`。D13-5 (b)、
+    仮置き 17）。同じ試行が続く境目は持ち越し、試行が変わる境目は全決済する。"""
+
+    CARRY_IF_SAME_TRIAL = "CARRY_IF_SAME_TRIAL"
+
+
+@dataclass(frozen=True, slots=True)
+class PathRule:
+    """連続口座の検証経路の条件（研究ポリシーの `validation.path`。D13 §6.1、D09 §7.3 の
+    2026-10-21 改訂。実装 PR の仮置き 50・52・64）。
+
+    `floors` は経路に当てる最低条件、`aggregate` は経路の全体の水準の条件（統計を持たない）。
+    どちらも空を許し（仮置き 52）、指標は採用指標（E1）で、経路で計れる指標（`PATH_METRICS`。
+    仮置き 64）だけ。同じ一覧に同じ `(metric, comparator)` を2つ書かない（E3）。
+    """
+
+    boundary: PathBoundary
+    floors: tuple[MetricCondition, ...]
+    aggregate: tuple[MetricCondition, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.boundary, PathBoundary):
+            raise KernelValueError("PathRule.boundary must be a PathBoundary")
+        for label, items in (("floors", self.floors), ("aggregate", self.aggregate)):
+            conditions = _require_conditions(items, MetricCondition, f"PathRule.{label}")
+            for item in conditions:
+                if item.metric not in PATH_METRICS:
+                    raise KernelValueError(
+                        f"validation.path.{label} の指標 {item.metric.value} は経路で計れない。"
+                        f"書けるのは {sorted(metric.value for metric in PATH_METRICS)}"
+                        "（D07 §5.6。実装 PR の仮置き 64）"
+                    )
+            _reject_duplicates(
+                [(item.metric.value, item.comparator.value) for item in conditions],
+                f"validation.path.{label}",
+            )
+
+    @property
+    def conditions(self) -> tuple[MetricCondition, ...]:
+        """経路の条件すべて（最低条件 → 全体の水準の順）。"""
+        return (*self.floors, *self.aggregate)
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationRule:
     """検証の条件（D09 §7.3。v0.2）。
 
     `fold_floors` は各 fold の検証区間に当てる最低条件（空でない。E2）、`aggregate` は fold 全体
     の水準の条件（空を許す）。条件は書いた順に当て、結果も書いた順に並べる（E3 の注記）。
+    `path` は連続口座の検証経路の条件（2026-10-21 改訂。版 3 以上は必須。改訂 PR の仮置き 36）。
     """
 
     fold_floors: tuple[MetricCondition, ...]
     aggregate: tuple[AggregateCondition, ...]
+    path: PathRule
 
     def __post_init__(self) -> None:
+        if not isinstance(self.path, PathRule):
+            raise KernelValueError("ValidationRule.path must be a PathRule (D13 §6.1)")
         floors = _require_conditions(
             self.fold_floors, MetricCondition, "ValidationRule.fold_floors"
         )
@@ -464,8 +533,18 @@ class EvaluationStandard:
     selection: SelectionRule
     validation: ValidationRule
     sufficiency: SufficiencyRule
+    #: 前提の記録（2026-10-21 改訂。D13 §6.4。版 3 以上は必須。改訂 PR の仮置き 36）。
+    basis: PolicyBasis
+    #: 比較の前提の固定（2026-10-21 改訂。D13 §6.6。版 3 以上は必須）。
+    comparison_basis: FixedComparisonBasis
 
     def __post_init__(self) -> None:
+        if not isinstance(self.basis, PolicyBasis):
+            raise KernelValueError("EvaluationStandard.basis must be a PolicyBasis (D13 §6.4)")
+        if not isinstance(self.comparison_basis, FixedComparisonBasis):
+            raise KernelValueError(
+                "EvaluationStandard.comparison_basis must be a FixedComparisonBasis (D13 §6.6)"
+            )
         if not isinstance(self.purpose, StandardPurpose):
             raise KernelValueError("EvaluationStandard.purpose must be a StandardPurpose")
         if not isinstance(self.split, SplitStandard):
@@ -666,34 +745,45 @@ _PHASE_ORDER: Final = {phase: index for index, phase in enumerate(TrialPhase)}
 
 @dataclass(frozen=True, slots=True)
 class TrialUnitKey:
-    """試行の実行単位の鍵 `(fold_index, phase, trial_index)`（D09 §3・§6.2）。"""
+    """試行の実行単位の鍵 `(variant, fold_index, phase, trial_index)`（D09 §3・§6.2。2026-10-21
+    改訂で組 `variant` を足した。R-18 の (2)）。"""
 
+    variant: Variant
     fold_index: int
     phase: TrialPhase
     trial_index: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.variant, Variant):
+            raise KernelValueError("TrialUnitKey.variant must be a Variant")
         _require_index(self.fold_index, "TrialUnitKey.fold_index")
         if not isinstance(self.phase, TrialPhase):
             raise KernelValueError("TrialUnitKey.phase must be a TrialPhase")
         _require_index(self.trial_index, "TrialUnitKey.trial_index")
 
     @property
-    def order(self) -> tuple[int, int, int]:
-        """実行の順の鍵（fold の昇順 → 局面 → 試行番号の昇順。D09 §5.4）。"""
-        return (self.fold_index, _PHASE_ORDER[self.phase], self.trial_index)
+    def order(self) -> tuple[int, int, int, int]:
+        """実行の順の鍵（組 → fold の昇順 → 局面 → 試行番号の昇順。D09 §5.4 の改訂）。"""
+        return (
+            VARIANTS.index(self.variant),
+            self.fold_index,
+            _PHASE_ORDER[self.phase],
+            self.trial_index,
+        )
 
 
 def trial_units(fold_count: int, trial_index: int) -> tuple[TrialUnitKey, ...]:
     """1つの試行が記録票に予測ダイジェストを持つ単位（D09 §10.2・§10.5 の注記）。
 
-    コンパイルが通った試行は、全 fold の選定区間の単位と、**選ばれるかどうかによらず**全 fold の
-    検証区間の単位を持つ。fold の昇順、局面は選定区間 → 検証区間の順に並べる。
+    コンパイルが通った試行は、両組（2026-10-21 改訂）の全 fold の選定区間の単位と、**選ばれるか
+    どうかによらず**全 fold の検証区間の単位を持つ。組の順（標準 → 候補）、fold の昇順、局面は
+    選定区間 → 検証区間の順に並べる。
     """
     _require_index(fold_count, "fold_count")
     _require_index(trial_index, "trial_index")
     return tuple(
-        TrialUnitKey(fold_index=fold, phase=phase, trial_index=trial_index)
+        TrialUnitKey(variant=variant, fold_index=fold, phase=phase, trial_index=trial_index)
+        for variant in VARIANTS
         for fold in range(fold_count)
         for phase in TrialPhase
     )
@@ -948,11 +1038,13 @@ class _UnitEvaluation:
                 raise KernelValueError(
                     "評価が COMPLETED でない単位は指標の行を持たない（D07 §10.1）"
                 )
-            if self.evaluation_status is EvaluationStatus.COMPLETED and set(ids) != set(MetricId):
-                missing = [item.value for item in MetricId if item not in set(ids)]
+            if self.evaluation_status is EvaluationStatus.COMPLETED and not any(
+                set(ids) == set(metric_ids_of(version)) for version in METRIC_SET_VERSIONS
+            ):
                 raise KernelValueError(
-                    f"unit {self.trial_index} の評価は COMPLETED なのに指標の行が欠けている:"
-                    f" {missing}（D07 §8.1。値なしも行として残す）"
+                    f"unit {self.trial_index} の評価は COMPLETED なのに指標の行が、どの指標集合"
+                    f"の版の指標とも一致しない: {sorted(item.value for item in ids)}"
+                    "（D07 §8.1・§5.6。値なしも行として残す）"
                 )
         elif (
             self.run_status is not None
@@ -1058,10 +1150,15 @@ class FoldSelection:
 
 
 class ConditionScope(Enum):
-    """条件の当て先（D09 §7.3。v0.2）。"""
+    """条件の当て先（D09 §7.3。v0.2。2026-10-21 改訂で経路の 2 値を足した。改訂 PR の仮置き 43、
+    実装 PR の仮置き 49）。"""
 
     FOLD_FLOOR = "FOLD_FLOOR"
     AGGREGATE = "AGGREGATE"
+    #: 連続口座の検証経路の最低条件（`validation.path.floors`）。
+    PATH_FLOOR = "PATH_FLOOR"
+    #: 連続口座の検証経路の全体の水準（`validation.path.aggregate`）。
+    PATH_AGGREGATE = "PATH_AGGREGATE"
 
 
 class ConditionOutcome(Enum):
@@ -1094,6 +1191,11 @@ class ConditionResult:
             _require_index(self.fold_index, "ConditionResult.fold_index")
             if self.statistic is not None:
                 raise KernelValueError("a FOLD_FLOOR ConditionResult has no statistic")
+        elif self.scope in (ConditionScope.PATH_FLOOR, ConditionScope.PATH_AGGREGATE):
+            if self.fold_index is not None or self.statistic is not None:
+                raise KernelValueError(
+                    "a path ConditionResult has no fold_index and no statistic (D09 §7.3 の改訂)"
+                )
         else:
             if self.fold_index is not None:
                 raise KernelValueError("an AGGREGATE ConditionResult has no fold_index")
@@ -1136,6 +1238,11 @@ class SufficiencyShortfallKind(Enum):
     TOTAL_TRADES_BELOW = "TOTAL_TRADES_BELOW"
     METRIC_UNCOMPUTABLE = "METRIC_UNCOMPUTABLE"
     NO_CANDIDATE_METRIC_UNAVAILABLE = "NO_CANDIDATE_METRIC_UNAVAILABLE"
+    #: 検証の合計の取引件数が方針上の最低件数に届かないまま、fold か経路の最低条件（ドローダウン）
+    #: を割った（D13 §5.5 の手順 3、D13-14 (a)、仮置き 13、実装 PR の仮置き 50）。`fold_index` と
+    #: `trial_index` は fold の違反ならその fold と試行、経路の違反なら `None`。`metric` は割った
+    #: 条件の指標、`required` / `observed` は検証の合計の件数の要件と観測。
+    FLOOR_BREACHED_TOTAL_TRADES_BELOW = "FLOOR_BREACHED_TOTAL_TRADES_BELOW"
 
 
 _TRADE_SHORTFALLS: Final = frozenset(
@@ -1143,6 +1250,14 @@ _TRADE_SHORTFALLS: Final = frozenset(
         SufficiencyShortfallKind.FOLD_TRADES_BELOW,
         SufficiencyShortfallKind.FLOOR_NOT_MET_TRADES_BELOW,
         SufficiencyShortfallKind.TOTAL_TRADES_BELOW,
+    }
+)
+
+#: 経路について記録しうる（`fold_index` が `None` でよい）理由（2026-10-21 改訂）。
+_PATH_CAPABLE_SHORTFALLS: Final = frozenset(
+    {
+        SufficiencyShortfallKind.METRIC_UNCOMPUTABLE,
+        SufficiencyShortfallKind.FLOOR_BREACHED_TOTAL_TRADES_BELOW,
     }
 )
 
@@ -1169,10 +1284,26 @@ class SufficiencyShortfall:
         if self.kind is SufficiencyShortfallKind.TOTAL_TRADES_BELOW:
             if self.fold_index is not None or self.trial_index is not None:
                 raise KernelValueError("TOTAL_TRADES_BELOW has no fold_index / trial_index")
+        elif self.kind in _PATH_CAPABLE_SHORTFALLS and self.fold_index is None:
+            # 経路の条件・指標の不足（2026-10-21 改訂）は fold と試行を持たない。
+            if self.trial_index is not None:
+                raise KernelValueError(f"a path {self.kind.value} has no trial_index")
         else:
             _require_index(self.fold_index, "SufficiencyShortfall.fold_index")
             _require_index(self.trial_index, "SufficiencyShortfall.trial_index")
-        if self.kind in _TRADE_SHORTFALLS:
+        if self.kind is SufficiencyShortfallKind.FLOOR_BREACHED_TOTAL_TRADES_BELOW:
+            if not isinstance(self.metric, MetricId) or self.reason is not None:
+                raise KernelValueError(
+                    "FLOOR_BREACHED_TOTAL_TRADES_BELOW carries the breached metric and no reason"
+                )
+            _require_count(self.required, "SufficiencyShortfall.required")
+            _require_count(self.observed, "SufficiencyShortfall.observed")
+            assert self.required is not None and self.observed is not None  # noqa: S101
+            if not self.observed < self.required:
+                raise KernelValueError(
+                    "FLOOR_BREACHED_TOTAL_TRADES_BELOW: the total is not below the requirement"
+                )
+        elif self.kind in _TRADE_SHORTFALLS:
             if self.metric is not None or self.reason is not None:
                 raise KernelValueError(f"{self.kind.value} has no metric / reason")
             _require_count(self.required, "SufficiencyShortfall.required")
@@ -1252,10 +1383,37 @@ class SearchVerdict(Enum):
     MET_IN_MECHANISM_CHECK = "MET_IN_MECHANISM_CHECK"
 
 
-@dataclass(frozen=True, slots=True)
-class SearchOutcome:
-    """結末記録の探索の項目（D09 §3・§10.6。v0.2）。"""
+class ProfitabilityAxis(Enum):
+    """収益性・リスクの軸（D13 §5.5、D09 §7.3 の 2026-10-21 改訂。仮置き 7・実装 PR の 50）。"""
 
+    #: 正式条件の観測値がすべて満たす側（全体の純収益率 > 0、全体と各 fold の最大ドローダウン率
+    #: ≤ 0.30 など。研究ポリシーの条件の結果がすべて `MET`）。
+    MET = "MET"
+    #: どれかの条件の観測値が満たさない側。
+    NOT_MET = "NOT_MET"
+    #: 判定できない（fold か経路が「判定できない」、または条件の観測値が無い）。
+    NOT_JUDGED = "NOT_JUDGED"
+
+
+class EvidenceAxis(Enum):
+    """証拠の軸（D13 §5.5。仮置き 7・実装 PR の 50）。理由は `SufficiencyShortfall` に残す。"""
+
+    SUFFICIENT = "SUFFICIENT"
+    INSUFFICIENT = "INSUFFICIENT"
+
+
+@dataclass(frozen=True, slots=True)
+class VariantOutcome:
+    """組ごとの結末記録の探索の項目（D09 §3・§10.6 の 2026-10-21 改訂。実装 PR の仮置き 63）。
+
+    v0.2 の `SearchOutcome` の組ごとの値（選定・fold の判定・実験の判定・頻度区分・条件ごとの
+    結果・証拠不足の理由・試行の状態の件数）に、2 軸の値と保留の印（D13 §5.5）と経路の要約
+    （D13 §4.6 の表 3）を足したもの。`hold` は判定が「証拠不足」のときだけ値を持つ（`True` は
+    「保留（証拠不足。収益性とリスクは条件を満たす側）」、`False` は「証拠不足（収益性は条件に
+    届かない側）」）。
+    """
+
+    variant: Variant
     selections: tuple[FoldSelection, ...]
     fold_verdicts: tuple[tuple[int, FoldVerdict], ...]
     verdict: SearchVerdict
@@ -1263,77 +1421,207 @@ class SearchOutcome:
     condition_results: tuple[ConditionResult, ...]
     shortfalls: tuple[SufficiencyShortfall, ...]
     trial_counts: tuple[tuple[TrialStatus, int], ...]
-    ledger_execution: int
     purpose: StandardPurpose
+    profitability: ProfitabilityAxis
+    evidence: EvidenceAxis
+    hold: bool | None
+    path: PathSummary
 
     def __post_init__(self) -> None:
+        if not isinstance(self.variant, Variant):
+            raise KernelValueError("VariantOutcome.variant must be a Variant")
         if not isinstance(self.selections, tuple) or not all(
             isinstance(item, FoldSelection) for item in self.selections
         ):
-            raise KernelValueError("SearchOutcome.selections must be a tuple of FoldSelection")
+            raise KernelValueError("VariantOutcome.selections must be a tuple of FoldSelection")
         fold_indices = [item.fold_index for item in self.selections]
         if not fold_indices or fold_indices != list(range(len(fold_indices))):
-            raise KernelValueError("SearchOutcome.selections は fold_index 0 からの連番")
+            raise KernelValueError("VariantOutcome.selections は fold_index 0 からの連番")
         if not isinstance(self.fold_verdicts, tuple) or not all(
             isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[1], FoldVerdict)
             for entry in self.fold_verdicts
         ):
-            raise KernelValueError("SearchOutcome.fold_verdicts must be (int, FoldVerdict) pairs")
+            raise KernelValueError("VariantOutcome.fold_verdicts must be (int, FoldVerdict) pairs")
         if [entry[0] for entry in self.fold_verdicts] != fold_indices:
-            raise KernelValueError("SearchOutcome.fold_verdicts は selections と同じ fold の順")
+            raise KernelValueError("VariantOutcome.fold_verdicts は selections と同じ fold の順")
         if not isinstance(self.verdict, SearchVerdict):
-            raise KernelValueError("SearchOutcome.verdict must be a SearchVerdict")
+            raise KernelValueError("VariantOutcome.verdict must be a SearchVerdict")
         if not isinstance(self.purpose, StandardPurpose):
-            raise KernelValueError("SearchOutcome.purpose must be a StandardPurpose")
-        if (
-            self.verdict is SearchVerdict.MEETS_STANDARD
-            and self.purpose is not StandardPurpose.STANDARD
-        ):
-            raise KernelValueError(
-                "MEETS_STANDARD は用途が STANDARD の評価基準でだけ出る（D09 §7.3 の手順4。Q33）"
-            )
-        if (
-            self.verdict is SearchVerdict.MET_IN_MECHANISM_CHECK
-            and self.purpose is not StandardPurpose.MECHANISM_CHECK
-        ):
-            raise KernelValueError(
-                "MET_IN_MECHANISM_CHECK は用途が MECHANISM_CHECK の評価基準でだけ出る（Q33）"
-            )
+            raise KernelValueError("VariantOutcome.purpose must be a StandardPurpose")
+        _require_verdict_purpose(self.verdict, self.purpose)
         has_selected = any(item.selected_trial_index is not None for item in self.selections)
         if self.frequency is None:
             if has_selected:
                 raise KernelValueError(
-                    "SearchOutcome.frequency は選んだ試行のある fold があれば値を持つ（D09 §3）"
+                    "VariantOutcome.frequency は選んだ試行のある fold があれば値を持つ（D09 §3）"
                 )
         elif not isinstance(self.frequency, FrequencyAssessment) or not has_selected:
             raise KernelValueError(
-                "SearchOutcome.frequency は選んだ試行のある fold が無ければ None（D09 §3）"
+                "VariantOutcome.frequency は選んだ試行のある fold が無ければ None（D09 §3）"
             )
         if not isinstance(self.condition_results, tuple) or not all(
             isinstance(item, ConditionResult) for item in self.condition_results
         ):
-            raise KernelValueError("SearchOutcome.condition_results must be ConditionResult")
+            raise KernelValueError("VariantOutcome.condition_results must be ConditionResult")
         if not isinstance(self.shortfalls, tuple) or not all(
             isinstance(item, SufficiencyShortfall) for item in self.shortfalls
         ):
-            raise KernelValueError("SearchOutcome.shortfalls must be SufficiencyShortfall")
+            raise KernelValueError("VariantOutcome.shortfalls must be SufficiencyShortfall")
         keys = [item.key for item in self.shortfalls]
         if keys != sorted(set(keys)):
             raise KernelValueError(
-                "SearchOutcome.shortfalls は主キー (kind, fold_index, trial_index, metric,"
+                "VariantOutcome.shortfalls は主キー (kind, fold_index, trial_index, metric,"
                 " reason) の昇順で重複なし（D09 §12）"
             )
         if not isinstance(self.trial_counts, tuple) or not all(
             isinstance(entry, tuple) and len(entry) == 2 for entry in self.trial_counts
         ):
-            raise KernelValueError("SearchOutcome.trial_counts must be (TrialStatus, int) pairs")
+            raise KernelValueError("VariantOutcome.trial_counts must be (TrialStatus, int) pairs")
         if [entry[0] for entry in self.trial_counts] != list(TrialStatus):
             raise KernelValueError(
-                "SearchOutcome.trial_counts は TrialStatus の宣言順に全状態（0件も出す。D09 §3）"
+                "VariantOutcome.trial_counts は TrialStatus の宣言順に全状態（0件も出す。D09 §3）"
             )
         for entry in self.trial_counts:
-            _require_count(entry[1], "SearchOutcome.trial_counts")
+            _require_count(entry[1], "VariantOutcome.trial_counts")
+        if not isinstance(self.profitability, ProfitabilityAxis):
+            raise KernelValueError("VariantOutcome.profitability must be a ProfitabilityAxis")
+        if not isinstance(self.evidence, EvidenceAxis):
+            raise KernelValueError("VariantOutcome.evidence must be an EvidenceAxis")
+        if (self.evidence is EvidenceAxis.INSUFFICIENT) != bool(self.shortfalls):
+            raise KernelValueError("証拠の軸は理由があるときだけ INSUFFICIENT（D13 §5.5）")
+        if self.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE:
+            if self.hold is not (self.profitability is ProfitabilityAxis.MET):
+                raise KernelValueError(
+                    "保留の印は、証拠不足で収益性・リスクの軸が MET のとき True（D13 §5.5）"
+                )
+        elif self.hold is not None:
+            raise KernelValueError("保留の印は判定が証拠不足のときだけ値を持つ（D13 §5.5）")
+        if not isinstance(self.path, PathSummary):
+            raise KernelValueError("VariantOutcome.path must be a PathSummary")
+        covered = [fold for row in self.path.segments for fold in row.fold_indices]
+        if covered != fold_indices[: len(covered)]:
+            raise KernelValueError("経路の区間の fold が選定記録の fold の先頭からの並びと合わない")
+        if self.path.end is PathEnd.COMPLETED and covered != fold_indices:
+            raise KernelValueError("完了した経路は全 fold を区間に持つ（D13 §4.6）")
+
+
+@dataclass(frozen=True, slots=True)
+class CombinedVerdict:
+    """組の判定（標準・候補の 2 組の判定の合わせ方。D09 §7.12、D13 §6.4。仮置き 8、実装 PR の
+    仮置き 50）。
+
+    `split` は「組の間で割れた」（両組とも判定が出て片方だけが満たす）とき `True`。`hold` は組の
+    保留の印で、組の判定が「証拠不足」のときだけ値を持つ。
+    """
+
+    verdict: SearchVerdict
+    split: bool
+    hold: bool | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.verdict, SearchVerdict):
+            raise KernelValueError("CombinedVerdict.verdict must be a SearchVerdict")
+        if not isinstance(self.split, bool):
+            raise KernelValueError("CombinedVerdict.split must be a bool")
+        if self.split and self.verdict is not SearchVerdict.INSUFFICIENT_EVIDENCE:
+            raise KernelValueError("組の間で割れた組の判定は証拠不足（D09 §7.12 の 3）")
+        if (self.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE) != (self.hold is not None):
+            raise KernelValueError("組の保留の印は組の判定が証拠不足のときだけ値を持つ")
+        if self.hold is not None and not isinstance(self.hold, bool):
+            raise KernelValueError("CombinedVerdict.hold must be a bool or None")
+
+
+_MET_VERDICTS: Final = frozenset(
+    {SearchVerdict.MEETS_STANDARD, SearchVerdict.MET_IN_MECHANISM_CHECK}
+)
+
+
+def combine_verdicts(standard: VariantOutcome, candidate: VariantOutcome) -> CombinedVerdict:
+    """組の判定（D09 §7.12 の順。最初に当てはまるもの）。
+
+    1. どちらかの組が「判定できない」→ 判定できない。
+    2. 両組が「満たす」（用途が機構の確認なら「機構の確認で条件をすべて満たした」）→ 満たす。
+    3. 片方の組だけが「満たす」→ 証拠不足（組の間で割れた）。
+    4. どちらかの組が「満たさない」→ 満たさない。
+    5. それ以外（両組が「証拠不足」）→ 証拠不足。
+
+    組の保留の印: 組の判定が証拠不足で、どちらの組も「満たさない」でなく、「満たす」でない組が
+    すべて保留の印を持つとき `True`。
+    """
+    if not isinstance(standard, VariantOutcome) or not isinstance(candidate, VariantOutcome):
+        raise KernelValueError("combine_verdicts requires two VariantOutcome")
+    if standard.variant is not Variant.STANDARD or candidate.variant is not Variant.CANDIDATE:
+        raise KernelValueError("combine_verdicts requires the standard and the candidate outcome")
+    if standard.purpose is not candidate.purpose:
+        raise KernelValueError("both variants are judged against the same research policy")
+    pair = (standard, candidate)
+    verdicts = (standard.verdict, candidate.verdict)
+    if SearchVerdict.INCOMPLETE in verdicts:
+        return CombinedVerdict(verdict=SearchVerdict.INCOMPLETE, split=False, hold=None)
+    met = [item.verdict in _MET_VERDICTS for item in pair]
+    if all(met):
+        return CombinedVerdict(verdict=standard.verdict, split=False, hold=None)
+    if any(met):
+        other = pair[1] if met[0] else pair[0]
+        hold = other.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE and other.hold is True
+        return CombinedVerdict(verdict=SearchVerdict.INSUFFICIENT_EVIDENCE, split=True, hold=hold)
+    if SearchVerdict.BELOW_STANDARD in verdicts:
+        return CombinedVerdict(verdict=SearchVerdict.BELOW_STANDARD, split=False, hold=None)
+    return CombinedVerdict(
+        verdict=SearchVerdict.INSUFFICIENT_EVIDENCE,
+        split=False,
+        hold=all(item.hold is True for item in pair),
+    )
+
+
+def _require_verdict_purpose(verdict: SearchVerdict, purpose: StandardPurpose) -> None:
+    if verdict is SearchVerdict.MEETS_STANDARD and purpose is not StandardPurpose.STANDARD:
+        raise KernelValueError(
+            "MEETS_STANDARD は用途が STANDARD の評価基準でだけ出る（D09 §7.3 の手順4。Q33）"
+        )
+    if (
+        verdict is SearchVerdict.MET_IN_MECHANISM_CHECK
+        and purpose is not StandardPurpose.MECHANISM_CHECK
+    ):
+        raise KernelValueError(
+            "MET_IN_MECHANISM_CHECK は用途が MECHANISM_CHECK の評価基準でだけ出る（Q33）"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SearchOutcome:
+    """結末記録の探索の項目（D09 §3・§10.6。2026-10-21 改訂: 組ごとの値と組の判定を持つ）。
+
+    `variants` は組ごとの値（`VariantOutcome`）、`combined` は組の判定（1 実行に 1 つ。D09 §7.12）、
+    `ledger_execution` は試行台帳の実行番号、`purpose` は評価基準の用途。
+    """
+
+    variants: Paired[VariantOutcome]
+    combined: CombinedVerdict
+    ledger_execution: int
+    purpose: StandardPurpose
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.variants, Paired):
+            raise KernelValueError("SearchOutcome.variants must be Paired[VariantOutcome]")
+        self.variants.require(VariantOutcome, "SearchOutcome.variants")
+        for variant, item in self.variants.items():
+            if item.variant is not variant:
+                raise KernelValueError("SearchOutcome.variants の組と中身の組が違う")
+        if not isinstance(self.combined, CombinedVerdict):
+            raise KernelValueError("SearchOutcome.combined must be a CombinedVerdict")
+        if not isinstance(self.purpose, StandardPurpose):
+            raise KernelValueError("SearchOutcome.purpose must be a StandardPurpose")
+        if any(item.purpose is not self.purpose for _, item in self.variants.items()):
+            raise KernelValueError("SearchOutcome: 組の用途が実験の用途と違う")
+        if self.combined != combine_verdicts(self.variants.standard, self.variants.candidate):
+            raise KernelValueError("SearchOutcome.combined は両組の判定から導いた値（D09 §7.12）")
         _require_ledger_execution(self.ledger_execution)
+
+    @property
+    def verdict(self) -> SearchVerdict:
+        """組の判定（実験全体の判定。D09 §7.12）。"""
+        return self.combined.verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -1668,33 +1956,34 @@ class _FoldJudgement:
     validation_trades: int | None
 
 
+def _floor_result(
+    fold_index: int, condition: MetricCondition, unit: ValidationUnitEvaluation
+) -> ConditionResult:
+    value = unit.value_of(condition.metric)
+    observed = _numeric(value)
+    if observed is None:
+        outcome = ConditionOutcome.UNCOMPUTABLE
+    elif _compare(observed, condition.comparator, condition.threshold):
+        outcome = ConditionOutcome.MET
+    else:
+        outcome = ConditionOutcome.NOT_MET
+    return ConditionResult(
+        scope=ConditionScope.FOLD_FLOOR,
+        fold_index=fold_index,
+        metric=condition.metric,
+        statistic=None,
+        comparator=condition.comparator,
+        threshold=condition.threshold,
+        observed=observed,
+        outcome=outcome,
+        unavailable_reason=_unavailable_reason(value),
+    )
+
+
 def _floor_results(
     fold_index: int, rule: ValidationRule, unit: ValidationUnitEvaluation
 ) -> tuple[ConditionResult, ...]:
-    results: list[ConditionResult] = []
-    for condition in rule.fold_floors:
-        value = unit.value_of(condition.metric)
-        observed = _numeric(value)
-        if observed is None:
-            outcome = ConditionOutcome.UNCOMPUTABLE
-        elif _compare(observed, condition.comparator, condition.threshold):
-            outcome = ConditionOutcome.MET
-        else:
-            outcome = ConditionOutcome.NOT_MET
-        results.append(
-            ConditionResult(
-                scope=ConditionScope.FOLD_FLOOR,
-                fold_index=fold_index,
-                metric=condition.metric,
-                statistic=None,
-                comparator=condition.comparator,
-                threshold=condition.threshold,
-                observed=observed,
-                outcome=outcome,
-                unavailable_reason=_unavailable_reason(value),
-            )
-        )
-    return tuple(results)
+    return tuple(_floor_result(fold_index, condition, unit) for condition in rule.fold_floors)
 
 
 def interim_floor_results(
@@ -1726,8 +2015,7 @@ def interim_floor_results(
         if reason is MetricUnavailableReason.INPUT_NOT_AVAILABLE:
             results.append((condition, reason))
             continue
-        single = ValidationRule(fold_floors=(condition,), aggregate=())
-        results.append((condition, _floor_results(fold_index, single, unit)[0]))
+        results.append((condition, _floor_result(fold_index, condition, unit)))
     return tuple(results)
 
 
@@ -1849,37 +2137,83 @@ def _judge_fold(
     return _FoldJudgement(FoldVerdict.FLOORS_MET, floors, (), trades)
 
 
-def build_search_outcome(
+def _path_results(rule: PathRule, path: PathSummary) -> tuple[ConditionResult, ...]:
+    """経路の条件の結果（D09 §7.3 の改訂の「経路の条件の結果の記録」）。
+
+    経路が「判定できない」で終わった組は結果を作らない。資金喪失で終えた経路は、その区間までの
+    系列で計った指標で比べる（仮置き 29）。
+    """
+    if path.end is PathEnd.INCOMPLETE:
+        return ()
+    results: list[ConditionResult] = []
+    for scope, conditions in (
+        (ConditionScope.PATH_FLOOR, rule.floors),
+        (ConditionScope.PATH_AGGREGATE, rule.aggregate),
+    ):
+        for condition in conditions:
+            value = path.metric(condition.metric)
+            if value is None:  # PATH_METRICS の検査（PathRule）で来ない
+                raise KernelValueError(f"the path has no metric {condition.metric.value}")
+            observed = _numeric(value)
+            if observed is None:
+                outcome = ConditionOutcome.UNCOMPUTABLE
+            elif _compare(observed, condition.comparator, condition.threshold):
+                outcome = ConditionOutcome.MET
+            else:
+                outcome = ConditionOutcome.NOT_MET
+            results.append(
+                ConditionResult(
+                    scope=scope,
+                    fold_index=None,
+                    metric=condition.metric,
+                    statistic=None,
+                    comparator=condition.comparator,
+                    threshold=condition.threshold,
+                    observed=observed,
+                    outcome=outcome,
+                    unavailable_reason=_unavailable_reason(value),
+                )
+            )
+    return tuple(results)
+
+
+def build_variant_outcome(
     standard: EvaluationStandard,
+    variant: Variant,
     folds: Sequence[FoldEvidence],
-    ledger_execution: int,
-) -> SearchOutcome:
-    """全 fold が終端した後に、頻度区分・fold の判定・実験の判定を決める（D09 §7.3・§7.8）。
+    path: PathSummary,
+) -> VariantOutcome:
+    """組ごとに、頻度区分・fold の判定・経路の条件・実験の判定・2 軸・保留の印を決める。
 
-    実験の判定は次の順で最初に当てはまるもの（D09 §7.3）:
+    D09 §7.3（2026-10-21 改訂）・D13 §5.5。実験の判定は次の順で最初に当てはまるもの:
 
-    1. `FLOOR_BREACHED` か `NO_ELIGIBLE_TRIAL` の fold がある: `BELOW_STANDARD`。
-    2. `INCOMPLETE` の fold がある: `INCOMPLETE`。
-    3. `INSUFFICIENT_EVIDENCE` の fold がある、または検証結果のある fold の検証区間の取引件数の
-       合計が `min_validation_trades_total` 未満: `INSUFFICIENT_EVIDENCE`。
-    4. 集約条件を当てる。1つでも `NOT_MET` なら `BELOW_STANDARD`。すべて `MET` なら、用途が
-       `STANDARD` なら `MEETS_STANDARD`、`MECHANISM_CHECK` なら `MET_IN_MECHANISM_CHECK`。
-       **用途を見るのはここだけ**（Q33 決定）。
+    1. `NO_ELIGIBLE_TRIAL` の fold がある、または fold（`FLOOR_BREACHED`）か経路の最低条件を割り、
+       かつ検証の合計の取引件数が `min_validation_trades_total` 以上: `BELOW_STANDARD`。
+    2. `INCOMPLETE` の fold がある、または経路が「判定できない」で終わった: `INCOMPLETE`。
+    3. 証拠不足の fold がある（候補なしの fold を含む。D13-24 (a)）、検証の合計の件数が要件未満
+       （`TOTAL_TRADES_BELOW`）、判定に使う経路の指標が観測不足で値なし（`METRIC_UNCOMPUTABLE`）、
+       または件数が要件未満のまま最低条件を割った（`FLOOR_BREACHED_TOTAL_TRADES_BELOW`。
+       D13-14 (a)）: `INSUFFICIENT_EVIDENCE`。
+    4. 集約条件（fold の集約条件と経路の全体の水準）を当て、1 つでも `NOT_MET` なら
+       `BELOW_STANDARD`。すべて `MET` なら、用途が `STANDARD` なら `MEETS_STANDARD`、
+       `MECHANISM_CHECK` なら `MET_IN_MECHANISM_CHECK`（用途を見るのはここだけ。Q33）。
 
-    各 fold の選定記録は、渡された選定区間の結果から `select_trial` で作り直した値と一致する
-    ことを確かめる（一致しなければ構造エラー）。試行の状態の件数は、渡された全 fold の単位
-    （選定区間の全試行と選んだ試行の検証区間）の状態から数える（D09 §10.4・§10.6）。
-    `ledger_execution` は試行台帳の実行番号（1 以上）で、呼び出し側が採番してから渡す。未採番を
-    番号の値で表さない。台帳への束縛は PR 4（D09 §17.7.3 の6）。
+    数える取引件数は独立口座の fold の run の検証区間の件数の合計（D13-20 (a)）。経路の条件の
+    結果は経路が判定できないで終わったとき以外は常に記録し（手順 3 で止まっても収益性の軸の
+    観測値として残す。R-16 (4)）、fold の集約条件は手順 4 に来たときだけ結果を作る。
     """
     if not isinstance(standard, EvaluationStandard):
-        raise KernelValueError("build_search_outcome requires an EvaluationStandard")
+        raise KernelValueError("build_variant_outcome requires an EvaluationStandard")
+    if not isinstance(variant, Variant):
+        raise KernelValueError("build_variant_outcome requires a Variant")
+    if not isinstance(path, PathSummary):
+        raise KernelValueError("build_variant_outcome requires a PathSummary")
     items = tuple(folds)
     if not all(isinstance(item, FoldEvidence) for item in items):
-        raise KernelValueError("build_search_outcome requires FoldEvidence values")
+        raise KernelValueError("build_variant_outcome requires FoldEvidence values")
     evidence = tuple(sorted(items, key=lambda item: item.fold.fold_index))
     if not evidence or [item.fold.fold_index for item in evidence] != list(range(len(evidence))):
-        raise KernelValueError("build_search_outcome: fold は 0 からの連番で1つ以上")
+        raise KernelValueError("build_variant_outcome: fold は 0 からの連番で1つ以上")
     for item in evidence:
         recomputed = select_trial(item.fold.fold_index, standard.selection, item.train_units)
         if recomputed != item.selection:
@@ -1896,35 +2230,101 @@ def build_search_outcome(
     verdicts = [item.verdict for item in judgements]
     conditions: list[ConditionResult] = [c for item in judgements for c in item.conditions]
     shortfalls: list[SufficiencyShortfall] = [s for item in judgements for s in item.shortfalls]
+    path_conditions = _path_results(standard.validation.path, path)
+
+    total = sum(item.validation_trades or 0 for item in judgements)
+    total_short = requirement is not None and total < requirement.min_validation_trades_total
+    if total_short:
+        assert requirement is not None  # noqa: S101  直前で確かめた
+        shortfalls.append(
+            SufficiencyShortfall(
+                kind=SufficiencyShortfallKind.TOTAL_TRADES_BELOW,
+                fold_index=None,
+                trial_index=None,
+                metric=None,
+                reason=None,
+                required=requirement.min_validation_trades_total,
+                observed=total,
+            )
+        )
+    # 最低条件の違反（fold の `FLOOR_BREACHED` と経路の最低条件）。
+    breaches: list[tuple[int | None, int | None, MetricId]] = []
+    for item, judgement in zip(evidence, judgements, strict=True):
+        if judgement.verdict is FoldVerdict.FLOOR_BREACHED and item.validation is not None:
+            for result in judgement.conditions:
+                if result.outcome is ConditionOutcome.NOT_MET:
+                    breaches.append(
+                        (item.fold.fold_index, item.validation.trial_index, result.metric)
+                    )
+    for result in path_conditions:
+        if result.scope is ConditionScope.PATH_FLOOR and result.outcome is ConditionOutcome.NOT_MET:
+            breaches.append((None, None, result.metric))
+    if breaches and total_short:
+        assert requirement is not None  # noqa: S101
+        for fold_index, trial_index, metric in breaches:
+            shortfalls.append(
+                SufficiencyShortfall(
+                    kind=SufficiencyShortfallKind.FLOOR_BREACHED_TOTAL_TRADES_BELOW,
+                    fold_index=fold_index,
+                    trial_index=trial_index,
+                    metric=metric,
+                    reason=None,
+                    required=requirement.min_validation_trades_total,
+                    observed=total,
+                )
+            )
+    path_uncomputable = [
+        result for result in path_conditions if result.outcome is ConditionOutcome.UNCOMPUTABLE
+    ]
+    for result in path_uncomputable:
+        shortfalls.append(
+            SufficiencyShortfall(
+                kind=SufficiencyShortfallKind.METRIC_UNCOMPUTABLE,
+                fold_index=None,
+                trial_index=None,
+                metric=result.metric,
+                reason=result.unavailable_reason,
+                required=None,
+                observed=None,
+            )
+        )
+    # 同じ指標と理由の経路の値なしが最低条件と全体の水準の両方に出たときは 1 件にする。
+    shortfalls = list({item.key: item for item in shortfalls}.values())
 
     verdict: SearchVerdict
-    if FoldVerdict.FLOOR_BREACHED in verdicts or FoldVerdict.NO_ELIGIBLE_TRIAL in verdicts:
+    aggregate_conditions: list[ConditionResult] = []
+    if FoldVerdict.NO_ELIGIBLE_TRIAL in verdicts or (breaches and not total_short):
         verdict = SearchVerdict.BELOW_STANDARD
-    elif FoldVerdict.INCOMPLETE in verdicts:
+    elif FoldVerdict.INCOMPLETE in verdicts or path.end is PathEnd.INCOMPLETE:
         verdict = SearchVerdict.INCOMPLETE
+    elif (
+        FoldVerdict.INSUFFICIENT_EVIDENCE in verdicts
+        or total_short
+        or path_uncomputable
+        or breaches
+    ):
+        verdict = SearchVerdict.INSUFFICIENT_EVIDENCE
     else:
-        total_short = False
-        if requirement is not None:
-            total = sum(item.validation_trades or 0 for item in judgements)
-            if total < requirement.min_validation_trades_total:
-                total_short = True
-                shortfalls.append(
-                    SufficiencyShortfall(
-                        kind=SufficiencyShortfallKind.TOTAL_TRADES_BELOW,
-                        fold_index=None,
-                        trial_index=None,
-                        metric=None,
-                        reason=None,
-                        required=requirement.min_validation_trades_total,
-                        observed=total,
-                    )
-                )
-        if FoldVerdict.INSUFFICIENT_EVIDENCE in verdicts or total_short:
-            verdict = SearchVerdict.INSUFFICIENT_EVIDENCE
-        else:
-            verdict = _aggregate_verdict(standard, evidence, conditions)
+        verdict = _aggregate_verdict(standard, evidence, aggregate_conditions, path_conditions)
+    all_conditions = (*conditions, *aggregate_conditions, *path_conditions)
 
-    return SearchOutcome(
+    profitability: ProfitabilityAxis
+    if verdict is SearchVerdict.INCOMPLETE or path.end is PathEnd.INCOMPLETE:
+        profitability = ProfitabilityAxis.NOT_JUDGED
+    elif any(item.outcome is ConditionOutcome.UNCOMPUTABLE for item in path_conditions):
+        profitability = ProfitabilityAxis.NOT_JUDGED
+    elif any(item.outcome is ConditionOutcome.NOT_MET for item in all_conditions):
+        profitability = ProfitabilityAxis.NOT_MET
+    else:
+        profitability = ProfitabilityAxis.MET
+    hold = (
+        profitability is ProfitabilityAxis.MET
+        if verdict is SearchVerdict.INSUFFICIENT_EVIDENCE
+        else None
+    )
+    ordered_shortfalls = tuple(sorted(shortfalls, key=lambda item: item.key))
+    return VariantOutcome(
+        variant=variant,
         selections=selections,
         fold_verdicts=tuple(
             (item.fold.fold_index, judgement.verdict)
@@ -1932,9 +2332,29 @@ def build_search_outcome(
         ),
         verdict=verdict,
         frequency=frequency,
-        condition_results=tuple(conditions),
-        shortfalls=tuple(sorted(shortfalls, key=lambda item: item.key)),
+        condition_results=all_conditions,
+        shortfalls=ordered_shortfalls,
         trial_counts=count_trial_statuses(s for item in evidence for s in item.unit_statuses),
+        purpose=standard.purpose,
+        profitability=profitability,
+        evidence=EvidenceAxis.INSUFFICIENT if ordered_shortfalls else EvidenceAxis.SUFFICIENT,
+        hold=hold,
+        path=path,
+    )
+
+
+def build_search_outcome(
+    standard: VariantOutcome,
+    candidate: VariantOutcome,
+    ledger_execution: int,
+) -> SearchOutcome:
+    """両組の結果から結末記録の探索の項目を作る（組の判定は `combine_verdicts`。D09 §7.12）。
+
+    `ledger_execution` は試行台帳の実行番号（1 以上）で、呼び出し側が採番してから渡す。
+    """
+    return SearchOutcome(
+        variants=Paired(standard=standard, candidate=candidate),
+        combined=combine_verdicts(standard, candidate),
         ledger_execution=ledger_execution,
         purpose=standard.purpose,
     )
@@ -1944,8 +2364,13 @@ def _aggregate_verdict(
     standard: EvaluationStandard,
     evidence: Sequence[FoldEvidence],
     conditions: list[ConditionResult],
+    path_conditions: Sequence[ConditionResult],
 ) -> SearchVerdict:
-    """実験の判定の手順4（D09 §7.3）。この時点で全 fold が `FLOORS_MET`。"""
+    """実験の判定の手順4（D09 §7.3）。この時点で全 fold が `FLOORS_MET`。
+
+    fold の集約条件（`MEDIAN`）の結果を `conditions` に足し、経路の全体の水準（記録済みの
+    `path_conditions` の `PATH_AGGREGATE`）と合わせて判定する。
+    """
     all_met = True
     for condition in standard.validation.aggregate:
         values: list[Decimal] = []
@@ -1969,6 +2394,9 @@ def _aggregate_verdict(
                 unavailable_reason=None,
             )
         )
+    for result in path_conditions:
+        if result.scope is ConditionScope.PATH_AGGREGATE:
+            all_met = all_met and result.outcome is ConditionOutcome.MET
     if not all_met:
         return SearchVerdict.BELOW_STANDARD
     # 用途を見るのはこの1か所だけ（D09 §7.3 の手順4。Q33 決定）。
@@ -2139,8 +2567,22 @@ class ComparisonBasis:
     code_digest: CodeDigest
     lock_digest: LockDigest
     env_digest: EnvDigest
+    #: 変換の組（2026-10-21 改訂。R-11、実装 PR の仮置き 61）。
+    variant: Variant
+    #: 時刻の規則の表の参照（run manifest の `time_rule_table_ref`。HistData の経路は `None`）。
+    time_rule_table_ref: TimeRuleTableRef | None
+    #: run の終わり方（独立口座の単位から作るので `MARK_TO_MARKET`。R-11・D06 §9.3 の改訂）。
+    run_end: RunEndMode
 
     def __post_init__(self) -> None:
+        if not isinstance(self.variant, Variant):
+            raise KernelValueError("ComparisonBasis.variant must be a Variant")
+        if self.time_rule_table_ref is not None and not isinstance(
+            self.time_rule_table_ref, TimeRuleTableRef
+        ):
+            raise KernelValueError("ComparisonBasis.time_rule_table_ref must be a TimeRuleTableRef")
+        if not isinstance(self.run_end, RunEndMode):
+            raise KernelValueError("ComparisonBasis.run_end must be a RunEndMode")
         for label, expected in (
             ("research_policy_ref", PolicyRef),
             ("snapshot_ref", SnapshotRef),
@@ -2178,8 +2620,128 @@ class TrialLedgerEvent(Enum):
     FINISHED = "FINISHED"
 
 
-#: 台帳の行の形式版（D09 §10.12.6。v0.3 で 1）。
-TRIAL_LEDGER_SCHEMA_VERSION: Final = 1
+#: 台帳の行の形式版（D09 §10.12.6。v0.3 で 1。2026-10-21 改訂で 2 に上げた: 行の `basis` を組
+#: ごとの写像にし、開始の行に系譜、結末の行に組ごとの結果を足した。R-11。版 1 の行は読込の検査
+#: L4 で止める。改訂 PR の仮置き 42 (a)）。
+TRIAL_LEDGER_SCHEMA_VERSION: Final = 2
+
+
+class ChangeKind(Enum):
+    """系譜の変更の種類（D13 §7.1、仮置き 9）。"""
+
+    HYPOTHESIS = "HYPOTHESIS"
+    PARAMETERS = "PARAMETERS"
+    STRATEGY_CODE = "STRATEGY_CODE"
+    RETRY = "RETRY"
+    POLICY_REVISION = "POLICY_REVISION"
+    DATA = "DATA"
+
+
+@dataclass(frozen=True, slots=True)
+class LineageSource:
+    """系譜の元の実行 `(experiment_id, execution)`（D13 §7.1 の `derived_from`）。"""
+
+    experiment_id: ExperimentId
+    execution: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.experiment_id, ExperimentId):
+            raise KernelValueError("LineageSource.experiment_id must be an ExperimentId")
+        if isinstance(self.execution, bool) or not isinstance(self.execution, int):
+            raise KernelValueError("LineageSource.execution must be an int")
+        if self.execution < 1:
+            raise KernelValueError("LineageSource.execution must be >= 1")
+
+
+@dataclass(frozen=True, slots=True)
+class Lineage:
+    """開始の行の系譜（D13 §7.1・§7.3、D09 §10.10 の 2026-10-21 改訂。仮置き 9、実装 PR の
+    仮置き 56）。
+
+    - `derived_from`: 元の実行（無ければ `None`）。
+    - `change_kinds`: 変更の種類（書いた順、重複なし）。
+    - `viewed_before`: 元の実行までに見た検証区間（元の実行の検証区間と、その元の実行の
+      `viewed_before` の和。開始の順に重複を除く）。元の実行が無ければ空。
+    - `note_digest`: 理由の文の SHA-256（本文は実験の版のディレクトリの記録票の実験設定に残る）。
+    """
+
+    derived_from: LineageSource | None
+    change_kinds: tuple[ChangeKind, ...]
+    viewed_before: tuple[Interval, ...]
+    note_digest: ContentDigest | None
+
+    def __post_init__(self) -> None:
+        if self.derived_from is not None and not isinstance(self.derived_from, LineageSource):
+            raise KernelValueError("Lineage.derived_from must be a LineageSource or None")
+        if not isinstance(self.change_kinds, tuple) or not all(
+            isinstance(item, ChangeKind) for item in self.change_kinds
+        ):
+            raise KernelValueError("Lineage.change_kinds must be a tuple of ChangeKind")
+        if len(set(self.change_kinds)) != len(self.change_kinds):
+            raise KernelValueError("Lineage.change_kinds に同じ種類が 2 つある")
+        if not isinstance(self.viewed_before, tuple) or not all(
+            isinstance(item, Interval) for item in self.viewed_before
+        ):
+            raise KernelValueError("Lineage.viewed_before must be a tuple of Interval")
+        if len(set(self.viewed_before)) != len(self.viewed_before):
+            raise KernelValueError("Lineage.viewed_before に同じ区間が 2 つある")
+        if self.derived_from is None and self.viewed_before:
+            raise KernelValueError("元の実行の無い系譜は見た検証区間を持たない")
+        if self.note_digest is not None and not isinstance(self.note_digest, ContentDigest):
+            raise KernelValueError("Lineage.note_digest must be a ContentDigest or None")
+
+
+@dataclass(frozen=True, slots=True)
+class VariantLedgerResult:
+    """結末の行の組ごとの結果（D09 §10.10・§10.12 の 2026-10-21 改訂。実装 PR の仮置き 55）。"""
+
+    status: ExperimentStatus
+    verdict: SearchVerdict
+    frequency_class: str | None
+    profitability: ProfitabilityAxis
+    evidence: EvidenceAxis
+    hold: bool | None
+
+    def __post_init__(self) -> None:
+        from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+
+        if not isinstance(self.status, ExperimentStatus):
+            raise KernelValueError("VariantLedgerResult.status must be an ExperimentStatus")
+        if not isinstance(self.verdict, SearchVerdict):
+            raise KernelValueError("VariantLedgerResult.verdict must be a SearchVerdict")
+        if self.frequency_class is not None and (
+            not isinstance(self.frequency_class, str)
+            or not _CLASS_NAME.fullmatch(self.frequency_class)
+        ):
+            raise KernelValueError("VariantLedgerResult.frequency_class must be a class name")
+        if not isinstance(self.profitability, ProfitabilityAxis):
+            raise KernelValueError("VariantLedgerResult.profitability must be a ProfitabilityAxis")
+        if not isinstance(self.evidence, EvidenceAxis):
+            raise KernelValueError("VariantLedgerResult.evidence must be an EvidenceAxis")
+        if self.hold is not None and not isinstance(self.hold, bool):
+            raise KernelValueError("VariantLedgerResult.hold must be a bool or None")
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerResults:
+    """結末の行の組の結果（組の判定の印と組ごとの結果。実装 PR の仮置き 55）。
+
+    組の判定そのものは行の最上位の `verdict` に置く（最上位は実験の状態と組の判定）。
+    """
+
+    split: bool
+    hold: bool | None
+    variants: Paired[VariantLedgerResult]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.split, bool):
+            raise KernelValueError("LedgerResults.split must be a bool")
+        if self.hold is not None and not isinstance(self.hold, bool):
+            raise KernelValueError("LedgerResults.hold must be a bool or None")
+        if not isinstance(self.variants, Paired):
+            raise KernelValueError("LedgerResults.variants must be Paired[VariantLedgerResult]")
+        self.variants.require(VariantLedgerResult, "LedgerResults.variants")
+
 
 #: 実行ごとの乱数（16進で 32 文字以上＝128 ビット以上。D09 §10.12.1 の W3）。
 _NONCE: Final = re.compile(r"[0-9a-f]{32,}")
@@ -2202,15 +2764,17 @@ class TrialLedgerEntry:
     experiment_name: str
     experiment_version: int
     strategy_id: str
-    basis: ComparisonBasis
+    basis: Paired[ComparisonBasis]
     trial_count: int
     search_plan_digest: ContentDigest
     validation_intervals: tuple[Interval, ...]
     final_holdout: FinalHoldoutSpec | None
     purpose: StandardPurpose
+    lineage: Lineage | None
     status: ExperimentStatus | None
     verdict: SearchVerdict | None
     frequency_class: str | None
+    results: LedgerResults | None
 
     def __post_init__(self) -> None:
         from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
@@ -2237,8 +2801,15 @@ class TrialLedgerEntry:
             )
         _require_name(self.experiment_name, "TrialLedgerEntry.experiment_name")
         _require_name(self.strategy_id, "TrialLedgerEntry.strategy_id")
-        if not isinstance(self.basis, ComparisonBasis):
-            raise KernelValueError("TrialLedgerEntry.basis must be a ComparisonBasis")
+        if not isinstance(self.basis, Paired):
+            raise KernelValueError("TrialLedgerEntry.basis must be Paired[ComparisonBasis]")
+        self.basis.require(ComparisonBasis, "TrialLedgerEntry.basis")
+        if any(item.variant is not variant for variant, item in self.basis.items()):
+            raise KernelValueError("TrialLedgerEntry.basis の組と比較の前提の組が違う")
+        if self.lineage is not None and not isinstance(self.lineage, Lineage):
+            raise KernelValueError("TrialLedgerEntry.lineage must be a Lineage or None")
+        if self.results is not None and not isinstance(self.results, LedgerResults):
+            raise KernelValueError("TrialLedgerEntry.results must be LedgerResults or None")
         if not isinstance(self.search_plan_digest, ContentDigest):
             raise KernelValueError("TrialLedgerEntry.search_plan_digest must be a ContentDigest")
         if (
@@ -2345,7 +2916,7 @@ class TrialLedgerDefect(Enum):
 
 
 #: 結末の行の不変項目から外す項目（D09 §10.12.2 の L9）。
-_VARIANT_FIELDS: Final = frozenset({"event", "status", "verdict", "frequency_class"})
+_VARIANT_FIELDS: Final = frozenset({"event", "status", "verdict", "frequency_class", "results"})
 
 
 def _invariants(entry: TrialLedgerEntry) -> dict[str, object]:
@@ -2365,28 +2936,41 @@ def _shape_defect(entry: TrialLedgerEntry) -> str | None:
             entry.status is not None
             or entry.verdict is not None
             or entry.frequency_class is not None
+            or entry.results is not None
         ):
-            return "a STARTED line has status / verdict / frequency_class all null"
+            return "a STARTED line has status / verdict / frequency_class / results all null"
         return None
     if entry.status not in (ExperimentStatus.COMPLETED, ExperimentStatus.FAILED_POST_RUN_CHECK):
         return "a FINISHED line has the status COMPLETED or FAILED_POST_RUN_CHECK"
     if entry.verdict is None:
-        return "a FINISHED line has a verdict"
+        return "a FINISHED line has a verdict (the combined verdict)"
+    # 形式版 2（実装 PR の仮置き 55）: 頻度区分は組ごと（`results`）に置き、最上位は空。
+    if entry.frequency_class is not None:
+        return "a FINISHED line keeps frequency_class null; the classes are per variant in results"
+    if entry.results is None:
+        return "a FINISHED line has the results of both variants"
     return None
 
 
 def _verdict_purpose_defect(entry: TrialLedgerEntry) -> str | None:
-    """L10: 判定と用途の組が実験の判定の手順4 で作れる組か（D09 §7.3。Q33）。"""
-    if (
-        entry.verdict is SearchVerdict.MEETS_STANDARD
-        and entry.purpose is not StandardPurpose.STANDARD
-    ):
-        return "MEETS_STANDARD is made only when the purpose is STANDARD"
-    if (
-        entry.verdict is SearchVerdict.MET_IN_MECHANISM_CHECK
-        and entry.purpose is not StandardPurpose.MECHANISM_CHECK
-    ):
-        return "MET_IN_MECHANISM_CHECK is made only when the purpose is MECHANISM_CHECK"
+    """L10: 判定と用途の組が実験の判定の手順4 で作れる組か（D09 §7.3。Q33）。
+
+    形式版 2 では組の判定（最上位の `verdict`）と組ごとの判定の両方に当てる（実装 PR の仮置き 55）。
+    """
+    verdicts = [entry.verdict]
+    if entry.results is not None:
+        verdicts.extend(item.verdict for _, item in entry.results.variants.items())
+    for verdict in verdicts:
+        if (
+            verdict is SearchVerdict.MEETS_STANDARD
+            and entry.purpose is not StandardPurpose.STANDARD
+        ):
+            return "MEETS_STANDARD is made only when the purpose is STANDARD"
+        if (
+            verdict is SearchVerdict.MET_IN_MECHANISM_CHECK
+            and entry.purpose is not StandardPurpose.MECHANISM_CHECK
+        ):
+            return "MET_IN_MECHANISM_CHECK is made only when the purpose is MECHANISM_CHECK"
     return None
 
 
@@ -2483,10 +3067,11 @@ def finished_entry(
     *,
     status: ExperimentStatus,
     verdict: SearchVerdict,
-    frequency_class: str | None,
+    results: LedgerResults,
 ) -> TrialLedgerEntry:
-    """結末の行: 開始の行の項目を写し、`status` / `verdict` / `frequency_class` だけを結末記録の
-    値にする（D09 §10.12.3 の3。L9 に当たる行を作らない）。"""
+    """結末の行: 開始の行の項目を写し、`status`（実験の状態）/ `verdict`（組の判定）/ `results`
+    （組ごとの結果）だけを結末記録の値にする（D09 §10.12.3 の3。形式版 2 では `frequency_class` は
+    空。実装 PR の仮置き 55。L9 に当たる行を作らない）。"""
     if not isinstance(started, TrialLedgerEntry) or started.event is not TrialLedgerEvent.STARTED:
         raise KernelValueError("finished_entry requires the STARTED entry of the execution")
     return replace(
@@ -2494,7 +3079,8 @@ def finished_entry(
         event=TrialLedgerEvent.FINISHED,
         status=status,
         verdict=verdict,
-        frequency_class=frequency_class,
+        frequency_class=None,
+        results=results,
     )
 
 
@@ -2617,7 +3203,7 @@ def count_prior_executions(
                     experiment_name=entry.experiment_name,
                     experiment_version=entry.experiment_version,
                     execution=entry.execution,
-                    research_policy_ref=entry.basis.research_policy_ref,
+                    research_policy_ref=entry.basis.standard.research_policy_ref,
                     purpose=entry.purpose,
                     search_plan_digest=entry.search_plan_digest,
                     verdict=None if closing is None else closing.entry.verdict,
@@ -2682,3 +3268,36 @@ def unmatched_binding(
         if any(path.startswith(prefix) for path, _ in pending):
             return None
     return pending[0]
+
+
+def lineage_of(
+    lines: Sequence[TrialLedgerLine],
+    derived_from: LineageSource | None,
+    change_kinds: tuple[ChangeKind, ...],
+    note_digest: ContentDigest | None,
+) -> Lineage | str:
+    """開始の行に書く系譜を台帳から組み立てる（D13 §7.1・§7.3。実装 PR の仮置き 56）。
+
+    `viewed_before` は、元の実行の開始の行の検証区間と、その行の系譜の `viewed_before` の和
+    （元の実行の側を先に、重複を除く）。元の実行の開始の行が台帳に無ければ理由の文字列を返す
+    （台帳にある実行だけを指せる。読込で確かめた後に台帳が変わった場合）。
+    """
+    if derived_from is None:
+        return Lineage(
+            derived_from=None, change_kinds=change_kinds, viewed_before=(), note_digest=note_digest
+        )
+    origin = started_line_of(lines, derived_from.experiment_id, derived_from.execution)
+    if origin is None:
+        return (
+            f"the trial ledger has no STARTED line of ({derived_from.experiment_id},"
+            f" {derived_from.execution}) that lineage.derived_from names (D13 §7.1)"
+        )
+    viewed = list(origin.entry.validation_intervals)
+    if origin.entry.lineage is not None:
+        viewed.extend(origin.entry.lineage.viewed_before)
+    return Lineage(
+        derived_from=derived_from,
+        change_kinds=change_kinds,
+        viewed_before=tuple(dict.fromkeys(viewed)),
+        note_digest=note_digest,
+    )

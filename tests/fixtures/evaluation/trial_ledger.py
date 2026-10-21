@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Final
 
 from odyssey_fx.backtest.domain.account import AccountSpec
+from odyssey_fx.backtest.domain.policies import RunEndMode
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.ids import AccountId, ExperimentId, SnapshotId
 from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str
@@ -32,13 +33,18 @@ from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
 from odyssey_fx.evaluation.domain.search import (
     TRIAL_LEDGER_SCHEMA_VERSION,
     ComparisonBasis,
+    EvidenceAxis,
+    LedgerResults,
+    ProfitabilityAxis,
     SearchVerdict,
     StandardPurpose,
     TrialLedgerEntry,
     TrialLedgerEvent,
     TrialLedgerLine,
+    VariantLedgerResult,
     finished_entry,
 )
+from odyssey_fx.evaluation.domain.variant import Paired, Variant
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 
 __all__ = [
@@ -59,12 +65,17 @@ def _policy(kind: str) -> PolicyRef:
     return PolicyRef(policy_kind=kind, policy_id=kind, version=1, digest=digest(kind))
 
 
-def basis() -> ComparisonBasis:
-    """形だけを満たす比較の前提（値はテスト用）。"""
+def basis() -> Paired[ComparisonBasis]:
+    """形だけを満たす組ごとの比較の前提（値はテスト用。2026-10-21 改訂で組の写像）。"""
+    return Paired.build(variant_basis)
+
+
+def variant_basis(variant: Variant) -> ComparisonBasis:
+    """組 1 つの比較の前提（snapshot は組ごとに別の値）。"""
     return ComparisonBasis(
         research_policy_ref=_policy("research"),
         metric_set_version=2,
-        snapshot_ref=SnapshotRef(snapshot_id=SnapshotId(digest("snapshot"))),
+        snapshot_ref=SnapshotRef(snapshot_id=SnapshotId(digest(f"snapshot {variant.value}"))),
         strategy_ref=StrategyRef(strategy_id="strategy_b", version=1, digest=digest("strategy")),
         execution_series=SeriesId(symbol=Symbol("USDJPY"), timeframe=_M15, basis=PriceBasis.BID),
         seed=0,
@@ -84,6 +95,9 @@ def basis() -> ComparisonBasis:
         code_digest=CodeDigest(digest("code")),
         lock_digest=LockDigest(digest("lock")),
         env_digest=EnvDigest(digest("env")),
+        variant=variant,
+        time_rule_table_ref=None,
+        run_end=RunEndMode.MARK_TO_MARKET,
     )
 
 
@@ -119,9 +133,11 @@ def started(
         ),
         final_holdout=None,
         purpose=purpose,
+        lineage=None,
         status=None,
         verdict=None,
         frequency_class=None,
+        results=None,
     )
 
 
@@ -131,8 +147,23 @@ def finished(
     verdict: SearchVerdict = SearchVerdict.INSUFFICIENT_EVIDENCE,
     status: ExperimentStatus = ExperimentStatus.COMPLETED,
 ) -> TrialLedgerEntry:
-    """開始の行に対応する結末の行（不変項目は開始の行から写す）。"""
-    return finished_entry(opening, status=status, verdict=verdict, frequency_class="LOW")
+    """開始の行に対応する結末の行（不変項目は開始の行から写す）。組の判定と両組の判定は同じ値。"""
+    item = VariantLedgerResult(
+        status=status,
+        verdict=verdict,
+        frequency_class="LOW",
+        profitability=ProfitabilityAxis.MET,
+        evidence=EvidenceAxis.INSUFFICIENT
+        if verdict is SearchVerdict.INSUFFICIENT_EVIDENCE
+        else EvidenceAxis.SUFFICIENT,
+        hold=True if verdict is SearchVerdict.INSUFFICIENT_EVIDENCE else None,
+    )
+    results = LedgerResults(
+        split=False,
+        hold=item.hold,
+        variants=Paired(standard=item, candidate=item),
+    )
+    return finished_entry(opening, status=status, verdict=verdict, results=results)
 
 
 def chain(

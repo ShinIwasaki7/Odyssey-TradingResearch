@@ -1,0 +1,114 @@
+# 研究ポリシー v3（研究ポリシー第 3 版。D13 §6.1・§9 の表 12-B、D09 §10.9 の 2026-10-21 改訂）
+#
+# 2026-10-21 の人間の方針（順 4。原文は D13 §0.1）と、その決定（D13-1〜D13-25・仮置き 1〜29。
+# 原文は D13 §0.3）の値を書いた版である。評価基準の群（`evaluation_standard`）を持つ最初の登録版で、
+# 探索の実験はこの版から指せる。
+#
+# - 評価範囲は承認済みの研究対象区間（初期ウォームアップの後）を土曜 12:00Z に揃えた
+#   2017-03-25T12:00Z〜2023-12-30T12:00Z（2,471 日。D13-2 (a)。D13 §2.1）。
+# - 選定区間 728 日・検証区間 364 日（D13-1 (a)）、ROLLING・purge 0（既決 Q22・Q23）。
+#   範囲の始まり側に端数の fold（検証 287 日）を必ず作り、fold は 5 つ（D13-3 (a)・D13-18 (a)、
+#   仮置き 23）。
+# - 各 fold の独立口座の run と、連続口座の検証経路の両方に、率で最大の下落の最大ドローダウン率
+#   ≤ 0.30（D13-6〜D13-8）。経路の全体の純収益率 > 0（原文 C5）。純収益率の下限は置かない
+#   （原文 C4。D13 §6.2）。fold の集約条件は無い（`aggregate: []`）。
+# - 証拠の要件は 1 区分、fold ごとの最低件数 0、検証の合計の最低件数 8（D13-9〜D13-11）。
+#   **方針上の最低件数は「この件数より少ない結果は研究候補として扱わない」という研究の方針の
+#   条件であり、統計的な十分性の保証ではない**（D13 §5.2）。数える件数は独立口座の fold の run の
+#   検証区間の完了取引の合計（D13-20 (a)）。
+# - 前提の記録（basis）は承認済みの 2 組の snapshot（D13 §1.1）・評価の対象系列（段 1 の既決）・
+#   前提の規則のファイルの SHA-256（D12 §12.1 の表。名前は実装 PR の仮置き 51）。用途 STANDARD の
+#   この版を指す探索の実験は、snapshot が役割ごとに一致し 2 つが異なることを読込で確かめる
+#   （D13-16 (a)・仮置き 21）。
+# - 比較の前提の固定（comparison_basis）は今の全実験設定と同じ値（D13-21 (a)・仮置き 12・18）。
+#   この版を指す探索の実験の口座・リスク・費用・執行の値は、これと一致しなければ読込で拒否する。
+#
+# 正式な合否条件は `fold_floors`・`path.floors`・`path.aggregate` と `sufficiency` だけで、診断の
+# 表示（D13 §5.4）とは分ける。最低年利・最低リスクリワード比は書かない（原文 C6）。
+#
+# **版を上げずに中身を変えない**。この版のダイジェストは `registry.yaml` に登録してあり、中身を
+# 変えると読込で拒否される（Q8 決定）。
+
+schema_version: 1
+id: research_policy
+version: 3
+complexity_limits:
+  component_kinds: 30
+  instances: 36
+  parameters: 33
+  decision_outputs: 18
+search_limits:
+  trials: 100
+evaluation_standard:
+  purpose: STANDARD
+  basis:
+    snapshots:
+      standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+      candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+    target_series: ["USDJPY/15m/bid", "USDJPY/1h/bid"]
+    premises:
+      - name: time_rule_table
+        version: 1
+        path: "docs/design/time_rules/time_rule_table_v1.yaml"
+        sha256: "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3"
+      - name: approved_time_rule_tables
+        version: null
+        path: "docs/design/time_rules/approved_time_rule_tables.yaml"
+        sha256: "2a4eee10144764ac228e102ef56965615463ff60d2abf54d6240d39e0bf0d90b"
+      - name: calendar
+        version: 1
+        path: "configs/calendars/fx_ny17_oanda_v1.yaml"
+        sha256: "a9da0d9ae6b3246b5bb67757a7b6cb4ac50e5a012c96a5c4a075bc1148a79b96"
+      - name: counting_rules
+        version: 1
+        path: "docs/design/counting_rules/counting_rules_v1.yaml"
+        sha256: "fa98eef8cec035a4564b849bc4098d1488aee968bc3a5c2d44efb3ba75ca6444"
+      - name: fetch_manifest
+        version: null
+        path: "docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json"
+        sha256: "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53"
+      - name: datasource
+        version: null
+        path: "configs/datasources/oanda_mt5_m1_v1.yaml"
+        sha256: "791b9917e073c8c04faa50ef6bed3906335b4d680bce51dbf96434516f895fb8"
+      - name: timeframes
+        version: 2
+        path: "configs/calendars/timeframes_v2.yaml"
+        sha256: "86f6d16689f7642b6b845e33df662ee2a67c314d623817848c08f0f37a4685b1"
+  comparison_basis:
+    account: {currency: "JPY", initial_balance: "1000000"}
+    risk_policy: {trial_risk_rate: "0.02", account_risk_cap: "0.20"}
+    cost_model:
+      spread_offset: "0.02"
+      commission_per_unit: "0.001"
+      entry_slippage: "0.01"
+      close_slippage: "0.01"
+    execution_policy: {entry_delay_bars: 0, adverse_fill_limits: {USDJPY: "0.05"}}
+  split:
+    range: {start: "2017-03-25T12:00:00Z", end: "2023-12-30T12:00:00Z"}
+    train_length: "728d"
+    validation_length: "364d"
+    window: ROLLING
+    purge: "0s"
+    partial_fold: AT_START
+    min_folds: 5
+  selection:
+    metric: ANNUALIZED_SHARPE_RATIO
+    direction: MAXIMIZE
+    eligibility: []
+  validation:
+    fold_floors:
+      - {metric: MAX_DRAWDOWN_MTM_RATE_PEAK, comparator: LE, threshold: "0.30"}
+    aggregate: []
+    path:
+      boundary: CARRY_IF_SAME_TRIAL
+      floors:
+        - {metric: MAX_DRAWDOWN_MTM_RATE_PEAK, comparator: LE, threshold: "0.30"}
+      aggregate:
+        - {metric: NET_RETURN_RATE, comparator: GT, threshold: "0"}
+  sufficiency:
+    classes:
+      - name: ALL
+        min_train_trades_per_365d: "0"
+        min_validation_trades_per_fold: 0
+        min_validation_trades_total: 8

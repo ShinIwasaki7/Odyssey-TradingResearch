@@ -26,7 +26,7 @@ from odyssey_fx.backtest.domain.policies import CostModel
 from odyssey_fx.backtest.execution.cost_model import FillPurpose
 from odyssey_fx.backtest.execution.fill_model import fill_price
 from odyssey_fx.backtest.portfolio.mtm import exit_price_for
-from odyssey_fx.backtest.trace.result import FinalSummaries
+from odyssey_fx.backtest.trace.result import FinalSummaries, HypotheticalCloseLine
 from odyssey_fx.common.money import Money, Price, decimal_from_int, kernel_context
 
 __all__ = ["RUN_END_STEPS", "final_summaries"]
@@ -67,6 +67,7 @@ def final_summaries(
     currency = ledger.currency
     zero = Money(decimal_from_int(0), currency)
     hypothetical = zero
+    lines: list[HypotheticalCloseLine] = []
     for position in positions:
         if last_close is None:  # pragma: no cover - 直前で判定済み
             continue
@@ -77,10 +78,26 @@ def final_summaries(
             direction = decimal_from_int(1 if position.side is OrderSide.BUY else -1)
             gross = (price.value - position.entry_price.value) * position.quantity.units * direction
             commission = cost_model.commission_per_unit.amount * position.quantity.units
-        hypothetical = hypothetical + Money(gross - commission, currency)
+            slippage = abs(base.value - price.value) * position.quantity.units
+        profit = Money(gross - commission, currency)
+        hypothetical = hypothetical + profit
+        # 明細は区間の終わりの決済の事実を辿るためだけのもの（方式 (ii)。実装 PR の仮置き 45）。
+        lines.append(
+            HypotheticalCloseLine(
+                position_id=position.position_id,
+                side=position.side,
+                quantity=position.quantity,
+                reference_bid=last_close,
+                exit_price=price,
+                commission=Money(commission, currency),
+                slippage=Money(slippage, currency),
+                profit=profit,
+            )
+        )
     return FinalSummaries(
         realized=ledger.balance - initial_balance,
         equity_with_mtm=equity,
         hypothetical_closed=hypothetical,
         cost_breakdown={kind: cost_totals.get(kind, zero) for kind in CostKind},
+        hypothetical_close_lines=tuple(lines),
     )

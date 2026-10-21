@@ -16,13 +16,14 @@ from dataclasses import dataclass
 from enum import Enum
 
 from odyssey_fx.backtest.domain.fills import CostKind
+from odyssey_fx.backtest.domain.orders import OrderSide
 from odyssey_fx.backtest.trace.manifest import DataCapabilityReport
 from odyssey_fx.backtest.trace.recorder import TraceTable
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import RunId
-from odyssey_fx.common.money import Money
+from odyssey_fx.common.ids import PositionId, RunId
+from odyssey_fx.common.money import Money, Price, Quantity
 
-__all__ = ["BacktestResult", "FinalSummaries", "RunStatus"]
+__all__ = ["BacktestResult", "FinalSummaries", "HypotheticalCloseLine", "RunStatus"]
 
 
 class RunStatus(Enum):
@@ -31,6 +32,48 @@ class RunStatus(Enum):
     COMPLETED = "COMPLETED"
     FAILED_DATA_ERROR = "FAILED_DATA_ERROR"
     FAILED_CAPABILITY = "FAILED_CAPABILITY"
+
+
+@dataclass(frozen=True, slots=True)
+class HypotheticalCloseLine:
+    """残存建玉1つの仮決済の明細（D06 §10.3 の `hypothetical_closed` の内訳。2026-10-21 改訂）。
+
+    連続口座の検証経路の区間の終わりの全決済を方式 (ii)（仮に閉じた損益で決める。実装 PR の
+    仮置き 45、2026-10-22 の人間の決定）で行うとき、決済の事実（数量・参照価格・費用）を run の
+    成果物から辿れるようにする（D13 §4.5 の記録の要件）。**計算だけ**で、注文・約定・完了取引数・
+    balance・リスク枠を変更しない。
+
+    - `reference_bid`: 最終評価価格（直前に完了した執行足の終値。bid）。
+    - `exit_price`: 決済の側の価格に決済の滑りを当てた価格（`hypothetical_closed` と同じ式）。
+    - `commission`: 決済の手数料（`commission_per_unit × 数量`）。
+    - `slippage`: 滑りの金額（`|決済の側の価格 − exit_price| × 数量`）。
+    - `profit`: この建玉の仮決済の損益（手数料を引いた後。`hypothetical_closed` の1項）。
+    """
+
+    position_id: PositionId
+    side: OrderSide
+    quantity: Quantity
+    reference_bid: Price
+    exit_price: Price
+    commission: Money
+    slippage: Money
+    profit: Money
+
+    def __post_init__(self) -> None:
+        for name, expected in (
+            ("position_id", PositionId),
+            ("side", OrderSide),
+            ("quantity", Quantity),
+            ("reference_bid", Price),
+            ("exit_price", Price),
+            ("commission", Money),
+            ("slippage", Money),
+            ("profit", Money),
+        ):
+            if not isinstance(getattr(self, name), expected):
+                raise KernelValueError(
+                    f"HypotheticalCloseLine.{name} must be a {expected.__name__}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +89,17 @@ class FinalSummaries:
     equity_with_mtm: Money
     hypothetical_closed: Money
     cost_breakdown: Mapping[CostKind, Money]
+    #: `hypothetical_closed` の建玉ごとの明細（2026-10-21 改訂。`HypotheticalCloseLine`）。
+    #: 残存建玉が無ければ空。
+    hypothetical_close_lines: tuple[HypotheticalCloseLine, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.hypothetical_close_lines, tuple) or not all(
+            isinstance(item, HypotheticalCloseLine) for item in self.hypothetical_close_lines
+        ):
+            raise KernelValueError(
+                "FinalSummaries.hypothetical_close_lines must be a tuple of HypotheticalCloseLine"
+            )
         for name in ("realized", "equity_with_mtm", "hypothetical_closed"):
             if not isinstance(getattr(self, name), Money):
                 raise KernelValueError(f"FinalSummaries.{name} must be a Money")

@@ -255,11 +255,24 @@ class _Store:
     def write_trial_run(self, record: object) -> None:  # pragma: no cover - 使わない
         raise NotImplementedError
 
-    def write_selection(self, selection: object) -> None:  # pragma: no cover - 使わない
+    def write_selection(  # pragma: no cover - 使わない
+        self, variant: object, selection: object
+    ) -> None:
+        raise NotImplementedError
+
+    def write_path_segment_start(self, record: object) -> None:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
+    def write_path_segment_end(self, record: object) -> None:  # pragma: no cover - 使わない
         raise NotImplementedError
 
     def write_aggregate_tables(  # pragma: no cover - 使わない
-        self, manifest: object, selections: object, records: object, metrics: object
+        self,
+        manifest: object,
+        variant: object,
+        selections: object,
+        records: object,
+        metrics: object,
     ) -> None:
         raise NotImplementedError
 

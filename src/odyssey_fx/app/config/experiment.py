@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
@@ -135,9 +135,13 @@ class RunBodyModel(StrictModel):
 
     `run_interval` だけは書式ごとのモデルが宣言する。書式 v1 と単一実行の書式 v2 では必須、
     探索の書式 v2 では書けば拒否する（区間は fold が持つ。D09 §5.5 の6、D07 §18.2 v2.7）。
+
+    `snapshot` は書式 v1 と単一実行の書式 v2 で必須、探索の書式 v2 では書けば拒否し、代わりに
+    両組の `snapshots` を書く（2026-10-21 改訂。D07 §18.2、改訂 PR の仮置き 38 (a)）。省略の
+    可否は書式ごとの読込が確かめる。
     """
 
-    snapshot: str
+    snapshot: str | None = None
     execution_series: str
     resolution_hierarchy: list[str]
     account: _AccountModel
@@ -161,6 +165,7 @@ class _ExperimentModel(RunBodyModel):
     schema_version: int
     id: str
     version: int
+    snapshot: str
     run_interval: _IntervalModel
     strategy: _StrategyModel
 
@@ -249,6 +254,10 @@ class RunBody:
         if ref is None:  # pragma: no cover - 5種はすべて構築時に作る
             raise ConfigError(f"ポリシーの版参照 {kind!r} が実験設定から作られていない")
         return ref
+
+    def with_snapshot(self, snapshot_ref: SnapshotRef) -> RunBody:
+        """snapshot だけを差し替えた実行の本体（探索の実験の組ごとの本体。D09 §6.2 の改訂）。"""
+        return replace(self, snapshot_ref=snapshot_ref)
 
     def with_run_interval(self, run_interval: Interval) -> ExperimentConfig:
         """単一実行の実験設定にする（書いた run 区間を足す）。"""
@@ -425,6 +434,7 @@ def resolve_run_body(
     strategy: StrategyDefinition,
     delay_scenario: DelayScenario | None,
     delay_ref: PolicyRef,
+    snapshot: str | None = None,
 ) -> RunBody:
     """書式 v1・v2 に共通する「実行の本体」を解決済みの値へ変換する（D06 §3、D07 §18.2）。
 
@@ -433,7 +443,13 @@ def resolve_run_body(
     run 区間は含めない（`RunBody`）。書式 v1 と単一実行の書式 v2 は呼び出し側が `run_interval_of`
     で読んだ区間を `RunBody.with_run_interval` で足す。探索の実験は単一の run 区間を持たない
     （D09 §6.2）。
+
+    `snapshot` は snapshot の識別子の文字列（省くとモデルの `snapshot`）。探索の書式 v2 は両組の
+    `snapshots` から標準の組の値を渡し、組ごとの値は `RunBody.with_snapshot` で差し替える。
     """
+    snapshot_text = model.snapshot if snapshot is None else snapshot
+    if snapshot_text is None:
+        raise ConfigError(f"{path}: `snapshot` を書くこと（D07 §18.2）")
     execution_series = parse_series(model.execution_series, timeframe_defs)
     if not model.resolution_hierarchy:
         raise ConfigError(f"{path}: `resolution_hierarchy` は1件以上書くこと（ADR-0030）")
@@ -451,7 +467,7 @@ def resolve_run_body(
     conversion_policy = _conversion_of(model.conversion_policy)
 
     try:
-        snapshot_ref = SnapshotRef(snapshot_id=SnapshotId(ContentDigest.sha256(model.snapshot)))
+        snapshot_ref = SnapshotRef(snapshot_id=SnapshotId(ContentDigest.sha256(snapshot_text)))
     except KernelValueError as exc:
         raise ConfigError(
             f"{path}: `snapshot` は承認済み snapshot の識別子（16進64文字）を書くこと: {exc}"

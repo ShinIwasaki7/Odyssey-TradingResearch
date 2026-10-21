@@ -34,17 +34,25 @@ fold ごとに選定区間の単位 → 選定記録 → 検証区間の単位 �
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
+from typing import Final
 
-from odyssey_fx.backtest.domain.policies import RunConfig
+from odyssey_fx.backtest.domain.policies import RunConfig, RunEndMode
 from odyssey_fx.backtest.trace.manifest import RunManifest
-from odyssey_fx.backtest.trace.result import BacktestResult
+from odyssey_fx.backtest.trace.result import BacktestResult, HypotheticalCloseLine, RunStatus
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import ExperimentId, RunId
+from odyssey_fx.common.money import Money
 from odyssey_fx.common.refs import CodeDigest, ConfigDigest, ContentDigest, EnvDigest, LockDigest
-from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
+from odyssey_fx.evaluation.application.evaluate_run import (
+    EvaluateRun,
+    EvaluationReport,
+    equity_series,
+)
 from odyssey_fx.evaluation.application.manifest import RunEvaluationId, run_evaluation_id
 from odyssey_fx.evaluation.application.ports import (
     BacktestRunner,
@@ -54,6 +62,8 @@ from odyssey_fx.evaluation.application.ports import (
     ManifestSaveResult,
     ResultReadFailure,
     ResultRepository,
+    SegmentPlanner,
+    SegmentRunPlan,
     StoredEvaluation,
     TrialLedgerAppendRefused,
     TrialLedgerContents,
@@ -65,6 +75,17 @@ from odyssey_fx.evaluation.domain.experiment import (
     ExperimentStatus,
 )
 from odyssey_fx.evaluation.domain.metrics import MetricRecord
+from odyssey_fx.evaluation.domain.path import (
+    PathEnd,
+    PathSegmentEnd,
+    PathSegmentKey,
+    PathSegmentRow,
+    PathSegmentStart,
+    PathSummary,
+    PlannedSegment,
+    path_metrics,
+    plan_segments,
+)
 from odyssey_fx.evaluation.domain.research_policy import (
     PolicyCheck,
     PolicyCheckResult,
@@ -76,9 +97,13 @@ from odyssey_fx.evaluation.domain.research_policy import (
 )
 from odyssey_fx.evaluation.domain.search import (
     TRIAL_LEDGER_SCHEMA_VERSION,
+    ChangeKind,
     ComparisonBasis,
     FoldEvidence,
     FoldSelection,
+    LedgerResults,
+    Lineage,
+    LineageSource,
     SearchOutcome,
     TrainUnitEvaluation,
     TrialLedgerBinding,
@@ -92,11 +117,14 @@ from odyssey_fx.evaluation.domain.search import (
     TrialStatus,
     TrialUnitKey,
     ValidationUnitEvaluation,
+    VariantLedgerResult,
     binding_mismatch,
     build_search_outcome,
+    build_variant_outcome,
     finished_entry,
     has_finished_line,
     last_digest,
+    lineage_of,
     next_execution,
     select_trial,
     started_line_of,
@@ -104,11 +132,17 @@ from odyssey_fx.evaluation.domain.search import (
 )
 from odyssey_fx.evaluation.domain.splits import SplitSpec
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 
 __all__ = [
     "ExperimentRefusal",
+    "LineageRequest",
+    "RecordedSearch",
+    "ReproductionItem",
+    "ReproductionRow",
+    "overall_reproduction",
     "PreparedExperiment",
     "PreparedSearch",
     "PreparedTrial",
@@ -357,6 +391,81 @@ class _Evaluated:
     metrics: tuple[MetricRecord, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class LineageRequest:
+    """実験設定の系譜（D13 §7.1）。台帳の開始の行の系譜は、これと台帳から組み立てる。"""
+
+    derived_from: LineageSource | None
+    change_kinds: tuple[ChangeKind, ...]
+    note_digest: ContentDigest | None
+
+    def __post_init__(self) -> None:
+        if self.derived_from is not None and not isinstance(self.derived_from, LineageSource):
+            raise KernelValueError("LineageRequest.derived_from must be a LineageSource or None")
+        if not isinstance(self.change_kinds, tuple) or not all(
+            isinstance(item, ChangeKind) for item in self.change_kinds
+        ):
+            raise KernelValueError("LineageRequest.change_kinds must be a tuple of ChangeKind")
+        if self.note_digest is not None and not isinstance(self.note_digest, ContentDigest):
+            raise KernelValueError("LineageRequest.note_digest must be a ContentDigest or None")
+
+
+@dataclass(frozen=True, slots=True)
+class _FoldsRun:
+    """組の全 fold の実行の結果（判定の入力・集約表の材料）。"""
+
+    evidence: tuple[FoldEvidence, ...]
+    selections: tuple[FoldSelection, ...]
+    records: tuple[TrialRunRecord, ...]
+    metrics: dict[TrialUnitKey, tuple[MetricRecord, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class _PathRun:
+    """組の連続口座の検証経路の結果（経路の要約と、区間の終端の記録）。"""
+
+    summary: PathSummary
+    ends: tuple[PathSegmentEnd, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _VariantRun:
+    """組 1 つの実行の結果。"""
+
+    folds: _FoldsRun
+    path: _PathRun
+
+    @property
+    def checks(self) -> tuple[PolicyCheckResult, ...]:
+        """組の単位と経路の区間の事後検査 P4・P5 のすべて。"""
+        return (
+            *(check for record in self.folds.records for check in record.outcome_checks),
+            *(check for end in self.path.ends for check in end.outcome_checks),
+        )
+
+
+def _initial_balance(prepared: PreparedSearch, variant: Variant) -> Money:
+    """組の経路の最初の残高（実験設定の初期残高。独立口座の単位の `RunConfig` と同じ値）。"""
+    for trial in prepared.trials:
+        for unit, config in trial.run_configs:
+            if unit.variant is variant:
+                return config.account.initial_balance
+    raise KernelValueError("a search with a selected trial has a unit of every variant")
+
+
+def _segment_failure(end: PathSegmentEnd) -> str:
+    """区間の run の失敗の理由（経路の要約の `end_reason`。D13 §4.6 の表 2 の E5）。"""
+    if end.run_status is not RunStatus.COMPLETED:
+        return f"the segment run ended {end.run_status.value} (D13 §4.5。仮置き 16)"
+    if end.evaluation_status is not EvaluationStatus.COMPLETED:
+        status = None if end.evaluation_status is None else end.evaluation_status.value
+        return f"the evaluation of the segment run is {status} (D13 §4.5。仮置き 16)"
+    if not end.post_run_checks_passed:
+        failed = [item.check.value for item in end.outcome_checks if not item.passed]
+        return f"the post-run checks {failed} of the segment run did not pass (D13 §4.7 の 2)"
+    return "the segment run has no final summaries (D06 §10.3)"
+
+
 class RunExperiment:
     """`execute(prepared) -> ExperimentOutcome | ExperimentRefusal`（D07 §3・§19.4）。
 
@@ -474,17 +583,26 @@ class RunExperiment:
         self,
         prepared: PreparedSearch,
         *,
-        basis: ComparisonBasis | None,
+        basis: Paired[ComparisonBasis] | None,
         execution_nonce: str,
         out_base: str,
         running: str,
+        segments: SegmentPlanner,
+        lineage: LineageRequest | None = None,
     ) -> ExperimentOutcome | ExperimentRefusal:
-        """探索の実験の1回の実行を進める（D09 §10.7 の状態×出来事表）。
+        """探索の実験の1回の実行を進める（D09 §10.7 の状態×出来事表。2026-10-21 改訂）。
 
-        - `basis`: この実行の比較の前提（合成が組み立てる。事前検査が全件合格なら必ず渡す）。
+        - `basis`: この実行の組ごとの比較の前提（合成が組み立てる。事前検査が全件合格なら必ず
+          渡す。仮置き 27）。
         - `execution_nonce`: 実行ごとの乱数の文字列（`app` が作る。D09 §10.12.1 の W3）。
         - `out_base` / `running`: 成果物の基点と、走らせている実験の版のディレクトリの基点からの
           パス（成果物からの逆照合 L11 と数え直し待ちの判定に使う。D09 §10.12.2）。
+        - `segments`: 連続口座の検証経路の区間の run の設定を組み立てる合成の口（D13 §4.7）。
+        - `lineage`: 実験設定の系譜（書かなければ `None`。D13 §7.1）。
+
+        1 回の実行で標準 → 候補の両組を評価し、組ごとに全 fold の後にその組の経路の区間を
+        区間 0 から順に走らせる（改訂 PR の仮置き 35 (a)）。両組の全 fold と経路が終端した後に、
+        組ごとの判定と組の判定を決め、集約表 → 結末記録 → 台帳の結末の行を書く。
 
         台帳が読めない・追記が断られた・照合が合わないときは `TrialLedgerStop`（終了コード 1）。
         """
@@ -529,24 +647,44 @@ class RunExperiment:
             )
             self._store.write_outcome(outcome)
             return outcome
-        if not isinstance(basis, ComparisonBasis):
+        if not isinstance(basis, Paired):
             raise KernelValueError("a search that passed the pre-run checks needs its basis")
+        if not isinstance(segments, SegmentPlanner):
+            raise KernelValueError("execute_search requires a SegmentPlanner")
 
-        started, binding = self._start_ledger(prepared, basis, execution_nonce, out_base, running)
-
-        # 探索中: fold を番号の昇順に進める（D09 §5.4・§6.6）。
-        evidence, selections, records, metrics = self._run_folds(prepared)
+        started, binding = self._start_ledger(
+            prepared, basis, execution_nonce, out_base, running, lineage
+        )
         standard = manifest.evaluation_standard
         if standard is None:  # pragma: no cover - 探索の記録票は評価基準を持つ
             raise KernelValueError("a search manifest carries its evaluation standard")
-        search = build_search_outcome(standard, evidence, binding.execution)
-        failed = failed_checks([check for record in records for check in record.outcome_checks])
+
+        # 探索中: 組（標準 → 候補）→ 組の中は fold → 局面 → 試行、組の全 fold の後に経路の区間
+        # （D09 §5.4 の改訂。改訂 PR の仮置き 35 (a)）。同じ `RunId` の評価は組をまたいで共有する。
+        cache: dict[RunId, _Evaluated] = {}
+        runs: dict[Variant, _VariantRun] = {}
+        for variant in VARIANTS:
+            folds = self._run_folds(prepared, variant, cache)
+            path = self._run_path(prepared, variant, folds.selections, segments, cache)
+            runs[variant] = _VariantRun(folds=folds, path=path)
+
+        outcomes = Paired.build(
+            lambda variant: build_variant_outcome(
+                standard, variant, runs[variant].folds.evidence, runs[variant].path.summary
+            )
+        )
+        search = build_search_outcome(outcomes.standard, outcomes.candidate, binding.execution)
+        failed = failed_checks([check for variant in VARIANTS for check in runs[variant].checks])
         status = ExperimentStatus.FAILED_POST_RUN_CHECK if failed else ExperimentStatus.COMPLETED
 
-        # 終端の書き込み: (1) 集約表 → (2) 結末記録 → (3) 台帳の結末の行（D09 §10.7）。
+        # 終端の書き込み: (1) 集約表（組ごと）→ (2) 結末記録 → (3) 台帳の結末の行（D09 §10.7）。
         # 指標は選定・判定に使った値をそのまま渡す（読み出しは `read_evaluation_metrics` だけ。
         # D07 v2.11 §3、D09 §17.7.4 の4）。
-        self._store.write_aggregate_tables(manifest, selections, records, metrics)
+        for variant in VARIANTS:
+            folds = runs[variant].folds
+            self._store.write_aggregate_tables(
+                manifest, variant, folds.selections, folds.records, folds.metrics
+            )
         outcome = self._search_outcome(
             prepared,
             status=status,
@@ -555,7 +693,18 @@ class RunExperiment:
             search=search,
         )
         self._store.write_outcome(outcome)
-        self._finish_ledger(started, binding, outcome)
+        self._finish_ledger(
+            started,
+            binding,
+            outcome,
+            Paired.build(
+                lambda variant: (
+                    ExperimentStatus.FAILED_POST_RUN_CHECK
+                    if failed_checks(runs[variant].checks)
+                    else ExperimentStatus.COMPLETED
+                )
+            ),
+        )
         return outcome
 
     def _read_ledger(self, purpose: str) -> TrialLedgerContents:
@@ -583,10 +732,11 @@ class RunExperiment:
     def _start_ledger(
         self,
         prepared: PreparedSearch,
-        basis: ComparisonBasis,
+        basis: Paired[ComparisonBasis],
         execution_nonce: str,
         out_base: str,
         running: str,
+        lineage: LineageRequest | None,
     ) -> tuple[TrialLedgerEntry, TrialLedgerBinding]:
         """台帳に開始の行を足し、束縛の記録を書く（D09 §10.12.3 の1・2）。どの run よりも前。"""
         manifest = prepared.manifest
@@ -608,6 +758,14 @@ class RunExperiment:
         standard = manifest.evaluation_standard
         if not isinstance(split, SplitSpec) or standard is None:  # pragma: no cover
             raise KernelValueError("a search manifest carries its split and evaluation standard")
+        written: Lineage | None = None
+        if lineage is not None:
+            built = lineage_of(
+                contents.lines, lineage.derived_from, lineage.change_kinds, lineage.note_digest
+            )
+            if isinstance(built, str):
+                raise TrialLedgerStop(f"{built}; {stopped}")
+            written = built
         entry = TrialLedgerEntry(
             schema_version=TRIAL_LEDGER_SCHEMA_VERSION,
             event=TrialLedgerEvent.STARTED,
@@ -623,9 +781,11 @@ class RunExperiment:
             validation_intervals=tuple(fold.validation for fold in split.folds),
             final_holdout=manifest.final_holdout,
             purpose=standard.purpose,
+            lineage=written,
             status=None,
             verdict=None,
             frequency_class=None,
+            results=None,
         )
         line = TrialLedgerLine.of(entry, last_digest(contents.lines))
         self._append(line, stopped)
@@ -639,9 +799,17 @@ class RunExperiment:
         return entry, binding
 
     def _finish_ledger(
-        self, started: TrialLedgerEntry, binding: TrialLedgerBinding, outcome: ExperimentOutcome
+        self,
+        started: TrialLedgerEntry,
+        binding: TrialLedgerBinding,
+        outcome: ExperimentOutcome,
+        statuses: Paired[ExperimentStatus],
     ) -> None:
-        """結末の行を足す（D09 §10.12.3 の3）。照合が合わなければ書かずに止める。"""
+        """結末の行を足す（D09 §10.12.3 の3）。照合が合わなければ書かずに止める。
+
+        最上位は実験の状態と組の判定、組ごとの状態・判定・頻度区分・2 軸・保留の印は `results`
+        （実装 PR の仮置き 55）。
+        """
         search = outcome.search
         if search is None:  # pragma: no cover - 探索が終端した実行は判定を持つ
             raise KernelValueError("a finished search carries its SearchOutcome")
@@ -661,29 +829,34 @@ class RunExperiment:
         opening = started_line_of(contents.lines, binding.experiment_id, binding.execution)
         if opening is None or opening.entry != started:  # pragma: no cover - 上の照合で済み
             raise TrialLedgerStop(f"the STARTED line changed; {stopped}")
+        results = LedgerResults(
+            split=search.combined.split,
+            hold=search.combined.hold,
+            variants=search.variants.map(
+                lambda variant, item: VariantLedgerResult(
+                    status=statuses.of(variant),
+                    verdict=item.verdict,
+                    frequency_class=None if item.frequency is None else item.frequency.class_name,
+                    profitability=item.profitability,
+                    evidence=item.evidence,
+                    hold=item.hold,
+                )
+            ),
+        )
         entry = finished_entry(
-            started,
-            status=outcome.status,
-            verdict=search.verdict,
-            frequency_class=None if search.frequency is None else search.frequency.class_name,
+            started, status=outcome.status, verdict=search.verdict, results=results
         )
         self._append(TrialLedgerLine.of(entry, last_digest(contents.lines)), stopped)
 
     def _run_folds(
-        self, prepared: PreparedSearch
-    ) -> tuple[
-        tuple[FoldEvidence, ...],
-        tuple[FoldSelection, ...],
-        tuple[TrialRunRecord, ...],
-        dict[TrialUnitKey, tuple[MetricRecord, ...]],
-    ]:
-        """fold ごとに選定区間の全単位 → 選定記録 → 検証区間の単位（D09 §4.1 の4・§6.6）。"""
+        self, prepared: PreparedSearch, variant: Variant, cache: dict[RunId, _Evaluated]
+    ) -> _FoldsRun:
+        """組の fold ごとに選定区間の全単位 → 選定記録 → 検証区間の単位（D09 §4.1 の4・§6.6）。"""
         manifest = prepared.manifest
         split = manifest.split
         standard = manifest.evaluation_standard
         if not isinstance(split, SplitSpec) or standard is None:  # pragma: no cover
             raise KernelValueError("a search manifest carries its split and evaluation standard")
-        cache: dict[RunId, _Evaluated] = {}
         evidence: list[FoldEvidence] = []
         selections: list[FoldSelection] = []
         records: list[TrialRunRecord] = []
@@ -708,7 +881,10 @@ class RunExperiment:
                     )
                     continue
                 unit = TrialUnitKey(
-                    fold_index=fold.fold_index, phase=TrialPhase.TRAIN, trial_index=index
+                    variant=variant,
+                    fold_index=fold.fold_index,
+                    phase=TrialPhase.TRAIN,
+                    trial_index=index,
                 )
                 done = self._run_unit(prepared, trial, unit, cache)
                 records.append(done.record)
@@ -716,12 +892,13 @@ class RunExperiment:
                 train_units.append(_train_unit(done))
             # 選定区間の結果だけから選び、検証区間の単位より前に選定記録を保存する（D09 §7.5）。
             selection = select_trial(fold.fold_index, standard.selection, train_units)
-            self._store.write_selection(selection)
+            self._store.write_selection(variant, selection)
             selections.append(selection)
             validation: ValidationUnitEvaluation | None = None
             if selection.selected_trial_index is not None:
                 chosen = prepared.trials[selection.selected_trial_index]
                 unit = TrialUnitKey(
+                    variant=variant,
                     fold_index=fold.fold_index,
                     phase=TrialPhase.VALIDATION,
                     trial_index=chosen.plan.trial_index,
@@ -738,7 +915,244 @@ class RunExperiment:
                     validation=validation,
                 )
             )
-        return tuple(evidence), tuple(selections), tuple(records), metrics
+        return _FoldsRun(
+            evidence=tuple(evidence),
+            selections=tuple(selections),
+            records=tuple(records),
+            metrics=metrics,
+        )
+
+    def _run_path(
+        self,
+        prepared: PreparedSearch,
+        variant: Variant,
+        selections: tuple[FoldSelection, ...],
+        planner: SegmentPlanner,
+        cache: dict[RunId, _Evaluated],
+    ) -> _PathRun:
+        """組の連続口座の検証経路を区間 0 から順に走らせる（D13 §4.5〜§4.7 の表 2）。
+
+        区間の列は全 fold の選定記録から決める（仮置き 11・14・15）。選んだ試行のある区間は、
+        開始記録 → 既存の成果物の確認（無ければ run、一致すれば再利用、一致しない・読めなければ
+        構造エラー。仮置き 26）→ 評価 → P4（開始記録と照合）・P5 → 終端の記録の順に進める。
+        区間の run が失敗すれば「判定できない」で後ろの区間は走らせず（仮置き 16）、区間の
+        終わりの費用を引いた後の残高が 0 以下なら「資金喪失」で終える（仮置き 29）。
+        """
+        manifest = prepared.manifest
+        split = manifest.split
+        if not isinstance(split, SplitSpec):  # pragma: no cover
+            raise KernelValueError("a search manifest carries its split")
+        planned = plan_segments(
+            split.folds, [selection.selected_trial_index for selection in selections]
+        )
+        initial = _initial_balance(prepared, variant)
+        balance = initial
+        rows: list[PathSegmentRow] = []
+        ends: list[PathSegmentEnd] = []
+        series: list[Decimal] = []
+        trade_count = 0
+        end = PathEnd.COMPLETED
+        end_segment: int | None = None
+        end_reason: str | None = None
+        for segment in planned:
+            if segment.trial_index is None:
+                # 候補なしの区間: 取引せず、残高を現金のまま次へ渡す（仮置き 15。表 2 の E3）。
+                rows.append(
+                    PathSegmentRow(
+                        segment_index=segment.segment_index,
+                        fold_indices=segment.fold_indices,
+                        trial_index=None,
+                        interval=segment.interval,
+                        initial_balance=balance,
+                        end_balance=balance,
+                        carried_boundaries=segment.carried_boundaries,
+                        settlement_count=0,
+                        settlement_cost=None,
+                        trade_count=None,
+                        run_id=None,
+                        run_reused=None,
+                    )
+                )
+                continue
+            done = self._run_segment(prepared, variant, segment, balance, planner, cache)
+            ends.append(done)
+            row = PathSegmentRow(
+                segment_index=segment.segment_index,
+                fold_indices=segment.fold_indices,
+                trial_index=segment.trial_index,
+                interval=segment.interval,
+                initial_balance=balance,
+                end_balance=done.settled_equity if done.succeeded else None,
+                carried_boundaries=segment.carried_boundaries,
+                settlement_count=len(done.settlement_lines),
+                settlement_cost=done.settlement_cost if done.succeeded else None,
+                trade_count=done.trade_count if done.succeeded else None,
+                run_id=done.run_id,
+                run_reused=done.run_reused,
+            )
+            rows.append(row)
+            if not done.succeeded:
+                end = PathEnd.INCOMPLETE
+                end_segment = segment.segment_index
+                end_reason = _segment_failure(done)
+                break
+            settled = done.settled_equity
+            if settled is None or done.trade_count is None:  # pragma: no cover - succeeded
+                raise KernelValueError("a succeeded segment carries its settled equity")
+            equities = equity_series(self._repository, done.run_id)
+            if isinstance(equities, str):
+                raise KernelValueError(
+                    f"the path segment {variant.value} {segment.segment_index}: {equities}"
+                    " (D07 §5.6)"
+                )
+            series.extend(equities)
+            series.append(settled.amount)
+            trade_count += done.trade_count
+            balance = settled
+            if settled.amount <= 0:
+                end = PathEnd.CAPITAL_LOST
+                end_segment = segment.segment_index
+                end_reason = (
+                    f"the settled balance {settled} at the end of segment"
+                    f" {segment.segment_index} is not positive (D13 §4.5。仮置き 29)"
+                )
+                break
+        if end is PathEnd.INCOMPLETE:
+            summary = PathSummary(
+                segments=tuple(rows),
+                end=end,
+                end_segment=end_segment,
+                end_reason=end_reason,
+                metrics=(),
+                trade_count=None,
+                final_balance=None,
+            )
+        else:
+            summary = PathSummary(
+                segments=tuple(rows),
+                end=end,
+                end_segment=end_segment,
+                end_reason=end_reason,
+                metrics=path_metrics(initial, series, balance),
+                trade_count=trade_count,
+                final_balance=balance,
+            )
+        return _PathRun(summary=summary, ends=tuple(ends))
+
+    def _run_segment(
+        self,
+        prepared: PreparedSearch,
+        variant: Variant,
+        segment: PlannedSegment,
+        balance: Money,
+        planner: SegmentPlanner,
+        cache: dict[RunId, _Evaluated],
+    ) -> PathSegmentEnd:
+        """区間 1 つ（表 2 の E2・E4・E5）。
+
+        開始記録 → 既存の成果物 → run → 評価 → P4・P5 → 終端の記録。
+        """
+        manifest = prepared.manifest
+        trial_index = segment.trial_index
+        if trial_index is None:  # pragma: no cover - 呼び出し側が分ける
+            raise KernelValueError("a segment without a candidate has no run")
+        trial = prepared.trials[trial_index]
+        compiled = trial.compiled
+        if compiled is None or trial.plan.compiled_ref is None:  # pragma: no cover - 選ばれた試行
+            raise KernelValueError("a selected trial has compiled (D09 §7.4)")
+        plan = planner.plan(variant, compiled, segment.interval, balance)
+        if not isinstance(plan, SegmentRunPlan):
+            raise KernelValueError("SegmentPlanner.plan must return a SegmentRunPlan")
+        config = plan.config
+        if (
+            config.run_end is not RunEndMode.CLOSE_ALL
+            or config.run_interval != segment.interval
+            or config.account.initial_balance != balance
+            or config.compiled_ref != trial.plan.compiled_ref
+        ):
+            raise KernelValueError(
+                "the segment run configuration must close all at the end of the segment and"
+                " start from the passed balance (D13 §4.5)"
+            )
+        key = PathSegmentKey(variant=variant, segment_index=segment.segment_index)
+        start = PathSegmentStart(
+            experiment_id=manifest.experiment_id,
+            key=key,
+            fold_indices=segment.fold_indices,
+            trial_index=trial_index,
+            compiled_ref=trial.plan.compiled_ref,
+            interval=segment.interval,
+            initial_balance=balance,
+            run_end=config.run_end,
+            config_digest=plan.config_digest,
+            expected_run_id=plan.expected_run_id,
+        )
+        self._store.write_path_segment_start(start)
+        version = manifest.metric_set_version
+        checked = self._inspect_existing(
+            plan.expected_run_id, plan.config_digest, version, prepared.calendar, read_metrics=True
+        )
+        if isinstance(checked, str):
+            # 区間の run の既存の成果物が一致しない・読めない: 構造エラーで中断（仮置き 26）。
+            raise KernelValueError(
+                f"runs/{plan.expected_run_id}/ (the path segment {variant.value}"
+                f" {segment.segment_index}) cannot be reused: {checked} (D13 §4.7 の 3)"
+            )
+        if checked is not None:
+            result = checked.result
+            reused = True
+        else:
+            result = self._runner.run(config, compiled)
+            if not isinstance(result, BacktestResult):
+                raise KernelValueError("BacktestRunner.run must return a BacktestResult")
+            reused = False
+        evaluated = self._evaluate_unit(prepared, result, checked, cache)
+        read = self._repository.read_manifest(result.run_id)
+        post = (
+            check_run_matches(
+                expected_config_digest_hex=plan.config_digest.digest.hex,
+                expected_run_id_hex=plan.expected_run_id.hex,
+                observed_config_digest_hex=(
+                    read.config_digest.digest.hex if isinstance(read, RunManifest) else None
+                ),
+                observed_run_id_hex=result.run_id.hex,
+                manifest_detail=None if isinstance(read, RunManifest) else read.detail,
+            ),
+            check_evaluation_rule(version, evaluated.metric_set_version),
+        )
+        summaries = result.summaries
+        settled: Money | None = None
+        final_balance: Money | None = None
+        final_equity: Money | None = None
+        lines: tuple[HypotheticalCloseLine, ...] = ()
+        trades: int | None = None
+        if summaries is not None and evaluated.status is EvaluationStatus.COMPLETED:
+            final_balance = balance + summaries.realized
+            final_equity = summaries.equity_with_mtm
+            # 方式 (ii): 区間の終わりの費用を引いた後の資産 = 残高 + 仮に閉じた損益
+            # （仮置き 28、実装 PR の仮置き 45）。
+            settled = final_balance + summaries.hypothetical_closed
+            lines = summaries.hypothetical_close_lines
+            trades = result.trade_count
+        end = PathSegmentEnd(
+            experiment_id=manifest.experiment_id,
+            key=key,
+            expected_run_id=plan.expected_run_id,
+            run_id=result.run_id,
+            run_status=result.status,
+            run_reused=reused,
+            run_evaluation_id=evaluated.run_evaluation_id.digest,
+            evaluation_status=evaluated.status,
+            result_digest=evaluated.result_digest,
+            final_balance=final_balance,
+            final_equity=final_equity,
+            settlement_lines=lines,
+            settled_equity=settled,
+            trade_count=trades,
+            outcome_checks=post,
+        )
+        self._store.write_path_segment_end(end)
+        return end
 
     def _run_unit(
         self,
@@ -764,8 +1178,9 @@ class RunExperiment:
             # 保存の前に全単位を確かめた（D09 §10.5 の注記）。ここで衝突するのは、その後に別の
             # 書き手が成果物を置いた場合だけで、構造エラーとして止める（中断）。
             raise KernelValueError(
-                f"runs/{expected_run_id}/ (fold {unit.fold_index} {unit.phase.value} trial"
-                f" {unit.trial_index}) cannot be reused any more: {checked} (D09 §10.5)"
+                f"runs/{expected_run_id}/ ({unit.variant.value} fold {unit.fold_index}"
+                f" {unit.phase.value} trial {unit.trial_index}) cannot be reused any more:"
+                f" {checked} (D09 §10.5)"
             )
         if checked is not None:
             result = checked.result
@@ -862,6 +1277,247 @@ class RunExperiment:
             )
         cache[result.run_id] = evaluated
         return evaluated
+
+    def reproduce_search(
+        self,
+        prepared: PreparedSearch,
+        recorded: Paired[RecordedSearch],
+        segments: SegmentPlanner,
+    ) -> tuple[ReproductionRow, ...]:
+        """探索の実験を別の成果物の基点でやり直し、保存済みの記録と照合する（D13-25 (a)）。
+
+        (1) 独立口座の単位: 試行記録のある各単位の run をやり直し、`run_id` と結果のダイジェストを
+        試行記録の値と照合し、選定区間の結果から選定を計算し直して選定記録と照合する。(2) 経路の
+        区間: 組ごとに区間 0 から順に区間の run をやり直し、受け渡す残高を計算し直して（記録の残高
+        を読んで使わない。仮置き 20）、各区間の `RunId`・結果のダイジェスト・終わりの残高を区間の
+        開始記録・終端の記録と照合する。記録は書かない（run と評価の成果物だけを別の基点に書く）。
+        """
+        manifest = prepared.manifest
+        split = manifest.split
+        standard = manifest.evaluation_standard
+        if not isinstance(split, SplitSpec) or standard is None:  # pragma: no cover
+            raise KernelValueError("a search manifest carries its split and evaluation standard")
+        version = manifest.metric_set_version
+        cache: dict[RunId, _Evaluated] = {}
+        results: dict[RunId, BacktestResult] = {}
+        rows: list[ReproductionRow] = []
+
+        def rerun(
+            config: RunConfig, compiled: CompiledStrategy, run_id: RunId
+        ) -> tuple[BacktestResult, _Evaluated]:
+            result = results.get(run_id)
+            if result is None:
+                result = self._runner.run(config, compiled)
+                if not isinstance(result, BacktestResult):
+                    raise KernelValueError("BacktestRunner.run must return a BacktestResult")
+                results[result.run_id] = result
+            return result, self._evaluate_unit(prepared, result, None, cache)
+
+        for variant in VARIANTS:
+            record = recorded.of(variant)
+            selections: list[int | None] = []
+            for fold in split.folds:
+                train_units: list[TrainUnitEvaluation] = []
+                for trial in prepared.trials:
+                    index = trial.plan.trial_index
+                    if trial.compiled is None:
+                        train_units.append(
+                            TrainUnitEvaluation(
+                                fold_index=fold.fold_index,
+                                trial_index=index,
+                                status=TrialStatus.FAILED,
+                                run_status=None,
+                                run_evaluation_id=None,
+                                evaluation_status=None,
+                                post_run_checks_passed=False,
+                                metrics=(),
+                            )
+                        )
+                        continue
+                    unit = TrialUnitKey(
+                        variant=variant,
+                        fold_index=fold.fold_index,
+                        phase=TrialPhase.TRAIN,
+                        trial_index=index,
+                    )
+                    done = self._reproduce_unit(prepared, trial, unit, record, rerun, version)
+                    rows.append(done[0])
+                    train_units.append(_train_unit(done[1]))
+                selection = select_trial(fold.fold_index, standard.selection, train_units)
+                saved = record.selections.get(fold.fold_index)
+                rows.append(
+                    ReproductionRow(
+                        item=ReproductionItem.SELECTION,
+                        variant=variant,
+                        key=f"f{fold.fold_index}",
+                        expected=(
+                            (
+                                "selected_trial_index",
+                                None if saved is None else _hex(saved.selected_trial_index),
+                            ),
+                        ),
+                        observed=(("selected_trial_index", _hex(selection.selected_trial_index)),),
+                        verdict=ReproductionVerdict.REPRODUCED
+                        if saved == selection
+                        else ReproductionVerdict.RESULT_MISMATCH,
+                    )
+                )
+                selections.append(selection.selected_trial_index)
+                if selection.selected_trial_index is not None:
+                    chosen = prepared.trials[selection.selected_trial_index]
+                    unit = TrialUnitKey(
+                        variant=variant,
+                        fold_index=fold.fold_index,
+                        phase=TrialPhase.VALIDATION,
+                        trial_index=chosen.plan.trial_index,
+                    )
+                    rows.append(
+                        self._reproduce_unit(prepared, chosen, unit, record, rerun, version)[0]
+                    )
+            rows.extend(
+                self._reproduce_path(prepared, variant, split, selections, record, segments, rerun)
+            )
+        return tuple(rows)
+
+    def _reproduce_unit(
+        self,
+        prepared: PreparedSearch,
+        trial: PreparedTrial,
+        unit: TrialUnitKey,
+        record: RecordedSearch,
+        rerun: Callable[[RunConfig, CompiledStrategy, RunId], tuple[BacktestResult, _Evaluated]],
+        version: int,
+    ) -> tuple[ReproductionRow, _UnitResult]:
+        """単位 1 つをやり直して試行記録と照合する（手順 3〜5 を単位ごとに。仮置き 57）。"""
+        compiled = trial.compiled
+        if compiled is None:  # pragma: no cover - 呼び出し側が分ける
+            raise KernelValueError("a trial rejected by the compiler has no unit to run")
+        expected_run_id = trial.expected_run_id(unit)
+        result, evaluated = rerun(trial.run_config(unit), compiled, expected_run_id)
+        saved = record.runs.get(unit)
+        read = self._repository.read_manifest(result.run_id)
+        post = (
+            check_run_matches(
+                expected_config_digest_hex=trial.plan.expected_config_digest(unit).digest.hex,
+                expected_run_id_hex=expected_run_id.hex,
+                observed_config_digest_hex=(
+                    read.config_digest.digest.hex if isinstance(read, RunManifest) else None
+                ),
+                observed_run_id_hex=result.run_id.hex,
+                manifest_detail=None if isinstance(read, RunManifest) else read.detail,
+            ),
+            check_evaluation_rule(version, evaluated.metric_set_version),
+        )
+        rerun_record = TrialRunRecord(
+            experiment_id=prepared.manifest.experiment_id,
+            unit=unit,
+            status=TrialStatus.COMPLETED,
+            expected_run_id=expected_run_id,
+            run_id=result.run_id,
+            run_status=result.status,
+            run_reused=False,
+            run_evaluation_id=evaluated.run_evaluation_id.digest,
+            evaluation_status=evaluated.status,
+            result_digest=evaluated.result_digest,
+            outcome_checks=post,
+        )
+        if saved is None:
+            verdict = ReproductionVerdict.RESULT_MISMATCH
+        elif saved.run_id != result.run_id:
+            verdict = ReproductionVerdict.RUN_ID_MISMATCH
+        elif saved.result_digest != evaluated.result_digest:
+            verdict = ReproductionVerdict.RESULT_MISMATCH
+        else:
+            verdict = ReproductionVerdict.REPRODUCED
+        row = ReproductionRow(
+            item=ReproductionItem.UNIT,
+            variant=unit.variant,
+            key=f"f{unit.fold_index}_{unit.phase.value}_t{unit.trial_index}",
+            expected=(
+                ("run_id", None if saved is None else _hex(saved.run_id)),
+                ("result_digest", None if saved is None else _hex(saved.result_digest)),
+            ),
+            observed=(
+                ("run_id", _hex(result.run_id)),
+                ("result_digest", _hex(evaluated.result_digest)),
+            ),
+            verdict=verdict,
+        )
+        return row, _UnitResult(record=rerun_record, metrics=evaluated.metrics)
+
+    def _reproduce_path(
+        self,
+        prepared: PreparedSearch,
+        variant: Variant,
+        split: SplitSpec,
+        selections: list[int | None],
+        record: RecordedSearch,
+        planner: SegmentPlanner,
+        rerun: Callable[[RunConfig, CompiledStrategy, RunId], tuple[BacktestResult, _Evaluated]],
+    ) -> list[ReproductionRow]:
+        """経路の区間を区間 0 から順にやり直し、残高を計算し直して照合する（仮置き 20）。"""
+        rows: list[ReproductionRow] = []
+        balance = _initial_balance(prepared, variant)
+        for segment in plan_segments(split.folds, selections):
+            if segment.trial_index is None:
+                continue
+            trial = prepared.trials[segment.trial_index]
+            compiled = trial.compiled
+            if compiled is None:  # pragma: no cover - 選ばれた試行はコンパイルが通っている
+                raise KernelValueError("a selected trial has compiled (D09 §7.4)")
+            plan = planner.plan(variant, compiled, segment.interval, balance)
+            start = record.segment_starts.get(segment.segment_index)
+            end = record.segment_ends.get(segment.segment_index)
+            result, evaluated = rerun(plan.config, compiled, plan.expected_run_id)
+            summaries = result.summaries
+            settled: Money | None = None
+            if summaries is not None and evaluated.status is EvaluationStatus.COMPLETED:
+                settled = balance + summaries.realized + summaries.hypothetical_closed
+            if start is None or end is None:
+                verdict = ReproductionVerdict.RESULT_MISMATCH
+            elif (
+                start.expected_run_id != plan.expected_run_id
+                or start.config_digest != plan.config_digest
+                or end.run_id != result.run_id
+            ):
+                verdict = ReproductionVerdict.RUN_ID_MISMATCH
+            elif end.result_digest != evaluated.result_digest or end.settled_equity != settled:
+                verdict = ReproductionVerdict.RESULT_MISMATCH
+            else:
+                verdict = ReproductionVerdict.REPRODUCED
+            rows.append(
+                ReproductionRow(
+                    item=ReproductionItem.SEGMENT,
+                    variant=variant,
+                    key=f"s{segment.segment_index}",
+                    expected=(
+                        ("run_id", None if end is None else _hex(end.run_id)),
+                        ("result_digest", None if end is None else _hex(end.result_digest)),
+                        ("settled_balance", None if end is None else _hex(end.settled_equity)),
+                    ),
+                    observed=(
+                        ("run_id", _hex(result.run_id)),
+                        ("result_digest", _hex(evaluated.result_digest)),
+                        ("settled_balance", _hex(settled)),
+                    ),
+                    verdict=verdict,
+                )
+            )
+            if settled is None or settled.amount <= 0:
+                break
+            balance = settled
+        if len([row for row in rows]) != len(record.segment_ends):
+            rows.append(
+                ReproductionRow(
+                    item=ReproductionItem.SEGMENT,
+                    variant=variant,
+                    key="count",
+                    expected=(("segments", str(len(record.segment_ends))),),
+                    observed=(("segments", str(len(rows))),),
+                    verdict=ReproductionVerdict.RESULT_MISMATCH,
+                )
+            )
+        return rows
 
     @staticmethod
     def _search_outcome(
@@ -1141,13 +1797,18 @@ class ReproductionVerdict(Enum):
 
 @dataclass(frozen=True, slots=True)
 class ReproductionReport:
-    """再現の報告（D07 §21.2。`--out` の下の `reproduction.json` に書く）。"""
+    """再現の報告（D07 §21.2。`--out` の下の `reproduction.json` に書く）。
+
+    探索の実験（2026-10-21 改訂。D13-25 (a)）は単数の `run_id`・結果のダイジェストを持たない
+    （`expected_*` / `observed_*` は `None`。照合の行は `reproduction.json` に書く。実装 PR の
+    仮置き 57）。
+    """
 
     experiment_id: ExperimentId
     verdict: ReproductionVerdict
-    expected_run_id: RunId
+    expected_run_id: RunId | None
     observed_run_id: RunId | None
-    expected_result_digest: ContentDigest
+    expected_result_digest: ContentDigest | None
     observed_result_digest: ContentDigest | None
 
     def __post_init__(self) -> None:
@@ -1155,11 +1816,13 @@ class ReproductionReport:
             raise KernelValueError("ReproductionReport.experiment_id must be an ExperimentId")
         if not isinstance(self.verdict, ReproductionVerdict):
             raise KernelValueError("ReproductionReport.verdict must be a ReproductionVerdict")
-        if not isinstance(self.expected_run_id, RunId):
+        if self.expected_run_id is not None and not isinstance(self.expected_run_id, RunId):
             raise KernelValueError("ReproductionReport.expected_run_id must be a RunId")
         if self.observed_run_id is not None and not isinstance(self.observed_run_id, RunId):
             raise KernelValueError("ReproductionReport.observed_run_id must be a RunId or None")
-        if not isinstance(self.expected_result_digest, ContentDigest):
+        if self.expected_result_digest is not None and not isinstance(
+            self.expected_result_digest, ContentDigest
+        ):
             raise KernelValueError("ReproductionReport.expected_result_digest must be a digest")
         if self.observed_result_digest is not None and not isinstance(
             self.observed_result_digest, ContentDigest
@@ -1180,3 +1843,71 @@ def judge_reproduction(
     if observed_result_digest != expected_result_digest:
         return ReproductionVerdict.RESULT_MISMATCH
     return ReproductionVerdict.REPRODUCED
+
+
+# --- 探索の実験の別プロセスでの再現（D13 §4.5・§4.7、D09 §11.4・D07 §21 の 2026-10-21 改訂）---
+
+
+class ReproductionItem(Enum):
+    """再現の照合の行の種類（実装 PR の仮置き 57）。"""
+
+    #: 独立口座の単位の run（`run_id` と結果のダイジェスト）。
+    UNIT = "UNIT"
+    #: fold の選定（選定区間の結果から選び直した選定記録）。
+    SELECTION = "SELECTION"
+    #: 連続口座の検証経路の区間の run（`RunId`・結果のダイジェスト・終わりの残高）。
+    SEGMENT = "SEGMENT"
+
+
+@dataclass(frozen=True, slots=True)
+class ReproductionRow:
+    """再現の照合の 1 行（実装 PR の仮置き 57）。判定は今の 5 値（D07 §21.2）。
+
+    `key` は行の鍵の表示（単位は `f<k>_<局面>_t<i>`、選定は `f<k>`、区間は `s<b>`）。
+    `expected` / `observed` は比べた値の表示（`run_id`・結果のダイジェスト・残高・選んだ試行）。
+    """
+
+    item: ReproductionItem
+    variant: Variant
+    key: str
+    expected: tuple[tuple[str, str | None], ...]
+    observed: tuple[tuple[str, str | None], ...]
+    verdict: ReproductionVerdict
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedSearch:
+    """組ごとの保存済みの探索の記録（再現の照合先）。"""
+
+    runs: Mapping[TrialUnitKey, TrialRunRecord]
+    selections: Mapping[int, FoldSelection]
+    segment_starts: Mapping[int, PathSegmentStart]
+    segment_ends: Mapping[int, PathSegmentEnd]
+
+
+#: 全体の判定に写す順（最初に当てはまる不一致。実装 PR の仮置き 57）。
+_REPRODUCTION_PRIORITY: Final = (
+    ReproductionVerdict.MANIFEST_TAMPERED,
+    ReproductionVerdict.ENVIRONMENT_MISMATCH,
+    ReproductionVerdict.RUN_ID_MISMATCH,
+    ReproductionVerdict.RESULT_MISMATCH,
+)
+
+
+def overall_reproduction(rows: Sequence[ReproductionRow]) -> ReproductionVerdict:
+    """全行が `REPRODUCED` なら `REPRODUCED`、それ以外は優先順で最初の不一致（仮置き 57）。"""
+    verdicts = {row.verdict for row in rows}
+    for verdict in _REPRODUCTION_PRIORITY:
+        if verdict in verdicts:
+            return verdict
+    return ReproductionVerdict.REPRODUCED
+
+
+def _hex(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, RunId):
+        return value.hex
+    if isinstance(value, ContentDigest):
+        return value.hex
+    return str(value)

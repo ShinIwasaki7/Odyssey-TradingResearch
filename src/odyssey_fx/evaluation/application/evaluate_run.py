@@ -51,6 +51,7 @@ from odyssey_fx.common.ids import (
     OrderId,
     PositionId,
     RequestId,
+    RunId,
     SequentialId,
 )
 from odyssey_fx.common.money import (
@@ -101,7 +102,9 @@ from odyssey_fx.evaluation.domain.metrics import (
     annualized_sharpe_ratio,
     average_trade_profit,
     max_drawdown,
+    max_drawdown_rate_peak,
     metric_caveats,
+    metric_ids_of,
     profit_factor,
     ratio_of,
     trade_outcome,
@@ -137,6 +140,8 @@ __all__ = [
     "EvaluateRun",
     "EvaluationReport",
     "calendar_ref_text",
+    "equity_points",
+    "equity_series",
 ]
 
 _STRING = ColumnValueKind.STRING
@@ -912,6 +917,7 @@ class EvaluateRun:
             raise KernelValueError("EvaluateRun.evaluate requires a BacktestResult")
         if not isinstance(calendar, TradingCalendar):
             raise KernelValueError("EvaluateRun.evaluate requires a TradingCalendar (D07 §4.1)")
+        metric_ids = metric_ids_of(metric_set_version)
         read = repository.read_manifest(result.run_id)
         if isinstance(read, ManifestReadFailure):
             manifest: RunManifest | None = None
@@ -989,7 +995,7 @@ class EvaluateRun:
             diagnostics = _build_fill_diagnostics(reads)
             categories = _build_categories(reads, context.run_manifest)
             metrics = _build_metrics(
-                result, context.run_manifest, reads, run_phases, trades, calendar
+                result, context.run_manifest, reads, run_phases, trades, calendar, metric_ids
             )
 
         report_rows = {
@@ -1992,8 +1998,12 @@ def _build_metrics(
     phases: Mapping[str, PhaseRank],
     trades: Sequence[TradeRecord],
     calendar: TradingCalendar,
+    metric_ids: Sequence[MetricId],
 ) -> tuple[MetricRecord, ...]:
-    """指標集合 v2 の19件（D07 §5.2・§5.5）。並びは `MetricId` の宣言順（D07 §8.1）。"""
+    """指標集合の指標（v2 は19件、v3 は #20 を足した 20 件。D07 §5.2・§5.5・§5.6）。
+
+    並びは `MetricId` の宣言順（D07 §8.1）。`metric_ids` は評価する指標集合の版が持つ指標。
+    """
     unresolved = result.unresolved_intrabar_count > 0
     snapshots = _ordered_snapshots(reads, phases)
     initial = manifest.config.account.initial_balance
@@ -2177,6 +2187,22 @@ def _build_metrics(
         )
     )
 
+    # #20 率で最大の下落（指標集合 v3。D07 §5.6、2026-10-21 改訂）。
+    if MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK in metric_ids:
+        equities = [snapshot.equity.amount for snapshot in snapshots]
+        peak_rate = max_drawdown_rate_peak(equities)
+        records.append(
+            make(
+                MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK,
+                Unavailable(MetricKind.RATIO, peak_rate)
+                if isinstance(peak_rate, MetricUnavailableReason)
+                else RatioValue(peak_rate),
+                len(equities),
+            )
+        )
+
+    if {record.metric_id for record in records} != set(metric_ids):
+        raise KernelValueError("the metrics built do not match the metric set (D07 §5.5・§5.6)")
     order = {metric_id: position for position, metric_id in enumerate(MetricId)}
     records.sort(key=lambda record: order[record.metric_id])
     return tuple(records)
@@ -2273,3 +2299,37 @@ def _exposure(
             observations,
         )
     return RatioValue(ratio_of(held, total)), observations
+
+
+# --- 連続口座の検証経路の資産の系列（D07 §5.6、D13 §4.6 の表 3。2026-10-21 改訂）------------
+
+
+def equity_series(repository: ResultRepository, run_id: RunId) -> tuple[Decimal, ...] | str:
+    """run の台帳 snapshot の `equity` を処理点の昇順に並べた系列（評価の #5・#20 と同じ並べ方）。
+
+    連続口座の検証経路の資産の系列を区間ごとにつなぐために使う（D07 §5.6）。run manifest か
+    台帳 snapshot の表が読めなければ理由の文字列を返す（呼び出し側が構造エラーにする）。
+    """
+    points = equity_points(repository, run_id)
+    if isinstance(points, str):
+        return points
+    return tuple(amount for _, amount in points)
+
+
+def equity_points(
+    repository: ResultRepository, run_id: RunId
+) -> tuple[tuple[UtcTime, Decimal], ...] | str:
+    """`equity_series` の各点に処理点の時刻を添えたもの（経路の診断の年率化に使う。D13 §5.4）。"""
+    read = repository.read_manifest(run_id)
+    if not isinstance(read, RunManifest):
+        return f"the run manifest of {run_id} cannot be read"
+    table = TraceTable.LEDGER_SNAPSHOTS
+    rows = _Rows(repository.read_table(run_id, table, COLUMN_SPECS[table]), COLUMN_SPECS[table])
+    if not rows.usable:
+        return f"the ledger snapshots of {run_id} cannot be read"
+    phases = {phase.name: phase for phase in read.phases.ordered()}
+    try:
+        snapshots = _ordered_snapshots({table: rows}, phases)
+    except (KernelValueError, KeyError, ValueError, TypeError) as exc:
+        return f"the ledger snapshots of {run_id} cannot be interpreted: {exc}"
+    return tuple((snapshot.at.time, snapshot.equity.amount) for snapshot in snapshots)

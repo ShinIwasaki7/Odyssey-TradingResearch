@@ -46,6 +46,7 @@ __all__ = [
     "ResolutionHierarchy",
     "RiskPolicy",
     "RunConfig",
+    "RunEndMode",
     "SpreadModel",
 ]
 
@@ -380,12 +381,31 @@ class ConversionPath:
         return not self.legs
 
 
+class RunEndMode(Enum):
+    """run の終わり方（D06 §3・§9.3・§10.1 の 2026-10-21 改訂。D13 §4.5、仮置き 22・45・50）。
+
+    - `MARK_TO_MARKET`: 残存建玉を未決済のまま時価評価して止める（既定。今の振る舞い）。
+      独立口座の run と単一実行の実験の run。
+    - `CLOSE_ALL`: 連続口座の検証経路の区間の run。区間の終わりの全決済は、決済の方式 (ii)
+      （仮に閉じた損益で決める。実装 PR の仮置き 45、2026-10-22 の人間の決定）により、run の
+      末尾の3集計の仮決済（明細つき）から経路の関数が決める。エンジンの手順は `MARK_TO_MARKET`
+      と同じで、この値は run の識別子（`ConfigDigest`）を分けるために持つ（D13-23 (a): 既定値も
+      常にダイジェストに入る）。
+    """
+
+    MARK_TO_MARKET = "MARK_TO_MARKET"
+    CLOSE_ALL = "CLOSE_ALL"
+
+
 @dataclass(frozen=True, slots=True)
 class RunConfig:
     """1回の run の設定（D06 §3・§9.3）。
 
     ポリシーは**参照だけ**を持つ。値の解決は合成の責務であり、再実行時に最新版へ
     差し替えない（上位設計書 §4.7.15 の `PolicyRef`）。
+
+    `run_end` は run の終わり方（2026-10-21 改訂。`RunEndMode`）。既定値 `MARK_TO_MARKET` も
+    含めて常に `ConfigDigest` の入力に入る（dataclass の全項目がダイジェストに入る。D13-23 (a)）。
     """
 
     run_interval: Interval
@@ -399,10 +419,13 @@ class RunConfig:
     delay_scenario_ref: PolicyRef
     execution_series: SeriesId
     seed: int = 0
+    run_end: RunEndMode = RunEndMode.MARK_TO_MARKET
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_interval, Interval):
             raise KernelValueError("RunConfig.run_interval must be an Interval")
+        if not isinstance(self.run_end, RunEndMode):
+            raise KernelValueError("RunConfig.run_end must be a RunEndMode")
         if not isinstance(self.snapshot_ref, SnapshotRef):
             raise KernelValueError("RunConfig.snapshot_ref must be a SnapshotRef")
         if not isinstance(self.compiled_ref, CompiledStrategyRef):
