@@ -1463,17 +1463,21 @@ class RunExperiment:
         """経路の区間を区間 0 から順にやり直し、残高を計算し直して照合する（仮置き 20）。
 
         各区間の `RunId`・結果のダイジェスト・終わりの残高を、区間の開始記録・終端の記録と、結末記録
-        の経路の要約の区間の行（`RunId`・初めと終わりの残高）の両方と照合する。最後に経路の終端と
-        最後の残高を結末記録と照合する（D13 §4.5 の「再現」）。
+        の経路の要約の区間の行（試行・`RunId`・初めと終わりの残高）の両方と照合する。候補なしの区間
+        （run の無い現金の区間。仮置き 15）も、計算し直した渡す残高を結末記録の区間の行と照合する。
+        最後に経路の終端と最後の残高、区間の数を照合する（D13 §4.5 の「再現」、§10.1 の 20）。
         """
         rows: list[ReproductionRow] = []
         concluded = {row.segment_index: row for row in record.outcome_path.segments}
         balance = _initial_balance(prepared, variant)
         end = PathEnd.COMPLETED
         final: Money | None = balance
+        reran = 0
         for segment in plan_segments(split.folds, selections):
             if segment.trial_index is None:
+                rows.append(_cash_segment_row(variant, segment, balance, concluded))
                 continue
+            reran += 1
             trial = prepared.trials[segment.trial_index]
             compiled = trial.compiled
             if compiled is None:  # pragma: no cover - 選ばれた試行はコンパイルが通っている
@@ -1499,6 +1503,7 @@ class RunExperiment:
             elif (
                 saved.result_digest != evaluated.result_digest
                 or saved.settled_equity != settled
+                or row.trial_index != segment.trial_index
                 or row.initial_balance != balance
                 or row.end_balance != settled
             ):
@@ -1553,9 +1558,13 @@ class RunExperiment:
                 else ReproductionVerdict.RESULT_MISMATCH,
             )
         )
-        reran = len(rows) - 1
+        reproduced = sum(1 for row in rows if row.key.startswith("s"))
         recorded_runs = sum(1 for row in outcome_path.segments if row.run_id is not None)
-        if reran != len(record.segment_ends) or reran != recorded_runs:
+        if (
+            reran != len(record.segment_ends)
+            or reran != recorded_runs
+            or reproduced != len(outcome_path.segments)
+        ):
             rows.append(
                 ReproductionRow(
                     item=ReproductionItem.SEGMENT,
@@ -1564,8 +1573,9 @@ class RunExperiment:
                     expected=(
                         ("segments", str(len(record.segment_ends))),
                         ("outcome_segments", str(recorded_runs)),
+                        ("outcome_all_segments", str(len(outcome_path.segments))),
                     ),
-                    observed=(("segments", str(reran)),),
+                    observed=(("segments", str(reran)), ("all_segments", str(reproduced))),
                     verdict=ReproductionVerdict.RESULT_MISMATCH,
                 )
             )
@@ -1961,6 +1971,45 @@ def overall_reproduction(rows: Sequence[ReproductionRow]) -> ReproductionVerdict
         if verdict in verdicts:
             return verdict
     return ReproductionVerdict.REPRODUCED
+
+
+def _cash_segment_row(
+    variant: Variant,
+    segment: PlannedSegment,
+    balance: Money,
+    concluded: Mapping[int, PathSegmentRow],
+) -> ReproductionRow:
+    """候補なしの区間（run の無い現金の区間。仮置き 15）の照合の行（D13 §4.5 の「再現」）。
+
+    計算し直した渡す残高（取引しないので初めと終わりが同じ）を、結末記録の経路の要約の区間の行の
+    試行（無い）・`RunId`（無い）・初めと終わりの残高と照合する。
+    """
+    row = concluded.get(segment.segment_index)
+    matches = (
+        row is not None
+        and row.trial_index is None
+        and row.run_id is None
+        and row.initial_balance == balance
+        and row.end_balance == balance
+    )
+    return ReproductionRow(
+        item=ReproductionItem.SEGMENT,
+        variant=variant,
+        key=f"s{segment.segment_index}",
+        expected=(
+            ("outcome_trial_index", None if row is None else _hex(row.trial_index)),
+            ("outcome_run_id", None if row is None else _hex(row.run_id)),
+            ("outcome_initial_balance", None if row is None else _hex(row.initial_balance)),
+            ("outcome_end_balance", None if row is None else _hex(row.end_balance)),
+        ),
+        observed=(
+            ("trial_index", None),
+            ("run_id", None),
+            ("initial_balance", _hex(balance)),
+            ("end_balance", _hex(balance)),
+        ),
+        verdict=ReproductionVerdict.REPRODUCED if matches else ReproductionVerdict.RESULT_MISMATCH,
+    )
 
 
 def _hex(value: object) -> str | None:

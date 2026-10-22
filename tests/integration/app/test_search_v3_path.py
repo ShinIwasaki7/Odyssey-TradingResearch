@@ -28,7 +28,7 @@ import io
 import json
 import shutil
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -56,7 +56,11 @@ from odyssey_fx.evaluation.adapters.fs_store import (
 from odyssey_fx.evaluation.application import run_experiment
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun
 from odyssey_fx.evaluation.application.ports import TrialLedgerContents
-from odyssey_fx.evaluation.application.run_experiment import PreparedSearch, RunExperiment
+from odyssey_fx.evaluation.application.run_experiment import (
+    PreparedSearch,
+    RecordedSearch,
+    RunExperiment,
+)
 from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS, MetricId, RatioValue
 from odyssey_fx.evaluation.domain.path import (
     PathEnd,
@@ -74,6 +78,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialPhase,
     TrialUnitKey,
 )
+from odyssey_fx.evaluation.domain.splits import SplitSpec
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Variant
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
@@ -453,6 +458,69 @@ def test_a_lineage_from_an_execution_not_in_the_ledger_is_a_config_error(
     code, output = _run(setup.workspace, experiment, tmp_path / "out")
     assert code == 2, output
     assert "試行台帳に無い" in output
+
+
+def test_a_cash_segment_balance_is_compared_with_the_outcome(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """再現は候補なしの区間（現金の区間）の渡す残高も結末記録の区間の行と照合する（D13 §4.5 の
+    「再現」、§10.1 の 20。区間の行だけを書き換えれば、最後の残高が同じでも不一致）。"""
+    summary = _path(setup, monkeypatch, (None, None), {})
+    assert [row.trial_index for row in summary.segments] == [None, None]
+    loaded = load_experiment_v2(
+        setup.workspace.repo / "configs/experiments/v3_path.yaml",
+        repo_root=setup.workspace.repo,
+        registry=INITIAL_CATALOG,
+        metric_set_versions=METRIC_SET_VERSIONS,
+    )
+    prepared = composition.prepare_search(
+        loaded=loaded,
+        snapshots_root=setup.workspace.repo / "data/snapshots",
+        repo_root=setup.workspace.repo,
+    )
+    split = prepared.manifest.split
+    assert isinstance(split, SplitSpec)
+    use_case = RunExperiment(
+        store=object(),  # type: ignore[arg-type]
+        runner=object(),  # type: ignore[arg-type]
+        repository=object(),  # type: ignore[arg-type]
+        evaluator=EvaluateRun(evaluation_code_digest=prepared.code_digest),
+    )
+
+    def reproduce(path: PathSummary) -> list[tuple[str, str]]:
+        record = RecordedSearch(
+            runs={},
+            selections={},
+            segment_starts={},
+            segment_ends={},
+            outcome_selections={},
+            outcome_path=path,
+        )
+        rows = use_case._reproduce_path(
+            prepared,
+            Variant.STANDARD,
+            split,
+            [None, None],
+            record,
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+        )
+        return [(row.key, row.verdict.value) for row in rows]
+
+    assert reproduce(summary) == [("s0", "REPRODUCED"), ("s1", "REPRODUCED"), ("end", "REPRODUCED")]
+    changed = Money(Decimal("999"), CurrencyCode("JPY"))
+    tampered = replace(
+        summary,
+        segments=(
+            summary.segments[0],
+            replace(summary.segments[1], initial_balance=changed, end_balance=changed),
+        ),
+    )
+    assert reproduce(tampered) == [
+        ("s0", "REPRODUCED"),
+        ("s1", "RESULT_MISMATCH"),
+        ("end", "REPRODUCED"),
+    ]
 
 
 def test_a_capital_loss_does_not_run_the_later_segments(
