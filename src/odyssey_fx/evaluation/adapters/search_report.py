@@ -633,12 +633,37 @@ _MINIMUM_NOTE: Final = (
 )
 
 
-def _hold_text(hold: bool | None) -> str:
-    if hold is None:
+_HOLD_TEXT: Final = "保留（証拠不足。収益性とリスクは条件を満たす側）"
+_HOLD_UNDETERMINED_TEXT: Final = "値なし（収益性は判定できない（観測不足））"
+
+
+def _hold_text(search: VariantOutcome) -> str:
+    """組の保留の印の表示（D13 §5.5、要決定 3。2026-10-22。実装 PR の仮置き 73）。
+
+    「収益性は条件に届かない側」は純収益率の条件を満たさないときだけ出す。それ以外の条件を
+    満たさずに保留にしないときは、その旨を出す。
+    """
+    if search.verdict is not SearchVerdict.INSUFFICIENT_EVIDENCE:
         return "なし（判定が証拠不足でない）"
+    if search.hold is None:
+        return _HOLD_UNDETERMINED_TEXT
+    if search.hold:
+        return _HOLD_TEXT
+    if any(
+        item.metric is MetricId.NET_RETURN_RATE and item.outcome is ConditionOutcome.NOT_MET
+        for item in search.condition_results
+    ):
+        return "証拠不足（収益性は条件に届かない側）"
+    return "証拠不足（保留にしない。純収益率以外の条件を満たさない側）"
+
+
+def _combined_hold_text(hold: bool | None) -> str:
+    """組の判定の保留の印の表示（実装 PR の仮置き 72・73）。"""
+    if hold is None:
+        return "値なし（収益性を判定できない組がある（観測不足））"
     if hold:
-        return "保留（証拠不足。収益性とリスクは条件を満たす側）"
-    return "証拠不足（収益性は条件に届かない側）"
+        return _HOLD_TEXT
+    return "保留にしない（組ごとの保留の印を参照）"
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,8 +909,8 @@ def _combined_lines(report: _Report) -> list[str]:
         combined = whole.combined
         tail = "（組の間で割れた）" if combined.split else ""
         lines.append(f"- 組の判定: {_verdict_text(combined.verdict, whole.purpose)}{tail}")
-        if combined.hold is not None:
-            lines.append(f"- 組の保留の印: {_hold_text(combined.hold)}")
+        if combined.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE:
+            lines.append(f"- 組の保留の印: {_combined_hold_text(combined.hold)}")
         for variant, outcome_of in whole.variants.items():
             lines.append(
                 f"- {_VARIANT_LABELS[variant]}の判定:"
@@ -913,7 +938,7 @@ def _verdict_lines(inputs: _Inputs) -> list[str]:
         f"- 収益性・リスクの軸: {_PROFITABILITY_NAMES[search.profitability]}"
         f"（{_code(search.profitability.value)}）",
         f"- 証拠の軸: {_EVIDENCE_NAMES[search.evidence]}（{_code(search.evidence.value)}）",
-        f"- 保留の印: {_hold_text(search.hold)}",
+        f"- 保留の印: {_hold_text(search)}",
     ]
     breached = sorted(_few_trades_breach(inputs))
     if breached:

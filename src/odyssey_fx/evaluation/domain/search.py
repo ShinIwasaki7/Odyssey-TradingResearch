@@ -180,6 +180,7 @@ __all__ = [
     "finished_line_of",
     "frequency_class_of",
     "has_finished_line",
+    "hold_mark_of",
     "interim_floor_results",
     "is_selectable_metric",
     "last_digest",
@@ -1408,9 +1409,10 @@ class VariantOutcome:
 
     v0.2 の `SearchOutcome` の組ごとの値（選定・fold の判定・実験の判定・頻度区分・条件ごとの
     結果・証拠不足の理由・試行の状態の件数）に、2 軸の値と保留の印（D13 §5.5）と経路の要約
-    （D13 §4.6 の表 3）を足したもの。`hold` は判定が「証拠不足」のときだけ値を持つ（`True` は
-    「保留（証拠不足。収益性とリスクは条件を満たす側）」、`False` は「証拠不足（収益性は条件に
-    届かない側）」）。
+    （D13 §4.6 の表 3）を足したもの。`hold` は保留の印で、判定が「証拠不足」でなければ `None`。
+    判定が「証拠不足」のときは収益性・リスクの軸から 3 状態になる（要決定 3。2026-10-22）:
+    軸が `MET` なら `True`（保留）、`NOT_MET` なら `False`（保留にしない）、`NOT_JUDGED`（経路の
+    指標が値なし）なら `None`（値なし。収益性は判定できない（観測不足））。判定の 4 値は変えない。
     """
 
     variant: Variant
@@ -1490,9 +1492,10 @@ class VariantOutcome:
         if (self.evidence is EvidenceAxis.INSUFFICIENT) != bool(self.shortfalls):
             raise KernelValueError("証拠の軸は理由があるときだけ INSUFFICIENT（D13 §5.5）")
         if self.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE:
-            if self.hold is not (self.profitability is ProfitabilityAxis.MET):
+            if self.hold is not hold_mark_of(self.profitability):
                 raise KernelValueError(
-                    "保留の印は、証拠不足で収益性・リスクの軸が MET のとき True（D13 §5.5）"
+                    "保留の印は、証拠不足で収益性・リスクの軸が MET なら True・NOT_MET なら False・"
+                    "NOT_JUDGED なら None（D13 §5.5、要決定 3）"
                 )
         elif self.hold is not None:
             raise KernelValueError("保留の印は判定が証拠不足のときだけ値を持つ（D13 §5.5）")
@@ -1511,7 +1514,8 @@ class CombinedVerdict:
     仮置き 50）。
 
     `split` は「組の間で割れた」（両組とも判定が出て片方だけが満たす）とき `True`。`hold` は組の
-    保留の印で、組の判定が「証拠不足」のときだけ値を持つ。
+    保留の印で、組の判定が「証拠不足」でなければ `None`。「証拠不足」のときは `True`（保留）・
+    `False`（保留にしない）・`None`（値なし。収益性を判定できない組がある。要決定 3）。
     """
 
     verdict: SearchVerdict
@@ -1525,7 +1529,7 @@ class CombinedVerdict:
             raise KernelValueError("CombinedVerdict.split must be a bool")
         if self.split and self.verdict is not SearchVerdict.INSUFFICIENT_EVIDENCE:
             raise KernelValueError("組の間で割れた組の判定は証拠不足（D09 §7.12 の 3）")
-        if (self.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE) != (self.hold is not None):
+        if self.verdict is not SearchVerdict.INSUFFICIENT_EVIDENCE and self.hold is not None:
             raise KernelValueError("組の保留の印は組の判定が証拠不足のときだけ値を持つ")
         if self.hold is not None and not isinstance(self.hold, bool):
             raise KernelValueError("CombinedVerdict.hold must be a bool or None")
@@ -1534,6 +1538,33 @@ class CombinedVerdict:
 _MET_VERDICTS: Final = frozenset(
     {SearchVerdict.MEETS_STANDARD, SearchVerdict.MET_IN_MECHANISM_CHECK}
 )
+
+
+def hold_mark_of(profitability: ProfitabilityAxis) -> bool | None:
+    """判定が「証拠不足」のときの保留の印（D13 §5.5、要決定 3。2026-10-22）。
+
+    収益性・リスクの軸が `MET` なら `True`（保留）、`NOT_MET` なら `False`（保留にしない）、
+    `NOT_JUDGED` なら `None`（値なし。収益性は判定できない（観測不足））。
+    """
+    if profitability is ProfitabilityAxis.MET:
+        return True
+    if profitability is ProfitabilityAxis.NOT_MET:
+        return False
+    return None
+
+
+def _combined_hold(items: Sequence[VariantOutcome]) -> bool | None:
+    """「満たす」でない組の保留の印から組の保留の印を作る（実装 PR の仮置き 72）。
+
+    「満たさない」の組か、保留の印が `False` の組があれば `False`。それ以外で印が値なしの組が
+    あれば `None`（値なし）。すべて `True` なら `True`。
+    """
+    marks = [False if item.verdict is SearchVerdict.BELOW_STANDARD else item.hold for item in items]
+    if any(mark is False for mark in marks):
+        return False
+    if any(mark is None for mark in marks):
+        return None
+    return True
 
 
 def combine_verdicts(standard: VariantOutcome, candidate: VariantOutcome) -> CombinedVerdict:
@@ -1546,7 +1577,8 @@ def combine_verdicts(standard: VariantOutcome, candidate: VariantOutcome) -> Com
     5. それ以外（両組が「証拠不足」）→ 証拠不足。
 
     組の保留の印: 組の判定が証拠不足で、どちらの組も「満たさない」でなく、「満たす」でない組が
-    すべて保留の印を持つとき `True`。
+    すべて保留の印を持つとき `True`。印が値なしの組があり、`False` の組が無ければ `None`（値なし。
+    要決定 3、実装 PR の仮置き 72）。
     """
     if not isinstance(standard, VariantOutcome) or not isinstance(candidate, VariantOutcome):
         raise KernelValueError("combine_verdicts requires two VariantOutcome")
@@ -1563,14 +1595,15 @@ def combine_verdicts(standard: VariantOutcome, candidate: VariantOutcome) -> Com
         return CombinedVerdict(verdict=standard.verdict, split=False, hold=None)
     if any(met):
         other = pair[1] if met[0] else pair[0]
-        hold = other.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE and other.hold is True
-        return CombinedVerdict(verdict=SearchVerdict.INSUFFICIENT_EVIDENCE, split=True, hold=hold)
+        return CombinedVerdict(
+            verdict=SearchVerdict.INSUFFICIENT_EVIDENCE, split=True, hold=_combined_hold((other,))
+        )
     if SearchVerdict.BELOW_STANDARD in verdicts:
         return CombinedVerdict(verdict=SearchVerdict.BELOW_STANDARD, split=False, hold=None)
     return CombinedVerdict(
         verdict=SearchVerdict.INSUFFICIENT_EVIDENCE,
         split=False,
-        hold=all(item.hold is True for item in pair),
+        hold=_combined_hold(pair),
     )
 
 
@@ -2317,11 +2350,7 @@ def build_variant_outcome(
         profitability = ProfitabilityAxis.NOT_MET
     else:
         profitability = ProfitabilityAxis.MET
-    hold = (
-        profitability is ProfitabilityAxis.MET
-        if verdict is SearchVerdict.INSUFFICIENT_EVIDENCE
-        else None
-    )
+    hold = hold_mark_of(profitability) if verdict is SearchVerdict.INSUFFICIENT_EVIDENCE else None
     ordered_shortfalls = tuple(sorted(shortfalls, key=lambda item: item.key))
     return VariantOutcome(
         variant=variant,

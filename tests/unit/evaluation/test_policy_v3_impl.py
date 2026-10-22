@@ -25,6 +25,7 @@ from odyssey_fx.common.refs import CompiledStrategyRef, PolicyRef, SnapshotRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.evaluation.adapters import search_report
 from odyssey_fx.evaluation.domain.diagnostics import (
     TradeFact,
     concentration,
@@ -36,8 +37,10 @@ from odyssey_fx.evaluation.domain.diagnostics import (
 )
 from odyssey_fx.evaluation.domain.metrics import (
     MetricId,
+    MetricKind,
     MetricUnavailableReason,
     RatioValue,
+    Unavailable,
     max_drawdown,
     max_drawdown_rate_peak,
     metric_ids_of,
@@ -66,6 +69,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialLedgerDefect,
     VariantOutcome,
     combine_verdicts,
+    hold_mark_of,
     ledger_defect,
     lineage_of,
 )
@@ -165,6 +169,13 @@ def test_the_coverage_checks_reject_a_hole_and_an_overlap() -> None:
     folds = generate_folds(split)
     with pytest.raises(KernelValueError, match="U1|U2"):
         check_full_coverage(folds[1:], split)
+    # U1 だけが破れる: 検証区間の並びはそのままで、最初の選定区間の始まりが評価範囲の始まりより後。
+    late_train = replace(
+        folds[0],
+        train=Interval(start=folds[0].train.start + timedelta(days=7), end=folds[0].train.end),
+    )
+    with pytest.raises(KernelValueError, match="U1"):
+        check_full_coverage((late_train, *folds[1:]), split)
     shifted = Fold(
         fold_index=4,
         train=folds[4].train,
@@ -367,6 +378,46 @@ def test_profitable_but_too_few_trades_is_held() -> None:
     assert outcome.hold is True
 
 
+def _uncomputable_path_outcome() -> VariantOutcome:
+    """経路の指標が値なし（計算できない）の組の結果（判定は証拠不足、収益性は判定できない）。"""
+    rule = standard(aggregate=(), classes=(_V3_CLASS,))
+    summary = path_summary(2)
+    blank = replace(
+        summary,
+        metrics=tuple(
+            (metric, Unavailable(MetricKind.RATIO, MetricUnavailableReason.UNDEFINED_DENOMINATOR))
+            for metric, _ in summary.metrics
+        ),
+    )
+    return judge(rule, _two_folds(), blank)  # type: ignore[arg-type]
+
+
+def test_an_uncomputable_path_leaves_the_hold_mark_undetermined() -> None:
+    """要決定 3: 証拠不足で収益性の軸が「判定できない」なら、保留の印は値なし（None）。"""
+    outcome = _uncomputable_path_outcome()
+    assert outcome.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE
+    assert outcome.profitability is ProfitabilityAxis.NOT_JUDGED
+    assert outcome.hold is None
+    assert hold_mark_of(ProfitabilityAxis.MET) is True
+    assert hold_mark_of(ProfitabilityAxis.NOT_MET) is False
+    with pytest.raises(KernelValueError):
+        replace(outcome, hold=False)
+
+
+def test_the_hold_text_names_net_return_only_when_it_falls_short() -> None:
+    """要決定 3: 「収益性は条件に届かない側」は純収益率の条件を満たさないときだけ（仮置き 73）。"""
+    undetermined = _uncomputable_path_outcome()
+    assert search_report._hold_text(undetermined) == "値なし（収益性は判定できない（観測不足））"
+    no_profit = _judge(trades=3, final="1000000", series=("1000000",))
+    assert no_profit.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE and no_profit.hold is False
+    assert search_report._hold_text(no_profit) == "証拠不足（収益性は条件に届かない側）"
+    breached = _judge(trades=3, series=("690000", "1100000"))
+    assert breached.hold is False
+    assert "届かない側" not in search_report._hold_text(breached)
+    assert search_report._hold_text(_judge(trades=3)).startswith("保留（")
+    assert search_report._combined_hold_text(None).startswith("値なし（")
+
+
 def test_a_failed_path_segment_makes_the_variant_incomplete() -> None:
     """仮置き 16: 区間の run の失敗で経路は判定できない。経路の条件の結果は作らない。"""
     outcome = _judge(end=PathEnd.INCOMPLETE)
@@ -406,7 +457,11 @@ def test_a_fold_without_a_candidate_keeps_the_experiment_insufficient() -> None:
 
 def _variant(verdict: SearchVerdict, *, hold: bool | None = None) -> VariantOutcome:
     base = _judge()
-    profit = ProfitabilityAxis.MET if hold else ProfitabilityAxis.NOT_MET
+    profit = {
+        True: ProfitabilityAxis.MET,
+        False: ProfitabilityAxis.NOT_MET,
+        None: ProfitabilityAxis.NOT_JUDGED,
+    }[hold]
     return VariantOutcome(
         variant=base.variant,
         selections=base.selections,
@@ -466,11 +521,19 @@ def test_the_combined_verdict_follows_the_table(
 
 @pytest.mark.parametrize(
     ("left_hold", "right_hold", "expected"),
-    [(True, True, True), (True, False, False), (False, True, False)],
+    [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+        (True, None, None),
+        (None, None, None),
+        (None, False, False),
+    ],
 )
 def test_the_combined_hold_needs_every_short_variant_held(
-    left_hold: bool, right_hold: bool, expected: bool
+    left_hold: bool | None, right_hold: bool | None, expected: bool | None
 ) -> None:
+    """組の保留の印: 印が値なしの組があり False の組が無ければ値なし（要決定 3、仮置き 72）。"""
     standard_ = _variant(SHORT, hold=left_hold)
     candidate = replace(_variant(SHORT, hold=right_hold), variant=Variant.CANDIDATE)
     assert combine_verdicts(standard_, candidate).hold is expected
@@ -482,6 +545,8 @@ def test_a_split_keeps_the_hold_of_the_short_variant() -> None:
     candidate = replace(_variant(SHORT, hold=True), variant=Variant.CANDIDATE)
     combined = combine_verdicts(standard_, candidate)
     assert combined.verdict is SHORT and combined.split and combined.hold is True
+    undetermined = replace(_variant(SHORT, hold=None), variant=Variant.CANDIDATE)
+    assert combine_verdicts(standard_, undetermined).hold is None
 
 
 # --- 台帳の行の形式版 2 と系譜（D09 §10.10・§10.12 の改訂、実装 PR の仮置き 55・56）------------
