@@ -3401,8 +3401,9 @@ def _ledger_results_of(payload: object) -> LedgerResults | None:
 def ledger_entry_of(payload: object) -> TrialLedgerEntry:
     """台帳の行の `entry`（正規化形の JSON の値）を型に直す（D09 §10.12.2 の L4）。
 
-    未知のキー・欠けたキー・型の不一致・語彙外の値・`schema_version` が 1 でないものは
-    `KernelValueError`（`ValueError` 系）。行の種類ごとの形と判定と用途の組は見ない（L5・L10）。
+    未知のキー・欠けたキー・型の不一致・語彙外の値・`schema_version` が 2 でないもの（形式版 1 の
+    行は読込で止める。実装 PR の仮置き 55）は `KernelValueError`（`ValueError` 系）。行の種類
+    ごとの形と判定と用途の組は見ない（L5・L10）。
     """
     item = _keys(payload, tuple(TrialLedgerEntry.__dataclass_fields__), "ledger entry")
     status = item["status"]

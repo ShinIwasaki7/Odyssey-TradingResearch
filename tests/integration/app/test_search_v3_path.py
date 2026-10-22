@@ -45,6 +45,7 @@ from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.money import CurrencyCode, Money
 from odyssey_fx.evaluation.adapters.fs_store import (
+    FileSystemExperimentStore,
     FileSystemResultRepository,
     read_experiment_outcome,
     read_path_records,
@@ -86,6 +87,12 @@ from tests.fixtures.evaluation.search_experiments import install_policy_v3, writ
 #: 1 試行（両軸とも値 1 つ）。両 fold で同じ試行が選ばれ、経路は 1 区間になる。
 ONE_TRIAL = (
     "    - {instance: m15_ema, parameter: period, values: [10]}\n"
+    "    - {instance: stop_level, parameter: lookback, values: [10]}"
+)
+
+#: 2 試行（片方の軸の値が 2 つ）。選定を与えて試行が変わる境目の経路を作るのに使う。
+TWO_TRIALS = (
+    "    - {instance: m15_ema, parameter: period, values: [10, 20]}\n"
     "    - {instance: stop_level, parameter: lookback, values: [10]}"
 )
 
@@ -351,6 +358,7 @@ def _path(
     monkeypatch: pytest.MonkeyPatch,
     selections: tuple[int | None, ...],
     settled: dict[int, str | None],
+    ran: list[int] | None = None,
 ) -> PathSummary:
     loaded = load_experiment_v2(
         setup.workspace.repo / "configs/experiments/v3_path.yaml",
@@ -373,6 +381,8 @@ def _path(
         planner: object,
         cache: object,
     ) -> PathSegmentEnd:
+        if ran is not None:
+            ran.append(segment.segment_index)
         value = settled[segment.segment_index]
         key = PathSegmentKey(variant=variant, segment_index=segment.segment_index)
         if value is None:
@@ -419,6 +429,102 @@ def test_a_settled_balance_at_or_below_zero_ends_the_path_with_a_capital_loss(
     assert summary.end is PathEnd.CAPITAL_LOST and summary.end_segment == 0
     rate = summary.metric(MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK)
     assert isinstance(rate, RatioValue) and rate.ratio >= 1
+
+
+def test_a_lineage_from_an_execution_not_in_the_ledger_is_a_config_error(
+    setup: _Setup, tmp_path: Path
+) -> None:
+    """系譜の元の実行が台帳に無ければ設定の誤り（終了コード 2。D13 §7.1、仮置き 56）。"""
+    experiment = write_search_experiment(
+        setup.workspace.repo,
+        "v3_lineage.yaml",
+        experiment_id="v3_lineage",
+        axes=ONE_TRIAL,
+        max_trials=1,
+        candidate_snapshot=setup.candidate,
+    )
+    experiment.write_text(
+        experiment.read_text(encoding="utf-8")
+        + "lineage:\n"
+        + f'  derived_from: {{experiment_id: "{"9" * 64}", execution: 1}}\n'
+        + '  change_kinds: [RETRY]\n  note: "やり直し"\n',
+        encoding="utf-8",
+    )
+    code, output = _run(setup.workspace, experiment, tmp_path / "out")
+    assert code == 2, output
+    assert "試行台帳に無い" in output
+
+
+def test_a_capital_loss_does_not_run_the_later_segments(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """資金喪失の区間の後ろの区間は走らせない（仮置き 29。試行が変わる 2 区間の計画で確かめる）。"""
+    ran: list[int] = []
+    summary = _path(setup, monkeypatch, (0, 1), {0: "0", 1: "1050000"}, ran)
+    assert ran == [0]
+    assert summary.end is PathEnd.CAPITAL_LOST and summary.end_segment == 0
+    assert [row.segment_index for row in summary.segments] == [0]
+
+
+def test_the_balance_passes_to_the_next_trial_across_real_segment_runs(
+    setup: _Setup, tmp_path: Path
+) -> None:
+    """試行が変わる境目（2 区間）を実際の区間の run で走らせ、区間 0 の終わりの費用を引いた後の
+    資産が区間 1 の初期残高になる（D13 §4.5・§4.6 の表 3。仮置き 28）。選定は与える。"""
+    experiment = write_search_experiment(
+        setup.workspace.repo,
+        "v3_two.yaml",
+        experiment_id="v3_two",
+        axes=TWO_TRIALS,
+        max_trials=2,
+        candidate_snapshot=setup.candidate,
+    )
+    loaded = load_experiment_v2(
+        experiment,
+        repo_root=setup.workspace.repo,
+        registry=INITIAL_CATALOG,
+        metric_set_versions=METRIC_SET_VERSIONS,
+    )
+    parts = composition._prepare_search(
+        loaded=loaded,
+        snapshots_root=setup.workspace.repo / "data/snapshots",
+        repo_root=setup.workspace.repo,
+        registry=INITIAL_CATALOG,
+    )
+    prepared = parts.prepared
+    assert len(prepared.trials) == 2
+    out = tmp_path / "out"
+    runner, planner = composition._search_wiring(loaded, parts, out)
+    use_case = RunExperiment(
+        store=FileSystemExperimentStore(
+            root=out,
+            experiment_name=prepared.manifest.experiment_name,
+            experiment_version=prepared.manifest.experiment_version,
+            identity_of=composition.recompute_experiment_id,
+        ),
+        runner=runner,
+        repository=FileSystemResultRepository(root=out),
+        evaluator=EvaluateRun(evaluation_code_digest=prepared.code_digest),
+    )
+    run = use_case._run_path(
+        prepared, Variant.STANDARD, (_selection(0, 0), _selection(1, 1)), planner, {}
+    )
+    summary = run.summary
+    assert summary.end is PathEnd.COMPLETED
+    assert [row.trial_index for row in summary.segments] == [0, 1]
+    assert [row.carried_boundaries for row in summary.segments] == [0, 0]
+    first, second = run.ends
+    assert first.succeeded and second.succeeded
+    assert first.run_id != second.run_id
+    assert first.settled_equity is not None and first.final_balance is not None
+    assert summary.segments[0].initial_balance.amount == Decimal("1000000")
+    assert summary.segments[1].initial_balance == first.settled_equity
+    assert summary.segments[0].end_balance == first.settled_equity
+    assert summary.final_balance == second.settled_equity
+    manifest = FileSystemResultRepository(root=out).read_manifest(second.run_id)
+    assert isinstance(manifest, RunManifest)
+    assert manifest.config.account.initial_balance == first.settled_equity
+    assert manifest.config.run_end is RunEndMode.CLOSE_ALL
 
 
 def test_a_failed_segment_stops_the_path_as_incomplete(

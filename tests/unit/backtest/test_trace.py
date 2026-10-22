@@ -248,6 +248,18 @@ def test_the_final_summaries_match_the_paper_trace() -> None:
     assert summaries.cost_breakdown[CostKind.COMMISSION] == _money("94")
     assert summaries.cost_breakdown[CostKind.SLIPPAGE_IN_PRICE] == _money("940")
     assert summaries.cost_breakdown[CostKind.SPREAD_IN_PRICE] == _money("1240")
+    # 区間の終わりの全決済の明細（方式 (ii)。実装 PR の仮置き 45）: 最終の bid 151.500 から
+    # 決済の滑り 0.01 を引いた 151.490 で閉じ、手数料 0.001 × 30,000 = 30、滑りの費用
+    # 0.01 × 30,000 = 300、損益 (151.490 − 151.000) × 30,000 − 30 = 14,670（明細の和が仮決済の
+    # 値と一致する）。
+    (line,) = summaries.hypothetical_close_lines
+    assert line.position_id == PositionId(2) and line.side is OrderSide.BUY
+    assert line.quantity == Quantity(decimal_from_str("30000"))
+    assert line.reference_bid == Price(decimal_from_str("151.500"))
+    assert line.exit_price == Price(decimal_from_str("151.490"))
+    assert line.commission == _money("30")
+    assert line.slippage == _money("300")
+    assert line.profit == _money("14670") == summaries.hypothetical_closed
 
 
 def test_the_summaries_are_not_built_without_a_final_price() -> None:

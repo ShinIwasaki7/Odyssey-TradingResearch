@@ -228,6 +228,17 @@ def test_a_different_trial_risk_rate_is_refused(tmp_path: Path) -> None:
     assert "risk_policy.trial_risk_rate" in _refused(path, root)
 
 
+def test_the_fixed_values_are_compared_as_decimals(tmp_path: Path) -> None:
+    """比較の前提の照合は十進数の値で比べる（"0.020" と "0.02" は同じ。実装 PR の仮置き 71）。"""
+    root = _workspace(tmp_path)
+    path = _experiment(
+        root,
+        ('  trial_risk_rate: "0.02"', '  trial_risk_rate: "0.020"'),
+        ('    USDJPY: "0.05"', '    USDJPY: "0.050"'),
+    )
+    assert _load(path, root).search is not None
+
+
 def test_a_different_adverse_fill_limit_is_refused(tmp_path: Path) -> None:
     """数量に効く執行ポリシーの値も比較の前提に入る（仮置き 18）。"""
     root = _workspace(tmp_path)

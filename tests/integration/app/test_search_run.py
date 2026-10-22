@@ -865,7 +865,20 @@ def test_experiment_report_of_a_search_requires_the_repo_root(full: _Full) -> No
 
 
 def _metrics_files(out: Path) -> list[Path]:
-    return sorted((out / "runs").glob("*/eval/*/METRICS.parquet"))
+    """独立口座の単位の run の評価の指標の表（経路の区間の run は除く）。
+
+    経路の区間の run（終わり方 `CLOSE_ALL`）は記録票に予測値が無く、記録票の保存の前の確認の
+    対象にならない（読めない既存の成果物は実行中の構造エラー。D13 §4.7 の 3）。run の識別子の
+    並びに左右されないよう、区間の run の表は選ばない。
+    """
+    return sorted(
+        path
+        for path in (out / "runs").glob("*/eval/*/METRICS.parquet")
+        if '"run_end":"CLOSE_ALL"'
+        not in json.loads(
+            (path.parent.parent.parent / "manifest.json").read_text(encoding="utf-8")
+        )["config"]
+    )
 
 
 def test_22_a_reused_evaluation_reads_the_stored_metrics_without_re_evaluating(
