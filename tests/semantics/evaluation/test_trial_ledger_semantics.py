@@ -324,14 +324,23 @@ def test_24_the_finished_line_copies_the_started_line_except_the_outcome_items()
     opening = started("a")
     closing = finished(opening, status=ExperimentStatus.FAILED_POST_RUN_CHECK)
     assert closing.event is TrialLedgerEvent.FINISHED
+    # 形式版 2（2026-10-21 改訂。実装 PR の仮置き 55）: 最上位は実験の状態と組の判定で、
+    # 頻度区分は組ごとの `results` に置き、最上位の `frequency_class` は空。
     assert (closing.status, closing.verdict, closing.frequency_class) == (
         ExperimentStatus.FAILED_POST_RUN_CHECK,
         SearchVerdict.INSUFFICIENT_EVIDENCE,
-        "LOW",
+        None,
     )
+    assert closing.results is not None
+    assert closing.results.variants.standard.frequency_class == "LOW"
     assert (
         replace(
-            closing, event=TrialLedgerEvent.STARTED, status=None, verdict=None, frequency_class=None
+            closing,
+            event=TrialLedgerEvent.STARTED,
+            status=None,
+            verdict=None,
+            frequency_class=None,
+            results=None,
         )
         == opening
     )

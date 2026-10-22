@@ -27,6 +27,7 @@ from odyssey_fx.evaluation.domain.search import Comparator, StandardPurpose
 from odyssey_fx.evaluation.domain.splits import SplitWindow
 from tests.fixtures.evaluation.research_policies import (
     DEFAULT_STANDARD_LINES,
+    TEST_PATH,
     append_registry_entry,
     policy_v3_text,
     write_policy,
@@ -66,11 +67,15 @@ def _refused(text: str, version: int = 3) -> str:
 
 
 def test_the_repository_policies_match_the_repository_registry() -> None:
-    """版 1 のダイジェストは変わらず、版 2 は試行数の上限 100 を持ち、どちらも登録簿と一致する。"""
+    """版 1 のダイジェストは変わらず、版 2 は試行数の上限 100 を持ち、どちらも登録簿と一致する。
+
+    2026-10-21 改訂: 版 3（研究ポリシー第 3 版。用途 STANDARD）を登録した（D13 §8.4 の (4)）。
+    """
     entries = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
     assert [(item.policy_id, item.version, item.purpose) for item in entries] == [
         ("research_policy", 1, None),
         ("research_policy", 2, None),
+        ("research_policy", 3, StandardPurpose.STANDARD),
     ]
     v1 = load_research_policy(
         research_policy_path(REPO_ROOT, "research_policy", 1),
@@ -89,8 +94,14 @@ def test_the_repository_policies_match_the_repository_registry() -> None:
     registry = research_policy_registry_path(REPO_ROOT)
     assert verify_registered(v1, entries, registry_path=registry).version == 1
     assert verify_registered(v2, entries, registry_path=registry).version == 2
-    # 版 3（評価基準の値）は Q19〜Q32 の決定まで登録しない（D09 §10.9）。現行の版はまだ無い。
-    assert current_standard_version(entries, "research_policy") is None
+    # 版 3（評価基準の値。D13 の決定）が現行の版（D09 §10.9・§10.11）。
+    v3 = load_research_policy(
+        research_policy_path(REPO_ROOT, "research_policy", 3),
+        policy_id="research_policy",
+        version=3,
+    )
+    assert verify_registered(v3, entries, registry_path=registry).version == 3
+    assert current_standard_version(entries, "research_policy") == 3
 
 
 _V1 = (
@@ -167,6 +178,7 @@ def _split(**overrides: str) -> str:
         "validation_length": '"2d"',
         "window": "ROLLING",
         "purge": '"0s"',
+        "partial_fold": "AT_START",
         "min_folds": "2",
     }
     values.update(overrides)
@@ -241,7 +253,7 @@ def _split(**overrides: str) -> str:
         (
             "empty floors",
             {
-                "validation": "  validation:\n    fold_floors: []\n    aggregate: []",
+                "validation": "  validation:\n    fold_floors: []\n    aggregate: []\n" + TEST_PATH,
             },
             "E2",
         ),
@@ -252,7 +264,7 @@ def _split(**overrides: str) -> str:
                     "  validation:\n    fold_floors:\n"
                     '      - {metric: NET_RETURN_RATE, comparator: GE, threshold: "0"}\n'
                     '      - {metric: NET_RETURN_RATE, comparator: GE, threshold: "0.1"}\n'
-                    "    aggregate: []"
+                    "    aggregate: []\n" + TEST_PATH
                 )
             },
             "E3",
@@ -293,6 +305,30 @@ def _split(**overrides: str) -> str:
         ),
         ("omitted purpose", {"purpose": None}, "purpose"),
         ("unknown purpose", {"purpose": "  purpose: CHECK"}, "purpose"),
+        # 版 3 以上の新しいキーは必須（2026-10-21 改訂。仮置き 23、改訂 PR の仮置き 36 (a)）。
+        ("omitted basis", {"basis": None}, "basis"),
+        ("omitted comparison basis", {"comparison_basis": None}, "comparison_basis"),
+        (
+            "omitted partial fold",
+            {"split": _split().replace("    partial_fold: AT_START\n", "")},
+            "partial_fold",
+        ),
+        ("unknown partial fold", {"split": _split(partial_fold="AT_END")}, "partial_fold"),
+        (
+            "omitted path",
+            {"validation": DEFAULT_STANDARD_LINES["validation"].replace("\n" + TEST_PATH, "")},
+            "path",
+        ),
+        (
+            "path metric the path does not measure",
+            {
+                "validation": DEFAULT_STANDARD_LINES["validation"].replace(
+                    "        - {metric: NET_RETURN_RATE, comparator: GE",
+                    "        - {metric: WIN_RATE, comparator: GE",
+                )
+            },
+            "経路で計れない",
+        ),
     ],
 )
 def test_a_broken_evaluation_standard_is_a_policy_error(

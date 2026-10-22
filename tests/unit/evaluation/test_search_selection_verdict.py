@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from decimal import Decimal
@@ -31,13 +32,13 @@ from odyssey_fx.evaluation.domain.search import (
     FrequencyAssessment,
     FrequencyClass,
     MetricCondition,
-    SearchOutcome,
     SearchVerdict,
     StandardPurpose,
     SufficiencyShortfall,
     SufficiencyShortfallKind,
     TrainUnitEvaluation,
     TrialStatus,
+    VariantOutcome,
     assess_frequency,
     build_search_outcome,
     candidate_status,
@@ -48,11 +49,13 @@ from odyssey_fx.evaluation.domain.search import (
     trades_per_365d,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.evaluation.domain.variant import Variant
 from tests.fixtures.evaluation.search_units import (
     Override,
     digest_for,
     evidence,
     in_fold,
+    judge,
     make_fold,
     standard,
     train_unit,
@@ -73,7 +76,8 @@ def _outcome(
     folds_spec: Sequence[FoldSpec],
     *,
     validation_kwargs: Mapping[int, Mapping[str, object]] | None = None,
-) -> SearchOutcome:
+) -> VariantOutcome:
+    """組ごとの判定（2026-10-21 改訂。条件を満たす人工の連続口座の検証経路で判定する）。"""
     items: list[FoldEvidence] = []
     for index, (trains, metrics) in enumerate(folds_spec):
         bound = in_fold(trains, index)
@@ -83,7 +87,7 @@ def _outcome(
             extra = dict((validation_kwargs or {}).get(index, {}))
             unit = validation_unit(selection.selected_trial_index, metrics, **extra)  # type: ignore[arg-type]
         items.append(evidence(rule, make_fold(index), trains, unit))
-    return build_search_outcome(rule, items, ledger_execution=1)
+    return judge(rule, items)
 
 
 # --- 試行の状態 ---------------------------------------------------------------------
@@ -325,7 +329,10 @@ def test_fold_without_candidates_is_judged_from_the_candidate_statuses(
     rule = standard(eligibility=(MetricCondition(NRR, Comparator.GE, Decimal("0")),))
     outcome = _outcome(rule, [(trains, None)])
     assert outcome.fold_verdicts == ((0, expected),)
-    assert outcome.condition_results == ()  # 候補なしの fold は最低条件の結果を作らない
+    # 候補なしの fold は最低条件の結果を作らない（経路の条件の結果は 2026-10-21 改訂で別に残る）。
+    assert not [
+        item for item in outcome.condition_results if item.scope is ConditionScope.FOLD_FLOOR
+    ]
     assert outcome.frequency is None
 
 
@@ -412,8 +419,8 @@ def test_total_trades_below_requirement_is_insufficient_evidence() -> None:
     total = outcome.shortfalls[-1]
     assert total.kind is SufficiencyShortfallKind.TOTAL_TRADES_BELOW
     assert (total.fold_index, total.required, total.observed) == (None, 20, 13)
-    # 手順3 で止まった実験は集約条件を判定しない。
-    assert all(item.scope is ConditionScope.FOLD_FLOOR for item in outcome.condition_results)
+    # 手順3 で止まった実験は fold の集約条件を判定しない（経路の条件は記録する。2026-10-21 改訂）。
+    assert not any(item.scope is ConditionScope.AGGREGATE for item in outcome.condition_results)
 
 
 def test_median_of_even_folds_is_the_mean_of_the_two_middle_values() -> None:
@@ -437,8 +444,9 @@ def test_median_of_even_folds_is_the_mean_of_the_two_middle_values() -> None:
 def test_median_of_odd_folds_is_the_middle_value_and_can_fail() -> None:
     values = [Decimal("0.4"), Decimal("-0.3"), Decimal("-0.1")]
     outcome = _outcome(standard(), [([train_unit(0)], {TC: 30, NRR: value}) for value in values])
-    aggregate = outcome.condition_results[-1]
-    assert aggregate.scope is ConditionScope.AGGREGATE
+    aggregate = next(
+        item for item in outcome.condition_results if item.scope is ConditionScope.AGGREGATE
+    )
     assert aggregate.observed == Decimal("-0.1")
     assert aggregate.outcome is ConditionOutcome.NOT_MET
     assert outcome.verdict is SearchVerdict.BELOW_STANDARD
@@ -463,6 +471,9 @@ def test_condition_results_follow_fold_then_written_order() -> None:
         (ConditionScope.FOLD_FLOOR, 1, DD),
         (ConditionScope.FOLD_FLOOR, 1, NRR),
         (ConditionScope.AGGREGATE, None, NRR),
+        # 経路の条件（2026-10-21 改訂。最低条件 → 全体の水準の書いた順）。
+        (ConditionScope.PATH_FLOOR, None, MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK),
+        (ConditionScope.PATH_AGGREGATE, None, NRR),
     ]
 
 
@@ -504,14 +515,14 @@ def test_build_rejects_a_selection_record_that_does_not_match_the_train_results(
         fold=make_fold(0), selection=forged, train_units=trains, validation=validation_unit(0)
     )
     with pytest.raises(KernelValueError, match="作り直した値と違う"):
-        build_search_outcome(rule, [item], ledger_execution=1)
+        judge(rule, [item])
 
 
 def test_build_requires_consecutive_folds_from_zero() -> None:
     rule = standard()
     item = evidence(rule, make_fold(1), [train_unit(0)], validation_unit(0))
     with pytest.raises(KernelValueError, match="連番"):
-        build_search_outcome(rule, [item], ledger_execution=1)
+        judge(rule, [item])
 
 
 def test_fold_evidence_requires_the_validation_unit_of_the_selected_trial() -> None:
@@ -525,10 +536,14 @@ def test_fold_evidence_requires_the_validation_unit_of_the_selected_trial() -> N
 def test_outcome_carries_trial_counts_ledger_execution_and_purpose() -> None:
     rule = standard(purpose=StandardPurpose.MECHANISM_CHECK)
     item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
-    outcome = build_search_outcome(rule, [item], ledger_execution=7)
-    assert outcome.trial_counts[1] == (TrialStatus.COMPLETED, 2)
+    standard_outcome = judge(rule, [item])
+    candidate_outcome = judge(rule, [item], variant=Variant.CANDIDATE)
+    assert standard_outcome.trial_counts[1] == (TrialStatus.COMPLETED, 2)
+    # 結末記録の探索の項目は両組と組の判定を持つ（2026-10-21 改訂。D09 §10.6・§7.12）。
+    outcome = build_search_outcome(standard_outcome, candidate_outcome, ledger_execution=7)
     assert outcome.ledger_execution == 7
     assert outcome.purpose is StandardPurpose.MECHANISM_CHECK
+    assert outcome.variants.of(Variant.CANDIDATE) == candidate_outcome
 
 
 @pytest.mark.parametrize("execution", [0, -1, True])
@@ -536,27 +551,18 @@ def test_ledger_execution_must_be_an_assigned_number_from_one(execution: object)
     # 未採番を 0 などの番号の値で表さない（D09 v0.3 §10.12.3 の採番。D09 §17.7.3 の6）。
     rule = standard()
     item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
+    pair = (judge(rule, [item]), judge(rule, [item], variant=Variant.CANDIDATE))
     with pytest.raises(KernelValueError, match="ledger_execution"):
-        build_search_outcome(rule, [item], ledger_execution=execution)  # type: ignore[arg-type]
+        build_search_outcome(*pair, ledger_execution=execution)  # type: ignore[arg-type]
 
 
 def test_search_outcome_rejects_meets_standard_under_mechanism_check() -> None:
     rule = standard()
     item = evidence(rule, make_fold(0), [train_unit(0, {TC: 30})], validation_unit(0, {TC: 30}))
-    outcome = build_search_outcome(rule, [item], ledger_execution=1)
+    outcome = judge(rule, [item])
     assert outcome.verdict is SearchVerdict.MEETS_STANDARD
     with pytest.raises(KernelValueError, match="MEETS_STANDARD"):
-        SearchOutcome(
-            selections=outcome.selections,
-            fold_verdicts=outcome.fold_verdicts,
-            verdict=SearchVerdict.MEETS_STANDARD,
-            frequency=outcome.frequency,
-            condition_results=outcome.condition_results,
-            shortfalls=outcome.shortfalls,
-            trial_counts=outcome.trial_counts,
-            ledger_execution=1,
-            purpose=StandardPurpose.MECHANISM_CHECK,
-        )
+        dataclasses.replace(outcome, purpose=StandardPurpose.MECHANISM_CHECK)
 
 
 def test_condition_result_rejects_an_outcome_contradicting_the_comparison() -> None:
@@ -654,7 +660,8 @@ def test_fold_evidence_rejects_a_validation_unit_of_another_fold() -> None:
 
 def test_completed_evaluation_must_carry_every_metric_row() -> None:
     rows = tuple(item for item in train_unit(0).metrics if item.metric_id is not MetricId.WIN_RATE)
-    with pytest.raises(KernelValueError, match="WIN_RATE"):
+    # 2026-10-21 改訂: 指標の行は指標集合 v2（19件）か v3（20件）のどちらかとちょうど一致する。
+    with pytest.raises(KernelValueError, match="指標集合"):
         TrainUnitEvaluation(
             fold_index=0,
             trial_index=0,

@@ -37,13 +37,13 @@ from odyssey_fx.evaluation.domain.search import (
     CandidateStatus,
     Comparator,
     ConditionOutcome,
+    ConditionScope,
     EvaluationStandard,
     FoldEvidence,
     FoldSelection,
     FoldVerdict,
     FrequencyClass,
     MetricCondition,
-    SearchOutcome,
     SearchVerdict,
     SelectionDirection,
     StandardPurpose,
@@ -51,8 +51,8 @@ from odyssey_fx.evaluation.domain.search import (
     TrainUnitEvaluation,
     TrialStatus,
     ValidationUnitEvaluation,
+    VariantOutcome,
     assess_frequency,
-    build_search_outcome,
     derive_trial_status,
     select_trial,
 )
@@ -61,6 +61,7 @@ from tests.fixtures.evaluation.search_units import (
     Override,
     evidence,
     in_fold,
+    judge,
     make_fold,
     standard,
     train_unit,
@@ -75,8 +76,12 @@ TC = MetricId.TRADE_COUNT
 FoldSpec = tuple[list[TrainUnitEvaluation], Mapping[MetricId, Override] | None]
 
 
-def _outcome(rule: EvaluationStandard, folds_spec: Sequence[FoldSpec]) -> SearchOutcome:
-    """`folds_spec` は fold ごとの (選定区間の単位の列, 検証区間の指標の上書き | None)。"""
+def _outcome(rule: EvaluationStandard, folds_spec: Sequence[FoldSpec]) -> VariantOutcome:
+    """`folds_spec` は fold ごとの (選定区間の単位の列, 検証区間の指標の上書き | None)。
+
+    2026-10-21 改訂: 組ごとの判定（`VariantOutcome`）を、条件を満たす人工の連続口座の検証経路
+    （純収益率 0.1・最大ドローダウン率 0）で作る（D09 §7.3 の改訂）。
+    """
     items: list[FoldEvidence] = []
     for index, (trains, validation) in enumerate(folds_spec):
         fold = make_fold(index)
@@ -88,7 +93,7 @@ def _outcome(rule: EvaluationStandard, folds_spec: Sequence[FoldSpec]) -> Search
             else validation_unit(selection.selected_trial_index, validation)
         )
         items.append(evidence(rule, fold, trains, unit))
-    return build_search_outcome(rule, items, ledger_execution=1)
+    return judge(rule, items)
 
 
 # --- #1 -------------------------------------------------------------------------
@@ -199,8 +204,29 @@ def test_11_floor_breach_with_enough_trades_is_below_standard_regardless_of_othe
     )
     assert outcome.fold_verdicts[0] == (0, FoldVerdict.FLOOR_BREACHED)
     assert outcome.verdict is SearchVerdict.BELOW_STANDARD
-    # 中央値の条件は判定しない（手順1 で決まったため）。
-    assert all(item.fold_index is not None for item in outcome.condition_results)
+    # 中央値の条件は判定しない（手順1 で決まったため）。経路の条件の結果は記録する
+    # （2026-10-21 改訂。D09 §7.3 の「経路の条件の結果の記録」）。
+    assert not any(item.scope is ConditionScope.AGGREGATE for item in outcome.condition_results)
+
+
+def test_11_floor_breach_with_too_few_total_trades_is_insufficient_evidence() -> None:
+    """2026-10-21 改訂（D09 §7.3・D13 §5.5、D13-14 (a)）: 最低条件を割っても、検証の合計の
+    取引件数が `min_validation_trades_total` 未満なら「満たさない」ではなく「証拠不足」で、
+    違反の事実を `FLOOR_BREACHED_TOTAL_TRADES_BELOW` に残し、保留の印は付けない。"""
+    rule = standard()
+    outcome = _outcome(
+        rule,
+        [
+            ([train_unit(0)], {**_FLOOR_GOOD, TC: 6, DD: Decimal("0.6")}),
+            ([train_unit(0)], {**_FLOOR_GOOD, TC: 6}),
+        ],
+    )
+    assert outcome.fold_verdicts[0] == (0, FoldVerdict.FLOOR_BREACHED)
+    assert outcome.verdict is SearchVerdict.INSUFFICIENT_EVIDENCE
+    kinds = {(item.kind, item.fold_index) for item in outcome.shortfalls}
+    assert (SufficiencyShortfallKind.FLOOR_BREACHED_TOTAL_TRADES_BELOW, 0) in kinds
+    assert (SufficiencyShortfallKind.TOTAL_TRADES_BELOW, None) in kinds
+    assert outcome.hold is False
 
 
 # --- #12 ------------------------------------------------------------------------

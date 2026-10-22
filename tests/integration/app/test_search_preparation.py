@@ -42,11 +42,16 @@ from odyssey_fx.evaluation.application.run_experiment import (
 from odyssey_fx.evaluation.domain.research_policy import PolicyCheck
 from odyssey_fx.evaluation.domain.search import TrialPhase, TrialUnitKey
 from odyssey_fx.evaluation.domain.status import CheckOutcome
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.catalog.registry import ComponentRegistry
 from odyssey_fx.strategy.declarations.specs import IntValue
-from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
+from tests.fixtures.acceptance.t02_workspace import (
+    T02Workspace,
+    build_workspace,
+    install_candidate,
+)
 from tests.fixtures.evaluation.search_experiments import (
     install_policy_v3,
     write_search_experiment,
@@ -57,9 +62,12 @@ from tests.fixtures.evaluation.search_experiments import (
 def workspace(tmp_path_factory: pytest.TempPathFactory) -> T02Workspace:
     """T02 の人工データを受け入れて承認し、試験用の研究ポリシー版 3 と版 4 を載せた作業場。
 
-    版 4 は試行数の上限だけを 3 に下げたもの（P7 の不合格を作るため）。
+    版 4 は試行数の上限だけを 3 に下げたもの（P7 の不合格を作るため）。候補の組の snapshot も
+    足す（2026-10-21 改訂。探索の実験は両組を評価する。D13-15 (a)）。
     """
-    built = build_workspace(tmp_path_factory.mktemp("t02-search"))
+    root = tmp_path_factory.mktemp("t02-search")
+    built = build_workspace(root)
+    install_candidate(built, root / "candidate")
     install_policy_v3(built.repo)
     install_policy_v3(built.repo, version=4, trials=3)
     return built
@@ -87,14 +95,17 @@ def prepared(workspace: T02Workspace) -> PreparedSearch:
     return _prepare(workspace, write_search_experiment(workspace.repo))
 
 
-def _unit(fold: int, phase: TrialPhase, trial: int) -> TrialUnitKey:
-    return TrialUnitKey(fold_index=fold, phase=phase, trial_index=trial)
+def _unit(
+    fold: int, phase: TrialPhase, trial: int, variant: Variant = Variant.STANDARD
+) -> TrialUnitKey:
+    return TrialUnitKey(variant=variant, fold_index=fold, phase=phase, trial_index=trial)
 
 
 def test_every_trial_and_unit_is_fixed_in_the_manifest_before_any_run(
     prepared: PreparedSearch,
 ) -> None:
-    """2軸 × 2値 × 2 fold: 4 試行の割当と、通った試行の4単位の予測ダイジェストが記録票に入る。"""
+    """2軸 × 2値 × 2 fold: 4 試行の割当と、通った試行の両組の 8 単位の予測ダイジェストが記録票に
+    入る（2026-10-21 改訂: 単位の鍵に組。組の順は標準 → 候補）。"""
     manifest = prepared.manifest
     assert manifest.is_search
     assert len(manifest.trials) == 4
@@ -109,10 +120,10 @@ def test_every_trial_and_unit_is_fixed_in_the_manifest_before_any_run(
     for trial in manifest.trials[:2]:
         assert trial.compiled and not trial.compile_rejections
         assert [unit for unit, _ in trial.expected_config_digests] == [
-            _unit(0, TrialPhase.TRAIN, trial.trial_index),
-            _unit(0, TrialPhase.VALIDATION, trial.trial_index),
-            _unit(1, TrialPhase.TRAIN, trial.trial_index),
-            _unit(1, TrialPhase.VALIDATION, trial.trial_index),
+            _unit(fold, phase, trial.trial_index, variant)
+            for variant in VARIANTS
+            for fold in (0, 1)
+            for phase in (TrialPhase.TRAIN, TrialPhase.VALIDATION)
         ]
     assert manifest.compiled_ref is None and manifest.expected_config_digest is None
     assert manifest.trials[0].compiled_ref != manifest.trials[1].compiled_ref
@@ -132,26 +143,39 @@ def test_a_trial_rejected_by_the_compiler_is_kept_as_a_failure(prepared: Prepare
 def test_the_units_differ_only_in_the_compiled_ref_and_the_interval(
     prepared: PreparedSearch,
 ) -> None:
-    """単位の `RunConfig` は区間とコンパイル結果だけが違い、同じ試行・同じ区間は同じ `RunId`。
+    """同じ組の単位の `RunConfig` は区間とコンパイル結果だけが違い、同じ試行・同じ区間は同じ
+    `RunId`。
 
     fold 0 の検証区間と fold 1 の選定区間は同じ区間なので、同じ試行の2単位は1つの run を共有する
-    （D09 §6.2）。
+    （D09 §6.2）。組が違えば snapshot が違うので `RunId` も別（2026-10-21 改訂。D09 §6.2 の (3)）。
     """
     folds = prepared.manifest.split.folds  # type: ignore[union-attr]
     first, second = prepared.trials[:2]
     for trial in (first, second):
-        assert trial.run_config(
-            _unit(0, TrialPhase.TRAIN, trial.plan.trial_index)
-        ).run_interval == (folds[0].train)
-        assert (
-            trial.run_config(_unit(1, TrialPhase.VALIDATION, trial.plan.trial_index)).run_interval
-            == folds[1].validation
-        )
-        shared = trial.expected_run_id(_unit(0, TrialPhase.VALIDATION, trial.plan.trial_index))
-        assert shared == trial.expected_run_id(_unit(1, TrialPhase.TRAIN, trial.plan.trial_index))
-        assert len({run_id for _, run_id in trial.expected_run_ids}) == 3
-    configs = [config for trial in (first, second) for _, config in trial.run_configs]
-    assert len({(config.account, config.seed, config.snapshot_ref) for config in configs}) == 1
+        index = trial.plan.trial_index
+        for variant in VARIANTS:
+            assert trial.run_config(_unit(0, TrialPhase.TRAIN, index, variant)).run_interval == (
+                folds[0].train
+            )
+            assert (
+                trial.run_config(_unit(1, TrialPhase.VALIDATION, index, variant)).run_interval
+                == folds[1].validation
+            )
+            shared = trial.expected_run_id(_unit(0, TrialPhase.VALIDATION, index, variant))
+            assert shared == trial.expected_run_id(_unit(1, TrialPhase.TRAIN, index, variant))
+        assert len({run_id for _, run_id in trial.expected_run_ids}) == 6
+    for variant in VARIANTS:
+        configs = [
+            config
+            for trial in (first, second)
+            for unit, config in trial.run_configs
+            if unit.variant is variant
+        ]
+        assert len({(config.account, config.seed, config.snapshot_ref) for config in configs}) == 1
+    snapshots = {
+        config.snapshot_ref for trial in (first, second) for _, config in trial.run_configs
+    }
+    assert len(snapshots) == 2
     assert not {run_id for _, run_id in first.expected_run_ids} & {
         run_id for _, run_id in second.expected_run_ids
     }
@@ -169,7 +193,10 @@ def test_the_pre_run_checks_cover_every_unit(prepared: PreparedSearch) -> None:
     }
     assert all(item.outcome is CheckOutcome.PASSED for item in checks.values())
     assert '"trial_count":4' in checks[PolicyCheck.TRIAL_COUNT_WITHIN_LIMIT].observed
-    assert set(manifest.allowed_partitions.values()) == {AccessClass.RESEARCH_HISTORY}
+    partitions = manifest.allowed_partitions
+    assert isinstance(partitions, Paired)  # 探索の実験は組の写像（2026-10-21 改訂）
+    for _, allowed in partitions.items():
+        assert set(allowed.values()) == {AccessClass.RESEARCH_HISTORY}
     assert manifest.complexity.instances is not None
 
 

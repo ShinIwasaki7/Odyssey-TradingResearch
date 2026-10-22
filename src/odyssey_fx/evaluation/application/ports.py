@@ -21,10 +21,13 @@ from odyssey_fx.backtest.trace.recorder import TraceTable
 from odyssey_fx.backtest.trace.result import BacktestResult
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
-from odyssey_fx.common.refs import ContentDigest, SnapshotRef
+from odyssey_fx.common.money import Money
+from odyssey_fx.common.refs import ConfigDigest, ContentDigest, SnapshotRef
+from odyssey_fx.common.time import Interval
 from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
 from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
 from odyssey_fx.evaluation.domain.metrics import MetricRecord
+from odyssey_fx.evaluation.domain.path import PathSegmentEnd, PathSegmentStart
 from odyssey_fx.evaluation.domain.search import (
     FoldSelection,
     TrialLedgerBinding,
@@ -35,6 +38,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialUnitKey,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.evaluation.domain.variant import Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
@@ -53,6 +57,8 @@ __all__ = [
     "ManifestSaveResult",
     "ResultReadFailure",
     "ResultRepository",
+    "SegmentPlanner",
+    "SegmentRunPlan",
     "SnapshotCatalog",
     "StoredEvaluation",
     "TableReadResult",
@@ -427,25 +433,40 @@ class ExperimentStore(Protocol):
         ...
 
     def write_trial_start(self, record: TrialStartRecord) -> None:
-        """単位の開始記録 `search/units/f<k>_<局面>_t<i>.start.json` を書く（D09 §10.3）。"""
+        """単位の開始記録 `search/<組>/units/f<k>_<局面>_t<i>.start.json` を書く（D09 §10.3）。
+
+        置き場は組ごと（2026-10-21 改訂。実装 PR の仮置き 47）。
+        """
         ...
 
     def write_trial_run(self, record: TrialRunRecord) -> None:
-        """単位の試行記録 `search/units/f<k>_<局面>_t<i>.json` を書く（D09 §10.3）。"""
+        """単位の試行記録 `search/<組>/units/f<k>_<局面>_t<i>.json` を書く（D09 §10.3）。"""
         ...
 
-    def write_selection(self, selection: FoldSelection) -> None:
-        """fold の選定記録 `search/selection_f<k>.json` を書く（D09 §7.5）。"""
+    def write_selection(self, variant: Variant, selection: FoldSelection) -> None:
+        """組の fold の選定記録 `search/<組>/selection_f<k>.json` を書く（D09 §7.5）。"""
+        ...
+
+    def write_path_segment_start(self, record: PathSegmentStart) -> None:
+        """経路の区間の開始記録 `search/<組>/path/s<b>.start.json` を書く（D13 §4.7 の 1。
+        実装 PR の仮置き 48。既にあれば何も書かずに失敗する。R4）。"""
+        ...
+
+    def write_path_segment_end(self, record: PathSegmentEnd) -> None:
+        """経路の区間の終端の記録 `search/<組>/path/s<b>.json` を書く（D13 §4.5 の「記録」。
+        既にあれば何も書かずに失敗する。R4）。"""
         ...
 
     def write_aggregate_tables(
         self,
         manifest: ExperimentManifest,
+        variant: Variant,
         selections: tuple[FoldSelection, ...],
         records: tuple[TrialRunRecord, ...],
         metrics: Mapping[TrialUnitKey, tuple[MetricRecord, ...]],
     ) -> None:
-        """集約表2つを書く（D09 §11.2、D07 v2.11 §3）。
+        """組の集約表2つを `search/<組>/` に書く（D09 §11.2、D07 v2.11 §3。2026-10-21 改訂で
+        組ごとの置き場。実装 PR の仮置き 47）。
 
         記録票（割当・コンパイル結果）・選定記録（候補の区分・選んだ試行）・試行記録（run と評価の
         項目）から行を作る。指標の行は、選定・判定に使った各単位の指標（`metrics`。試行記録の
@@ -477,6 +498,43 @@ class ExperimentStore(Protocol):
         §10.12.2 の L11。Q38・Q39）。
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentRunPlan:
+    """経路の区間の run の設定と予測値（D13 §4.7 の 1。区間の開始記録の材料）。"""
+
+    config: RunConfig
+    config_digest: ConfigDigest
+    expected_run_id: RunId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config, RunConfig):
+            raise KernelValueError("SegmentRunPlan.config must be a RunConfig")
+        if not isinstance(self.config_digest, ConfigDigest):
+            raise KernelValueError("SegmentRunPlan.config_digest must be a ConfigDigest")
+        if not isinstance(self.expected_run_id, RunId):
+            raise KernelValueError("SegmentRunPlan.expected_run_id must be a RunId")
+
+
+@runtime_checkable
+class SegmentPlanner(Protocol):
+    """経路の区間の run の設定を組み立てる（D13 §4.5・§4.7。実装は合成）。
+
+    区間の設定は、全 fold の選定の後に決まる実行区間と、前の区間の結果で決まる初期残高に依る
+    ので、記録票の時点では作れない（D13 §4.7）。合成は独立口座の単位と同じ材料（組の snapshot・
+    口座・ポリシー・執行系列・seed・コンパイル結果）から、実行区間・初期残高・run の終わり方
+    `CLOSE_ALL` だけを変えた `RunConfig` と、その `ConfigDigest`・予測 `RunId` を返し、その設定を
+    走らせてよい設定として runner に登録する。
+    """
+
+    def plan(
+        self,
+        variant: Variant,
+        compiled: CompiledStrategy,
+        interval: Interval,
+        initial_balance: Money,
+    ) -> SegmentRunPlan: ...
 
 
 @runtime_checkable

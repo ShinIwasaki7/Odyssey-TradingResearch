@@ -20,6 +20,7 @@ from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.adapters import search_report
 from odyssey_fx.evaluation.domain.search import TrialPhase, TrialUnitKey
+from odyssey_fx.evaluation.domain.variant import Variant
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult
 from tests.fixtures.synthetic.market import USDJPY, series
 
@@ -75,7 +76,9 @@ def test_the_gaps_shown_are_those_of_the_series_the_capability_check_read(
     inputs = SimpleNamespace(artifacts_root=Path("/nowhere"), roots=())
     record = SimpleNamespace(
         run_id=SimpleNamespace(hex="ab" * 32),
-        unit=TrialUnitKey(fold_index=0, phase=TrialPhase.VALIDATION, trial_index=0),
+        unit=TrialUnitKey(
+            variant=Variant.STANDARD, fold_index=0, phase=TrialPhase.VALIDATION, trial_index=0
+        ),
     )
 
     lines = search_report._capability_lines(cast(Any, inputs), cast(Any, record))

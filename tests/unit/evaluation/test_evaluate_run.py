@@ -31,6 +31,7 @@ from odyssey_fx.evaluation.domain.metrics import (
     RatioValue,
     TradeOutcome,
     Unavailable,
+    metric_ids_of,
 )
 from odyssey_fx.evaluation.domain.status import (
     CHECK_ALL_VALUES_READABLE,
@@ -103,8 +104,24 @@ def report() -> EvaluationReport:
 
 def test_the_metrics_are_the_nineteen_in_declaration_order(report: EvaluationReport) -> None:
     """指標集合 v2 の19件すべてが1行ずつ、宣言順に並ぶ（D07 §5.5・§8.1）。"""
-    assert [record.metric_id for record in report.metrics] == list(MetricId)
+    assert [record.metric_id for record in report.metrics] == list(metric_ids_of(2))
     assert len(report.metrics) == 19
+
+
+def test_metric_set_v3_adds_the_rate_peak_drawdown_last() -> None:
+    """指標集合 v3 は v2 の19件に #20 を足した 20 件（D07 §5.6。2026-10-21 改訂）。"""
+    repository = traces.repository_for()
+    result = traces.result_for(repository.manifest)
+    report = EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
+        result, repository, 3, traces.CALENDAR
+    )
+    assert [record.metric_id for record in report.metrics] == list(MetricId)
+    peak = next(
+        record.value
+        for record in report.metrics
+        if record.metric_id is MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK
+    )
+    assert isinstance(peak, RatioValue)
 
 
 def test_net_profit_matches_the_paper_trace(report: EvaluationReport) -> None:
@@ -658,8 +675,9 @@ def test_the_evaluation_identifier_changes_with_the_metric_set_version() -> None
     repository = traces.repository_for()
     result = traces.result_for(repository.manifest)
     use_case = EvaluateRun(evaluation_code_digest=_CODE_DIGEST)
-    first = use_case.evaluate(result, repository, 1, traces.CALENDAR)
-    second = use_case.evaluate(result, repository, 2, traces.CALENDAR)
+    # 実装が持つ版は 2 と 3（2026-10-21 改訂。D07 §5.6）。
+    first = use_case.evaluate(result, repository, 2, traces.CALENDAR)
+    second = use_case.evaluate(result, repository, 3, traces.CALENDAR)
     assert first.manifest.run_evaluation_id != second.manifest.run_evaluation_id
 
 

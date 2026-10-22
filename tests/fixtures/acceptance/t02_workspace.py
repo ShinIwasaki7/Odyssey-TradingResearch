@@ -66,6 +66,9 @@ __all__ = [
     "SEALED_GENERATION_END",
     "SNAPSHOT_PLACEHOLDER",
     "T02Workspace",
+    "CANDIDATE_MARKER",
+    "accept_candidate",
+    "install_candidate",
     "accept_variant",
     "build_sealed_workspace",
     "build_workspace",
@@ -353,3 +356,29 @@ def accept_variant(
     """
     _write_raw(raw_root / "data/raw/market", bars)
     return _accept(workspace.repo, raw_root, by="acceptance-test", boundaries=SEALED_BOUNDARIES)
+
+
+def accept_candidate(workspace: T02Workspace, root: Path) -> str:
+    """作業場に候補の組の snapshot（2026-10-21 改訂の探索の実験の両組。D13-15 (a)）を足す。
+
+    `sealed_raw_bars()`（T02 の値を 1 週間延ばした素の足。評価範囲の中は作業場の足と同じ値）を
+    `root` の下に書いて受け入れて承認する。作業場の snapshot と中身が違う（延ばした週がある）ので
+    別の識別子になり、評価範囲の run の結果は同じになる。
+    """
+    return accept_variant(workspace, root, sealed_raw_bars())
+
+
+#: 候補の組の snapshot の識別子を書いておく作業場の中のファイル（`install_candidate` が書き、
+#: `search_experiments.write_search_experiment` が既定値として読む）。
+CANDIDATE_MARKER: Final = "candidate_snapshot.txt"
+
+
+def install_candidate(workspace: T02Workspace, root: Path) -> str:
+    """`accept_candidate` で候補の組の snapshot を足し、識別子を作業場の `CANDIDATE_MARKER` に書く。
+
+    探索の実験設定を書くテストが、候補の組の snapshot を毎回渡さずに済むようにする（2026-10-21
+    改訂。探索の実験は両組の snapshot を書く。D13-15 (a)）。
+    """
+    snapshot_id = accept_candidate(workspace, root)
+    (workspace.repo / CANDIDATE_MARKER).write_text(snapshot_id, encoding="utf-8")
+    return snapshot_id

@@ -24,7 +24,13 @@ from odyssey_fx.evaluation.domain.search import (
     ValidationRule,
     is_selectable_metric,
 )
-from odyssey_fx.evaluation.domain.splits import SplitStandard, SplitWindow
+from odyssey_fx.evaluation.domain.splits import PartialFold, SplitStandard, SplitWindow
+from tests.fixtures.evaluation.search_units import DEFAULT_PATH_RULE
+from tests.fixtures.evaluation.search_units import test_basis as _basis
+from tests.fixtures.evaluation.search_units import test_comparison_basis as _comparison_basis
+
+#: 経路の条件（2026-10-21 改訂で `ValidationRule.path` は必須。D13 §6.1）。
+_PATH = DEFAULT_PATH_RULE
 
 
 def _floor(
@@ -108,8 +114,8 @@ def test_a_threshold_must_be_a_finite_decimal() -> None:
 def test_fold_floors_must_not_be_empty_but_aggregate_and_eligibility_may() -> None:
     """E2: 最低条件の無い評価基準は書けない。集約条件と足切りの空は許す。"""
     with pytest.raises(KernelValueError, match="E2"):
-        ValidationRule(fold_floors=(), aggregate=())
-    assert ValidationRule(fold_floors=(_floor(),), aggregate=()).aggregate == ()
+        ValidationRule(fold_floors=(), aggregate=(), path=_PATH)
+    assert ValidationRule(fold_floors=(_floor(),), aggregate=(), path=_PATH).aggregate == ()
     assert (
         SelectionRule(
             metric=MetricId.NET_RETURN_RATE, direction=SelectionDirection.MAXIMIZE, eligibility=()
@@ -121,7 +127,7 @@ def test_fold_floors_must_not_be_empty_but_aggregate_and_eligibility_may() -> No
 def test_the_same_condition_is_not_written_twice_in_one_list() -> None:
     """E3: 同じ一覧に `(metric, comparator)`（集約条件は statistic も）が同じ条件を2つ書かない。"""
     with pytest.raises(KernelValueError, match="E3"):
-        ValidationRule(fold_floors=(_floor(), _floor()), aggregate=())
+        ValidationRule(fold_floors=(_floor(), _floor()), aggregate=(), path=_PATH)
     with pytest.raises(KernelValueError, match="E3"):
         SelectionRule(
             metric=MetricId.NET_RETURN_RATE,
@@ -135,11 +141,12 @@ def test_the_same_condition_is_not_written_twice_in_one_list() -> None:
         threshold=Decimal("0"),
     )
     with pytest.raises(KernelValueError, match="E3"):
-        ValidationRule(fold_floors=(_floor(),), aggregate=(median, median))
+        ValidationRule(fold_floors=(_floor(),), aggregate=(median, median), path=_PATH)
     # 比較が違えば別の条件（範囲の上下を書ける）。
     both = ValidationRule(
         fold_floors=(_floor(comparator=Comparator.LE), _floor(comparator=Comparator.GE)),
         aggregate=(),
+        path=_PATH,
     )
     assert [item.comparator for item in both.fold_floors] == [Comparator.LE, Comparator.GE]
 
@@ -182,6 +189,7 @@ def test_an_evaluation_standard_holds_the_five_groups() -> None:
         window=SplitWindow.ROLLING,
         purge_seconds=0,
         min_folds=1,
+        partial_fold=PartialFold.AT_START,
     )
     standard = EvaluationStandard(
         purpose=StandardPurpose.MECHANISM_CHECK,
@@ -189,8 +197,10 @@ def test_an_evaluation_standard_holds_the_five_groups() -> None:
         selection=SelectionRule(
             metric=MetricId.NET_RETURN_RATE, direction=SelectionDirection.MAXIMIZE, eligibility=()
         ),
-        validation=ValidationRule(fold_floors=(_floor(),), aggregate=()),
+        validation=ValidationRule(fold_floors=(_floor(),), aggregate=(), path=_PATH),
         sufficiency=SufficiencyRule(classes=(_class("ONLY", "0"),)),
+        basis=_basis(),
+        comparison_basis=_comparison_basis(),
     )
     assert standard.purpose is StandardPurpose.MECHANISM_CHECK
     with pytest.raises(KernelValueError):
@@ -200,4 +210,6 @@ def test_an_evaluation_standard_holds_the_five_groups() -> None:
             selection=standard.selection,
             validation=standard.validation,
             sufficiency=standard.sufficiency,
+            basis=standard.basis,
+            comparison_basis=standard.comparison_basis,
         )

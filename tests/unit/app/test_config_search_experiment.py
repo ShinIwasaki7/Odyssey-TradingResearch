@@ -20,6 +20,7 @@ from odyssey_fx.evaluation.domain.search import SearchPlanKind
 from odyssey_fx.evaluation.domain.splits import FinalHoldoutSpec, SplitKind
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.declarations.specs import IntValue
+from tests.fixtures.evaluation.research_policies import append_registry_entry
 from tests.fixtures.evaluation.search_experiments import (
     BASE_EXPERIMENT,
     DEFAULT_AXES,
@@ -37,7 +38,6 @@ _COPIED = (
     "configs/strategies/strategy_b_v1.yaml",
     "configs/policies/research/research_policy_v1.yaml",
     "configs/policies/research/research_policy_v2.yaml",
-    "configs/policies/research/registry.yaml",
     BASE_EXPERIMENT,
 )
 
@@ -53,6 +53,10 @@ def _workspace(tmp_path: Path) -> Path:
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((REPO_ROOT / relative).read_bytes())
+    # 登録簿はリポジトリの正本を写さず作業場で作る（正本の版 3 と試験用の版 3 が重ならないよう
+    # にする。2026-10-21 改訂で正本に版 3 を登録した）。
+    append_registry_entry(tmp_path, "research_policy", 1)
+    append_registry_entry(tmp_path, "research_policy", 2)
     install_policy_v3(tmp_path)
     return tmp_path
 
@@ -289,8 +293,9 @@ def test_a_single_run_experiment_needs_its_run_interval(tmp_path: Path) -> None:
 
 # --- 遅延規則の「どの足にも当たらない」検査を当てる範囲（D09 §17.7.2 の6）------------------
 
-#: 選定区間を 3 日にした 2 fold（fold 0 = 選定 [1,4) 日・検証 [4,8) 日、fold 1 = 選定 [5,8) 日・
-#: 検証 [8,12) 日）。評価範囲の最初の 1 日 [0,1) はどの単位の実行区間にも入らない。
+#: 選定区間を 3 日にした分割。2026-10-21 改訂（D13 §2.3）で、範囲の始まり側の端数も端数の fold
+#: （選定 [0,3) 日・検証 [3,4) 日）になり、続いて fold 1 = 選定 [1,4) 日・検証 [4,8) 日、
+#: fold 2 = 選定 [5,8) 日・検証 [8,12) 日。単位の実行区間の和は評価範囲に等しい（D13 §2.4 の U1）。
 _SHORT_TRAIN_SPLIT = TWO_FOLD_SPLIT.replace('train_length: "4d"', 'train_length: "3d"')
 
 
@@ -308,31 +313,36 @@ def _with_delay(path: Path, bar_start: str, delay: str) -> Path:
 
 
 def test_the_delay_rule_check_uses_the_unit_intervals_not_the_range(tmp_path: Path) -> None:
-    """遅らせた公開が評価範囲の始まりに届いても、どの単位の実行区間にも届かなければ拒否する。
+    """遅らせた公開がどの単位の実行区間の中の見え方も変えなければ拒否し、単位の区間を示す。
 
-    2015-01-01T22:00Z 始まりの日足は 01-02T22:00Z に公開される。48 時間遅らせると評価範囲の
-    始まり（01-04T22:00Z）ちょうどに届くが、単位の実行区間はどれも 01-05T22:00Z 以降に始まる。
+    2015-01-01T22:00Z 始まりの日足は 01-02T22:00Z に公開される。24 時間遅らせても評価範囲の
+    始まり（01-04T22:00Z）より前なので、どの単位でも見え方が変わらない。2026-10-21 改訂の端数の
+    fold で単位の実行区間が評価範囲を覆う（U1）ので、規則の当て先は単位の区間のまま、評価範囲の
+    始まりの手前の公開は拒否される（以前の「範囲の始まりに届いても単位に届かない」場合は、
+    端数の fold が範囲の始まりから選定区間を持つので起きない）。
+    """
+    root = _workspace(tmp_path)
+    install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
+    path = _with_delay(
+        write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "24h"
+    )
+    message = _refused(path, root)
+    assert "見え方が変わらない" in message
+    # 拒否の理由は単位の実行区間（端数の fold の選定区間の始まりを含む）を並べる。
+    assert "2015-01-04T22:00:00Z〜2015-01-07T22:00:00Z" in message
+
+
+def test_a_delay_rule_reaching_one_unit_interval_is_accepted(tmp_path: Path) -> None:
+    """どれか1つの単位の実行区間で見え方が変われば受け付ける。
+
+    48 時間遅らせると端数の fold の選定区間の始まり（01-04T22:00Z）ちょうどに届く。
     """
     root = _workspace(tmp_path)
     install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
     path = _with_delay(
         write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "48h"
     )
-    message = _refused(path, root)
-    assert "見え方が変わらない" in message
-    assert "2015-01-05T22:00:00" in message
-
-
-def test_a_delay_rule_reaching_one_unit_interval_is_accepted(tmp_path: Path) -> None:
-    """どれか1つの単位の実行区間で見え方が変われば受け付ける。
-
-    72 時間遅らせると fold 0 の選定区間の始まり（01-05T22:00Z）ちょうどに届く。
-    """
-    root = _workspace(tmp_path)
-    install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
-    path = _with_delay(
-        write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "72h"
-    )
     loaded = _load(path, root)
     assert loaded.search is not None
-    assert [fold.train.start for fold in loaded.search.split.folds] == [_day(1), _day(5)]
+    assert [fold.train.start for fold in loaded.search.split.folds] == [_day(0), _day(1), _day(5)]
+    assert [fold.partial for fold in loaded.search.split.folds] == [True, False, False]

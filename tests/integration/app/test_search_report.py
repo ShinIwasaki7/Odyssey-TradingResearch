@@ -20,7 +20,8 @@ D09 §11.5（9 見出しの書式）・§10.4（途中で止まった実行）�
 - 研究ポリシーの版の登録簿が無い・壊れている・版の要素が無い・ダイジェストが違うと、
   `experiment report` は終了コード 2 でレポートを書かない。`experiment run` の最後に読めなければ
   結末記録と台帳の行はそのままで終了コード 1（#26）。レポートの書き込みの失敗も同じ（§17.7.5 の8）。
-- 「退避中」の印がある版は終了コード 2。`experiment reproduce` は探索の実験を終了コード 2 で拒否。
+- 「退避中」の印がある版は終了コード 2。`experiment reproduce` は探索の実験も再現する（2026-10-21
+  改訂。D13-25 (a)）。結末記録の無い（途中で止まった）実験は終了コード 2。
 
 最後まで通す実行は1回だけ行い（`base`）、ほかのテストはその成果物を写した基点で走らせる
 （同じ設定の単位は既存の run と評価を再利用する。D07 §19.6）。台帳と登録簿は、レポートだけを
@@ -69,8 +70,14 @@ from odyssey_fx.evaluation.domain.search import (
     TrialPhase,
     TrialUnitKey,
 )
-from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
+from odyssey_fx.evaluation.domain.variant import Variant
+from tests.fixtures.acceptance.t02_workspace import (
+    T02Workspace,
+    build_workspace,
+    install_candidate,
+)
 from tests.fixtures.evaluation.research_policies import (
+    TEST_BASIS,
     append_registry_entry,
     policy_v3_text,
     write_policy,
@@ -93,12 +100,21 @@ _MECHANISM_PURPOSE = "用途: 機構の確認（共通基準の判定ではな�
 
 @pytest.fixture(scope="module")
 def workspace(tmp_path_factory: pytest.TempPathFactory) -> T02Workspace:
-    """試験用の研究ポリシー版 3（機構の確認）・版 4（試行数の上限 3）・版 6（共通基準の判定）。"""
-    built = build_workspace(tmp_path_factory.mktemp("t02-search-report"))
+    """試験用の研究ポリシー版 3（機構の確認）・版 4（試行数の上限 3）・版 6（共通基準の判定）。
+
+    探索の実験は両組の snapshot を書く（2026-10-21 改訂）。用途が共通基準の判定の版 6 は、前提の
+    記録の snapshot が実験の両組と役割ごとに一致しないと読込で拒否されるので、作業場の 2 つの
+    snapshot を書く（D13-16 (a)・仮置き 21）。
+    """
+    root = tmp_path_factory.mktemp("t02-search-report")
+    built = build_workspace(root)
+    candidate = install_candidate(built, root / "candidate")
     install_policy_v3(built.repo)
     install_policy_v3(built.repo, version=4, trials=3)
+    basis = TEST_BASIS.replace("1" * 64, built.snapshot_id).replace("2" * 64, candidate)
     text = policy_v3_text(
-        version=6, replace={"split": TWO_FOLD_SPLIT, "purpose": "  purpose: STANDARD"}
+        version=6,
+        replace={"split": TWO_FOLD_SPLIT, "purpose": "  purpose: STANDARD", "basis": basis},
     )
     write_policy(built.repo, "research_policy", 6, text)
     append_registry_entry(built.repo, "research_policy", 6)
@@ -212,6 +228,20 @@ def _rewrite_outcome(directory: Path, **changes: Any) -> None:
     outcome = read_experiment_outcome(directory)
     assert outcome is not None and outcome.search is not None
     search = replace(outcome.search, **changes)
+    payload = experiment_outcome_payload(replace(outcome, search=search))
+    (directory / "experiment_outcome.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _rewrite_standard_variant(directory: Path, **changes: Any) -> None:
+    """結末記録の標準の組の値（`VariantOutcome`）だけを書き換える（2026-10-21 改訂）。"""
+    outcome = read_experiment_outcome(directory)
+    assert outcome is not None and outcome.search is not None
+    variants = outcome.search.variants
+    search = replace(
+        outcome.search, variants=replace(variants, standard=replace(variants.standard, **changes))
+    )
     payload = experiment_outcome_payload(replace(outcome, search=search))
     (directory / "experiment_outcome.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -467,7 +497,11 @@ def test_25_an_interrupted_run_shows_unit_and_fold_states_without_a_verdict(
     directory = _version(out, "base")
     for name in ("experiment_outcome.json", "report.md"):
         (directory / name).unlink()
-    search = directory / "search"
+    # 標準の組の fold 1 の途中で止まった形にする（候補の組と経路の区間はまだ始まっていない。
+    # 組の順は標準 → 候補、組の中は全 fold の後に経路。改訂 PR の仮置き 35 (a)）。
+    shutil.rmtree(directory / "search" / "candidate")
+    search = directory / "search" / "standard"
+    shutil.rmtree(search / "path")
     for name in ("trial_units.parquet", "trial_metrics.parquet", "selection_f1.json"):
         (search / name).unlink()
     for path in sorted((search / "units").iterdir()):
@@ -478,17 +512,24 @@ def test_25_an_interrupted_run_shows_unit_and_fold_states_without_a_verdict(
     text = (directory / "report.md").read_text(encoding="utf-8")
     assert _sections(text) == list(SEARCH_REPORT_HEADINGS)
     assert "- 判定: 未確定（途中で止まった）" in _section(text, 1)
-    states = _section(text, 3)
+    whole = _section(text, 3)
+    # 組ごとに出す（2026-10-21 改訂）。ここで見るのは標準の組の本文。
+    states = whole[whole.index("### 標準の組") : whole.index("### 候補の組")]
     for value in ("`ABORTED`", "`NOT_STARTED`", "`COMPLETED`"):
         assert value in states
     assert "中断（`ABORTED`）" in states and "未試行（`NOT_STARTED`）" in states
     assert "検証済み" in states and "証拠の要件は未確定（頻度区分が決まっていない）" in states
-    selected = read_selections(directory)[0].selected_trial_index
+    selected = read_selections(directory, Variant.STANDARD)[0].selected_trial_index
     assert selected is not None
     assert f"| f0_VALIDATION_t{selected} |" in states
     # 検証区間の取引件数は、検証区間の試行記録が指す評価の TRADE_COUNT の写し（Q36 決定）。
-    record = read_unit_records(directory)[1][
-        TrialUnitKey(fold_index=0, phase=TrialPhase.VALIDATION, trial_index=selected)
+    record = read_unit_records(directory, Variant.STANDARD)[1][
+        TrialUnitKey(
+            variant=Variant.STANDARD,
+            fold_index=0,
+            phase=TrialPhase.VALIDATION,
+            trial_index=selected,
+        )
     ]
     metrics = FileSystemResultRepository(root=out).read_evaluation_metrics(
         record.run_id, RunEvaluationId(record.run_evaluation_id)
@@ -505,6 +546,9 @@ def test_25_an_interrupted_run_shows_unit_and_fold_states_without_a_verdict(
     availability = _section(text, 4)
     assert "- fold 1: 候補なし" not in availability
     assert "- fold 1: 検証区間の単位が終わっていない" in availability
+    # 候補の組はまだ始まっていない（未着手）。
+    candidate = whole[whole.index("### 候補の組") :]
+    assert "未着手" in candidate
     assert "未確定（途中で止まった）" in _section(text, 6)
     assert "頑健性の表は出さない" in _section(text, 9)
     assert "- この番号の結末の行: あり" in _section(text, 8)
@@ -520,7 +564,8 @@ def test_16_a_floor_breached_with_few_trades_is_shown_in_the_verdict_section(
     directory = _version(_copy_base(base, tmp_path), "base")
     outcome = read_experiment_outcome(directory)
     assert outcome is not None and outcome.search is not None
-    selected = outcome.search.selections[0].selected_trial_index
+    standard = outcome.search.variants.standard
+    selected = standard.selections[0].selected_trial_index
     assert selected is not None
     breach = ConditionResult(
         scope=ConditionScope.FOLD_FLOOR,
@@ -533,7 +578,7 @@ def test_16_a_floor_breached_with_few_trades_is_shown_in_the_verdict_section(
         outcome=ConditionOutcome.NOT_MET,
         unavailable_reason=None,
     )
-    others = tuple(item for item in outcome.search.condition_results if item.fold_index != 0)
+    others = tuple(item for item in standard.condition_results if item.fold_index != 0)
     shortfall = SufficiencyShortfall(
         kind=SufficiencyShortfallKind.FLOOR_NOT_MET_TRADES_BELOW,
         fold_index=0,
@@ -543,8 +588,8 @@ def test_16_a_floor_breached_with_few_trades_is_shown_in_the_verdict_section(
         required=5,
         observed=0,
     )
-    rest = tuple(item for item in outcome.search.shortfalls if item.fold_index != 0)
-    _rewrite_outcome(
+    rest = tuple(item for item in standard.shortfalls if item.fold_index != 0)
+    _rewrite_standard_variant(
         directory,
         condition_results=(breach, *others),
         shortfalls=tuple(sorted((shortfall, *rest), key=lambda item: item.key)),
@@ -707,7 +752,9 @@ def test_a_unit_failing_a_post_run_check_is_listed_first(
     # 1行目に不合格の旨、2行目に用途（D09 §11.5 の順1。§17.7.5 の3）
     assert verdict.splitlines()[2] == "**記録の検査（事後検査）に合格でない単位がある**"
     assert verdict.splitlines()[4] == _MECHANISM_PURPOSE
-    assert "| f0_TRAIN_t0 | evaluation_rule_matches | FAILED |" in verdict
+    # 単位の名前の前に組を付ける（2026-10-21 改訂。両組の単位と経路の区間を並べる）。
+    assert "| standard f0_TRAIN_t0 | evaluation_rule_matches | FAILED |" in verdict
+    assert "| candidate f0_TRAIN_t0 | evaluation_rule_matches | FAILED |" in verdict
 
 
 def test_an_unreadable_aggregate_table_is_written_as_unreadable_not_raised(
@@ -716,7 +763,7 @@ def test_an_unreadable_aggregate_table_is_written_as_unreadable_not_raised(
     """集約表が読めなければ、例外にせず該当する欄に「読めない（理由）」と書く（終了コード 0）。"""
     repo = _repo_copy(workspace, tmp_path, base.ledger)
     directory = _version(_copy_base(base, tmp_path), "base")
-    (directory / "search" / "trial_metrics.parquet").write_bytes(b"not a parquet file")
+    (directory / "search" / "standard" / "trial_metrics.parquet").write_bytes(b"not a parquet file")
     code, output = _report(directory, repo)
     assert code == 0, output
     text = (directory / "report.md").read_text(encoding="utf-8")
@@ -724,20 +771,11 @@ def test_an_unreadable_aggregate_table_is_written_as_unreadable_not_raised(
     assert str(tmp_path) not in text
 
 
-# --- reproduce の拒否 --------------------------------------------------------------------------
+# --- reproduce（2026-10-21 改訂: 探索の実験も再現する。D13-25 (a)）------------------------------
 
 
-@pytest.mark.parametrize("stopped", [False, True])
-def test_reproduce_refuses_a_search_experiment(
-    workspace: T02Workspace, base: _Base, tmp_path: Path, stopped: bool
-) -> None:
-    """探索の実験の別プロセスでの再現は段階5 の対象外（D09 §15）。結末記録の有無によらず終了
-    コード 2 で、reproduction.json を書かない。"""
-    directory = _version(_copy_base(base, tmp_path), "base")
-    if stopped:
-        (directory / "experiment_outcome.json").unlink()
-    target = tmp_path / "reproduced"
-    code, stdout, stderr = _cli(
+def _reproduce(workspace: T02Workspace, directory: Path, target: Path) -> tuple[int, str, str]:
+    return _cli(
         [
             "experiment",
             "reproduce",
@@ -751,6 +789,38 @@ def test_reproduce_refuses_a_search_experiment(
             str(workspace.repo),
         ]
     )
+
+
+def test_reproduce_re_runs_a_search_experiment_in_another_root(
+    workspace: T02Workspace, base: _Base, tmp_path: Path
+) -> None:
+    """探索の実験の別プロセスでの再現（D13-25 (a)、D07 §21 の改訂。実装 PR の仮置き 57）。
+
+    変えていない環境では、両組の独立口座の単位・選定・経路の区間がすべて一致し、全体の判定は
+    `REPRODUCED`（終了コード 0）。報告には単位・選定・区間ごとの照合の行がある。
+    """
+    directory = _version(_copy_base(base, tmp_path), "base")
+    target = tmp_path / "reproduced"
+    code, stdout, stderr = _reproduce(workspace, directory, target)
+    assert code == 0, stdout + stderr
+    assert "判定: REPRODUCED" in stdout
+    report = json.loads((target / "reproduction.json").read_text(encoding="utf-8"))
+    assert report["verdict"] == "REPRODUCED"
+    items = report["items"]
+    assert {item["verdict"] for item in items} == {"REPRODUCED"}
+    assert {item["variant"] for item in items} == {"standard", "candidate"}
+    assert {item["item"] for item in items} == {"UNIT", "SELECTION", "SEGMENT"}
+
+
+def test_reproduce_refuses_a_search_experiment_without_an_outcome(
+    workspace: T02Workspace, base: _Base, tmp_path: Path
+) -> None:
+    """結末記録の無い（途中で止まった）探索の実験には再現する結果が無い。終了コード 2 で、
+    reproduction.json を書かない（D07 §21.2 の手順1）。"""
+    directory = _version(_copy_base(base, tmp_path), "base")
+    (directory / "experiment_outcome.json").unlink()
+    target = tmp_path / "reproduced"
+    code, stdout, stderr = _reproduce(workspace, directory, target)
     assert code == 2, stdout + stderr
-    assert "段階5 の対象外" in stderr
+    assert "結末記録が無い" in stderr
     assert not (target / "reproduction.json").exists()

@@ -20,7 +20,7 @@ import pytest
 
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import ExperimentId
+from odyssey_fx.common.ids import ExperimentId, SnapshotId
 from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.adapters.fs_store import (
@@ -63,10 +63,12 @@ from odyssey_fx.evaluation.domain.search import (
 )
 from odyssey_fx.evaluation.domain.splits import (
     FinalHoldoutSpec,
+    PartialFold,
     SplitStandard,
     SplitWindow,
     split_spec_of,
 )
+from odyssey_fx.evaluation.domain.variant import Paired, Variant
 from odyssey_fx.strategy.compiler.compiled import (
     CompileError,
     CompileRejection,
@@ -74,6 +76,9 @@ from odyssey_fx.strategy.compiler.compiled import (
 )
 from odyssey_fx.strategy.declarations.specs import IntValue
 from tests.fixtures.evaluation.experiments import EXPERIMENT_VALUES, make_manifest
+from tests.fixtures.evaluation.search_units import DEFAULT_PATH_RULE
+from tests.fixtures.evaluation.search_units import test_basis as _basis
+from tests.fixtures.evaluation.search_units import test_comparison_basis as _comparison_basis
 
 _START = UtcTime.parse("2015-01-04T22:00:00Z")
 
@@ -92,6 +97,7 @@ def _standard(train_days: int = 4) -> EvaluationStandard:
             window=SplitWindow.ROLLING,
             purge_seconds=0,
             min_folds=2,
+            partial_fold=PartialFold.AT_START,
         ),
         selection=SelectionRule(
             metric=MetricId.NET_RETURN_RATE, direction=SelectionDirection.MAXIMIZE, eligibility=()
@@ -105,7 +111,10 @@ def _standard(train_days: int = 4) -> EvaluationStandard:
                 ),
             ),
             aggregate=(),
+            path=DEFAULT_PATH_RULE,
         ),
+        basis=_basis(),
+        comparison_basis=_comparison_basis(),
         sufficiency=SufficiencyRule(
             classes=(
                 FrequencyClass(
@@ -182,6 +191,13 @@ def _search_manifest(
         "final_holdout": None,
         "trials": _trials(),
         "pre_run_checks": (*single.pre_run_checks, check_trial_count(2, 100)),
+        # 探索の実験の snapshot と許可 partition は組の写像（2026-10-21 改訂。D07 §19.2）。
+        "snapshot_id": Paired(
+            standard=single.snapshot_id, candidate=SnapshotId(digest("candidate snapshot"))
+        ),
+        "allowed_partitions": Paired(
+            standard=single.allowed_partitions, candidate=single.allowed_partitions
+        ),
     }
     fields.update(overrides)
     draft = replace(single, **fields)
@@ -193,6 +209,8 @@ def _search_manifest(
 
 def _stage4_identity(manifest: ExperimentManifest, values: Mapping[str, Any]) -> ExperimentId:
     """段階4 の識別の入力（D07 §19.2 の1〜4）をそのまま写した式。"""
+    partitions = manifest.allowed_partitions
+    assert not isinstance(partitions, Paired)
     payload = {
         "experiment_name": manifest.experiment_name,
         "experiment_version": manifest.experiment_version,
@@ -210,9 +228,7 @@ def _stage4_identity(manifest: ExperimentManifest, values: Mapping[str, Any]) ->
         "compiled_ref": manifest.compiled_ref,
         "expected_config_digest": manifest.expected_config_digest,
         "snapshot_id": manifest.snapshot_id,
-        "allowed_partitions": {
-            partition: access.value for partition, access in manifest.allowed_partitions.items()
-        },
+        "allowed_partitions": {partition: access.value for partition, access in partitions.items()},
         "complexity": manifest.complexity,
         "complexity_limits": manifest.complexity_limits,
         "pre_run_checks": list(manifest.pre_run_checks),
@@ -265,8 +281,11 @@ def test_the_written_search_keys_do_not_enter_the_identity() -> None:
     [
         {"final_holdout": FinalHoldoutSpec(Interval(start=_day(12), end=_day(14)), "確かめ")},
         {
+            # 選定区間 3 日では端数の fold が足されて fold が 3 つになる（2026-10-21 改訂。
+            # D13 §2.3）ので、試行の単位も 3 fold 分にする。
             "evaluation_standard": _standard(train_days=3),
             "split": split_spec_of(_standard(train_days=3).split),
+            "trials": _trials(folds=3),
         },
         {
             "trials": (
@@ -381,8 +400,9 @@ def test_the_aggregate_tables_keep_their_columns_and_types_with_no_rows(tmp_path
         experiment_version=manifest.experiment_version,
         identity_of=lambda item: item.experiment_id,
     )
-    store.write_aggregate_tables(manifest, selections, (), {})
-    search = store.directory / "search"
+    store.write_aggregate_tables(manifest, Variant.STANDARD, selections, (), {})
+    # 組ごとの置き場（2026-10-21 改訂。実装 PR の仮置き 47）。
+    search = store.directory / "search" / "standard"
     units = pl.read_parquet(search / "trial_units.parquet")
     assert units.height == 4
     assert set(units.get_column("status").to_list()) == {"FAILED"}
@@ -394,8 +414,10 @@ def test_the_aggregate_tables_keep_their_columns_and_types_with_no_rows(tmp_path
     assert metrics.columns[:4] == ["fold_index", "phase", "trial_index", "metric_id"]
     assert metrics.schema["fold_index"] == pl.Int64()
     # 指標は試行記録の単位とちょうど同じ単位について渡す（D09 §17.7.4 の4）。
-    stray = TrialUnitKey(fold_index=0, phase=TrialPhase.TRAIN, trial_index=0)
+    stray = TrialUnitKey(
+        variant=Variant.STANDARD, fold_index=0, phase=TrialPhase.TRAIN, trial_index=0
+    )
     with pytest.raises(KernelValueError, match="cover exactly the units"):
-        store.write_aggregate_tables(manifest, selections, (), {stray: ()})
+        store.write_aggregate_tables(manifest, Variant.STANDARD, selections, (), {stray: ()})
     with pytest.raises(ArtifactAlreadyExists):
-        store.write_aggregate_tables(manifest, selections, (), {})
+        store.write_aggregate_tables(manifest, Variant.STANDARD, selections, (), {})

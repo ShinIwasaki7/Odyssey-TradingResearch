@@ -53,6 +53,7 @@ from odyssey_fx.evaluation.domain.experiment import (
     ExperimentManifest,
     ExperimentOutcome,
     ExperimentStatus,
+    all_allowed_partitions,
 )
 from odyssey_fx.evaluation.domain.metrics import CategoryCount, MetricId, MetricRecord
 from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
@@ -766,7 +767,8 @@ def _identity_lines(inputs: _Inputs) -> list[str]:
     manifest = inputs.manifest
     outcome = inputs.outcome
     policy = manifest.research_policy_ref
-    access = Counter(item.value for item in manifest.allowed_partitions.values())
+    partitions = all_allowed_partitions(manifest)
+    access = Counter(item.value for item in partitions.values())
     lines = [
         f"- 記録票の識別子（experiment_id）: {_code(manifest.experiment_id.hex)}",
         f"- 実験: {_code(manifest.experiment_name)} 版 {manifest.experiment_version}"
@@ -778,7 +780,7 @@ def _identity_lines(inputs: _Inputs) -> list[str]:
         f"- 探索計画・分割: {_code(manifest.search_plan)}・{_code(manifest.split)}",
         f"- snapshot: {_code(manifest.snapshot_id)}",
         "- 許可した partition: "
-        + f"{len(manifest.allowed_partitions)} 件（"
+        + f"{len(partitions)} 件（"
         + "、".join(f"{name} {count} 件" for name, count in sorted(access.items()))
         + "）",
         f"- 設定のダイジェスト（ConfigDigest。記録票の予測値）:"

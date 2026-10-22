@@ -56,6 +56,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     read_experiment_manifest,
     read_experiment_outcome,
     read_ledger_binding,
+    read_path_records,
     read_selections,
     read_trial_ledger_file,
     read_unit_records,
@@ -76,7 +77,12 @@ from odyssey_fx.evaluation.domain.search import (
     TrialUnitKey,
 )
 from odyssey_fx.evaluation.domain.status import CheckOutcome
-from tests.fixtures.acceptance.t02_workspace import T02Workspace, build_workspace
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
+from tests.fixtures.acceptance.t02_workspace import (
+    T02Workspace,
+    build_workspace,
+    install_candidate,
+)
 from tests.fixtures.evaluation.research_policies import (
     append_registry_entry,
     policy_v3_text,
@@ -104,7 +110,10 @@ _NO_CANDIDATE = (
 @pytest.fixture(scope="module")
 def workspace(tmp_path_factory: pytest.TempPathFactory) -> T02Workspace:
     """試験用の研究ポリシー版 3（2 fold）・版 4（試行数の上限 3）・版 5（足切りを通らない）。"""
-    built = build_workspace(tmp_path_factory.mktemp("t02-search-run"))
+    root = tmp_path_factory.mktemp("t02-search-run")
+    built = build_workspace(root)
+    # 探索の実験は標準・候補の両組の snapshot を書く（2026-10-21 改訂。D13-15 (a)）。
+    install_candidate(built, root / "candidate")
     install_policy_v3(built.repo)
     install_policy_v3(built.repo, version=4, trials=3)
     text = policy_v3_text(version=5, replace={"split": TWO_FOLD_SPLIT, "selection": _NO_CANDIDATE})
@@ -165,8 +174,10 @@ def _ledger(workspace: T02Workspace) -> tuple[TrialLedgerLine, ...]:
     return contents.lines
 
 
-def _unit(fold: int, phase: TrialPhase, trial: int) -> TrialUnitKey:
-    return TrialUnitKey(fold_index=fold, phase=phase, trial_index=trial)
+def _unit(
+    fold: int, phase: TrialPhase, trial: int, variant: Variant = Variant.STANDARD
+) -> TrialUnitKey:
+    return TrialUnitKey(variant=variant, fold_index=fold, phase=phase, trial_index=trial)
 
 
 # --- 最後まで通す（2 × 2 × 2 fold）-------------------------------------------------------
@@ -186,15 +197,19 @@ class _RecordingStore(FileSystemExperimentStore):
         super().write_ledger_binding(binding)
 
     def write_trial_start(self, record: Any) -> None:
-        type(self).calls.append(f"start {unit_name(record.unit)}")
+        type(self).calls.append(f"start {record.unit.variant.value} {unit_name(record.unit)}")
         super().write_trial_start(record)
 
-    def write_selection(self, selection: Any) -> None:
-        type(self).calls.append(f"selection {selection.fold_index}")
-        super().write_selection(selection)
+    def write_selection(self, variant: Any, selection: Any) -> None:
+        type(self).calls.append(f"selection {variant.value} {selection.fold_index}")
+        super().write_selection(variant, selection)
+
+    def write_path_segment_start(self, record: Any) -> None:
+        type(self).calls.append(f"path {record.key.variant.value} {record.key.segment_index}")
+        super().write_path_segment_start(record)
 
     def write_aggregate_tables(self, *args: Any) -> None:
-        type(self).calls.append("tables")
+        type(self).calls.append(f"tables {args[1].value}")
         super().write_aggregate_tables(*args)
 
     def write_outcome(self, outcome: Any) -> None:
@@ -256,39 +271,61 @@ def test_a_full_search_records_every_unit_selection_table_outcome_and_two_ledger
     search = outcome.search
     assert search is not None and search.ledger_execution == 1
 
-    starts, runs = read_unit_records(directory)
-    selections = read_selections(directory)
-    assert sorted(selections) == [0, 1]
-    expected_units = {_unit(fold, TrialPhase.TRAIN, trial) for fold in (0, 1) for trial in range(4)}
-    for fold, selection in selections.items():
-        assert selection.selected_trial_index is not None
-        expected_units.add(_unit(fold, TrialPhase.VALIDATION, selection.selected_trial_index))
-    assert set(starts) == set(runs) == expected_units
-    assert sum(count for _, count in search.trial_counts) == len(expected_units)
-    assert search.selections == tuple(selections[fold] for fold in (0, 1))
-    for record in runs.values():
-        assert [check.outcome for check in record.outcome_checks] == [CheckOutcome.PASSED] * 2
+    # 1 回の実行で標準・候補の両組を評価し、記録は組ごとの置き場 `search/<組>/` に置く
+    # （2026-10-21 改訂。D13-15 (a)、実装 PR の仮置き 47）。
+    run_ids: dict[Variant, set[RunId]] = {}
+    for variant in VARIANTS:
+        starts, runs = read_unit_records(directory, variant)
+        selections = read_selections(directory, variant)
+        assert sorted(selections) == [0, 1]
+        expected_units = {
+            _unit(fold, TrialPhase.TRAIN, trial, variant) for fold in (0, 1) for trial in range(4)
+        }
+        for fold, selection in selections.items():
+            assert selection.selected_trial_index is not None
+            expected_units.add(
+                _unit(fold, TrialPhase.VALIDATION, selection.selected_trial_index, variant)
+            )
+        assert set(starts) == set(runs) == expected_units
+        result = search.variants.of(variant)
+        assert sum(count for _, count in result.trial_counts) == len(expected_units)
+        assert result.selections == tuple(selections[fold] for fold in (0, 1))
+        for record in runs.values():
+            assert [check.outcome for check in record.outcome_checks] == [CheckOutcome.PASSED] * 2
 
-    # fold 0 の検証区間と fold 1 の選定区間は同じ区間なので、fold 0 で選んだ試行の2単位は
-    # 1つの run を共有し、後の単位は前の単位の成果物を再利用する（D09 §6.2・§10.5）。
-    chosen = selections[0].selected_trial_index
-    assert chosen is not None
-    shared = runs[_unit(1, TrialPhase.TRAIN, chosen)]
-    assert shared.run_id == runs[_unit(0, TrialPhase.VALIDATION, chosen)].run_id
-    assert shared.run_reused
+        # fold 0 の検証区間と fold 1 の選定区間は同じ区間なので、fold 0 で選んだ試行の2単位は
+        # 1つの run を共有し、後の単位は前の単位の成果物を再利用する（D09 §6.2・§10.5）。
+        chosen = selections[0].selected_trial_index
+        assert chosen is not None
+        shared = runs[_unit(1, TrialPhase.TRAIN, chosen, variant)]
+        assert shared.run_id == runs[_unit(0, TrialPhase.VALIDATION, chosen, variant)].run_id
+        assert shared.run_reused
+        run_ids[variant] = {record.run_id for record in runs.values()}
 
-    units = pl.read_parquet(directory / "search" / "trial_units.parquet")
-    assert units.height == len(expected_units)
-    assert units.columns[:3] == ["fold_index", "phase", "trial_index"]
-    assert units.schema["run_reused"] == pl.Boolean()
-    assert set(units.get_column("status").to_list()) == {"COMPLETED"}
-    metrics = pl.read_parquet(directory / "search" / "trial_metrics.parquet")
-    assert metrics.columns[:4] == ["fold_index", "phase", "trial_index", "metric_id"]
-    assert (
-        not metrics.select(["fold_index", "phase", "trial_index", "metric_id"])
-        .is_duplicated()
-        .any()
-    )
+        units = pl.read_parquet(directory / "search" / variant.value / "trial_units.parquet")
+        assert units.height == len(expected_units)
+        assert units.columns[:3] == ["fold_index", "phase", "trial_index"]
+        assert units.schema["run_reused"] == pl.Boolean()
+        assert set(units.get_column("status").to_list()) == {"COMPLETED"}
+        metrics = pl.read_parquet(directory / "search" / variant.value / "trial_metrics.parquet")
+        assert metrics.columns[:4] == ["fold_index", "phase", "trial_index", "metric_id"]
+        assert (
+            not metrics.select(["fold_index", "phase", "trial_index", "metric_id"])
+            .is_duplicated()
+            .any()
+        )
+
+        # 連続口座の検証経路: 区間ごとに開始記録と終端の記録がそろう（D13 §4.7）。
+        segment_starts, segment_ends = read_path_records(directory, variant)
+        assert segment_starts and set(segment_starts) == set(segment_ends)
+        assert result.path.end.value == "COMPLETED"
+        for index, end in segment_ends.items():
+            assert end.run_id == segment_starts[index].expected_run_id
+            assert [check.outcome for check in end.outcome_checks] == [CheckOutcome.PASSED] * 2
+            # 区間の run は終わり方（全決済）が違うので独立口座の run と成果物を共有しない。
+            assert end.run_id not in run_ids[variant]
+    # 組が違えば snapshot が違うので run を共有しない（D09 §6.2 の (3)）。
+    assert not run_ids[Variant.STANDARD] & run_ids[Variant.CANDIDATE]
 
     lines = full.lines
     assert [line.entry.event for line in lines] == [
@@ -297,6 +334,10 @@ def test_a_full_search_records_every_unit_selection_table_outcome_and_two_ledger
     ]
     assert lines[1].entry.verdict is search.verdict
     assert lines[1].entry.status is ExperimentStatus.COMPLETED
+    results = lines[1].entry.results
+    assert results is not None
+    for variant, item in results.variants.items():
+        assert item.verdict is search.variants.of(variant).verdict
     binding = read_ledger_binding(directory)
     assert binding is not None
     assert (binding.execution, binding.started_line_digest) == (1, lines[0].digest)
@@ -309,17 +350,30 @@ def test_a_full_search_records_every_unit_selection_table_outcome_and_two_ledger
 
 def test_4_22_the_records_are_written_in_the_designed_order(full: _Full) -> None:
     """台帳の開始の行 → 束縛の記録 → 最初の開始記録（#22）。各 fold の選定記録は検証区間の単位の
-    開始記録より前（#4）。集約表 → 結末記録 → 台帳の結末の行（D09 §10.7）。"""
+    開始記録より前（#4）。組の順は標準 → 候補で、組の中は全 fold の後にその組の経路の区間（D09
+    §5.4 の 2026-10-21 改訂。改訂 PR の仮置き 35 (a)）。集約表（組ごと）→ 結末記録 → 台帳の結末の
+    行（D09 §10.7）。"""
     calls = list(full.calls)
-    assert calls[:3] == ["ledger STARTED", "binding", "start f0_TRAIN_t0"]
-    for fold in (0, 1):
-        validation = next(c for c in calls if c.startswith(f"start f{fold}_VALIDATION"))
-        assert calls.index(f"selection {fold}") < calls.index(validation)
-        assert all(
-            calls.index(f"start f{fold}_TRAIN_t{trial}") < calls.index(f"selection {fold}")
-            for trial in range(4)
-        )
-    assert calls[-3:] == ["tables", "outcome", "ledger FINISHED"]
+    assert calls[:3] == ["ledger STARTED", "binding", "start standard f0_TRAIN_t0"]
+    for variant in ("standard", "candidate"):
+        for fold in (0, 1):
+            validation = next(
+                c for c in calls if c.startswith(f"start {variant} f{fold}_VALIDATION")
+            )
+            assert calls.index(f"selection {variant} {fold}") < calls.index(validation)
+            assert all(
+                calls.index(f"start {variant} f{fold}_TRAIN_t{trial}")
+                < calls.index(f"selection {variant} {fold}")
+                for trial in range(4)
+            )
+
+    def positions(prefix: str) -> list[int]:
+        return [index for index, call in enumerate(calls) if call.startswith(prefix)]
+
+    assert max(positions("start standard")) < min(positions("path standard"))
+    assert max(positions("path standard")) < min(positions("start candidate"))
+    assert max(positions("start candidate")) < min(positions("path candidate"))
+    assert calls[-4:] == ["tables standard", "tables candidate", "outcome", "ledger FINISHED"]
 
 
 def test_15_23_an_interrupted_search_leaves_the_start_records_and_the_started_line_only(
@@ -336,9 +390,10 @@ def test_15_23_an_interrupted_search_leaves_the_start_records_and_the_started_li
     directory = _version(tmp_path, "stopped")
     assert (directory / "experiment_manifest.json").is_file()
     assert read_experiment_outcome(directory) is None
-    starts, runs = read_unit_records(directory)
+    starts, runs = read_unit_records(directory, Variant.STANDARD)
     assert list(starts) == [_unit(0, TrialPhase.TRAIN, 0)] and runs == {}
-    assert read_selections(directory) == {}
+    assert read_unit_records(directory, Variant.CANDIDATE) == ({}, {})
+    assert read_selections(directory, Variant.STANDARD) == {}
     assert read_ledger_binding(directory) is not None
     assert [line.entry.event for line in _ledger(workspace)] == [TrialLedgerEvent.STARTED]
 
@@ -358,8 +413,13 @@ def test_the_same_version_rerun_retreats_the_records_and_counts_execution_2(
     outcome = read_experiment_outcome(directory)
     assert outcome is not None and outcome.search is not None
     assert outcome.search.ledger_execution == 2
-    _, runs = read_unit_records(directory)
-    assert all(record.run_reused for record in runs.values())
+    for variant in VARIANTS:
+        _, runs = read_unit_records(directory, variant)
+        assert all(record.run_reused for record in runs.values())
+        # 同じ版を同じコードで再実行すると、経路の区間の run も前回と同じ RunId で再利用する
+        # （D13 §4.7 の 3。仮置き 26）。
+        _, ends = read_path_records(directory, variant)
+        assert ends and all(end.run_reused for end in ends.values())
     lines = _ledger(workspace)
     assert [(line.entry.execution, line.entry.event) for line in lines] == [
         (1, TrialLedgerEvent.STARTED),
@@ -527,8 +587,9 @@ def test_23_c_a_binding_that_cannot_be_written_stops_before_any_run_and_counts_t
         code, output = _run(workspace, out, experiment)
     assert code == 1, output
     directory = _version(out, "stop_c")
-    starts, runs = read_unit_records(directory)
-    assert starts == {} and runs == {}
+    for variant in VARIANTS:
+        starts, runs = read_unit_records(directory, variant)
+        assert starts == {} and runs == {}
     assert read_experiment_outcome(directory) is None
     assert _executions(workspace) == [(1, TrialLedgerEvent.STARTED)]
 
@@ -700,12 +761,15 @@ def test_6_the_next_fold_runs_after_a_fold_without_a_candidate(
     code, output = _run(workspace, out, _experiment(workspace, "nocand", policy_version=5))
     assert code == 0, output
     directory = _version(out, "nocand")
-    selections = read_selections(directory)
-    assert sorted(selections) == [0, 1]
-    assert all(item.selected_trial_index is None for item in selections.values())
-    starts, _ = read_unit_records(directory)
-    assert {unit.fold_index for unit in starts} == {0, 1}
-    assert all(unit.phase is TrialPhase.TRAIN for unit in starts)
+    for variant in VARIANTS:
+        selections = read_selections(directory, variant)
+        assert sorted(selections) == [0, 1]
+        assert all(item.selected_trial_index is None for item in selections.values())
+        starts, _ = read_unit_records(directory, variant)
+        assert {unit.fold_index for unit in starts} == {0, 1}
+        assert all(unit.phase is TrialPhase.TRAIN for unit in starts)
+        # 候補なしの fold は取引しない現金の区間で、区間の run は無い（仮置き 15）。
+        assert read_path_records(directory, variant) == ({}, {})
     outcome = read_experiment_outcome(directory)
     assert outcome is not None and outcome.search is not None
     assert outcome.search.verdict.value == "BELOW_STANDARD"
@@ -729,12 +793,15 @@ def test_7_a_unit_failing_a_post_run_check_is_excluded_and_fails_the_search(
     outcome = read_experiment_outcome(directory)
     assert outcome is not None and outcome.status is ExperimentStatus.FAILED_POST_RUN_CHECK
     assert outcome.failed_checks == (PolicyCheck.EVALUATION_RULE_MATCHES,)
-    _, runs = read_unit_records(directory)
-    record = runs[_unit(0, TrialPhase.TRAIN, 0)]
-    assert record.outcome_checks[1].outcome is CheckOutcome.FAILED
-    assert '"metric_set_version":3' in record.outcome_checks[1].observed
-    for selection in read_selections(directory).values():
-        assert {entry[2] for entry in selection.inputs} == {CandidateStatus.EXCLUDED_POST_RUN_CHECK}
+    for variant in VARIANTS:
+        _, runs = read_unit_records(directory, variant)
+        record = runs[_unit(0, TrialPhase.TRAIN, 0, variant)]
+        assert record.outcome_checks[1].outcome is CheckOutcome.FAILED
+        assert '"metric_set_version":3' in record.outcome_checks[1].observed
+        for selection in read_selections(directory, variant).values():
+            assert {entry[2] for entry in selection.inputs} == {
+                CandidateStatus.EXCLUDED_POST_RUN_CHECK
+            }
     assert _ledger(workspace)[-1].entry.status is ExperimentStatus.FAILED_POST_RUN_CHECK
 
 
@@ -743,29 +810,38 @@ def test_8_experiment_run_does_not_call_the_holdout_gate(full: _Full) -> None:
     assert full.code == 0, full.output
     assert not [name for name in sys.modules if "holdout_gate" in name]
     manifest = read_experiment_manifest(_version(full.out, "full"))
-    assert {access.value for access in manifest.allowed_partitions.values()} == {"RESEARCH_HISTORY"}
+    partitions = manifest.allowed_partitions
+    assert isinstance(partitions, Paired)  # 探索の実験は組の写像（2026-10-21 改訂）
+    for _, allowed in partitions.items():
+        assert {access.value for access in allowed.values()} == {"RESEARCH_HISTORY"}
     checks = {item.check: item.outcome for item in manifest.pre_run_checks}
     assert checks[PolicyCheck.RESEARCH_HISTORY_ONLY] is CheckOutcome.PASSED
 
 
 def test_24_the_finished_line_copies_the_started_line(full: _Full) -> None:
-    """結末の行は開始の行の項目を写し、`status` / `verdict` / `frequency_class` だけが結末記録の値
-    になる（D09 §10.12.3 の3）。"""
+    """結末の行は開始の行の項目を写し、`status`（実験の状態）/ `verdict`（組の判定）/ `results`
+    （組ごとの結果）だけが結末記録の値になる（D09 §10.12.3 の3。行の形式版 2 では最上位の
+    `frequency_class` は空で、頻度区分は組ごと。実装 PR の仮置き 55）。"""
     opening, closing = full.lines
     outcome = read_experiment_outcome(_version(full.out, "full"))
     assert outcome is not None and outcome.search is not None
-    frequency = outcome.search.frequency
     assert (closing.entry.status, closing.entry.verdict, closing.entry.frequency_class) == (
         outcome.status,
         outcome.search.verdict,
-        None if frequency is None else frequency.class_name,
+        None,
     )
+    results = closing.entry.results
+    assert results is not None
+    for variant, item in results.variants.items():
+        frequency = outcome.search.variants.of(variant).frequency
+        assert item.frequency_class == (None if frequency is None else frequency.class_name)
     restored = replace(
         closing.entry,
         event=TrialLedgerEvent.STARTED,
         status=None,
         verdict=None,
         frequency_class=None,
+        results=None,
     )
     assert encode(restored) == encode(opening.entry)
     assert closing.prev == opening.digest
@@ -789,7 +865,20 @@ def test_experiment_report_of_a_search_requires_the_repo_root(full: _Full) -> No
 
 
 def _metrics_files(out: Path) -> list[Path]:
-    return sorted((out / "runs").glob("*/eval/*/METRICS.parquet"))
+    """独立口座の単位の run の評価の指標の表（経路の区間の run は除く）。
+
+    経路の区間の run（終わり方 `CLOSE_ALL`）は記録票に予測値が無く、記録票の保存の前の確認の
+    対象にならない（読めない既存の成果物は実行中の構造エラー。D13 §4.7 の 3）。run の識別子の
+    並びに左右されないよう、区間の run の表は選ばない。
+    """
+    return sorted(
+        path
+        for path in (out / "runs").glob("*/eval/*/METRICS.parquet")
+        if '"run_end":"CLOSE_ALL"'
+        not in json.loads(
+            (path.parent.parent.parent / "manifest.json").read_text(encoding="utf-8")
+        )["config"]
+    )
 
 
 def test_22_a_reused_evaluation_reads_the_stored_metrics_without_re_evaluating(
@@ -806,17 +895,20 @@ def test_22_a_reused_evaluation_reads_the_stored_metrics_without_re_evaluating(
     code, output = _run(workspace, out, _experiment(workspace, "reused"))
     assert code == 0, output
     directory = _version(out, "reused")
-    _, runs = read_unit_records(directory)
-    assert all(record.run_reused for record in runs.values())
     original = _version(full.out, "full")
-    assert read_selections(directory) == read_selections(original)
-    # 集約表は `run_reused`（この実行では全単位が再利用）だけが違う。
-    for name in ("trial_units.parquet", "trial_metrics.parquet"):
-        new, old = (
-            pl.read_parquet(base / "search" / name).drop("run_reused", strict=False)
-            for base in (directory, original)
-        )
-        assert new.equals(old), name
+    for variant in VARIANTS:
+        _, runs = read_unit_records(directory, variant)
+        assert all(record.run_reused for record in runs.values())
+        assert read_selections(directory, variant) == read_selections(original, variant)
+        # 集約表は `run_reused`（この実行では全単位が再利用）だけが違う。
+        for name in ("trial_units.parquet", "trial_metrics.parquet"):
+            new, old = (
+                pl.read_parquet(base / "search" / variant.value / name).drop(
+                    "run_reused", strict=False
+                )
+                for base in (directory, original)
+            )
+            assert new.equals(old), name
     outcome, expected = read_experiment_outcome(directory), read_experiment_outcome(original)
     assert outcome is not None and outcome.search is not None
     assert expected is not None and expected.search is not None
@@ -912,6 +1004,6 @@ def test_metrics_that_become_unreadable_during_the_search_interrupt_it(
     assert code == 1, output
     directory = _version(out, "vanished")
     assert read_experiment_outcome(directory) is None
-    starts, runs = read_unit_records(directory)
+    starts, runs = read_unit_records(directory, Variant.STANDARD)
     assert list(starts) == [_unit(0, TrialPhase.TRAIN, 0)] and runs == {}
     assert [line.entry.event for line in _ledger(workspace)] == [TrialLedgerEvent.STARTED]

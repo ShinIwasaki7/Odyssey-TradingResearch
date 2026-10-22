@@ -22,6 +22,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
 )
 from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.search import TrialPhase, TrialUnitKey
+from odyssey_fx.evaluation.domain.variant import Variant
 
 
 def _generation(directory: Path, tag: str) -> None:
@@ -108,12 +109,15 @@ def test_an_unreadable_marker_stops_without_moving_anything(tmp_path: Path, text
 @pytest.mark.parametrize(
     "unit",
     [
-        TrialUnitKey(fold_index=0, phase=TrialPhase.TRAIN, trial_index=0),
-        TrialUnitKey(fold_index=12, phase=TrialPhase.VALIDATION, trial_index=305),
+        TrialUnitKey(variant=Variant.STANDARD, fold_index=0, phase=TrialPhase.TRAIN, trial_index=0),
+        TrialUnitKey(
+            variant=Variant.CANDIDATE, fold_index=12, phase=TrialPhase.VALIDATION, trial_index=305
+        ),
     ],
 )
 def test_the_unit_record_name_and_the_key_map_one_to_one(unit: TrialUnitKey) -> None:
-    assert unit_of_name(unit_name(unit)) == unit
+    """組は置き場（`search/<組>/units/`）で、名前は組の中の鍵（2026-10-21 改訂。仮置き 47）。"""
+    assert unit_of_name(unit_name(unit), unit.variant) == unit
 
 
 @pytest.mark.parametrize(
@@ -122,12 +126,12 @@ def test_the_unit_record_name_and_the_key_map_one_to_one(unit: TrialUnitKey) -> 
 def test_a_name_outside_the_pattern_is_a_structural_error(name: str) -> None:
     """名前は `f(0|[1-9][0-9]*)_(TRAIN|VALIDATION)_t(0|[1-9][0-9]*)` に完全一致するものだけ。"""
     with pytest.raises(KernelValueError):
-        unit_of_name(name)
+        unit_of_name(name, Variant.STANDARD)
 
 
 def test_a_stray_file_among_the_unit_records_is_a_structural_error(tmp_path: Path) -> None:
-    units = tmp_path / "search" / "units"
+    units = tmp_path / "search" / "standard" / "units"
     units.mkdir(parents=True)
     (units / "f01_TRAIN_t0.json").write_text("{}", encoding="utf-8")
     with pytest.raises(KernelValueError):
-        read_unit_records(tmp_path)
+        read_unit_records(tmp_path, Variant.STANDARD)

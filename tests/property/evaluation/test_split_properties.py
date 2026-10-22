@@ -8,6 +8,9 @@
   （最新の区間を必ず検証に使う）。
 - 選定区間の長さは `ROLLING` なら `T` ちょうど、`EXPANDING` なら `T` 以上。
 - 次の fold を採れなかった理由が生成の手順3 どおり（もう1つ前は範囲に収まらない）。
+- 2026-10-21 改訂（D13 §2.3・§2.4）: 端数があれば範囲の始まり側に端数の fold が1つ足され
+  （`fold_index = 0`、選定区間は `[R0, R0 + T)`、検証区間は `V` より短い）、fold があれば
+  検証区間の和は `[R0 + T + P, R1)` に等しい（U2）。
 """
 
 from __future__ import annotations
@@ -18,7 +21,12 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.evaluation.domain.splits import SplitStandard, SplitWindow, generate_folds
+from odyssey_fx.evaluation.domain.splits import (
+    PartialFold,
+    SplitStandard,
+    SplitWindow,
+    generate_folds,
+)
 
 _START = UtcTime.parse("2016-01-03T22:00:00Z")
 _HOUR = 3600
@@ -34,6 +42,7 @@ def _standards(draw: st.DrawFn) -> SplitStandard:
         window=draw(st.sampled_from(list(SplitWindow))),
         purge_seconds=draw(st.integers(min_value=0, max_value=24 * 5)) * _HOUR,
         min_folds=1,
+        partial_fold=PartialFold.AT_START,
     )
 
 
@@ -48,9 +57,17 @@ def test_generated_folds_keep_purge_monotonicity_and_the_range(standard: SplitSt
     for index, fold in enumerate(folds):
         assert fold.fold_index == index
         assert fold.train.end + purge <= fold.validation.start
-        assert fold.validation.duration == validation_length
         assert standard.range.start <= fold.train.start
         assert fold.validation.end <= standard.range.end
+        if fold.partial:
+            # 端数の fold は最も古い fold で、選定区間は範囲の始まりから T（D13 §2.3）。
+            assert index == 0
+            assert fold.train.start == standard.range.start
+            assert fold.train.duration == train_length
+            assert fold.validation.start == fold.train.end + purge
+            assert timedelta(0) < fold.validation.duration < validation_length
+            continue
+        assert fold.validation.duration == validation_length
         if standard.window is SplitWindow.ROLLING:
             assert fold.train.duration == train_length
         else:
@@ -63,8 +80,11 @@ def test_generated_folds_keep_purge_monotonicity_and_the_range(standard: SplitSt
 
     if folds:
         assert folds[-1].validation.end == standard.range.end
-    # 採らなかった最初の j（= fold の数）は、手順3 の条件を満たさない。
-    next_validation_start = standard.range.end - validation_length * (len(folds) + 1)
+        # U2: 検証区間の和は [R0 + T + P, R1)（D13 §2.4）。
+        assert folds[0].validation.start == standard.range.start + train_length + purge
+    complete = [fold for fold in folds if not fold.partial]
+    # 採らなかった最初の j（= 完全な fold の数）は、手順3 の条件を満たさない。
+    next_validation_start = standard.range.end - validation_length * (len(complete) + 1)
     next_train_end = next_validation_start - purge
     if standard.window is SplitWindow.ROLLING:
         assert next_train_end - train_length < standard.range.start

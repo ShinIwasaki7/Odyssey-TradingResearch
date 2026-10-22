@@ -11,9 +11,11 @@
 #
 # **登録は人間が版を足すときに、研究ポリシーのファイルと同じコミットで1行足す**。要素は書き換え
 # も削除もしない（過去の実験の記録票が指す版を後から変えないため）。版 3（評価基準の値）は
-# D09 §17.3 の Q19〜Q32 が決まってから足す。
+# D09 §17.3 の Q19〜Q32 が決まってから足す。版 3 は 2026-10-21 の決定（D13）の値で、順 4 の実装 PR
+# で足した（D13 §8.4 の (4)。`digest` は読込が計算した値）。
 
 schema_version: 1
 entries:
   - {id: research_policy, version: 1, digest: "f31c6088a0ff8447a6003a9c56dbf44d45f0ab71046879f1e6b1178876c71aef"}
   - {id: research_policy, version: 2, digest: "c8903543b93db0aca60ff457f382d8cc8c8304ac11ff5c2402661e0400fe2426"}
+  - {id: research_policy, version: 3, digest: "f2e5d8f47489beac23d340438684aafc20c83ff7c7a1619e2aa6eb4b94ef1c3b", purpose: STANDARD}

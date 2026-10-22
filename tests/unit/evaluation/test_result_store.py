@@ -13,15 +13,18 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from odyssey_fx.backtest.trace.manifest import RunManifest
+from odyssey_fx.backtest.domain.policies import RunEndMode
+from odyssey_fx.backtest.trace.manifest import RunManifest, legacy_config_digest_of
 from odyssey_fx.backtest.trace.recorder import TraceTable, column_names
 from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultRepository,
     FileSystemResultWriter,
     FileSystemTraceSink,
     evaluation_directory,
+    manifest_from_payload,
     reserve_run_directory,
     run_directory,
 )
@@ -322,6 +325,55 @@ def test_replacing_a_run_also_clears_its_evaluations(saved_run: tuple[Path, obje
 
     assert not evaluations.exists(), "古い評価の成果物が残っている"
     assert (run_directory(root, result.run_id) / "manifest.replaced.001.json").is_file()
+
+
+def _legacy_payload(saved_run: tuple[Path, object]) -> tuple[dict[str, object], RunManifest]:
+    """終わり方の項目（run_end）が入る前の形の run manifest の JSON（2026-10-21 改訂の前に書いた
+    manifest の代わり。設定の本文から run_end を除き、指紋と識別子を旧い形で計算し直す）。"""
+    root, output = saved_run
+    original: RunManifest = output.manifest  # type: ignore[attr-defined]
+    path = run_directory(root, original.run_id) / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = '"run_end":"MARK_TO_MARKET",'
+    assert payload["config"].count(entry) == 1
+    payload["config"] = payload["config"].replace(entry, "")
+    legacy = legacy_config_digest_of(
+        original.config,
+        symbol_spec_ref=original.symbol_spec_ref,
+        calendar_ref=original.calendar_ref,
+        timeframe_def_refs=original.timeframe_def_refs,
+    )
+    assert legacy != original.config_digest
+    payload["config_digest"] = str(legacy.digest)
+    payload["run_id"] = str(
+        run_id_of(legacy, original.code_digest, original.lock_digest, original.env_digest)
+    )
+    return payload, original
+
+
+def test_an_old_manifest_without_run_end_is_read_as_mark_to_market(
+    saved_run: tuple[Path, object],
+) -> None:
+    """終わり方の項目の無い旧い run manifest は MARK_TO_MARKET と読み、識別子は保存値のまま
+    （実装 PR の仮置き 62。指紋は項目が入る前の形で照合する）。"""
+    payload, original = _legacy_payload(saved_run)
+    restored = manifest_from_payload(payload)
+    assert restored.config.run_end is RunEndMode.MARK_TO_MARKET
+    assert restored.config == original.config
+    assert str(restored.config_digest.digest) == payload["config_digest"]
+    assert str(restored.run_id) == payload["run_id"]
+
+
+def test_an_old_manifest_whose_config_was_edited_is_refused(
+    saved_run: tuple[Path, object],
+) -> None:
+    """旧い形の manifest でも、設定の中身だけを書き換えれば指紋が合わず拒否する（D06 §9.3）。"""
+    payload, _ = _legacy_payload(saved_run)
+    config = payload["config"]
+    assert isinstance(config, str)
+    payload["config"] = config.replace("2026-01-06T12:00:00Z", "2026-01-06T13:00:00Z")
+    with pytest.raises(KernelValueError, match="fingerprint disagree"):
+        manifest_from_payload(payload)
 
 
 def test_a_saved_run_with_a_broken_manifest_is_evaluated_and_explained(

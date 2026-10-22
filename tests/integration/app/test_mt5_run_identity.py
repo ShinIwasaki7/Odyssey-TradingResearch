@@ -39,10 +39,20 @@ from odyssey_fx.evaluation.adapters.fs_store import EXPERIMENT_OUTCOME_FILE
 from tests.fixtures.backtest.harness import CODE_DIGEST, ENV_DIGEST
 from tests.fixtures.mt5.workspace import Mt5Workspace, build_mt5_workspace
 
-#: 高速化の前の main（b0b18c8）で記録した値（モジュールの説明の「期待値の作り方」）。
-EXPECTED_RUN_ID: Final = "b6e3c2eee14936e56537d66da3f1a576eb8e866e5456a4c52f6984fabd779177"
-EXPECTED_RESULT_DIGEST: Final = "3dec6ef959ac0e8f7d152b0e71e50e410cc6157ddd324dbf6035ef56f6186607"
-EXPECTED_TRACE_DIGEST: Final = "731faac94743b78888dc13dc9b56f5d5cff03ee2606d155f8d1e61b54a193d66"
+#: 期待値（モジュールの説明の「期待値の作り方」）。2026-10-22 に取り直した（D13 §6.5 の R-9 の
+#: 帰結 (1)）: run の設定に run の終わり方（`RunConfig.run_end`。既定値も常に `ConfigDigest` に
+#: 入る。D13-23 (a)）を足したので、`ConfigDigest` が変わり、`run_id`・結果のダイジェスト・判断
+#: 履歴の全表のダイジェスト（`run_id` 列を含む）の 3 つが変わる。取り直す前の値は
+#: `b6e3c2ee…`・`3dec6ef9…`・`731faac9…`（高速化の前の main b0b18c8 で記録）。
+EXPECTED_RUN_ID: Final = "305f383f74f1acd365b7a1e598ee2873bc9e028e9361936befdf814c39cbc2be"
+EXPECTED_RESULT_DIGEST: Final = "dedbc31ddc9a3d7adc7788d61a53fd7230c648d8c298a5b439f97785fcc55379"
+EXPECTED_TRACE_DIGEST: Final = "754aaf5f4f6da9e7b13e5e27ab1a976f6548c7c9458564d79fe0988613873653"
+#: 判断履歴の全表から `run_id` 列を除いたダイジェスト。終わり方を足す前の main（55a745c）で同じ
+#: テストの組み立てに `without=("run_id",)` を足して記録した値。判断履歴が `run_id` 列以外で
+#: 変わらないことを確かめる（D13 §6.5 の R-9 の帰結 (1)）。
+EXPECTED_TRACE_DIGEST_WITHOUT_RUN_ID: Final = (
+    "15e4d98233cdef3b9c8ebfe16f82d18957c8dd9ccaf8bec930e49677d3f15ebb"
+)
 
 DECISION: Final = UtcTime.parse("2026-01-23T20:00:00Z")
 RUN: Final = Interval(start=DECISION, end=UtcTime.parse("2026-01-23T21:00:00Z"))
@@ -96,7 +106,7 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> Mt5Workspace:
     )
 
 
-def _trace_digest(run_directory: Path) -> str:
+def _trace_digest(run_directory: Path, *, without: tuple[str, ...] = ()) -> str:
     """判断履歴の全表（`TraceTable` の各表）の内容のダイジェスト。
 
     Parquet のバイト列は圧縮設定やライブラリの版で変わりうるので、列名・列の型・全行の値を
@@ -109,6 +119,7 @@ def _trace_digest(run_directory: Path) -> str:
             payload[table.value] = None
             continue
         frame = pl.read_parquet(path)
+        frame = frame.drop([name for name in without if name in frame.columns])
         payload[table.value] = {
             "columns": frame.columns,
             "dtypes": [str(dtype) for dtype in frame.dtypes],
@@ -166,3 +177,14 @@ def test_identifiers_and_trace_match_the_record_made_before_the_speedup(
     )
     expected = (EXPECTED_RUN_ID, EXPECTED_RESULT_DIGEST, EXPECTED_TRACE_DIGEST)
     assert observed == expected, f"observed (run_id, result_digest, trace) = {observed}"
+
+
+def test_the_trace_is_unchanged_except_the_run_id_column(
+    outcome: tuple[dict[str, object], Path],
+) -> None:
+    """run の終わり方を足しても、判断履歴は `run_id` 列以外で変わらない（D13 §6.5 の R-9 (1)）。"""
+    recorded, artifacts = outcome
+    run_directory = artifacts / "runs" / str(recorded["run_id"])
+    assert _trace_digest(run_directory, without=("run_id",)) == (
+        EXPECTED_TRACE_DIGEST_WITHOUT_RUN_ID
+    )

@@ -57,7 +57,8 @@ def _registry(repo: Path, *, with_v3: bool = True) -> None:
 
 def _standard(name: str) -> TrialLedgerEntry:
     entry = started(name, purpose=StandardPurpose.STANDARD)
-    return replace(entry, basis=replace(entry.basis, research_policy_ref=_V3))
+    # 比較の前提は組ごとの写像（2026-10-21 改訂。台帳の行の形式版 2）。
+    return replace(entry, basis=entry.basis.map(lambda _, b: replace(b, research_policy_ref=_V3)))
 
 
 def _ledger(repo: Path, out: Path, *args: str) -> tuple[int, str, str]:
@@ -79,7 +80,7 @@ def test_the_listing_groups_by_policy_version_and_marks_differing_basis_cells(
 ) -> None:
     _registry(tmp_path)
     first = started("a")
-    second = replace(started("b"), basis=replace(started("b").basis, seed=7))
+    second = replace(started("b"), basis=started("b").basis.map(lambda _, b: replace(b, seed=7)))
     third = _standard("c")
     write_ledger(
         tmp_path,
@@ -96,11 +97,15 @@ def test_the_listing_groups_by_policy_version_and_marks_differing_basis_cells(
     row_a, row_b = _row(text, "exp_a"), _row(text, "exp_b")
     header = next(line for line in text.splitlines() if line.startswith("| 実験 |"))
     names = [cell.strip() for cell in header.strip("|").split("|")]
-    seed = names.index("seed")
-    assert row_a[names.index("判定")] == "共通基準を満たさない（`BELOW_STANDARD`）"
-    assert row_b[names.index("判定")] == "結末の行なし"
+    # 列は組ごとの比較の前提（`standard.*` / `candidate.*`。台帳の行の形式版 2）。
+    seed = names.index("standard.seed")
+    assert row_a[names.index("組の判定")] == "共通基準を満たさない（`BELOW_STANDARD`）"
+    assert row_b[names.index("組の判定")] == "結末の行なし"
     assert (row_a[seed], row_b[seed]) == ("0", "*7")
-    assert all(not cell.startswith("*") for cell in row_b[: names.index("research_policy_ref")])
+    assert row_b[names.index("candidate.seed")] == "*7"
+    assert all(
+        not cell.startswith("*") for cell in row_b[: names.index("standard.research_policy_ref")]
+    )
     assert "`*` はまとまりの最初の行と比較の前提が違う項目。" in text
     assert "末尾に書きかけの行がある（数えていない。次の追記で切り詰められる）。" in text
 

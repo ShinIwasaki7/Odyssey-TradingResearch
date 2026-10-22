@@ -31,10 +31,12 @@ import polars as pl
 
 from odyssey_fx.backtest.domain.account import AccountSpec
 from odyssey_fx.backtest.domain.fills import CostKind
+from odyssey_fx.backtest.domain.orders import OrderSide
 from odyssey_fx.backtest.domain.policies import (
     HierarchyCheckResult,
     ResolutionHierarchy,
     RunConfig,
+    RunEndMode,
 )
 from odyssey_fx.backtest.trace.manifest import (
     CoverageCapability,
@@ -43,6 +45,7 @@ from odyssey_fx.backtest.trace.manifest import (
     RunManifest,
     SeriesCoverageReport,
     config_digest_of,
+    legacy_config_digest_of,
 )
 from odyssey_fx.backtest.trace.recorder import (
     TraceTable,
@@ -53,14 +56,21 @@ from odyssey_fx.backtest.trace.recorder import (
     table_column_kinds,
     table_columns,
 )
-from odyssey_fx.backtest.trace.result import BacktestResult, FinalSummaries, RunStatus
+from odyssey_fx.backtest.trace.result import (
+    BacktestResult,
+    FinalSummaries,
+    HypotheticalCloseLine,
+    RunStatus,
+)
 from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import AccountId, ExperimentId, RunId, SnapshotId
+from odyssey_fx.common.ids import AccountId, ExperimentId, PositionId, RunId, SnapshotId
 from odyssey_fx.common.money import (
     CurrencyCode,
     Money,
+    Price,
     PriceOffset,
+    Quantity,
     decimal_from_str,
     kernel_context,
 )
@@ -124,6 +134,19 @@ from odyssey_fx.evaluation.domain.metrics import (
     TradeRecord,
     Unavailable,
 )
+from odyssey_fx.evaluation.domain.path import (
+    PathEnd,
+    PathSegmentEnd,
+    PathSegmentKey,
+    PathSegmentRow,
+    PathSegmentStart,
+    PathSummary,
+)
+from odyssey_fx.evaluation.domain.policy_basis import (
+    FixedComparisonBasis,
+    PolicyBasis,
+    PremiseFile,
+)
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
     ComplexityMeasures,
@@ -134,20 +157,29 @@ from odyssey_fx.evaluation.domain.research_policy import (
 from odyssey_fx.evaluation.domain.search import (
     AggregateCondition,
     CandidateStatus,
+    ChangeKind,
+    CombinedVerdict,
     Comparator,
     ComparisonBasis,
     ConditionOutcome,
     ConditionResult,
     ConditionScope,
     EvaluationStandard,
+    EvidenceAxis,
     FoldSelection,
     FoldStatistic,
     FoldVerdict,
     FrequencyAssessment,
     FrequencyClass,
+    LedgerResults,
+    Lineage,
+    LineageSource,
     MetricCondition,
     ParameterAssignment,
     ParameterAxis,
+    PathBoundary,
+    PathRule,
+    ProfitabilityAxis,
     SearchOutcome,
     SearchPlan,
     SearchPlanKind,
@@ -170,6 +202,8 @@ from odyssey_fx.evaluation.domain.search import (
     TrialStatus,
     TrialUnitKey,
     ValidationRule,
+    VariantLedgerResult,
+    VariantOutcome,
     last_digest,
     ledger_defect,
     ledger_line_digest,
@@ -177,6 +211,7 @@ from odyssey_fx.evaluation.domain.search import (
 from odyssey_fx.evaluation.domain.splits import (
     FinalHoldoutSpec,
     Fold,
+    PartialFold,
     SplitKind,
     SplitSpec,
     SplitStandard,
@@ -187,6 +222,7 @@ from odyssey_fx.evaluation.domain.status import (
     ConsistencyCheckResult,
     EvaluationStatus,
 )
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import BarKey
 from odyssey_fx.marketdata.domain.integrity import (
@@ -833,8 +869,27 @@ def _result_payload(result: BacktestResult) -> dict[str, Any]:
                 kind.value: canonical_text(amount)
                 for kind, amount in summaries.cost_breakdown.items()
             },
+            # 仮決済の明細（2026-10-21 改訂。区間の終わりの決済の方式 (ii)。仮置き 45）。
+            "hypothetical_close_lines": [
+                canonical_text(line) for line in summaries.hypothetical_close_lines
+            ],
         },
     }
+
+
+def _close_line_of(text: object) -> HypotheticalCloseLine:
+    """仮決済の明細1件を読み戻す（`_result_payload` と対）。"""
+    item = _loads(text, "FinalSummaries.hypothetical_close_lines")
+    return HypotheticalCloseLine(
+        position_id=PositionId.parse(item["position_id"]),
+        side=OrderSide(item["side"]),
+        quantity=Quantity(decimal_from_str(item["quantity"]["units"])),
+        reference_bid=Price(decimal_from_str(item["reference_bid"]["value"])),
+        exit_price=Price(decimal_from_str(item["exit_price"]["value"])),
+        commission=_money_of(item["commission"]),
+        slippage=_money_of(item["slippage"]),
+        profit=_money_of(item["profit"]),
+    )
 
 
 # --- run 成果物の読み戻し（D07 §4.1・§4.3）-----------------------------------
@@ -1033,6 +1088,9 @@ def _run_config_of(payload: Mapping[str, Any], timeframes: Mapping[str, Timefram
         delay_scenario_ref=_policy_ref_of(payload["delay_scenario_ref"]),
         execution_series=_series_of(payload["execution_series"], timeframes),
         seed=int(payload["seed"]),
+        # 終わり方の項目の無い旧い run manifest（2026-10-21 改訂の前）は今の振る舞いの
+        # `MARK_TO_MARKET` と読む。識別子は保存値のまま（実装 PR の仮置き 62）。
+        run_end=RunEndMode(payload.get("run_end", RunEndMode.MARK_TO_MARKET.value)),
     )
 
 
@@ -1050,7 +1108,8 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
     エンコード文字列で保存されており（同節）、その表現は JSON 互換なのでそのまま読める。
     """
     timeframes = _timeframes_of(payload)
-    config = _run_config_of(_loads(payload["config"], "RunManifest.config"), timeframes)
+    raw_config = _loads(payload["config"], "RunManifest.config")
+    config = _run_config_of(raw_config, timeframes)
     symbol_spec = _loads(payload["symbol_spec_ref"], "RunManifest.symbol_spec_ref")
     symbol_spec_ref = SymbolSpecRef(
         symbol=Symbol(symbol_spec["symbol"]),
@@ -1059,7 +1118,9 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> RunManifest:
     )
     timeframe_def_refs = tuple(TimeframeRef.parse(item) for item in payload["timeframe_def_refs"])
     stored_digest = ConfigDigest(_digest_of(payload["config_digest"], "ConfigDigest"))
-    recomputed = config_digest_of(
+    # 終わり方の項目の無い旧い manifest は、その項目が入る前の形で照合する（仮置き 62）。
+    digest_of = legacy_config_digest_of if "run_end" not in raw_config else config_digest_of
+    recomputed = digest_of(
         config,
         symbol_spec_ref=symbol_spec_ref,
         calendar_ref=payload["calendar_ref"],
@@ -1140,6 +1201,10 @@ def result_from_payload(
                 CostKind(name): _money_of(_loads(amount, "FinalSummaries.cost_breakdown"))
                 for name, amount in summaries["cost_breakdown"].items()
             },
+            # 明細の無い旧い結果（2026-10-21 改訂の前）は空として読む。
+            hypothetical_close_lines=tuple(
+                _close_line_of(text) for text in summaries.get("hypothetical_close_lines", ())
+            ),
         ),
     )
 
@@ -1697,6 +1762,47 @@ def _policy_check_of(payload: Mapping[str, Any]) -> PolicyCheckResult:
 _MEASURES = ("component_kinds", "instances", "parameters", "decision_outputs")
 
 
+def _snapshot_ids_payload(value: SnapshotId | Paired[SnapshotId]) -> object:
+    """記録票の snapshot（探索の実験は組の写像 `{standard, candidate}`。2026-10-21 改訂）。"""
+    if isinstance(value, Paired):
+        return {variant.value: item.hex for variant, item in value.items()}
+    return value.hex
+
+
+def _partitions_list(partitions: Mapping[str, AccessClass]) -> list[dict[str, str]]:
+    return [
+        {"partition": partition, "access_class": access.value}
+        for partition, access in partitions.items()
+    ]
+
+
+def _partitions_payload(
+    value: Mapping[str, AccessClass] | Paired[Mapping[str, AccessClass]],
+) -> object:
+    """記録票の許可 partition（探索の実験は組の写像。2026-10-21 改訂）。"""
+    if isinstance(value, Paired):
+        return {variant.value: _partitions_list(item) for variant, item in value.items()}
+    return _partitions_list(value)
+
+
+def _partitions_of(payload: object) -> dict[str, AccessClass]:
+    return {
+        item["partition"]: AccessClass(item["access_class"])
+        for item in _list_of(payload, "allowed_partitions")
+    }
+
+
+def _paired_of[ValueT](
+    payload: object, decoder: Callable[[Any], ValueT], label: str
+) -> Paired[ValueT]:
+    """組の写像 `{standard, candidate}` を読む（キーはちょうど 2 組）。"""
+    item = _keys(payload, tuple(variant.value for variant in VARIANTS), label)
+    return Paired(
+        standard=decoder(item[Variant.STANDARD.value]),
+        candidate=decoder(item[Variant.CANDIDATE.value]),
+    )
+
+
 def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     """記録票を JSON へ落とす（D07 §19.2 の表の項目すべて。ADR-0027）。
 
@@ -1743,11 +1849,8 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
         "expected_config_digest": None
         if expected_config_digest is None
         else expected_config_digest.digest.hex,
-        "snapshot_id": manifest.snapshot_id.hex,
-        "allowed_partitions": [
-            {"partition": partition, "access_class": access.value}
-            for partition, access in manifest.allowed_partitions.items()
-        ],
+        "snapshot_id": _snapshot_ids_payload(manifest.snapshot_id),
+        "allowed_partitions": _partitions_payload(manifest.allowed_partitions),
         "complexity": {name: getattr(manifest.complexity, name) for name in _MEASURES},
         "complexity_limits": {
             name: getattr(manifest.complexity_limits, name) for name in _MEASURES
@@ -1806,11 +1909,18 @@ def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentMa
             version=strategy["version"],
             digest=_digest_of(strategy["digest"], "strategy_ref.digest"),
         ),
-        snapshot_id=SnapshotId(_digest_of(payload["snapshot_id"], "snapshot_id")),
-        allowed_partitions={
-            item["partition"]: AccessClass(item["access_class"])
-            for item in payload["allowed_partitions"]
-        },
+        snapshot_id=_paired_of(
+            payload["snapshot_id"],
+            lambda raw: SnapshotId(_digest_of(raw, "snapshot_id")),
+            "snapshot_id",
+        )
+        if isinstance(payload["snapshot_id"], Mapping)
+        else SnapshotId(_digest_of(payload["snapshot_id"], "snapshot_id")),
+        allowed_partitions=_paired_of(
+            payload["allowed_partitions"], _partitions_of, "allowed_partitions"
+        )
+        if isinstance(payload["allowed_partitions"], Mapping)
+        else _partitions_of(payload["allowed_partitions"]),
         complexity=ComplexityMeasures(**{name: payload["complexity"][name] for name in _MEASURES}),
         complexity_limits=ComplexityLimits(
             **{name: payload["complexity_limits"][name] for name in _MEASURES}
@@ -2074,19 +2184,42 @@ class FileSystemExperimentStore:
         return path
 
     def write_trial_start(self, record: TrialStartRecord) -> None:
-        """開始記録を書く（D09 §10.3。既にあれば何も書かずに失敗する。R4）。"""
-        path = self._search_path(UNITS_DIRECTORY, unit_name(record.unit) + _START_SUFFIX)
+        """開始記録を書く（D09 §10.3。既にあれば何も書かずに失敗する。R4）。
+
+        置き場は組ごとの `search/<組>/units/`（2026-10-21 改訂。実装 PR の仮置き 47）。
+        """
+        path = self._search_path(
+            record.unit.variant.value, UNITS_DIRECTORY, unit_name(record.unit) + _START_SUFFIX
+        )
         _write_new_json(path, _canonical_json(record), "a start record")
 
     def write_trial_run(self, record: TrialRunRecord) -> None:
         """試行記録を書く（D09 §10.3。既にあれば何も書かずに失敗する。R4）。"""
-        path = self._search_path(UNITS_DIRECTORY, unit_name(record.unit) + _RUN_SUFFIX)
+        path = self._search_path(
+            record.unit.variant.value, UNITS_DIRECTORY, unit_name(record.unit) + _RUN_SUFFIX
+        )
         _write_new_json(path, _canonical_json(record), "a trial record")
 
-    def write_selection(self, selection: FoldSelection) -> None:
-        """選定記録を書く（D09 §7.5。同じ実行の中で書き換えない。既にあれば失敗する。R4）。"""
-        path = self._search_path(f"selection_f{selection.fold_index}.json")
+    def write_selection(self, variant: Variant, selection: FoldSelection) -> None:
+        """組の選定記録を書く（D09 §7.5。同じ実行の中で書き換えない。既にあれば失敗する。R4）。"""
+        path = self._search_path(variant.value, f"selection_f{selection.fold_index}.json")
         _write_new_json(path, _canonical_json(selection), "a selection record")
+
+    def write_path_segment_start(self, record: PathSegmentStart) -> None:
+        """経路の区間の開始記録 `search/<組>/path/s<b>.start.json`（D13 §4.7。仮置き 48。R4）。"""
+        key = record.key
+        path = self._search_path(
+            key.variant.value, PATH_DIRECTORY, segment_name(key.segment_index) + _START_SUFFIX
+        )
+        _write_new_json(path, _canonical_json(record), "a path segment start record")
+
+    def write_path_segment_end(self, record: PathSegmentEnd) -> None:
+        """経路の区間の終端の記録 `search/<組>/path/s<b>.json`（D13 §4.5 の「記録」。R4）。"""
+        key = record.key
+        path = self._search_path(
+            key.variant.value, PATH_DIRECTORY, segment_name(key.segment_index) + _RUN_SUFFIX
+        )
+        _write_new_json(path, _canonical_json(record), "a path segment end record")
 
     def write_ledger_binding(self, binding: TrialLedgerBinding) -> None:
         """束縛の記録を書く（D09 §10.12.3 の2。W2: 一時名から排他的に作成する）。"""
@@ -2096,6 +2229,7 @@ class FileSystemExperimentStore:
     def write_aggregate_tables(
         self,
         manifest: ExperimentManifest,
+        variant: Variant,
         selections: tuple[FoldSelection, ...],
         records: tuple[TrialRunRecord, ...],
         metrics: Mapping[TrialUnitKey, tuple[MetricRecord, ...]],
@@ -2111,7 +2245,9 @@ class FileSystemExperimentStore:
                 "the metrics given for trial_metrics must cover exactly the units of the trial"
                 " records (D09 §11.2)"
             )
-        rows = trial_units_rows(manifest, selections, records)
+        if any(record.unit.variant is not variant for record in records):
+            raise KernelValueError("the trial records of another variant were given")
+        rows = trial_units_rows(manifest, variant, selections, records)
         units = pl.DataFrame(
             {name: [row[name] for row in rows] for name in _TRIAL_UNITS_SCHEMA},
             schema=dict(_TRIAL_UNITS_SCHEMA),
@@ -2143,8 +2279,8 @@ class FileSystemExperimentStore:
         )
         if table.select(["fold_index", "phase", "trial_index", "metric_id"]).is_duplicated().any():
             raise KernelValueError("trial_metrics has a duplicated primary key (D09 §11.2)")
-        _write_new_parquet(self._search_path(TRIAL_UNITS_TABLE), units)
-        _write_new_parquet(self._search_path(TRIAL_METRICS_TABLE), table)
+        _write_new_parquet(self._search_path(variant.value, TRIAL_UNITS_TABLE), units)
+        _write_new_parquet(self._search_path(variant.value, TRIAL_METRICS_TABLE), table)
 
     # --- 試行台帳（D09 §10.10・§10.12）-------------------------------------------------
 
@@ -2178,6 +2314,8 @@ class FileSystemExperimentStore:
 #: 探索の記録のディレクトリ（D09 §11.1）と、その中の名前。
 SEARCH_DIRECTORY = "search"
 UNITS_DIRECTORY = "units"
+#: 連続口座の検証経路の区間の記録（`search/<組>/path/`。2026-10-21 改訂。実装 PR の仮置き 48）。
+PATH_DIRECTORY = "path"
 LEDGER_BINDING_FILE = "ledger_execution.json"
 TRIAL_UNITS_TABLE = "trial_units.parquet"
 TRIAL_METRICS_TABLE = "trial_metrics.parquet"
@@ -2187,6 +2325,8 @@ RETREAT_MARKER_FILE = "retreat_in_progress.json"
 #: 単位の記録のファイル名の鍵の部分（D09 §11.1。先頭のゼロを許さない。照合は `fullmatch`）。
 UNIT_NAME = re.compile(r"f(0|[1-9][0-9]*)_(TRAIN|VALIDATION)_t(0|[1-9][0-9]*)")
 _SELECTION_NAME = re.compile(r"selection_f(0|[1-9][0-9]*)\.json")
+#: 区間の記録のファイル名の鍵の部分（`s<b>`。先頭のゼロを許さない）。
+SEGMENT_NAME = re.compile(r"s(0|[1-9][0-9]*)")
 _KEPT_SEARCH = re.compile(r"search\.([1-9][0-9]*)")
 _START_SUFFIX = ".start.json"
 _RUN_SUFFIX = ".json"
@@ -2197,14 +2337,25 @@ def unit_name(unit: TrialUnitKey) -> str:
     return f"f{unit.fold_index}_{unit.phase.value}_t{unit.trial_index}"
 
 
-def unit_of_name(name: str) -> TrialUnitKey:
-    """ファイル名の鍵の部分から単位の鍵を読む。正規表現に完全一致しなければ構造エラー。"""
+def segment_name(segment_index: int) -> str:
+    """区間の番号からファイル名の鍵の部分を作る（`s<b>`。実装 PR の仮置き 48）。"""
+    return f"s{segment_index}"
+
+
+def variant_directory(directory: Path, variant: Variant) -> Path:
+    """組の探索の記録の置き場 `search/<組>/`（2026-10-21 改訂。実装 PR の仮置き 47）。"""
+    return search_directory(directory) / variant.value
+
+
+def unit_of_name(name: str, variant: Variant) -> TrialUnitKey:
+    """ファイル名の鍵の部分（と置き場の組）から単位の鍵を読む。一致しなければ構造エラー。"""
     match = UNIT_NAME.fullmatch(name)
     if match is None:
         raise KernelValueError(
             f"{name!r} is not a unit record name f<k>_<TRAIN|VALIDATION>_t<i> (D09 §11.1)"
         )
     return TrialUnitKey(
+        variant=variant,
         fold_index=int(match.group(1)),
         phase=TrialPhase(match.group(2)),
         trial_index=int(match.group(3)),
@@ -2294,8 +2445,9 @@ def _parameter_value_of(payload: object, label: str) -> ParameterValue:
 
 
 def _unit_key_of(payload: object, label: str) -> TrialUnitKey:
-    item = _keys(payload, ("fold_index", "phase", "trial_index"), label)
+    item = _keys(payload, ("variant", "fold_index", "phase", "trial_index"), label)
     return TrialUnitKey(
+        variant=Variant(item["variant"]),
         fold_index=_int_of(item["fold_index"], label),
         phase=TrialPhase(item["phase"]),
         trial_index=_int_of(item["trial_index"], label),
@@ -2325,11 +2477,15 @@ def _search_plan_of(payload: object) -> SearchPlan:
 
 
 def _fold_of(payload: object) -> Fold:
-    item = _keys(payload, ("fold_index", "train", "validation"), "fold")
+    item = _keys(payload, ("fold_index", "train", "validation", "partial"), "fold")
+    partial = item["partial"]
+    if not isinstance(partial, bool):
+        raise KernelValueError("fold.partial must be a bool")
     return Fold(
         fold_index=_int_of(item["fold_index"], "fold.fold_index"),
         train=_interval_c(item["train"], "fold.train"),
         validation=_interval_c(item["validation"], "fold.validation"),
+        partial=partial,
     )
 
 
@@ -2354,7 +2510,15 @@ def _metric_condition_of(payload: object) -> MetricCondition:
 def _evaluation_standard_of(payload: object) -> EvaluationStandard:
     item = _keys(
         payload,
-        ("purpose", "split", "selection", "validation", "sufficiency"),
+        (
+            "purpose",
+            "split",
+            "selection",
+            "validation",
+            "sufficiency",
+            "basis",
+            "comparison_basis",
+        ),
         "evaluation_standard",
     )
     split = _keys(
@@ -2366,6 +2530,7 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
             "window",
             "purge_seconds",
             "min_folds",
+            "partial_fold",
         ),
         "evaluation_standard.split",
     )
@@ -2373,8 +2538,9 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
         item["selection"], ("metric", "direction", "eligibility"), "evaluation_standard.selection"
     )
     validation = _keys(
-        item["validation"], ("fold_floors", "aggregate"), "evaluation_standard.validation"
+        item["validation"], ("fold_floors", "aggregate", "path"), "evaluation_standard.validation"
     )
+    path_rule = _keys(validation["path"], ("boundary", "floors", "aggregate"), "validation.path")
     sufficiency = _keys(item["sufficiency"], ("classes",), "evaluation_standard.sufficiency")
     return EvaluationStandard(
         purpose=StandardPurpose(item["purpose"]),
@@ -2385,6 +2551,7 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
             window=SplitWindow(split["window"]),
             purge_seconds=_int_of(split["purge_seconds"], "split.purge_seconds"),
             min_folds=_int_of(split["min_folds"], "split.min_folds"),
+            partial_fold=PartialFold(split["partial_fold"]),
         ),
         selection=SelectionRule(
             metric=MetricId(selection["metric"]),
@@ -2411,7 +2578,20 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
                     for raw in _list_of(validation["aggregate"], "aggregate")
                 )
             ),
+            path=PathRule(
+                boundary=PathBoundary(path_rule["boundary"]),
+                floors=tuple(
+                    _metric_condition_of(entry)
+                    for entry in _list_of(path_rule["floors"], "path.floors")
+                ),
+                aggregate=tuple(
+                    _metric_condition_of(entry)
+                    for entry in _list_of(path_rule["aggregate"], "path.aggregate")
+                ),
+            ),
         ),
+        basis=_policy_basis_of(item["basis"]),
+        comparison_basis=_fixed_comparison_of(item["comparison_basis"]),
         sufficiency=SufficiencyRule(
             classes=tuple(
                 FrequencyClass(
@@ -2442,6 +2622,71 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
                 )
             )
         ),
+    )
+
+
+def _policy_basis_of(payload: object) -> PolicyBasis:
+    item = _keys(payload, ("snapshots", "target_series", "premises"), "basis")
+    premises: list[PremiseFile] = []
+    for raw in _list_of(item["premises"], "basis.premises"):
+        entry = _keys(raw, ("name", "version", "path", "sha256"), "basis.premises")
+        version = entry["version"]
+        premises.append(
+            PremiseFile(
+                name=_str_of(entry["name"], "premise.name"),
+                version=None if version is None else _int_of(version, "premise.version"),
+                path=_str_of(entry["path"], "premise.path"),
+                sha256=_str_of(entry["sha256"], "premise.sha256"),
+            )
+        )
+    return PolicyBasis(
+        snapshots=_paired_of(
+            item["snapshots"],
+            lambda raw: SnapshotId(_hex_id(raw, "basis.snapshots")),
+            "basis.snapshots",
+        ),
+        target_series=tuple(
+            _str_of(text, "basis.target_series")
+            for text in _list_of(item["target_series"], "basis.target_series")
+        ),
+        premises=tuple(premises),
+    )
+
+
+def _fixed_comparison_of(payload: object) -> FixedComparisonBasis:
+    item = _keys(
+        payload,
+        (
+            "currency",
+            "initial_balance",
+            "trial_risk_rate",
+            "account_risk_cap",
+            "spread_offset",
+            "commission_per_unit",
+            "entry_slippage",
+            "close_slippage",
+            "entry_delay_bars",
+            "adverse_fill_limits",
+        ),
+        "comparison_basis",
+    )
+    limits: list[tuple[str, Decimal]] = []
+    for raw in _list_of(item["adverse_fill_limits"], "comparison_basis.adverse_fill_limits"):
+        pair = _list_of(raw, "comparison_basis.adverse_fill_limits")
+        if len(pair) != 2:
+            raise KernelValueError("an adverse fill limit is (symbol, limit)")
+        limits.append((_str_of(pair[0], "symbol"), _decimal_of(pair[1], "limit")))
+    return FixedComparisonBasis(
+        currency=_str_of(item["currency"], "comparison_basis.currency"),
+        initial_balance=_decimal_of(item["initial_balance"], "initial_balance"),
+        trial_risk_rate=_decimal_of(item["trial_risk_rate"], "trial_risk_rate"),
+        account_risk_cap=_decimal_of(item["account_risk_cap"], "account_risk_cap"),
+        spread_offset=_decimal_of(item["spread_offset"], "spread_offset"),
+        commission_per_unit=_decimal_of(item["commission_per_unit"], "commission_per_unit"),
+        entry_slippage=_decimal_of(item["entry_slippage"], "entry_slippage"),
+        close_slippage=_decimal_of(item["close_slippage"], "close_slippage"),
+        entry_delay_bars=_int_of(item["entry_delay_bars"], "entry_delay_bars"),
+        adverse_fill_limits=tuple(limits),
     )
 
 
@@ -2609,10 +2854,116 @@ def _shortfall_of(payload: object) -> SufficiencyShortfall:
     )
 
 
-def _search_outcome_of(payload: object) -> SearchOutcome:
+def _money_c(payload: object, label: str) -> Money:
+    item = _keys(payload, ("amount", "currency"), label)
+    return Money(_decimal_of(item["amount"], label), CurrencyCode(_str_of(item["currency"], label)))
+
+
+def _optional_money_c(payload: object, label: str) -> Money | None:
+    return None if payload is None else _money_c(payload, label)
+
+
+def _metric_value_c(payload: object, label: str) -> MetricValue:
+    """経路の指標の値（比率か値なし）の正規化形を読む。"""
+    if not isinstance(payload, Mapping):
+        raise KernelValueError(f"{label} must be a JSON object")
+    if "reason" in payload:
+        item = _keys(payload, ("kind", "reason"), label)
+        return Unavailable(
+            kind=MetricKind(item["kind"]), reason=MetricUnavailableReason(item["reason"])
+        )
+    item = _keys(payload, ("kind", "ratio"), label)
+    if MetricKind(item["kind"]) is not MetricKind.RATIO:
+        raise KernelValueError(f"{label}: a path metric is a ratio")
+    return RatioValue(ratio=_decimal_of(item["ratio"], label))
+
+
+def _optional_bool(value: object, label: str) -> bool | None:
+    if value is None or isinstance(value, bool):
+        return value
+    raise KernelValueError(f"{label} must be a bool or null")
+
+
+def _path_row_of(payload: object) -> PathSegmentRow:
     item = _keys(
         payload,
         (
+            "segment_index",
+            "fold_indices",
+            "trial_index",
+            "interval",
+            "initial_balance",
+            "end_balance",
+            "carried_boundaries",
+            "settlement_count",
+            "settlement_cost",
+            "trade_count",
+            "run_id",
+            "run_reused",
+        ),
+        "path segment",
+    )
+    trial = item["trial_index"]
+    trades = item["trade_count"]
+    run_id = item["run_id"]
+    return PathSegmentRow(
+        segment_index=_int_of(item["segment_index"], "segment.segment_index"),
+        fold_indices=tuple(
+            _int_of(value, "segment.fold_indices")
+            for value in _list_of(item["fold_indices"], "segment.fold_indices")
+        ),
+        trial_index=None if trial is None else _int_of(trial, "segment.trial_index"),
+        interval=_interval_c(item["interval"], "segment.interval"),
+        initial_balance=_money_c(item["initial_balance"], "segment.initial_balance"),
+        end_balance=_optional_money_c(item["end_balance"], "segment.end_balance"),
+        carried_boundaries=_int_of(item["carried_boundaries"], "segment.carried_boundaries"),
+        settlement_count=_int_of(item["settlement_count"], "segment.settlement_count"),
+        settlement_cost=_optional_money_c(item["settlement_cost"], "segment.settlement_cost"),
+        trade_count=None if trades is None else _int_of(trades, "segment.trade_count"),
+        run_id=None if run_id is None else RunId(_hex_id(run_id, "segment.run_id")),
+        run_reused=_optional_bool(item["run_reused"], "segment.run_reused"),
+    )
+
+
+def _path_summary_of(payload: object) -> PathSummary:
+    item = _keys(
+        payload,
+        (
+            "segments",
+            "end",
+            "end_segment",
+            "end_reason",
+            "metrics",
+            "trade_count",
+            "final_balance",
+        ),
+        "path",
+    )
+    metrics: list[tuple[MetricId, MetricValue]] = []
+    for raw in _list_of(item["metrics"], "path.metrics"):
+        pair = _list_of(raw, "path.metrics")
+        if len(pair) != 2:
+            raise KernelValueError("a path metric is (metric, value)")
+        metrics.append((MetricId(pair[0]), _metric_value_c(pair[1], "path.metrics")))
+    end_segment = item["end_segment"]
+    reason = item["end_reason"]
+    trades = item["trade_count"]
+    return PathSummary(
+        segments=tuple(_path_row_of(raw) for raw in _list_of(item["segments"], "path.segments")),
+        end=PathEnd(item["end"]),
+        end_segment=None if end_segment is None else _int_of(end_segment, "path.end_segment"),
+        end_reason=None if reason is None else _str_of(reason, "path.end_reason"),
+        metrics=tuple(metrics),
+        trade_count=None if trades is None else _int_of(trades, "path.trade_count"),
+        final_balance=_optional_money_c(item["final_balance"], "path.final_balance"),
+    )
+
+
+def _variant_outcome_of(payload: object) -> VariantOutcome:
+    item = _keys(
+        payload,
+        (
+            "variant",
             "selections",
             "fold_verdicts",
             "verdict",
@@ -2620,10 +2971,13 @@ def _search_outcome_of(payload: object) -> SearchOutcome:
             "condition_results",
             "shortfalls",
             "trial_counts",
-            "ledger_execution",
             "purpose",
+            "profitability",
+            "evidence",
+            "hold",
+            "path",
         ),
-        "search",
+        "search variant",
     )
     verdicts: list[tuple[int, FoldVerdict]] = []
     for entry in _list_of(item["fold_verdicts"], "search.fold_verdicts"):
@@ -2647,7 +3001,8 @@ def _search_outcome_of(payload: object) -> SearchOutcome:
         )
     else:
         assessment = None
-    return SearchOutcome(
+    return VariantOutcome(
+        variant=Variant(item["variant"]),
         selections=tuple(
             _fold_selection_of(entry) for entry in _list_of(item["selections"], "selections")
         ),
@@ -2662,8 +3017,157 @@ def _search_outcome_of(payload: object) -> SearchOutcome:
             _shortfall_of(entry) for entry in _list_of(item["shortfalls"], "shortfalls")
         ),
         trial_counts=tuple(counts),
+        purpose=StandardPurpose(item["purpose"]),
+        profitability=ProfitabilityAxis(item["profitability"]),
+        evidence=EvidenceAxis(item["evidence"]),
+        hold=_optional_bool(item["hold"], "search.hold"),
+        path=_path_summary_of(item["path"]),
+    )
+
+
+def _search_outcome_of(payload: object) -> SearchOutcome:
+    item = _keys(payload, ("variants", "combined", "ledger_execution", "purpose"), "search")
+    combined = _keys(item["combined"], ("verdict", "split", "hold"), "search.combined")
+    split = combined["split"]
+    if not isinstance(split, bool):
+        raise KernelValueError("search.combined.split must be a bool")
+    return SearchOutcome(
+        variants=_paired_of(item["variants"], _variant_outcome_of, "search.variants"),
+        combined=CombinedVerdict(
+            verdict=SearchVerdict(combined["verdict"]),
+            split=split,
+            hold=_optional_bool(combined["hold"], "search.combined.hold"),
+        ),
         ledger_execution=_int_of(item["ledger_execution"], "search.ledger_execution"),
         purpose=StandardPurpose(item["purpose"]),
+    )
+
+
+def _close_line_c(payload: object) -> HypotheticalCloseLine:
+    item = _keys(
+        payload,
+        (
+            "position_id",
+            "side",
+            "quantity",
+            "reference_bid",
+            "exit_price",
+            "commission",
+            "slippage",
+            "profit",
+        ),
+        "settlement line",
+    )
+    quantity = _keys(item["quantity"], ("units",), "settlement.quantity")
+    reference = _keys(item["reference_bid"], ("value",), "settlement.reference_bid")
+    exit_price = _keys(item["exit_price"], ("value",), "settlement.exit_price")
+    return HypotheticalCloseLine(
+        position_id=PositionId.parse(_str_of(item["position_id"], "settlement.position_id")),
+        side=OrderSide(item["side"]),
+        quantity=Quantity(_decimal_of(quantity["units"], "settlement.quantity")),
+        reference_bid=Price(_decimal_of(reference["value"], "settlement.reference_bid")),
+        exit_price=Price(_decimal_of(exit_price["value"], "settlement.exit_price")),
+        commission=_money_c(item["commission"], "settlement.commission"),
+        slippage=_money_c(item["slippage"], "settlement.slippage"),
+        profit=_money_c(item["profit"], "settlement.profit"),
+    )
+
+
+def _segment_key_of(payload: object, label: str) -> PathSegmentKey:
+    item = _keys(payload, ("variant", "segment_index"), label)
+    return PathSegmentKey(
+        variant=Variant(item["variant"]),
+        segment_index=_int_of(item["segment_index"], f"{label}.segment_index"),
+    )
+
+
+def _segment_start_of(payload: object) -> PathSegmentStart:
+    item = _keys(
+        payload,
+        (
+            "experiment_id",
+            "key",
+            "fold_indices",
+            "trial_index",
+            "compiled_ref",
+            "interval",
+            "initial_balance",
+            "run_end",
+            "config_digest",
+            "expected_run_id",
+        ),
+        "segment start record",
+    )
+    return PathSegmentStart(
+        experiment_id=ExperimentId(_hex_id(item["experiment_id"], "experiment_id")),
+        key=_segment_key_of(item["key"], "segment start record.key"),
+        fold_indices=tuple(
+            _int_of(value, "fold_indices")
+            for value in _list_of(item["fold_indices"], "fold_indices")
+        ),
+        trial_index=_int_of(item["trial_index"], "trial_index"),
+        compiled_ref=CompiledStrategyRef(_wrapped_digest(item["compiled_ref"], "compiled_ref")),
+        interval=_interval_c(item["interval"], "interval"),
+        initial_balance=_money_c(item["initial_balance"], "initial_balance"),
+        run_end=RunEndMode(item["run_end"]),
+        config_digest=ConfigDigest(_wrapped_digest(item["config_digest"], "config_digest")),
+        expected_run_id=RunId(_hex_id(item["expected_run_id"], "expected_run_id")),
+    )
+
+
+def _segment_end_of(payload: object) -> PathSegmentEnd:
+    item = _keys(
+        payload,
+        (
+            "experiment_id",
+            "key",
+            "expected_run_id",
+            "run_id",
+            "run_status",
+            "run_reused",
+            "run_evaluation_id",
+            "evaluation_status",
+            "result_digest",
+            "final_balance",
+            "final_equity",
+            "settlement_lines",
+            "settled_equity",
+            "trade_count",
+            "outcome_checks",
+        ),
+        "segment end record",
+    )
+    reused = item["run_reused"]
+    if not isinstance(reused, bool):
+        raise KernelValueError("segment end record.run_reused must be a bool")
+    evaluation = item["run_evaluation_id"]
+    evaluation_status = item["evaluation_status"]
+    result_digest = item["result_digest"]
+    trades = item["trade_count"]
+    return PathSegmentEnd(
+        experiment_id=ExperimentId(_hex_id(item["experiment_id"], "experiment_id")),
+        key=_segment_key_of(item["key"], "segment end record.key"),
+        expected_run_id=RunId(_hex_id(item["expected_run_id"], "expected_run_id")),
+        run_id=RunId(_hex_id(item["run_id"], "run_id")),
+        run_status=RunStatus(item["run_status"]),
+        run_reused=reused,
+        run_evaluation_id=None
+        if evaluation is None
+        else _cdigest_of(evaluation, "run_evaluation_id"),
+        evaluation_status=None
+        if evaluation_status is None
+        else EvaluationStatus(evaluation_status),
+        result_digest=None if result_digest is None else _cdigest_of(result_digest, "digest"),
+        final_balance=_optional_money_c(item["final_balance"], "final_balance"),
+        final_equity=_optional_money_c(item["final_equity"], "final_equity"),
+        settlement_lines=tuple(
+            _close_line_c(raw) for raw in _list_of(item["settlement_lines"], "settlement_lines")
+        ),
+        settled_equity=_optional_money_c(item["settled_equity"], "settled_equity"),
+        trade_count=None if trades is None else _int_of(trades, "trade_count"),
+        outcome_checks=tuple(
+            _policy_check_c(entry) for entry in _list_of(item["outcome_checks"], "outcome_checks")
+        ),
     )
 
 
@@ -2765,9 +3269,22 @@ def _basis_of(payload: object) -> ComparisonBasis:
             "code_digest",
             "lock_digest",
             "env_digest",
+            "variant",
+            "time_rule_table_ref",
+            "run_end",
         ),
         "basis",
     )
+    table = item["time_rule_table_ref"]
+    table_ref: TimeRuleTableRef | None = None
+    if table is not None:
+        found = _keys(table, ("table_id", "version", "sha256", "variant"), "time_rule_table_ref")
+        table_ref = TimeRuleTableRef(
+            table_id=_str_of(found["table_id"], "time_rule_table_ref.table_id"),
+            version=_int_of(found["version"], "time_rule_table_ref.version"),
+            sha256=_str_of(found["sha256"], "time_rule_table_ref.sha256"),
+            variant=TimeRuleVariant(found["variant"]),
+        )
     timeframe_refs = tuple(
         TimeframeRef.parse(_str_of(text, "basis.timeframe_def_refs"))
         for text in _list_of(item["timeframe_def_refs"], "basis.timeframe_def_refs")
@@ -2814,14 +3331,79 @@ def _basis_of(payload: object) -> ComparisonBasis:
         code_digest=CodeDigest(_wrapped_digest(item["code_digest"], "basis.code_digest")),
         lock_digest=LockDigest(_wrapped_digest(item["lock_digest"], "basis.lock_digest")),
         env_digest=EnvDigest(_wrapped_digest(item["env_digest"], "basis.env_digest")),
+        variant=Variant(item["variant"]),
+        time_rule_table_ref=table_ref,
+        run_end=RunEndMode(item["run_end"]),
+    )
+
+
+def _lineage_of(payload: object) -> Lineage | None:
+    if payload is None:
+        return None
+    item = _keys(
+        payload, ("derived_from", "change_kinds", "viewed_before", "note_digest"), "lineage"
+    )
+    source = item["derived_from"]
+    derived: LineageSource | None = None
+    if source is not None:
+        found = _keys(source, ("experiment_id", "execution"), "lineage.derived_from")
+        derived = LineageSource(
+            experiment_id=ExperimentId(_hex_id(found["experiment_id"], "derived_from")),
+            execution=_int_of(found["execution"], "lineage.derived_from.execution"),
+        )
+    note = item["note_digest"]
+    return Lineage(
+        derived_from=derived,
+        change_kinds=tuple(
+            ChangeKind(value) for value in _list_of(item["change_kinds"], "change_kinds")
+        ),
+        viewed_before=tuple(
+            _interval_c(raw, "lineage.viewed_before")
+            for raw in _list_of(item["viewed_before"], "lineage.viewed_before")
+        ),
+        note_digest=None if note is None else _cdigest_of(note, "lineage.note_digest"),
+    )
+
+
+def _variant_ledger_result_of(payload: object) -> VariantLedgerResult:
+    item = _keys(
+        payload,
+        ("status", "verdict", "frequency_class", "profitability", "evidence", "hold"),
+        "results.variant",
+    )
+    frequency_class = item["frequency_class"]
+    return VariantLedgerResult(
+        status=ExperimentStatus(item["status"]),
+        verdict=SearchVerdict(item["verdict"]),
+        frequency_class=None
+        if frequency_class is None
+        else _str_of(frequency_class, "results.frequency_class"),
+        profitability=ProfitabilityAxis(item["profitability"]),
+        evidence=EvidenceAxis(item["evidence"]),
+        hold=_optional_bool(item["hold"], "results.hold"),
+    )
+
+
+def _ledger_results_of(payload: object) -> LedgerResults | None:
+    if payload is None:
+        return None
+    item = _keys(payload, ("split", "hold", "variants"), "results")
+    split = item["split"]
+    if not isinstance(split, bool):
+        raise KernelValueError("results.split must be a bool")
+    return LedgerResults(
+        split=split,
+        hold=_optional_bool(item["hold"], "results.hold"),
+        variants=_paired_of(item["variants"], _variant_ledger_result_of, "results.variants"),
     )
 
 
 def ledger_entry_of(payload: object) -> TrialLedgerEntry:
     """台帳の行の `entry`（正規化形の JSON の値）を型に直す（D09 §10.12.2 の L4）。
 
-    未知のキー・欠けたキー・型の不一致・語彙外の値・`schema_version` が 1 でないものは
-    `KernelValueError`（`ValueError` 系）。行の種類ごとの形と判定と用途の組は見ない（L5・L10）。
+    未知のキー・欠けたキー・型の不一致・語彙外の値・`schema_version` が 2 でないもの（形式版 1 の
+    行は読込で止める。実装 PR の仮置き 55）は `KernelValueError`（`ValueError` 系）。行の種類
+    ごとの形と判定と用途の組は見ない（L5・L10）。
     """
     item = _keys(payload, tuple(TrialLedgerEntry.__dataclass_fields__), "ledger entry")
     status = item["status"]
@@ -2836,7 +3418,7 @@ def ledger_entry_of(payload: object) -> TrialLedgerEntry:
         experiment_name=_str_of(item["experiment_name"], "entry.experiment_name"),
         experiment_version=_int_of(item["experiment_version"], "entry.experiment_version"),
         strategy_id=_str_of(item["strategy_id"], "entry.strategy_id"),
-        basis=_basis_of(item["basis"]),
+        basis=_paired_of(item["basis"], _basis_of, "entry.basis"),
         trial_count=_int_of(item["trial_count"], "entry.trial_count"),
         search_plan_digest=_cdigest_of(item["search_plan_digest"], "entry.search_plan_digest"),
         validation_intervals=tuple(
@@ -2845,11 +3427,13 @@ def ledger_entry_of(payload: object) -> TrialLedgerEntry:
         ),
         final_holdout=_final_holdout_of(item["final_holdout"]),
         purpose=StandardPurpose(item["purpose"]),
+        lineage=_lineage_of(item["lineage"]),
         status=None if status is None else ExperimentStatus(status),
         verdict=None if verdict is None else SearchVerdict(verdict),
         frequency_class=None
         if frequency_class is None
         else _str_of(frequency_class, "entry.frequency_class"),
+        results=_ledger_results_of(item["results"]),
     )
 
 
@@ -2915,7 +3499,7 @@ def _read_record[ValueT](path: Path, decoder: Callable[[Any], ValueT], label: st
 
 
 def read_unit_records(
-    directory: Path,
+    directory: Path, variant: Variant
 ) -> tuple[dict[TrialUnitKey, TrialStartRecord], dict[TrialUnitKey, TrialRunRecord]]:
     """実験の版のディレクトリの開始記録と試行記録を読む（D09 §10.3・§11.1）。
 
@@ -2923,7 +3507,7 @@ def read_unit_records(
     `.start.json` か `.json` を付けたものだけを読み、それ以外は構造エラーとする。ファイル名の鍵と
     中身の単位の鍵が違うものも構造エラー。`search/units/` が無ければ両方とも空。
     """
-    units = search_directory(directory) / UNITS_DIRECTORY
+    units = variant_directory(directory, variant) / UNITS_DIRECTORY
     starts: dict[TrialUnitKey, TrialStartRecord] = {}
     runs: dict[TrialUnitKey, TrialRunRecord] = {}
     if not (units.exists() or units.is_symlink()):
@@ -2933,13 +3517,13 @@ def read_unit_records(
     for path in sorted(units.iterdir()):
         name = path.name
         if name.endswith(_START_SUFFIX):
-            unit = unit_of_name(name.removesuffix(_START_SUFFIX))
+            unit = unit_of_name(name.removesuffix(_START_SUFFIX), variant)
             start = _read_record(path, _start_record_of, "start record")
             if start.unit != unit:
                 raise KernelValueError(f"{path} holds the start record of {start.unit}")
             starts[unit] = start
         elif name.endswith(_RUN_SUFFIX):
-            unit = unit_of_name(name.removesuffix(_RUN_SUFFIX))
+            unit = unit_of_name(name.removesuffix(_RUN_SUFFIX), variant)
             record = _read_record(path, _run_record_of, "trial record")
             if record.unit != unit:
                 raise KernelValueError(f"{path} holds the trial record of {record.unit}")
@@ -2949,9 +3533,9 @@ def read_unit_records(
     return starts, runs
 
 
-def read_selections(directory: Path) -> dict[int, FoldSelection]:
-    """実験の版のディレクトリの選定記録を fold の番号で読む（D09 §7.5・§11.1）。"""
-    search = search_directory(directory)
+def read_selections(directory: Path, variant: Variant) -> dict[int, FoldSelection]:
+    """実験の版のディレクトリの組の選定記録を fold の番号で読む（D09 §7.5・§11.1）。"""
+    search = variant_directory(directory, variant)
     found: dict[int, FoldSelection] = {}
     if not search.is_dir() or search.is_symlink():
         return found
@@ -2964,6 +3548,40 @@ def read_selections(directory: Path) -> dict[int, FoldSelection]:
             raise KernelValueError(f"{path} holds the selection of fold {selection.fold_index}")
         found[selection.fold_index] = selection
     return found
+
+
+def read_path_records(
+    directory: Path, variant: Variant
+) -> tuple[dict[int, PathSegmentStart], dict[int, PathSegmentEnd]]:
+    """組の経路の区間の開始記録と終端の記録を区間の番号で読む（D13 §4.7。仮置き 48）。
+
+    `search/<組>/path/` の名前は `s<b>.start.json` か `s<b>.json` だけを読み、それ以外・ファイル名と
+    中身の鍵の食い違いは構造エラー。置き場が無ければ両方とも空。
+    """
+    folder = variant_directory(directory, variant) / PATH_DIRECTORY
+    starts: dict[int, PathSegmentStart] = {}
+    ends: dict[int, PathSegmentEnd] = {}
+    if not (folder.exists() or folder.is_symlink()):
+        return starts, ends
+    if folder.is_symlink() or not folder.is_dir():
+        raise KernelValueError(f"{folder} is not a plain directory")
+    for path in sorted(folder.iterdir()):
+        name = path.name
+        suffix = _START_SUFFIX if name.endswith(_START_SUFFIX) else _RUN_SUFFIX
+        match = SEGMENT_NAME.fullmatch(name.removesuffix(suffix))
+        if not name.endswith(suffix) or match is None:
+            raise KernelValueError(f"{path} is not a path segment record file")
+        index = int(match.group(1))
+        record: PathSegmentStart | PathSegmentEnd
+        if suffix == _START_SUFFIX:
+            record = _read_record(path, _segment_start_of, "path segment start record")
+            starts[index] = record
+        else:
+            record = _read_record(path, _segment_end_of, "path segment end record")
+            ends[index] = record
+        if record.key != PathSegmentKey(variant=variant, segment_index=index):
+            raise KernelValueError(f"{path} holds the record of {record.key}")
+    return starts, ends
 
 
 def read_ledger_binding(directory: Path) -> TrialLedgerBinding | None:
@@ -3107,7 +3725,9 @@ def _metric_record_of(row: Mapping[str, object]) -> MetricRecord:
     )
 
 
-def read_trial_metrics(directory: Path) -> dict[TrialUnitKey, tuple[MetricRecord, ...]]:
+def read_trial_metrics(
+    directory: Path, variant: Variant
+) -> dict[TrialUnitKey, tuple[MetricRecord, ...]]:
     """完了した実行の集約表 `search/trial_metrics.parquet` を単位ごとの指標の行として読む。
 
     D09 §11.2。
@@ -3116,7 +3736,7 @@ def read_trial_metrics(directory: Path) -> dict[TrialUnitKey, tuple[MetricRecord
     値を計算し直さない）。表が無い・リンク・列が足りない・行が読めない・主キーが重複するときは
     `KernelValueError`（レポートは「読めない」と表示する）。
     """
-    path = search_directory(directory) / TRIAL_METRICS_TABLE
+    path = variant_directory(directory, variant) / TRIAL_METRICS_TABLE
     if path.is_symlink() or not path.is_file():
         raise KernelValueError(f"{SEARCH_DIRECTORY}/{TRIAL_METRICS_TABLE} is missing or not a file")
     try:
@@ -3136,6 +3756,7 @@ def read_trial_metrics(directory: Path) -> dict[TrialUnitKey, tuple[MetricRecord
     for row in frame.iter_rows(named=True):
         try:
             unit = TrialUnitKey(
+                variant=variant,
                 fold_index=_int_of(row["fold_index"], "fold_index"),
                 phase=TrialPhase(_str_of(row["phase"], "phase")),
                 trial_index=_int_of(row["trial_index"], "trial_index"),
@@ -3159,6 +3780,7 @@ def read_trial_metrics(directory: Path) -> dict[TrialUnitKey, tuple[MetricRecord
 
 def trial_units_rows(
     manifest: ExperimentManifest,
+    variant: Variant,
     selections: Sequence[FoldSelection],
     records: Sequence[TrialRunRecord],
 ) -> list[dict[str, object]]:
@@ -3172,12 +3794,18 @@ def trial_units_rows(
     for selection in sorted(selections, key=lambda item: item.fold_index):
         status_of = {entry[0]: entry[2] for entry in selection.inputs}
         units = [
-            TrialUnitKey(fold_index=selection.fold_index, phase=TrialPhase.TRAIN, trial_index=index)
+            TrialUnitKey(
+                variant=variant,
+                fold_index=selection.fold_index,
+                phase=TrialPhase.TRAIN,
+                trial_index=index,
+            )
             for index in sorted(plans)
         ]
         if selection.selected_trial_index is not None:
             units.append(
                 TrialUnitKey(
+                    variant=variant,
                     fold_index=selection.fold_index,
                     phase=TrialPhase.VALIDATION,
                     trial_index=selection.selected_trial_index,
@@ -3216,6 +3844,7 @@ def trial_units_rows(
             )
     leftover = set(by_unit) - {
         TrialUnitKey(
+            variant=variant,
             fold_index=row["fold_index"],  # type: ignore[arg-type]
             phase=TrialPhase(row["phase"]),
             trial_index=row["trial_index"],  # type: ignore[arg-type]
@@ -3601,6 +4230,31 @@ def reproduction_payload(
         "observed_run_id": None if observed_run_id is None else observed_run_id.hex,
         "expected_result_digest": expected_result_digest.hex,
         "observed_result_digest": _optional_hex(observed_result_digest),
+    }
+
+
+def search_reproduction_payload(
+    experiment_id: ExperimentId, verdict: str, rows: Sequence[Any]
+) -> dict[str, Any]:
+    """探索の実験の再現の報告の JSON（実装 PR の仮置き 57）。
+
+    全体の判定と、単位・選定・経路の区間ごとの照合の行（`items`。行の種類・組・鍵・照合した値の
+    記録と再現・行の判定）を持つ。
+    """
+    return {
+        "experiment_id": experiment_id.hex,
+        "verdict": verdict,
+        "items": [
+            {
+                "item": row.item.value,
+                "variant": row.variant.value,
+                "key": row.key,
+                "expected": dict(row.expected),
+                "observed": dict(row.observed),
+                "verdict": row.verdict.value,
+            }
+            for row in rows
+        ],
     }
 
 

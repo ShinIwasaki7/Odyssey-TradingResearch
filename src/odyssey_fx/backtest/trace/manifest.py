@@ -12,10 +12,15 @@ manifest は JSON で保存する（ADR-0027）。識別・入力・ポリシー
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
 
-from odyssey_fx.backtest.domain.policies import HierarchyCheckResult, ResolutionHierarchy, RunConfig
+from odyssey_fx.backtest.domain.policies import (
+    HierarchyCheckResult,
+    ResolutionHierarchy,
+    RunConfig,
+    RunEndMode,
+)
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
@@ -36,6 +41,7 @@ __all__ = [
     "RunManifest",
     "SeriesCoverageReport",
     "config_digest_of",
+    "legacy_config_digest_of",
 ]
 
 
@@ -173,6 +179,41 @@ def config_digest_of(
         raise KernelValueError("config_digest_of requires a non-empty calendar reference")
     payload = {
         "config": config,
+        "symbol_spec_ref": symbol_spec_ref,
+        "calendar_ref": calendar_ref,
+        "timeframe_def_refs": tuple(timeframe_def_refs),
+    }
+    return ConfigDigest(digest=digest(payload))
+
+
+def legacy_config_digest_of(
+    config: RunConfig,
+    *,
+    symbol_spec_ref: SymbolSpecRef,
+    calendar_ref: str,
+    timeframe_def_refs: Sequence[TimeframeRef] = (),
+) -> ConfigDigest:
+    """終わり方の項目（`run_end`）が入る前の形の `ConfigDigest`（旧い run manifest の照合用）。
+
+    2026-10-21 改訂（R-9。D13-23 (a)）の前に書いた run manifest は、`RunConfig` に `run_end` が
+    無い形でダイジェストを取っている。正規化エンコードは dataclass をフィールド名の mapping に
+    するので（D02 §9.3）、`run_end` を除いた mapping のダイジェストが旧い形の値と一致する。旧い
+    manifest は `MARK_TO_MARKET` と読む（実装 PR の仮置き 62）ので、それ以外の値は拒否する。
+    新しい run の識別には使わない（既定値も常に入れる。D13-23 (a)）。
+    """
+    if not isinstance(config, RunConfig):
+        raise KernelValueError("legacy_config_digest_of requires a RunConfig")
+    if config.run_end is not RunEndMode.MARK_TO_MARKET:
+        raise KernelValueError("a run manifest without run_end is read as MARK_TO_MARKET")
+    if not isinstance(symbol_spec_ref, SymbolSpecRef):
+        raise KernelValueError("legacy_config_digest_of requires a SymbolSpecRef")
+    if not isinstance(calendar_ref, str) or not calendar_ref:
+        raise KernelValueError("legacy_config_digest_of requires a non-empty calendar reference")
+    legacy = {
+        item.name: getattr(config, item.name) for item in fields(config) if item.name != "run_end"
+    }
+    payload = {
+        "config": legacy,
         "symbol_spec_ref": symbol_spec_ref,
         "calendar_ref": calendar_ref,
         "timeframe_def_refs": tuple(timeframe_def_refs),

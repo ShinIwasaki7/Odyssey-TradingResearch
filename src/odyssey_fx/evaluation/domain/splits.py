@@ -14,6 +14,19 @@ purge を書かないので、同じ研究ポリシーの版を指す探索の�
    この `j` を fold として採る。満たさない最初の `j` で生成を止める。
 4. 採った fold を時間の古い順に並べ、`fold_index` を 0 から振る。
 
+**端数の fold**（2026-10-21 改訂。D13 §2.3 の手順 2〜3、D09 §6.1、決定 D13-1・D13-3、仮置き 23）:
+上の手順で採った完全な fold の数を `k`、最も古い完全な fold の検証区間の始まりを
+`S = R1 − k·V` とする。選定区間 `[R0, R0 + T)`（`ROLLING` でも `EXPANDING` でも同じ区間）と検証
+区間 `[R0 + T + P, S)` を持つ fold を、`S − (R0 + T + P)` が 0 より大きいときに必ず1つ足し、
+最も古い fold として `fold_index = 0` にする（端数の印 `Fold.partial = True`。完全な fold は
+`1〜k`）。研究ポリシーの `split.partial_fold` は必須で、値は `AT_START`（範囲の始まり側）だけ。
+端数が出ない範囲（`R1 − R0 − T − P` が `V` の倍数）では端数の fold は作られない。
+
+**全期間が使われることの確認**（D13 §2.4 の U1・U2。`check_full_coverage`）: U1 選定区間・purge の
+空白・検証区間の和集合が評価範囲 `[R0, R1)` に等しい。U2 検証区間の和が `[R0 + T + P, R1)` に
+等しく互いに重ならない。生成の手順から必ず成り立つ不変条件で、fold の数の検査（検査7）を通った後に
+確かめ、破れていれば構造エラー（検査2・3 と同じ扱い）。
+
 **研究ポリシーを読むときの検査**（D09 §6.1 の 1〜3・5〜7）のうち、本モジュールが持つもの:
 
 - 検査 1・5 と 7 の後半（`min_folds` は 1 以上）: `SplitStandard` の構築時に確かめる。
@@ -46,6 +59,7 @@ from odyssey_fx.evaluation.domain.errors import EvaluationError
 __all__ = [
     "FinalHoldoutSpec",
     "Fold",
+    "PartialFold",
     "SplitKind",
     "SplitSpec",
     "SplitStandard",
@@ -53,6 +67,7 @@ __all__ = [
     "SplitWindow",
     "check_final_holdout",
     "check_fold_invariants",
+    "check_full_coverage",
     "folds_for_policy",
     "generate_folds",
     "split_spec_of",
@@ -89,6 +104,14 @@ class SplitWindow(Enum):
     EXPANDING = "EXPANDING"
 
 
+class PartialFold(Enum):
+    """端数の fold の置き場（研究ポリシーの `split.partial_fold`。2026-10-21 改訂。D13 §2.3 の
+    手順 4、仮置き 4・23）。値は `AT_START`（評価範囲の始まり側に端数の fold を作る）だけで、
+    端数の fold を作らない値は無い（D13-3 (a)）。"""
+
+    AT_START = "AT_START"
+
+
 def _require_int(value: object, label: str, *, minimum: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise KernelValueError(f"{label} must be an int, got {value!r}")
@@ -106,6 +129,7 @@ class SplitStandard:
     - `window`: `ROLLING` か `EXPANDING`。
     - `purge_seconds`: 選定区間の終わりと検証区間の始まりのあいだの空白（0 以上。検査5）。
     - `min_folds`: 生成される fold の数の下限（1 以上。検査7 の後半）。
+    - `partial_fold`: 端数の fold の置き場（2026-10-21 改訂。`AT_START` だけ。必須）。
     """
 
     range: Interval
@@ -114,6 +138,7 @@ class SplitStandard:
     window: SplitWindow
     purge_seconds: int
     min_folds: int
+    partial_fold: PartialFold
 
     def __post_init__(self) -> None:
         if not isinstance(self.range, Interval):
@@ -124,20 +149,29 @@ class SplitStandard:
             raise KernelValueError("SplitStandard.window must be a SplitWindow")
         _require_int(self.purge_seconds, "SplitStandard.purge_seconds", minimum=0)
         _require_int(self.min_folds, "SplitStandard.min_folds", minimum=1)
+        if not isinstance(self.partial_fold, PartialFold):
+            raise KernelValueError("SplitStandard.partial_fold must be a PartialFold")
 
 
 @dataclass(frozen=True, slots=True)
 class Fold:
-    """1つの fold（D09 §6.1・§3）。`train` は選定区間、`validation` は検証区間。"""
+    """1つの fold（D09 §6.1・§3）。`train` は選定区間、`validation` は検証区間。
+
+    `partial` は端数の印（2026-10-21 改訂。D13 §2.3 の手順 5）。表示と記録のためで、判定の規則を
+    fold の種類で変えない（D13 §3.1）。
+    """
 
     fold_index: int
     train: Interval
     validation: Interval
+    partial: bool = False
 
     def __post_init__(self) -> None:
         _require_int(self.fold_index, "Fold.fold_index", minimum=0)
         if not isinstance(self.train, Interval) or not isinstance(self.validation, Interval):
             raise KernelValueError("Fold.train / Fold.validation must be Interval")
+        if not isinstance(self.partial, bool):
+            raise KernelValueError("Fold.partial must be a bool")
 
 
 def check_fold_invariants(folds: tuple[Fold, ...], purge_seconds: int) -> None:
@@ -226,13 +260,78 @@ def generate_folds(standard: SplitStandard) -> tuple[Fold, ...]:
         )
         step += 1
 
-    # 手順4: 古い順に並べ、fold_index を 0 から振る。
-    folds = tuple(
-        Fold(fold_index=index, train=train, validation=validation)
-        for index, (train, validation) in enumerate(reversed(taken))
-    )
+    # 端数の fold（D13 §2.3 の手順 2〜3。2026-10-21 改訂）: 最も古い完全な fold の検証区間の
+    # 始まり S = R1 − k·V までの [R0 + T + P, S) が 0 より長ければ必ず1つ足す（D13-3 (a)）。
+    ordered = list(reversed(taken))
+    partial: tuple[Interval, Interval] | None = None
+    oldest_start = span - validation_length * len(taken)
+    if standard.partial_fold is PartialFold.AT_START and oldest_start > train_length + purge:
+        partial = (
+            Interval(start=at(0), end=at(train_length)),
+            Interval(start=at(train_length + purge), end=at(oldest_start)),
+        )
+
+    # 手順4: 古い順に並べ、fold_index を 0 から振る（端数の fold があれば 0）。
+    folds_list: list[Fold] = []
+    if partial is not None:
+        folds_list.append(Fold(fold_index=0, train=partial[0], validation=partial[1], partial=True))
+    for train, validation in ordered:
+        folds_list.append(Fold(fold_index=len(folds_list), train=train, validation=validation))
+    folds = tuple(folds_list)
     check_fold_invariants(folds, standard.purge_seconds)
     return folds
+
+
+def _union_is(intervals: list[tuple[UtcTime, UtcTime]], start: UtcTime, end: UtcTime) -> bool:
+    """区間の和集合が `[start, end)` にちょうど等しいか（重なりは許す、穴とはみ出しは許さない）。"""
+    if not intervals:
+        return False
+    ordered = sorted(intervals)
+    if ordered[0][0] != start:
+        return False
+    reach = ordered[0][1]
+    for left, right in ordered[1:]:
+        if left > reach:
+            return False
+        reach = max(reach, right)
+    return reach == end and all(right <= end for _, right in ordered)
+
+
+def check_full_coverage(folds: tuple[Fold, ...], standard: SplitStandard) -> None:
+    """全期間が使われることの確認 U1・U2（D13 §2.4、D09 §6.1。2026-10-21 改訂）。
+
+    - U1: 選定区間・purge の空白・検証区間の和集合が評価範囲 `[R0, R1)` に等しい。
+    - U2: 検証区間の和が `[R0 + T + P, R1)` に等しく、互いに重ならない。
+
+    生成の手順から必ず成り立つ不変条件で、破れていれば構造エラー（`KernelValueError`。D09 §6.1 の
+    検査2・3 と同じ扱い）。fold が1つも無い規則は検査7 が先に止める（ここでは構造エラー）。
+    """
+    if not isinstance(standard, SplitStandard) or not isinstance(folds, tuple):
+        raise KernelValueError("check_full_coverage requires folds and a SplitStandard")
+    if not folds:
+        raise KernelValueError("check_full_coverage requires at least one fold (D09 §6.1 の検査7)")
+    first_train_end = standard.range.start + timedelta(seconds=standard.train_seconds)
+    validation_start = first_train_end + timedelta(seconds=standard.purge_seconds)
+    covered = [(fold.train.start, fold.validation.end) for fold in folds]
+    if not _union_is(covered, standard.range.start, standard.range.end):
+        raise KernelValueError(
+            "the train, purge and validation intervals of the folds do not cover the evaluation"
+            f" range {standard.range} exactly (D13 §2.4 の U1)"
+        )
+    validations = sorted((fold.validation.start, fold.validation.end) for fold in folds)
+    contiguous = all(
+        previous[1] == current[0]
+        for previous, current in zip(validations, validations[1:], strict=False)
+    )
+    if not (
+        contiguous
+        and validations[0][0] == validation_start
+        and validations[-1][1] == standard.range.end
+    ):
+        raise KernelValueError(
+            "the validation intervals of the folds are not a partition of"
+            f" [{validation_start}, {standard.range.end}) (D13 §2.4 の U2)"
+        )
 
 
 def folds_for_policy(standard: SplitStandard, *, research_until: UtcTime) -> tuple[Fold, ...]:
@@ -257,6 +356,8 @@ def folds_for_policy(standard: SplitStandard, *, research_until: UtcTime) -> tup
             f"生成される fold の数が {len(folds)} で、最小 fold 数 {standard.min_folds} に"
             " 届かない（D09 §6.1 の検査7）"
         )
+    # 検査7 を通った後に U1・U2（D13 §2.3 の「検査の順序と分類」）。
+    check_full_coverage(folds, standard)
     return folds
 
 
@@ -298,6 +399,8 @@ def split_spec_of(standard: SplitStandard) -> SplitSpec:
     読むときの検査6・7 は読込が当て済みであることを前提にし、fold が作れない規則は構造エラー。
     """
     folds = generate_folds(standard)
+    if folds:
+        check_full_coverage(folds, standard)
     return SplitSpec(kind=SplitKind.STANDARD, folds=folds, purge_seconds=standard.purge_seconds)
 
 

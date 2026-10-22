@@ -15,6 +15,7 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.splits import (
     Fold,
+    PartialFold,
     SplitStandard,
     SplitStandardViolation,
     SplitWindow,
@@ -47,6 +48,7 @@ def _standard(
         window=window,
         purge_seconds=purge_seconds,
         min_folds=min_folds,
+        partial_fold=PartialFold.AT_START,
     )
 
 
@@ -86,16 +88,29 @@ def test_expanding_folds_fix_the_train_start_at_the_range_start() -> None:
 
 
 def test_purge_leaves_a_gap_between_train_and_validation() -> None:
-    """purge は選定区間の終わりと検証区間の始まりのあいだの空白（D09 §6.3）。"""
+    """purge は選定区間の終わりと検証区間の始まりのあいだの空白（D09 §6.3）。
+
+    2026-10-21 改訂（D13 §2.3）: 完全な fold 2つの前に残った [5,6) は端数の fold（選定区間
+    [0,4)・purge [4,5)・検証区間 [5,6)）として使う。
+    """
     folds = generate_folds(_standard(purge_seconds=DAY))
-    assert _spans(folds) == [(0, 1, 5, 6, 8), (1, 3, 7, 8, 10)]
+    assert _spans(folds) == [(0, 0, 4, 5, 6), (1, 1, 5, 6, 8), (2, 3, 7, 8, 10)]
+    assert [fold.partial for fold in folds] == [True, False, False]
     for fold in folds:
         assert fold.validation.start - fold.train.end == timedelta(days=1)
 
 
 def test_a_range_too_short_for_one_fold_generates_none() -> None:
-    """選定区間と検証区間が評価範囲に入らなければ fold は0個（検査7 は `folds_for_policy`）。"""
-    assert generate_folds(_standard(days=5, train=4, validation=2)) == ()
+    """選定区間と purge が評価範囲を使い切れば fold は0個（検査7 は `folds_for_policy`）。"""
+    assert generate_folds(_standard(days=4, train=4, validation=2)) == ()
+
+
+def test_a_range_shorter_than_one_complete_fold_generates_a_partial_fold() -> None:
+    """完全な fold が作れなくても、選定区間の後ろに残る期間は端数の fold になる（D13 §2.3・
+    D13-3 (a)。2026-10-21 改訂で「0 個」から変わった）。"""
+    folds = generate_folds(_standard(days=5, train=4, validation=2))
+    assert _spans(folds) == [(0, 0, 4, 4, 5)]
+    assert folds[0].partial
 
 
 def test_huge_lengths_generate_no_folds_without_overflowing() -> None:
@@ -114,9 +129,15 @@ def test_huge_lengths_generate_no_folds_without_overflowing() -> None:
                 "window": SplitWindow.EXPANDING,
                 "purge_seconds": 0,
                 "min_folds": 1,
+                "partial_fold": PartialFold.AT_START,
                 **values,
             }  # type: ignore[arg-type]
         )
+        if "validation_seconds" in values:
+            # 検証区間が範囲より長いと完全な fold は作れず、選定区間の後ろの [4,10) が端数の
+            # fold になる（2026-10-21 改訂。D13 §2.3）。
+            assert _spans(generate_folds(standard)) == [(0, 0, 4, 4, 10)]
+            continue
         assert generate_folds(standard) == ()
         with pytest.raises(SplitStandardViolation, match="検査7"):
             folds_for_policy(standard, research_until=_at(100))
@@ -148,6 +169,7 @@ def test_the_standard_rejects_non_positive_lengths_negative_purge_and_zero_min_f
         "window": SplitWindow.ROLLING,
         "purge_seconds": 0,
         "min_folds": 1,
+        "partial_fold": PartialFold.AT_START,
     }
     values[field] = value
     with pytest.raises(KernelValueError):

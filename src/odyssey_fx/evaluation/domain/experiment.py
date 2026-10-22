@@ -66,10 +66,12 @@ from odyssey_fx.evaluation.domain.splits import (
     split_spec_of,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
+from odyssey_fx.evaluation.domain.variant import Paired
 from odyssey_fx.marketdata.domain.access import AccessClass
 
 __all__ = [
     "EXPERIMENT_SCHEMA_VERSION",
+    "all_allowed_partitions",
     "ExperimentManifest",
     "ExperimentOutcome",
     "ExperimentStatus",
@@ -224,6 +226,25 @@ def _require_checks(
     return checks
 
 
+def _partitions(value: object, label: str) -> Mapping[str, AccessClass]:
+    """許可 partition の対応を確かめ、キーの昇順の読み取り専用の写しにする。"""
+    if not isinstance(value, Mapping) or not all(
+        isinstance(key, str) and isinstance(item, AccessClass) for key, item in value.items()
+    ):
+        raise KernelValueError(f"{label} must map partition ids to AccessClass")
+    return MappingProxyType(dict(sorted(value.items())))
+
+
+def all_allowed_partitions(manifest: ExperimentManifest) -> Mapping[str, AccessClass]:
+    """記録票の許可 partition（探索の実験は両組の和）。"""
+    partitions = manifest.allowed_partitions
+    if isinstance(partitions, Paired):
+        merged = dict(partitions.standard)
+        merged.update(partitions.candidate)
+        return MappingProxyType(dict(sorted(merged.items())))
+    return partitions
+
+
 @dataclass(frozen=True, slots=True)
 class ExperimentManifest:
     """実験の記録票（D07 §19.2 の表の項目すべて）。
@@ -253,8 +274,10 @@ class ExperimentManifest:
     strategy_ref: StrategyRef
     compiled_ref: CompiledStrategyRef | None
     expected_config_digest: ConfigDigest | None
-    snapshot_id: SnapshotId
-    allowed_partitions: Mapping[str, AccessClass]
+    #: 単一実行の実験は単数の snapshot。探索の実験は組の写像（2026-10-21 改訂。D07 §19.2・
+    #: R-18 の (3)。改訂 PR の仮置き 38 (a)）。
+    snapshot_id: SnapshotId | Paired[SnapshotId]
+    allowed_partitions: Mapping[str, AccessClass] | Paired[Mapping[str, AccessClass]]
     complexity: ComplexityMeasures
     complexity_limits: ComplexityLimits
     pre_run_checks: tuple[PolicyCheckResult, ...]
@@ -280,7 +303,6 @@ class ExperimentManifest:
         for label, expected in (
             ("research_policy_ref", PolicyRef),
             ("strategy_ref", StrategyRef),
-            ("snapshot_id", SnapshotId),
             ("complexity", ComplexityMeasures),
             ("complexity_limits", ComplexityLimits),
             ("code_digest", CodeDigest),
@@ -313,18 +335,38 @@ class ExperimentManifest:
         object.__setattr__(
             self, "resolved_files", tuple(sorted(self.resolved_files, key=lambda item: item.role))
         )
-        if not isinstance(self.allowed_partitions, Mapping) or not all(
-            isinstance(key, str) and isinstance(value, AccessClass)
-            for key, value in self.allowed_partitions.items()
-        ):
-            raise KernelValueError(
-                "ExperimentManifest.allowed_partitions must map partition ids to AccessClass"
+        if self.is_search:
+            # 探索の実験は組の写像（2026-10-21 改訂。D07 §19.2、改訂 PR の仮置き 38 (a)）。
+            if not isinstance(self.snapshot_id, Paired) or not isinstance(
+                self.allowed_partitions, Paired
+            ):
+                raise KernelValueError(
+                    "a search manifest holds the snapshot ids and the allowed partitions per"
+                    " variant (D07 §19.2 の 2026-10-21 改訂)"
+                )
+            self.snapshot_id.require(SnapshotId, "ExperimentManifest.snapshot_id")
+            if self.snapshot_id.standard == self.snapshot_id.candidate:
+                raise KernelValueError(
+                    "the standard and the candidate snapshots of a search must differ"
+                    " (実装 PR の仮置き 54)"
+                )
+            object.__setattr__(
+                self,
+                "allowed_partitions",
+                self.allowed_partitions.map(
+                    lambda _, value: _partitions(value, "ExperimentManifest.allowed_partitions")
+                ),
             )
-        object.__setattr__(
-            self,
-            "allowed_partitions",
-            MappingProxyType(dict(sorted(self.allowed_partitions.items()))),
-        )
+        else:
+            if not isinstance(self.snapshot_id, SnapshotId):
+                raise KernelValueError("ExperimentManifest.snapshot_id must be a SnapshotId")
+            if isinstance(self.allowed_partitions, Paired):
+                raise KernelValueError("a single-run manifest has one set of allowed partitions")
+            object.__setattr__(
+                self,
+                "allowed_partitions",
+                _partitions(self.allowed_partitions, "ExperimentManifest.allowed_partitions"),
+            )
         _require_checks(
             self.pre_run_checks,
             SEARCH_PRE_RUN_CHECKS if self.is_search else PRE_RUN_CHECKS,
@@ -459,9 +501,7 @@ def experiment_id_of(
         "compiled_ref": manifest.compiled_ref,
         "expected_config_digest": manifest.expected_config_digest,
         "snapshot_id": manifest.snapshot_id,
-        "allowed_partitions": {
-            partition: access.value for partition, access in manifest.allowed_partitions.items()
-        },
+        "allowed_partitions": _partitions_payload(manifest.allowed_partitions),
         "complexity": manifest.complexity,
         "complexity_limits": manifest.complexity_limits,
         "pre_run_checks": list(manifest.pre_run_checks),
@@ -471,6 +511,18 @@ def experiment_id_of(
         payload["final_holdout"] = manifest.final_holdout
         payload["trials"] = list(manifest.trials)
     return ExperimentId(digest(payload))
+
+
+def _partitions_payload(
+    partitions: Mapping[str, AccessClass] | Paired[Mapping[str, AccessClass]],
+) -> object:
+    """識別の入力の許可 partition（探索の実験は組の写像。D07 §19.2 の 2026-10-21 改訂）。"""
+    if isinstance(partitions, Paired):
+        return {
+            variant.value: {key: access.value for key, access in value.items()}
+            for variant, value in partitions.items()
+        }
+    return {partition: access.value for partition, access in partitions.items()}
 
 
 @dataclass(frozen=True, slots=True)

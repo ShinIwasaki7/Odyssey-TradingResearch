@@ -13,6 +13,7 @@ fold 0 の検証区間と fold 1 の選定区間が同じ区間になる。D09 �
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Final
 
@@ -24,6 +25,7 @@ from tests.fixtures.evaluation.research_policies import (
 
 __all__ = [
     "BASE_EXPERIMENT",
+    "CANDIDATE_PLACEHOLDER",
     "DEFAULT_AXES",
     "TWO_FOLD_SPLIT",
     "install_policy_v3",
@@ -42,6 +44,7 @@ TWO_FOLD_SPLIT: Final = (
     '    validation_length: "4d"\n'
     "    window: ROLLING\n"
     '    purge: "0s"\n'
+    "    partial_fold: AT_START\n"
     "    min_folds: 2"
 )
 
@@ -59,6 +62,11 @@ _RUN_INTERVAL: Final = (
     '  end: "2015-01-16T22:00:00Z"\n'
 )
 _SINGLE_RUN_KEYS: Final = 'search_plan: "NONE"\nsplit: "NONE"\n'
+
+#: 候補の組の snapshot の既定値（設定の読込だけを確かめるテスト用。snapshot は開かない）。
+CANDIDATE_PLACEHOLDER: Final = "c" * 64
+
+_SNAPSHOT_LINE: Final = re.compile(r'^snapshot: "([0-9a-f]{64})"\n', re.MULTILINE)
 
 
 def install_policy_v3(
@@ -78,10 +86,22 @@ def search_experiment_text(
     axes: str = DEFAULT_AXES,
     max_trials: int = 4,
     final_holdout: str = "NONE",
+    candidate_snapshot: str = CANDIDATE_PLACEHOLDER,
 ) -> str:
-    """単一実行の実験設定の本文から探索の実験設定の本文を作る（D09 §5.6）。"""
+    """単一実行の実験設定の本文から探索の実験設定の本文を作る（D09 §5.6）。
+
+    単数の `snapshot` を両組の `snapshots: {standard, candidate}` に書き換える（2026-10-21 改訂。
+    標準の組は元の snapshot、候補の組は `candidate_snapshot`）。
+    """
     assert _RUN_INTERVAL in base and _SINGLE_RUN_KEYS in base
     text = base.replace(_RUN_INTERVAL, "")
+    match = _SNAPSHOT_LINE.search(text)
+    assert match is not None, "単一実行の実験設定に snapshot の行が無い"
+    text = _SNAPSHOT_LINE.sub(
+        f'snapshots:\n  standard: "{match.group(1)}"\n  candidate: "{candidate_snapshot}"\n',
+        text,
+        count=1,
+    )
     text = text.replace("id: strategy_b_t02_none\n", f"id: {experiment_id}\n")
     text = text.replace(
         'research_policy: {id: "research_policy", version: 1}',
@@ -108,8 +128,20 @@ def write_search_experiment(
     axes: str = DEFAULT_AXES,
     max_trials: int = 4,
     final_holdout: str = "NONE",
+    candidate_snapshot: str | None = None,
 ) -> Path:
-    """作業場に探索の実験設定を書き、その位置を返す（元は作業場の `BASE_EXPERIMENT`）。"""
+    """作業場に探索の実験設定を書き、その位置を返す（元は作業場の `BASE_EXPERIMENT`）。
+
+    `candidate_snapshot` を省くと、作業場の `candidate_snapshot.txt`（`t02_workspace.
+    install_candidate` が書く）があればその識別子を、無ければ `CANDIDATE_PLACEHOLDER` を使う。
+    """
+    if candidate_snapshot is None:
+        marker = repo / "candidate_snapshot.txt"
+        candidate_snapshot = (
+            marker.read_text(encoding="utf-8").strip()
+            if marker.is_file()
+            else CANDIDATE_PLACEHOLDER
+        )
     base = (repo / BASE_EXPERIMENT).read_text(encoding="utf-8")
     path = repo / "configs/experiments" / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,6 +152,7 @@ def write_search_experiment(
         axes=axes,
         max_trials=max_trials,
         final_holdout=final_holdout,
+        candidate_snapshot=candidate_snapshot,
     )
     path.write_text(text, encoding="utf-8")
     return path

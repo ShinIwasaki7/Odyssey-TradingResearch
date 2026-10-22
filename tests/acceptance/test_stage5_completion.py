@@ -75,8 +75,10 @@ from odyssey_fx.evaluation.domain.search import (
     TrialUnitKey,
 )
 from odyssey_fx.evaluation.domain.status import CheckOutcome
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
 from tests.fixtures.acceptance.t02_workspace import (
+    CANDIDATE_MARKER,
     LAST_VALIDATION,
     SEALED_BOUNDARIES,
     T02Workspace,
@@ -109,6 +111,13 @@ _HEADINGS = (
     "## 7. 比較の前提",
     "## 8. 試行台帳",
     "## 9. 診断（判定に使わない）",
+)
+
+#: 候補の組の snapshot で値を変える区間（封印期間の中。どの fold も読まないので run の結果は作業場
+#: の snapshot と同じになり、識別子だけが違う。2026-10-21 改訂で探索の実験は両組の snapshot を
+#: 書く）。
+_CANDIDATE_CHANGE = Interval(
+    start=UtcTime.parse("2015-01-20T22:00:00Z"), end=UtcTime.parse("2015-01-21T22:00:00Z")
 )
 
 #: 途中で止まった実行を待つ上限（秒）。束縛の記録が現れたら止める。
@@ -160,14 +169,17 @@ class _Run:
 
     @property
     def selections(self) -> dict[int, FoldSelection]:
-        return read_selections(self.directory)
+        """標準の組の選定記録（2026-10-21 改訂で記録は組ごと）。"""
+        return read_selections(self.directory, Variant.STANDARD)
 
     @property
     def runs(self) -> dict[TrialUnitKey, TrialRunRecord]:
-        return read_unit_records(self.directory)[1]
+        """標準の組の試行記録。"""
+        return read_unit_records(self.directory, Variant.STANDARD)[1]
 
     def table(self, name: str) -> pl.DataFrame:
-        return pl.read_parquet(self.directory / SEARCH_DIRECTORY / name)
+        """標準の組の集約表（`search/standard/`）。"""
+        return pl.read_parquet(self.directory / SEARCH_DIRECTORY / Variant.STANDARD.value / name)
 
 
 def _experiment_run(
@@ -184,11 +196,11 @@ def _experiment_run(
 
 
 def _experiment_version(workspace: T02Workspace, version: int, snapshot_id: str) -> Path:
-    """版 1 の実験設定から `version` と `snapshot` だけを書き換えた実験設定を作業場に置く。"""
+    """版 1 の実験設定から `version` と標準の組の snapshot だけを書き換えた実験設定を置く。"""
     text = (workspace.repo / "configs/experiments" / f"{_NAME}.yaml").read_text(encoding="utf-8")
     for old, new in (
         ("\nversion: 1\n", f"\nversion: {version}\n"),
-        (f'snapshot: "{workspace.snapshot_id}"', f'snapshot: "{snapshot_id}"'),
+        (f'standard: "{workspace.snapshot_id}"', f'standard: "{snapshot_id}"'),
     ):
         assert text.count(old) == 1, old
         text = text.replace(old, new)
@@ -213,8 +225,18 @@ def _ledger_events(repo: Path, version: int) -> list[tuple[int, TrialLedgerEvent
 
 @pytest.fixture(scope="module")
 def workspace(tmp_path_factory: pytest.TempPathFactory) -> T02Workspace:
-    """封印 partition を持つ作業場に、研究ポリシー版 3・空の台帳・探索の実験設定（版 1）を置く。"""
-    built = build_sealed_workspace(tmp_path_factory.mktemp("stage5-acceptance"))
+    """封印 partition を持つ作業場に、研究ポリシー版 3・空の台帳・探索の実験設定（版 1）を置く。
+
+    探索の実験は両組の snapshot を書くので、封印期間の中の足だけを変えた候補の組の snapshot も
+    受け入れる（2026-10-21 改訂。D13-15 (a)）。
+    """
+    root = tmp_path_factory.mktemp("stage5-acceptance")
+    built = build_sealed_workspace(root)
+    candidate = accept_variant(
+        built, root / "candidate-raw", sealed_raw_bars(changed=_CANDIDATE_CHANGE)
+    )
+    assert candidate != built.snapshot_id
+    (built.repo / CANDIDATE_MARKER).write_text(candidate, encoding="utf-8")
     install_policy_v3(built.repo)
     (built.repo / _LEDGER).parent.mkdir(parents=True, exist_ok=True)
     (built.repo / _LEDGER).write_bytes(b"")
@@ -342,19 +364,22 @@ def test_2b_every_unit_is_in_the_table_and_the_counts_match_the_outcome(complete
 
     outcome = read_experiment_outcome(completed.directory)
     assert outcome is not None and outcome.search is not None
+    counts = outcome.search.variants.standard.trial_counts
     table_counts = units.group_by("status").len()
     assert {status: count for status, count in table_counts.iter_rows()} == {
-        status.value: count for status, count in outcome.search.trial_counts if count
+        status.value: count for status, count in counts if count
     }
-    assert sum(count for _, count in outcome.search.trial_counts) == len(expected)
+    assert sum(count for _, count in counts) == len(expected)
 
 
 def _stopped_copy(completed: _Run, workspace: T02Workspace, root: Path) -> tuple[Path, Path]:
     """完了した版 1 から途中で止まった状態を人工に作る（成果物の基点とリポジトリの根を返す）。
 
-    fold 0 の選定区間の試行 1 の開始記録の後で止まった状態: 結末記録・レポート・集約表・選定記録・
-    fold 0 の検証区間と fold 1 の記録を消し、fold 0 の試行 1 の試行記録だけを消す（開始記録は
-    残す）。台帳は別のリポジトリの根へ、この実行の開始の行までを写す。
+    標準の組の fold 0 の選定区間の試行 1 の開始記録の後で止まった状態: 結末記録・レポート・
+    集約表・選定記録・fold 0 の検証区間と fold 1 の記録・経路の区間の記録・候補の組の記録を消し
+    （組の順は標準 → 候補で、組の中は全 fold の後に経路。改訂 PR の仮置き 35 (a)）、fold 0 の
+    試行 1 の試行記録だけを消す（開始記録は残す）。台帳は別のリポジトリの根へ、この実行の開始の
+    行までを写す。
     """
     artifacts = root / "artifacts"
     for entry in (completed.artifacts / "runs").iterdir():
@@ -363,7 +388,9 @@ def _stopped_copy(completed: _Run, workspace: T02Workspace, root: Path) -> tuple
     directory = _version_directory(artifacts, 1)
     shutil.copytree(completed.directory, directory)
 
-    search = directory / SEARCH_DIRECTORY
+    shutil.rmtree(directory / SEARCH_DIRECTORY / Variant.CANDIDATE.value)
+    search = directory / SEARCH_DIRECTORY / Variant.STANDARD.value
+    shutil.rmtree(search / "path")
     (directory / EXPERIMENT_OUTCOME_FILE).unlink()
     (directory / REPORT_FILE).unlink(missing_ok=True)
     for name in (TRIAL_UNITS_TABLE, TRIAL_METRICS_TABLE):
@@ -398,9 +425,9 @@ def test_2c_a_report_on_a_stopped_execution_tells_aborted_not_started_and_comple
     assert {0, 1}.isdisjoint(rejected), "試行 0・1 はコンパイルが通る割当のはず"
     artifacts, repo = _stopped_copy(completed, workspace, tmp_path)
     directory = _version_directory(artifacts, 1)
-    starts, runs = read_unit_records(directory)
+    starts, runs = read_unit_records(directory, Variant.STANDARD)
     assert set(starts) - set(runs) == {
-        TrialUnitKey(fold_index=0, phase=TrialPhase.TRAIN, trial_index=1)
+        TrialUnitKey(variant=Variant.STANDARD, fold_index=0, phase=TrialPhase.TRAIN, trial_index=1)
     }
 
     process = _odyssey(
@@ -415,8 +442,11 @@ def test_2c_a_report_on_a_stopped_execution_tells_aborted_not_started_and_comple
         "f0_TRAIN_t1": TrialStatus.ABORTED,
         "f1_TRAIN_t0": TrialStatus.NOT_STARTED,
     }
+    # 組ごとに出す（2026-10-21 改訂）。順 3 の標準の組の本文で確かめる（候補の組は未着手）。
+    folds = report[report.index(_HEADINGS[2]) : report.index(_HEADINGS[3])]
+    standard = folds[folds.index("### 標準の組") : folds.index("### 候補の組")]
     for name, status in expected.items():
-        rows = [line for line in report.splitlines() if line.startswith(f"| {name} |")]
+        rows = [line for line in standard.splitlines() if line.startswith(f"| {name} |")]
         assert len(rows) == 1, (name, rows)
         assert f"`{status.value}`" in rows[0].split("|")[3], (name, rows[0])
 
@@ -476,8 +506,12 @@ def test_3a_every_allowed_partition_is_research_history_and_p2_passes(
 ) -> None:
     for run in (completed, variant):
         manifest = run.manifest
-        assert manifest.allowed_partitions
-        assert set(manifest.allowed_partitions.values()) == {AccessClass.RESEARCH_HISTORY}
+        partitions = manifest.allowed_partitions
+        assert isinstance(partitions, Paired)  # 探索の実験は組の写像（2026-10-21 改訂）
+        for variant_name in VARIANTS:
+            allowed = partitions.of(variant_name)
+            assert allowed
+            assert set(allowed.values()) == {AccessClass.RESEARCH_HISTORY}
         checks = [
             item
             for item in manifest.pre_run_checks
@@ -499,6 +533,7 @@ def test_3b_a_policy_whose_range_crosses_the_research_boundary_is_refused_on_loa
         '    validation_length: "1000d"\n'
         "    window: ROLLING\n"
         '    purge: "0s"\n'
+        "    partial_fold: AT_START\n"
         "    min_folds: 2"
     )
     registry = research_policy_registry_path(workspace.repo)
@@ -542,7 +577,9 @@ def test_3c_the_sealed_partitions_never_enter_the_allowed_set(
     classes = [item["partition_id"]["access_class"] for item in snapshot["partitions"]]
     assert AccessClass.LEGACY_HOLDOUT.value in classes
     assert AccessClass.RESEARCH_HISTORY.value in classes
-    allowed = completed.manifest.allowed_partitions
+    partitions = completed.manifest.allowed_partitions
+    assert isinstance(partitions, Paired)
+    allowed = partitions.standard
     assert len(allowed) == classes.count(AccessClass.RESEARCH_HISTORY.value)
     assert all(AccessClass.LEGACY_HOLDOUT.value not in key for key in allowed)
 

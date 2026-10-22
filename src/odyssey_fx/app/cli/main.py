@@ -83,6 +83,7 @@ from odyssey_fx.evaluation.application.run_experiment import (
     ReproductionVerdict,
 )
 from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS
 from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.marketdata.application.acceptance import (
@@ -1067,7 +1068,7 @@ def _load_run_configs(
             args.experiment,
             repo_root=args.repo_root,
             registry=INITIAL_CATALOG,
-            metric_set_versions=frozenset({METRIC_SET_VERSION}),
+            metric_set_versions=METRIC_SET_VERSIONS,
         )
         if loaded.search is not None:
             raise ConfigError(
@@ -1176,13 +1177,14 @@ def _run_evaluate(args: argparse.Namespace, out: _Writer) -> int:
             f"`--run` は実行の識別子（16進64文字）を書くこと（{args.run!r}）: {exc}"
         ) from exc
 
-    if args.metric_set_version != METRIC_SET_VERSION:
+    if args.metric_set_version not in METRIC_SET_VERSIONS:
         # **式のある版だけを受ける**。版の番号だけを変えても評価は現在の版の式で走るので、
         # 「別の指標集合で作った」と名乗る成果物ができてしまう（D07 §9.2 は版を評価の
-        # 識別子の材料にしている）。実装が持つ指標集合は最新の1版だけである（D07 §5.5）。
+        # 識別子の材料にしている）。実装が持つのは版 2 と版 3（D07 §5.5・§5.6。実装 PR の
+        # 仮置き 53）。
         raise ConfigError(
             f"指標集合の版 {args.metric_set_version} の式は無い。"
-            f" この実装が持つのは版 {METRIC_SET_VERSION} だけである（D07 §5.5）"
+            f" この実装が持つのは版 {sorted(METRIC_SET_VERSIONS)} である（D07 §5.5・§5.6）"
         )
     calendar = load_calendar(args.calendar)
     outcome = composition.evaluate_saved_run(
@@ -1276,7 +1278,7 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
         args.experiment,
         repo_root=args.repo_root,
         registry=INITIAL_CATALOG,
-        metric_set_versions=frozenset({METRIC_SET_VERSION}),
+        metric_set_versions=METRIC_SET_VERSIONS,
     )
     outcome = composition.run_experiment(
         loaded=loaded,
@@ -1332,6 +1334,9 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
     search = result.search
     if search is not None:
         out.line(f"判定: {search.verdict.value}（評価基準の用途: {search.purpose.value}）")
+        # 組の判定の内訳（2026-10-21 改訂。D09 §7.12）。
+        for variant, item in search.variants.items():
+            out.line(f"  {variant.value} の組の判定: {item.verdict.value}")
         out.line(f"試行台帳の実行番号: {search.ledger_execution}")
         if result.failed_checks:
             out.line("事後検査に合格しなかった単位がある（どの単位かは試行記録にある。D09 §10.8）")
@@ -1391,11 +1396,15 @@ def _run_experiment_reproduce(args: argparse.Namespace, out: _Writer) -> int:
     out.line(f"記録票の識別子（experiment_id）: {report.experiment_id}")
     out.line(f"判定: {report.verdict.value}")
     out.line(f"理由: {outcome.detail}")
-    out.line(f"記録の run_id: {report.expected_run_id}")
-    out.line(f"再現の run_id: {report.observed_run_id}")
-    out.line(f"記録の result_digest: {report.expected_result_digest.hex}")
-    observed = report.observed_result_digest
-    out.line(f"再現の result_digest: {None if observed is None else observed.hex}")
+    if report.expected_run_id is not None and report.expected_result_digest is not None:
+        out.line(f"記録の run_id: {report.expected_run_id}")
+        out.line(f"再現の run_id: {report.observed_run_id}")
+        out.line(f"記録の result_digest: {report.expected_result_digest.hex}")
+        observed = report.observed_result_digest
+        out.line(f"再現の result_digest: {None if observed is None else observed.hex}")
+    else:
+        # 探索の実験は単位・選定・経路の区間ごとの照合の行を報告に書く（実装 PR の仮置き 57）。
+        out.line("照合の行（単位・選定・経路の区間ごと）は報告にある")
     out.line(f"報告: {outcome.path}")
     return _EXIT_OK if report.verdict is ReproductionVerdict.REPRODUCED else _EXIT_NOT_REPRODUCED
 

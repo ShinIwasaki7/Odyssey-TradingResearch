@@ -10,7 +10,15 @@
 |---|---|
 | 1 | `schema_version` / `id` / `version` / `complexity_limits` |
 | 2 | 版 1 ＋ `search_limits: {trials}`（1実験の試行数の上限。Q7 決定） |
-| 3 以上 | 版 2 ＋ `evaluation_standard: {purpose, split, selection, validation, sufficiency}` |
+| 3 以上 | 版 2 ＋ `evaluation_standard`（下の 7 群） |
+
+`evaluation_standard` の群: `purpose` / `basis` / `comparison_basis` / `split` / `selection` /
+`validation` / `sufficiency`。
+
+**版 3 以上の新しいキー**（2026-10-21 改訂。D13 §6.1・§6.4・§6.6、D09 §10.9 の改訂）: 前提の記録
+`basis`・比較の前提の固定 `comparison_basis`・端数の fold の置き場 `split.partial_fold`・連続口座の
+検証経路の条件 `validation.path` は**すべて必須**で、省略は読込で拒否する（既定値を置かない。仮置き
+23、改訂 PR の仮置き 36 (a)）。`split.partial_fold` の値は `AT_START` だけ。
 
 実験設定の書式 v2 は研究ポリシーを版参照 `{id, version}` だけで指す（D07 §18.2）。読んだ
 ファイルの `id` / `version` が参照と一致することを確かめる（食い違えば設定の誤り）。
@@ -47,9 +55,15 @@ from odyssey_fx.app.config.models import StrictModel, require_schema_version, va
 from odyssey_fx.app.config.scalars import require_decimal
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.ids import SnapshotId
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.metrics import MetricId
+from odyssey_fx.evaluation.domain.policy_basis import (
+    FixedComparisonBasis,
+    PolicyBasis,
+    PremiseFile,
+)
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
     RegistryEntry,
@@ -62,6 +76,8 @@ from odyssey_fx.evaluation.domain.search import (
     FoldStatistic,
     FrequencyClass,
     MetricCondition,
+    PathBoundary,
+    PathRule,
     SelectionDirection,
     SelectionRule,
     StandardPurpose,
@@ -69,11 +85,13 @@ from odyssey_fx.evaluation.domain.search import (
     ValidationRule,
 )
 from odyssey_fx.evaluation.domain.splits import (
+    PartialFold,
     SplitStandard,
     SplitStandardViolation,
     SplitWindow,
     folds_for_policy,
 )
+from odyssey_fx.evaluation.domain.variant import Paired
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
 from odyssey_fx.strategy.declarations.duration import DURATION_UNITS
 
@@ -138,6 +156,7 @@ class _SplitModel(StrictModel):
     window: str
     purge: str
     min_folds: int
+    partial_fold: str
 
 
 class _ConditionModel(StrictModel):
@@ -159,9 +178,63 @@ class _SelectionModel(StrictModel):
     eligibility: list[_ConditionModel]
 
 
+class _PathModel(StrictModel):
+    boundary: str
+    floors: list[_ConditionModel]
+    aggregate: list[_ConditionModel]
+
+
 class _ValidationModel(StrictModel):
     fold_floors: list[_ConditionModel]
     aggregate: list[_AggregateModel]
+    path: _PathModel
+
+
+class _SnapshotsModel(StrictModel):
+    standard: str
+    candidate: str
+
+
+class _PremiseModel(StrictModel):
+    name: str
+    version: int | None
+    path: str
+    sha256: str
+
+
+class _BasisModel(StrictModel):
+    snapshots: _SnapshotsModel
+    target_series: list[str]
+    premises: list[_PremiseModel]
+
+
+class _ComparisonAccountModel(StrictModel):
+    currency: str
+    initial_balance: str
+
+
+class _ComparisonRiskModel(StrictModel):
+    trial_risk_rate: str
+    account_risk_cap: str
+
+
+class _ComparisonCostModel(StrictModel):
+    spread_offset: str
+    commission_per_unit: str
+    entry_slippage: str
+    close_slippage: str
+
+
+class _ComparisonExecutionModel(StrictModel):
+    entry_delay_bars: int
+    adverse_fill_limits: dict[str, str]
+
+
+class _ComparisonBasisModel(StrictModel):
+    account: _ComparisonAccountModel
+    risk_policy: _ComparisonRiskModel
+    cost_model: _ComparisonCostModel
+    execution_policy: _ComparisonExecutionModel
 
 
 class _FrequencyClassModel(StrictModel):
@@ -177,6 +250,8 @@ class _SufficiencyModel(StrictModel):
 
 class _EvaluationStandardModel(StrictModel):
     purpose: str
+    basis: _BasisModel
+    comparison_basis: _ComparisonBasisModel
     split: _SplitModel
     selection: _SelectionModel
     validation: _ValidationModel
@@ -288,6 +363,7 @@ def _split_of(model: _SplitModel, label: str) -> SplitStandard:
         window=_member(SplitWindow, model.window, f"{label}.window"),
         purge_seconds=_seconds(model.purge, f"{label}.purge", positive=False),
         min_folds=model.min_folds,
+        partial_fold=_member(PartialFold, model.partial_fold, f"{label}.partial_fold"),
     )
 
 
@@ -305,6 +381,72 @@ def _aggregate_of(model: _AggregateModel, label: str) -> AggregateCondition:
         statistic=_member(FoldStatistic, model.statistic, f"{label}.statistic"),
         comparator=_member(Comparator, model.comparator, f"{label}.comparator"),
         threshold=require_decimal(model.threshold, f"{label}.threshold"),
+    )
+
+
+def _path_rule_of(model: _PathModel, label: str) -> PathRule:
+    return PathRule(
+        boundary=_member(PathBoundary, model.boundary, f"{label}.boundary"),
+        floors=tuple(
+            _condition_of(item, f"{label}.floors[{index}]")
+            for index, item in enumerate(model.floors)
+        ),
+        aggregate=tuple(
+            _condition_of(item, f"{label}.aggregate[{index}]")
+            for index, item in enumerate(model.aggregate)
+        ),
+    )
+
+
+def _basis_of(model: _BasisModel, label: str) -> PolicyBasis:
+    def snapshot(text: str, key: str) -> SnapshotId:
+        try:
+            return SnapshotId(ContentDigest(algorithm="sha256", hex=text))
+        except KernelValueError as exc:
+            raise ConfigError(
+                f"{label}.snapshots.{key} は承認済み snapshot の識別子（16 進 64 文字）: {exc}"
+            ) from exc
+
+    return PolicyBasis(
+        snapshots=Paired(
+            standard=snapshot(model.snapshots.standard, "standard"),
+            candidate=snapshot(model.snapshots.candidate, "candidate"),
+        ),
+        target_series=tuple(model.target_series),
+        premises=tuple(
+            PremiseFile(name=item.name, version=item.version, path=item.path, sha256=item.sha256)
+            for item in model.premises
+        ),
+    )
+
+
+def _comparison_basis_of(model: _ComparisonBasisModel, label: str) -> FixedComparisonBasis:
+    cost = model.cost_model
+    return FixedComparisonBasis(
+        currency=model.account.currency,
+        initial_balance=require_decimal(
+            model.account.initial_balance, f"{label}.account.initial_balance"
+        ),
+        trial_risk_rate=require_decimal(
+            model.risk_policy.trial_risk_rate, f"{label}.risk_policy.trial_risk_rate"
+        ),
+        account_risk_cap=require_decimal(
+            model.risk_policy.account_risk_cap, f"{label}.risk_policy.account_risk_cap"
+        ),
+        spread_offset=require_decimal(cost.spread_offset, f"{label}.cost_model.spread_offset"),
+        commission_per_unit=require_decimal(
+            cost.commission_per_unit, f"{label}.cost_model.commission_per_unit"
+        ),
+        entry_slippage=require_decimal(cost.entry_slippage, f"{label}.cost_model.entry_slippage"),
+        close_slippage=require_decimal(cost.close_slippage, f"{label}.cost_model.close_slippage"),
+        entry_delay_bars=model.execution_policy.entry_delay_bars,
+        adverse_fill_limits=tuple(
+            (
+                symbol,
+                require_decimal(limit, f"{label}.execution_policy.adverse_fill_limits.{symbol}"),
+            )
+            for symbol, limit in sorted(model.execution_policy.adverse_fill_limits.items())
+        ),
     )
 
 
@@ -347,6 +489,7 @@ def _standard_of(
                 _aggregate_of(item, f"{label}.validation.aggregate[{index}]")
                 for index, item in enumerate(model.validation.aggregate)
             ),
+            path=_path_rule_of(model.validation.path, f"{label}.validation.path"),
         )
         sufficiency = SufficiencyRule(
             classes=tuple(
@@ -363,6 +506,10 @@ def _standard_of(
             selection=selection,
             validation=validation,
             sufficiency=sufficiency,
+            basis=_basis_of(model.basis, f"{label}.basis"),
+            comparison_basis=_comparison_basis_of(
+                model.comparison_basis, f"{label}.comparison_basis"
+            ),
         )
     except ConfigError as exc:
         raise ConfigError(f"{path}: 研究ポリシーの評価基準の誤り: {exc}") from exc
