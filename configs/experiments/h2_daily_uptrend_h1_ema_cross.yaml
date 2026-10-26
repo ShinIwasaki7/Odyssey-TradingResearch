@@ -1,0 +1,92 @@
+# 順 5 の元の実験（版 1）: 研究仮説 H2「日足の上昇局面での、1 時間足の移動平均の上抜け」の
+# 探索の実験設定（書式 v2。D14 §2.2 の手順 1「事前の記録」の成果物 (2)、D09 §5.6）
+#
+# 人間の決定（2026-10-22。原文は D14 §0.5）: 研究仮説は H2（D14-1 (b)）、格子は仮説ごとの既定
+# （D14-2 (a)。H2 は 4 試行）、軸の値は D14 §4.3 の表（仮置き 13）、買いだけ（仮置き 14）、
+# 1 時間足の EMA の窓は 150 に固定（仮置き 15）。事前の記録の注記は
+# `docs/data/usdjpy_step5_research_loop/README.md` の「事前の記録」節。
+#
+# - 研究ポリシーは第 3 版（評価基準の群を持つ登録済みの版。用途 STANDARD）。評価範囲・fold・選定・
+#   判定・証拠の要件はすべて研究ポリシーから入り、ここには書かない（D09 §5.6・§7.6）。
+# - 両組の snapshot は研究ポリシーの `basis.snapshots` と役割ごとに同じ値（D13-16 (a)）。実体は
+#   git 管理外の `data/snapshots/`。
+# - 環境・執行系列・解像度の階層・口座・リスク・執行・費用・換算は順 3 の実験設定
+#   （`configs/experiments/strategy_a_usdjpy_mt5_standard.yaml`・`strategy_b_usdjpy_mt5_standard.yaml`）
+#   と同じ値。口座・リスク・費用・数量に効く執行の値は研究ポリシーの `comparison_basis` と照合され、
+#   違えば読込で拒否される（D13-21 (a)、D09 §5.5 の 12）。
+# - 格子は 1 時間足の EMA の期間 P {20, 50} × 利確の倍率 R {1.5, 3.0} = 4 試行（D14 §4.3）。
+#   試行番号は軸を `(instance, parameter)` の文字列の昇順（`h1_ema.period` → `take_profit.reward_risk`）
+#   に並べ、後ろの軸ほど速く変わる順に振る（D09 §5.2）: 0 = (20, 1.5)、1 = (20, 3.0)、
+#   2 = (50, 1.5)、3 = (50, 3.0)。`max_trials` は列挙した試行の数と同じ値（D14 §4.2）。
+# - `run_interval` は書かない（fold が区間を持つ。D09 §5.5 の 6）。最終検証は順 6 以降なので
+#   `final_holdout: NONE`（D14 §9.1）。系譜（`lineage`）は元の実験なので書かない（D13 §7.1）。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**金額・率は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: h2_daily_uptrend_h1_ema_cross
+version: 1
+
+hypothesis: "日足の終値が日足の EMA（期間 20）を上回る局面に限り、1 時間足の終値が 1 時間足の EMA（期間 P）を下から上に抜けたら成行で買い、直近 20 本の 1 時間足の安値に損切り、R 倍に利確を置く規則は、両組で共通基準を満たす"
+
+research_policy: {id: "research_policy", version: 3}
+
+strategy: "configs/strategies/h2_daily_uptrend_h1_ema_cross_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+snapshots:
+  standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+  candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+
+execution_series: "USDJPY/15m/bid"
+
+resolution_hierarchy:
+  - "USDJPY/15m/bid"
+  - "USDJPY/1m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT15M"
+
+evaluation: {metric_set_version: 3}
+
+search_plan:
+  kind: GRID
+  max_trials: 4
+  axes:
+    - {instance: h1_ema, parameter: period, values: [20, 50]}
+    - {instance: take_profit, parameter: reward_risk, values: [1.5, 3.0]}
+
+split: STANDARD
+
+final_holdout: NONE
