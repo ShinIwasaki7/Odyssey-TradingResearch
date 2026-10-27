@@ -84,6 +84,9 @@ def experiment_text(version: int, periods: list[int], lineage: bool = False) -> 
 
 REPORT = """# 実験レポート: synthetic_cross 版 1
 
+保存済みの成果物だけから作った表示である（記録票・結末記録）。正本はそれらの
+成果物であり、このファイルは結果のダイジェストに入らない。
+
 ## 1. 判定
 
 用途: 共通基準の判定
@@ -211,6 +214,9 @@ def test_collect_reads_run_and_registered_versions(tmp_path: Path) -> None:
     assert versions[0].verdict == "BELOW_STANDARD"
     assert versions[0].facts.max_memory_bytes == 5200000000
     assert versions[1].report is None
+    report = versions[0].report
+    assert report is not None and report.preamble == ""  # 「保存済みの成果物…」は出さない
+    assert "保存済みの成果物" in convert(REPORT).preamble  # 変換そのものは落とさない
 
 
 def test_unrelated_configs_are_not_listed(tmp_path: Path) -> None:

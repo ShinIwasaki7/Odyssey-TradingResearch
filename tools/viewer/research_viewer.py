@@ -164,6 +164,21 @@ def _max_memory(time_log: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+#: 結果の欄に出さない前置きの段落の書き出し（2026-10-27 の人間の指示「保存済みの成果物だけから
+#: 作った表示である〜の表示は無くす」）。`report.md` そのものは変えない。
+_HIDDEN_PREAMBLE_PREFIX = "<p>保存済みの成果物"
+
+
+def _report(text: str) -> Document:
+    document = convert(text)
+    document.preamble = "\n".join(
+        block
+        for block in document.preamble.split("\n")
+        if not block.startswith(_HIDDEN_PREAMBLE_PREFIX)
+    )
+    return document
+
+
 def _run_version(directory: Path) -> VersionView:
     """実行した（または実行を始めた）版を、版のディレクトリから読む。"""
     manifest_path = directory / "experiment_manifest.json"
@@ -215,7 +230,7 @@ def _run_version(directory: Path) -> VersionView:
         facts=facts,
         verdict=combined.get("verdict"),
         verdict_split=combined.get("split"),
-        report=convert(report_text) if report_text else None,
+        report=_report(report_text) if report_text else None,
     )
 
 
