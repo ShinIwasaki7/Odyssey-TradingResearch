@@ -19,6 +19,18 @@ _LIST_ITEM = re.compile(r"^( *)- (.*)$")
 _TABLE_SEPARATOR = re.compile(r"^\|(\s*:?-+:?\s*\|)+\s*$")
 _NUMBER = re.compile(r"^[-+−]?[\d,]*\.?\d+(e[-+]?\d+)?%?$", re.IGNORECASE)
 
+#: 日付だけを見せる列（2026-10-27 の人間の指示「選定区間・検証区間は日付までで時刻は無くて良い」）。
+DATE_ONLY_COLUMNS = frozenset({"選定区間", "検証区間"})
+#: 区間の文字（`common.time.Interval` の `[開始, 終わり)`）。
+_INTERVAL = re.compile(r"^\[(\d{4}-\d{2}-\d{2})T[^,\]]*,\s*(\d{4}-\d{2}-\d{2})T[^)\]]*\)$")
+
+
+def date_only(text: str) -> str:
+    """区間の文字を日付だけにする（`[2017-03-25T12:00:00Z, 2019-03-23T12:00:00Z)` →
+    `2017-03-25 〜 2019-03-23`）。区間の形でなければそのまま返す。"""
+    match = _INTERVAL.match(text.strip())
+    return f"{match.group(1)} 〜 {match.group(2)}" if match else text
+
 
 @dataclass(frozen=True, slots=True)
 class Section:
@@ -86,6 +98,11 @@ def _cell_html(tag: str, text: str) -> str:
 def _table(lines: list[str]) -> str:
     header = split_cells(lines[0])
     rows = [split_cells(line) for line in lines[2:]]
+    date_columns = {index for index, name in enumerate(header) if name in DATE_ONLY_COLUMNS}
+    rows = [
+        [date_only(cell) if index in date_columns else cell for index, cell in enumerate(row)]
+        for row in rows
+    ]
     out = ['<div class="table-wrap"><table>', "<thead><tr>"]
     out.extend(_cell_html("th", cell) for cell in header)
     out.append("</tr></thead><tbody>")

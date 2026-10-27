@@ -178,6 +178,20 @@ def test_convert_splits_sections_and_builds_tables_and_nested_lists() -> None:
     assert "<td>x&lt;y</td>" in folds
 
 
+def test_interval_columns_show_dates_only() -> None:
+    document = convert(
+        "## 節\n\n| fold | 選定区間 | 検証区間 | 注記 |\n|---|---|---|---|\n"
+        "| 0 | [2017-03-25T12:00:00Z, 2019-03-23T12:00:00Z) | "
+        "[2019-03-23T12:00:00Z, 2020-03-21T12:00:00Z) | [2017-03-25T12:00:00Z, x) |\n"
+        "| 1 | 対象外 | なし | |\n"
+    )
+    body = document.sections[0].html
+    assert "<td>2017-03-25 〜 2019-03-23</td>" in body
+    assert "<td>2019-03-23 〜 2020-03-21</td>" in body
+    assert "T12:00:00Z, x)" in body  # 対象の列でなければ変えない
+    assert "<td>対象外</td>" in body  # 区間の形でなければ変えない
+
+
 def test_convert_keeps_unknown_syntax_as_text() -> None:
     document = convert("## 節\n\n> 引用\n1. 番号\n")
     assert "&gt; 引用<br>1. 番号" in document.sections[0].html
