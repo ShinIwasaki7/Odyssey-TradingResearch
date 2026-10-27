@@ -161,11 +161,21 @@ D14 に定めが無いため事前登録の PR で置いた前提（PR #100 の�
 
 ### 2.4 再現（D14-10 (a)）
 
+**判定の値と成績の数値は書かない**（D14 §7.1 (a)）。書くのは再現の一致・不一致と、進行の事実・ハッシュだけである。再現の終了を待って本 PR（PR #101）に追記した（第 3.6 節の仮置き 7 の決定）。
+
 | 項目 | 値 |
 |---|---|
-| コマンド | `uv run odyssey-fx experiment reproduce --experiment-dir <リポジトリ>/runs/experiments/h2_daily_uptrend_h1_ema_cross/v1 --snapshots <リポジトリ>/data/snapshots --out <リポジトリ>/runs/reproduce/h2_daily_uptrend_h1_ema_cross/v1 --repo-root <step5-run-v1 の作業ツリー>`（台帳には書かない） |
-| 開始 | 2026-10-27T04:35:04Z（作業ツリー `step5-run-v1`。元の実行と同じコミット） |
-| 結果（`reproduction.json` の一致・不一致） | **未完（後のコミットで追記）**。再現の終了を待って本 PR（PR #101）に追記してから merge する（第 3.6 節の仮置き 7 の決定） |
+| コマンド | `uv run --frozen odyssey-fx experiment reproduce --experiment-dir <リポジトリ>/runs/experiments/h2_daily_uptrend_h1_ema_cross/v1 --snapshots <リポジトリ>/data/snapshots --out <リポジトリ>/runs/reproduce/h2_daily_uptrend_h1_ema_cross/v1 --repo-root <step5-run-v1 の作業ツリー>`（`caffeinate -i` と `/usr/bin/time -l` で包んだ。台帳には書かない） |
+| 実行の場所 | ローカルの Mac。作業ツリー `.claude/worktrees/step5-run-v1`（元の実行と同じコミット `e521f56` に台帳の行のコミット `3d20d6f` を足したもの。コードと `uv.lock` は元の実行と同じ） |
+| 開始・終了（UTC） | 2026-10-27T04:35:04Z 〜 2026-10-27T12:34:10Z |
+| 経過時間 | 約 7 時間 59 分（`/usr/bin/time -l` の real 28,745.5 秒）。元の実行の約 1.04 倍（D14 §8.2 の見込み 0.78〜0.96 倍をわずかに上回った。同じ時間帯に、同じ Mac で本 PR の確認（全テストと snapshot を開く確認）を走らせていた） |
+| 最大メモリ | 約 5.57 GiB（`maximum resident set size` 5,978,529,792 バイト） |
+| 終了コード | 0 |
+| 判定（`reproduction.json` の `verdict`） | **REPRODUCED（一致）** |
+| 照合の行 | 67 行すべて一致: 単位（選定区間と検証区間の run）50 行（両組 25 行ずつ）、fold ごとの選定 10 行（両組 5 行ずつ）、連続口座の経路 7 行（標準の組は区間 2 と終端 1、候補の組は区間 3 と終端 1）。不一致 0 行 |
+| 比較の方式 | 記録票に記録された全単位と経路の全区間を、別の成果物の置き場（上の `--out`）で走らせ直し、元の実験の成果物と照合した。単位は `run_id` と結果のダイジェスト（`result_digest`）、選定は fold ごとの選ばれた試行、経路の区間は `run_id`・結果のダイジェストと区間の間で引き継いだ残高、経路の終端は終端の残高を照合した（`experiment reproduce` の出力の理由の文） |
+| 報告 | `runs/reproduce/h2_daily_uptrend_h1_ema_cross/v1/reproduction.json`（メインの checkout の根から。版管理の外）、SHA-256 `1edd2bad43fdec06d892745ffbd871c46f29cab90f21371831c37087d5f14f7a` |
+| 台帳 | 再現は台帳に書かない。再現の後も、作業ツリー `step5-run-v1` の台帳は 2 行のままで、ファイルの SHA-256 は第 2.2 節と同じ `16e1db14…d684` |
 
 ## 3. 改善の事前の記録（版 2。結果を見る前。D14 §2.5 の (2)〜(4)）
 
