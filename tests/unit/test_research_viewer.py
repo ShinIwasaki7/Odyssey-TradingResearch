@@ -197,6 +197,17 @@ def test_interval_columns_show_dates_only() -> None:
     assert "<td>対象外</td>" in body  # 区間の形でなければ変えない
 
 
+def test_pipe_lines_without_separator_are_text_and_terminate() -> None:
+    """区切り行の無い `|` の行（途中で切れた表など）は文字として出し、止まる（Codex 1 巡目）。"""
+    for source, expected in (
+        ("## 節\n\n| 見出し |\n", "<p>| 見出し |</p>"),
+        ("## 節\n\n| a | b |\n| 1 | 2 |\n", "<p>| a | b |<br>| 1 | 2 |</p>"),
+        ("## 節\n\n本文\n| x |\n", "<p>本文<br>| x |</p>"),
+        ("## 節\n\n本文\n| h |\n|---|\n| 1 |\n", '<p>本文</p>\n<div class="table-wrap">'),
+    ):
+        assert convert(source).sections[0].html.startswith(expected), source
+
+
 def test_convert_keeps_unknown_syntax_as_text() -> None:
     document = convert("## 節\n\n> 引用\n1. 番号\n")
     assert "&gt; 引用<br>1. 番号" in document.sections[0].html

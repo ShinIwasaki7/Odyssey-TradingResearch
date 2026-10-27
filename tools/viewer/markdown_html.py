@@ -135,6 +135,15 @@ def _list(items: list[tuple[int, str]]) -> str:
     return "".join(out)
 
 
+def _table_starts(lines: list[str], index: int) -> bool:
+    """`index` の行が表の見出し行か（次の行が区切り行のときだけ表として読む）。"""
+    return (
+        lines[index].startswith("|")
+        and index + 1 < len(lines)
+        and _TABLE_SEPARATOR.match(lines[index + 1]) is not None
+    )
+
+
 def _blocks(lines: list[str]) -> str:
     """節の中身（見出しの 2 段目を含まない行）を HTML にする。"""
     out: list[str] = []
@@ -150,11 +159,7 @@ def _blocks(lines: list[str]) -> str:
             out.append(f"<h{level}>{inline(heading.group(2))}</h{level}>")
             index += 1
             continue
-        if (
-            line.startswith("|")
-            and index + 1 < len(lines)
-            and _TABLE_SEPARATOR.match(lines[index + 1])
-        ):
+        if _table_starts(lines, index):
             end = index + 2
             while end < len(lines) and lines[end].startswith("|"):
                 end += 1
@@ -176,14 +181,17 @@ def _blocks(lines: list[str]) -> str:
                 index += 1
             out.append(_list(items))
             continue
-        paragraph: list[str] = []
+        # 段落は少なくとも今の行を読む（どの分岐も 1 行以上進めるので、壊れた入力でも止まる）。
+        # 区切り行の無い `|` の行（途中で切れた表など）は段落の文字として出す。
+        paragraph = [line.strip()]
+        index += 1
         while index < len(lines):
             current = lines[index]
             if (
                 not current.strip()
                 or _HEADING.match(current)
                 or _LIST_ITEM.match(current)
-                or current.startswith("|")
+                or _table_starts(lines, index)
             ):
                 break
             paragraph.append(current.strip())
