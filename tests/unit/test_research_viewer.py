@@ -184,8 +184,10 @@ def test_interval_columns_show_dates_only() -> None:
         "| 0 | [2017-03-25T12:00:00Z, 2019-03-23T12:00:00Z) | "
         "[2019-03-23T12:00:00Z, 2020-03-21T12:00:00Z) | [2017-03-25T12:00:00Z, x) |\n"
         "| 1 | 対象外 | なし | |\n"
+        "\n| 単位 | 実行区間 |\n|---|---|\n| f0 | [2017-01-01T00:00:00Z, 2017-02-01T00:00:00Z) |\n"
     )
     body = document.sections[0].html
+    assert "<td>2017-01-01 〜 2017-02-01</td>" in body
     assert "<td>2017-03-25 〜 2019-03-23</td>" in body
     assert "<td>2019-03-23 〜 2020-03-21</td>" in body
     assert "T12:00:00Z, x)" in body  # 対象の列でなければ変えない
@@ -236,6 +238,46 @@ def test_strategy_html_shows_comment_components_and_axes(tmp_path: Path) -> None
     assert "1 時間足の終値（USDJPY bid）" in page
     assert "探索 20 / 50" in page
     assert "保有中のポジション" in page
+
+
+def test_conditions_are_shown_in_japanese_with_units() -> None:
+    experiment = {
+        "execution_series": "USDJPY/15m/bid",
+        "account": {"account_id": "ACC1", "currency": "JPY", "initial_balance": "1000000"},
+        "risk_policy": {"trial_risk_rate": "0.02", "account_risk_cap": "0.20"},
+        "cost_model": {
+            "commission_per_unit": "0.001",
+            "entry_slippage": "0.01",
+            "close_slippage": "0.01",
+            "spread_offset": "0.02",
+        },
+        "execution_policy": {
+            "entry_delay_bars": 0,
+            "entry_valid_for": "PT20M",
+            "close_valid_for": "PT20M",
+            "adverse_fill_limits": {"USDJPY": "0.05"},
+            "reference_quote_source": "EXECUTION_SERIES_LAST_CLOSE",
+            "new_key": "x",
+        },
+    }
+    page = rv._conditions_table(experiment)
+    for expected in (
+        "<td title='account_id'>口座名</td><td>ACC1</td>",
+        "<td title='initial_balance'>初期残高</td><td>1,000,000 円</td>",
+        "<td title='trial_risk_rate'>1取引のリスク上限</td><td>残高の 2%</td>",
+        "<td>残高の 20%</td>",
+        "<td>1 通貨あたり 0.001 円（片道）</td>",
+        "1 万通貨なら片道 10 円",
+        "<td>0.02 円（2 pip）固定</td>",
+        "<td>0.01 円（1 pip）</td>",
+        "最初の15 分足の始値で約定する",
+        "<td>20 分</td>",
+        "<td>USDJPY 0.05 円（5 pip）</td>",
+        "<td>直前に確定した15 分足の終値</td>",
+        "<td title='new_key'>new_key</td><td>x</td>",
+        "<th>執行の系列</th><td>USDJPY/15m/bid</td>",
+    ):
+        assert expected in page, expected
 
 
 def test_change_html_shows_lineage_and_changed_axis(tmp_path: Path) -> None:

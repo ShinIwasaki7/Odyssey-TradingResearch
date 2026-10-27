@@ -19,8 +19,9 @@ _LIST_ITEM = re.compile(r"^( *)- (.*)$")
 _TABLE_SEPARATOR = re.compile(r"^\|(\s*:?-+:?\s*\|)+\s*$")
 _NUMBER = re.compile(r"^[-+−]?[\d,]*\.?\d+(e[-+]?\d+)?%?$", re.IGNORECASE)
 
-#: 日付だけを見せる列（2026-10-27 の人間の指示「選定区間・検証区間は日付までで時刻は無くて良い」）。
-DATE_ONLY_COLUMNS = frozenset({"選定区間", "検証区間"})
+#: 日付だけを見せる列（2026-10-27 の人間の指示「選定区間・検証区間・実行区間は日付までで時刻は無くて
+#: 良い」）。
+DATE_ONLY_COLUMNS = frozenset({"選定区間", "検証区間", "実行区間"})
 #: 区間の文字（`common.time.Interval` の `[開始, 終わり)`）。
 _INTERVAL = re.compile(r"^\[(\d{4}-\d{2}-\d{2})T[^,\]]*,\s*(\d{4}-\d{2}-\d{2})T[^)\]]*\)$")
 

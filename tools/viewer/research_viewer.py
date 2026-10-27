@@ -26,9 +26,10 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -460,26 +461,241 @@ def _axes_table(experiment: Mapping[str, Any]) -> str:
     )
 
 
+def _decimal_text(value: object) -> str:
+    """設定の数の文字を、指数や末尾の 0 を付けずに出す（読めなければそのまま）。"""
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return str(value)
+    return format(number.normalize(), "f")
+
+
+def _grouped(value: object) -> str:
+    """金額を 3 桁ごとに区切る（例: 1000000 → 1,000,000）。"""
+    try:
+        number = Decimal(str(value)).normalize()
+    except InvalidOperation:
+        return str(value)
+    return f"{number:,f}"
+
+
+def _percent(value: object) -> str:
+    try:
+        return _decimal_text(Decimal(str(value)) * 100) + "%"
+    except InvalidOperation:
+        return str(value)
+
+
+def _duration_text(value: object) -> str:
+    """ISO 8601 の時間の長さ（`PT20M` など）を日本語にする。"""
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", str(value))
+    if not match or not any(match.groups()):
+        return str(value)
+    units = ("時間", "分", "秒")
+    return " ".join(
+        f"{number} {unit}" for number, unit in zip(match.groups(), units, strict=True) if number
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Market:
+    """条件の表示に使う、執行の系列から読む値（通貨の表示と pip の大きさ）。"""
+
+    timeframe: str
+    price_unit: str
+    pip: Decimal | None
+
+    def price(self, value: object) -> str:
+        text = f"{_decimal_text(value)} {self.price_unit}"
+        if self.pip is None:
+            return text
+        try:
+            pips = Decimal(str(value)) / self.pip
+        except InvalidOperation:
+            return text
+        return f"{text}（{_decimal_text(pips)} pip）"
+
+
+def _market(experiment: Mapping[str, Any]) -> _Market:
+    parts = str(experiment.get("execution_series", "")).split("/")
+    symbol = parts[0] if parts else ""
+    timeframe = _TIMEFRAME_NAMES.get(parts[1], parts[1]) if len(parts) > 1 else "執行足"
+    quote = symbol[3:] if len(symbol) == 6 else ""
+    # pip の大きさは円の組で 0.01、それ以外で 0.0001（銘柄仕様の `pip_size` と同じ慣行）。
+    pip = Decimal("0.01") if quote == "JPY" else Decimal("0.0001") if quote else None
+    return _Market(timeframe, "円" if quote == "JPY" else quote or "価格", pip)
+
+
+#: 実験の条件の表（2026-10-27 に人間と確認した項目名と意味）。値の書き方は関数で決める。
+_ConditionRow = tuple[str, str, Callable[[Any, Mapping[str, Any], _Market], tuple[str, str]]]
+
+
+def _money(value: Any, account: Mapping[str, Any]) -> str:
+    currency = account.get("currency")
+    return f"{_grouped(value)} {'円' if currency == 'JPY' else currency}"
+
+
+_CONDITION_ROWS: Mapping[str, Sequence[_ConditionRow]] = {
+    "account": (
+        ("account_id", "口座名", lambda v, a, m: (str(v), "記録上の識別用。結果には影響しない")),
+        (
+            "currency",
+            "口座の通貨",
+            lambda v, a, m: ("円（JPY）" if v == "JPY" else str(v), "損益と残高を数える通貨"),
+        ),
+        (
+            "initial_balance",
+            "初期残高",
+            lambda v, a, m: (_money(v, a), "各 fold の開始時の口座残高"),
+        ),
+    ),
+    "risk_policy": (
+        (
+            "trial_risk_rate",
+            "1取引のリスク上限",
+            lambda v, a, m: (
+                f"残高の {_percent(v)}",
+                "損切りまでに失ってよい額。これが取引量の上限を決める",
+            ),
+        ),
+        (
+            "account_risk_cap",
+            "口座全体のリスク上限",
+            lambda v, a, m: (f"残高の {_percent(v)}", "同時に抱えるリスクの合計の上限"),
+        ),
+    ),
+    "cost_model": (
+        (
+            "commission_per_unit",
+            "手数料",
+            lambda v, a, m: (
+                f"1 通貨あたり {_money(v, a)}（片道）",
+                "入るときと出るときにそれぞれかかる。1 万通貨なら片道 "
+                f"{_money(Decimal(str(v)) * 10000, a)}",
+            ),
+        ),
+        (
+            "spread_offset",
+            "スプレッド",
+            lambda v, a, m: (
+                f"{m.price(v)}固定",
+                f"買値＝売値＋{_decimal_text(v)} {m.price_unit}",
+            ),
+        ),
+        (
+            "entry_slippage",
+            "入るときの約定ずれ",
+            lambda v, a, m: (
+                m.price(v),
+                f"約定価格を不利な向きに {_decimal_text(v)} {m.price_unit}ずらす",
+            ),
+        ),
+        (
+            "close_slippage",
+            "出るときの約定ずれ",
+            lambda v, a, m: (
+                m.price(v),
+                f"決済・損切りの約定価格を不利な向きに {_decimal_text(v)} {m.price_unit}ずらす",
+            ),
+        ),
+    ),
+    "execution_policy": (
+        (
+            "entry_delay_bars",
+            "約定の見送り本数",
+            lambda v, a, m: (
+                f"{v} 本",
+                f"注文を受け付けた後、最初の{m.timeframe}の始値で約定する"
+                if v == 0
+                else f"注文を受け付けた後の始値を {v} 本見送ってから約定する",
+            ),
+        ),
+        (
+            "entry_valid_for",
+            "新規注文の有効時間",
+            lambda v, a, m: (_duration_text(v), "この時間内に約定しなければ注文は消える"),
+        ),
+        (
+            "close_valid_for",
+            "決済注文の有効時間",
+            lambda v, a, m: (
+                _duration_text(v),
+                "この時間内に約定しなければ注文は消える（決済注文）",
+            ),
+        ),
+        (
+            "adverse_fill_limits",
+            "不利な約定の見込み幅",
+            lambda v, a, m: (
+                "、".join(f"{symbol} {m.price(width)}" for symbol, width in dict(v).items())
+                if isinstance(v, dict)
+                else str(v),
+                "注文時の価格からこの幅まで不利に約定しうると見込んで、取引量を決める",
+            ),
+        ),
+        (
+            "reference_quote_source",
+            "注文時の基準価格",
+            lambda v, a, m: (
+                f"直前に確定した{m.timeframe}の終値"
+                if v == "EXECUTION_SERIES_LAST_CLOSE"
+                else str(v),
+                "上の「不利な約定の見込み幅」を測る起点になる価格",
+            ),
+        ),
+    ),
+}
+
+_CONDITION_GROUPS: Mapping[str, str] = {
+    "account": "口座",
+    "risk_policy": "リスク",
+    "cost_model": "費用",
+    "execution_policy": "執行",
+}
+
+
 def _conditions_table(experiment: Mapping[str, Any]) -> str:
     """口座・リスク・費用・執行など、比較の前提として全実験で揃える条件。"""
     policy = experiment.get("research_policy") or {}
-    rows: list[tuple[str, str]] = [
+    head_rows: list[tuple[str, str]] = [
         ("研究ポリシー", f"{policy.get('id')} 第 {policy.get('version')} 版"),
         ("執行の系列", str(experiment.get("execution_series"))),
         ("分割", str(experiment.get("split"))),
         ("最終検証", str(experiment.get("final_holdout"))),
     ]
-    for key, label in (
-        ("account", "口座"),
-        ("risk_policy", "リスク"),
-        ("cost_model", "費用"),
-        ("execution_policy", "執行"),
-    ):
-        value = experiment.get(key)
-        if isinstance(value, dict):
-            rows.append((label, "、".join(f"{k} = {v}" for k, v in value.items())))
-    body = "".join(f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in rows)
-    return f"<div class='table-wrap'><table class='kv'><tbody>{body}</tbody></table></div>"
+    head = "".join(f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in head_rows)
+    account = experiment.get("account") or {}
+    market = _market(experiment)
+    rows: list[str] = []
+    for group, group_label in _CONDITION_GROUPS.items():
+        values = experiment.get(group)
+        if not isinstance(values, dict):
+            continue
+        known = {key for key, _, _ in _CONDITION_ROWS[group]}
+        cells: list[tuple[str, str, str, str]] = []
+        for key, label, describe in _CONDITION_ROWS[group]:
+            if key in values:
+                value, meaning = describe(values[key], account, market)
+                cells.append((label, key, value, meaning))
+        # 表に無い項目は、元の名前と値のまま出す（黙って落とさない）。
+        cells.extend(
+            (key, key, str(value), "") for key, value in values.items() if key not in known
+        )
+        for index, (label, key, value, meaning) in enumerate(cells):
+            group_cell = (
+                f"<th rowspan='{len(cells)}' class='group'>{_esc(group_label)}</th>"
+                if index == 0
+                else ""
+            )
+            rows.append(
+                f"<tr>{group_cell}<td title='{_esc(key)}'>{_esc(label)}</td>"
+                f"<td>{_esc(value)}</td><td class='muted'>{_esc(meaning)}</td></tr>"
+            )
+    return (
+        f"<div class='table-wrap'><table class='kv'><tbody>{head}</tbody></table></div>"
+        "<div class='table-wrap'><table class='conditions'><thead><tr><th>区分</th><th>項目</th>"
+        f"<th>値</th><th>意味</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+    )
 
 
 def _yaml_details(title: str, text: str) -> str:
@@ -795,6 +1011,8 @@ thead th { background: var(--code); position: sticky; top: 0; white-space: nowra
 tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--code) 45%, transparent); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.kv th { background: var(--code); white-space: nowrap; width: 1%; }
+table.conditions th.group { background: var(--code); white-space: nowrap; }
+table.conditions td:nth-child(2), table.conditions td:first-child { white-space: nowrap; }
 tr.changed td { background: var(--changed) !important; font-weight: 600; }
 details.sec { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   margin-bottom: 12px; }
