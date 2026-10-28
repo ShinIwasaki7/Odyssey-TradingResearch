@@ -632,6 +632,18 @@ _MINIMUM_NOTE: Final = (
     "あり、統計的な十分性の保証ではない"
 )
 
+#: 判定の欄の定型の注記（D13 §7.3 の文言そのまま）。系譜の先行の実行が既に見た検証区間
+#: （台帳の開始の行の `lineage.viewed_before`）が、この実行の検証区間と重なるときに出す。
+_NOT_INDEPENDENT_NOTE: Final = (
+    "この判定の検証区間は、系譜の先行の実行が既に見た区間を含む（独立した確認ではない）"
+)
+#: 台帳のこの実行の開始の行と照合できず、上の注記を出すかを決められないときの1行
+#: （照合の R3・R5・R6。D09 §10.12.3 の4）。
+_LINEAGE_UNKNOWN_NOTE: Final = (
+    "台帳のこの実行の開始の行と照合できないので、この判定の検証区間を系譜の先行の実行が"
+    "既に見たかを示せない（理由は「8. 試行台帳」）"
+)
+
 
 _HOLD_TEXT: Final = "保留（証拠不足。収益性とリスクは条件を満たす側）"
 _HOLD_UNDETERMINED_TEXT: Final = "値なし（収益性は判定できない（観測不足））"
@@ -838,6 +850,31 @@ def _final_validation_line(inputs: _Inputs) -> str:
     return f"{label}: 満たさない（{'・'.join(reasons)}）{tail}"
 
 
+def _lineage_note(ledger: _LedgerView) -> str | None:
+    """判定の欄の「独立した確認ではない」の注記（D13 §7.3）。出さないなら `None`。
+
+    台帳のこの実行の開始の行の系譜の `viewed_before` が、同じ行の検証区間のどれかと重なれば
+    注記を出す（機械的な判定。保存済みの台帳の行を読むだけで、成果物も結末記録も変えない）。
+    事前検査で止めた実行（R1。台帳に書いていない）は出さない。開始の行と照合できない
+    （R3・R5・R6）ときは、注記の有無を決められない旨を出す。
+    """
+    if ledger.case == "R1":
+        return None
+    started = ledger.started
+    if started is None:
+        return _LINEAGE_UNKNOWN_NOTE
+    entry = started.entry
+    lineage = entry.lineage
+    if lineage is None:
+        return None
+    seen = any(
+        ours.overlaps(theirs)
+        for ours in entry.validation_intervals
+        for theirs in lineage.viewed_before
+    )
+    return _NOT_INDEPENDENT_NOTE if seen else None
+
+
 def _combined_lines(report: _Report) -> list[str]:
     """順1 の先頭: 組の判定と組をまたぐ表示（D09 §11.5 の順1 の改訂。改訂 PR の仮置き 41）。"""
     inputs = report.first
@@ -920,6 +957,9 @@ def _combined_lines(report: _Report) -> list[str]:
         f"- 研究ポリシー: {_code(policy.policy_id)} 版 {policy.version}（{inputs.standing}）"
     )
     lines.append(f"- {_FIXED_NOTES[inputs.purpose]}。")
+    lineage_note = _lineage_note(inputs.ledger)
+    if lineage_note is not None:
+        lines.append(f"- {lineage_note}。")
     lines.append(f"- {_PROCEDURE_NOTE}。")
     lines.append(f"- {_MINIMUM_NOTE}。")
     lines.append(f"- {_final_validation_line(inputs)}")
