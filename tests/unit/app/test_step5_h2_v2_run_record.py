@@ -160,7 +160,7 @@ def test_sections_4_and_5_carry_no_verdict_values() -> None:
         for member in enum
     }
     for identifier in identifiers:
-        assert re.search(rf"\b{identifier}\b", section) is None, identifier
+        assert re.search(rf"(?<![A-Z_]){identifier}(?![A-Z_])", section) is None, identifier
     labels = {
         *_VERDICT_NAMES.values(),
         *_FOLD_VERDICT_NAMES.values(),
@@ -169,3 +169,33 @@ def test_sections_4_and_5_carry_no_verdict_values() -> None:
     }
     for label in labels:
         assert label not in section, label
+
+
+def _table_heads(text: str, heading: str) -> list[str]:
+    """`heading` の節の最初の表の、見出し行と区切り行を除いた各行の 1 列目。"""
+    body = text[text.index(heading) :]
+    rows: list[str] = []
+    for line in body.splitlines()[1:]:
+        if line.startswith("|"):
+            rows.append(line.split("|")[1].strip())
+        elif rows:
+            break
+    return rows[2:]
+
+
+def test_the_prediction_rows_match_the_preregistered_predictions() -> None:
+    """第 5.2 節の予想と実際の行は、第 3.3 節の予想の行と同じ対象を同じ順で並べる（D14 §7.1）。"""
+    text = README.read_text(encoding="utf-8")
+    predicted = _table_heads(text, "### 3.3 予想")
+    section = text[text.index("### 5.2 ") :]
+    compared = _table_heads(section, "**予想（第 3.3 節）と実際の一致・不一致**")
+    assert len(predicted) == 8
+    assert compared == predicted
+
+
+def test_the_human_note_on_version_1_is_in_the_loop_report() -> None:
+    """E5 の後半: 一巡の報告に、版 1 の判定についての人の手の注記がある（D14 §3.3）。"""
+    section = _section_4_and_5()
+    assert "### 5.7 " in section
+    assert "**版 1 の判定も、独立した確認ではない**" in section
+    assert "台帳の累計には入らない" in section
