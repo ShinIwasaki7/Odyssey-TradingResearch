@@ -17,6 +17,9 @@ D09 §11.5（9 見出しの書式）・§10.4（途中で止まった実行）�
   fold は最低条件の結果と取引件数の写しと「証拠の要件は未確定」だけ。判定・頻度区分は出さない
   （#25）。
 - 取引が少ない fold で最低条件を割った事実が判定の欄に出る（#16 の後半）。
+- 系譜で先行の実行を指す実験（改善後の実験）の判定の欄には「独立した確認ではない」の注記が
+  出て、系譜の無い実験には出ない。保存済みの成果物から `experiment report` で作り直しても同じ
+  （D13 §7.3、D14 §7.2 の E5）。
 - 研究ポリシーの版の登録簿が無い・壊れている・版の要素が無い・ダイジェストが違うと、
   `experiment report` は終了コード 2 でレポートを書かない。`experiment run` の最後に読めなければ
   結末記録と台帳の行はそのままで終了コード 1（#26）。レポートの書き込みの失敗も同じ（§17.7.5 の8）。
@@ -51,6 +54,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     TRIAL_LEDGER_LOCK_PATH,
     FileSystemResultRepository,
     experiment_outcome_payload,
+    read_experiment_manifest,
     read_experiment_outcome,
     read_selections,
     read_unit_records,
@@ -147,6 +151,37 @@ def _run(workspace: T02Workspace, out: Path, name: str, **kwargs: Any) -> tuple[
     experiment = write_search_experiment(
         workspace.repo, f"{name}.yaml", experiment_id=name, axes=AXES, **kwargs
     )
+    code, stdout, stderr = _cli(
+        [
+            "experiment",
+            "run",
+            "--experiment",
+            str(experiment),
+            "--snapshots",
+            str(workspace.repo / "data/snapshots"),
+            "--out",
+            str(out),
+            "--repo-root",
+            str(workspace.repo),
+        ]
+    )
+    return code, stdout + stderr
+
+
+def _run_derived(
+    workspace: T02Workspace, out: Path, name: str, origin: str, execution: int
+) -> tuple[int, str]:
+    """系譜（`lineage`）で `origin` の実行 `execution` を指す探索の実験を走らせる（D13 §7.1）。"""
+    experiment = write_search_experiment(
+        workspace.repo, f"{name}.yaml", experiment_id=name, axes=AXES
+    )
+    with experiment.open("a", encoding="utf-8") as stream:
+        stream.write(
+            "lineage:\n"
+            f"  derived_from: {{experiment_id: {origin}, execution: {execution}}}\n"
+            "  change_kinds: [PARAMETERS]\n"
+            '  note: "テスト用の系譜"\n'
+        )
     code, stdout, stderr = _cli(
         [
             "experiment",
@@ -483,6 +518,36 @@ def test_r7_and_15_the_counts_see_only_the_lines_before_the_started_line(
     assert _report(_version(out, "second"), workspace.repo)[0] == 0
     text = (_version(out, "second") / "report.md").read_text(encoding="utf-8")
     assert "末尾に書きかけの行がある（数えていない。次の追記で切り詰められる）" in text
+
+
+_NOT_INDEPENDENT = (
+    "- この判定の検証区間は、系譜の先行の実行が既に見た区間を含む（独立した確認ではない）。"
+)
+
+
+def test_a_derived_experiment_is_marked_not_an_independent_confirmation(
+    workspace: T02Workspace, base: _Base, tmp_path: Path
+) -> None:
+    """系譜で先行の実行を指す実験は、判定の欄に D13 §7.3 の注記が出る（同じ検証区間を見るため）。
+    系譜の無い元の実験には出ない。注記は描画時に台帳の開始の行から決めるので、レポートを消して
+    `experiment report` で作り直しても同じバイト列になる（D14 §7.2 の E5）。"""
+    out = _seeded(base, tmp_path)
+    assert _run(workspace, out, "origin")[0] == 0
+    origin = read_experiment_manifest(_version(out, "origin")).experiment_id.hex
+    code, output = _run_derived(workspace, out, "derived", origin, 1)
+    assert code == 0, output
+    first = (_version(out, "origin") / "report.md").read_text(encoding="utf-8")
+    second_path = _version(out, "derived") / "report.md"
+    second = second_path.read_text(encoding="utf-8")
+    assert _NOT_INDEPENDENT not in first
+    assert "独立した確認ではない" not in first
+    assert _NOT_INDEPENDENT in _section(second, 1).splitlines()
+    assert second.count("独立した確認ではない") == 1
+
+    second_path.unlink()
+    code, output = _report(_version(out, "derived"), workspace.repo)
+    assert code == 0, output
+    assert second_path.read_text(encoding="utf-8") == second
 
 
 # --- 途中で止まった実行（#25）-------------------------------------------------------------------
