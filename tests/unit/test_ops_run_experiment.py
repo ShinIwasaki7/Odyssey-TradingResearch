@@ -163,6 +163,8 @@ def test_concurrent_launch_is_refused_while_first_is_preparing(
         "schema_version: 2\nversion: 3\n",
         "schema_version: 2\nid: synthetic\n",
         "id: s\nversion: 0\n",
+        "id: ../escape\nversion: 1\n",
+        "id: /absolute\nversion: 1\n",
     ],
 )
 def test_refuses_experiment_without_id_or_version(

@@ -27,7 +27,7 @@
     uv run python -m tools.ops.run_experiment \\
         --experiment configs/experiments/<名前>.yaml --repo <リポジトリ>
 
-標準ライブラリと PyYAML だけを使う。
+標準ライブラリと PyYAML、実験の名前の検査（`odyssey_fx.evaluation.domain.experiment`）だけを使う。
 """
 
 from __future__ import annotations
@@ -45,6 +45,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.evaluation.domain.experiment import require_experiment_name
 
 #: 起動の拒否・設定の誤りの終了コード。
 EXIT_REFUSED = 2
@@ -92,6 +95,12 @@ def plan_from_args(args: argparse.Namespace) -> Plan:
     version = data.get("version")
     if not isinstance(experiment_id, str) or not experiment_id:
         raise LaunchError(f"実験設定に id が無い: {experiment_path}")
+    # 版のディレクトリ名になるので、本体と同じ字種の規則（D07 §19.1）を書き込みの前に当てる。
+    # `../` や絶対パスの id で runs/experiments/ の外に書くのを防ぐ（PR #103 の Codex の指摘）。
+    try:
+        require_experiment_name(experiment_id)
+    except KernelValueError as exc:
+        raise LaunchError(f"実験設定の id がディレクトリ名として使えない: {exc}") from exc
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise LaunchError(f"実験設定の version が 1 以上の整数でない: {experiment_path}")
     snapshots = (args.snapshots or repo / "data" / "snapshots").resolve()
