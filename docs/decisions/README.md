@@ -17,7 +17,7 @@
 | [0011](0011-frozen-dataclass-domain.md) | domain は frozen dataclass、設定境界だけ Pydantic v2 | B-3 |
 | [0012](0012-decimal-float-boundary.md) | 台帳系は Decimal、Feature は float | B-4 |
 | [0013](0013-data-layout-and-gitignore.md) | データは data/raw/market へ移し実体を git 管理外にする | C-1 |
-| [0014](0014-period-access-classification.md) | 期間はアクセス状態で三分類する | C-2 |
+| [0014](0014-period-access-classification.md) | 期間はアクセス状態で三分類する（廃止。ADR-0038 で置き換え） | C-2 |
 | [0015](0015-initial-vertical-slice-scope.md) | 初版の縦断実行範囲は USDJPY・JPY 口座・判断 1h・執行 15m | C-3 |
 | [0016](0016-implementation-start-conditions.md) | 実装開始は最小縦断の契約確定を条件とする | D-2 |
 | [0017](0017-codex-review-tooling.md) | pr-review スキルを書き換え、最小 poller を新規作成する | D-3 |
@@ -40,3 +40,5 @@
 | [0034](0034-review-rules-in-agents-md.md) | レビュー観点は AGENTS.md を正本とし両レーンで共有する | PR レビュー方針 §5 |
 | [0035](0035-quality-check-access-vs-strategy-selection-access.md) | 2024 年以降のデータの閲覧は品質確認と戦略選定に分け、品質確認の閲覧は必ず記録する（提案） | D11 §6 の 6-7a、D15 §2.2 の S1 |
 | [0036](0036-quality-check-permit-in-holdout-gate.md) | 2024 年以降のデータの品質確認の読み取りは、読み取りの関所の品質確認専用の許可を通す（提案） | D11 §6 の 6-7c、D15 §2.2 の S1 |
+| [0037](0037-revised-constraint-on-data-from-2024.md) | 2024-01-01 以降のデータは OANDA MT5 の 1 分足の取得と関所の下での封印の取り込みだけを許し、閲覧は引き続き禁止する（制約の改定文。提案） | D15 §2.2 の S2a（D15-2） |
+| [0038](0038-sealed-classes-from-2024-replacing-adr-0014.md) | ADR-0014 を置き換える。新たに取得する OANDA MT5 の 1 分足の 2024-01-01 以降は封印の区分として取り込み、封印で始める（提案） | D15 §2.2 の S2a |
