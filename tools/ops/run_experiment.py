@@ -217,12 +217,18 @@ def _update_launch(plan: Plan, **fields: Any) -> None:
 
 
 def prepare(plan: Plan, *, mode: str) -> None:
-    """手順 1・2: 二重起動を拒否し、開始時刻と `launch.json` を書く。"""
-    if plan.launch_path.exists():
+    """手順 1・2: 二重起動を拒否し、開始時刻と `launch.json` を書く。
+
+    `launch.json` を排他的に作って起動を予約してから、ほかのファイルを書く。存在の確認と書き込み
+    の間に別の起動が入り込むと、両方が受け付けられて記録が上書きされるため（PR #103 の 1 巡目）。
+    """
+    plan.version_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(plan.launch_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+    except FileExistsError as exc:
         raise LaunchError(
             f"この版は既に起動されている（{plan.launch_path} がある）。再実行は人間の決定を待つ"
-        )
-    plan.version_dir.mkdir(parents=True, exist_ok=True)
+        ) from exc
     started_at = _now()
     (plan.version_dir / "started_at_utc.txt").write_text(started_at + "\n", encoding="utf-8")
     _write_json(plan.launch_path, launch_facts(plan, started_at, mode=mode))

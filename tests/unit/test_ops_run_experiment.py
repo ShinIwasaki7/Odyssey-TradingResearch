@@ -131,6 +131,32 @@ def test_refuses_when_launch_json_exists(
     assert not marker.exists()
 
 
+def test_concurrent_launch_is_refused_while_first_is_preparing(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1 本目が事実を集めている途中（予約の後・書き込みの前）に 2 本目が来ても拒否される。
+    repo, worktree = dirs
+    args = re_mod._parser().parse_args(_args(repo, worktree))
+    plan = re_mod.plan_from_args(args)
+    real_facts = re_mod.launch_facts
+    refused: list[str] = []
+
+    def facts_with_second_launch(
+        plan: re_mod.Plan, started_at: str, *, mode: str
+    ) -> dict[str, object]:
+        with pytest.raises(re_mod.LaunchError):
+            re_mod.prepare(plan, mode="detached")
+        refused.append("second")
+        return real_facts(plan, started_at, mode=mode)
+
+    monkeypatch.setattr(re_mod, "launch_facts", facts_with_second_launch)
+
+    re_mod.prepare(plan, mode="foreground")
+
+    assert refused == ["second"]
+    assert json.loads(plan.launch_path.read_text())["mode"] == "foreground"
+
+
 @pytest.mark.parametrize(
     "text",
     [
