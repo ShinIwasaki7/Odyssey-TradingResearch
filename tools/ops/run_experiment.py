@@ -345,7 +345,15 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REFUSED
     if args.foreground:
         return execute(plan)
-    pid = spawn_child(plan)
+    try:
+        pid = spawn_child(plan)
+    except OSError as exc:
+        # 何も走っていないので、この起動が書いたファイルを消して再起動できるようにする
+        # （PR #103 の仮置き 5 の人間の決定。D14 仮置き 27）。
+        for name in ("launch.json", "started_at_utc.txt", "launcher.log"):
+            (plan.version_dir / name).unlink(missing_ok=True)
+        print(f"起動しない: 切り離した実行を起動できない: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
     # 成績は出さない（置き場と PID だけ）。
     print(f"実行を切り離して起動した: {plan.version_dir}（包みの PID {pid}）")
     return 0

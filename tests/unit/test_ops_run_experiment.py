@@ -210,6 +210,21 @@ def test_detached_mode_prepares_and_spawns_child(
     assert not (out / "exit_code.txt").exists()
 
 
+def test_spawn_failure_removes_reservation_so_relaunch_works(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, worktree = dirs
+    monkeypatch.setattr(re_mod, "child_command", lambda plan: [str(worktree / "missing-python")])
+
+    assert re_mod.main(_args(repo, worktree)) == re_mod.EXIT_REFUSED
+
+    out = _version_dir(repo)
+    assert list(out.iterdir()) == []
+
+    monkeypatch.setattr(re_mod, "spawn_child", lambda plan: 4321)
+    assert re_mod.main(_args(repo, worktree)) == 0
+
+
 def test_child_command_uses_absolute_paths(dirs: tuple[Path, Path]) -> None:
     repo, worktree = dirs
     args = re_mod._parser().parse_args(_args(repo, worktree))
