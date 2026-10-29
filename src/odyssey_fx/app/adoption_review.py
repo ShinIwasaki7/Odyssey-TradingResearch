@@ -221,6 +221,23 @@ def _bound_directory(
         binding = read_ledger_binding(directory)
     except (KernelValueError, OSError) as exc:
         raise ArtifactBindingMismatch(f"記録票か束縛の記録を読めない: {exc}") from exc
+    # 記録票の改変を束縛の前に確かめる（別プロセスでの再現の手順1 と同じ。D07 §21.2）。本文の
+    # SHA-256 が記録と違う（例: カレンダーの本文だけを書き換えた）か、記録票から識別子を再計算すると
+    # 記録と違えば、固定した試行の run と適合の検査をその記録票で行わない（PR #116 の Codex
+    # 1 巡目）。
+    altered = sorted(item.role for item in manifest.resolved_files if not item.intact)
+    if altered:
+        raise ArtifactBindingMismatch(
+            f"{experiment_dir} の記録票の本文 {altered} が記録された SHA-256 と一致しない"
+        )
+    try:
+        recomputed = composition.recompute_experiment_id(manifest)
+    except (ConfigError, KernelValueError) as exc:
+        raise ArtifactBindingMismatch(f"記録票から識別子を再計算できない: {exc}") from exc
+    if recomputed != manifest.experiment_id:
+        raise ArtifactBindingMismatch(
+            f"{experiment_dir} の記録票から再計算した識別子が記録された識別子と一致しない"
+        )
     started = accepted.started
     marker = directory / RETREAT_MARKER_FILE
     if (

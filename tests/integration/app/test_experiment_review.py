@@ -459,6 +459,23 @@ def test_t11_another_directory_is_a_binding_mismatch(env: _Env) -> None:
         shutil.rmtree(other)
 
 
+def test_t11_a_tampered_manifest_text_is_a_binding_mismatch(env: _Env, tmp_path: Path) -> None:
+    """記録票の本文（カレンダー）だけを書き換えた成果物は審査に使わない（Codex 1 巡目）。"""
+    out = tmp_path / "out"
+    directory = out / "runs/experiments/review_case/v1"
+    shutil.copytree(env.directory, directory, ignore=shutil.ignore_patterns("review"))
+    path = directory / "experiment_manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    (calendar,) = [item for item in payload["resolved_files"] if item["role"] == "calendar"]
+    calendar["text"] = calendar["text"] + "\n# 書き換え\n"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    code, stdout, _ = _review(env, directory=directory, out=out)
+    assert code == 2
+    assert "理由の識別子: ARTIFACT_BINDING_MISMATCH" in stdout
+    assert _reviews(env) == ()
+    assert not (directory / "review").exists()
+
+
 def test_t16_a_refused_append_leaves_no_line_and_a_retry_writes_elsewhere(env: _Env) -> None:
     repo = env.workspace.repo
     (repo / ADOPTION_REVIEW_LOCK_PATH).write_text("{}\n", encoding="utf-8")
