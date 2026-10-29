@@ -13,8 +13,10 @@
 守ること（D12 §11.4・人間の決定 D12-21）:
 
 - 注文・売買の機能は使わない。使う API は ``ALLOWED_API_CALLS`` だけ（テストで確かめる）。
-- 要求の終わりは 2024-01-01T00:00Z より前に限る（``REQUEST_END_LIMIT``）。
-  超える要求は出さずに止まる。
+- 研究期間の段（``probe``・``timesurvey``・``fullfetch`` など）の要求の終わりは
+  2024-01-01T00:00Z より前に限る（``REQUEST_END_LIMIT``。研究期間の上限）。超える要求は出さずに
+  止まる。2024 年以降の取得は制約の改定文 ADR-0037 の窓（``sealedfetch`` の段。窓は版管理の
+  設定 1 つから読む）だけで行う。
 - 要求の時刻は UTC の ``datetime`` で作る（MetaQuotes の公式の仕様:
   "MetaTrader 5 stores tick and bar open time in UTC time zone (without the shift)"）。
 - API の時刻と配布 CSV の時刻の変換を混同しない。配布 CSV は MT5 のサーバー時刻
@@ -56,7 +58,9 @@ from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
-#: 要求の終わりの上限（この時刻以降を含む要求は出さない）。研究期間 2017〜2023 年（D12）。
+#: 研究期間の段の要求の終わりの上限（この時刻以降を含む要求は出さない）。研究期間
+#: 2017〜2023 年（D12）。研究期間の上限で、許可の窓ではない。2024 年以降の取得は ADR-0037 の窓
+#: （``sealedfetch``。ADR-0037 第4項の 6）。
 REQUEST_END_LIMIT = datetime(2024, 1, 1, tzinfo=UTC)
 
 #: この道具が呼んでよい MetaTrader5 の関数（注文・売買・口座の関数は含めない）。
@@ -1575,6 +1579,595 @@ def _cmd_fullverify(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+# --- 封印の取得（制約の改定文 ADR-0037。一括取得と定期取得の 2 段。順 6 の S4a） ------------
+# 2024-01-01 以降の OANDA MT5 の 1 分足（bid）を、許可の窓の中だけ要求し、gzip の CSV に書く
+# （ADR-0037 第1項の 2 の 1）。窓（取得を許す期間の始まり・取得の開始時点・8 通貨）は版管理の
+# 設定 1 つ configs/acquisition/oanda_mt5_m1_sealed_window.yaml からだけ読み、この道具に日付を
+# 書かない（ADR-0037 第4項の 1）。要求の一覧（計画）は Mac の tools/survey/sealed_fetch_plan.py が
+# 窓の設定と 2024 年以降の時刻の規則の表から作る。Windows ではこの道具が、同じ窓の設定のファイル
+# （SHA-256 が計画の記録と一致するもの）を読み直し、計画の要求をすべて窓と照らしてから（1 つでも
+# 外れれば何も要求せずに止まる）要求する（ADR-0037 第4項の 3・5）。価格は CSV の中だけに書き、
+# 取得の記録（fetch_log.jsonl・manifest.json）・標準出力には件数・時刻・SHA-256 だけを出す
+# （ADR-0037 第7項）。研究期間の段の上限 REQUEST_END_LIMIT は研究期間の上限で、許可の窓ではない
+# （ADR-0037 第4項の 6）。この段は REQUEST_END_LIMIT を使わない。
+
+SEALED_KIND = "oanda_mt5_sealed_fetch"
+SEALED_PLAN_KIND = "oanda_mt5_sealed_fetch_plan"
+SEALED_STAGE_BULK = "bulk"
+SEALED_STAGE_PERIODIC = "periodic"
+SEALED_STAGES: tuple[str, ...] = (SEALED_STAGE_BULK, SEALED_STAGE_PERIODIC)
+SEALED_RESULT_PREFIX = "SEALEDFETCH_RESULT "
+#: 改定文が取得を許す 8 通貨（ADR-0037 第1項の 2 の 1）。窓の設定の銘柄はこの中に限る。
+SEALED_PAIRS: tuple[str, ...] = (USDJPY, *OTHER_PAIRS)
+#: API の時刻 − UTC の時間として表が取りうる値（2024 年以降の表 版 1 の標準と候補。D03 §16.2.3）。
+SEALED_OFFSETS_HOURS: frozenset[int] = frozenset({2, 3})
+#: 窓の設定の固定の値（ADR-0037 第4項の 2）。
+_SEALED_FIXED: dict[str, str] = {
+    "schema_version": "1",
+    "decision": "ADR-0037",
+    "datasource": "oanda_mt5_m1",
+    "price_basis": "bid",
+    "timeframe": "M1",
+}
+SEALED_STORAGE_TERMS = (
+    "制約の改定文 ADR-0037 の下で取得した 2024 年以降の封印のデータ。誰も開かない。"
+    "読む経路は関所の下の受入れと最終検証のコマンドだけ（ADR-0037 第1項の 3 の 3）。再配布しない。"
+)
+
+
+class SealedWindowError(ValueError):
+    """許可の窓の外の要求・窓の設定の誤り・計画と設定の食い違い（何も要求せずに止まる）。"""
+
+
+@dataclass(frozen=True)
+class SealedWindow:
+    """窓の設定のうち道具が使う値（ADR-0037 第4項の 2）。"""
+
+    allowed_start: datetime
+    acquisition_start: datetime | None
+    symbols: tuple[str, ...]
+    sha256: str
+
+
+def _sealed_time(text: str, label: str) -> datetime:
+    value = text.strip().strip('"').strip("'")
+    if not value.endswith("Z"):
+        raise SealedWindowError(f"{label} は UTC の時刻（末尾 Z）で書く: {text!r}")
+    moment = datetime.fromisoformat(value[:-1] + "+00:00")
+    return moment.astimezone(UTC)
+
+
+def read_sealed_window(path: Path) -> SealedWindow:
+    """窓の設定を読む（Windows の Python には YAML の読込が無いので、決まった形の行だけ読む）。
+
+    最上位の ``key: value`` の行（字下げなし、``#`` から後は注記）だけを読み、固定の値・銘柄・
+    期間の始まり・取得の開始時点を取り出す。形が違えば止まる（本基盤の読込
+    ``app.config.sealed_window`` が正本で、こちらは同じファイルを道具の側で読み直すだけ）。
+    """
+    raw = path.read_bytes()
+    found: dict[str, str] = {}
+    for line in raw.decode("utf-8").splitlines():
+        if not line or line[0] in " #\t":
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            raise SealedWindowError(f"{path}: 読めない行: {line!r}")
+        value = value.split(" #", 1)[0].strip()
+        if key in found:
+            raise SealedWindowError(f"{path}: {key} が 2 度ある")
+        found[key] = value
+    for key, want in _SEALED_FIXED.items():
+        if found.get(key) != want:
+            raise SealedWindowError(
+                f"{path}: {key} は {want} でなければならない（ADR-0037 第4項の 2）"
+            )
+    symbols_text = found.get("symbols", "")
+    if not (symbols_text.startswith("[") and symbols_text.endswith("]")):
+        raise SealedWindowError(f"{path}: symbols は [..] の列で書く")
+    symbols = tuple(s.strip() for s in symbols_text[1:-1].split(",") if s.strip())
+    if not symbols or len(set(symbols)) != len(symbols) or not set(symbols) <= set(SEALED_PAIRS):
+        raise SealedWindowError(
+            f"{path}: symbols は改定文の 8 通貨の中から重複なく 1 つ以上（ADR-0037 第1項の 2 の 1）"
+        )
+    if "allowed_start" not in found or "acquisition_start" not in found:
+        raise SealedWindowError(f"{path}: allowed_start と acquisition_start が要る")
+    allowed = _sealed_time(found["allowed_start"], "allowed_start")
+    acq_text = found["acquisition_start"]
+    acquisition = None if acq_text == "null" else _sealed_time(acq_text, "acquisition_start")
+    if acquisition is not None and not allowed < acquisition:
+        raise SealedWindowError(f"{path}: acquisition_start は allowed_start より後")
+    return SealedWindow(
+        allowed_start=allowed,
+        acquisition_start=acquisition,
+        symbols=symbols,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+@dataclass(frozen=True)
+class SealedRequest:
+    """封印の取得の 1 要求 = 1 通貨 × 1 区間（一括取得は API の時刻の 1 か月、定期取得は 1 窓）。
+
+    ``api_*`` は API の時刻の値（MT5 に渡す。時刻の規則の表の標準の組で UTC から直した値）、
+    ``utc_*`` はその区間の UTC（標準の組）。``offset_*_hours`` は始まり・終わりで使った
+    「API の時刻 − UTC」。
+    """
+
+    rid: str
+    pair: str
+    stage: str
+    api_from: datetime
+    api_to: datetime
+    utc_from: datetime
+    utc_to: datetime
+    offset_from_hours: int
+    offset_to_hours: int
+    file: str
+
+    def window(self) -> Window:
+        return Window(self.rid, self.api_from, self.api_to)
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "rid": self.rid,
+            "pair": self.pair,
+            "stage": self.stage,
+            "api_from": self.api_from.isoformat(),
+            "api_to": self.api_to.isoformat(),
+            "utc_from": self.utc_from.isoformat(),
+            "utc_to": self.utc_to.isoformat(),
+            "offset_from_hours": self.offset_from_hours,
+            "offset_to_hours": self.offset_to_hours,
+            "file": self.file,
+        }
+
+    @classmethod
+    def from_payload(cls, raw: Mapping[str, Any]) -> SealedRequest:
+        def moment(key: str) -> datetime:
+            value = datetime.fromisoformat(str(raw[key]))
+            if value.tzinfo is None:
+                raise SealedWindowError(f"計画の {key} に時刻帯が無い: {raw[key]!r}")
+            return value.astimezone(UTC)
+
+        return cls(
+            rid=str(raw["rid"]),
+            pair=str(raw["pair"]),
+            stage=str(raw["stage"]),
+            api_from=moment("api_from"),
+            api_to=moment("api_to"),
+            utc_from=moment("utc_from"),
+            utc_to=moment("utc_to"),
+            offset_from_hours=int(raw["offset_from_hours"]),
+            offset_to_hours=int(raw["offset_to_hours"]),
+            file=str(raw["file"]),
+        )
+
+
+def check_sealed_request(
+    request: SealedRequest, window: SealedWindow, stage: str, now: datetime
+) -> None:
+    """要求が許可の窓の中かを確かめる（外れれば ``SealedWindowError``。何も要求しない）。
+
+    ADR-0037 第4項の 3: 要求の区間が [allowed_start, 要求の時点) の中、銘柄が設定の中、時間足と
+    価格基準は設定の固定の値（この段は 1 分足の bid だけを要求する）。窓は要求する足の始まりの
+    時刻（UTC。標準の組）で判定する。一括取得は [allowed_start, acquisition_start)、定期取得は
+    [acquisition_start, 要求の時点)。取得の開始時点が空の間は、どちらの段も始めない。
+    """
+    label = request.rid
+    if stage not in SEALED_STAGES or request.stage != stage:
+        raise SealedWindowError(f"{label}: 段 {request.stage} は {stage} の要求ではない")
+    if window.acquisition_start is None:
+        raise SealedWindowError(
+            "窓の設定の acquisition_start が空。一括取得も定期取得も始めない（ADR-0037 第4項の 3）"
+        )
+    if request.pair not in window.symbols:
+        raise SealedWindowError(f"{label}: 通貨 {request.pair} は窓の設定の銘柄に無い")
+    for moment in (request.api_from, request.api_to, request.utc_from, request.utc_to):
+        if moment.tzinfo is None:
+            raise SealedWindowError(f"{label}: 区間は時刻帯つきの時刻で作る")
+    if not (request.api_from < request.api_to and request.utc_from < request.utc_to):
+        raise SealedWindowError(f"{label}: 区間の始めが終わりより前でない")
+    for api, utc, hours in (
+        (request.api_from, request.utc_from, request.offset_from_hours),
+        (request.api_to, request.utc_to, request.offset_to_hours),
+    ):
+        if hours not in SEALED_OFFSETS_HOURS or api - utc != timedelta(hours=hours):
+            raise SealedWindowError(
+                f"{label}: API の時刻と UTC の差が表の値（2・3 時間）と合わない"
+            )
+    if request.utc_from < window.allowed_start:
+        raise SealedWindowError(
+            f"{label}: {window.allowed_start.isoformat()} より前を含む要求は出さない"
+            "（ADR-0037 第2項の 1）"
+        )
+    if request.utc_to > now:
+        raise SealedWindowError(
+            f"{label}: 要求の時点より後を含む要求は出さない（ADR-0037 第4項の 3）"
+        )
+    if stage == SEALED_STAGE_BULK and request.utc_to > window.acquisition_start:
+        raise SealedWindowError(
+            f"{label}: 一括取得は取得の開始時点より前だけ（ADR-0037 第2項の 3）"
+        )
+    if stage == SEALED_STAGE_PERIODIC and request.utc_from < window.acquisition_start:
+        raise SealedWindowError(f"{label}: 定期取得は取得の開始時点から（ADR-0037 第2項の 3）")
+
+
+def sealed_max_requests(planned: int) -> int:
+    """要求の上限 = 計画の数 ＋ 1 割の切り上げ。
+
+    D15-18c (a)、PR #109 の仮置き S2b-10（272 → 300、8 → 9）。
+    """
+    if planned < 1:
+        raise SealedWindowError("計画の要求が 0")
+    return -(-planned * 11 // 10)
+
+
+def load_sealed_plan(
+    plan_path: Path, window: SealedWindow, *, now: datetime
+) -> tuple[dict[str, Any], list[SealedRequest]]:
+    """計画を読み、窓の設定と照らして、すべての要求を確かめる（1 つでも外れれば何も要求しない）。"""
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if plan.get("kind") != SEALED_PLAN_KIND or plan.get("schema") != 1:
+        raise SealedWindowError(f"{plan_path}: 封印の取得の計画ではない")
+    if plan.get("window_config_sha256") != window.sha256:
+        raise SealedWindowError(
+            f"{plan_path}: 計画を作った窓の設定（{plan.get('window_config_sha256')}）と、"
+            "渡した窓の設定"
+            f"（{window.sha256}）が違う"
+        )
+    stage = str(plan.get("stage"))
+    requests = [SealedRequest.from_payload(item) for item in plan["requests"]]
+    if not requests:
+        raise SealedWindowError(f"{plan_path}: 要求が無い")
+    rids = [r.rid for r in requests]
+    if len(set(rids)) != len(rids):
+        raise SealedWindowError(f"{plan_path}: 同じ要求の名前が 2 度ある")
+    for r in requests:
+        check_sealed_request(r, window, stage, now)
+    by_pair: dict[str, list[SealedRequest]] = {}
+    for r in requests:
+        by_pair.setdefault(r.pair, []).append(r)
+    for pair, items in by_pair.items():
+        ordered = sorted(items, key=lambda r: r.api_from)
+        for a, b in zip(ordered, ordered[1:], strict=False):
+            if a.api_to > b.api_from:
+                raise SealedWindowError(f"{plan_path}: {pair} の要求の区間が重なる")
+    if int(plan.get("planned_requests", -1)) != len(requests):
+        raise SealedWindowError(f"{plan_path}: planned_requests が要求の数と違う")
+    if int(plan.get("max_requests", -1)) != sealed_max_requests(len(requests)):
+        raise SealedWindowError(f"{plan_path}: max_requests が計画の数 ＋ 1 割の切り上げと違う")
+    return plan, requests
+
+
+def load_sealed_manifest(
+    out_dir: Path, plan: Mapping[str, Any], plan_sha256: str
+) -> dict[str, Any]:
+    """出力の置き場の manifest を読む（無ければ空の形。別の計画の manifest なら止まる）。"""
+    path = out_dir / FULL_MANIFEST
+    if path.exists():
+        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("plan_sha256") != plan_sha256:
+            raise SealedWindowError(f"{path}: 別の計画の取得の記録がある（計画の SHA-256 が違う）")
+        return data
+    return {
+        "kind": SEALED_KIND,
+        "schema": 1,
+        "stage": plan["stage"],
+        "decision": "ADR-0037",
+        "time_basis": (
+            "API の生の時刻（秒）。変換しない（D12-47）。"
+            "要求の区間は時刻の規則の表の標準の組で UTC から直した"
+        ),
+        "price_basis": "bid の足（chart_mode 0）",
+        "columns": list(RATE_FIELDS),
+        "window_config_sha256": plan["window_config_sha256"],
+        "time_rule_table": plan["time_rule_table"],
+        "window": plan["window"],
+        "plan_sha256": plan_sha256,
+        "planned_requests": plan["planned_requests"],
+        "max_requests": plan["max_requests"],
+        "requests_sent": 0,
+        "storage_terms": SEALED_STORAGE_TERMS,
+        "symbols": {},
+        "files": {},
+        "runs": [],
+    }
+
+
+def run_sealed_fetch(
+    api: Mt5Api,
+    pair: str,
+    out_dir: Path,
+    *,
+    plan: Mapping[str, Any],
+    plan_sha256: str,
+    requests: Sequence[SealedRequest],
+    window: SealedWindow,
+    redo_empty: bool = False,
+    max_total: int | None = None,
+    stop_at_epoch: float | None = None,
+    disk_free: Callable[[], int] | None = None,
+    min_free_bytes: int = MIN_FREE_BYTES,
+    retry_waits: Sequence[float] = SURVEY_RETRY_WAITS,
+    clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
+    tool_sha256: str | None = None,
+) -> dict[str, Any]:
+    """1 通貨の封印の取得（計画の順）。上限・打ち切り・空きに達したら次の要求を出さない。
+
+    全期間取得（``run_full_fetch``）と同じ扱い: 取得済みの要求は出さない、0 本なら待って出し直す
+    （数えない）、この回の最初の要求が 0 本ならその通貨の残りを出さずに止まる、``redo_empty`` なら
+    0 本だった要求だけを出す。要求の直前にも窓を確かめる（``check_sealed_request``）。価格は CSV
+    にだけ書く。
+    """
+    stage = str(plan["stage"])
+    limit = int(plan["max_requests"])
+    if max_total is None:
+        max_total = limit
+    if max_total > limit:
+        raise SealedWindowError(f"要求は合計 {limit} まで（指定 {max_total}）")
+    if pair not in window.symbols:
+        raise SealedWindowError(f"通貨 {pair} は窓の設定の銘柄に無い")
+    own = [r for r in requests if r.pair == pair]
+    for r in own:
+        check_sealed_request(r, window, stage, now())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = load_sealed_manifest(out_dir, plan, plan_sha256)
+    if tool_sha256:
+        manifest["tool_sha256"] = tool_sha256
+    manifest["terminal"] = terminal_summary(api)
+    files: dict[str, Any] = manifest["files"]
+    log_path = out_dir / FULL_FETCH_LOG
+    result: dict[str, Any] = {
+        "pair": pair,
+        "stage": stage,
+        "redo_empty": redo_empty,
+        "sent_this_run": 0,
+        "ok": 0,
+        "empty": 0,
+        "skipped_done": 0,
+        "stop": None,
+    }
+
+    def save() -> None:
+        _atomic_write(
+            out_dir / FULL_MANIFEST,
+            json.dumps(manifest, ensure_ascii=False, indent=1).encode("utf-8"),
+        )
+
+    symbol, _candidates = resolve_symbol(api, pair)
+    if symbol is None:
+        result["stop"] = "symbol_not_found"
+    else:
+        api.symbol_select(symbol, True)
+        mode, point, digits = symbol_meta(api, symbol)
+        manifest["symbols"][pair] = {
+            "symbol": symbol,
+            "chart_mode": mode,
+            "point": point,
+            "digits": digits,
+        }
+    first_request = True
+    for req in own if result["stop"] is None else []:
+        assert symbol is not None
+        entry = files.get(req.rid)
+        if redo_empty:
+            if not entry or entry.get("status") != STATUS_EMPTY:
+                continue
+        elif _entry_is_done(out_dir, entry):
+            result["skipped_done"] += 1
+            continue
+        elif entry and entry.get("status") == STATUS_EMPTY:
+            continue
+        if int(manifest["requests_sent"]) >= max_total:
+            result["stop"] = "request_limit"
+            break
+        if stop_at_epoch is not None and clock() >= stop_at_epoch:
+            result["stop"] = "time_limit"
+            break
+        free = disk_free() if disk_free else None
+        if free is not None and free < min_free_bytes:
+            result["stop"] = "low_disk"
+            break
+        check_sealed_request(req, window, stage, now())
+        w = req.window()
+        rows: list[dict[str, Any]] = []
+        outside: list[float] = []
+        retries = 0
+        for attempt in range(len(retry_waits) + 1):
+            if attempt:
+                sleep(retry_waits[attempt - 1])
+                retries += 1
+            stamp = datetime.now(tz=UTC).isoformat()
+            returned = rows_of(api.copy_rates_range(symbol, api.TIMEFRAME_M1, w.start, w.end))
+            rows, outside = split_by_window(returned, w)
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "rid": req.rid,
+                            "attempt": attempt,
+                            "redo_empty": redo_empty,
+                            "requested_from_api_time": w.start.isoformat(),
+                            "requested_to_api_time": w.end.isoformat(),
+                            "returned_in_window": len(rows),
+                            "out_of_window": len(outside),
+                            "executed_at_utc": stamp,
+                            "disk_free_bytes": free,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            if rows:
+                break
+        manifest["requests_sent"] = int(manifest["requests_sent"]) + 1
+        result["sent_this_run"] += 1
+        attempts = int(entry.get("attempts", 0)) + 1 if entry else 1
+        new: dict[str, Any] = {
+            "rid": req.rid,
+            "pair": pair,
+            "symbol": symbol,
+            "stage": stage,
+            "file": req.file if rows else None,
+            "status": STATUS_OK if rows else STATUS_EMPTY,
+            "requested_from_api_time": w.start.isoformat(),
+            "requested_to_api_time": w.end.isoformat(),
+            "requested_from_utc": req.utc_from.isoformat(),
+            "requested_to_utc": req.utc_to.isoformat(),
+            "rows": len(rows),
+            "first_bar_time": int(rows[0]["time"]) if rows else None,
+            "last_bar_time": int(rows[-1]["time"]) if rows else None,
+            "out_of_window_count": len(outside),
+            "retries": retries,
+            "attempts": attempts,
+            "last_error": str(api.last_error()),
+            "executed_at_utc": datetime.now(tz=UTC).isoformat(),
+            "sha256_gz": None,
+            "sha256_csv": None,
+        }
+        if rows:
+            data = month_csv_bytes(rows)
+            gz = gzip_bytes(data)
+            _atomic_write(out_dir / req.file, gz)
+            new["sha256_csv"] = _sha256_bytes(data)
+            new["sha256_gz"] = _sha256_bytes(gz)
+            result["ok"] += 1
+        else:
+            result["empty"] += 1
+        files[req.rid] = new
+        save()
+        if not rows and first_request and not redo_empty:
+            result["stop"] = "first_request_empty"
+            break
+        first_request = False
+    result["requests_sent_total"] = int(manifest["requests_sent"])
+    result["remaining"] = [r.rid for r in own if not _entry_is_done(out_dir, files.get(r.rid))]
+    manifest["runs"].append(
+        {
+            "pair": pair,
+            "finished_at_utc": datetime.now(tz=UTC).isoformat(),
+            **{k: v for k, v in result.items() if k != "remaining"},
+        }
+    )
+    save()
+    return result
+
+
+def verify_sealed_dir(root: Path, plan_path: Path, pairs: Sequence[str] | None = None) -> list[str]:
+    """回収した封印の取得の置き場を manifest と計画と照合し、問題の一覧を返す（Mac）。
+
+    gzip と展開後の SHA-256・行数・見出し行・要求の区間が計画の要求と同じこと・時刻（API の生の
+    値）が要求の区間の中にあること・manifest に無いファイルが無いことを確かめる。価格は読まない。
+    """
+    problems: list[str] = []
+    manifest_path = root / FULL_MANIFEST
+    if not manifest_path.exists():
+        return [f"manifest が無い: {manifest_path}"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan_sha = _sha256(plan_path)
+    if manifest.get("kind") != SEALED_KIND or manifest.get("plan_sha256") != plan_sha:
+        return [f"manifest が計画 {plan_path} の封印の取得の記録ではない"]
+    planned = {str(item["rid"]): SealedRequest.from_payload(item) for item in plan["requests"]}
+    want = set(pairs) if pairs else None
+    listed: set[str] = set()
+    for rid, e in sorted(manifest["files"].items()):
+        if want is not None and e["pair"] not in want:
+            continue
+        req = planned.get(rid)
+        if req is None:
+            problems.append(f"{rid}: 計画に無い要求")
+            continue
+        lo = datetime.fromisoformat(e["requested_from_api_time"])
+        hi = datetime.fromisoformat(e["requested_to_api_time"])
+        if lo != req.api_from or hi != req.api_to:
+            problems.append(f"{rid}: 要求の区間が計画と違う")
+            continue
+        if e["status"] != STATUS_OK:
+            continue
+        listed.add(str(e["file"]))
+        path = root / str(e["file"])
+        if str(e["file"]) != req.file or not path.exists():
+            problems.append(f"{rid}: ファイルが無い")
+            continue
+        if _sha256(path) != e["sha256_gz"]:
+            problems.append(f"{rid}: gzip の SHA-256 が合わない")
+            continue
+        data = gzip.decompress(path.read_bytes())
+        if _sha256_bytes(data) != e["sha256_csv"]:
+            problems.append(f"{rid}: 展開後の SHA-256 が合わない")
+            continue
+        lines = data.decode("utf-8").splitlines()
+        if not lines or lines[0] != ",".join(RATE_FIELDS):
+            problems.append(f"{rid}: 見出し行が違う")
+            continue
+        if len(lines) - 1 != e["rows"]:
+            problems.append(
+                f"{rid}: 行数が合わない（manifest {e['rows']}、ファイル {len(lines) - 1}）"
+            )
+            continue
+        times = [int(line.split(",", 1)[0]) for line in lines[1:]]
+        if any(not (lo.timestamp() <= t < hi.timestamp()) for t in times):
+            problems.append(f"{rid}: 区間の外の時刻がある")
+    for path in sorted(root.glob("*/*.csv.gz")):
+        rel = path.relative_to(root).as_posix()
+        if (want is None or rel.split("/", 1)[0] in want) and rel not in listed:
+            problems.append(f"manifest に無いファイル: {rel}")
+    return problems
+
+
+def _cmd_sealedfetch(args: argparse.Namespace) -> int:
+    window = read_sealed_window(Path(args.window))
+    plan_path = Path(args.plan)
+    plan, requests = load_sealed_plan(plan_path, window, now=datetime.now(tz=UTC))
+    pairs = [x for x in args.pairs.split(",") if x]
+    for pair in pairs:
+        if pair not in window.symbols:
+            raise SealedWindowError(f"通貨 {pair} は窓の設定の銘柄に無い")
+    api = load_mt5()
+    if not api.initialize():
+        print(json.dumps({"initialize": False, "last_error": str(api.last_error())}))
+        return 2
+    try:
+        out_dir = Path(args.out_dir)
+        info = api.terminal_info()
+        data_path = Path(str(getattr(info, "data_path", "") or out_dir))
+        tool_sha = _sha256(Path(__file__))
+        for pair in pairs:
+            result = run_sealed_fetch(
+                api,
+                pair,
+                out_dir,
+                plan=plan,
+                plan_sha256=_sha256(plan_path),
+                requests=requests,
+                window=window,
+                redo_empty=args.redo_empty,
+                max_total=args.max_total,
+                stop_at_epoch=args.stop_at_epoch,
+                disk_free=lambda: shutil.disk_usage(data_path).free,
+                tool_sha256=tool_sha,
+            )
+            # 件数・状態だけ（価格は出さない）。39_sealed_fetch.sh がこの行を読む。
+            print(SEALED_RESULT_PREFIX + json.dumps(result, ensure_ascii=True), flush=True)
+            if result["stop"] is not None:
+                break
+    finally:
+        api.shutdown()
+    return 0
+
+
+def _cmd_sealedverify(args: argparse.Namespace) -> int:
+    pairs = [x for x in (args.pairs or "").split(",") if x] or None
+    problems = verify_sealed_dir(Path(args.root), Path(args.plan), pairs)
+    for p in problems:
+        print(p)
+    print(f"sealedverify: 問題 {len(problems)} 件")
+    return 1 if problems else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1608,6 +2201,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     v = sub.add_parser("fullverify", help="回収した全期間取得の置き場を manifest と照合する（Mac）")
     v.add_argument("--root", required=True)
     v.add_argument("--pairs")
+    sf = sub.add_parser(
+        "sealedfetch",
+        help="封印の取得（ADR-0037。一括・定期）を Windows の MT5 で要求し、gzip の CSV で保存する",
+    )
+    sf.add_argument(
+        "--plan", required=True, help="Mac の sealed_fetch_plan.py が作った計画（JSON）"
+    )
+    sf.add_argument(
+        "--window", required=True, help="窓の設定（oanda_mt5_m1_sealed_window.yaml の写し）"
+    )
+    sf.add_argument("--out-dir", required=True)
+    sf.add_argument("--pairs", required=True, help="通貨（カンマ区切り。窓の設定の銘柄の中）")
+    sf.add_argument("--max-total", type=int, help="要求の上限（既定は計画の上限。超える値は拒む）")
+    sf.add_argument("--stop-at-epoch", type=float, help="この時刻（UNIX 秒）以降は要求を出さない")
+    sf.add_argument("--redo-empty", action="store_true", help="0 本だった要求だけを出し直す")
+    sv = sub.add_parser(
+        "sealedverify", help="回収した封印の取得の置き場を manifest と計画と照合する（Mac）"
+    )
+    sv.add_argument("--root", required=True)
+    sv.add_argument("--plan", required=True)
+    sv.add_argument("--pairs")
     c = sub.add_parser("compare", help="USDJPY の tick を配布 CSV と突き合わせる（Mac）")
     c.add_argument("--probe-dir", required=True)
     c.add_argument("--oanda-csv", required=True)
@@ -1622,6 +2236,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_fullfetch(args)
     if args.command == "fullverify":
         return _cmd_fullverify(args)
+    if args.command == "sealedfetch":
+        return _cmd_sealedfetch(args)
+    if args.command == "sealedverify":
+        return _cmd_sealedverify(args)
     return _cmd_compare(args)
 
 
