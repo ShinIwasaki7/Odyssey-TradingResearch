@@ -24,6 +24,7 @@ git は `git -C <リポジトリの根>` の子プロセスで動かす。出力
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -43,6 +44,8 @@ __all__ = ["ACCESS_LOG_FILE", "REMOTE", "GitHoldoutAccessLog"]
 
 #: 消費の記録のファイル名（ADR-0014。snapshot のディレクトリの中）。
 ACCESS_LOG_FILE: Final = "access_log.jsonl"
+#: `git check-ignore -v` の 1 行（`<規則の置き場>:<行>:<規則>\t<道>`）。
+_CHECK_IGNORE_LINE: Final = re.compile(r"^(?P<source>.*?):(?P<line>\d+):(?P<pattern>[^\t]*)\t")
 #: push 先のリモート（ADR-0014 の「origin への push を compare-and-set とする」）。
 REMOTE: Final = "origin"
 
@@ -138,6 +141,7 @@ class GitHoldoutAccessLog:
         ファイルで履歴を置き換えて commit しないため）。
         """
         path = self._root / rel
+        self._require_not_ignored(rel)
         committed = subprocess.run(  # noqa: S603
             ["git", "-C", str(self._root), "show", f"HEAD:{rel}"],  # noqa: S607
             capture_output=True,
@@ -159,11 +163,27 @@ class GitHoldoutAccessLog:
                     f"{rel} in the working tree is not the committed content followed by appended"
                     " lines; it is never committed as it is (records are append-only)",
                 )
-        # `check-ignore` は否定の規則（`!`）に当たった道も「当たった」と返す版があるので使わない。
-        ignored = self._git(
-            "base", "ls-files", "--others", "--ignored", "--exclude-standard", "--", rel
+
+    def _require_not_ignored(self, rel: str) -> None:
+        """`rel` が git の無視の規則に当たらないこと（まだ無いファイルにも当てる）。
+
+        `check-ignore` は否定の規則（`!`）に当たった道も終了コード 0 で返すので、`-v` で当たった
+        規則を読み、最後に当たった規則が否定でなければ無視されるとみなす。
+        """
+        done = subprocess.run(  # noqa: S603
+            ["git", "-C", str(self._root), "check-ignore", "-v", "--no-index", "--", rel],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        if ignored.strip():
+        if done.returncode == 1:
+            return  # どの規則にも当たらない
+        match = _CHECK_IGNORE_LINE.match(done.stdout)
+        if done.returncode != 0 or match is None:
+            raise HoldoutAccessLogStop(
+                "base", f"whether git ignores {rel} cannot be determined (exit {done.returncode})"
+            )
+        if not match.group("pattern").startswith("!"):
             raise HoldoutAccessLogStop(
                 "base", f"{rel} is ignored by git; it cannot reach {REMOTE} (ADR-0014)"
             )

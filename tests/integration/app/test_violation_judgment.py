@@ -537,7 +537,8 @@ def test_a_consumption_log_that_git_ignores_stops_before_anything_is_written(
     """origin に届かない（版管理されない）消費の記録には書かない（ADR-0014）。"""
     repo, origin = _sealed_repo(sealed_base, tmp_path)
     accept_id = _access_ids(repo)[0]
-    (_final(repo) / "access_log.jsonl").write_text("")
+    # 消費の記録はまだ無い（最初の消費）。無い置き場にも無視の規則を当てる（Codex 2 巡目）。
+    assert not (_final(repo) / "access_log.jsonl").exists()
     with (repo / ".gitignore").open("a", encoding="utf-8") as handle:
         handle.write("data/snapshots/*/access_log.jsonl\n")
     _git(repo, "commit", "--quiet", "-am", "ignore the consumption logs")
