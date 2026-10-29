@@ -7,10 +7,14 @@ snapshot は「受入れが固定した市場データの1つの版」であり�
 **`SnapshotId` の対象**（D03 §3.7.1 v1.7）: `sources`、`conversion`（カレンダー版を含む）、
 `basis_declaration`（値と `verified` のみ）、`series`、`partitions`、
 `integrity_report_ref`、`provisional_report_ref`、`resolved_classifications`、
-`legacy_access`。
+`legacy_access`。OANDA MT5 の経路の 2 つの封印の区分の partition の初期状態
+`sealed_initial_states`（ADR-0038 第3項。順 6 の S4a）は、空でないときだけ対象に入る（既存の
+snapshot の識別子は変わらない）。
 
 **対象外**: `created_at`、`declaration_record`（宣言者・宣言日時）、`closure_decisions`
-（記入されたままの分類。v1.7 で対象外に変更）、`access_log`、`approval`。同じ宣言内容なら
+（記入されたままの分類。v1.7 で対象外に変更）、`access_log`、`approval`、品質確認の閲覧の
+記録 `quality_read`（閲覧の識別子と「品質確認の許可を要したか」。ADR-0036 第7項。`created_at` と
+同じく同じ入力なら同じ識別子のまま）。同じ宣言内容なら
 誰がいつ宣言・承認しても同じ `snapshot_id` になり、同じ警告集合に同じ結果を与える分類は
 区間のまとめ方によらず同じ `snapshot_id` になる。
 
@@ -31,7 +35,7 @@ manifest の保存形式（`manifest.json`）も同じ順序で書く（D03 §3.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -44,6 +48,7 @@ from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.access import (
     OANDA_SEALED_CLASSES,
     AccessClass,
+    HoldoutState,
     sealed_partition_period,
 )
 from odyssey_fx.marketdata.domain.classification import (
@@ -68,6 +73,9 @@ __all__ = [
     "LegacyObservation",
     "PartitionId",
     "PartitionRecord",
+    "QualityReadRecord",
+    "SEALED_INITIAL_REASONS",
+    "SealedInitialState",
     "SeriesManifest",
     "SnapshotManifest",
     "SourceFile",
@@ -629,6 +637,79 @@ class LegacyAccessRecord:
         return (str(self.series_id), str(self.interval.start))
 
 
+#: 封印の区分の partition を `CONSUMED` で始めた理由の語彙（ADR-0038 第3項の例外 1・2。
+#: `marketdata.domain.sealed_state.InitialStateReason` の値と同じ。テストで照合する）。
+SEALED_INITIAL_REASONS: frozenset[str] = frozenset({"VIOLATION_JUDGMENT", "EXISTING_CONSUMED"})
+
+
+@dataclass(frozen=True, slots=True)
+class SealedInitialState:
+    """OANDA MT5 の経路の封印の区分の partition 1 つの初期状態。
+
+    ADR-0038 第3項。D03 §16.3.1 の検査 11。
+
+    受入れの時に決め、以後は消費の記録の追記でだけ状態が変わる（ADR-0038 第3項の 1）。`reasons` は
+    `CONSUMED` で始めた理由（例外 1・2）の値の整列した列で、`SEALED` なら空。
+    """
+
+    partition_id: PartitionId
+    state: HoldoutState
+    reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.partition_id, PartitionId):
+            raise MarketDataValueError("SealedInitialState.partition_id must be a PartitionId")
+        if self.partition_id.access_class not in OANDA_SEALED_CLASSES:
+            raise MarketDataValueError(
+                "only the OANDA MT5 sealed partitions carry an initial state in the manifest,"
+                f" got {self.partition_id} (ADR-0038 第3項)"
+            )
+        if not isinstance(self.state, HoldoutState):
+            raise MarketDataValueError("SealedInitialState.state must be a HoldoutState")
+        if (
+            not isinstance(self.reasons, tuple)
+            or not all(isinstance(reason, str) for reason in self.reasons)
+            or not set(self.reasons) <= SEALED_INITIAL_REASONS
+            or list(self.reasons) != sorted(set(self.reasons))
+        ):
+            raise MarketDataValueError(
+                f"SealedInitialState.reasons must be sorted distinct values of"
+                f" {sorted(SEALED_INITIAL_REASONS)}"
+            )
+        if (self.state is HoldoutState.CONSUMED) != bool(self.reasons):
+            raise MarketDataValueError(
+                "SealedInitialState carries reasons exactly when it starts CONSUMED"
+            )
+
+    def sort_key(self) -> str:
+        """整列鍵（partition のディレクトリ）。"""
+        return str(self.partition_id)
+
+
+@dataclass(frozen=True, slots=True)
+class QualityReadRecord:
+    """受入れが品質確認の許可を要したかと、その閲覧の識別子（ADR-0036 第7項。PR #80 の仮置き 19）。
+
+    `SnapshotId` の計算の対象外（`created_at` と同じ）。`permit_required` が真なら `access_id`
+    （品質確認の閲覧の記録の閲覧の識別子）が要り、偽なら持たない。分類・確定・承認
+    （`data classify` / `data approve`）は、許可を要した snapshot について、閲覧の記録に
+    その識別子の「完了」の終了の行があることを確かめる。
+    """
+
+    permit_required: bool
+    access_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.permit_required, bool):
+            raise MarketDataValueError("QualityReadRecord.permit_required must be a bool")
+        if self.permit_required:
+            _require_non_empty_str(self.access_id, "QualityReadRecord.access_id")
+        elif self.access_id is not None:
+            raise MarketDataValueError(
+                "QualityReadRecord.access_id is recorded only when a permit was required"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class Approval:
     """人間の受入れ承認（D03 §3.7）。**`SnapshotId` の計算対象外**。
@@ -678,6 +759,8 @@ class SnapshotManifest:
     approval: Approval | None = None
     provisional_report_ref: ContentDigest | None = None
     resolved_classifications: tuple[ResolvedClassification, ...] = ()
+    sealed_initial_states: tuple[SealedInitialState, ...] = ()
+    quality_read: QualityReadRecord | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.created_at, UtcTime):
@@ -715,6 +798,11 @@ class SnapshotManifest:
             "resolved_classifications", ResolvedClassification, lambda item: item.sort_key()
         )
         self._normalize("legacy_access", LegacyAccessRecord, lambda item: item.sort_key())
+        self._normalize("sealed_initial_states", SealedInitialState, lambda item: item.sort_key())
+        if self.quality_read is not None and not isinstance(self.quality_read, QualityReadRecord):
+            raise MarketDataValueError(
+                "SnapshotManifest.quality_read must be a QualityReadRecord or None"
+            )
 
         # 解決済みの分類は警告1件に1件（同じ警告に2つの結果を記録しない、D03 §4 の 9）。
         seen: set[tuple[str, str, str]] = set()
@@ -726,6 +814,20 @@ class SnapshotManifest:
                     " twice; each warning resolves to exactly one classification (D03 §4 の 9)"
                 )
             seen.add(key)
+
+        # 封印の区分の partition は 1 つにつき 1 つの初期状態を持つ（過不足なし。ADR-0038 第3項）。
+        sealed = [
+            str(record.partition_id)
+            for record in self.partitions
+            if record.access_class in OANDA_SEALED_CLASSES
+        ]
+        stated = [str(item.partition_id) for item in self.sealed_initial_states]
+        if sorted(sealed) != stated:
+            raise MarketDataValueError(
+                "SnapshotManifest.sealed_initial_states must hold exactly one initial state for"
+                f" each OANDA MT5 sealed partition (partitions {len(sealed)}, states"
+                f" {len(stated)}; ADR-0038 第3項)"
+            )
 
         declared = {record.series_id for record in self.series}
         for partition in self.partitions:
@@ -761,7 +863,7 @@ class SnapshotManifest:
         含めないもの: `created_at`、`declaration_record`、`closure_decisions`（記入された
         ままの分類、v1.7）、`access_log`、`approval`。
         """
-        return {
+        payload: dict[str, Any] = {
             "basis_declaration": self.basis_declaration,
             "conversion": self.conversion.identity_payload(),
             "integrity_report_ref": self.integrity_report_ref,
@@ -772,6 +874,10 @@ class SnapshotManifest:
             "series": tuple(record.identity_payload() for record in self.series),
             "sources": self.sources,
         }
+        # 封印の区分の初期状態は、あるときだけ対象に入れる（既存の snapshot の識別子は変わらない）。
+        if self.sealed_initial_states:
+            payload["sealed_initial_states"] = self.sealed_initial_states
+        return payload
 
     def snapshot_id(self) -> SnapshotId:
         """内容から決まる snapshot の識別子（D03 §3.7.1）。
@@ -785,6 +891,17 @@ class SnapshotManifest:
     def is_approved(self) -> bool:
         """人間の受入れ承認が記入されているか（D03 §3.7.1 の3）。"""
         return self.approval is not None
+
+    def sealed_initial_state(self, partition_id: PartitionId) -> SealedInitialState | None:
+        """封印の区分の partition の初期状態（無ければ `None`）。"""
+        for item in self.sealed_initial_states:
+            if item.partition_id == partition_id:
+                return item
+        return None
+
+    def with_quality_read(self, quality_read: QualityReadRecord) -> SnapshotManifest:
+        """品質確認の閲覧の記録を記入した manifest を返す。`snapshot_id` は変わらない。"""
+        return replace(self, quality_read=quality_read)
 
     def partition_record(self, partition_id: PartitionId) -> PartitionRecord | None:
         """指定した partition の記録（未登録なら `None`）。"""
@@ -820,6 +937,8 @@ class SnapshotManifest:
             approval=self.approval,
             provisional_report_ref=provisional_report_ref,
             resolved_classifications=resolved,
+            sealed_initial_states=self.sealed_initial_states,
+            quality_read=self.quality_read,
         )
 
     def with_approval(self, approval: Approval) -> SnapshotManifest:
@@ -838,4 +957,6 @@ class SnapshotManifest:
             approval=approval,
             provisional_report_ref=self.provisional_report_ref,
             resolved_classifications=self.resolved_classifications,
+            sealed_initial_states=self.sealed_initial_states,
+            quality_read=self.quality_read,
         )

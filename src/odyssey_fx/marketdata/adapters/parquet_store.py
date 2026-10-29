@@ -47,7 +47,7 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     PENDING_DIRECTORY,
     ReadableSnapshot,
 )
-from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.access import AccessClass, HoldoutState
 from odyssey_fx.marketdata.domain.bar import (
     Bar,
     BarCoverage,
@@ -85,6 +85,8 @@ from odyssey_fx.marketdata.domain.snapshot import (
     Mt5FailedSpan,
     PartitionId,
     PartitionRecord,
+    QualityReadRecord,
+    SealedInitialState,
     SeriesCoverageCounts,
     SeriesManifest,
     SnapshotManifest,
@@ -330,6 +332,22 @@ def _manifest_payload(manifest: SnapshotManifest) -> Mapping[str, Any]:
             for record in manifest.legacy_access
         ],
     }
+    # 封印の区分の初期状態（ADR-0038 第3項）と品質確認の閲覧の記録（ADR-0036 第7項）は、
+    # あるときだけ鍵を書く（既存の snapshot の manifest の形は変わらない。順 6 の S4a）。
+    if manifest.sealed_initial_states:
+        payload["sealed_initial_states"] = [
+            {
+                "partition_id": _partition_payload(item.partition_id),
+                "reasons": list(item.reasons),
+                "state": item.state.value,
+            }
+            for item in manifest.sealed_initial_states
+        ]
+    if manifest.quality_read is not None:
+        payload["quality_read"] = {
+            "access_id": manifest.quality_read.access_id,
+            "permit_required": manifest.quality_read.permit_required,
+        }
     if manifest.declaration_record is not None:
         payload["declaration_record"] = {
             "declared_at": str(manifest.declaration_record.declared_at),
@@ -482,7 +500,29 @@ def _manifest_from_payload(payload: Mapping[str, Any]) -> SnapshotManifest:
             declared_at=UtcTime.parse(str(declaration["declared_at"])),
         ),
         approval=None if approval is None else _approval_from_payload(approval),
+        sealed_initial_states=tuple(
+            SealedInitialState(
+                partition_id=_partition_from_payload(item["partition_id"]),
+                state=HoldoutState(str(item["state"])),
+                reasons=tuple(str(reason) for reason in item["reasons"]),
+            )
+            for item in payload.get("sealed_initial_states", ())
+        ),
+        quality_read=_quality_read_from_payload(payload.get("quality_read")),
     )
+
+
+def _quality_read_from_payload(payload: object) -> QualityReadRecord | None:
+    """品質確認の閲覧の記録を、形と型のまま確かめて読む（無ければ `None`）。"""
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping) or set(payload) != {"access_id", "permit_required"}:
+        raise ValueError("manifest.quality_read must have access_id and permit_required")
+    access_id = payload["access_id"]
+    required = payload["permit_required"]
+    if not isinstance(required, bool) or not (access_id is None or isinstance(access_id, str)):
+        raise ValueError("manifest.quality_read has values of the wrong type")
+    return QualityReadRecord(permit_required=required, access_id=access_id)
 
 
 def _approval_from_payload(payload: object) -> Approval:

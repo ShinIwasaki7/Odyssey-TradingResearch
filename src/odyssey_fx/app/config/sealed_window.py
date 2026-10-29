@@ -7,10 +7,16 @@
 読み、OANDA MT5 の経路の区分の境界（`SealedAccessBoundaries`。ADR-0038 第1項）を作る。区分の
 境界はこの設定からだけ読み、コードに取得の開始時点の日付を書かない（ADR-0038 第1項）。
 
-取得の開始時点の値は S4a で書く（ADR-0037 第2項の 4）。値が空（`null`）の間は境界が決まらない
+取得の開始時点の値は S4a で書いた（ADR-0037 第2項の 4）。値が空（`null`）の間は境界が決まらない
 ので、2024-01-01 以降の足を分類しない（`SealedAccessBoundaries` が `AcquisitionStartUnset` で
-止める）。`acquisition_start` が `merge_commit_time` から ADR-0037 第2項の 2 の規則で計算した
-値と一致することの単体テストは S4a（ADR-0037 第4項の 4）。
+止める）。読込は、`acquisition_start` が `acquisition_start_basis.merge_commit_time` から
+ADR-0037 第2項の 2 の規則（`acquisition_start_after`）で計算した値と一致することを確かめ、
+食い違えば止める（書き誤りを読込で見つける。D15-2 (a)）。`acquisition_start` を書くときは
+`merge_commit`・`merge_commit_time` も書き、空のときは 3 つとも空にする。merge のコミットの
+時刻が ADR-0037 に記録した値と一致することは単体テストで確かめる（ADR-0037 第4項の 4）。
+
+`symbols` は取得の道具が要求する銘柄（改定文の 8 通貨の中）。`timeframe: M1` は MT5 の時間足の
+名前（`TIMEFRAME_M1`）で、基盤の時間足の識別では `1m` に当たる。
 """
 
 from __future__ import annotations
@@ -25,7 +31,11 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.domain.quality_permit import SEALED_INTAKE_SYMBOLS
-from odyssey_fx.marketdata.domain.access import SEALED_RESEARCH_UNTIL, SealedAccessBoundaries
+from odyssey_fx.marketdata.domain.access import (
+    SEALED_RESEARCH_UNTIL,
+    SealedAccessBoundaries,
+    acquisition_start_after,
+)
 
 __all__ = [
     "SEALED_WINDOW_PATH",
@@ -117,6 +127,37 @@ def load_sealed_window(path: Path) -> SealedWindowConfig:
         "acquisition_start_basis.merge_commit_time",
         path,
     )
+    merge_commit = model.acquisition_start_basis.merge_commit
+    basis_given = (merge_commit is not None, merge_commit_time is not None)
+    if acquisition_start is None:
+        if any(basis_given):
+            raise ConfigError(
+                f"{path}: `acquisition_start` が空なのに根拠（acquisition_start_basis）がある。"
+                "3 つとも書くか、3 つとも空にする（ADR-0037 第4項の 2）"
+            )
+    else:
+        if not all(basis_given):
+            raise ConfigError(
+                f"{path}: `acquisition_start` の根拠（merge_commit・merge_commit_time）が無い"
+                "（ADR-0037 第4項の 4）"
+            )
+        assert merge_commit_time is not None  # noqa: S101  上で確かめた
+        if (
+            not isinstance(merge_commit, str)
+            or len(merge_commit) != 40
+            or any(char not in "0123456789abcdef" for char in merge_commit)
+        ):
+            raise ConfigError(
+                f"{path}: `acquisition_start_basis.merge_commit` はコミットの完全な識別"
+                "（小文字の 16 進 40 文字）"
+            )
+        expected = acquisition_start_after(merge_commit_time)
+        if acquisition_start != expected:
+            raise ConfigError(
+                f"{path}: `acquisition_start` {acquisition_start} が、merge のコミットの時刻"
+                f" {merge_commit_time} から ADR-0037 第2項の 2 の規則で計算した値 {expected} と"
+                " 食い違う"
+            )
     try:
         boundaries = SealedAccessBoundaries(acquisition_start=acquisition_start)
     except KernelValueError as exc:
@@ -127,7 +168,7 @@ def load_sealed_window(path: Path) -> SealedWindowConfig:
         symbols=symbols,
         allowed_start=allowed_start,
         acquisition_start=acquisition_start,
-        merge_commit=model.acquisition_start_basis.merge_commit,
+        merge_commit=merge_commit,
         merge_commit_time=merge_commit_time,
         boundaries=boundaries,
     )

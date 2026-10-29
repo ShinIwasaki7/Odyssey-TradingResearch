@@ -120,13 +120,22 @@ def _lock_text() -> str:
 
 
 def _create_lock(lock: Path) -> None:
-    """ロックを排他的に作る（既にあれば `FileExistsError`）。"""
+    """ロックを排他的に作る（既にあれば `FileExistsError`）。
+
+    作った後の書き込み・同期・閉じるのどれかが失敗したら、**自分で作ったロックを消してから**
+    例外をそのまま送出する（残すと以後の追記がすべて「ロックがある」で断られ、人間が消すまで
+    続くため。ADR-0035 第4項の 5 の 1「追記の 1 回ごとに作って消すロック」）。
+    """
     descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
-        os.write(descriptor, _lock_text().encode("utf-8"))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        try:
+            os.write(descriptor, _lock_text().encode("utf-8"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except BaseException:
+        lock.unlink(missing_ok=True)
+        raise
 
 
 def _append_bytes(path: Path, keep: int, data: bytes) -> None:
@@ -173,7 +182,10 @@ def append_quality_access_row(
     except OSError as exc:
         return QualityLogAppendRefused(
             kind=QualityLogAppendRefusal.LOCKED,
-            detail=f"the lock {QUALITY_ACCESS_LOCK_PATH} cannot be created: {exc}",
+            detail=(
+                f"the lock {QUALITY_ACCESS_LOCK_PATH} could not be created or written; a lock this"
+                f" append created was removed again: {exc}"
+            ),
         )
     try:
         contents = read_quality_access_log_file(path)

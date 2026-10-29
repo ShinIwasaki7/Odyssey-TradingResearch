@@ -1,0 +1,64 @@
+# 数え方の規則（2024 年以降の封印の取り込み用）版 1（OANDA MT5 API の 1 分足の経路。D03 §15.12・§16）
+#
+# 研究期間の数え方の規則 版 1（counting_rules_v1.yaml。識別 oanda_mt5_counting_rules）と**規則の値は同じ**で、指す
+# ファイルだけが違う: 時刻の規則の表は 2024 年以降の表 oanda_mt5_time_rules_sealed 版 1（D03 §16.2.3）、カレンダーは
+# fx_ny17_oanda 版 2（D03 §16.2.5）、年末年始の休場の定義ファイルは 2024 年以降の告知の分。研究期間の規則のファイルは
+# 1 バイトも変えないため（1 バイトでも変えたら新しい版。counting_rules_v1.yaml の注記）、別の識別のファイルにした
+# （PR #111 の仮置き S4a-6。2026-10-29 に人間が「このまま（推奨）」と決定）。封印の取り込みの受入れ
+# （odyssey-fx data accept-mt5 --sealed）だけがこのファイルを読む。
+#
+# - v2_2017_year_end_closures: inherit は「告知の無い日は fx_ny17 版 2 の宣言を引き継ぐ」の意味で、2024 年以降も同じ扱い
+#   （PR #109 の要決定 S2b-3 (a)。項目の名前は研究期間の規則と同じにした。値が違えば実装が止まる）。
+# - 1 バイトでも変えたら新しい版のファイル（counting_rules_sealed_v2.yaml）にする。前の版は消さない。
+
+schema_version: 1
+
+id: oanda_mt5_counting_rules_sealed
+version: 1
+source_sections: "D03 §15.2・§15.4・§15.6・§15.7・§16.2、D06 §18.9"
+
+time_rule_table:
+  file: docs/design/time_rules/time_rule_table_sealed_v1.yaml
+  approved_list: docs/design/time_rules/approved_time_rule_tables_sealed.yaml  # 研究期間の一覧は変えない（PR #111 の要決定 C (a)）
+
+calendar:
+  # 休場の判定（D03 §15.2 の順 1・§15.6 の 1・§16.2.5）。カレンダー fx_ny17_oanda 版 2（SHA-256 6af95a8d0b26f9b68d959f2b70e811eacb436ea92651df95912ca91a78924a7f）は
+  # 人間が承認した（2026-10-29、AskUserQuestion。PR #111 の承認の対象 項目 2「承認する（推奨）」。原文は D15 §0.5.7）。
+  base: {id: fx_ny17, version: 2, file: configs/calendars/fx_ny17_v2.yaml}
+  holiday_exceptions:
+    file: tools/survey/oanda_holiday_exceptions_sealed_2026-10-29.json
+    sha256: 74eb57211482574cb6702e604680576f7635d20eb2a76d3241bfb896615793fc
+  v2_2017_year_end_closures: inherit  # 告知の無い日は版 2 の宣言を引き継ぐ（PR #109 の要決定 S2b-3 (a)。上の注記）
+  declared_as: {id: fx_ny17_oanda, version: 2, file: configs/calendars/fx_ny17_oanda_v2.yaml, sha256: 6af95a8d0b26f9b68d959f2b70e811eacb436ea92651df95912ca91a78924a7f}  # 中身は上の 2 つと研究期間の定義ファイルの和集合（D03 §16.2.5）
+
+minute_status_order: [closed, acquisition_shortfall, recorded, unrecorded]  # D03 §15.2。1 分に 1 つ、この順に判定
+
+acquisition_shortfall:
+  reasons: [outside_acquired_range, request_failed_or_not_fetched, corrupt, time_not_interpretable]
+  before_acquired_range: data_start  # 取得の範囲の最初より前は取得不足でなくデータの開始前（D03 §15.2）
+  reinterpret_as_unrecorded: false  # D12-80
+  bar_with_shortfall_minute: not_built  # 取得不足の分を 1 つでも含む足は作らない（D03 §15.4）
+  run_policy: not_runnable  # 区間を切り、重なる run は実行前に止める（D06 §18.9、D11 §12.1）
+
+bars:
+  timeframes: [15m, 1h, 4h_ny17, 1d_ny17]
+  built_from: 1m  # すべて 1 分足から直接作る（D03 §15.4）
+  build_condition: at_least_one_recorded_minute_and_no_shortfall
+  coverage_denominator: expected_minutes_excluding_closures
+  coverage_threshold: none  # 閾値を置かない（D12-87）
+  call_partial_bar_complete: false  # D12-87
+
+warmup:
+  # 現在の戦略（検証戦略 B）の必要履歴の写し。基盤全体の品質基準ではない（D12-88）。集計の道具だけが使い、
+  # 基盤の実装は戦略の宣言の窓で数える（D03 §15.12）。道具は daily_bars_source の値と一致を確かめる
+  daily_bars: 60
+  daily_bars_source: "configs/strategies/strategy_b_v1.yaml の components の instance_id daily_ema（入力 USDJPY/1d_ny17/bid）の parameters.window_bars"
+  partial_daily_bar_counts: true  # D12-82
+  closure_day_breaks_continuity: false  # D12-83
+  all_no_record_scheduled_day_resets: true  # D12-84（例外なし。2022-12-26 も同じ。D03 §15.7）
+  ready_at: available_at_of_last_required_bar  # 準備完了は必要本数の最後の足の公開時刻（D03 §15.5・§15.7）
+  intraday_no_record_bar: resets_like_daily  # 15 分足・1 時間足・4 時間足の全分無記録も日足と同じ（D12-90 (a)）
+
+sensitivity:
+  variants: [standard, candidate]  # 変換の組ごとに snapshot（D12-92 (a)）。candidate は候補を持つ行をすべて替えた組
+  out_of_calendar_bars_in_candidate: exclude_and_report  # 足の生成に使わず件数を品質の報告に（D12-97 (a)）

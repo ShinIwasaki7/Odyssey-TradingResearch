@@ -69,6 +69,7 @@ from odyssey_fx.app.config.experiment_v2 import (
     load_experiment_v2,
 )
 from odyssey_fx.app.config.refill import load_calendar_ref, load_refill_provider
+from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
@@ -96,7 +97,7 @@ from odyssey_fx.marketdata.application.acceptance import (
     requires_rerun,
 )
 from odyssey_fx.marketdata.application.classification import require_recorded_classification
-from odyssey_fx.marketdata.application.mt5_acceptance import reaccept_mt5
+from odyssey_fx.marketdata.application.mt5_acceptance import Mt5Boundaries, reaccept_mt5
 from odyssey_fx.marketdata.application.ports import SnapshotStore
 from odyssey_fx.marketdata.application.refill_fetch import fetch_plan
 from odyssey_fx.marketdata.application.refill_plan import create_plan
@@ -104,16 +105,18 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     PENDING_DIRECTORY,
     require_recorded_content,
 )
-from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES
+from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES, SealedAccessBoundaries
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.refill import RefillFilter
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
     BasisDeclaration,
     DeclarationRecord,
     PartitionId,
+    QualityReadRecord,
     SnapshotManifest,
 )
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant
@@ -206,6 +209,23 @@ def build_parser() -> argparse.ArgumentParser:
     accept_mt5.add_argument(
         "--repo-root", type=Path, default=Path("."), help="リポジトリの位置（規則のファイルの基点）"
     )
+    accept_mt5.add_argument(
+        "--sealed",
+        action="store_true",
+        help=(
+            "2024 年以降の封印の取り込み（ADR-0037。関所の品質確認の許可の下。原データは"
+            " data/raw/oanda_mt5_sealed/<取得日>/。D03 §16.3）"
+        ),
+    )
+    accept_mt5.add_argument(
+        "--manifest-copy",
+        type=Path,
+        default=None,
+        help=(
+            "--sealed のとき: 取得記録の版管理の写し"
+            "（docs/data/sealed/<取得日>_<段>/manifest.json）"
+        ),
+    )
 
     classify = data.add_parser(
         "classify",
@@ -223,6 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
     classify.add_argument(
         "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
     )
+    classify.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="リポジトリの位置（品質確認の閲覧の記録・許可の定義・窓の設定の基点）",
+    )
 
     approve_command = data.add_parser(
         "approve",
@@ -233,6 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
     approve_command.add_argument("--comment", default="", help="承認時のコメント")
     approve_command.add_argument(
         "--out", type=Path, required=True, help="snapshot の基点（data/snapshots/）"
+    )
+    approve_command.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="リポジトリの位置（品質確認の閲覧の記録・許可の定義・窓の設定の基点）",
     )
 
     _add_refill_parsers(data)
@@ -631,7 +663,18 @@ def _run_accept(args: argparse.Namespace, out: _Writer) -> int:
 
 
 def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
-    """MT5 経路の受入れの 1〜8（D03 §15.3）。規則のファイルは数え方の規則が指すものを読む。"""
+    """MT5 経路の受入れの 1〜8（D03 §15.3）。規則のファイルは数え方の規則が指すものを読む。
+
+    研究期間の受入れ（`--sealed` なし）は、区分を OANDA MT5 の経路の境界で決め（ADR-0038 第0項の
+    1）、封印の区分の足が現れれば何も書かずに失敗する（D03 §16.1、PR #109 の仮置き S2b-7）。原
+    ファイルは許可の値なしで読むので、封印の置き場の下と 2024-01-01 を越える要求のファイルは読まない
+    （ADR-0036 第8項。`read_symbol_files`）。暫定 manifest には「品質確認の許可を要しなかった」と
+    記録する（ADR-0036 第7項）。`--sealed` は封印の取り込み（`_run_accept_mt5_sealed`）。
+    """
+    if args.sealed:
+        return _run_accept_mt5_sealed(args, out)
+    if args.manifest_copy is not None:
+        raise ConfigError("--manifest-copy は --sealed のときだけ使う")
     rules = mt5_app.load_mt5_rules(args.repo_root)
     datasource = mt5_app.load_datasource(args.repo_root)
     raw_root = args.raw_root if args.raw_root is not None else args.repo_root / datasource.root
@@ -646,10 +689,15 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
         symbol=Symbol(args.symbol),
         variant=TimeRuleVariant(args.variant),
         created_at=created_at,
-        boundaries=INITIAL_ACCESS_BOUNDARIES,
+        boundaries=SealedAccessBoundaries(acquisition_start=None),
         code_version=composition.code_version(),
         months=months,
         docs_manifest_copy=args.repo_root / datasource.docs_copy_for(args.fetch_date),
+    )
+    pending = PendingSnapshot(
+        manifest=pending.manifest.with_quality_read(QualityReadRecord(permit_required=False)),
+        report=pending.report,
+        partition_bars=pending.partition_bars,
     )
     provisional = str(pending.provisional_id)
     store = composition.snapshot_store(args.out)
@@ -676,15 +724,82 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
     return _EXIT_OK
 
 
+def _run_accept_mt5_sealed(args: argparse.Namespace, out: _Writer) -> int:
+    """封印の取り込みの受入れ（ADR-0037 第1項の 2 の 2、D03 §16.3。関所の品質確認の許可の下）。
+
+    出力は件数・時刻・区間・ハッシュ・合否だけ（ADR-0037 第1項の 4、D03 §16.4）。許可が出ない・
+    記録に失敗したときは何も読まずに失敗する（ADR-0036 第7項）。
+    """
+    # 封印の取り込みの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import sealed_intake
+    from odyssey_fx.app.quality_check import QualityCheckRefused
+
+    if args.raw_root is not None or args.months is not None:
+        raise ConfigError(
+            "--sealed では --raw-root と --months を使わない（原データは"
+            " data/raw/oanda_mt5_sealed/<取得日>/ に置き、取得の回 × 通貨 × 組で 1 つの snapshot に"
+            "する。D03 §16.3.3）"
+        )
+    if args.manifest_copy is None:
+        raise ConfigError("--sealed には --manifest-copy（取得記録の版管理の写し）が要る")
+    store = composition.snapshot_store(args.out)
+
+    def write(pending: PendingSnapshot) -> str:
+        directory = f"{PENDING_DIRECTORY}/{pending.provisional_id}"
+        _write_snapshot(store, directory, pending, pending.manifest)
+        return directory
+
+    try:
+        accepted = sealed_intake.accept_sealed(
+            repo_root=args.repo_root,
+            fetch_date=args.fetch_date,
+            symbol=Symbol(args.symbol),
+            variant=TimeRuleVariant(args.variant),
+            manifest_copy=args.manifest_copy,
+            snapshots_root=args.out,
+            created_at=composition.now_utc(),
+            code_version=composition.code_version(),
+            write=write,
+        )
+    except QualityCheckRefused as refused:
+        out.line(f"封印の取り込みの受入れを始めなかった（何も読んでいない）: {refused}")
+        return _EXIT_FAILED
+    pending = accepted.pending
+    mt5_record = pending.manifest.conversion.mt5
+    quality = pending.manifest.quality_read
+    out.line(f"暫定の識別子（provisional_id）: {pending.provisional_id}")
+    out.line(f"品質確認の閲覧の識別子: {quality.access_id if quality else ''}（許可の下で読んだ）")
+    if mt5_record is not None:
+        table = mt5_record.time_rule_table
+        out.line(f"時刻の規則の表: {table}、変換の組 {args.variant}")
+        out.line(f"受け入れた要求（API の時刻の年月）: {' '.join(mt5_record.months)}")
+    out.line(f"原データの置き場: {accepted.raw_location}")
+    out.lines(summary.series_lines(pending.manifest))
+    out.lines(summary.sealed_partition_lines(pending.manifest))
+    out.lines(summary.findings_lines(pending.report))
+    out.lines(summary.unobservable_lines())
+    return _EXIT_OK
+
+
 # --- classify ---------------------------------------------------------------
 
 
 def _read_partitions(
-    store: SnapshotStore, snapshot_dir: str, manifest: SnapshotManifest
+    store: SnapshotStore,
+    snapshot_dir: str,
+    manifest: SnapshotManifest,
+    read_permit: QualityReadPermit | None = None,
 ) -> dict[PartitionId, tuple[Bar, ...]]:
-    """manifest に記録された partition の足をすべて読む。"""
+    """manifest に記録された partition の足をすべて読む。
+
+    封印の区分の partition は、品質確認の許可の値が覆うときだけ読める（`read_partition` が
+    確かめる。ADR-0036 第9項の 3）。
+    """
     return {
-        record.partition_id: tuple(store.read_partition(snapshot_dir, record.partition_id))
+        record.partition_id: tuple(
+            store.read_partition(snapshot_dir, record.partition_id, read_permit=read_permit)
+        )
         for record in manifest.partitions
     }
 
@@ -712,26 +827,49 @@ def _rerun_calendar(
     return decisions_file.calendar
 
 
-def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
-    """分類を記入して snapshot を確定する（D03 §4 の 9、§10 の `classify`）。"""
-    store = composition.snapshot_store(args.out)
-    pending_directory = f"{PENDING_DIRECTORY}/{args.pending}"
+def _mt5_rules_for(repo_root: Path, manifest: SnapshotManifest) -> mt5_app.Mt5Rules:
+    """MT5 経路の snapshot の規則（封印の snapshot は封印用の数え方の規則。D03 §16.2）。"""
+    from odyssey_fx.app import sealed_intake  # 使うときだけ読み込む（関所を含むため）
 
-    manifest = store.read_manifest(pending_directory)
-    report = store.read_integrity_report(pending_directory)
-    if str(manifest.snapshot_id()) != args.pending:
-        raise ConfigError(
-            f"{pending_directory} の manifest は暫定の識別子 {manifest.snapshot_id()} を"
-            f" 表しており、指定された {args.pending} と一致しない（D03 §3.7.1）"
-        )
+    if sealed_intake.is_sealed_snapshot(manifest):
+        return mt5_app.load_mt5_rules(repo_root, mt5_app.SEALED_COUNTING_RULES)
+    return mt5_app.load_mt5_rules(repo_root)
 
+
+def _mt5_boundaries(repo_root: Path, manifest: SnapshotManifest) -> Mt5Boundaries:
+    """MT5 経路の snapshot の確定段階の再実行の区分の境界（ADR-0038 第1項）。
+
+    封印の snapshot は窓の設定の取得の開始時点で作る。研究期間の snapshot は今までの境界のまま
+    （研究期間の足だけを持つので、どちらの境界でも研究履歴になる。受入れが封印の区分の足を
+    拒むので、再実行で 2024 年以降の足が現れることは無い）。
+    """
+    from odyssey_fx.app import sealed_intake  # 使うときだけ読み込む（関所を含むため）
+
+    if sealed_intake.is_sealed_snapshot(manifest):
+        return load_sealed_window(repo_root / SEALED_WINDOW_PATH).boundaries
+    return INITIAL_ACCESS_BOUNDARIES
+
+
+def _classify_compute(
+    args: argparse.Namespace,
+    out: _Writer,
+    store: SnapshotStore,
+    pending_directory: str,
+    manifest: SnapshotManifest,
+    report: IntegrityReport,
+    read_permit: QualityReadPermit | None,
+) -> tuple[PendingSnapshot, PendingSnapshot, FinalizedSnapshot]:
+    """分類を当てて最終 snapshot をメモリの上に作る（書き出さない。D03 §4 の 9）。
+
+    封印の snapshot は品質確認の許可の下で呼ばれ、暫定 partition を許可の値で読む。
+    """
     # **暫定 snapshot の内容が記録どおりかを、何かを再利用する前に確かめる**（D03 §4
     # 「再実行の入力」）。分類は暫定 partition を読み戻して最終 snapshot を組み立てるので、
     # 照合しないと、書き換えられた足がそのまま正当な partition として記録される。
     provisional = PendingSnapshot(
         manifest=manifest,
         report=report,
-        partition_bars=_read_partitions(store, pending_directory, manifest),
+        partition_bars=_read_partitions(store, pending_directory, manifest, read_permit),
     )
     require_recorded_content(manifest, report, provisional.partition_bars)
 
@@ -760,8 +898,8 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
                 provisional,
                 calendar=calendar,
                 timeframe_defs=load_timeframes(args.timeframes),
-                targets=mt5_app.load_mt5_rules(Path(".")).targets,
-                boundaries=INITIAL_ACCESS_BOUNDARIES,
+                targets=_mt5_rules_for(args.repo_root, manifest).targets,
+                boundaries=_mt5_boundaries(args.repo_root, manifest),
                 excluded=excluded,
             )
         else:
@@ -779,6 +917,52 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
     else:
         final = provisional
         finalized = finalize(final, decisions)
+    return provisional, final, finalized
+
+
+def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
+    """分類を記入して snapshot を確定する（D03 §4 の 9、§10 の `classify`）。
+
+    MT5 経路の snapshot は、受入れの閲覧の「完了」の終了の行を先に確かめる（ADR-0036 第7項）。
+    封印の区分の partition を持つ snapshot は、分類・確定を関所の品質確認の許可の下で行い
+    （ADR-0037 第1項の 3 の 3）、終了の行を書けた後にだけ最終 snapshot を書く。
+    """
+    # 封印の取り込みの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import sealed_intake
+    from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
+
+    store = composition.snapshot_store(args.out)
+    pending_directory = f"{PENDING_DIRECTORY}/{args.pending}"
+
+    manifest = store.read_manifest(pending_directory)
+    report = store.read_integrity_report(pending_directory)
+    if str(manifest.snapshot_id()) != args.pending:
+        raise ConfigError(
+            f"{pending_directory} の manifest は暫定の識別子 {manifest.snapshot_id()} を"
+            f" 表しており、指定された {args.pending} と一致しない（D03 §3.7.1）"
+        )
+    sealed_intake.require_acceptance_completed(args.repo_root, manifest, pending_directory)
+    if sealed_intake.is_sealed_snapshot(manifest):
+        request = sealed_intake.finalize_request(args.repo_root, manifest)
+        try:
+            provisional, final, finalized = run_quality_check(
+                repository_root=args.repo_root,
+                request=request,
+                tool=lambda permit: sealed_intake.without_values(
+                    "classifying the sealed partitions",
+                    lambda: _classify_compute(
+                        args, out, store, pending_directory, manifest, report, permit
+                    ),
+                ),
+            )
+        except QualityCheckRefused as refused:
+            out.line(f"分類・確定を始めなかった・結果を出さなかった: {refused}")
+            return _EXIT_FAILED
+    else:
+        provisional, final, finalized = _classify_compute(
+            args, out, store, pending_directory, manifest, report, None
+        )
     final_id = str(finalized.snapshot_id)
 
     # 既に確定済みの snapshot は**上書きしない**。同じ原ファイル・設定・分類なら同じ最終
@@ -803,7 +987,8 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
     out.line("")
     out.line(f"最終の識別子（snapshot_id）: {final_id}")
     out.line(f"確定先: {args.out / final_id}")
-    out.line(f"記入した分類: {len(decisions)} 件（警告ごとに解決すると {len(resolved)} 件）")
+    recorded = finalized.manifest.closure_decisions
+    out.line(f"記入した分類: {len(recorded)} 件（警告ごとに解決すると {len(resolved)} 件）")
     out.lines(summary.resolved_lines(finalized.manifest))
     out.line("")
     out.line(
@@ -821,6 +1006,11 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
 
 def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
     """承認と価格基準の宣言記録を記入する（D03 §3.7.1 の 2、§10 の `approve`）。"""
+    # 封印の取り込みの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import sealed_intake
+    from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
+
     if PENDING_DIRECTORY in Path(args.snapshot).parts:
         raise ConfigError(
             f"{args.snapshot!r} は暫定 snapshot である。暫定 snapshot は承認の対象に"
@@ -841,28 +1031,48 @@ def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
             f"{args.snapshot} は既に承認されている"
             f"（承認者 {manifest.approval.approved_by if manifest.approval else ''}）"
         )
+    # MT5 経路の snapshot は、受入れの閲覧の「完了」の終了の行を確かめる（ADR-0036 第7項）。
+    sealed_intake.require_acceptance_completed(args.repo_root, manifest, args.snapshot)
 
-    # 承認は「この内容でよい」という人間の確認なので、**承認の時点で**内容が manifest の
-    # 記録どおりであることを確かめる。読み取りの関門でも同じ検査をするが、そこで初めて
-    # 気づく形だと「承認済みなのに読めない snapshot」ができてしまう（D03 §3.7.1）。
-    # 確定段階で再実行した snapshot は暫定報告も照合する（D03 §3.7 v1.7）。
-    provisional_report = store.read_provisional_report_for(args.snapshot, manifest)
-    require_recorded_content(
-        manifest,
-        report,
-        _read_partitions(store, args.snapshot, manifest),
-        provisional_report=provisional_report,
-    )
+    def verify(read_permit: QualityReadPermit | None) -> None:
+        # 承認は「この内容でよい」という人間の確認なので、**承認の時点で**内容が manifest の
+        # 記録どおりであることを確かめる。読み取りの関門でも同じ検査をするが、そこで初めて
+        # 気づく形だと「承認済みなのに読めない snapshot」ができてしまう（D03 §3.7.1）。
+        # 確定段階で再実行した snapshot は暫定報告も照合する（D03 §3.7 v1.7）。
+        provisional_report = store.read_provisional_report_for(args.snapshot, manifest)
+        require_recorded_content(
+            manifest,
+            report,
+            _read_partitions(store, args.snapshot, manifest, read_permit),
+            provisional_report=provisional_report,
+        )
 
-    # 確定段階を経た snapshot だけが承認できる形にする。分類を飛ばした承認を防ぐため、
-    # 読み取りの関門と同じ規則で、暫定報告と最終報告の和集合の分類対象の警告に分類が過不足
-    # なく対応し、解決済みの分類がそれと一致することを確かめる（D03 §4 の 9 v1.7）。
-    require_recorded_classification(
-        manifest,
-        report,
-        report if provisional_report is None else provisional_report,
-        error=ConfigError,
-    )
+        # 確定段階を経た snapshot だけが承認できる形にする。分類を飛ばした承認を防ぐため、
+        # 読み取りの関門と同じ規則で、暫定報告と最終報告の和集合の分類対象の警告に分類が過不足
+        # なく対応し、解決済みの分類がそれと一致することを確かめる（D03 §4 の 9 v1.7）。
+        require_recorded_classification(
+            manifest,
+            report,
+            report if provisional_report is None else provisional_report,
+            error=ConfigError,
+        )
+
+    if sealed_intake.is_sealed_snapshot(manifest):
+        # 封印の区分の partition を読む承認の検算は、関所の品質確認の許可の下で行い、終了の行を
+        # 書けた後にだけ承認を記入する（ADR-0037 第1項の 3 の 3、ADR-0036 第7項）。
+        try:
+            run_quality_check(
+                repository_root=args.repo_root,
+                request=sealed_intake.finalize_request(args.repo_root, manifest),
+                tool=lambda permit: sealed_intake.without_values(
+                    "verifying the sealed partitions", lambda: verify(permit)
+                ),
+            )
+        except QualityCheckRefused as refused:
+            out.line(f"承認の検算を始めなかった・結果を出さなかった: {refused}")
+            return _EXIT_FAILED
+    else:
+        verify(None)
 
     approved_at = composition.now_utc()
     finalized = FinalizedSnapshot(manifest=manifest)
@@ -1024,6 +1234,8 @@ def _with_declaration_record(
         approval=manifest.approval,
         provisional_report_ref=manifest.provisional_report_ref,
         resolved_classifications=manifest.resolved_classifications,
+        sealed_initial_states=manifest.sealed_initial_states,
+        quality_read=manifest.quality_read,
     )
 
 

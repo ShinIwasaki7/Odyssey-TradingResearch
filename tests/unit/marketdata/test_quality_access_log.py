@@ -222,6 +222,29 @@ def test_a_held_lock_refuses_the_append_and_leaves_the_file(tmp_path: Path) -> N
     assert (root / QUALITY_ACCESS_LOCK_PATH).exists()
 
 
+def test_a_write_failure_right_after_creating_the_lock_removes_that_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ロックを作った直後の書き込みが失敗しても、自分で作ったロックを残さない（残 P2 の 3）。"""
+    root = _repo(tmp_path, _start())
+    before = (root / QUALITY_ACCESS_LOG_PATH).read_bytes()
+
+    def failing_fsync(descriptor: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(
+        "odyssey_fx.marketdata.adapters.quality_access_log_store.os.fsync", failing_fsync
+    )
+    refused = append_quality_access_row(root, _end())
+    assert isinstance(refused, QualityLogAppendRefused)
+    assert refused.kind is QualityLogAppendRefusal.LOCKED
+    assert not (root / QUALITY_ACCESS_LOCK_PATH).exists()
+    assert (root / QUALITY_ACCESS_LOG_PATH).read_bytes() == before
+    monkeypatch.undo()
+    # 次の追記はロックに断られない。
+    assert append_quality_access_row(root, _end()) == _end()
+
+
 def test_a_torn_tail_is_cut_before_the_next_append(tmp_path: Path) -> None:
     root = _repo(tmp_path, _start(), raw=b'{"access_id":"a1","fini')
     contents = read_quality_access_log_file(root / QUALITY_ACCESS_LOG_PATH)

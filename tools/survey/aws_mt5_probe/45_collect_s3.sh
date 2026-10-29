@@ -4,6 +4,8 @@
 # 照合が合わなければ何も置かない。置き場の既存のファイルは上書きしない（同じ中身なら飛ばし、違えば止まる）。
 # manifest.json と fetch_log.jsonl は <取得日>/ の直下に置く（この取得の記録。回収のたびに新しい版にする）。
 # インスタンスは使わない（S3 だけ）ので、終了の時刻の後でも、インスタンスの終了の後でも動く。
+# 封印の取得（39_sealed_fetch.sh。バケットの記録に S3_PREFIX=sealed）のバケットなら、置き場は
+# data/raw/oanda_mt5_sealed/<取得日>/<通貨>/、照合は記録の計画（SEALED_PLAN）との sealedverify（ADR-0037。D03 §16.5.4）。
 #
 # 使い方: tools/survey/aws_mt5_probe/45_collect_s3.sh <通貨,...|--all> [--execute]
 source "$(dirname "$0")/lib.sh"
@@ -20,7 +22,17 @@ done
 [[ -n "$pairs" ]] || die "通貨（カンマ区切り）か --all を指定する"
 require_profile
 load_s3_state || die "S3 の一時バケットの記録が無い（${S3_STATE_FILE}。38_full_fetch.sh の前）"
-dest_root="${FULL_ROOT}/${FETCH_DATE}"
+if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
+  [[ -n "${SEALED_PLAN:-}" && -f "$SEALED_PLAN" ]] || die "封印の取得の計画が無い（記録の SEALED_PLAN=${SEALED_PLAN:-なし}）"
+  data_root="$SEALED_ROOT"
+  verify_args=(sealedverify --plan "$SEALED_PLAN")
+  sample_rel="USDJPY/USDJPY_2024-01_m1.csv.gz"
+else
+  data_root="$FULL_ROOT"
+  verify_args=(fullverify)
+  sample_rel="USDJPY/USDJPY_2017-01_m1.csv.gz"
+fi
+dest_root="${data_root}/${FETCH_DATE}"
 cat >&2 <<INFO
 == S3 からの回収の計画
   バケット: s3://${S3_BUCKET}/${S3_KEY_PREFIX}/
@@ -30,8 +42,8 @@ INFO
 [[ "$EXECUTE" == 1 ]] || { echo "(dry-run) 何もしていない。" >&2; exit 0; }
 
 # 置き場が版管理の外であることを確かめる（リポジトリの中に置く場合）。
-if repo=$(git -C "$(dirname "$FULL_ROOT")" rev-parse --show-toplevel 2>/dev/null); then
-  git -C "$repo" check-ignore -q "${dest_root}/USDJPY/USDJPY_2017-01_m1.csv.gz" \
+if repo=$(git -C "$(dirname "$data_root")" rev-parse --show-toplevel 2>/dev/null); then
+  git -C "$repo" check-ignore -q "${dest_root}/${sample_rel}" \
     || die "置き場 ${dest_root} が .gitignore の外。置かない"
 fi
 
@@ -51,11 +63,19 @@ for p in ${pairs//,/ }; do
 done
 
 size=$("$PY_MAC" -I -c 'import os,sys; print(sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(sys.argv[1]) for f in fs))' "$stage")
-collected="${COLLECTED_BYTES:-0}"
-(( collected + size <= PROBE_COLLECT_LIMIT_BYTES )) \
-  || die "回収の合計が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える（済み ${collected}、今回 ${size}）。置かない"
+if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
+  # 封印の原ファイルの大きさは表示も記録もしない（D03 §16.4「見てはいけない値」。中身で決まる値）。上限は
+  # この回の回収だけで確かめる（通貨ごとの回収の合計は記録しない。PR #111 の仮置き S4a-13「このまま」）。
+  collected=0
+  (( size <= PROBE_COLLECT_LIMIT_BYTES )) \
+    || die "この回の回収が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える。置かない（大きさは表示しない）"
+else
+  collected="${COLLECTED_BYTES:-0}"
+  (( collected + size <= PROBE_COLLECT_LIMIT_BYTES )) \
+    || die "回収の合計が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える（済み ${collected}、今回 ${size}）。置かない"
+fi
 
-(cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe fullverify --root "$stage" --pairs "$pairs") \
+(cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe "${verify_args[@]}" --root "$stage" --pairs "$pairs") \
   || die "S3 から受け取ったファイルが manifest と合わない。置かない（S3 には残っている）"
 
 # 置く前に、既存のファイルとの食い違いを全部確かめる（途中まで置いて止まらないように）。
@@ -76,12 +96,16 @@ done
 mkdir -p "$dest_root"
 cp "$stage/manifest.json" "${dest_root}/manifest.json"
 [[ -f "$stage/fetch_log.jsonl" ]] && cp "$stage/fetch_log.jsonl" "${dest_root}/fetch_log.jsonl"
-(cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe fullverify --root "$dest_root" --pairs "$pairs") \
+(cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe "${verify_args[@]}" --root "$dest_root" --pairs "$pairs") \
   || die "置いた後の照合が合わない: ${dest_root}"
 
-save_s3_state COLLECTED_BYTES $(( collected + size ))
 save_s3_state COLLECTED_MANIFEST_SHA256 "$(sha256_of "${dest_root}/manifest.json")"
-log "回収した: ${#new_files[@]} ファイルを新しく置いた（${dest_root}。回収の合計 $(( collected + size )) バイト）"
+if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
+  log "回収した: ${#new_files[@]} ファイルを新しく置いた（${dest_root}）"
+else
+  save_s3_state COLLECTED_BYTES $(( collected + size ))
+  log "回収した: ${#new_files[@]} ファイルを新しく置いた（${dest_root}。回収の合計 $(( collected + size )) バイト）"
+fi
 # 件数だけを表示する（価格は表示しない）。
 "$PY_MAC" -I - "${dest_root}/manifest.json" "$pairs" <<'PY'
 import json, sys
@@ -90,6 +114,9 @@ for pair in sys.argv[2].split(","):
     es = [e for e in m["files"].values() if e["pair"] == pair]
     ok = [e for e in es if e["status"] == "ok"]
     empty = [e["rid"] for e in es if e["status"] == "empty"]
-    print(f"  {pair}: 取得済み {len(ok)} / 84 か月、行 {sum(e['rows'] for e in ok)}、0 本 {len(empty)} {empty if empty else ''}")
+    unit = "84 か月"
+    if m.get("kind") == "oanda_mt5_sealed_fetch":
+        unit = f"{len(es)} 要求（取得済みの記録の数）"
+    print(f"  {pair}: 取得済み {len(ok)} / {unit}、行 {sum(e['rows'] for e in ok)}、0 本 {len(empty)} {empty if empty else ''}")
 print(f"  要求の累計 {m['requests_sent']} / {m['max_requests']}")
 PY

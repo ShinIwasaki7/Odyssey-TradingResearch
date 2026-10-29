@@ -59,6 +59,7 @@ __all__ = [
     "AccessClass",
     "HoldoutState",
     "SealedAccessBoundaries",
+    "acquisition_start_after",
     "is_trading_week_start",
     "next_trading_week_start",
     "sealed_partition_period",
@@ -204,6 +205,17 @@ def is_trading_week_start(moment: UtcTime) -> bool:
     if not isinstance(moment, UtcTime):
         raise MarketDataValueError("is_trading_week_start requires a UtcTime")
     return trading_week_start(moment) == moment
+
+
+def acquisition_start_after(merge_commit_time: UtcTime) -> UtcTime:
+    """改定文の merge のコミットの時刻から取得の開始時点を決める（ADR-0037 第2項の 2）。
+
+    merge の時刻より後の、最初の完全な取引週の始まり（ニューヨークの日曜 17:00）。merge の時刻が
+    ちょうど週の始まりなら、その次の週の始まり。休場の宣言は見ない（時刻だけで決まる）。
+    """
+    if not isinstance(merge_commit_time, UtcTime):
+        raise MarketDataValueError("acquisition_start_after requires a UtcTime")
+    return next_trading_week_start(trading_week_start(merge_commit_time))
 
 
 # --- OANDA MT5 の経路の境界（ADR-0038 第1項・第2項）--------------------------------------

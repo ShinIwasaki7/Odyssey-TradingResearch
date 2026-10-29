@@ -20,13 +20,18 @@ datasource: oanda_mt5_m1
 check_kind: ACCEPTANCE
 classes: [HOLDOUT_SINCE_2024, FORWARD_HOLDOUT]
 period: {start: "2024-01-01T00:00:00Z", end: null}
-targets: {kind: RAW_FILE, symbols: [USDJPY], timeframes: [M1]}
+targets: {kind: RAW_FILE, symbols: [USDJPY], timeframes: [1m]}
 output_kinds: [COUNTS, HASHES, INTERVALS, PASS_FAIL, TIMES]
 ```
+
+`timeframes` は時間足の定義の識別（`TimeframeRef.id`。例 `1m`・`15m`・`1h`）で書く。照合は
+partition の系列の時間足の識別と比べるので、窓の設定の `timeframe: M1`（MT5 の時間足の名前）の
+綴りでは一致しない。読込は識別の形（`^[a-z0-9_]+$`）でない値を止める（S3 の残 P2 の 2）。
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Final
 
@@ -54,6 +59,9 @@ __all__ = [
 QUALITY_CHECKS_DIRECTORY: Final = Path("configs") / "quality_checks"
 
 QUALITY_CHECK_SCHEMA_VERSION: Final = 1
+
+#: 時間足の定義の識別の形（`odyssey_fx.common.timeframe.TimeframeRef.id` と同じ）。
+_TIMEFRAME_ID: Final = re.compile(r"^[a-z0-9_]+$")
 
 
 class _ToolModel(StrictModel):
@@ -90,6 +98,17 @@ def _distinct(values: list[str], label: str, path: Path) -> list[str]:
     return values
 
 
+def _timeframe_ids(values: list[str], path: Path) -> list[str]:
+    """時間足の識別（`TimeframeRef.id` の形）だけを受け付ける（照合は識別と比べるため）。"""
+    bad = [value for value in values if not _TIMEFRAME_ID.fullmatch(value)]
+    if bad:
+        raise ConfigError(
+            f"{path}: `targets.timeframes` は時間足の定義の識別（例 1m・15m・1h）で書く。"
+            f" 識別の形でない値: {bad}（窓の設定の M1 の綴りは使わない）"
+        )
+    return values
+
+
 def load_quality_check_definition(path: Path) -> QualityCheckDefinition:
     """許可の定義を 1 つ読む。ファイル名（拡張子を除く）は道具の名前と一致しなければならない。"""
     payload = load_yaml_mapping(path)
@@ -117,7 +136,11 @@ def load_quality_check_definition(path: Path) -> QualityCheckDefinition:
             symbols=frozenset(
                 Symbol(code) for code in _distinct(model.targets.symbols, "targets.symbols", path)
             ),
-            timeframes=frozenset(_distinct(model.targets.timeframes, "targets.timeframes", path)),
+            timeframes=frozenset(
+                _timeframe_ids(
+                    _distinct(model.targets.timeframes, "targets.timeframes", path), path
+                )
+            ),
             output_kinds=frozenset(
                 QualityOutputKind(value)
                 for value in _distinct(model.output_kinds, "output_kinds", path)

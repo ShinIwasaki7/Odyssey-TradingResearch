@@ -1,0 +1,97 @@
+# 取引カレンダー fx_ny17_oanda v2（OANDA MT5 API の 1 分足の経路。2024 年以降の封印の取り込み用。D03 §16.2.5）
+#
+# 研究期間のカレンダー fx_ny17_oanda 版 1（configs/calendars/fx_ny17_oanda_v1.yaml。承認済み）は変えない。本版は
+# 2024 年以降の年末年始の宣言を OANDA証券の公開の告知で確かめた版で、封印の snapshot が参照する（研究期間の snapshot は
+# 版 1 を参照したまま）。人間の承認は順 6 の封印レーン S4a の PR の承認の対象（表とカレンダーを 1 回の質問・2 項目。
+# D03 §16.2.6、PR #109 の仮置き S2b-5）。
+#
+# - 2023 年以前の宣言は版 1 と同じ（1 行も変えていない）。週の開閉（日曜 17:00〜金曜 17:00 ニューヨーク）も同じ。
+# - 中身は fx_ny17 版 2（configs/calendars/fx_ny17_v2.yaml）の宣言と、研究期間の定義ファイル
+#   tools/survey/oanda_holiday_exceptions_2026-10-16.json の 11 行と、2024 年以降の定義ファイル
+#   tools/survey/oanda_holiday_exceptions_sealed_2026-10-29.json の 2 行の和集合（D03 §15.6 の 1 と同じ作り方）。
+# - 告知で確かめた日（2024-12-25・2025-12-25）: 版 1 の短縮セッション 03:00〜17:00 を、告知の取引日単位の休場 1 件に
+#   置き換えた（版 1 より広い日。取引日で読む D12-72。D03 §16.2.5 の 4）。
+# - 告知の本文で確かめられなかった日（2024-01-01・2025-01-01・2026-01-01）は、版 1 の宣言（取引日単位の休場。fx_ny17
+#   版 2 から引き継いだもの）を引き継ぐ（PR #109 の要決定 S2b-3 (a)）。告知が参照する取引時間表（画像・PDF）は開いて
+#   いない（告知のページだけを開く条件。S4a の PR の仮置き）。
+# - 2026-12-25（金）・2027-01-01（金）は告知が未掲載で、版 1 に宣言が無いので予定取引日（S2b-3 (a)）。告知が出たら
+#   その期間を覆う定期取得の受入れの前に新しい版で直す（D03 §16.2.5 の 3）。2027-12-25 は土曜で宣言は要らない。
+# - 東京サーバーの再開の遅れは、2024 年以降の告知の本文に無いので宣言しない（研究期間の形を当てはめない。D03 §16.2.5）。
+#
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。価格・2024 年以降の市場データは使っていない。
+
+schema_version: 1
+
+id: fx_ny17_oanda
+version: 2
+tz: America/New_York
+
+weekly_open:
+  weekday: 6 # 日曜
+  at: "17:00:00"
+
+weekly_close:
+  weekday: 4 # 金曜
+  at: "17:00:00"
+
+closures:
+  - local_date: "2017-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（版 2 の宣言を引き継ぐ。根拠は HistData の共通の欠落。OANDA の告知なし。D12-98 (a)）
+  - local_date: "2018-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 2 の宣言を引き継ぐ。根拠は HistData の共通の欠落。OANDA の告知なし。D12-98 (a)）
+  - local_date: "2018-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（取引日単位。OANDA の告知 2018-12-25-closed。版 2 の 03:00〜17:00 の短縮セッションを置き換え）
+  - local_date: "2018-12-25"
+    start: "17:00:00"
+    end: "17:10:00"
+    note: 東京サーバーの再開の遅れ（OANDA の告知 2018-12-26-tokyo-resume）
+  - local_date: "2019-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 2 の宣言のまま。OANDA の告知 2019-01-01-closed と同じ区間）
+  - local_date: "2019-01-01"
+    start: "17:00:00"
+    end: "17:10:00"
+    note: 東京サーバーの再開の遅れ（OANDA の告知 2019-01-02-tokyo-resume）
+  - local_date: "2019-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（取引日単位。OANDA の告知 2019-12-25-closed。版 2 の 04:00〜17:00 の短縮セッションを置き換え）
+  - local_date: "2019-12-25"
+    start: "17:00:00"
+    end: "17:10:00"
+    note: 東京サーバーの再開の遅れ（OANDA の告知 2019-12-26-tokyo-resume）
+  - local_date: "2020-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 2 の宣言のまま。OANDA の告知 2020-01-01-closed と同じ区間）
+  - local_date: "2020-01-01"
+    start: "17:00:00"
+    end: "17:10:00"
+    note: 東京サーバーの再開の遅れ（OANDA の告知 2020-01-02-tokyo-resume）
+  - local_date: "2020-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（取引日単位。OANDA の告知 2020-12-25-closed。版 2 の 03:00〜17:00 の短縮セッションを置き換え）
+  - local_date: "2021-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 2 の宣言のまま。OANDA の告知 2021-01-01-closed と同じ区間）
+  - local_date: "2023-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（取引日単位。OANDA の告知 2023-12-25-closed。版 2 の 03:00〜17:00 の短縮セッションを置き換え）
+  - local_date: "2024-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 1 の宣言＝fx_ny17 版 2 から引き継いだものを引き継ぐ。告知の本文で確かめられない。PR #109 の S2b-3 (a)）
+  - local_date: "2024-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（取引日単位。OANDA の告知 2024-12-25-closed。版 1 の 03:00〜17:00 の短縮セッションを置き換え）
+  - local_date: "2025-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 1 の宣言＝fx_ny17 版 2 から引き継いだものを引き継ぐ。告知の本文で確かめられない。PR #109 の S2b-3 (a)）
+  - local_date: "2025-12-25"
+    covers_trading_day: true
+    note: クリスマスの休場（取引日単位。OANDA の告知 2025-12-25-closed。版 1 の 03:00〜17:00 の短縮セッションを置き換え）
+  - local_date: "2026-01-01"
+    covers_trading_day: true
+    note: 元日の休場（版 1 の宣言＝fx_ny17 版 2 から引き継いだものを引き継ぐ。告知の本文で確かめられない。PR #109 の S2b-3 (a)）
+
+openings: []

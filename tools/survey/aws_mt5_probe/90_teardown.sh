@@ -48,7 +48,14 @@ if [[ "$verify_only" == 1 ]]; then verify; exit 0; fi
 
 # S3 の一時バケットの回収が済んだか（済んでいれば 0）。価格は読まない（ファイルの有無と SHA-256 だけ）。
 s3_collected() {
-  local w key missing=0 example=""
+  local w key missing=0 example="" data_root
+  local -a verify_args
+  # 封印の取得のバケット（記録に S3_PREFIX=sealed）は封印の置き場と計画で照合する（45_collect_s3.sh と同じ）。
+  if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
+    data_root="$SEALED_ROOT"; verify_args=(sealedverify --plan "${SEALED_PLAN:-}")
+  else
+    data_root="$FULL_ROOT"; verify_args=(fullverify)
+  fi
   w=$(mktemp -d)
   aws_p s3 cp "s3://${S3_BUCKET}/${S3_KEY_PREFIX}/manifest.json" "$w/manifest.json" --only-show-errors 2>/dev/null \
     || { rm -rf "$w"; log "S3 に manifest が無い"; [[ -z "$(s3_keys)" ]]; return; }
@@ -59,12 +66,12 @@ s3_collected() {
   for key in $(s3_keys); do
     case "$key" in
       "${S3_KEY_PREFIX}/manifest.json"|"${S3_KEY_PREFIX}/fetch_log.jsonl") ;;
-      "${S3_KEY_PREFIX}/"*.csv.gz) [[ -f "${FULL_ROOT}/${FETCH_DATE}/${key#"${S3_KEY_PREFIX}"/}" ]] || { missing=$(( missing + 1 )); example="$key"; } ;;
+      "${S3_KEY_PREFIX}/"*.csv.gz) [[ -f "${data_root}/${FETCH_DATE}/${key#"${S3_KEY_PREFIX}"/}" ]] || { missing=$(( missing + 1 )); example="$key"; } ;;
       *) log "知らないキー: ${key}"; missing=$(( missing + 1 )); example="$key" ;;
     esac
   done
   (( missing == 0 )) || { log "S3 にあって Mac に無いファイル: ${missing} 件（例 ${example}）"; return 1; }
-  (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe fullverify --root "${FULL_ROOT}/${FETCH_DATE}") >&2
+  (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe "${verify_args[@]}" --root "${data_root}/${FETCH_DATE}") >&2
 }
 s3_keys() {
   aws_p s3api list-objects-v2 --bucket "$S3_BUCKET" --query "Contents[].Key" --output text | tr '\t' '\n' | grep -v '^None$' || true

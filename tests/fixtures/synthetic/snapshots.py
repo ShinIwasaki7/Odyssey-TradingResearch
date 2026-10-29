@@ -14,7 +14,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
-from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass
+from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass, HoldoutState
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.classification import (
     ClassificationDecision,
@@ -29,6 +29,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
     LegacyAccessRecord,
     PartitionId,
     PartitionRecord,
+    SealedInitialState,
     SeriesManifest,
     SnapshotManifest,
     SourceFile,
@@ -104,8 +105,13 @@ def manifest(
     resolved_classifications: Sequence[ResolvedClassification] = (),
     legacy_access: Sequence[LegacyAccessRecord] = (),
     approval: Approval | None = None,
+    sealed_initial_states: Sequence[SealedInitialState] | None = None,
 ) -> SnapshotManifest:
-    """テスト用の manifest を組み立てる。"""
+    """テスト用の manifest を組み立てる。
+
+    封印の区分の partition の初期状態を渡さなければ、どれも `SEALED` で始めたものとする
+    （ADR-0038 第3項。manifest は封印の区分の partition 1 つに 1 つの初期状態を持つ）。
+    """
     hourly = market.series()
     if sources is None:
         sources = (source("data/raw/market/USDJPY_1h_merged.csv"),)
@@ -120,6 +126,12 @@ def manifest(
                 partitions=tuple(record.partition_id for record in partitions),
             ),
         )
+    if sealed_initial_states is None:
+        sealed_initial_states = tuple(
+            SealedInitialState(partition_id=record.partition_id, state=HoldoutState.SEALED)
+            for record in partitions
+            if record.access_class in OANDA_SEALED_CLASSES
+        )
     return SnapshotManifest(
         created_at=created_at,
         basis_declaration=BASIS,
@@ -132,6 +144,7 @@ def manifest(
         resolved_classifications=tuple(resolved_classifications),
         legacy_access=tuple(legacy_access),
         approval=approval,
+        sealed_initial_states=tuple(sealed_initial_states),
     )
 
 

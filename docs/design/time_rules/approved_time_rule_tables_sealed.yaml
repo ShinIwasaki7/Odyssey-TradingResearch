@@ -1,0 +1,19 @@
+# 2024 年以降の時刻の規則の表の承認済みの一覧（封印の取り込みの受入れだけが読む。D03 §16.2、順 6 の封印レーン S4a）。
+#
+# 書式と規則は研究期間の一覧（approved_time_rule_tables.yaml）と同じ（D12-48 (a)。1 行が承認済みの表の 1 版、sha256 は表の
+# ファイルのバイト列の SHA-256、取り消しは revoked に書き行は消さない）。研究期間の一覧は研究ポリシー 第 3 版の前提の
+# ファイル（configs/policies/research/research_policy_v3.yaml の premises。SHA-256 が変わると読込で拒否される）なので
+# 行を足さず、別のファイルにした（PR #111 の要決定 C への人間の決定 2026-10-29「(a) 別の一覧ファイルにする（推奨）」）。
+# 封印用の数え方の規則（counting_rules_sealed_v1.yaml）の time_rule_table.approved_list がこのファイルを指す。
+
+schema_version: 1
+
+tables:
+  - id: oanda_mt5_time_rules_sealed
+    version: 1
+    file: docs/design/time_rules/time_rule_table_sealed_v1.yaml
+    sha256: f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3
+    judgment_criteria_version: 2
+    approved_by: ["人間の承認 2026-10-29（AskUserQuestion。PR #111 の承認の対象 項目 1「承認する（推奨）」、SHA-256 f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3。原文は D15 §0.5.7）"]
+    file_recorded_by: "D03 §16.2.3 の行の案（PR #109 の要決定 S2b-1 (a)・S2b-2 (a)、仮置き S2b-2・S2b-3）を順 6 の S4a でファイルにした。2024 年以降の封印の snapshot だけが参照する"
+    revoked: null
