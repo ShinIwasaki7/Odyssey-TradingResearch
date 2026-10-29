@@ -26,12 +26,14 @@ D01 §2.2 規則2）。
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 from typing import NoReturn
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.application.ports import QualityAccessLog
 from odyssey_fx.evaluation.domain.errors import EvaluationError
 from odyssey_fx.evaluation.domain.quality_permit import (
+    SEALED_RAW_ROOT,
     FinalEvaluationPermitNotImplemented,
     QualityCheckDefinition,
     QualityCheckRequest,
@@ -111,7 +113,7 @@ def _target_problem(
             return f"the raw file {target.location} has no hash"
         if target.symbol is None or target.symbol not in definition.symbols:
             return f"the symbol of the raw file {target.location} is not in the definition"
-        return None
+        return _raw_location_problem(target)
     partition = target.partition_id
     if definition.target_kind is not QualityTargetKind.PARTITION:
         return f"the partition {partition} is not a target kind of the definition"
@@ -123,6 +125,32 @@ def _target_problem(
         return f"the timeframe of {partition} is not in the definition"
     if not request.period.contains_interval(target.interval):
         return f"the partition {partition} is outside the requested period"
+    return None
+
+
+def _raw_location_problem(target: RawFileTarget) -> str | None:
+    """原ファイルが封印の原ファイルの置き場にあり、その通貨の場所にあるか（ADR-0036 第4項）。
+
+    置き場は `data/raw/oanda_mt5_sealed/<取得日>/<通貨>/<ファイル>`（D03 §16 の PR #109 の
+    仮置き S2b-6）。この外のファイル（旧データの CSV `data/raw/market/`、HistData の 1 分足
+    `data/raw/histdata/`、研究期間の `data/raw/oanda_mt5/` など）には許可を出さない。
+    """
+    location = target.location
+    parts = PurePosixPath(location).parts
+    root = len(SEALED_RAW_ROOT)
+    if (
+        location.startswith("/")
+        or "\\" in location
+        or any(part in ("", ".", "..") for part in location.split("/"))
+        or len(parts) < root + 3
+        or parts[:root] != SEALED_RAW_ROOT
+    ):
+        return (
+            f"the raw file {location} is not under {'/'.join(SEALED_RAW_ROOT)}/<date>/<symbol>/;"
+            " only the OANDA MT5 sealed raw files may be covered (ADR-0036 第4項)"
+        )
+    if parts[root + 1] != str(target.symbol):
+        return f"the raw file {location} is not in the directory of its symbol {target.symbol}"
     return None
 
 

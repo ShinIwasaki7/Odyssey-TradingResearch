@@ -41,6 +41,8 @@ from odyssey_fx.marketdata.domain.quality_access import (
 
 __all__ = [
     "SEALED_INTAKE_DATASOURCE",
+    "SEALED_INTAKE_SYMBOLS",
+    "SEALED_RAW_ROOT",
     "FinalEvaluationPermitNotImplemented",
     "QualityCheckDefinition",
     "QualityCheckRequest",
@@ -51,6 +53,17 @@ __all__ = [
 
 #: 許可の定義が覆ってよいデータ源（OANDA MT5 API の 1 分足の列対応の宣言。ADR-0037 第1項の 2）。
 SEALED_INTAKE_DATASOURCE: Final = "oanda_mt5_m1"
+
+#: 改定文が取得と取り込みを許す 8 通貨（ADR-0037 第1項の 2 の 1）。許可の定義の銘柄はこの中に限る。
+SEALED_INTAKE_SYMBOLS: Final = frozenset(
+    Symbol(code)
+    for code in ("USDJPY", "USDCHF", "AUDJPY", "EURUSD", "EURJPY", "GBPJPY", "GBPUSD", "AUDUSD")
+)
+
+#: 封印の原ファイルの置き場（`data/raw/oanda_mt5_sealed/<取得日>/<通貨>/`。D03 §16 の
+#: PR #109 の仮置き S2b-6）。品質確認の許可が覆う原ファイルはこの下に限る（旧データの CSV
+#: `data/raw/market/` などを許可の対象にしない。ADR-0036 第4項）。
+SEALED_RAW_ROOT: Final = ("data", "raw", "oanda_mt5_sealed")
 
 
 class FinalEvaluationPermitNotImplemented(EvaluationError):
@@ -141,6 +154,14 @@ class QualityCheckDefinition:
             or not all(isinstance(item, Symbol) for item in self.symbols)
         ):
             raise EvaluationError("QualityCheckDefinition.symbols must be a non-empty frozenset")
+        outside_symbols = sorted(
+            str(item) for item in self.symbols if item not in SEALED_INTAKE_SYMBOLS
+        )
+        if outside_symbols:
+            raise EvaluationError(
+                f"a quality-check permit may only cover the 8 currencies of the revised"
+                f" constraint, got {outside_symbols} (ADR-0037 第1項の 2 の 1)"
+            )
         if (
             not isinstance(self.timeframes, frozenset)
             or not self.timeframes

@@ -24,6 +24,7 @@ from odyssey_fx.app.config.models import StrictModel, require_schema_version, va
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import UtcTime
+from odyssey_fx.evaluation.domain.quality_permit import SEALED_INTAKE_SYMBOLS
 from odyssey_fx.marketdata.domain.access import SEALED_RESEARCH_UNTIL, SealedAccessBoundaries
 
 __all__ = [
@@ -36,11 +37,8 @@ __all__ = [
 #: 窓の設定の置き場（リポジトリの根からの相対パス。ADR-0037 第4項の 1）。
 SEALED_WINDOW_PATH: Final = Path("configs") / "acquisition" / "oanda_mt5_m1_sealed_window.yaml"
 
-#: 改定文が取得を許す 8 通貨（ADR-0037 第1項の 2 の 1）。
-SEALED_WINDOW_SYMBOLS: Final = frozenset(
-    Symbol(code)
-    for code in ("USDJPY", "USDCHF", "AUDJPY", "EURUSD", "EURJPY", "GBPJPY", "GBPUSD", "AUDUSD")
-)
+#: 改定文が取得を許す 8 通貨（ADR-0037 第1項の 2 の 1）。許可の定義と同じ 1 か所の値を使う。
+SEALED_WINDOW_SYMBOLS: Final = SEALED_INTAKE_SYMBOLS
 
 #: この実装が読む設定ファイルの形式版。
 SEALED_WINDOW_SCHEMA_VERSION: Final = 1

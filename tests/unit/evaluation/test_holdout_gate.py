@@ -182,6 +182,38 @@ def test_finishing_writes_the_end_row(tmp_path: Path) -> None:
             replace(REQUEST, targets=(replace(RAW, symbol=None),)),
             QualityPermitRefusal.OUTSIDE_DEFINITION,
         ),
+        # 旧データの CSV など、封印の原ファイルの置き場の外のファイル（ADR-0036 第4項）。
+        (
+            replace(
+                REQUEST, targets=(replace(RAW, location="data/raw/market/USDJPY_1h_merged.csv"),)
+            ),
+            QualityPermitRefusal.OUTSIDE_DEFINITION,
+        ),
+        (
+            replace(
+                REQUEST, targets=(replace(RAW, location="data/raw/oanda_mt5/USDJPY/2023-12.csv"),)
+            ),
+            QualityPermitRefusal.OUTSIDE_DEFINITION,
+        ),
+        (
+            replace(
+                REQUEST,
+                targets=(
+                    replace(
+                        RAW, location="data/raw/oanda_mt5_sealed/x/USDJPY/../../../market/a.csv"
+                    ),
+                ),
+            ),
+            QualityPermitRefusal.OUTSIDE_DEFINITION,
+        ),
+        # 置き場の通貨と対象の銘柄が食い違う。
+        (
+            replace(
+                REQUEST,
+                targets=(replace(RAW, location="data/raw/oanda_mt5_sealed/20301101/EURUSD/a.csv"),),
+            ),
+            QualityPermitRefusal.OUTSIDE_DEFINITION,
+        ),
     ],
 )
 def test_a_request_outside_the_approved_definition_gets_no_permit_and_no_row(
@@ -308,6 +340,8 @@ def test_the_final_evaluation_permit_is_refused_until_r4(tmp_path: Path) -> None
         ({"output_kinds": frozenset({QualityOutputKind.EVIDENCE})}, "ADR-0037"),
         ({"period": AccessPeriod(start=T("2023-01-01T00:00:00Z"), end=None)}, "2024"),
         ({"config_digest": "nothex"}, "hex"),
+        ({"symbols": frozenset({Symbol("USDJPY"), Symbol("NZDUSD")})}, "8 currencies"),
+        ({"symbols": frozenset({Symbol("USDCAD")})}, "8 currencies"),
     ],
 )
 def test_a_definition_outside_the_revised_constraint_cannot_be_built(
