@@ -503,6 +503,8 @@ data/
                                     # RESEARCH_HISTORY / LEGACY_HOLDOUT / QUARANTINED_UNASSIGNED（ADR-0014）、
                                     # OANDA MT5 の経路の snapshot は RESEARCH_HISTORY と 2 つの封印の区分
                                     # （2024 年以降・前向き。名前は S3。ADR-0038。v2.12）
+                                    # 名前は HOLDOUT_SINCE_2024 / FORWARD_HOLDOUT（PR #110 の
+                                    # 仮置き S3-1 の決定）。<区分>/<取引週の始まり>/ に分ける（ADR-0038 第2項の 3）
 ```
 
 `LEGACY_HOLDOUT` と `QUARANTINED_UNASSIGNED` の partition は、`evaluation.application.holdout_gate` を通らない読込経路を持たない。**v2.12**: OANDA MT5 の経路の 2 つの封印の区分（2024 年以降の封印の区分・前向きの封印の区分。ADR-0038 第1項）の partition も同じで、読む経路は受入れ（分類・確定・承認を含む。品質確認の許可の下）と、関所を通る最終検証のコマンドだけである（ADR-0037 第1項の 3 の 3）。`CONSUMED` を研究・開発用途の opt-in で読む規則は 2024-01-01 以降の区分に当てない（ADR-0038 第8項の 1）。旧データの snapshot の 2024 年以降の partition は、どの経路でも読まない（D12-1）。`marketdata.application.asof` は、渡された partition 集合の外を読めない構造にする（D03 で具体化）。
