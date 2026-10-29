@@ -38,6 +38,7 @@ from odyssey_fx.marketdata.domain.quality_access import (
     QualityAccessStart,
     completed_access_ids,
 )
+from tests.fixtures.git_origin import git, isolate_git, publish_repo
 from tools.survey import mt5_api_probe as probe
 from tools.survey import sealed_fetch_plan as planner
 
@@ -142,13 +143,70 @@ class FakeMt5:
 
 
 def _repo(tmp_path: Path) -> Path:
+    """一時のリポジトリ（git の作業木と、一時ディレクトリの bare の origin。D09 §9.8）。
+
+    受入れは既にある snapshot の消費の記録を origin の既定ブランチと照らす（D09 §9.10.13 の 3）
+    ので、作業木を origin へ push しておく。実際の origin には触れない。
+    """
     repo = tmp_path / "repo"
     for rel in COPIED:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / rel, repo / rel)
     (repo / "research").mkdir()
     (repo / "research" / "quality_access_log.jsonl").write_bytes(b"")
+    publish_repo(repo, tmp_path / "origin.git", home=tmp_path / "githome")
     return repo
+
+
+def _push_log(repo: Path, snapshot: Path) -> None:
+    """snapshot の消費の記録を commit して origin の main へ push する（人工の消費の記録）。"""
+    log = snapshot / "access_log.jsonl"
+    git(repo, "add", str(log))
+    git(repo, "commit", "--quiet", "-m", "consumption log")
+    git(repo, "push", "--quiet", "origin", "main")
+
+
+def test_an_unpublished_consumption_log_stops_the_intake_before_reading(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """作業木の消費の記録が origin と違えば受入れを始めない（D09 §9.10.11 の 20・§9.10.13）。"""
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    assert _accept(repo, copy) == 0
+    (pending_dir,) = _pending(repo)
+    assert _classify(repo, pending_dir.name, tmp_path) == 0
+    snapshots = repo / "data" / "snapshots"
+    (final,) = [p for p in snapshots.iterdir() if p.name != "_pending"]
+    store = ParquetSnapshotStore(root=snapshots)
+    one = store.read_manifest(final.name).sealed_initial_states[0].partition_id
+    line = {
+        "actor": "t",
+        "kind": "CONSUMED",
+        "partition": str(one),
+        "purpose": "",
+        "recorded_at": "x",
+    }
+    (final / "access_log.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    before = len(_log(repo).rows)
+    capsys.readouterr()
+    assert _accept(repo, copy, variant="candidate") != 0
+    assert "differs from origin/main" in capsys.readouterr().err
+    assert len(_log(repo).rows) == before  # 閲覧の記録の開始の行も書いていない（読んでいない）
+    assert _pending(repo) == []
+    # origin にだけあって作業木に無い記録も止める。
+    _push_log(repo, final)
+    git(repo, "reset", "--quiet", "--hard", "HEAD~1")
+    assert not (final / "access_log.jsonl").exists()
+    capsys.readouterr()
+    assert _accept(repo, copy, variant="candidate") != 0
+    assert "is not contained in the local HEAD" in capsys.readouterr().err
+    assert _pending(repo) == []
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """git の全体・システムの設定を読まない（受入れの origin の照合の子プロセスにも当てる）。"""
+    isolate_git(monkeypatch, tmp_path / "githome")
 
 
 def _fetch(repo: Path, tmp_path: Path, pairs: tuple[str, ...] = ("USDJPY",)) -> Path:
@@ -455,6 +513,7 @@ def test_a_consumed_period_does_not_return_to_sealed_on_a_new_intake(tmp_path: P
         + "\n",
         encoding="utf-8",
     )
+    _push_log(repo, final)  # 消費の記録は origin に届いて初めて記録（D09 §9.10.13 の 3）
     assert _accept(repo, copy, variant="candidate") == 0
     (again,) = _pending(repo)
     states = {
@@ -478,6 +537,7 @@ def test_an_unknown_state_of_an_overlapping_partition_stops_before_reading(
     snapshots = repo / "data" / "snapshots"
     (final,) = [p for p in snapshots.iterdir() if p.name != "_pending"]
     (final / "access_log.jsonl").write_text("{broken\n", encoding="utf-8")
+    _push_log(repo, final)
     before = len(_log(repo).rows)
     assert _accept(repo, copy, variant="candidate") != 0
     assert "cannot be derived" in capsys.readouterr().err

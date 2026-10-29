@@ -30,6 +30,7 @@ from odyssey_fx.common.reason import MissingInputReason
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
 from odyssey_fx.marketdata.application.snapshot_access import (
+    FinalSources,
     PartitionedBars,
     ReadableSnapshot,
     readable_surface,
@@ -134,6 +135,23 @@ class DurationWindow:
             raise MarketDataValueError(f"DurationWindow.duration must be > 0, got {self.duration}")
 
 
+def _no_record_of(
+    snapshot: ReadableSnapshot, final_sources: FinalSources | None
+) -> Mapping[SeriesId, frozenset[UtcTime]]:
+    """全分無記録の足（D03 §15.7）。最終検証の run は並びが指す snapshot の分も合わせる。"""
+    merged: dict[SeriesId, frozenset[UtcTime]] = {}
+    sources = [snapshot]
+    if final_sources is not None:
+        sources.extend(final_sources.snapshots[name] for name in sorted(final_sources.snapshots))
+    for source in sources:
+        observation = Mt5Observation.from_snapshot(source)
+        if observation is None:
+            continue
+        for series, starts in observation.no_record.items():
+            merged[series] = merged.get(series, frozenset()) | starts
+    return MappingProxyType(merged)
+
+
 @dataclass(frozen=True, slots=True)
 class AsOfView:
     """判断時点の as-of 読み取り（D03 §6）。
@@ -146,6 +164,10 @@ class AsOfView:
     schedules: Mapping[SeriesId, SeriesSchedule]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
     publication_log: PublicationLog = PublicationLog()
+    #: 最終検証の run だけが渡す、関所の最終評価の許可の並びと並びが指す snapshot（D09 §9.10.3
+    #: の 4、要決定 R2-3 (a)）。研究履歴の partition は `snapshot` から、並びの partition は
+    #: ここから読む。`None`（既定）なら封印の区分の partition は許可集合に入らない。
+    final_sources: FinalSources | None = None
     _recorded_at: Mapping[BarKey, UtcTime] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
@@ -165,6 +187,7 @@ class AsOfView:
             self.allowed_partitions,
             label="AsOfView",
             partition_bars=self.partition_bars,
+            final_sources=self.final_sources,
         )
         # 呼び出し元が渡した可変な mapping を保持したままにすると、構築時の照合をすり抜けた
         # 後で中身を差し替えられる（D03 §6.1）。不変な写しへ置き換える。
@@ -193,12 +216,7 @@ class AsOfView:
         )
         object.__setattr__(self, "_visibility", {})
         # MT5 経路の全分無記録の足（D03 §15.7）。HistData の経路では空（従来の読み方のまま）。
-        observation = Mt5Observation.from_snapshot(self.snapshot)
-        object.__setattr__(
-            self,
-            "_no_record",
-            MappingProxyType({}) if observation is None else observation.no_record,
-        )
+        object.__setattr__(self, "_no_record", _no_record_of(self.snapshot, self.final_sources))
 
     @property
     def manifest(self) -> SnapshotManifest:
@@ -731,6 +749,8 @@ class ExecutionSeriesView:
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
     schedule: SeriesSchedule
+    #: 最終検証の run だけが渡す（`AsOfView.final_sources` と同じ。D09 §9.10.3 の 4）。
+    final_sources: FinalSources | None = None
     _series_bars: tuple[Bar, ...] | None = field(
         init=False, repr=False, compare=False, default=None
     )
@@ -756,6 +776,7 @@ class ExecutionSeriesView:
             self.allowed_partitions,
             label="ExecutionSeriesView",
             partition_bars=self.partition_bars,
+            final_sources=self.final_sources,
         )
         object.__setattr__(self, "partition_bars", frozen)
         # 系列の足（時刻順）と、開始時刻で引く索引を1度だけ作る。系列が許可された partition

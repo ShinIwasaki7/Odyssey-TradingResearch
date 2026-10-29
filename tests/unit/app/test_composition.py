@@ -23,6 +23,7 @@ from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.application.ports import RawFileContent, RawRow
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.final_grant import FinalReadGrant
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
@@ -73,7 +74,7 @@ class _StubStore:
         self,
         snapshot_dir: str,
         partition_id: PartitionId,
-        read_permit: QualityReadPermit | None = None,
+        read_permit: QualityReadPermit | FinalReadGrant | None = None,
     ) -> Sequence[Bar]:
         raise NotImplementedError("構成の試験では partition を読まない")
 

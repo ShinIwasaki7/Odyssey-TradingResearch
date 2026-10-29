@@ -50,6 +50,7 @@ from odyssey_fx.marketdata.domain.errors import (
 
 __all__ = [
     "INITIAL_ACCESS_BOUNDARIES",
+    "LEGACY_FROZEN_CLASSES",
     "OANDA_SEALED_CLASSES",
     "PROTECTED_CLASSES",
     "SEALED_CLASSES",
@@ -60,6 +61,7 @@ __all__ = [
     "HoldoutState",
     "SealedAccessBoundaries",
     "acquisition_start_after",
+    "is_frozen_legacy_partition",
     "is_trading_week_start",
     "next_trading_week_start",
     "sealed_partition_period",
@@ -93,6 +95,27 @@ SEALED_CLASSES: Final = frozenset({AccessClass.LEGACY_HOLDOUT, *OANDA_SEALED_CLA
 #: 2024 年以降の区分（封印の区分と隔離の区分の総称。ADR-0035 第0項の 3）。品質確認の閲覧の
 #: 記録の対象になる区分。
 PROTECTED_CLASSES: Final = frozenset({*SEALED_CLASSES, AccessClass.QUARANTINED_UNASSIGNED})
+
+
+#: 旧データの snapshot の 2024 年以降の区分（ADR-0038 第0項の 2・第6項）。2024 年以降の部分は
+#: どの経路でも読まない（ADR-0038 第8項の 1、D09 §9.10.13 の 2）。
+LEGACY_FROZEN_CLASSES: Final = frozenset(
+    {AccessClass.LEGACY_HOLDOUT, AccessClass.QUARANTINED_UNASSIGNED}
+)
+
+
+def is_frozen_legacy_partition(access_class: AccessClass, interval: Interval) -> bool:
+    """旧データの snapshot の 2024 年以降の partition か（どの経路でも読まない。D09 §9.10.13）。
+
+    区分が `LEGACY_HOLDOUT`・`QUARANTINED_UNASSIGNED` で、partition の期間が 2024-01-01T00:00Z
+    より後に及ぶもの（R4 の仮置き: 期間で見る。人工データの封印 partition（D08 §9.5 の例外。
+    2015 年など）は受入れ・分類・承認の検算のために今のまま読める）。
+    """
+    if not isinstance(access_class, AccessClass) or not isinstance(interval, Interval):
+        raise MarketDataValueError(
+            "is_frozen_legacy_partition requires an AccessClass and Interval"
+        )
+    return access_class in LEGACY_FROZEN_CLASSES and interval.end > SEALED_RESEARCH_UNTIL
 
 
 class HoldoutState(Enum):

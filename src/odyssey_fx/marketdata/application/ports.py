@@ -23,6 +23,7 @@ from typing import Any, Protocol
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar
+from odyssey_fx.marketdata.domain.final_grant import FinalReadGrant
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.refill import (
@@ -98,12 +99,14 @@ class SnapshotStore(Protocol):
         self,
         snapshot_dir: str,
         partition_id: PartitionId,
-        read_permit: QualityReadPermit | None = None,
+        read_permit: QualityReadPermit | FinalReadGrant | None = None,
     ) -> Sequence[Bar]:
         """partition の足を昇順で読む。
 
         OANDA MT5 の経路の封印の区分の partition は、読み取りの許可の値（関所の品質確認の
-        許可。ADR-0036 第9項の 2）が覆うときだけ読む。値が無ければ読まない（3）。
+        許可。ADR-0036 第9項の 2。または最終評価の許可の並び。D09 §9.10.3 の 4）が覆うときだけ
+        読む。値が無ければ読まない（3）。旧データの snapshot の 2024 年以降の partition はどの
+        許可でも読まない（ADR-0038 第8項の 1、D09 §9.10.13 の 2）。
         """
         ...
 

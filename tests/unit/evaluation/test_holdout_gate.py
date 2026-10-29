@@ -18,7 +18,6 @@ from odyssey_fx.evaluation.application.holdout_gate import HoldoutGate
 from odyssey_fx.evaluation.application.ports import QualityAccessLog
 from odyssey_fx.evaluation.domain.errors import EvaluationError
 from odyssey_fx.evaluation.domain.quality_permit import (
-    FinalEvaluationPermitNotImplemented,
     QualityCheckDefinition,
     QualityCheckRequest,
     QualityPermitRefusal,
@@ -321,9 +320,13 @@ def test_the_quality_flow_writes_no_consumption_record(tmp_path: Path) -> None:
     ]
 
 
-def test_the_final_evaluation_permit_is_refused_until_r4(tmp_path: Path) -> None:
-    with pytest.raises(FinalEvaluationPermitNotImplemented):
-        _gate(_root(tmp_path)).request_final_evaluation_permit()
+def test_the_quality_permit_and_the_final_evaluation_permit_are_separate(tmp_path: Path) -> None:
+    """2 種類の許可は別の型・別の手順（ADR-0036 第3項）。品質確認の関所は最終評価の入口が無い。"""
+    from odyssey_fx.evaluation.application import holdout_gate
+
+    gate = _gate(_root(tmp_path))
+    assert not hasattr(gate, "request_final_evaluation_permit")
+    assert callable(holdout_gate.issue_final_evaluation_permit)
 
 
 # --- 許可の定義が覆ってよい範囲（ADR-0036 第4項、ADR-0037 第1項・第9項）------------------

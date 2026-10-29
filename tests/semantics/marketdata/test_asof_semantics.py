@@ -360,20 +360,25 @@ def test_the_execution_view_accepts_a_recorded_partition() -> None:
     assert key.bar_start == UtcTime.parse("2026-01-14T10:00:00Z")
 
 
-def test_a_holdout_partition_may_still_be_granted() -> None:
-    """封印期間は、解除の手続きを通れば許可されうる（拒否されるのは隔離期間だけ）。"""
+def test_a_legacy_holdout_partition_is_never_granted() -> None:
+    """旧データの snapshot の封印期間（`LEGACY_HOLDOUT`）は、どの経路でも許可集合に入らない。
+
+    2024 年以降の旧データは凍結で、どの経路でも読まない（ADR-0038 第6項の 1・第8項の 1、D09
+    §9.10.13 の 2。R4）。最終検証は OANDA MT5 の経路の 2 つの封印の区分だけを使う（D09 §9.3 の 1）。
+    以前は「解除の手続きを通れば許可されうる」とした（ADR-0014 の関所）が、その関所は作らない。
+    """
     holdout = PartitionId(series=HOURLY, access_class=AccessClass.LEGACY_HOLDOUT)
     partition_bars: dict[PartitionId, Sequence[Bar]] = {
         HOURLY_PARTITION: _bars(HOURLY, market.TF_1H),
         holdout: (),
     }
-    view = AsOfView(
-        snapshot=snapshots.readable_for(partition_bars),
-        allowed_partitions=frozenset({HOURLY_PARTITION, holdout}),
-        schedules={HOURLY: SCHEDULES[HOURLY]},
-        partition_bars=partition_bars,
-    )
-    assert holdout in view.allowed_partitions
+    with pytest.raises(HoldoutAccessViolation, match="legacy holdout"):
+        AsOfView(
+            snapshot=snapshots.readable_for(partition_bars),
+            allowed_partitions=frozenset({HOURLY_PARTITION, holdout}),
+            schedules={HOURLY: SCHEDULES[HOURLY]},
+            partition_bars=partition_bars,
+        )
 
 
 # --- 承認（D03 §3.7.1 の3・§11）---------------------------------------------

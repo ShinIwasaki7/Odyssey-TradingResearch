@@ -1,8 +1,10 @@
-"""読み取りの関所（`holdout_gate`）の品質確認専用の許可（ADR-0036、ADR-0035 第4項）。
+"""読み取りの関所（`holdout_gate`）: 品質確認専用の許可（ADR-0036、ADR-0035 第4項）と、
+最終評価の許可（D09 v0.5 §9.10。R4）。
 
-関所は 2 種類の許可を**別の型・別の手順**として持つ（ADR-0036 第3項）。順 6 の S3 では
-**品質確認の許可だけ**を実装し、最終評価の許可は D09 の後続版（D15 の R2）の承認まで実装しない
-（呼ばれたら拒否する。実装は D15 の R4。ADR-0036 第11項）。
+関所は 2 種類の許可を**別の型・別の手順**として持つ（ADR-0036 第3項）。品質確認の許可は順 6 の
+S3 で実装した（`HoldoutGate`）。最終評価の許可は R4 で実装する（`issue_final_evaluation_permit`・
+研究ポリシーの検査 P2F の `final_partitions_match_permit`・`consumption_rows_present`。手順の
+結線と git・ファイルは `app.final_validation`）。
 
 品質確認の読み取りの手順（fail-closed。ADR-0036 第7項）:
 
@@ -25,23 +27,30 @@ D01 §2.2 規則2）。
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
-from typing import NoReturn
 
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.application.ports import QualityAccessLog
 from odyssey_fx.evaluation.domain.errors import EvaluationError
+from odyssey_fx.evaluation.domain.final_validation import (
+    CandidateKey,
+    FinalEvaluationPermit,
+    FinalReason,
+    FinalWindow,
+    PredictedRun,
+    WindowRefusal,
+)
 from odyssey_fx.evaluation.domain.quality_permit import (
     SEALED_RAW_ROOT,
-    FinalEvaluationPermitNotImplemented,
     QualityCheckDefinition,
     QualityCheckRequest,
     QualityPermitRefusal,
     QualityReadRefused,
     QualityTargetKind,
 )
-from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired
+from odyssey_fx.marketdata.domain.access import AccessClass, HoldoutState
 from odyssey_fx.marketdata.domain.quality_access import (
     PartitionTarget,
     QualityAccessEnd,
@@ -52,8 +61,14 @@ from odyssey_fx.marketdata.domain.quality_access import (
     QualityRecordKind,
     RawFileTarget,
 )
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
 
-__all__ = ["HoldoutGate"]
+__all__ = [
+    "HoldoutGate",
+    "consumption_rows_present",
+    "final_partitions_match_permit",
+    "issue_final_evaluation_permit",
+]
 
 
 def _refused(kind: QualityPermitRefusal, detail: str) -> QualityReadRefused:
@@ -155,7 +170,7 @@ def _raw_location_problem(target: RawFileTarget) -> str | None:
 
 
 class HoldoutGate:
-    """読み取りの関所（ADR-0036）。品質確認の許可だけを出す（最終評価の許可は R4）。"""
+    """読み取りの関所の品質確認の許可（ADR-0036）。最終評価の許可は下の関数（R4）。"""
 
     def __init__(
         self, definitions: Sequence[QualityCheckDefinition], log: QualityAccessLog
@@ -278,9 +293,106 @@ class HoldoutGate:
             )
         return end
 
-    def request_final_evaluation_permit(self, *args: object, **kwargs: object) -> NoReturn:
-        """最終評価の許可は実装しない（D09 の後続版の承認まで。ADR-0036 第11項）。常に拒否する。"""
-        raise FinalEvaluationPermitNotImplemented(
-            "the final-evaluation permit of the holdout gate is not implemented until the next"
-            " version of D09 is approved (D15 の R2・R4, ADR-0036 第11項); nothing was read"
+
+# --- 最終評価の許可（D09 v0.5 §9.10。R4）---------------------------------------------------
+
+
+def final_partitions_match_permit(
+    permit: FinalEvaluationPermit,
+    allowed: Paired[frozenset[tuple[str, PartitionId]]],
+    record_snapshots: Paired[str],
+) -> WindowRefusal | None:
+    """研究ポリシーの検査 P2F（`final_partitions_match_permit`）の (1)・(3)（D09 §9.10.8）。
+
+    (1) 組ごとの許可集合が、研究履歴の partition と許可の値の並びの partition の和に等しい（それ
+    以外の封印の区分・隔離の区分・旧データの 2024 年以降の partition を含まない）。(3) 研究履歴の
+    partition は記録票の snapshot のものだけ。合格なら `None`。
+    """
+    for variant in VARIANTS:
+        expected = permit.allowed_set(variant)
+        given = allowed.of(variant)
+        if given != expected:
+            extra = sorted(f"{snapshot}:{pid}" for snapshot, pid in given - expected)
+            lacking = sorted(f"{snapshot}:{pid}" for snapshot, pid in expected - given)
+            return WindowRefusal(
+                FinalReason.P2F_NOT_PASSED,
+                f"P2F (1): the {variant.value} allowed set differs from the permit"
+                f" (extra {extra[:3]}, lacking {lacking[:3]}. D09 §9.10.8)",
+            )
+        for snapshot, partition_id in permit.research_partitions.of(variant):
+            if partition_id.access_class is not AccessClass.RESEARCH_HISTORY:
+                return WindowRefusal(
+                    FinalReason.P2F_NOT_PASSED,
+                    f"P2F (1): {partition_id} of the {variant.value} run is neither research"
+                    " history nor a partition of the permit (D09 §9.10.8)",
+                )
+            if snapshot != record_snapshots.of(variant):
+                return WindowRefusal(
+                    FinalReason.P2F_NOT_PASSED,
+                    f"P2F (3): the research-history partition {partition_id} of the"
+                    f" {variant.value} run is read from {snapshot}, not from the snapshot of the"
+                    f" manifest {record_snapshots.of(variant)} (D09 §9.10.8)",
+                )
+    return None
+
+
+def consumption_rows_present(
+    permit: FinalEvaluationPermit, rows_on_origin: Mapping[tuple[str, str], frozenset[str]]
+) -> WindowRefusal | None:
+    """P2F の (2): 消費の対象のすべての partition に、この許可の識別子の消費の行が origin の
+    既定ブランチ上にある（`rows_on_origin` は `(snapshot_id, partition)` → 許可の識別子の集合）。"""
+    missing = sorted(
+        f"{snapshot}:{partition_id}"
+        for snapshot, partition_id in permit.window.targets
+        if permit.permit_id not in rows_on_origin.get((snapshot, str(partition_id)), frozenset())
+    )
+    if missing:
+        return WindowRefusal(
+            FinalReason.RECORD_NOT_ON_ORIGIN,
+            f"P2F (2): {len(missing)} target partition(s) have no consumption row of the permit"
+            f" {permit.permit_id} on origin (first: {missing[0]}. D09 §9.10.8)",
         )
+    return None
+
+
+def issue_final_evaluation_permit(
+    *,
+    permit_id: str,
+    candidate: CandidateKey,
+    t_fix: UtcTime,
+    length_days: int,
+    window: FinalWindow,
+    predicted: Paired[PredictedRun],
+    purpose: str,
+    research_partitions: Paired[tuple[tuple[str, PartitionId], ...]],
+    states: Mapping[tuple[str, str], HoldoutState],
+) -> FinalEvaluationPermit | WindowRefusal:
+    """関所の最終評価の許可を発行する（D09 §9.10.2 の段 3。ADR-0036 第3項の「別の型・別の手順」）。
+
+    呼び出し側（`app.final_validation`）が段 1・段 2 の確かめ（申請の資格・origin の確かめ・
+    窓の導出・出力先・能力検査・再計算・run の予測）を終えた後にだけ呼ぶ。ここでは段 2 (d)
+    （消費の対象がすべて `SEALED`。`states` は origin の既定ブランチ上の消費の記録から導いた
+    `(snapshot_id, partition)` の状態）を確かめ、許可の値を組み立てる。許可の発行の行は書かない
+    （仮置き R2-2）。許可は控えとロックとして手元にだけ持つ。
+    """
+    not_sealed = sorted(
+        f"{snapshot}:{partition_id}"
+        for snapshot, partition_id in window.targets
+        if states.get((snapshot, str(partition_id))) is not HoldoutState.SEALED
+    )
+    if not_sealed:
+        return WindowRefusal(
+            FinalReason.NOT_SEALED,
+            f"{len(not_sealed)} target partition(s) are not SEALED on origin (first:"
+            f" {not_sealed[0]}. D09 §9.10.2 の段 2 (d))",
+        )
+    return FinalEvaluationPermit(
+        permit_id=permit_id,
+        candidate=candidate,
+        t_fix=t_fix,
+        length_days=length_days,
+        window=window,
+        predicted=predicted,
+        purpose=purpose,
+        research_partitions=research_partitions,
+    )

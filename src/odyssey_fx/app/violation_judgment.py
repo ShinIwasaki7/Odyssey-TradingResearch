@@ -10,7 +10,9 @@ fail-closed に行う（ADR-0035 第3項の「書き手と経路」。PR #110 �
    PR #107 の要決定 S1-2）。
 2. 違反の範囲（ADR-0035 第3項。partition の対象はその系列とその期間、原ファイルの対象はその
    銘柄の封印の区分の全体。PR #110 の仮置き S3-7）に重なる、既にあるすべての確定済みの snapshot の
-   封印の区分の `SEALED` の partition に、消費の記録を `HoldoutAccessLog` を通して追記する。
+   封印の区分の `SEALED` の partition に、消費の記録を `HoldoutAccessLog` を通して追記する。行は
+   版 1（D09 §9.10.4。理由 `VIOLATION_JUDGMENT`、許可の識別子の欄は判定の行の識別子。R4 で
+   版 0 から改めた。版 0 で書かれた行は版 0 のまま読む）。
 3. 変更したファイルだけを commit し、origin の既定ブランチへ push する（ADR-0014 の消費遷移の
    直列化。ADR-0038 第8項の 3）。
 
@@ -43,6 +45,7 @@ from odyssey_fx.marketdata.adapters.quality_access_log_store import (
 )
 from odyssey_fx.marketdata.application.snapshot_access import PENDING_DIRECTORY
 from odyssey_fx.marketdata.domain.access import HoldoutState
+from odyssey_fx.marketdata.domain.consumption_log import ConsumptionReason, ConsumptionRow
 from odyssey_fx.marketdata.domain.errors import HoldoutStateUnknown, MarketDataValueError
 from odyssey_fx.marketdata.domain.quality_access import (
     QualityAccessJudgment,
@@ -62,8 +65,8 @@ __all__ = [
     "plan_judgment",
 ]
 
-#: 消費の記録の `purpose` の頭（理由として閲覧の識別子と判定の行を指す。ADR-0035 第3項）。
-CONSUMPTION_PURPOSE: Final = "VIOLATION_JUDGMENT"
+#: 消費の行の理由（版 1 の `reason`。D09 §9.10.4。版 0 の時代は `purpose` の頭に書いた）。
+CONSUMPTION_PURPOSE: Final = ConsumptionReason.VIOLATION_JUDGMENT.value
 
 
 @dataclass(slots=True)
@@ -355,19 +358,24 @@ def judge_violation(
                 progress,
             )
         progress.judgment_appended = True
-    purpose = (
-        f"{CONSUMPTION_PURPOSE} access_id={plan.judgment.access_id}"
-        f" judgment_row_id={plan.judgment.row_id}"
-    )
     recorded_at = now()
     for item in plan.to_consume:
         try:
-            log.append_consumed(
+            # 版 1 の行（D09 §9.10.4・§9.10.13 の 1。R4）: 理由 `VIOLATION_JUDGMENT`、許可の
+            # 識別子の欄に判定の行の識別子、閲覧の識別子、候補と目的は空。
+            log.append_row(
                 item.snapshot_id,
-                item.partition.partition_id,
-                recorded_at=recorded_at,
-                actor=plan.judgment.judged_by,
-                purpose=purpose,
+                ConsumptionRow(
+                    row_id=new_id(),
+                    partition=str(item.partition.partition_id),
+                    reason=ConsumptionReason.VIOLATION_JUDGMENT,
+                    permit_id=plan.judgment.row_id,
+                    candidate=None,
+                    access_id=plan.judgment.access_id,
+                    recorded_at=recorded_at,
+                    actor=plan.judgment.judged_by,
+                    purpose="",
+                ),
             )
         except HoldoutAccessLogStop as stop:
             raise ViolationJudgmentStopped(stop.stage, stop.detail, progress) from stop

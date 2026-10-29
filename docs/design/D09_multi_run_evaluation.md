@@ -887,6 +887,8 @@ ADR-0014 は、`CONSUMED` の partition を研究・開発用途で読む場合�
 
 **本節を作るために読まなかったもの**: 戦略の成績、取引表、価格、2024 年以降のデータ、旧データの CSV。本節に出てくる数は、件数・日数・時刻・終了コードだけである。
 
+**反映状況（R4。D15 §2.3 の R4 の実装 PR、ブランチ `feat/step6-r4-final-validation`、未 merge。本節の約束は変えていない）**: 関所の最終評価の許可（`evaluation.application.holdout_gate` の `issue_final_evaluation_permit`・検査 P2F の `final_partitions_match_permit`・`consumption_rows_present`）、窓と申請の状態と判定の規則（`evaluation.domain.final_validation`）、消費の行の版 1（`marketdata.domain.consumption_log`）、最終検証のコマンド `odyssey-fx experiment final-validate`（`app.final_validation`。段 1〜段 5、`--dry-run`・`--withdraw`・`--close-failed`、終了コード 0・1・2・7・8・9）、記録の 2 層（`app.final_validation_records`。台帳 `research/final_validations.jsonl` を空のファイルで版管理に置いた）を実装した。`--resume` は入口だけで常に拒否する（状態 C は終了コード 8 `RESUME_NOT_ALLOWED`）。仮置き R2-21〜R2-29 は 2026-10-30 に人間が決定した（すべて「このまま」。第17.9.1節）が、やり直しの実装は後続の PR。段 2 (f)(g) と段 5 の run・評価の本番の実装は、最終検証の run の実行設定（`RunConfig`）が複数の snapshot をどう指すかの決定（R4 の要決定 A）の後で、本番の結線は段 2 の最初で止める（終了コード 7 `FINAL_RUN_UNAVAILABLE`。何も書かない）。受入テスト（第9.10.11節）は人工の run（`FinalRunner` の差し替え）と一時の git リポジトリで確かめた。番号付きの仮置きは R4 の PR 本文。
+
 #### 9.10.1 用語と、最終検証に関わる時点【導出】
 
 | 短い名前 | 何を指すか | 出典 |
@@ -1117,6 +1119,8 @@ odyssey-fx experiment final-validate \
 1. **後からの違反の判定の管理コマンド**（注記 (1)。ADR-0035 第3項）: 消費の行の形は第9.10.4節の版 1（`reason` = `VIOLATION_JUDGMENT`）。origin の確かめ・コミット・push の手順は第9.10.2節の段 2 (a)・段 4 と同じ部品を使う。PR #114（未 merge）が先に入れば、R4 はその管理コマンドを版 1 の行に改める。
 2. **旧データの snapshot の 2024 年以降の partition を塞ぐ**（注記 (2)。ADR-0038 第8項の 1、PR #110 の仮置き S3-10）: as-of ビューの許可集合（D03 §6.1）と `SnapshotStore.read_partition` の両方で、旧データの snapshot（ADR-0038 第0項の 2）の `LEGACY_HOLDOUT`・`QUARANTINED_UNASSIGNED` の partition を読まない。分類・承認の検算のための読み取りも含める（帰結: 旧データの snapshot の 2024 年以降の partition の検算はできなくなる。旧データは凍結で再承認の予定が無い。仮置き R2-15）。受入テストは第9.10.11節の 19。
 3. **受入れの初期状態の例外 2 と origin の消費の記録の照合**（注記 (3)。ADR-0038 第3項の 3、PR #111 の要決定 D）: 受入れが既にある partition の状態を導く前に、第9.10.2節の段 2 (a) の origin の確かめ（作業木の消費の記録が origin の既定ブランチ上と同じであること）を行い、違えば・確かめられなければ受入れを始めない（仮置き R2-16）。受入テストは第9.10.11節の 20。
+
+**反映状況（R4。未 merge）**: (1) 後からの違反の判定の管理コマンドは版 1 の行（`reason` = `VIOLATION_JUDGMENT`、`permit_id` = 判定の行の識別子、`access_id` = 閲覧の識別子）で書くように改めた。push を断られたときに追記を残してやり直しに含める方式（PR #114）は変えていない（仮置き R2-2 の「R4 でそろえる」の当て方は R4 の仮置き）。(2) 旧データの snapshot の 2024 年以降の partition を as-of ビューの許可集合と `SnapshotStore.read_partition` の両方で塞いだ（分類・承認の検算の読み取りも含む。期間で見るのは R4 の仮置き）。(3) 受入れの初期状態の例外 2 の前に、作業木の消費の記録が origin の既定ブランチ上と同じことを `GitHoldoutAccessLog.require_logs_match_origin` で確かめ、違えば・確かめられなければ受入れを始めない（受入テスト 20）。
 
 ## 10. 試行の記録
 

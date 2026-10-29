@@ -23,16 +23,14 @@ OANDA MT5 の経路の 2 つの封印の区分（ADR-0038）の partition は、
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from enum import Enum
 
-from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.common.time import Interval
 from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass, HoldoutState
+from odyssey_fx.marketdata.domain.consumption_log import AccessLogEntry, AccessLogEntryKind
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.snapshot import (
     LegacyAccessRecord,
     LegacyObservation,
-    PartitionId,
     PartitionRecord,
 )
 
@@ -45,47 +43,6 @@ __all__ = [
     "initial_holdout_state",
     "serialize_entry",
 ]
-
-
-class AccessLogEntryKind(Enum):
-    """閲覧記録の種別（ADR-0014）。
-
-    - `GRANTED`: 許可が発行された（まだデータは公開されていない）。
-    - `CONSUMED`: 消費が確定した。この記録があれば partition は `CONSUMED`。
-    - `RESEARCH_OPT_IN`: 既に使用済みの partition を、研究・開発用途として明示的に
-      読んだ記録。holdout 成績としての集計は禁止される。
-    """
-
-    GRANTED = "GRANTED"
-    CONSUMED = "CONSUMED"
-    RESEARCH_OPT_IN = "RESEARCH_OPT_IN"
-
-
-@dataclass(frozen=True, slots=True)
-class AccessLogEntry:
-    """閲覧記録1件（ADR-0014、D03 §3.7）。
-
-    記録は追記専用なので、この型に「取り消し」は存在しない。`recorded_at` は記録時刻で、
-    `snapshot_id` の計算には入らない（D03 §3.7.1）。
-    """
-
-    kind: AccessLogEntryKind
-    partition_id: PartitionId
-    recorded_at: UtcTime
-    actor: str
-    purpose: str = ""
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.kind, AccessLogEntryKind):
-            raise MarketDataValueError("AccessLogEntry.kind must be an AccessLogEntryKind")
-        if not isinstance(self.partition_id, PartitionId):
-            raise MarketDataValueError("AccessLogEntry.partition_id must be a PartitionId")
-        if not isinstance(self.recorded_at, UtcTime):
-            raise MarketDataValueError("AccessLogEntry.recorded_at must be a UtcTime")
-        if not isinstance(self.actor, str) or not self.actor:
-            raise MarketDataValueError("AccessLogEntry.actor must be a non-empty str")
-        if not isinstance(self.purpose, str):
-            raise MarketDataValueError("AccessLogEntry.purpose must be a str")
 
 
 def serialize_entry(entry: AccessLogEntry) -> Mapping[str, str]:

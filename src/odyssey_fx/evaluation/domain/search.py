@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal, localcontext
@@ -181,6 +181,7 @@ __all__ = [
     "frequency_class_of",
     "has_finished_line",
     "hold_mark_of",
+    "path_condition_results",
     "interim_floor_results",
     "is_selectable_metric",
     "last_digest",
@@ -2178,13 +2179,24 @@ def _path_results(rule: PathRule, path: PathSummary) -> tuple[ConditionResult, .
     """
     if path.end is PathEnd.INCOMPLETE:
         return ()
+    return path_condition_results(rule, path.metric)
+
+
+def path_condition_results(
+    rule: PathRule, metric_of: Callable[[MetricId], MetricValue | None]
+) -> tuple[ConditionResult, ...]:
+    """経路の条件（最低条件 → 全体の水準）を、指標の値の引き方 `metric_of` に当てる。
+
+    探索の連続口座の経路（`_path_results`）と、最終検証の 1 本の連続口座の run（D09 §9.10.11 の
+    判定の規則。要決定 R2-7 (a)）が共有する。
+    """
     results: list[ConditionResult] = []
     for scope, conditions in (
         (ConditionScope.PATH_FLOOR, rule.floors),
         (ConditionScope.PATH_AGGREGATE, rule.aggregate),
     ):
         for condition in conditions:
-            value = path.metric(condition.metric)
+            value = metric_of(condition.metric)
             if value is None:  # PATH_METRICS の検査（PathRule）で来ない
                 raise KernelValueError(f"the path has no metric {condition.metric.value}")
             observed = _numeric(value)
