@@ -478,14 +478,36 @@ def test_full_fetch_dry_run_creates_nothing_and_refuses_unknown_pairs(tmp_path: 
     assert late.returncode != 0 and "超えた" in late.stderr  # 終了の時刻（4 時間）の後は動かない
 
 
-def test_limits_in_lib_sh_match_the_approved_values() -> None:
+def _lib_values(tmp_path: Path, kind: str | None) -> list[str]:
+    env = dict(os.environ, RESULT_ROOT=str(tmp_path / "probe_root"))
+    env.pop("PROBE_RUN_KIND", None)
+    if kind is not None:
+        env["PROBE_RUN_KIND"] = kind
+    out = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{SCRIPTS / "lib.sh"}"; echo "$PROBE_RUN_KIND $PROBE_SHUTDOWN_SECONDS'
+            ' $PROBE_DEADLINE_SECONDS $REQUEST_TIME_LIMIT_SECONDS"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.split()
+
+
+def test_limits_in_lib_sh_match_the_approved_values(tmp_path: Path) -> None:
     text = (SCRIPTS / "lib.sh").read_text(encoding="utf-8")
-    assert "readonly PROBE_SHUTDOWN_SECONDS=16200" in text  # 4 時間 30 分
-    assert "readonly PROBE_DEADLINE_SECONDS=14400" in text  # 4 時間
     assert "readonly FULL_TIME_LIMIT_SECONDS=9000" in text  # 2 時間 30 分
     assert "readonly FULL_MAX_REQUESTS=750" in text
     assert "readonly PROBE_ROOT_GB=60" in text
-    assert 'readonly PROBE_RUN_KIND="fullfetch"' in text
+    # 起動の種類ごとの上限（全期間取得は付録 K-16.6、封印の一括取得は D15-18c (a)、定期取得は
+    # PR #109 の仮置き S2b-10）。既定は全期間取得。
+    assert _lib_values(tmp_path, None) == ["fullfetch", "16200", "14400", "9000"]
+    assert _lib_values(tmp_path, "sealed-bulk") == ["sealed-bulk", "12600", "10800", "7200"]
+    assert _lib_values(tmp_path, "sealed-periodic") == ["sealed-periodic", "9000", "7200", "3600"]
 
 
 def test_iam_policies_allow_only_the_probe_bucket_prefix() -> None:

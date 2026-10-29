@@ -51,7 +51,7 @@ cat >&2 <<INFO
   キーペア: ${key_name}（秘密鍵は ${key_file}、権限 600。リポジトリの外）
   シャットダウンの動作: 停止。Windows の中で ${PROBE_SHUTDOWN_SECONDS} 秒後に自動の停止
   タグ: ${PROBE_TAG_KEY}=${PROBE_TAG_VALUE}
-  作業上限: 起動から $(( FULL_TIME_LIMIT_SECONDS / 60 )) 分で要求を打ち切り（起動の種類 ${PROBE_RUN_KIND}。要求は ${FULL_MAX_REQUESTS} まで）
+  作業上限: 起動から $(( REQUEST_TIME_LIMIT_SECONDS / 60 )) 分で要求を打ち切り（起動の種類 ${PROBE_RUN_KIND}。要求は $( [[ "$PROBE_RUN_KIND" == fullfetch ]] && echo "${FULL_MAX_REQUESTS}" || echo "計画の上限（一括 300・定期 9）" ) まで）
   作業役が必ず終了する時刻: 起動から $(( PROBE_DEADLINE_SECONDS / 60 )) 分（Windows の中の自動の停止は $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分で、止め忘れの備え）
 INFO
 

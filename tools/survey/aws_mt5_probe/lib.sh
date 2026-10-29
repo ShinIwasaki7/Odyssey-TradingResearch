@@ -7,7 +7,9 @@
 # - AWS CLI は必ずプロファイル odyssey-mt5-probe と東京リージョンで呼ぶ（aws_p を使う）。
 # - 認証情報のファイルの中身を読まない・表示しない。キー・パスワードをログに書かない。
 # - 作るものには必ずタグ Project=odyssey-mt5-probe を付け、消すのもこのタグのものだけ。
-# - 2024-01-01T00:00Z 以降の価格を要求しない（要求は mt5_api_probe.py の段の名前でだけ指定する）。
+# - 研究期間の段は 2024-01-01T00:00Z 以降の価格を要求しない（要求は mt5_api_probe.py の段の名前でだけ指定する。
+#   上限 REQUEST_END_LIMIT は研究期間の上限）。2024 年以降の取得は封印の取得の段（39_sealed_fetch.sh）だけで、
+#   許可の窓は版管理の設定 configs/acquisition/oanda_mt5_m1_sealed_window.yaml から読む（制約の改定文 ADR-0037）。
 
 set -euo pipefail
 
@@ -22,23 +24,22 @@ readonly PROBE_ROOT_GB=60                             # gp3、終了時に削除
 readonly PROBE_AMI_NAME_PATTERN="Windows_Server-2022-English-Full-Base-*"
 readonly PROBE_SSM_ROLE="odyssey-mt5-probe-ssm-role"  # 人間が作る（付録 K-1）。インスタンスプロファイルも同名
 readonly PROBE_RDP_CIDR="${PROBE_RDP_CIDR:-126.221.39.9/32}"   # 人間の IP（司令塔が伝えた値）
-# 作業上限は全期間取得（付録 K-16.6。人間の第 18 回の決定「案のとおり」で承認）の値。
-# 前回（最後の調査。付録 K-10.3）は 2 時間 30 分・2 時間・1 時間 30 分、その前（付録 K-8・K-9）は
-# 4 時間 30 分・4 時間・3 時間だった。
-readonly PROBE_SHUTDOWN_SECONDS=16200                 # 4 時間 30 分（Windows の中の自動の停止。止め忘れの備え）
-readonly PROBE_DEADLINE_SECONDS=14400                 # 4 時間（作業役が必ず終了する時刻。95_deadline_guard.sh と check_deadline）
-readonly FULL_TIME_LIMIT_SECONDS=9000                 # 2 時間 30 分（要求の打ち切り。この後は新しい要求を出さず、回収に移る）
+# 作業上限は起動の種類（PROBE_RUN_KIND。下の「起動の種類」）ごとに決める。全期間取得（fullfetch）は付録 K-16.6
+# （人間の第 18 回の決定「案のとおり」）の値。前回（最後の調査。付録 K-10.3）は 2 時間 30 分・2 時間・1 時間 30 分、
+# その前（付録 K-8・K-9）は 4 時間 30 分・4 時間・3 時間だった。
+readonly FULL_TIME_LIMIT_SECONDS=9000                 # 全期間取得の要求の打ち切り 2 時間 30 分（38_full_fetch.sh）
 readonly FULL_MAX_REQUESTS=750                        # 要求の上限（計画 672。残り 78 は 0 本の月のやり直しだけ。道具の側でも数える）
 readonly FINAL_TIME_LIMIT_SECONDS=5400                # 最後の調査（付録 K-10）の打ち切り 1 時間 30 分（前回の段。今回は使わない）
 readonly TS_TIME_LIMIT_SECONDS=10800                  # 時刻の調査（D12 §11.7）の作業上限 3 時間（前回の段。今回は使わない）
-# この起動の種類。fullfetch は全期間取得（付録 K-16）だけを行う起動で、他の段（30・35・36・37）は動かない。
-readonly PROBE_RUN_KIND="fullfetch"
 # 回収（SSM の出力と S3 から受け取る分）の合計の上限 1 GB（付録 K-16.6）。道具で数えられる分。
 readonly PROBE_COLLECT_LIMIT_BYTES=1073741824
 # 全期間取得の回収に使う S3 の一時バケット（人間の第 18 回の決定 (A)）。名前は
 # odyssey-mt5-probe-<取得日>-<乱数 8 桁>。IAM で許すのはこの接頭辞のバケットだけ（iam_policy_*.json）。
 readonly S3_BUCKET_PREFIX="${PROBE_NAME}-"
-readonly S3_KEY_PREFIX="full"
+# バケットの中の置き場の接頭辞。全期間取得は full、封印の取得は sealed。封印の取得はバケットの記録
+# （s3_bucket.env の S3_PREFIX）に書き、回収（45）と片付け（90）は記録の値を使う（load_s3_state）。
+S3_KEY_PREFIX="full"
+readonly SEALED_S3_KEY_PREFIX="sealed"
 # S3 の一時バケットを消した後、消えた（head-bucket が 404）と確かめるまでの待ち方（90_teardown.sh）。
 # 付録 K-17.6: `s3api wait bucket-not-exists`（5 秒 × 20 回）は「Max attempts exceeded」で止まったが、
 # 直後の head-bucket は 404 だった。間隔 10 秒 × 最大 30 回に延ばし、毎回の応答を記録する（人間の決定 2026-10-17 の①。
@@ -84,6 +85,10 @@ readonly STATE_FILE="${STATE_DIR}/state.env"
 readonly S3_STATE_FILE="${STATE_DIR}/s3_bucket.env"
 # 全期間取得の置き場（人間の第 18 回の決定。data/raw/oanda_mt5/<取得日>/<通貨>/。.gitignore の data/raw/* で版管理の外）
 readonly FULL_ROOT="${FULL_ROOT:-/Users/sanchez/Desktop/Odyssey-TradingResearch/data/raw/oanda_mt5}"
+# 封印の取得の原ファイルの置き場（D03 §16.5.4、PR #109 の仮置き S2b-6、ADR-0013 の改訂。
+# data/raw/oanda_mt5_sealed/<取得日>/<通貨>/。.gitignore の data/raw/* で版管理の外）。研究期間の置き場と分け、
+# 研究期間の道具が 2024 年以降のファイルを拾わないようにする。
+readonly SEALED_ROOT="${SEALED_ROOT:-/Users/sanchez/Desktop/Odyssey-TradingResearch/data/raw/oanda_mt5_sealed}"
 # キーペアの秘密鍵はリポジトリの外（~/.ssh）に置く。Windows の管理者のパスワードの復号にだけ使う。
 readonly KEY_DIR="${HOME}/.ssh"
 # Mac の Python（リポジトリの .python-version の影響を受けない、OS の Python を使う。標準ライブラリだけ）
@@ -91,6 +96,35 @@ readonly PY_MAC="${PY_MAC:-/usr/bin/python3}"
 # 時刻の調査の評価（tools.survey.mt5_time_survey）に使う、リポジトリの仮想環境の Python（3.12）
 REPO_PY="${REPO_PY:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.venv/bin/python}"
 readonly REPO_PY
+
+# --- 起動の種類（PROBE_RUN_KIND）と作業上限 -----------------------------------------------------
+# 10_launch.sh は環境変数 PROBE_RUN_KIND（既定 fullfetch）の値を状態（state.env の RUN_KIND）に書く。以後の
+# スクリプトは状態の値を使う（環境変数と状態が違えば止まる）。
+#   fullfetch       全期間取得（付録 K-16）。打ち切り 2 時間 30 分・終了 4 時間・自動の停止 4 時間 30 分
+#   sealed-bulk     封印の一括取得（ADR-0037。D15-18c (a)）。打ち切り 2 時間・終了 3 時間・自動の停止 3 時間 30 分
+#   sealed-periodic 封印の定期取得（ADR-0037。PR #109 の仮置き S2b-10）。打ち切り 1 時間・終了 2 時間・自動の停止 2 時間 30 分
+# 要求の上限は、全期間取得は FULL_MAX_REQUESTS、封印の取得は計画の max_requests（計画の数 ＋ 1 割の切り上げ。
+# 一括 300・定期 9）で、道具が manifest で数える。
+_state_kind=""
+if [[ -f "$STATE_FILE" ]]; then
+  _state_kind=$(sed -n 's/^RUN_KIND=//p' "$STATE_FILE" | tail -n 1)
+fi
+if [[ -n "$_state_kind" && -n "${PROBE_RUN_KIND:-}" && "$_state_kind" != "$PROBE_RUN_KIND" ]]; then
+  printf '[lib] 停止: 環境変数の PROBE_RUN_KIND=%s と、状態の RUN_KIND=%s が違う\n' "$PROBE_RUN_KIND" "$_state_kind" >&2
+  exit 1
+fi
+PROBE_RUN_KIND="${_state_kind:-${PROBE_RUN_KIND:-fullfetch}}"
+readonly PROBE_RUN_KIND
+case "$PROBE_RUN_KIND" in
+  fullfetch)       _shutdown=16200; _deadline=14400; _cutoff=9000 ;;
+  sealed-bulk)     _shutdown=12600; _deadline=10800; _cutoff=7200 ;;
+  sealed-periodic) _shutdown=9000;  _deadline=7200;  _cutoff=3600 ;;
+  *) printf '[lib] 停止: 知らない起動の種類 PROBE_RUN_KIND=%s\n' "$PROBE_RUN_KIND" >&2; exit 1 ;;
+esac
+readonly PROBE_SHUTDOWN_SECONDS="$_shutdown"          # Windows の中の自動の停止（止め忘れの備え）
+readonly PROBE_DEADLINE_SECONDS="$_deadline"          # 作業役が必ず終了する時刻（95_deadline_guard.sh と check_deadline）
+readonly REQUEST_TIME_LIMIT_SECONDS="$_cutoff"        # 要求の打ち切り（この後は新しい要求を出さず、回収に移る）
+unset _shutdown _deadline _cutoff _state_kind
 
 # 環境変数の認証情報や別のプロファイルが紛れ込まないようにする。
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE \
@@ -161,9 +195,10 @@ check_deadline() {
   fi
 }
 
-# 最後の調査（PROBE_RUN_KIND=final）・全期間取得（fullfetch）の起動では、一覧の外の要求を出す段を動かさない。
+# 最後の調査（PROBE_RUN_KIND=final）・全期間取得（fullfetch）・封印の取得（sealed-*）の起動では、一覧の外の
+# 要求を出す段を動かさない。
 forbid_in_final_run() {
-  [[ "$PROBE_RUN_KIND" != "final" && "$PROBE_RUN_KIND" != "fullfetch" ]] \
+  [[ "$PROBE_RUN_KIND" != "final" && "$PROBE_RUN_KIND" != "fullfetch" && "$PROBE_RUN_KIND" != sealed-* ]] \
     || die "この起動（${PROBE_RUN_KIND}）では、この段は動かさない（要求は決めた一覧だけ。付録 K-10.2・K-16.2）"
 }
 
@@ -181,6 +216,8 @@ load_s3_state() {
   source "$S3_STATE_FILE"
   : "${S3_BUCKET:?}" "${FETCH_DATE:?}"
   assert_probe_bucket "$S3_BUCKET"
+  # 封印の取得のバケットは記録に S3_PREFIX=sealed を持つ（全期間取得の記録には無い）。
+  S3_KEY_PREFIX="${S3_PREFIX:-full}"
 }
 save_s3_state() {  # save_s3_state KEY VALUE
   mkdir -p "$STATE_DIR"
@@ -238,7 +275,7 @@ wait_bucket_absent() {  # wait_bucket_absent <bucket>
   return 1
 }
 
-# Windows の中の自動の停止を、承認済みの時刻（起動の時刻 + PROBE_SHUTDOWN_SECONDS = 4 時間 30 分）に予約し直す
+# Windows の中の自動の停止を、承認済みの時刻（起動の時刻 + PROBE_SHUTDOWN_SECONDS。全期間取得は 4 時間 30 分）に予約し直す
 # PowerShell（20_prepare.sh が実行のたびに SSM で送る。人間の決定 2026-10-17 の (A)。D12 付録 K-18 の⑤）。
 # 起動の時の予約（10_launch.sh の user-data の shutdown /s /t）は初回の起動で 1 回だけ動き、再起動（msiexec の
 # 3010 の後など）で消えるため。起動の時刻は Mac の状態のファイルの LAUNCHED_AT_EPOCH（10_launch.sh が run-instances
