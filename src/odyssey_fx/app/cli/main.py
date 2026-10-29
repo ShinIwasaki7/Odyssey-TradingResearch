@@ -27,6 +27,10 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
   D09 §11.5 の書式で、`--repo-root` の試行台帳と研究ポリシーの版の登録簿も読む（段階5）。
 - `odyssey-fx experiment ledger`（段階5）: 試行台帳を研究ポリシーの版ごとにまとめた一覧を
   標準出力に出す（D09 §11.4。ファイルは書かない）。
+- `odyssey-fx gate judge-violation`（順 6。人間だけが使う管理コマンド）: 後から品質確認の条件違反と
+  判定した閲覧について、判定の行を品質確認の閲覧の記録に追記し、違反の範囲に重なる封印の区分の
+  `SEALED` の partition に消費の記録を追記して、commit・origin の既定ブランチへ push する
+  （ADR-0035 第3項。`--dry-run` は何も書かない）。
 
 **実行と評価を別のコマンドに分ける**（D07 §4.1）。評価は run を実行し直さず、保存された
 判断履歴と manifest だけを読む。同じ run を別の指標集合の版で評価し直しても、`runs/` の
@@ -48,7 +52,7 @@ import shutil
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from odyssey_fx.app import composition
 from odyssey_fx.app import mt5 as mt5_app
@@ -122,6 +126,9 @@ from odyssey_fx.marketdata.domain.snapshot import (
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
+
+if TYPE_CHECKING:  # pragma: no cover - 型の参照だけ（結線は使うときだけ読み込む）
+    from odyssey_fx.app.violation_judgment import JudgmentProgress
 
 __all__ = ["build_parser", "main"]
 
@@ -439,7 +446,53 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("."),
         help="現在の環境の `uv.lock` を読むリポジトリの位置（設定ファイルは読まない）",
     )
+    _add_gate_parsers(top)
     return parser
+
+
+def _add_gate_parsers(top: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """人間だけが使う関所の管理コマンド（ADR-0035 第3項の「書き手と経路」）。"""
+    gate = top.add_parser(
+        "gate", help="関所の管理コマンド（人間だけが使う。ADR-0035 第3項）"
+    ).add_subparsers(dest="gate_command", required=True)
+    judge = gate.add_parser(
+        "judge-violation",
+        help=(
+            "品質確認の条件違反の判定を記録し、重なる封印の partition に消費の記録を追記して"
+            " commit・origin の既定ブランチへ push する（ADR-0035 第3項）"
+        ),
+    )
+    judge.set_defaults(command="gate_judge_violation")
+    judge.add_argument("--access-id", required=True, help="違反と判定した閲覧の識別子")
+    judge.add_argument(
+        "--conditions",
+        type=int,
+        nargs="+",
+        required=True,
+        choices=(1, 3, 6),
+        help="違反した条件（ADR-0035 第3項の 1・3・6 の 1 つ以上）",
+    )
+    judge.add_argument("--by", required=True, help="判定者")
+    judge.add_argument(
+        "--judged-at", required=True, help="判定の日時（UTC。例 2026-10-29T12:00:00Z）"
+    )
+    judge.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="リポジトリの位置（品質確認の閲覧の記録と git の作業木。既定は現在のディレクトリ）",
+    )
+    judge.add_argument(
+        "--snapshots",
+        type=Path,
+        default=None,
+        help="snapshot の基点（既定は <repo-root>/data/snapshots。リポジトリの中に置く）",
+    )
+    judge.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="何も書かず、git も動かさず、判定の行と重なる partition の数だけを出す",
+    )
 
 
 def _add_refill_parsers(data: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1625,6 +1678,107 @@ def _run_experiment_reproduce(args: argparse.Namespace, out: _Writer) -> int:
     return _EXIT_OK if report.verdict is ReproductionVerdict.REPRODUCED else _EXIT_NOT_REPRODUCED
 
 
+# --- gate judge-violation（ADR-0035 第3項）----------------------------------
+
+
+def _run_gate_judge_violation(args: argparse.Namespace, out: _Writer) -> int:
+    """後から品質確認の条件違反と判定した閲覧を記録する（人間だけが使う管理コマンド）。
+
+    出力は件数・識別子・時刻だけ（partition の足を読まない）。止まったら、どこまで進んだかを
+    件数と識別子で出し、終了コード 1 で終える。
+    """
+    # 結線（関所の品質確認の入口を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import violation_judgment as judging
+    from odyssey_fx.app.holdout_access_log import GitHoldoutAccessLog
+    from odyssey_fx.evaluation.application.ports import HoldoutAccessLogStop
+    from odyssey_fx.marketdata.adapters.quality_access_log_store import (
+        quality_access_line_bytes,
+    )
+
+    repo_root = Path(args.repo_root)
+    snapshots = args.snapshots if args.snapshots is not None else repo_root / "data" / "snapshots"
+    conditions = frozenset(args.conditions)
+    judged_at = UtcTime.parse(args.judged_at)
+    out.line(f"閲覧の識別子: {args.access_id}")
+    try:
+        if args.dry_run:
+            plan = judging.plan_judgment(
+                repo_root=repo_root,
+                snapshots_root=snapshots,
+                access_id=args.access_id,
+                conditions=conditions,
+                judged_by=args.by,
+                judged_at=judged_at,
+            )
+            out.line("乾式実行: 何も書いていない（git も動かしていない）")
+            if plan.existing:
+                out.line(
+                    f"判定の行: 既にある（行の識別子 {plan.judgment.row_id}。"
+                    "やり直しでは追記しない）"
+                )
+            else:
+                line = quality_access_line_bytes(plan.judgment).decode("utf-8").rstrip("\n")
+                out.line(f"判定の行（追記する行。行の識別子は実行のときに作り直す）: {line}")
+            if plan.differing:
+                out.line(f"既にある判定の行と入力が違う項目: {', '.join(plan.differing)}")
+            consumed = len(plan.covered) - len(plan.to_consume)
+            out.line(
+                f"違反の範囲に重なる封印の partition: {len(plan.covered)}"
+                f"（snapshot {len(plan.snapshots)}）。消費の記録を追記するもの（SEALED）:"
+                f" {len(plan.to_consume)}、既に使用済み（CONSUMED）: {consumed}"
+            )
+            return _EXIT_OK
+        log = GitHoldoutAccessLog(repo_root, snapshots)
+        progress = judging.judge_violation(
+            repo_root=repo_root,
+            snapshots_root=snapshots,
+            access_id=args.access_id,
+            conditions=conditions,
+            judged_by=args.by,
+            judged_at=judged_at,
+            log=log,
+        )
+    except HoldoutAccessLogStop as stop:
+        out.line(f"失敗（{stop.stage}）: {stop.detail}。何も書いていない")
+        return _EXIT_FAILED
+    except judging.ViolationJudgmentStopped as stopped:
+        out.line(f"失敗（{stopped.stage}）: {stopped.detail}")
+        out.lines(_judgment_progress_lines(stopped.progress))
+        return _EXIT_FAILED
+    out.lines(_judgment_progress_lines(progress))
+    return _EXIT_OK
+
+
+def _judgment_progress_lines(progress: JudgmentProgress) -> list[str]:
+    """管理コマンドの進み具合（件数・識別子だけ）。"""
+    judgment = {
+        True: "この回に追記した",
+        False: "既にあったので追記しなかった（やり直し）",
+        None: "追記していない",
+    }[progress.judgment_appended]
+    written = ", ".join(progress.written_snapshots) or "なし"
+    commit = (
+        f"{progress.commit}（origin の既定ブランチへ push した）"
+        if progress.commit is not None
+        else "なし"
+    )
+    differing = (
+        [f"既にある判定の行と入力が違う項目（既にある行を使った）: {', '.join(progress.differing)}"]
+        if progress.differing
+        else []
+    )
+    return [
+        f"判定の行: {judgment}（行の識別子 {progress.judgment_row_id or 'なし'}）",
+        *differing,
+        f"違反の範囲に重なる封印の partition: {progress.covered}"
+        f"（snapshot {len(progress.snapshots)}）。うち既に使用済み: {progress.already_consumed}",
+        f"消費の記録: この回に {progress.consumed_now} / {progress.to_consume} 件追記した"
+        f"（追記した snapshot: {written}）",
+        f"commit: {commit}",
+    ]
+
+
 # --- 入口 -------------------------------------------------------------------
 
 
@@ -1674,6 +1828,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "experiment_reproduce": _run_experiment_reproduce,
         "experiment_report": _run_experiment_report,
         "experiment_ledger": _run_experiment_ledger,
+        "gate_judge_violation": _run_gate_judge_violation,
     }
     try:
         return handlers[args.command](args, out)
