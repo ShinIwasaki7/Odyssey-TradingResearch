@@ -28,7 +28,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
@@ -49,6 +49,8 @@ from odyssey_fx.app.mt5 import (
     load_mt5_rules,
 )
 from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.money import decimal_from_str
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.quality_permit import (
@@ -401,15 +403,15 @@ def _require_inside_window(
 def _spec_value(value: object) -> Decimal | None:
     """取得記録の `point`（JSON の数）を `Decimal` にする。
 
-    浮動小数は `repr`（最短の 10 進表記）を経て、二進の誤差を持ち込まない。
+    浮動小数は `repr`（最短の 10 進表記）を経て、二進の誤差を持ち込まない（ADR-0012。構築は
+    `money.decimal_from_str`。`NaN`・`Infinity` は読めない値として `None`）。
     """
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         return None
     try:
-        out = Decimal(repr(value)) if isinstance(value, float) else Decimal(str(value))
-    except InvalidOperation:
+        return decimal_from_str(repr(value) if isinstance(value, float) else str(value))
+    except KernelValueError:
         return None
-    return out if out.is_finite() else None
 
 
 def require_symbol_spec_matches(
