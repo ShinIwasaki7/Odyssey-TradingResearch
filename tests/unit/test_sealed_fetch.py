@@ -334,6 +334,7 @@ def test_a_periodic_fetch_writes_prices_only_into_the_files_and_verifies(
     shown = json.dumps(result) + capsys.readouterr().out
     for text in (manifest_text, log_text, shown):
         assert "123.4" not in text and "123.7" not in text and "123.6" not in text
+    assert "disk_free" not in log_text  # 空きの差から端末の履歴の大きさが分かるので記録しない
     entry = json.loads(manifest_text)["files"]["P-USDJPY-20261101T2200Z"]
     data = gzip.decompress((out / entry["file"]).read_bytes()).decode()
     assert len(data.splitlines()) == 1 + 3  # 区間の終わりちょうどの足は保存しない

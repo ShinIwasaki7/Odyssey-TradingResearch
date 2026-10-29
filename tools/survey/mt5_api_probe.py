@@ -1899,7 +1899,8 @@ def run_sealed_fetch(
     全期間取得（``run_full_fetch``）と同じ扱い: 取得済みの要求は出さない、0 本なら待って出し直す
     （数えない）、この回の最初の要求が 0 本ならその通貨の残りを出さずに止まる、``redo_empty`` なら
     0 本だった要求だけを出す。要求の直前にも窓を確かめる（``check_sealed_request``）。価格は CSV
-    にだけ書く。
+    にだけ書く。ディスクの空きは低ディスクの停止の判定にだけ使い、記録しない（空きの差から端末の
+    履歴の大きさが分かるため。PR #109 の仮置き S2b-11・D03 §16.4）。
     """
     stage = str(plan["stage"])
     limit = int(plan["max_requests"])
@@ -1994,7 +1995,6 @@ def run_sealed_fetch(
                             "returned_in_window": len(rows),
                             "out_of_window": len(outside),
                             "executed_at_utc": stamp,
-                            "disk_free_bytes": free,
                         },
                         ensure_ascii=False,
                     )
@@ -2058,8 +2058,11 @@ def run_sealed_fetch(
 def verify_sealed_dir(root: Path, plan_path: Path, pairs: Sequence[str] | None = None) -> list[str]:
     """回収した封印の取得の置き場を manifest と計画と照合し、問題の一覧を返す（Mac）。
 
-    gzip と展開後の SHA-256・行数・見出し行・要求の区間が計画の要求と同じこと・時刻（API の生の
-    値）が要求の区間の中にあること・manifest に無いファイルが無いことを確かめる。価格は読まない。
+    要求の区間が計画の要求と同じこと・ファイルの置き場・gzip のバイト列の SHA-256・manifest に
+    無いファイルが無いことだけを確かめる。**ファイルを展開しない・行に分けない**（封印の原ファイル
+    の中身を読むのは関所の品質確認の許可の下の受入れだけ。ADR-0036 第8項・D11 §10 の受入条件 25。
+    展開後の SHA-256・行数・見出し・時刻が要求の区間の中にあることは、受入れが許可の下で確かめる。
+    D03 §16.3.1 の検査 1・2）。全期間取得の ``verify_full_dir`` と違い、時刻の列も読まない。
     """
     problems: list[str] = []
     manifest_path = root / FULL_MANIFEST
@@ -2095,22 +2098,6 @@ def verify_sealed_dir(root: Path, plan_path: Path, pairs: Sequence[str] | None =
         if _sha256(path) != e["sha256_gz"]:
             problems.append(f"{rid}: gzip の SHA-256 が合わない")
             continue
-        data = gzip.decompress(path.read_bytes())
-        if _sha256_bytes(data) != e["sha256_csv"]:
-            problems.append(f"{rid}: 展開後の SHA-256 が合わない")
-            continue
-        lines = data.decode("utf-8").splitlines()
-        if not lines or lines[0] != ",".join(RATE_FIELDS):
-            problems.append(f"{rid}: 見出し行が違う")
-            continue
-        if len(lines) - 1 != e["rows"]:
-            problems.append(
-                f"{rid}: 行数が合わない（manifest {e['rows']}、ファイル {len(lines) - 1}）"
-            )
-            continue
-        times = [int(line.split(",", 1)[0]) for line in lines[1:]]
-        if any(not (lo.timestamp() <= t < hi.timestamp()) for t in times):
-            problems.append(f"{rid}: 区間の外の時刻がある")
     for path in sorted(root.glob("*/*.csv.gz")):
         rel = path.relative_to(root).as_posix()
         if (want is None or rel.split("/", 1)[0] in want) and rel not in listed:

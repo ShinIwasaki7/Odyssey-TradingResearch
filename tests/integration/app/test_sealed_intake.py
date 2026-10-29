@@ -308,6 +308,50 @@ def test_a_raw_file_that_is_not_the_recorded_one_is_never_parsed(
     assert isinstance(end, QualityAccessEnd) and end.result is QualityAccessResult.STOPPED
 
 
+def _edit_record(repo: Path, copy: Path, change: Any) -> None:
+    """取得記録（原本と写し）を人工に書き換える（価格は含まない記録だけ）。"""
+    raw = repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE / "manifest.json"
+    payload = json.loads(raw.read_text(encoding="utf-8"))
+    change(payload)
+    text = json.dumps(payload, ensure_ascii=False, indent=1)
+    raw.write_text(text, encoding="utf-8")
+    copy.write_text(text, encoding="utf-8")
+
+
+def test_a_currency_with_an_empty_request_is_not_accepted_this_time(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """0 本の要求が残った通貨のその回は受け入れない（D03 §16.5.8、PR #109 の仮置き S2b-13）。"""
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+
+    def empty(payload: dict[str, Any]) -> None:
+        (entry,) = payload["files"].values()
+        entry.update(status="empty", file=None, rows=0, first_bar_time=None, last_bar_time=None)
+
+    _edit_record(repo, copy, empty)
+    assert _accept(repo, copy) != 0
+    assert "取得済みでない" in capsys.readouterr().err
+    assert _pending(repo) == [] and _log(repo).rows == ()
+
+
+def test_a_periodic_record_reaching_before_the_acquisition_start_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """取得記録の段に合わない要求の区間（検査 2）は、読む前に止める。"""
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+
+    def earlier(payload: dict[str, Any]) -> None:
+        (entry,) = payload["files"].values()
+        entry["requested_from_api_time"] = "2026-10-26T00:00:00+00:00"
+
+    _edit_record(repo, copy, earlier)
+    assert _accept(repo, copy) != 0
+    assert "取得の開始時点" in capsys.readouterr().err
+    assert _pending(repo) == [] and _log(repo).rows == ()
+
+
 def test_a_consumed_period_does_not_return_to_sealed_on_a_new_intake(tmp_path: Path) -> None:
     """例外 2（ADR-0038 第3項の 3）。
 

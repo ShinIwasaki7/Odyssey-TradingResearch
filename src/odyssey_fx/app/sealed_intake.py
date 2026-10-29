@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -65,6 +65,7 @@ from odyssey_fx.marketdata.application.mt5_acceptance import (
     InitialStateOf,
     Mt5AcceptanceFailed,
     Mt5FetchEntry,
+    Mt5ReadFile,
     build_mt5_pending,
 )
 from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, HoldoutState
@@ -281,29 +282,80 @@ def _fetch_record(path: Path) -> dict[str, object]:
     return payload
 
 
+def _utc_of(api_epoch: int, symbol: Symbol, rules: Mt5Rules, *, end: bool) -> datetime:
+    """API の時刻を標準の組で UTC に直す（表は API の時刻の暦日で引く。終わりは 1 分前の暦日）。"""
+    api = datetime.fromtimestamp(api_epoch, UTC)
+    key = api - timedelta(minutes=1) if end else api
+    row = rules.table.row_for(str(symbol), key.date())
+    if row is None:
+        raise SealedIntakeRefused(
+            f"時刻の規則の表 {rules.table.table_id} が覆わない期間の要求（{api.isoformat()}）。"
+            "受入れの前に止める（D03 §16.2.4）"
+        )
+    return api - timedelta(hours=row.offset_hours(TimeRuleVariant.STANDARD))
+
+
 def _require_inside_window(
-    entries: Sequence[Mt5FetchEntry], window: SealedWindowConfig, rules: Mt5Rules
+    entries: Sequence[Mt5FetchEntry],
+    window: SealedWindowConfig,
+    rules: Mt5Rules,
+    stage: object,
 ) -> None:
-    """要求の区間が許可の窓の中か（標準の組の変換で UTC に直す。D03 §16.3.1 の検査 2）。"""
+    """要求の区間が許可の窓と取得の段に合うか（D03 §16.3.1 の検査 2 のうち、読む前に分かる部分）。
+
+    標準の組の変換で UTC に直し、始まりが `allowed_start` 以上、一括取得は終わりが取得の開始時点
+    以下、定期取得は始まりが取得の開始時点以上であることを確かめる（ADR-0037 第2項の 3・
+    第4項の 3）。
+    全行の足の始まりが要求の区間の中にあることは、許可の下で読んだ後に確かめる
+    （`_require_rows_inside_requests`）。
+    """
     if window.acquisition_start is None:
         raise SealedIntakeRefused(
             "窓の設定の取得の開始時点が空。2024-01-01 以降の足を含む受入れを始めない"
             "（ADR-0038 第1項）"
         )
+    if stage not in ("bulk", "periodic"):
+        raise SealedIntakeRefused(f"取得記録の段 {stage!r} は bulk でも periodic でもない")
+    acquisition = window.acquisition_start.value
     for entry in entries:
-        api_from = datetime.fromtimestamp(entry.requested_from_api, UTC)
-        row = rules.table.row_for(str(entry.symbol), api_from.date())
-        if row is None:
-            raise SealedIntakeRefused(
-                f"{entry.rid}: 時刻の規則の表 {rules.table.table_id} が覆わない期間の要求"
-                "（受入れの前に止める。D03 §16.2.4）"
-            )
-        utc_from = api_from - timedelta(hours=row.offset_hours(TimeRuleVariant.STANDARD))
+        utc_from = _utc_of(entry.requested_from_api, entry.symbol, rules, end=False)
+        utc_to = _utc_of(entry.requested_to_api, entry.symbol, rules, end=True)
         if utc_from < window.allowed_start.value:
             raise SealedIntakeRefused(
                 f"{entry.rid}: 要求の始まり {utc_from.isoformat()} が許可の窓の始まり"
                 f" {window.allowed_start} より前（ADR-0037 第4項の 3）"
             )
+        if stage == "bulk" and utc_to > acquisition:
+            raise SealedIntakeRefused(
+                f"{entry.rid}: 一括取得の要求が取得の開始時点 {window.acquisition_start} を越える"
+                "（ADR-0037 第2項の 3）"
+            )
+        if stage == "periodic" and utc_from < acquisition:
+            raise SealedIntakeRefused(
+                f"{entry.rid}: 定期取得の要求が取得の開始時点 {window.acquisition_start} より前から"
+                "始まる（ADR-0037 第2項の 3）"
+            )
+
+
+def _require_rows_inside_requests(
+    entries: Sequence[Mt5FetchEntry], files: Mapping[str, Mt5ReadFile]
+) -> None:
+    """全行の足の始まり（API の時刻）が要求の区間の中か（検査 2。外れれば失敗。件数だけ）。"""
+    outside = 0
+    for entry in entries:
+        read = files.get(entry.rid)
+        if read is None:
+            continue
+        outside += sum(
+            1
+            for row in read.rows
+            if not entry.requested_from_api <= row.api_time < entry.requested_to_api
+        )
+    if outside:
+        raise Mt5AcceptanceFailed(
+            f"{outside} row(s) start outside their requested intervals; acceptance fails and"
+            " nothing is written (D03 §16.3.1 の検査 2. counts only)"
+        )
 
 
 def accept_sealed(
@@ -349,14 +401,18 @@ def accept_sealed(
         raise SealedIntakeRefused(
             f"取得記録 {record_path} と版管理の写し {manifest_copy} が違う（D03 §16.3.1 の検査 1）"
         )
-    own = [
-        entry
-        for entry in read_fetch_manifest(record_path)
-        if entry.symbol == symbol and entry.acquired
-    ]
+    own = [entry for entry in read_fetch_manifest(record_path) if entry.symbol == symbol]
     if not own:
-        raise SealedIntakeRefused(f"{record_path} に {symbol} の取得済みの要求が無い")
-    _require_inside_window(own, window, rules)
+        raise SealedIntakeRefused(f"{record_path} に {symbol} の要求が無い")
+    missing = sorted(entry.rid for entry in own if not entry.acquired)
+    if missing:
+        # 0 本・失敗の要求が残った通貨のその回は受け入れない（D03 §16.5.8、PR #109 の仮置き
+        # S2b-13。2024 年以降のどの月・週にも取引日はあるので、0 本は取り寄せの問題とみなす）。
+        raise SealedIntakeRefused(
+            f"{symbol} の要求 {len(missing)} 件が取得済みでない（{', '.join(missing)}）。この回の"
+            f" {symbol} は受け入れない。取り直しの後に受け入れる（D03 §16.5.8）"
+        )
+    _require_inside_window(own, window, rules, record.get("stage"))
 
     # 初期状態の材料は読み取りの前にそろえる（読めなければ始めない。ADR-0038 第3項の 2・3）
     provider = initial_state_provider(_violations(root), existing_sealed_partitions(snapshots_root))
@@ -380,6 +436,7 @@ def accept_sealed(
         files = read_symbol_files(
             raw_dir, own, datasource.columns, read_permit=permit, location_prefix=location
         )
+        _require_rows_inside_requests(own, files)
         built = build_mt5_pending(
             created_at=created_at,
             symbol=symbol,

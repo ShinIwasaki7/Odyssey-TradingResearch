@@ -63,9 +63,17 @@ for p in ${pairs//,/ }; do
 done
 
 size=$("$PY_MAC" -I -c 'import os,sys; print(sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(sys.argv[1]) for f in fs))' "$stage")
-collected="${COLLECTED_BYTES:-0}"
-(( collected + size <= PROBE_COLLECT_LIMIT_BYTES )) \
-  || die "回収の合計が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える（済み ${collected}、今回 ${size}）。置かない"
+if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
+  # 封印の原ファイルの大きさは表示も記録もしない（D03 §16.4「見てはいけない値」。中身で決まる値）。上限は
+  # この回の回収だけで確かめる（通貨ごとの回収の合計は記録しない。S4a の PR の仮置き）。
+  collected=0
+  (( size <= PROBE_COLLECT_LIMIT_BYTES )) \
+    || die "この回の回収が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える。置かない（大きさは表示しない）"
+else
+  collected="${COLLECTED_BYTES:-0}"
+  (( collected + size <= PROBE_COLLECT_LIMIT_BYTES )) \
+    || die "回収の合計が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える（済み ${collected}、今回 ${size}）。置かない"
+fi
 
 (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe "${verify_args[@]}" --root "$stage" --pairs "$pairs") \
   || die "S3 から受け取ったファイルが manifest と合わない。置かない（S3 には残っている）"
@@ -91,9 +99,13 @@ cp "$stage/manifest.json" "${dest_root}/manifest.json"
 (cd "$PROBE_SCRIPT_DIR/../../.." && "$REPO_PY" -m tools.survey.mt5_api_probe "${verify_args[@]}" --root "$dest_root" --pairs "$pairs") \
   || die "置いた後の照合が合わない: ${dest_root}"
 
-save_s3_state COLLECTED_BYTES $(( collected + size ))
 save_s3_state COLLECTED_MANIFEST_SHA256 "$(sha256_of "${dest_root}/manifest.json")"
-log "回収した: ${#new_files[@]} ファイルを新しく置いた（${dest_root}。回収の合計 $(( collected + size )) バイト）"
+if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
+  log "回収した: ${#new_files[@]} ファイルを新しく置いた（${dest_root}）"
+else
+  save_s3_state COLLECTED_BYTES $(( collected + size ))
+  log "回収した: ${#new_files[@]} ファイルを新しく置いた（${dest_root}。回収の合計 $(( collected + size )) バイト）"
+fi
 # 件数だけを表示する（価格は表示しない）。
 "$PY_MAC" -I - "${dest_root}/manifest.json" "$pairs" <<'PY'
 import json, sys
