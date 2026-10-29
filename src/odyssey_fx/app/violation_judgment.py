@@ -107,6 +107,8 @@ class JudgmentPlan:
     covered: tuple[SnapshotSealedPartition, ...]
     to_consume: tuple[SnapshotSealedPartition, ...]
     snapshots: tuple[str, ...]
+    #: commit する消費の記録の snapshot（この判定と、他のすべての判定の行の範囲の snapshot）。
+    publish_snapshots: tuple[str, ...] = ()
 
 
 def _now() -> UtcTime:
@@ -231,6 +233,28 @@ def plan_judgment(
             " finalize or discard those snapshots first, then run this command again",
             progress,
         )
+    # 他の閲覧の判定の行: その範囲に `SEALED` が残っていれば、その閲覧のやり直しを先にする
+    # （判定の行だけが消費の記録なしに origin へ出ないようにする）。範囲の snapshot の消費の記録は、
+    # 品質確認の閲覧の記録と一緒に commit する（前の回の未 commit の消費の記録を置き去りにしない）。
+    starts = {row.access_id: row for row in contents.rows if isinstance(row, QualityAccessStart)}
+    others: set[str] = set()
+    publish = {item.snapshot_id for item in covered}
+    for row in contents.rows:
+        if not isinstance(row, QualityAccessJudgment) or row.access_id == access_id:
+            continue
+        other_scopes = violation_scopes((starts[row.access_id], row))
+        for item in partitions:
+            if any(scope.covers(item.partition.partition_id) for scope in other_scopes):
+                publish.add(item.snapshot_id)
+                if item.partition.state is not HoldoutState.CONSUMED:
+                    others.add(row.access_id)
+    if others:
+        raise ViolationJudgmentStopped(
+            "other-judgment",
+            f"the judgments of the accesses {sorted(others)} still leave SEALED (or unknown)"
+            " partitions in their range; run this command for those accesses first",
+            progress,
+        )
     to_consume = tuple(item for item in covered if item.partition.state is HoldoutState.SEALED)
     return JudgmentPlan(
         judgment=judgment,
@@ -239,6 +263,7 @@ def plan_judgment(
         covered=covered,
         to_consume=to_consume,
         snapshots=tuple(sorted({item.snapshot_id for item in covered})),
+        publish_snapshots=tuple(sorted(publish)),
     )
 
 
@@ -305,7 +330,7 @@ def judge_violation(
         QUALITY_ACCESS_LOG_PATH.as_posix(),
         *(
             _relative(root, Path(snapshots_root) / snapshot / "access_log.jsonl", progress)
-            for snapshot in plan.snapshots
+            for snapshot in plan.publish_snapshots
         ),
     ]
     if (root / QUALITY_ACCESS_LOCK_PATH).exists():

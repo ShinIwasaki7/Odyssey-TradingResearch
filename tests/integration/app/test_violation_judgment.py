@@ -598,3 +598,50 @@ def test_a_refused_commit_leaves_nothing_staged(
     hook.unlink()
     assert _judge(repo, accept_id) == 0
     assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin) != head
+
+
+def test_another_judgment_with_sealed_partitions_left_stops_first(
+    sealed_base: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """他の閲覧の判定の範囲に SEALED が残れば、その閲覧のやり直しを先にする（Codex 3 巡目）。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    judged = QualityAccessJudgment(
+        row_id="a-judgment",
+        access_id=accept_id,
+        violated_conditions=frozenset({1}),
+        judged_at=UtcTime.parse(JUDGED_AT),
+        judged_by="人間",
+    )
+    assert QualityAccessLogFile(repo).append(judged) == judged  # 消費の記録の前に止まった跡
+    _retroactive_start(repo, "eurusd-audit", "EURUSD")
+    before = _snapshot_bytes(repo)
+    capsys.readouterr()
+    assert _judge(repo, "eurusd-audit") == 1
+    printed = capsys.readouterr().out
+    assert "失敗（other-judgment）" in printed and accept_id in printed
+    assert _snapshot_bytes(repo) == before
+    assert _judge(repo, accept_id) == 0  # 先にやり直すと
+    assert _judge(repo, "eurusd-audit") == 0  # 次の判定へ進める
+    assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin)
+
+
+def test_an_unpublished_consumption_of_another_judgment_is_committed_with_the_log(
+    sealed_base: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """前の判定の push が断られて残った消費の記録は、次の判定の commit に一緒に入る。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    assert _judge(repo, accept_id) == 1
+    hook.unlink()
+    _retroactive_start(repo, "eurusd-audit", "EURUSD")
+    capsys.readouterr()
+    assert _judge(repo, "eurusd-audit") == 0
+    final = _final(repo)
+    changed = _git(repo, "show", "--name-only", "--format=", "HEAD").splitlines()
+    assert f"data/snapshots/{final.name}/access_log.jsonl" in changed
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin)
