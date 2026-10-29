@@ -142,12 +142,17 @@ class GitHoldoutAccessLog:
         """
         path = self._root / rel
         self._require_not_ignored(rel)
-        committed = subprocess.run(  # noqa: S603
-            ["git", "-C", str(self._root), "show", f"HEAD:{rel}"],  # noqa: S607
-            capture_output=True,
-            check=False,
+        # HEAD に有るか無いかを先に決める（git の失敗を「無い」と読まない）。
+        in_head = bool(self._git("base", "ls-tree", "--name-only", "HEAD", "--", rel).strip())
+        committed = (
+            subprocess.run(  # noqa: S603
+                ["git", "-C", str(self._root), "show", f"HEAD:{rel}"],  # noqa: S607
+                capture_output=True,
+                check=False,
+            )
+            if in_head
+            else None
         )
-        in_head = committed.returncode == 0
         if in_head and not path.is_file():
             raise HoldoutAccessLogStop(
                 "base",
@@ -156,7 +161,9 @@ class GitHoldoutAccessLog:
             )
         if not path.is_file():
             return
-        if in_head:
+        if committed is not None:
+            if committed.returncode != 0:
+                raise HoldoutAccessLogStop("base", f"{rel} cannot be read from HEAD")
             if not path.read_bytes().startswith(committed.stdout):
                 raise HoldoutAccessLogStop(
                     "base",
