@@ -18,7 +18,7 @@ source_sections: "D03 §15.2・§15.4・§15.6・§15.7・§16.2、D06 §18.9"
 
 time_rule_table:
   file: docs/design/time_rules/time_rule_table_sealed_v1.yaml
-  approved_list: docs/design/time_rules/approved_time_rule_tables.yaml
+  approved_list: docs/design/time_rules/approved_time_rule_tables_sealed.yaml  # 研究期間の一覧は変えない（要決定 C）
 
 calendar:
   # 休場の判定（D03 §15.2 の順 1・§15.6 の 1・§16.2.5）。内容の承認は順 6 の S4a の PR の承認の対象（カレンダー）。

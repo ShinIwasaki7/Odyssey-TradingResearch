@@ -45,7 +45,7 @@ PRICE = "157.4321"
 COPIED = (
     "docs/design/counting_rules/counting_rules_sealed_v1.yaml",
     "docs/design/time_rules/time_rule_table_sealed_v1.yaml",
-    "docs/design/time_rules/approved_time_rule_tables.yaml",
+    "docs/design/time_rules/approved_time_rule_tables_sealed.yaml",
     "docs/design/time_rules/time_rule_table_v1.yaml",
     "configs/calendars/fx_ny17_oanda_v2.yaml",
     "configs/calendars/fx_ny17_v2.yaml",
@@ -435,6 +435,10 @@ def test_the_research_acceptance_refuses_the_sealed_raw_directory(
     shutil.copy(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml", repo / "configs/calendars/")
     shutil.copy(
         ROOT / "tools/survey/oanda_holiday_exceptions_2026-10-16.json", repo / "tools/survey/"
+    )
+    shutil.copy(
+        ROOT / "docs/design/time_rules/approved_time_rule_tables.yaml",
+        repo / "docs/design/time_rules/",
     )
     research_copy = repo / f"docs/data/oanda_mt5_full_fetch_{FETCH_DATE}/manifest.json"
     research_copy.parent.mkdir(parents=True)

@@ -50,7 +50,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from odyssey_fx.app import composition, sealed_intake
+from odyssey_fx.app import composition
 from odyssey_fx.app import mt5 as mt5_app
 from odyssey_fx.app.cli import summary
 from odyssey_fx.app.config import (
@@ -70,7 +70,6 @@ from odyssey_fx.app.config.experiment_v2 import (
 )
 from odyssey_fx.app.config.refill import load_calendar_ref, load_refill_provider
 from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
-from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
 from odyssey_fx.backtest.trace.result import RunStatus
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
@@ -731,6 +730,11 @@ def _run_accept_mt5_sealed(args: argparse.Namespace, out: _Writer) -> int:
     出力は件数・時刻・区間・ハッシュ・合否だけ（ADR-0037 第1項の 4、D03 §16.4）。許可が出ない・
     記録に失敗したときは何も読まずに失敗する（ADR-0036 第7項）。
     """
+    # 封印の取り込みの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import sealed_intake
+    from odyssey_fx.app.quality_check import QualityCheckRefused
+
     if args.raw_root is not None or args.months is not None:
         raise ConfigError(
             "--sealed では --raw-root と --months を使わない（原データは"
@@ -825,6 +829,8 @@ def _rerun_calendar(
 
 def _mt5_rules_for(repo_root: Path, manifest: SnapshotManifest) -> mt5_app.Mt5Rules:
     """MT5 経路の snapshot の規則（封印の snapshot は封印用の数え方の規則。D03 §16.2）。"""
+    from odyssey_fx.app import sealed_intake  # 使うときだけ読み込む（関所を含むため）
+
     if sealed_intake.is_sealed_snapshot(manifest):
         return mt5_app.load_mt5_rules(repo_root, mt5_app.SEALED_COUNTING_RULES)
     return mt5_app.load_mt5_rules(repo_root)
@@ -837,6 +843,8 @@ def _mt5_boundaries(repo_root: Path, manifest: SnapshotManifest) -> Mt5Boundarie
     （研究期間の足だけを持つので、どちらの境界でも研究履歴になる。受入れが封印の区分の足を
     拒むので、再実行で 2024 年以降の足が現れることは無い）。
     """
+    from odyssey_fx.app import sealed_intake  # 使うときだけ読み込む（関所を含むため）
+
     if sealed_intake.is_sealed_snapshot(manifest):
         return load_sealed_window(repo_root / SEALED_WINDOW_PATH).boundaries
     return INITIAL_ACCESS_BOUNDARIES
@@ -919,6 +927,11 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
     封印の区分の partition を持つ snapshot は、分類・確定を関所の品質確認の許可の下で行い
     （ADR-0037 第1項の 3 の 3）、終了の行を書けた後にだけ最終 snapshot を書く。
     """
+    # 封印の取り込みの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import sealed_intake
+    from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
+
     store = composition.snapshot_store(args.out)
     pending_directory = f"{PENDING_DIRECTORY}/{args.pending}"
 
@@ -990,6 +1003,11 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
 
 def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
     """承認と価格基準の宣言記録を記入する（D03 §3.7.1 の 2、§10 の `approve`）。"""
+    # 封印の取り込みの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import sealed_intake
+    from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
+
     if PENDING_DIRECTORY in Path(args.snapshot).parts:
         raise ConfigError(
             f"{args.snapshot!r} は暫定 snapshot である。暫定 snapshot は承認の対象に"
