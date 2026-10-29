@@ -410,6 +410,25 @@ def test_a_consumed_period_does_not_return_to_sealed_on_a_new_intake(tmp_path: P
     assert others and all(value == (HoldoutState.SEALED, ()) for value in others)
 
 
+def test_an_unknown_state_of_an_overlapping_partition_stops_before_reading(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """重なる既にある partition の消費の記録が壊れていれば、原ファイルを読む前に止める。"""
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    assert _accept(repo, copy) == 0
+    (pending_dir,) = _pending(repo)
+    assert _classify(repo, pending_dir.name, tmp_path) == 0
+    snapshots = repo / "data" / "snapshots"
+    (final,) = [p for p in snapshots.iterdir() if p.name != "_pending"]
+    (final / "access_log.jsonl").write_text("{broken\n", encoding="utf-8")
+    before = len(_log(repo).rows)
+    assert _accept(repo, copy, variant="candidate") != 0
+    assert "cannot be derived" in capsys.readouterr().err
+    assert len(_log(repo).rows) == before  # 閲覧の記録の開始の行も書いていない（読んでいない）
+    assert _pending(repo) == []
+
+
 def test_classify_refuses_an_acceptance_without_a_completed_end_row(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

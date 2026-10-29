@@ -46,7 +46,7 @@ from odyssey_fx.app.mt5 import (
 )
 from odyssey_fx.app.quality_check import QualityCheckRefused, run_quality_check
 from odyssey_fx.common.symbol import Symbol
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.quality_permit import (
     SEALED_RAW_ROOT,
     QualityCheckRequest,
@@ -68,7 +68,12 @@ from odyssey_fx.marketdata.application.mt5_acceptance import (
     Mt5ReadFile,
     build_mt5_pending,
 )
-from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, HoldoutState
+from odyssey_fx.marketdata.domain.access import (
+    OANDA_SEALED_CLASSES,
+    HoldoutState,
+    next_trading_week_start,
+    trading_week_start,
+)
 from odyssey_fx.marketdata.domain.errors import HoldoutStateUnknown, MarketDataValueError
 from odyssey_fx.marketdata.domain.quality_access import (
     SEALED_INTAKE_OUTPUT_KINDS,
@@ -337,6 +342,39 @@ def _require_inside_window(
             )
 
 
+def _require_known_states(
+    existing: Sequence[ExistingSealedPartition],
+    symbol: Symbol,
+    entries: Sequence[Mt5FetchEntry],
+    rules: Mt5Rules,
+) -> None:
+    """この受入れの partition と重なりうる既にある partition の状態が、すべて導けるか。
+
+    重なりうる範囲は、要求の区間（標準の組の UTC）を含む取引週の全体（候補の組の 1 時間のずれも
+    含む）。同じ銘柄のその範囲に、状態を導けない partition があれば受入れを始めない（ADR-0038
+    第3項の 3。原ファイルを読む前に止める）。
+    """
+    starts = [_utc_of(entry.requested_from_api, symbol, rules, end=False) for entry in entries]
+    ends = [_utc_of(entry.requested_to_api, symbol, rules, end=True) for entry in entries]
+    lo = trading_week_start(UtcTime(min(starts)))
+    hi = next_trading_week_start(trading_week_start(UtcTime(max(ends))))
+    span = Interval(start=lo, end=hi)
+    unknown = sorted(
+        str(item.partition_id)
+        for item in existing
+        if item.state is None
+        and item.partition_id.series.symbol == symbol
+        and item.partition_id.period is not None
+        and item.partition_id.period.overlaps(span)
+    )
+    if unknown:
+        raise HoldoutStateUnknown(
+            f"the state of the existing partitions {unknown[:3]} (and {max(len(unknown) - 3, 0)}"
+            " more) that may overlap this intake cannot be derived; the acceptance does not start"
+            " and no raw file is read (ADR-0038 第3項の 3)"
+        )
+
+
 def _require_rows_inside_requests(
     entries: Sequence[Mt5FetchEntry], files: Mapping[str, Mt5ReadFile]
 ) -> None:
@@ -428,8 +466,11 @@ def accept_sealed(
         )
     _require_inside_window(own, window, rules, record.get("stage"))
 
-    # 初期状態の材料は読み取りの前にそろえる（読めなければ始めない。ADR-0038 第3項の 2・3）
-    provider = initial_state_provider(_violations(root), existing_sealed_partitions(snapshots_root))
+    # 初期状態の材料は読み取りの前にそろえる（読めなければ始めない。ADR-0038 第3項の 2・3）。
+    # 重なりうる既にある partition の状態が導けないときも、原ファイルを読む前に止める。
+    existing = existing_sealed_partitions(snapshots_root)
+    _require_known_states(existing, symbol, own, rules)
+    provider = initial_state_provider(_violations(root), existing)
     request = QualityCheckRequest(
         tool=SEALED_ACCEPT_TOOL,
         config_digest=sealed_config_digest(root, rules),
