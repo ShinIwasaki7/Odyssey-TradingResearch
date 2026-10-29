@@ -412,7 +412,7 @@ class PartitionId:
     （ADR-0038 第2項）ので、partition の始まり `period_start`（取引週の始まり。最初の
     partition だけ 2024-01-01T00:00Z）を識別に持つ。ディレクトリは
     `USDJPY_1m_bid/HOLDOUT_SINCE_2024/20240107T2200Z` の形（PR #110 の仮置き S3-2 の決定。
-    ADR-0038 第2項の 3）。
+    ADR-0038 第2項の「3 の補足」）。
     他の区分は `period_start` を持たない（`None`。既存の snapshot の識別子は変わらない）。
     """
 
