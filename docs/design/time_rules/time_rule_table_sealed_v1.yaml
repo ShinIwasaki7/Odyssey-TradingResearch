@@ -1,0 +1,127 @@
+# 2024 年以降の時刻の規則の表 版 1（OANDA MT5 API の 1 分足。8 通貨 × 2024-01-01〜2027-12-31。封印の取り込みの受入れ用）
+#
+# 正本の内容: D03 §16.2.3 の「行の案」（4 行。PR #109 の要決定 S2b-1 (a)「別の新しい表」・S2b-2 (a)「米国式 +3」、
+# 仮置き S2b-2「判定条件 版 2、すべて仮定付き」・S2b-3「覆う期間 [2024-01-01, 2028-01-01)」）。研究期間の表 版 1
+# （time_rule_table_v1.yaml、識別 oanda_mt5_time_rules）は 1 バイトも変えない（D12-48）。研究期間の snapshot は版 1、
+# 封印の snapshot はこの表を参照し、1 つの snapshot に 2 つの表は入らない。
+#
+# 人間の承認: 順 6 の封印レーンの S4a の PR の「承認の対象」（表とカレンダーを 1 回の質問・2 項目で問う。D03 §16.2.6、
+# PR #109 の仮置き S2b-5）。承認は PR の merge で確定する。
+#
+# このファイルのバイト列の SHA-256 を、承認済みの表の一覧（approved_time_rule_tables.yaml）とデータ配置の決定記録
+# （ADR-0013）に書く。1 バイトでも変えたら別の版（版 2）として新しいファイルを作り、人間の承認とハッシュの記録を
+# やり直す（D12-48）。毎年 9 月末までに次の年の行を足した新しい版を作る（PR #109 の仮置き S2b-3）。
+#
+# 読み方（D03 §15.9。研究期間の表と同じ）:
+# - 変換 offset_hours は「API の時刻 − UTC」の時間数。UTC = API の時刻 − offset_hours。
+# - 期間 periods は API の時刻の暦日の半開区間 [from, to)。両端（2024-01-01・2028-01-01）を除く境目は夏時間の切替の
+#   日曜（00:00）で、週末の休場の中にある。夏時間の切替の日付は公開の暦（米国: 3 月の第 2 日曜・11 月の第 1 日曜、
+#   欧州: 3 月の最後の日曜・10 月の最後の日曜）を Python の zoneinfo（IANA）で計算して確かめた（D03 §16.2.1）。
+#   将来の年の日付は今の法律の規則による。
+# - 2024 年以降の行はすべて「仮定付き」（2024 年以降のデータを閲覧しない・比較材料が無い。判定条件 版 2 の C8 (i)。
+#   D03 §16.2.2）。観察した範囲は空のまま増えない（封印のデータを見て表を直す経路は作らない。D03 §16.2.3）。
+# - 本ファイルの読込・検証は app.config が行う（ADR-0018）。価格・2024 年以降のデータは使っていない。
+
+schema_version: 1
+
+id: oanda_mt5_time_rules_sealed
+version: 1
+judgment_criteria_version: 2  # 確認済みへ移す判定条件の版（D12 §11.7.9。PR #109 の仮置き S2b-2）
+source_section: "D03 §16.2.3（2024 年以降の表の行の案）"
+approval:
+  decisions: ["順 6 の封印レーン S4a の PR の承認の対象（表）。PR の merge で確定（D03 §16.2.6、PR #109 の仮置き S2b-5）"]
+  note: "形は PR #109 の要決定 S2b-1 (a)「別の新しい表（推奨）」、米欧の間の週の標準は S2b-2 (a)「米国式 +3（推奨）」（2026-10-29、人間）"
+conversion_definition: "API の時刻 − UTC（時間）"
+lookup_key: "API の生の時刻の暦日"
+coverage:
+  pairs: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD]
+  from: 2024-01-01
+  to: 2028-01-01
+marks:
+  confirmed: "確認済み"
+  assumed_same: "仮定付き（候補の間で変換が同じ）"
+  assumed_differs: "仮定付き（候補の間で変換が違う）"
+
+rows:
+  - row: 1
+    pairs: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2024〜2027 年の両方冬の週"
+    periods:
+      - {from: 2024-01-01, to: 2024-03-10}
+      - {from: 2024-11-03, to: 2025-03-09}
+      - {from: 2025-11-02, to: 2026-03-08}
+      - {from: 2026-11-01, to: 2027-03-14}
+      - {from: 2027-11-07, to: 2028-01-01}
+    status: 仮定付き
+    mark: assumed_same
+    standard: {name: 両方冬（米国式・欧州式とも同じ）, offset_hours: 2}
+    candidates: []
+    evidence:
+      discriminating: "なし（2024 年以降のデータを閲覧しない。比較材料なし。判定条件 版 2 の C8 (i)）"
+      opening_position: "なし"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "研究期間の表 版 1 の行 8（両方冬 +2）と同じ変換を 2024 年以降へ広げる"
+    decision: "D03 §16.2.3 の行 1（PR #109 の仮置き S2b-2・S2b-3）"
+
+  - row: 2
+    pairs: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2024〜2027 年の春の米欧の間の週"
+    periods:
+      - {from: 2024-03-10, to: 2024-03-31}
+      - {from: 2025-03-09, to: 2025-03-30}
+      - {from: 2026-03-08, to: 2026-03-29}
+      - {from: 2027-03-14, to: 2027-03-28}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 米国式, offset_hours: 3}
+    candidates:
+      - {name: 欧州式, offset_hours: 2}
+    evidence:
+      discriminating: "なし（2024 年以降のデータを閲覧しない。比較材料なし。判定条件 版 2 の C8 (i)）"
+      opening_position: "なし"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "研究期間の表 版 1 の行 3（USDJPY × 2023 年春、確認済み、米国式）と行 7（2020〜2023 年の米欧の間、標準 米国式）を 2024 年以降へ広げる"
+    decision: "PR #109 の要決定 S2b-2 (a)「米国式 +3（推奨）」"
+
+  - row: 3
+    pairs: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2024〜2027 年の両方夏の週"
+    periods:
+      - {from: 2024-03-31, to: 2024-10-27}
+      - {from: 2025-03-30, to: 2025-10-26}
+      - {from: 2026-03-29, to: 2026-10-25}
+      - {from: 2027-03-28, to: 2027-10-31}
+    status: 仮定付き
+    mark: assumed_same
+    standard: {name: 両方夏（米国式・欧州式とも同じ）, offset_hours: 3}
+    candidates: []
+    evidence:
+      discriminating: "なし（2024 年以降のデータを閲覧しない。比較材料なし。判定条件 版 2 の C8 (i)）"
+      opening_position: "なし"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "研究期間の表 版 1 の行 9（両方夏 +3）と同じ変換を 2024 年以降へ広げる"
+    decision: "D03 §16.2.3 の行 3（PR #109 の仮置き S2b-2・S2b-3）"
+
+  - row: 4
+    pairs: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD]
+    label: "8 通貨 × 2024〜2027 年の秋の米欧の間の週"
+    periods:
+      - {from: 2024-10-27, to: 2024-11-03}
+      - {from: 2025-10-26, to: 2025-11-02}
+      - {from: 2026-10-25, to: 2026-11-01}
+      - {from: 2027-10-31, to: 2027-11-07}
+    status: 仮定付き
+    mark: assumed_differs
+    standard: {name: 米国式, offset_hours: 3}
+    candidates:
+      - {name: 欧州式, offset_hours: 2}
+    evidence:
+      discriminating: "なし（2024 年以降のデータを閲覧しない。比較材料なし。判定条件 版 2 の C8 (i)）"
+      opening_position: "なし"
+      price_auxiliary: "なし"
+    observed_scope: "なし"
+    extension_assumption: "研究期間の表 版 1 の行 7（2020〜2023 年の米欧の間、標準 米国式）を 2024 年以降へ広げる"
+    decision: "PR #109 の要決定 S2b-2 (a)「米国式 +3（推奨）」"

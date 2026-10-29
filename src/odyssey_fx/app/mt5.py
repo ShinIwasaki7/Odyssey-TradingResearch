@@ -48,6 +48,7 @@ from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 __all__ = [
     "DEFAULT_COUNTING_RULES",
     "DEFAULT_MT5_DATASOURCE",
+    "SEALED_COUNTING_RULES",
     "DEFAULT_TIMEFRAMES_V2",
     "Mt5Rules",
     "accept_mt5_in_memory",
@@ -57,6 +58,9 @@ __all__ = [
 
 #: 数え方の規則 版 1（D03 §15.12。PR #84 で置かれる）。
 DEFAULT_COUNTING_RULES = Path("docs/design/counting_rules/counting_rules_v1.yaml")
+#: 2024 年以降の封印の取り込み用の数え方の規則 版 1（規則の値は版 1 と同じ。指す表とカレンダーが違う。
+#: D03 §16.2。順 6 の S4a）。
+SEALED_COUNTING_RULES = Path("docs/design/counting_rules/counting_rules_sealed_v1.yaml")
 #: 列対応の宣言（MT5 経路）。
 DEFAULT_MT5_DATASOURCE = Path("configs/datasources/oanda_mt5_m1_v1.yaml")
 #: 1 分足を含む時間足の定義 版 2。

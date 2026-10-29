@@ -20,3 +20,11 @@ tables:
     approved_by: ["D12-48（第 14 回、2026-10-16）", "D12-70（第 17 回、2026-10-16）"]
     file_recorded_by: "2026-10-17 の人間の指示 3-A（D12 §0.1.26）による表 版 1 のファイル化。内容は D12 §11.7.10 の表 版 1 と同じ。ハッシュの記録は設計 PR docs/tick-record-model-design の merge（人間の承認）で確定"
     revoked: null
+  - id: oanda_mt5_time_rules_sealed
+    version: 1
+    file: docs/design/time_rules/time_rule_table_sealed_v1.yaml
+    sha256: f9d36cdb0736d3acbcd36a7b987bba62330a26910ca5c977d3fa1d5cde58a143
+    judgment_criteria_version: 2
+    approved_by: ["順 6 の封印レーン S4a の PR の承認の対象（表。D03 §16.2.6、PR #109 の仮置き S2b-5）。PR の merge で確定"]
+    file_recorded_by: "D03 §16.2.3 の行の案（PR #109 の要決定 S2b-1 (a)・S2b-2 (a)、仮置き S2b-2・S2b-3）を順 6 の S4a でファイルにした。2024 年以降の封印の snapshot だけが参照する"
+    revoked: null
