@@ -174,3 +174,21 @@ def test_execute_records_a_sealed_bucket_with_its_plan(tmp_path: Path) -> None:
     ]
     assert any("sealed_plan.json.b64" in text for text in puts)  # 計画を Windows に置く段まで進んだ
     assert any(c[:2] == ["s3api", "create-bucket"] for c in _calls(tmp_path))
+
+
+@needs_bash
+@pytest.mark.parametrize(("kind", "shown"), [("fullfetch", True), ("sealed-periodic", False)])
+def test_the_disk_usage_is_not_shown_for_the_sealed_fetch(
+    tmp_path: Path, kind: str, shown: bool
+) -> None:
+    """封印の取得では Windows のディスクの使用量・空きを表示しない（PR #109 の仮置き S2b-11）。"""
+    env = _sealed_env(tmp_path, {})
+    env["PROBE_RUN_KIND"] = kind
+    script = (
+        f'source "{SCRIPTS / "lib.sh"}"; ssm_ps() {{ cat "$3"; }}; '
+        "ssm_run_probe_task i-0123 t 'C:\\probe\\out' 'x'"
+    )
+    out = subprocess.run(
+        ["bash", "-c", script], env=env, capture_output=True, text=True, check=True
+    ).stdout
+    assert ("Get-PSDrive" in out) is shown

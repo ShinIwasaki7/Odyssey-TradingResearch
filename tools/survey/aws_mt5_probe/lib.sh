@@ -413,7 +413,12 @@ PS
 # 試験の道具を、人間がログインした Administrator の対話のセッションのタスクとして実行する（30_run_probe.sh と同じ方法）。
 # ssm_run_probe_task <instance-id> <task-suffix> <windows-out-dir> <probe の引数（Windows のコマンド行の文字列）>
 ssm_run_probe_task() {
-  local id="$1" suffix="$2" out="$3" pargs="$4" tool_sha w
+  local id="$1" suffix="$2" out="$3" pargs="$4" tool_sha w disk_line
+  # ディスクの使用量・空きは全期間取得などでは表示する。封印の取得では表示しない（空きの差から端末の
+  # 履歴（2024 年以降の自動の取り寄せ分を含む）の大きさが分かるため。PR #109 の仮置き S2b-11・D03 §16.4）。
+  # shellcheck disable=SC2016  # PowerShell の変数（$_）なので bash では展開しない
+  disk_line='Get-PSDrive C | ForEach-Object { '"'"'C: used GB {0:N2} free GB {1:N2}'"'"' -f ($_.Used/1GB), ($_.Free/1GB) }'
+  [[ "$PROBE_RUN_KIND" == sealed-* ]] && disk_line='"disk usage: not shown for the sealed fetch"'
   tool_sha=$(sha256_of "$PROBE_TOOL")
   w=$(mktemp -d)
   cat >"$w/run.ps1" <<PS
@@ -436,7 +441,7 @@ while ((Get-ScheduledTask -TaskName \$task).State -eq 'Running') { Start-Sleep -
 Unregister-ScheduledTask -TaskName \$task -Confirm:\$false
 "task result: \$result"
 Get-Content '${out}\\run.log'
-Get-PSDrive C | ForEach-Object { 'C: used GB {0:N2} free GB {1:N2}' -f (\$_.Used/1GB), (\$_.Free/1GB) }
+${disk_line}
 PS
   ssm_ps "$id" 3600 "$w/run.ps1"
   rm -rf "$w"
