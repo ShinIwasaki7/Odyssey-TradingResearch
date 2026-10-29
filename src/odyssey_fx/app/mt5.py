@@ -31,10 +31,10 @@ from odyssey_fx.marketdata.adapters.mt5_csv_source import (
 )
 from odyssey_fx.marketdata.application.acceptance import PendingSnapshot
 from odyssey_fx.marketdata.application.mt5_acceptance import (
+    Mt5Boundaries,
     Mt5FetchEntry,
     build_mt5_pending,
 )
-from odyssey_fx.marketdata.domain.access import AccessBoundaries
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.counting_rules import CountingRules
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
@@ -58,8 +58,8 @@ __all__ = [
 
 #: 数え方の規則 版 1（D03 §15.12。PR #84 で置かれる）。
 DEFAULT_COUNTING_RULES = Path("docs/design/counting_rules/counting_rules_v1.yaml")
-#: 2024 年以降の封印の取り込み用の数え方の規則 版 1（規則の値は版 1 と同じ。指す表とカレンダーが違う。
-#: D03 §16.2。順 6 の S4a）。
+#: 2024 年以降の封印の取り込み用の数え方の規則 版 1（規則の値は版 1 と同じ。指す表と
+#: カレンダーが違う。D03 §16.2。順 6 の S4a）。
 SEALED_COUNTING_RULES = Path("docs/design/counting_rules/counting_rules_sealed_v1.yaml")
 #: 列対応の宣言（MT5 経路）。
 DEFAULT_MT5_DATASOURCE = Path("configs/datasources/oanda_mt5_m1_v1.yaml")
@@ -203,7 +203,7 @@ def accept_mt5_in_memory(
     symbol: Symbol,
     variant: TimeRuleVariant,
     created_at: UtcTime,
-    boundaries: AccessBoundaries,
+    boundaries: Mt5Boundaries,
     code_version: str,
     months: Iterable[tuple[int, int]] | None = None,
     docs_manifest_copy: Path | None = None,

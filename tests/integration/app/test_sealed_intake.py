@@ -1,0 +1,418 @@
+"""封印の取り込みの経路（取得 → 品質確認の許可の下の受入れ → 取引週の partition → 分類・承認）。
+
+順 6 の S4a（D15 §2.2 の S4a の行の注記の 4 点、ADR-0036 第7項〜第9項、ADR-0038 第2項・第3項、
+D03 §16.3、D11 §10 の受入条件 25）。**人工データだけ**を使う: 取得は偽の MT5 の API（人工の価格）で
+`mt5_api_probe.run_sealed_fetch` を動かし、その出力（gzip の CSV と取得記録）を一時のリポジトリの
+`data/raw/oanda_mt5_sealed/<取得日>/` に置く。規則のファイル（2024 年以降の表・カレンダー 版 2・
+封印用の数え方の規則・許可の定義・窓の設定）は版管理のものを写す。実データ・2024 年以降の実際の
+データは読まない。
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import shutil
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from odyssey_fx.app.cli.main import main
+from odyssey_fx.common.time import UtcTime
+from odyssey_fx.marketdata.adapters.mt5_csv_source import read_fetch_manifest, read_symbol_files
+from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+from odyssey_fx.marketdata.adapters.quality_access_log_store import QualityAccessLogFile
+from odyssey_fx.marketdata.domain.access import HoldoutState
+from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation
+from odyssey_fx.marketdata.domain.quality_access import (
+    QualityAccessEnd,
+    QualityAccessLogContents,
+    QualityAccessResult,
+    QualityAccessStart,
+    completed_access_ids,
+)
+from tools.survey import mt5_api_probe as probe
+from tools.survey import sealed_fetch_plan as planner
+
+ROOT = Path(__file__).resolve().parents[3]
+FETCH_DATE = "2026-11-14"
+#: 人工の価格（取得の道具と受入れの画面出力・記録に現れないことを確かめる印）。
+PRICE = "157.4321"
+
+COPIED = (
+    "docs/design/counting_rules/counting_rules_sealed_v1.yaml",
+    "docs/design/time_rules/time_rule_table_sealed_v1.yaml",
+    "docs/design/time_rules/approved_time_rule_tables.yaml",
+    "docs/design/time_rules/time_rule_table_v1.yaml",
+    "configs/calendars/fx_ny17_oanda_v2.yaml",
+    "configs/calendars/fx_ny17_v2.yaml",
+    "configs/calendars/timeframes_v2.yaml",
+    "configs/datasources/oanda_mt5_m1_v1.yaml",
+    "configs/acquisition/oanda_mt5_m1_sealed_window.yaml",
+    "configs/quality_checks/oanda_mt5_sealed_accept.yaml",
+    "configs/quality_checks/oanda_mt5_sealed_finalize.yaml",
+    "tools/survey/oanda_holiday_exceptions_sealed_2026-10-29.json",
+)
+
+
+class FakeMt5:
+    """要求の区間の取引時間の 1 分ごとに足を返す偽の API（人工の価格）。"""
+
+    COPY_TICKS_ALL = 1
+    TIMEFRAME_M1 = 1
+
+    def initialize(self) -> bool:
+        return True
+
+    def version(self) -> Any:
+        return (500, 5000, "test")
+
+    def terminal_info(self) -> Any:
+        return SimpleNamespace(build=5000, name="t", company="c", maxbars=0, connected=True)
+
+    def symbols_get(self, group: str) -> Any:
+        return [SimpleNamespace(name=f"{group.strip('*')}.cl")]
+
+    def symbol_info(self, symbol: str) -> Any:
+        return SimpleNamespace(chart_mode=0, point=0.001, digits=3)
+
+    def symbol_select(self, symbol: str, enable: bool) -> bool:
+        return True
+
+    def copy_ticks_range(self, *args: Any) -> Any:
+        raise AssertionError("封印の取得は tick を要求しない")
+
+    def copy_rates_range(
+        self, symbol: str, timeframe: int, date_from: datetime, date_to: datetime
+    ) -> Any:
+        # 両方冬（+2 時間）の週: 取引時間は API の時刻の月曜 00:00〜土曜 00:00。
+        rows = []
+        t = date_from
+        while t < date_to:
+            if t.weekday() < 5:
+                rows.append(
+                    {
+                        "time": int(t.timestamp()),
+                        "open": float(PRICE),
+                        "high": float(PRICE) + 0.01,
+                        "low": float(PRICE) - 0.01,
+                        "close": float(PRICE),
+                        "tick_volume": 3,
+                        "spread": 2,
+                        "real_volume": 0,
+                    }
+                )
+            t += timedelta(minutes=1)
+        return rows
+
+    def last_error(self) -> Any:
+        return (1, "Success")
+
+    def shutdown(self) -> Any:
+        return None
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    for rel in COPIED:
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / rel, repo / rel)
+    (repo / "research").mkdir()
+    (repo / "research" / "quality_access_log.jsonl").write_bytes(b"")
+    return repo
+
+
+def _fetch(repo: Path, tmp_path: Path) -> Path:
+    """定期取得の初回（[2026-11-01T22:00Z, 2026-11-08T22:00Z)）を偽の API で USDJPY だけ取る。"""
+    plan = planner.build_plan(
+        ROOT, probe.SEALED_STAGE_PERIODIC, run_at=UtcTime.parse("2026-11-14T00:00:00Z")
+    )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan.payload), encoding="utf-8")
+    window = probe.read_sealed_window(repo / "configs/acquisition/oanda_mt5_m1_sealed_window.yaml")
+    loaded, requests = probe.load_sealed_plan(
+        plan_path, window, now=datetime(2026, 11, 14, tzinfo=UTC)
+    )
+    raw = repo / "data" / "raw" / "oanda_mt5_sealed" / FETCH_DATE
+    result = probe.run_sealed_fetch(
+        FakeMt5(),
+        "USDJPY",
+        raw,
+        plan=loaded,
+        plan_sha256=probe._sha256(plan_path),
+        requests=requests,
+        window=window,
+        sleep=lambda s: None,
+        now=lambda: datetime(2026, 11, 14, tzinfo=UTC),
+    )
+    assert result["ok"] == 1 and PRICE not in json.dumps(result)
+    copy = repo / "docs" / "data" / "sealed" / f"{FETCH_DATE}_periodic-1" / "manifest.json"
+    copy.parent.mkdir(parents=True)
+    shutil.copy(raw / "manifest.json", copy)
+    return copy
+
+
+def _accept(repo: Path, copy: Path, variant: str = "standard") -> int:
+    return main(
+        [
+            "data",
+            "accept-mt5",
+            "--sealed",
+            "--fetch-date",
+            FETCH_DATE,
+            "--symbol",
+            "USDJPY",
+            "--variant",
+            variant,
+            "--manifest-copy",
+            str(copy),
+            "--out",
+            str(repo / "data" / "snapshots"),
+            "--repo-root",
+            str(repo),
+        ]
+    )
+
+
+def _log(repo: Path) -> QualityAccessLogContents:
+    contents = QualityAccessLogFile(repo).read()
+    assert isinstance(contents, QualityAccessLogContents)
+    return contents
+
+
+def _pending(repo: Path) -> list[Path]:
+    root = repo / "data" / "snapshots" / "_pending"
+    return sorted(path for path in root.iterdir() if path.is_dir()) if root.exists() else []
+
+
+def _classify(repo: Path, provisional: str, tmp_path: Path) -> int:
+    decisions = tmp_path / "decisions.yaml"
+    decisions.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
+    return main(
+        [
+            "data",
+            "classify",
+            "--pending",
+            provisional,
+            "--decisions",
+            str(decisions),
+            "--timeframes",
+            str(repo / "configs/calendars/timeframes_v2.yaml"),
+            "--out",
+            str(repo / "data" / "snapshots"),
+            "--repo-root",
+            str(repo),
+        ]
+    )
+
+
+def _approve(repo: Path, snapshot: str) -> int:
+    return main(
+        [
+            "data",
+            "approve",
+            "--snapshot",
+            snapshot,
+            "--by",
+            "test",
+            "--out",
+            str(repo / "data" / "snapshots"),
+            "--repo-root",
+            str(repo),
+        ]
+    )
+
+
+# --- 経路 ----------------------------------------------------------------------------------
+
+
+def test_the_usdjpy_path_runs_from_fetch_to_an_approved_sealed_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    capsys.readouterr()
+    assert _accept(repo, copy) == 0
+    printed = capsys.readouterr().out
+    assert PRICE not in printed and "157.4" not in printed  # 画面には件数・時刻・ハッシュだけ
+    (pending_dir,) = _pending(repo)
+    store = ParquetSnapshotStore(root=repo / "data" / "snapshots")
+    manifest = store.read_manifest(f"_pending/{pending_dir.name}")
+    # 取引週の partition（前向きの封印の区分。週は 2026-11-01T22:00Z から）と初期状態。
+    sealed = [record for record in manifest.partitions if record.partition_id.period_start]
+    assert sealed and all(
+        record.access_class.value == "FORWARD_HOLDOUT"
+        and str(record.partition_id.period_start) == "2026-11-01T22:00:00Z"
+        for record in sealed
+    )
+    assert len(sealed) == len(manifest.series) == 5  # 1 分足と上位足 4 つ
+    assert {item.state for item in manifest.sealed_initial_states} == {HoldoutState.SEALED}
+    # 閲覧の識別子と「許可を要したか」。閲覧の記録は開始と「完了」の終了の 2 行。
+    assert manifest.quality_read is not None and manifest.quality_read.permit_required
+    start, end = _log(repo).rows
+    assert isinstance(start, QualityAccessStart) and isinstance(end, QualityAccessEnd)
+    assert start.access_id == end.access_id == manifest.quality_read.access_id
+    assert end.result is QualityAccessResult.COMPLETED
+    assert start.tool.name == "oanda_mt5_sealed_accept"
+    # 消費の記録は書かない。
+    assert not (pending_dir / "access_log.jsonl").exists()
+
+    assert _classify(repo, pending_dir.name, tmp_path) == 0
+    (final,) = [p for p in (repo / "data" / "snapshots").iterdir() if p.name != "_pending"]
+    assert _approve(repo, final.name) == 0
+    approved = store.read_manifest(final.name)
+    assert approved.is_approved
+    assert approved.sealed_initial_states == manifest.sealed_initial_states
+    assert approved.quality_read == manifest.quality_read
+    # 受入れ・分類・承認の 3 回の閲覧がどれも「完了」。
+    rows = _log(repo).rows
+    assert len(rows) == 6 and len(completed_access_ids(rows)) == 3
+    assert PRICE not in (final / "manifest.json").read_text(encoding="utf-8")
+    assert PRICE not in (final / "integrity_report.json").read_text(encoding="utf-8")
+
+
+def test_without_an_approved_definition_nothing_is_read_or_written(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    (repo / "configs/quality_checks/oanda_mt5_sealed_accept.yaml").unlink()
+    assert _accept(repo, copy) != 0
+    assert _pending(repo) == [] and _log(repo).rows == ()
+
+
+def test_a_changed_rule_file_breaks_the_config_digest_and_nothing_is_read(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    timeframes = repo / "configs/calendars/timeframes_v2.yaml"
+    timeframes.write_text(
+        timeframes.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+    )
+    assert _accept(repo, copy) != 0
+    assert _pending(repo) == [] and _log(repo).rows == ()
+
+
+def test_a_raw_file_that_is_not_the_recorded_one_is_never_parsed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    raw = repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE
+    (gz,) = list((raw / "USDJPY").glob("*.csv.gz"))
+    gz.write_bytes(gzip.compress(b"time,open,high,low,close,tick_volume,spread,real_volume\n"))
+    assert _accept(repo, copy) != 0
+    assert "does not cover the raw file" in capsys.readouterr().err
+    assert _pending(repo) == []
+    start, end = _log(repo).rows
+    assert isinstance(end, QualityAccessEnd) and end.result is QualityAccessResult.STOPPED
+
+
+def test_a_consumed_period_does_not_return_to_sealed_on_a_new_intake(tmp_path: Path) -> None:
+    """例外 2（ADR-0038 第3項の 3）。
+
+    既にある snapshot の同じ期間の partition が使用済みなら、新しい partition も使用済みで始める。
+    """
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    assert _accept(repo, copy) == 0
+    (pending_dir,) = _pending(repo)
+    assert _classify(repo, pending_dir.name, tmp_path) == 0
+    snapshots = repo / "data" / "snapshots"
+    (final,) = [p for p in snapshots.iterdir() if p.name != "_pending"]
+    store = ParquetSnapshotStore(root=snapshots)
+    one = next(
+        item.partition_id
+        for item in store.read_manifest(final.name).sealed_initial_states
+        if item.partition_id.series.timeframe.id == "1m"
+    )
+    (final / "access_log.jsonl").write_text(
+        json.dumps(
+            {
+                "actor": "t",
+                "kind": "CONSUMED",
+                "partition": str(one),
+                "purpose": "",
+                "recorded_at": "x",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _accept(repo, copy, variant="candidate") == 0
+    (again,) = _pending(repo)
+    states = {
+        str(item.partition_id): (item.state, item.reasons)
+        for item in store.read_manifest(f"_pending/{again.name}").sealed_initial_states
+    }
+    assert states[str(one)] == (HoldoutState.CONSUMED, ("EXISTING_CONSUMED",))
+    others = [value for key, value in states.items() if key != str(one)]
+    assert others and all(value == (HoldoutState.SEALED, ()) for value in others)
+
+
+def test_classify_refuses_an_acceptance_without_a_completed_end_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    assert _accept(repo, copy) == 0
+    (pending_dir,) = _pending(repo)
+    # 終了の行を書けなかった受入れを作る（記録から終了の行を除く。人工の状況）。
+    log = repo / "research" / "quality_access_log.jsonl"
+    first = log.read_bytes().splitlines(keepends=True)[0]
+    log.write_bytes(first)
+    assert _classify(repo, pending_dir.name, tmp_path) != 0
+    assert "「完了」の終了の行が無い" in capsys.readouterr().err
+    assert [p.name for p in (repo / "data" / "snapshots").iterdir()] == ["_pending"]
+
+
+# --- 関所の外から原ファイルを読む経路が無いこと（受入条件 25）----------------------------------
+
+
+def test_no_reader_parses_a_sealed_raw_file_without_a_permit(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _fetch(repo, tmp_path)
+    raw = repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE
+    entries = read_fetch_manifest(raw / "manifest.json")
+    columns = ("time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume")
+    with pytest.raises(HoldoutAccessViolation, match="sealed raw file"):
+        read_symbol_files(raw, entries, columns)
+
+
+def test_the_research_acceptance_refuses_the_sealed_raw_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path)
+    _fetch(repo, tmp_path)
+    shutil.copy(
+        ROOT / "docs/design/counting_rules/counting_rules_v1.yaml",
+        repo / "docs/design/counting_rules/",
+    )
+    shutil.copy(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml", repo / "configs/calendars/")
+    shutil.copy(
+        ROOT / "tools/survey/oanda_holiday_exceptions_2026-10-16.json", repo / "tools/survey/"
+    )
+    research_copy = repo / f"docs/data/oanda_mt5_full_fetch_{FETCH_DATE}/manifest.json"
+    research_copy.parent.mkdir(parents=True)
+    shutil.copy(repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE / "manifest.json", research_copy)
+    assert (
+        main(
+            [
+                "data",
+                "accept-mt5",
+                "--fetch-date",
+                FETCH_DATE,
+                "--symbol",
+                "USDJPY",
+                "--raw-root",
+                str(repo / "data/raw/oanda_mt5_sealed"),
+                "--out",
+                str(repo / "data" / "snapshots"),
+                "--repo-root",
+                str(repo),
+            ]
+        )
+        != 0
+    )
+    assert "sealed raw file" in capsys.readouterr().err
+    assert _pending(repo) == [] and _log(repo).rows == ()

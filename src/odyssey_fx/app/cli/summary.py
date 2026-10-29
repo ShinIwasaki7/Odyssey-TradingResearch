@@ -50,6 +50,7 @@ __all__ = [
     "refill_finalize_lines",
     "refill_plan_lines",
     "resolved_lines",
+    "sealed_partition_lines",
     "series_lines",
     "severity_totals",
     "trade_lines",
@@ -92,6 +93,39 @@ def series_lines(manifest: SnapshotManifest) -> list[str]:
         lines.append(
             f"  {record.series_id}: {record.bar_count} 本"
             f"  [{record.covered_interval.start}, {record.covered_interval.end})"
+        )
+    return lines
+
+
+def sealed_partition_lines(manifest: SnapshotManifest) -> list[str]:
+    """封印の区分の partition の件数と初期状態の内訳（D03 §16.3.1 の 11。件数・週だけ）。
+
+    取引週の partition は系列ごとに多い（一括取得で約 150）ので、区分 × 系列ごとに件数・最初と最後の
+    週・初期状態の内訳（`SEALED` / `CONSUMED` と理由）だけを出す。価格は出さない。
+    """
+    groups: dict[tuple[str, str], list[str]] = {}
+    for record in manifest.partitions:
+        if record.partition_id.period_start is None:
+            continue
+        key = (record.access_class.value, str(record.series_id))
+        groups.setdefault(key, []).append(str(record.partition_id.period_start))
+    if not groups:
+        return []
+    states: dict[tuple[str, str], dict[str, int]] = {}
+    for item in manifest.sealed_initial_states:
+        key = (item.partition_id.access_class.value, str(item.partition_id.series))
+        label = item.state.value + ("" if not item.reasons else f"（{'・'.join(item.reasons)}）")
+        states.setdefault(key, {})
+        states[key][label] = states[key].get(label, 0) + 1
+    lines = ["封印の区分の partition（取引週。区分 × 系列）:"]
+    for key in sorted(groups):
+        weeks = sorted(groups[key])
+        breakdown = "、".join(
+            f"{label} {count}" for label, count in sorted(states.get(key, {}).items())
+        )
+        lines.append(
+            f"  {key[0]} {key[1]}: {len(weeks)} 週（{weeks[0]} 〜 {weeks[-1]}）、"
+            f"初期状態 {breakdown}"
         )
     return lines
 

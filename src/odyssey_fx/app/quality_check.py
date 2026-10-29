@@ -4,8 +4,8 @@
 である。run・探索の実験・最終検証を組み立てる入口（`app.composition` の他の関数）は品質確認の
 許可を受け取らない（ADR-0036 第5項の 1）。本モジュールは `backtest`・`strategy` を直接 import
 しない。関所のポートの定義（`evaluation.application.ports`）を通して、両パッケージの型の
-モジュール（`backtest.domain`・`backtest.trace`・`strategy.declarations` など）は間接に読み込まれるが、
-戦略を動かす・run を組み立てるモジュール（`backtest.engine`・`backtest.application`・
+モジュール（`backtest.domain`・`backtest.trace`・`strategy.declarations` など）は間接に読み込ま
+れるが、戦略を動かす・run を組み立てるモジュール（`backtest.engine`・`backtest.application`・
 `strategy.runtime`・`app.composition`）は読み込まれない（戦略を動かす経路が構造上無い。ADR-0036
 第5項の 2）。直接の import と、読み込まれるモジュールの全体の両方をテストで検査する。
 

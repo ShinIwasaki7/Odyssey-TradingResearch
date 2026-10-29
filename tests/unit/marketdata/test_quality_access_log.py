@@ -225,16 +225,16 @@ def test_a_held_lock_refuses_the_append_and_leaves_the_file(tmp_path: Path) -> N
 def test_a_write_failure_right_after_creating_the_lock_removes_that_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ロックを作った直後の書き込みが失敗しても、自分で作ったロックを残さない（S3 の残 P2 の 3）。"""
-    import odyssey_fx.marketdata.adapters.quality_access_log_store as store
-
+    """ロックを作った直後の書き込みが失敗しても、自分で作ったロックを残さない（残 P2 の 3）。"""
     root = _repo(tmp_path, _start())
     before = (root / QUALITY_ACCESS_LOG_PATH).read_bytes()
 
     def failing_fsync(descriptor: int) -> None:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(store.os, "fsync", failing_fsync)
+    monkeypatch.setattr(
+        "odyssey_fx.marketdata.adapters.quality_access_log_store.os.fsync", failing_fsync
+    )
     refused = append_quality_access_row(root, _end())
     assert isinstance(refused, QualityLogAppendRefused)
     assert refused.kind is QualityLogAppendRefusal.LOCKED

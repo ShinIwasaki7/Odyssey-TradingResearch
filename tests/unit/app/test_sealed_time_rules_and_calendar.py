@@ -1,8 +1,10 @@
-"""2024 年以降の時刻の規則の表 `oanda_mt5_time_rules_sealed` 版 1 とカレンダー `fx_ny17_oanda` 版 2（D03 §16.2）。
+"""2024 年以降の時刻の規則の表とカレンダー。
 
-版管理のファイルを読むだけで、市場データは読まない。確かめること: 承認済みの一覧と照合して読める（T1〜T5・
-T4）、表の境目が公開の暦の夏時間の切替の日曜と一致する、カレンダー 版 2 は 2023 年以前が版 1 と同じで
-2024 年以降の違いは告知で確かめた 2 日だけ、カレンダーが「fx_ny17 版 2 − 休場の定義」と一致する。
+表は `oanda_mt5_time_rules_sealed` 版 1、カレンダーは `fx_ny17_oanda` 版 2（D03 §16.2）。版管理の
+ファイルを読むだけで、市場データは読まない。確かめること: 承認済みの一覧と照合して読める
+（T1〜T5・T4）、表の境目が公開の暦の夏時間の切替の日曜と一致する、カレンダー 版 2 は 2023 年以前が
+版 1 と同じで 2024 年以降の違いは告知で確かめた 2 日だけ、カレンダーが「fx_ny17 版 2 − 休場の定義」と
+一致する。
 """
 
 from __future__ import annotations
@@ -71,7 +73,7 @@ def test_the_table_boundaries_are_the_public_daylight_saving_sundays() -> None:
 
 
 def test_a_trading_minute_maps_to_the_same_row_by_api_or_utc_date() -> None:
-    # load_mt5_rules が check_lookup_agreement（T4）を通すことに加え、2024-01-01 の始まりの変換を確かめる。
+    # load_mt5_rules が T4 を通すことに加え、2024-01-01 の始まりの変換を確かめる。
     rules = load_mt5_rules(ROOT, SEALED_COUNTING_RULES)
     row = rules.table.row_for("USDJPY", date(2024, 1, 1))
     assert row is not None and row.offset_hours(TimeRuleVariant.STANDARD) == 2
@@ -101,7 +103,7 @@ def test_calendar_v2_equals_v1_before_2024_and_differs_only_on_the_two_announced
     days = {
         datetime.fromtimestamp(minute, ZoneInfo("America/New_York")).date() for minute in removed
     }
-    # 取引日 D の休場は ニューヨークの D-1 17:00〜D 03:00 を新たに閉じる（D 03:00〜17:00 は版 1 で閉じていた）。
+    # 取引日 D の休場は NY の D-1 17:00〜D 03:00 を新たに閉じる（D 03:00〜17:00 は版 1 で閉じた）
     assert days == {date(2024, 12, 24), date(2024, 12, 25), date(2025, 12, 24), date(2025, 12, 25)}
 
 

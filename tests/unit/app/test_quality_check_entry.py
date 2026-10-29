@@ -295,18 +295,16 @@ def test_the_quality_path_never_assembles_a_backtest_or_a_strategy(relative: str
 
 
 def test_importing_the_quality_entry_never_loads_a_strategy_runner_or_a_run_assembler() -> None:
-    """間接の import も含めて、戦略を動かす・run を組み立てるモジュールが読み込まれない（S3 の残 P2 の 1）。
+    """間接の import も含めて、戦略を動かす・run を組み立てるモジュールが読み込まれない。
 
-    関所のポートの定義を通して `backtest`・`strategy` の型のモジュールは読み込まれる（入口の説明文に
-    書いたとおり）が、実行のモジュールは読み込まれないことを、別のプロセスの `sys.modules` で確かめる。
+    S3 の残 P2 の 1。関所のポートの定義を通して `backtest`・`strategy` の型のモジュールは読み込ま
+    れる（入口の説明文に書いたとおり）が、実行のモジュールは読み込まれないことを、別のプロセスの
+    `sys.modules` で確かめる。
     """
     import subprocess
     import sys
 
-    code = (
-        "import sys, odyssey_fx.app.quality_check\n"
-        "print('\\n'.join(sorted(sys.modules)))\n"
-    )
+    code = "import sys, odyssey_fx.app.quality_check\nprint('\\n'.join(sorted(sys.modules)))\n"
     loaded = subprocess.run(
         [sys.executable, "-c", code], check=True, capture_output=True, text=True
     ).stdout.split()
@@ -341,7 +339,8 @@ def test_no_run_or_experiment_entry_accepts_a_quality_permit() -> None:
 
 def test_a_definition_spelling_the_timeframe_as_m1_is_refused_on_load(tmp_path: Path) -> None:
     """時間足は識別（1m）で書く。M1 の綴りは照合で必ず外れるので読込で止める（S3 の残 P2 の 2）。"""
-    root = _repo(tmp_path, definition=DEFINITION_YAML.replace("timeframes: [1m]", "timeframes: [M1]"))
+    spelled = DEFINITION_YAML.replace("timeframes: [1m]", "timeframes: [M1]")
+    root = _repo(tmp_path, definition=spelled)
     with pytest.raises(ConfigError, match="時間足の定義の識別"):
         load_quality_check_definitions(root / QUALITY_CHECKS_DIRECTORY)
 

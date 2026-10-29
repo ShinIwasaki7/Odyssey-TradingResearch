@@ -1,0 +1,22 @@
+# 品質確認の許可の定義（ADR-0036 第4項。人間が PR の merge で承認する。順 6 の封印レーン S4a）。
+#
+# 道具: 封印の区分の partition を読む分類・確定・承認（odyssey-fx data classify / data approve。ADR-0037 第1項の 3 の 3 の「受入れ（分類・確定・承認を含む）」）。
+# 2024 年以降の区分について許す品質確認は封印の取り込みの受入れの検査だけ（ADR-0037 第9項）で、出力は件数・時刻・
+# 区間・ハッシュ・合否だけ（ADR-0037 第1項の 4）。
+#
+# - ファイル名（拡張子を除く）は道具の名前と同じ。1 つの道具に承認済みの版は 1 つ（PR #110 の仮置き S3-9）。
+# - config_digest は固定したファイル（封印用の数え方の規則・それが指す 2024 年以降の時刻の規則の表・承認済みの一覧・
+#   カレンダー fx_ny17_oanda 版 2 と fx_ny17 版 2・年末年始の休場の定義・列対応の宣言 oanda_mt5_m1 版 1・時間足の
+#   定義 版 2・窓の設定）の置き場と SHA-256 の正規化 JSON の SHA-256（odyssey_fx.app.sealed_intake.sealed_config_digest）。
+#   どれか 1 バイトでも変われば関所は許可を出さない（定義を直して人間が承認し直す）。単体テストで今のファイルと照合する。
+# - timeframes は時間足の定義の識別（1m など。M1 の綴りは使わない）。
+
+schema_version: 1
+tool: {name: oanda_mt5_sealed_finalize, version: "1"}
+config_digest: 230e9bbd42fcbc3ab983d72614d38a5cc639ab700b53881ef628e489ae7fbf95
+datasource: oanda_mt5_m1
+check_kind: ACCEPTANCE
+classes: [HOLDOUT_SINCE_2024, FORWARD_HOLDOUT]
+period: {start: "2024-01-01T00:00:00Z", end: null}
+targets: {kind: PARTITION, symbols: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD], timeframes: [1m, 15m, 1h, 4h_ny17, 1d_ny17]}
+output_kinds: [COUNTS, HASHES, INTERVALS, PASS_FAIL, TIMES]

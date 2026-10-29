@@ -1,8 +1,9 @@
-"""版管理の窓の設定（`configs/acquisition/oanda_mt5_m1_sealed_window.yaml`）の値の照合（ADR-0037 第4項の 4）。
+"""版管理の窓の設定（`configs/acquisition/oanda_mt5_m1_sealed_window.yaml`）の値の照合。
 
-確かめること: `allowed_start` が改定文の値と一致する。`acquisition_start` が merge のコミットの時刻から
-ADR-0037 第2項の 2 の規則で計算した値と一致する。merge のコミットとその時刻が ADR-0037 に記録した値
-（git の履歴があれば git の値）と一致する。設定ファイルと ADR を読むだけで、市場データは読まない。
+ADR-0037 第4項の 4。確かめること: `allowed_start` が改定文の値と一致する。`acquisition_start` が
+merge のコミットの時刻から ADR-0037 第2項の 2 の規則で計算した値と一致する。merge のコミットと
+その時刻が ADR-0037 に記録した値（git の履歴があれば git の値）と一致する。設定ファイルと ADR を
+読むだけで、市場データは読まない。
 """
 
 from __future__ import annotations

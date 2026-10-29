@@ -17,7 +17,14 @@
 6. 1 分ごとの区分（`minute_status.classify_minutes`）。無記録の区間（`UNRECORDED_MINUTES`）と
    取得不足の区間（`ACQUISITION_SHORTFALL`）を検査報告に載せる。
 7. 上位足の生成（`m1_aggregation.aggregate_from_minutes`）。
-8. 以降（アクセス分類と partition、暫定 manifest、分類と確定）は D03 §4 のまま。
+8. 以降（アクセス分類と partition、暫定 manifest、分類と確定）は D03 §4 のまま。ただし区分は
+   OANDA MT5 の経路の境界（`SealedAccessBoundaries`。ADR-0038 第0項の 1・第1項）で決め、2 つの
+   封印の区分の足は取引週の partition に分け（ADR-0038 第2項）、その partition の初期状態
+   （ADR-0038 第3項）を manifest の `sealed_initial_states` に記録する（順 6 の S4a）。初期状態を
+   決める手立て（`initial_state_of`）を渡さない受入れ（研究期間の受入れ）は、封印の区分の partition
+   を作らずに構造エラーで失敗する（研究期間の snapshot に封印の区分の partition を作らない。
+   D03 §16.1、PR #109 の仮置き S2b-7）。旧データの境界（`AccessBoundaries`）も受け付ける
+   （既存の呼び出しのため）。
 
 負のスプレッド（`spread` < 0）は受入れを失敗させず、snapshot に入る 1 分足の連続区間を
 `NEGATIVE_SPREAD`（WARN、記録のみ）に載せる（D03 §15.3 の 4・§15.6 の 2 v1.25。D12-131）。
@@ -28,7 +35,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -48,10 +55,19 @@ from odyssey_fx.marketdata.application.m1_aggregation import (
 )
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
-from odyssey_fx.marketdata.domain.access import AccessBoundaries
+from odyssey_fx.marketdata.domain.access import (
+    OANDA_SEALED_CLASSES,
+    AccessBoundaries,
+    SealedAccessBoundaries,
+)
 from odyssey_fx.marketdata.domain.bar import Bar, MinuteSource, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
-from odyssey_fx.marketdata.domain.errors import IntegrityCheckFailed, MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import (
+    AcquisitionStartUnset,
+    IntegrityCheckFailed,
+    MarketDataValueError,
+    SealedBoundaryBar,
+)
 from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.minute_status import (
     MINUTE,
@@ -69,6 +85,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
     Mt5FailedSpan,
     PartitionId,
     PartitionRecord,
+    SealedInitialState,
     SeriesCoverageCounts,
     SeriesManifest,
     SnapshotManifest,
@@ -110,6 +127,44 @@ _STATUS_OK = "ok"
 
 class Mt5AcceptanceFailed(IntegrityCheckFailed):
     """MT5 経路の受入れ全体の失敗（取得不足 (c) 破損、構造検査の ERROR。何も書かない）。"""
+
+
+#: 区分の境界（OANDA MT5 の経路の境界。旧データの境界も既存の呼び出しのために受け付ける）。
+Mt5Boundaries = AccessBoundaries | SealedAccessBoundaries
+#: 封印の区分の partition の初期状態を決める手立て（app が品質確認の閲覧の記録の判定の行と、既にある
+#: snapshot の partition の状態から作る。ADR-0038 第3項）。
+InitialStateOf = Callable[[PartitionId], SealedInitialState]
+
+
+def _group_partitions(
+    series: SeriesId, bars: Sequence[Bar], boundaries: Mt5Boundaries
+) -> dict[PartitionId, tuple[Bar, ...]]:
+    """足を partition に分ける（所属は `bar_end`。封印の区分は取引週。ADR-0038 第2項）。"""
+    if isinstance(boundaries, AccessBoundaries):
+        return {
+            PartitionId(series=series, access_class=access_class): group
+            for access_class, group in classify_partitions(bars, boundaries).items()
+        }
+    grouped: dict[PartitionId, list[Bar]] = {}
+    for bar in bars:
+        try:
+            access_class = boundaries.classify(bar.bar_start, bar.bar_end)
+        except (SealedBoundaryBar, AcquisitionStartUnset) as exc:
+            raise Mt5AcceptanceFailed(
+                f"{exc}; acceptance fails and no snapshot is produced (counts and times only)"
+            ) from exc
+        if access_class in OANDA_SEALED_CLASSES:
+            period = boundaries.partition_period(access_class, bar.bar_end)
+            partition_id = PartitionId(
+                series=series, access_class=access_class, period_start=period.start
+            )
+        else:
+            partition_id = PartitionId(series=series, access_class=access_class)
+        grouped.setdefault(partition_id, []).append(bar)
+    return {
+        partition_id: tuple(sorted(group, key=lambda bar: bar.bar_start.value))
+        for partition_id, group in grouped.items()
+    }
 
 
 # --- 入力（adapters が読んだ事実） ------------------------------------------------------
@@ -644,10 +699,11 @@ def _assemble(
     created_at: UtcTime,
     built: _Mt5Built,
     sources: tuple[SourceFile, ...],
-    boundaries: AccessBoundaries,
+    boundaries: Mt5Boundaries,
     basis_declaration: BasisDeclaration,
     conversion: ConversionRecord,
     extra_errors: Sequence[CheckResult] = (),
+    initial_state_of: InitialStateOf | None = None,
 ) -> PendingSnapshot:
     report = IntegrityReport(results=tuple(dict.fromkeys((*built.findings, *extra_errors))))
     _require_no_errors(report)
@@ -657,14 +713,29 @@ def _assemble(
     series_manifests: list[SeriesManifest] = []
     partitions: list[PartitionRecord] = []
     partition_bars: dict[PartitionId, tuple[Bar, ...]] = {}
+    initial_states: list[SealedInitialState] = []
     for series, bars in bars_by_series.items():
         if not bars:
             # 1 本も作れなかった系列は記録しない（作れなかった事実は報告に残る。D03 §5.2 と同じ）。
             continue
         ordered = tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
         partition_ids: list[PartitionId] = []
-        for access_class, group in classify_partitions(ordered, boundaries).items():
-            partition_id = PartitionId(series=series, access_class=access_class)
+        for partition_id, group in _group_partitions(series, ordered, boundaries).items():
+            if partition_id.access_class in OANDA_SEALED_CLASSES:
+                if initial_state_of is None:
+                    raise Mt5AcceptanceFailed(
+                        f"the bars of {series} reach the sealed class"
+                        f" {partition_id.access_class.value}; a research snapshot never holds a"
+                        " sealed partition, and the sealed intake runs only under a quality-check"
+                        " permit (D03 §16.1, PR #109 の仮置き S2b-7). Nothing was written"
+                    )
+                state = initial_state_of(partition_id)
+                if not isinstance(state, SealedInitialState) or state.partition_id != partition_id:
+                    raise MarketDataValueError(
+                        f"the initial state given for {partition_id} is not its own"
+                        " (ADR-0038 第3項)"
+                    )
+                initial_states.append(state)
             partition_ids.append(partition_id)
             partition_bars[partition_id] = group
             partitions.append(
@@ -697,6 +768,7 @@ def _assemble(
         partitions=tuple(partitions),
         integrity_report_ref=ContentDigest.sha256(integrity_report_digest_hex(report)),
         closure_decisions=(),
+        sealed_initial_states=tuple(initial_states),
     )
     return PendingSnapshot(manifest=manifest, report=report, partition_bars=partition_bars)
 
@@ -716,9 +788,10 @@ def build_mt5_pending(
     minute_def: TimeframeDefinition,
     timeframe_defs: Mapping[str, TimeframeDefinition],
     targets: Sequence[str],
-    boundaries: AccessBoundaries,
+    boundaries: Mt5Boundaries,
     basis_declaration: BasisDeclaration,
     code_version: str,
+    initial_state_of: InitialStateOf | None = None,
 ) -> PendingSnapshot:
     """MT5 経路の暫定 snapshot を組み立てる（D03 §15.3 の 1〜8）。
 
@@ -780,6 +853,7 @@ def build_mt5_pending(
         basis_declaration=basis_declaration,
         conversion=conversion,
         extra_errors=converted.errors,
+        initial_state_of=initial_state_of,
     )
 
 
@@ -789,14 +863,16 @@ def reaccept_mt5(
     calendar: TradingCalendar,
     timeframe_defs: Mapping[str, TimeframeDefinition],
     targets: Sequence[str],
-    boundaries: AccessBoundaries,
+    boundaries: Mt5Boundaries,
     excluded: Collection[tuple[SeriesId, Interval]] = frozenset(),
 ) -> PendingSnapshot:
     """MT5 経路の確定段階の再実行（D03 §15.3 の 8 → §4 の 9）。
 
     暫定 snapshot の 1 分足と manifest の取得の範囲を再利用し、新しいカレンダーで 1 分ごとの区分と
     上位足を作り直す。原ファイルは読み直さない（D03 §4 の 9 と同じ理由）。`excluded` はセッション外
-    データ異常として除外する 1 分足。
+    データ異常として除外する 1 分足。封印の区分の partition の初期状態は暫定 snapshot の記録を
+    引き継ぐ（初期状態は受入れの時に決める。ADR-0038 第3項の 1）。暫定 snapshot に無い封印の区分の
+    partition が再実行で現れたら止める。
     """
     conversion = pending.manifest.conversion
     mt5 = conversion.mt5
@@ -847,11 +923,31 @@ def reaccept_mt5(
         calendar_version=calendar.version,
         mt5=new_mt5,
     )
-    return _assemble(
-        created_at=pending.manifest.created_at,
+    recorded = pending.manifest
+
+    def carried(partition_id: PartitionId) -> SealedInitialState:
+        state = recorded.sealed_initial_state(partition_id)
+        if state is None:
+            raise Mt5AcceptanceFailed(
+                f"the rerun made the sealed partition {partition_id}, which the provisional"
+                " snapshot did not have; its initial state was not decided at acceptance"
+                " (ADR-0038 第3項の 1)"
+            )
+        return state
+
+    rebuilt = _assemble(
+        created_at=recorded.created_at,
         built=built,
-        sources=pending.manifest.sources,
+        sources=recorded.sources,
         boundaries=boundaries,
-        basis_declaration=pending.manifest.basis_declaration,
+        basis_declaration=recorded.basis_declaration,
         conversion=new_conversion,
+        initial_state_of=carried if recorded.sealed_initial_states else None,
+    )
+    if recorded.quality_read is None:
+        return rebuilt
+    return PendingSnapshot(
+        manifest=rebuilt.manifest.with_quality_read(recorded.quality_read),
+        report=rebuilt.report,
+        partition_bars=rebuilt.partition_bars,
     )

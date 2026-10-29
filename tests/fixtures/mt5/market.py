@@ -35,7 +35,7 @@ from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
 from odyssey_fx.marketdata.domain.access import AccessBoundaries
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.series import PriceBasis
-from odyssey_fx.marketdata.domain.snapshot import Approval, BasisDeclaration
+from odyssey_fx.marketdata.domain.snapshot import Approval, BasisDeclaration, QualityReadRecord
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleTable, TimeRuleVariant
 from odyssey_fx.marketdata.domain.timeframe_def import FixedUtcAlignment, TimeframeDefinition
 from tests.fixtures.synthetic import market
@@ -240,7 +240,7 @@ def build_pending(
             files[rid] = Mt5ReadFile(
                 entry=entry, sha256_gz=sha_gz, sha256_csv=sha_csv, header_ok=True, rows=rows
             )
-    return build_mt5_pending(
+    built = build_mt5_pending(
         created_at=UtcTime.parse("2026-10-17T00:00:00Z"),
         symbol=USDJPY,
         entries=entries,
@@ -257,6 +257,13 @@ def build_pending(
         boundaries=boundaries,
         basis_declaration=BasisDeclaration(value=PriceBasis.BID, verified=False),
         code_version="synthetic",
+    )
+    # 研究期間の受入れ（`data accept-mt5`）と同じく、品質確認の許可を要しなかったと記録する
+    # （ADR-0036 第7項。分類・承認がこの項目を確かめる）。
+    return PendingSnapshot(
+        manifest=built.manifest.with_quality_read(QualityReadRecord(permit_required=False)),
+        report=built.report,
+        partition_bars=built.partition_bars,
     )
 
 

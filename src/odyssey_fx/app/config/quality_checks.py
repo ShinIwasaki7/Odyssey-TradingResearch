@@ -137,7 +137,9 @@ def load_quality_check_definition(path: Path) -> QualityCheckDefinition:
                 Symbol(code) for code in _distinct(model.targets.symbols, "targets.symbols", path)
             ),
             timeframes=frozenset(
-                _timeframe_ids(_distinct(model.targets.timeframes, "targets.timeframes", path), path)
+                _timeframe_ids(
+                    _distinct(model.targets.timeframes, "targets.timeframes", path), path
+                )
             ),
             output_kinds=frozenset(
                 QualityOutputKind(value)

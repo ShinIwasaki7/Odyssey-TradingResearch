@@ -142,8 +142,10 @@ def load_sealed_window(path: Path) -> SealedWindowConfig:
                 "（ADR-0037 第4項の 4）"
             )
         assert merge_commit_time is not None  # noqa: S101  上で確かめた
-        if not isinstance(merge_commit, str) or len(merge_commit) != 40 or any(
-            char not in "0123456789abcdef" for char in merge_commit
+        if (
+            not isinstance(merge_commit, str)
+            or len(merge_commit) != 40
+            or any(char not in "0123456789abcdef" for char in merge_commit)
         ):
             raise ConfigError(
                 f"{path}: `acquisition_start_basis.merge_commit` はコミットの完全な識別"
