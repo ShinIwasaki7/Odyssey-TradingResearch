@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -23,7 +23,7 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.money import Money
 from odyssey_fx.common.refs import ConfigDigest, ContentDigest, SnapshotRef
-from odyssey_fx.common.time import Interval
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
 from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
 from odyssey_fx.evaluation.domain.metrics import MetricRecord
@@ -59,6 +59,8 @@ __all__ = [
     "ColumnValueKind",
     "EvaluationReadFailure",
     "ExperimentStore",
+    "HoldoutAccessLog",
+    "HoldoutAccessLogStop",
     "ManifestReadFailure",
     "ManifestSaveResult",
     "QualityAccessLog",
@@ -583,4 +585,62 @@ class QualityAccessLog(Protocol):
 
     def append(self, row: QualityAccessRow) -> QualityAccessRow | QualityLogAppendRefused:
         """1 行を追記し、読み直して一致を確かめる。成功なら `row`、断れば理由を返す。"""
+        ...
+
+
+class HoldoutAccessLogStop(Exception):
+    """消費の記録の追記・commit・push を止めた（`HoldoutAccessLog`。fail-closed）。
+
+    `stage` は止まった段（`base`（origin の確認）・`append`（追記）・`commit`・`push`）。
+    `detail` は人間が読む理由（件数・識別子・git の終了コードだけ。価格を含まない）。
+    """
+
+    def __init__(self, stage: str, detail: str) -> None:
+        super().__init__(f"{stage}: {detail}")
+        self.stage = stage
+        self.detail = detail
+
+
+@runtime_checkable
+class HoldoutAccessLog(Protocol):
+    """封印の区分の消費の記録（snapshot の `access_log.jsonl`）の追記と origin への公開（D01 §4）。
+
+    ADR-0038 第8項の 3 が引き継ぐ ADR-0014 の「消費遷移の直列化」（origin の既定ブランチへの push
+    を compare-and-set とする）の手順を、このポートの 3 つの操作で行う。実装は `marketdata` の
+    消費の記録の追記と、git の取得・commit・push を `app` が適合させる（D01 §4 v2.8。D09 Q11）。
+    品質確認の閲覧の記録（`QualityAccessLog`）とは別のポート・別の記録である（P1-3）。
+
+    **【仮置き】最小の形**: 消費の記録の行の項目と行の鍵は D09 の後続版（D15 の R2）が決め、
+    このポートの操作も R4（関所の最終評価の許可の実装）で作る（ADR-0035 第3項の要決定 S3-A）。
+    本ポートは、後から品質確認の条件違反と判定した閲覧の管理コマンド（ADR-0035 第3項。S5a の前の
+    単独の PR）が使う 3 つの操作だけを置き、R4 で置き換えてよい。どの操作も失敗したら
+    `HoldoutAccessLogStop` を送出する。
+    """
+
+    def require_published_base(self, paths: Sequence[str]) -> None:
+        """origin の既定ブランチに知らない追記が無いことを確かめる（ADR-0014 の消費の手順 (1)）。
+
+        `paths` はこれから commit するファイル（リポジトリの根からの相対パス）。作業木のそれらの
+        ファイルが、手元の最新の commit の内容の後ろに行を足しただけであることも確かめる。
+        """
+        ...
+
+    def append_consumed(
+        self,
+        snapshot_id: str,
+        partition_id: PartitionId,
+        *,
+        recorded_at: UtcTime,
+        actor: str,
+        purpose: str,
+    ) -> str:
+        """消費の記録を 1 行追記し、読み直して一致を確かめる。書いたファイルの相対パスを返す。"""
+        ...
+
+    def publish(self, paths: Sequence[str], message: str) -> str | None:
+        """`paths` だけを commit し、origin の既定ブランチへ push する（ADR-0014 の手順 (2)(3)）。
+
+        成功したら commit の識別子、commit する変更が無ければ `None` を返す。push に失敗したら
+        commit を取り消して（作業木の追記は残して）止める（部分的な commit を残さない）。
+        """
         ...

@@ -67,6 +67,7 @@ from odyssey_fx.marketdata.adapters.mt5_csv_source import (
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.adapters.quality_access_log_store import QualityAccessLogFile
 from odyssey_fx.marketdata.application.acceptance import PendingSnapshot
+from odyssey_fx.marketdata.application.access_log import initial_holdout_state
 from odyssey_fx.marketdata.application.mt5_acceptance import (
     InitialStateOf,
     Mt5AcceptanceFailed,
@@ -76,6 +77,7 @@ from odyssey_fx.marketdata.application.mt5_acceptance import (
 )
 from odyssey_fx.marketdata.domain.access import (
     OANDA_SEALED_CLASSES,
+    AccessClass,
     HoldoutState,
     next_trading_week_start,
     trading_week_start,
@@ -119,6 +121,7 @@ __all__ = [
     "SealedAcceptance",
     "SealedDataError",
     "SealedIntakeRefused",
+    "SnapshotSealedPartition",
     "accept_sealed",
     "without_values",
     "existing_sealed_partitions",
@@ -129,6 +132,7 @@ __all__ = [
     "require_symbol_spec_matches",
     "sealed_config_digest",
     "sealed_raw_location",
+    "snapshot_sealed_partitions",
 ]
 
 #: 封印の取り込みの受入れの道具（許可の定義 `configs/quality_checks/oanda_mt5_sealed_accept.yaml`。
@@ -263,19 +267,44 @@ def _consumed_in_log(lines: Sequence[object], partition_id: PartitionId) -> bool
     return found
 
 
-def existing_sealed_partitions(snapshots_root: Path) -> list[ExistingSealedPartition]:
-    """既にある OANDA MT5 の経路の snapshot の封印の partition とその状態（ADR-0038 第3項の 3）。
+@dataclass(frozen=True, slots=True)
+class SnapshotSealedPartition:
+    """確定済みの snapshot の封印の区分の partition 1 つと、その snapshot の識別子。"""
+
+    snapshot_id: str
+    partition: ExistingSealedPartition
+
+
+def _state_from(initial: HoldoutState, consumed: bool | None) -> HoldoutState | None:
+    if consumed is None:
+        return None
+    if initial is HoldoutState.CONSUMED or consumed:
+        return HoldoutState.CONSUMED
+    return HoldoutState.SEALED
+
+
+def snapshot_sealed_partitions(
+    snapshots_root: Path, *, legacy: bool = False
+) -> list[SnapshotSealedPartition]:
+    """確定済みの snapshot の封印の区分の partition とその状態を、snapshot ごとに返す。
+
+    OANDA MT5 の経路の snapshot は、manifest の初期状態（ADR-0038 第3項）と作業木の消費の記録から
+    導く。`legacy` が真なら、旧データの snapshot の `LEGACY_HOLDOUT` の partition も、旧基盤の
+    履歴（`legacy_access`）の初期状態（ADR-0014）と消費の記録から導いて含める（後から品質確認の
+    条件違反と判定した閲覧の消費の対象。ADR-0035 第3項の「封印の区分」は第0項の 3 で
+    `LEGACY_HOLDOUT` を含む）。
+    受入れの初期状態の例外 2 は旧データの snapshot を数えない（ADR-0038 第3項の 3）ので、
+    `existing_sealed_partitions` は `legacy` を偽で呼ぶ。
 
     確定済みの snapshot（`data/snapshots/<snapshot_id>/`）を全部読む。暫定・退避（`_pending/`）は
-    消費されないので数えない。manifest が読めない snapshot があれば、封印の区分を持つかどうかも
-    分からないので `HoldoutStateUnknown`（受入れを始めない）。消費の記録は作業木のものを読む
-    （origin の既定ブランチとの照合は最終検証の手順。D15 の R2・R4。S4a の仮置き）。
+    読まない。manifest が読めない snapshot があれば `HoldoutStateUnknown`。消費の記録が読めなければ
+    状態を `None`（導けない）にする。
     """
     root = Path(snapshots_root)
     if not root.exists():
         return []
     store = ParquetSnapshotStore(root=root)
-    out: list[ExistingSealedPartition] = []
+    out: list[SnapshotSealedPartition] = []
     for directory in sorted(path for path in root.iterdir() if path.is_dir()):
         if directory.name.startswith("_"):
             continue
@@ -286,23 +315,56 @@ def existing_sealed_partitions(snapshots_root: Path) -> list[ExistingSealedParti
                 f"the snapshot {directory.name} cannot be read ({type(exc).__name__}); the states"
                 " of existing sealed partitions cannot be derived (ADR-0038 第3項の 3)"
             ) from exc
-        if manifest.conversion.mt5 is None or not manifest.sealed_initial_states:
-            continue  # 旧データの snapshot の LEGACY_HOLDOUT は数えない（ADR-0038 第3項の 3）
+        oanda = manifest.conversion.mt5 is not None and bool(manifest.sealed_initial_states)
+        legacy_records = (
+            [
+                record
+                for record in manifest.partitions
+                if record.access_class is AccessClass.LEGACY_HOLDOUT
+            ]
+            if legacy and not oanda
+            else []
+        )
+        if not oanda and not legacy_records:
+            continue  # 旧データの LEGACY_HOLDOUT は既定では数えない（ADR-0038 第3項の 3）
         try:
             lines: Sequence[object] = list(store.read_access_log(directory.name))
         except Exception:  # noqa: BLE001
             lines = [None]
-        for item in manifest.sealed_initial_states:
-            consumed = _consumed_in_log(lines, item.partition_id)
-            state: HoldoutState | None
-            if consumed is None:
-                state = None
-            elif item.state is HoldoutState.CONSUMED or consumed:
-                state = HoldoutState.CONSUMED
-            else:
-                state = HoldoutState.SEALED
-            out.append(ExistingSealedPartition(partition_id=item.partition_id, state=state))
+        if oanda:
+            for item in manifest.sealed_initial_states:
+                state = _state_from(item.state, _consumed_in_log(lines, item.partition_id))
+                out.append(
+                    SnapshotSealedPartition(
+                        snapshot_id=directory.name,
+                        partition=ExistingSealedPartition(
+                            partition_id=item.partition_id, state=state
+                        ),
+                    )
+                )
+        for record in legacy_records:
+            initial = initial_holdout_state(record, manifest.legacy_access)
+            state = _state_from(initial, _consumed_in_log(lines, record.partition_id))
+            out.append(
+                SnapshotSealedPartition(
+                    snapshot_id=directory.name,
+                    partition=ExistingSealedPartition(
+                        partition_id=record.partition_id, state=state
+                    ),
+                )
+            )
     return out
+
+
+def existing_sealed_partitions(snapshots_root: Path) -> list[ExistingSealedPartition]:
+    """既にある OANDA MT5 の経路の snapshot の封印の partition とその状態（ADR-0038 第3項の 3）。
+
+    確定済みの snapshot（`data/snapshots/<snapshot_id>/`）を全部読む。暫定・退避（`_pending/`）は
+    消費されないので数えない。manifest が読めない snapshot があれば、封印の区分を持つかどうかも
+    分からないので `HoldoutStateUnknown`（受入れを始めない）。消費の記録は作業木のものを読む
+    （origin の既定ブランチとの照合は最終検証の手順。D15 の R2・R4。S4a の仮置き）。
+    """
+    return [item.partition for item in snapshot_sealed_partitions(snapshots_root)]
 
 
 def initial_state_provider(
