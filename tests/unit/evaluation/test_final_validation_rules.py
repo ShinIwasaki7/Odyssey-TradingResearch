@@ -176,6 +176,13 @@ def test_the_week_of_t_fix_and_later_weeks_are_never_in_the_window() -> None:
     assert window.consumption.end == WEEKS[-1].end
 
 
+def test_a_requested_symbol_without_any_partition_is_refused() -> None:
+    """要求した銘柄の一部に封印の partition が無ければ、存在する側だけを消費しない。"""
+    refusal = _window(_facts(), symbols=frozenset({"USDJPY", "EURUSD"}))
+    assert isinstance(refusal, WindowRefusal)
+    assert refusal.reason is FinalReason.WINDOW_HAS_MISSING_WEEK
+
+
 def test_no_usable_week_is_refused() -> None:
     refusal = _window(_facts(consumed=frozenset(range(12))))
     assert isinstance(refusal, WindowRefusal)

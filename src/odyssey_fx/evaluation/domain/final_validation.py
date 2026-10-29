@@ -325,6 +325,15 @@ def derive_final_window(
         if str(fact.partition_id.series.symbol) in symbols and fact.period.end <= t_fix
     ]
     series = sorted({fact.partition_id.series for fact in chosen}, key=str)
+    lacking = sorted(symbols - {str(item.symbol) for item in series})
+    if series and lacking:
+        # 要求した銘柄の一部に封印の partition が 1 つも無い（被覆が無い）。存在する側だけを消費
+        # しない（D09 §9.10.3 の 5、§9.10.2 の段 2 (e) の系列の被覆）。
+        return WindowRefusal(
+            FinalReason.WINDOW_HAS_MISSING_WEEK,
+            f"no approved sealed partition of {lacking} ends by T_fix {t_fix}; the window of the"
+            " other symbols is not consumed alone (仮置き R2-9)",
+        )
     if not series:
         return WindowRefusal(
             FinalReason.NO_USABLE_WINDOW,

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from odyssey_fx.app import final_validation_records as records
 from odyssey_fx.app.final_validation_records import (
     FINAL_LEDGER_LOCK_PATH,
     FINAL_LEDGER_PATH,
@@ -83,3 +84,23 @@ def test_the_ledger_is_never_created_by_an_append_and_a_lock_stops_it(tmp_path: 
     with pytest.raises(FinalLedgerError, match="exists"):
         append_ledger_row(tmp_path, _values())
     assert (tmp_path / FINAL_LEDGER_PATH).read_bytes() == b""
+
+
+def test_a_failed_json_write_leaves_no_file_under_the_final_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """書きかけの記録を確定の名前に残さない（状態 D と取り違えない。Codex 1 巡目）。"""
+
+    def broken(_: int) -> None:
+        raise OSError("disk full (synthetic)")
+
+    monkeypatch.setattr("os.fsync", broken)
+    target = tmp_path / "final" / "1" / "final_evaluation.json"
+    with pytest.raises(OSError):
+        records.write_json_once(target, {"a": 1})
+    assert list(target.parent.iterdir()) == []
+    monkeypatch.undo()
+    digest = records.write_json_once(target, {"a": 1})
+    assert len(digest) == 64 and [p.name for p in target.parent.iterdir()] == [target.name]
+    with pytest.raises(FileExistsError):
+        records.write_json_once(target, {"a": 2})

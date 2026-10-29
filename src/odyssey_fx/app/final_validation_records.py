@@ -18,7 +18,7 @@ import hashlib
 import json
 import os
 import socket
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -273,17 +273,26 @@ def final_directory(experiment_dir: Path, execution: int) -> Path:
 
 
 def write_json_once(path: Path, payload: Mapping[str, Any]) -> str:
-    """JSON を新しく書き（既にあれば `FileExistsError`）、内容の SHA-256 を返す。"""
+    """JSON を新しく書き（既にあれば `FileExistsError`）、内容の SHA-256 を返す。
+
+    一時のファイルに全部を書いて同期してから、確定の名前へ排他的に結ぶ（`os.link`）。途中で
+    失敗したら一時のファイルを消し、確定の名前には何も残さない（書きかけの記録を「書いた」と
+    読まないため。状態 D の導出は確定の名前の有無で見る）。
+    """
     data = (json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
-        os.write(descriptor, data)
-        os.fsync(descriptor)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.link(temporary, path)
     finally:
-        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
     return hashlib.sha256(data).hexdigest()
-
-
-def _unused(_: Sequence[str]) -> None:  # pragma: no cover
-    return None
