@@ -284,7 +284,7 @@
 1. 固定した試行を、研究ポリシーの分割の 5 つの fold の**検証区間それぞれで**、fold の検証の run と同じ設定（独立口座、同じ初期残高・比較の前提・ウォームアップの規則）で run する。最後の fold の検証区間は、元の実験で同じ試行がその区間で run 済みなので、入力が一致すれば再利用してよい（一致の確かめは R3）。
 2. 各 run の検証区間の完了取引の件数を数える（D13-20 (a) と同じ。run の終わりに残った建玉は数えない）。
 3. 5 つの件数の合計が、研究ポリシーの現行の版の検証の合計の最低件数（版 3 では `min_validation_trades_total` = 8）以上なら合格、未満なら不合格（理由 `EVIDENCE_FLOOR_NOT_MET`）。値は研究ポリシーから読む（仮置き 4）。
-4. run・評価・事後検査のどれかが失敗した fold があれば「判定できない」（理由 `EVIDENCE_FLOOR_UNDETERMINED`）。審査の結果は要決定 R1-4 による。
+4. run・評価・事後検査のどれかが失敗した fold があれば「判定できない」（理由 `EVIDENCE_FLOOR_UNDETERMINED`）。審査の結果は保留（R1-4 (a)。2026-10-30 決定）。
 5. 合格・不合格によらず、記録に「研究履歴の中の確認で、独立した確認ではない」の注記を付ける（D15-6 (a) の文）。
 
 - 件数だけを見る。固定した試行の run の収益・ドローダウンは、この検査の合否に使わない（D15-6 (a) は件数の最低線だけを決めた）。数値の層には件数だけを記録し、それ以外の指標は記録しない。
@@ -371,10 +371,10 @@ DSR = Φ( (SR̂ − SR₀) × √(T − 1) ÷ √(1 − g₃ × SR̂ + ((g₄ �
 
 ### 7.1 形【既決】＋【提案】
 
-- D13 §8.2 の表の行ごとに、宣言と取引の記録から機械的に取れる印と閾値を審査の規則のファイルに固定する（D15-8 (a)）。**候補が 0 件の今**、規則と閾値は候補を見る前に固定される。閾値の値は人間が決める（要決定 R1-5〜R1-7）。
+- D13 §8.2 の表の行ごとに、宣言と取引の記録から機械的に取れる印と閾値を審査の規則のファイルに固定する（D15-8 (a)）。**候補が 0 件の今**、規則と閾値は候補を見る前に固定される。閾値の値は人間が決めた（R1-5〜R1-7 はすべて (a)。2026-10-30）。
 - 結果は行ごと・組ごとに「適合（`FITS`）／能力の追加が要る（`NEEDS_CAPABILITY`）／判定できない（`UNDETERMINED`）」。`NEEDS_CAPABILITY` には要る能力の名前を付ける。
 - 取引の記録の出どころは、第4節の固定した試行の 5 本の run の完了取引（組ごと）である。
-- どれかの行・組が `NEEDS_CAPABILITY` なら審査は「進めない」（理由 `COST_MODEL_NEEDS_CAPABILITY`。要る能力をすべて記録）。`UNDETERMINED` の扱いは要決定 R1-4。
+- どれかの行・組が `NEEDS_CAPABILITY` なら審査は「進めない」（理由 `COST_MODEL_NEEDS_CAPABILITY`。要る能力をすべて記録）。`UNDETERMINED` なら保留（R1-4 (a)。2026-10-30 決定）。
 
 ### 7.2 行と規則の一覧【提案】
 
@@ -449,7 +449,7 @@ DSR = Φ( (SR̂ − SR₀) × √(T − 1) ÷ √(1 − g₃ × SR̂ + ((g₄ �
 
 ## 9. 審査の結果と後続
 
-### 9.1 結果の値と合わせ方【提案】（要決定 R1-4）
+### 9.1 結果の値と合わせ方【提案】（R1-4 (a)。2026-10-30 決定）
 
 | 値 | 識別子 | 意味 |
 |---|---|---|
@@ -536,7 +536,7 @@ schema_version: 1
 id: adoption_review
 version: 1
 cost_model_fit:
-  spread_session_concentration: {window: {anchor: WEEKLY_OPEN, length: "PT2H"}, max_ratio: "2"     # R1-6 (a)}
+  spread_session_concentration: {window: {anchor: WEEKLY_OPEN, length: "PT2H"}, max_ratio: "2"}   # R1-6 (a)
   fixed_cost_share:             {max_share: "0.25"}   # R1-7 (a)
   swap_rollover:                {rule: ANY_CROSSING}   # R1-5 (a): 日替わりをまたいだ完了取引が 1 件でもあれば
   currency_conversion:          {require_account_currency: true}
