@@ -1839,6 +1839,31 @@ def load_sealed_plan(
     return plan, requests
 
 
+def _planned_rids(plan: Mapping[str, Any]) -> dict[str, list[str]]:
+    """計画の要求の名前を通貨ごとに（計画の順）。"""
+    out: dict[str, list[str]] = {}
+    for item in plan["requests"]:
+        out.setdefault(str(item["pair"]), []).append(str(item["rid"]))
+    return out
+
+
+def _write_new(path: Path, data: bytes) -> None:
+    """原ファイルを新しく書く。既にあれば書かずに止まる（原データを上書きしない。ADR-0013）。
+
+    一時のファイルに書いてから、置き場が無いときだけ名前を付ける（``os.link`` は置き場が
+    あれば失敗する）。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    try:
+        os.link(tmp, path)
+    except FileExistsError as exc:
+        raise SealedWindowError(f"{path} は既にある。原ファイルを上書きしない（ADR-0013）") from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def load_sealed_manifest(
     out_dir: Path, plan: Mapping[str, Any], plan_sha256: str
 ) -> dict[str, Any]:
@@ -1865,6 +1890,9 @@ def load_sealed_manifest(
         "window": plan["window"],
         "plan_sha256": plan_sha256,
         "planned_requests": plan["planned_requests"],
+        # 計画の要求の名前（通貨ごと）。受入れは、その通貨の計画の要求がすべて状態 ok で記録されて
+        # いることを確かめる（未要求の要求を取得済みと取り違えない。D03 §16.5.8）。
+        "planned": _planned_rids(plan),
         "max_requests": plan["max_requests"],
         "requests_sent": 0,
         "storage_terms": SEALED_STORAGE_TERMS,
@@ -1961,6 +1989,11 @@ def run_sealed_fetch(
             continue
         elif entry and entry.get("status") == STATUS_EMPTY:
             continue
+        if (out_dir / req.file).exists():
+            # 記録と合わない（または記録の無い）既存の原ファイル。上書きせず、要求も出さずに止まる。
+            # 取り直しは新しい取得の回（別の取得日の置き場）で行う（ADR-0013）。
+            result["stop"] = "existing_file"
+            break
         if int(manifest["requests_sent"]) >= max_total:
             result["stop"] = "request_limit"
             break
@@ -2030,7 +2063,7 @@ def run_sealed_fetch(
         if rows:
             data = month_csv_bytes(rows)
             gz = gzip_bytes(data)
-            _atomic_write(out_dir / req.file, gz)
+            _write_new(out_dir / req.file, gz)
             new["sha256_csv"] = _sha256_bytes(data)
             new["sha256_gz"] = _sha256_bytes(gz)
             result["ok"] += 1

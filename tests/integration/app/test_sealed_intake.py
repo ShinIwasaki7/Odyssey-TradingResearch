@@ -335,6 +335,22 @@ def test_a_currency_with_an_empty_request_is_not_accepted_this_time(
     assert _pending(repo) == [] and _log(repo).rows == ()
 
 
+def test_a_currency_with_an_unrequested_planned_request_is_not_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """計画の要求が記録に無い（途中で止まった）通貨は受け入れない（D03 §16.5.8。Codex 1 巡目）。"""
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+
+    def unrequested(payload: dict[str, Any]) -> None:
+        payload["planned"]["USDJPY"].append("P-USDJPY-20261108T2200Z")
+
+    _edit_record(repo, copy, unrequested)
+    assert _accept(repo, copy) != 0
+    assert "未要求" in capsys.readouterr().err
+    assert _pending(repo) == [] and _log(repo).rows == ()
+
+
 def test_a_periodic_record_reaching_before_the_acquisition_start_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

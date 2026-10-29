@@ -340,6 +340,39 @@ def test_a_periodic_fetch_writes_prices_only_into_the_files_and_verifies(
     assert len(data.splitlines()) == 1 + 3  # 区間の終わりちょうどの足は保存しない
 
 
+def test_an_existing_raw_file_is_never_overwritten(
+    tmp_path: Path, first: planner.SealedPlan
+) -> None:
+    """記録と合わない既存の原ファイルは上書きせず、要求も出さずに止まる（ADR-0013）。"""
+    plan_path = _write_plan(tmp_path, first)
+    window = probe.read_sealed_window(ROOT / SEALED_WINDOW_PATH)
+    plan, requests = probe.load_sealed_plan(plan_path, window, now=NOW)
+    out = tmp_path / "out"
+    (usdjpy,) = [r for r in requests if r.pair == "USDJPY"]
+    target = out / usdjpy.file
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"left by a stopped run")
+    api = FakeMt5()
+    result = probe.run_sealed_fetch(
+        api,
+        "USDJPY",
+        out,
+        plan=plan,
+        plan_sha256=probe._sha256(plan_path),
+        requests=requests,
+        window=window,
+        sleep=lambda s: None,
+        now=lambda: NOW,
+    )
+    assert result["stop"] == "existing_file" and api.rate_calls == []
+    assert target.read_bytes() == b"left by a stopped run"
+    with pytest.raises(probe.SealedWindowError, match="上書きしない"):
+        probe._write_new(target, b"new")
+    assert target.read_bytes() == b"left by a stopped run"
+    manifest = json.loads((out / probe.FULL_MANIFEST).read_text(encoding="utf-8"))
+    assert manifest["planned"]["USDJPY"] == [usdjpy.rid]
+
+
 def test_a_plan_that_breaks_the_window_requests_nothing(
     tmp_path: Path, first: planner.SealedPlan, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -404,7 +404,21 @@ def accept_sealed(
     own = [entry for entry in read_fetch_manifest(record_path) if entry.symbol == symbol]
     if not own:
         raise SealedIntakeRefused(f"{record_path} に {symbol} の要求が無い")
-    missing = sorted(entry.rid for entry in own if not entry.acquired)
+    planned = record.get("planned")
+    if not isinstance(planned, dict) or not isinstance(planned.get(str(symbol)), list):
+        raise SealedIntakeRefused(
+            f"{record_path} に計画の要求の一覧（planned）が無い。取得済みかを確かめられないので"
+            "受け入れない（D03 §16.5.8）"
+        )
+    wanted = {str(rid) for rid in planned[str(symbol)]}
+    recorded = {entry.rid for entry in own}
+    extra = sorted(recorded - wanted)
+    if extra:
+        raise SealedIntakeRefused(f"{record_path} に計画に無い要求がある（{', '.join(extra)}）")
+    missing = sorted(
+        [entry.rid for entry in own if not entry.acquired]
+        + [f"{rid}（未要求）" for rid in sorted(wanted - recorded)]
+    )
     if missing:
         # 0 本・失敗の要求が残った通貨のその回は受け入れない（D03 §16.5.8、PR #109 の仮置き
         # S2b-13。2024 年以降のどの月・週にも取引日はあるので、0 本は取り寄せの問題とみなす）。
