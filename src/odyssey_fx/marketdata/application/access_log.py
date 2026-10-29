@@ -9,6 +9,12 @@
 （manifest の `legacy_access`）が決め、**未観測と確認できた partition だけ** `SEALED` に
 する。使用済み、または履歴不明の partition は `CONSUMED` とする（fail-closed）。
 
+OANDA MT5 の経路の 2 つの封印の区分（ADR-0038）の partition は、受入れの時に決めた初期状態
+（`marketdata.domain.sealed_state.initial_sealed_state`。ADR-0038 第3項）から同じ規則で導く
+（`derive_sealed_state`）。旧基盤の履歴（`legacy_access`）は使わない（ADR-0038 第3項の 4）。
+品質確認の閲覧の記録（`research/quality_access_log.jsonl`）は状態の導出に使わない（ADR-0035
+第4項の 3）。
+
 本モジュールが担うのは記録の追記と状態の導出だけで、許可の発行・origin への push を伴う
 封印解除の手順（fail-closed な gate）は D07（`evaluation.application.holdout_gate`）が
 実装する（D03 §3.8）。記録の行は1行1 JSON（JSON Lines）で、追記した順に並ぶ。
@@ -21,7 +27,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.marketdata.domain.access import AccessClass, HoldoutState
+from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass, HoldoutState
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.snapshot import (
     LegacyAccessRecord,
@@ -35,6 +41,7 @@ __all__ = [
     "AccessLogEntryKind",
     "append_entry",
     "derive_holdout_state",
+    "derive_sealed_state",
     "initial_holdout_state",
     "serialize_entry",
 ]
@@ -184,5 +191,37 @@ def derive_holdout_state(
         if entry.partition_id != partition.partition_id:
             continue
         if entry.kind is AccessLogEntryKind.CONSUMED:
+            return HoldoutState.CONSUMED
+    return HoldoutState.SEALED
+
+
+def derive_sealed_state(
+    partition: PartitionRecord,
+    initial_state: HoldoutState,
+    entries: Sequence[AccessLogEntry],
+) -> HoldoutState:
+    """OANDA MT5 の経路の封印の区分の partition の現在の状態を導く（ADR-0038 第3項・第8項）。
+
+    `initial_state` は受入れの時に決めた初期状態（`initial_sealed_state`）。以後は消費の記録の
+    追記でだけ変わり（ADR-0038 第3項の 1）、消費の記録が 1 件でもあれば `CONSUMED`。
+    `SEALED → CONSUMED` は不可逆で、`CONSUMED` から `SEALED` へは戻らない。
+    """
+    if not isinstance(partition, PartitionRecord):
+        raise MarketDataValueError("derive_sealed_state requires a PartitionRecord")
+    if partition.access_class not in OANDA_SEALED_CLASSES:
+        raise MarketDataValueError(
+            f"only the OANDA MT5 sealed classes are derived by this rule, got"
+            f" {partition.access_class.value} for {partition.partition_id} (ADR-0038 第3項)"
+        )
+    if not isinstance(initial_state, HoldoutState):
+        raise MarketDataValueError("derive_sealed_state requires an initial HoldoutState")
+    if initial_state is HoldoutState.CONSUMED:
+        return HoldoutState.CONSUMED
+    for entry in entries:
+        if not isinstance(entry, AccessLogEntry):
+            raise MarketDataValueError("derive_sealed_state requires AccessLogEntry values")
+        if entry.partition_id == partition.partition_id and (
+            entry.kind is AccessLogEntryKind.CONSUMED
+        ):
             return HoldoutState.CONSUMED
     return HoldoutState.SEALED

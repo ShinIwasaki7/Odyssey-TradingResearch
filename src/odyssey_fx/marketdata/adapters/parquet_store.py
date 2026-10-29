@@ -38,6 +38,7 @@ from odyssey_fx.marketdata.application.partition_digest import (
     partition_digest_hex,
     partition_row,
 )
+from odyssey_fx.marketdata.application.quality_access_log import require_partition_read_allowed
 from odyssey_fx.marketdata.application.report_digest import (
     integrity_report_digest_hex,
     integrity_report_text,
@@ -70,6 +71,7 @@ from odyssey_fx.marketdata.domain.integrity import (
     IntegrityReport,
     Severity,
 )
+from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     Approval,
@@ -234,16 +236,23 @@ def _series_record_payload(record: SeriesManifest) -> Mapping[str, Any]:
 
 
 def _partition_payload(partition_id: PartitionId) -> Mapping[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "access_class": partition_id.access_class.value,
         "series": _series_payload(partition_id.series),
     }
+    if partition_id.period_start is not None:
+        # OANDA MT5 の経路の封印の区分だけが持つ（ADR-0038 第2項）。他の区分は鍵を足さない
+        # （既存の manifest の形は変わらない）。
+        payload["period_start"] = str(partition_id.period_start)
+    return payload
 
 
 def _partition_from_payload(payload: Mapping[str, Any]) -> PartitionId:
+    period_start = payload.get("period_start")
     return PartitionId(
         series=_series_from_payload(payload["series"]),
         access_class=AccessClass(str(payload["access_class"])),
+        period_start=None if period_start is None else UtcTime.parse(str(period_start)),
     )
 
 
@@ -657,8 +666,18 @@ class ParquetSnapshotStore:
         # 算法は application にあり、読み取り側が同じ値を再計算して照合できる。
         return partition_digest_hex(ordered)
 
-    def read_partition(self, snapshot_dir: str, partition_id: PartitionId) -> Sequence[Bar]:
-        """partition の足を開始時刻の昇順で読む。"""
+    def read_partition(
+        self,
+        snapshot_dir: str,
+        partition_id: PartitionId,
+        read_permit: QualityReadPermit | None = None,
+    ) -> Sequence[Bar]:
+        """partition の足を開始時刻の昇順で読む。
+
+        OANDA MT5 の経路の封印の区分の partition は、読み取りの許可の値が覆うときだけ読む
+        （ファイルを開く前に確かめる。ADR-0036 第9項の 3）。
+        """
+        require_partition_read_allowed(partition_id, read_permit)
         path = self._snapshot_path(snapshot_dir) / partition_id.directory / _PARTITION_FILE
         if not path.is_file():
             raise FileNotFoundError(f"partition file not found: {path}")

@@ -33,6 +33,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
@@ -808,7 +809,20 @@ def test_7_a_unit_failing_a_post_run_check_is_excluded_and_fails_the_search(
 def test_8_experiment_run_does_not_call_the_holdout_gate(full: _Full) -> None:
     """探索の経路は封印期間の許可判定（`holdout_gate`。後続版）を持たず、許可集合は研究履歴だけ。"""
     assert full.code == 0, full.output
-    assert not [name for name in sys.modules if "holdout_gate" in name]
+    # 関所のモジュールは品質確認の許可のために存在する（順 6 の S3）。探索の経路（CLI と組み立て）が
+    # それを import しないことを、他のテストの import に左右されない別プロセスで確かめる。
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, odyssey_fx.app.cli.main, odyssey_fx.app.composition;"
+            " print(any('holdout_gate' in name for name in sys.modules))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert probe.stdout.strip() == "False"
     manifest = read_experiment_manifest(_version(full.out, "full"))
     partitions = manifest.allowed_partitions
     assert isinstance(partitions, Paired)  # 探索の実験は組の写像（2026-10-21 改訂）

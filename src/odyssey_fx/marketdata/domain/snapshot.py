@@ -41,7 +41,11 @@ from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
-from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.access import (
+    OANDA_SEALED_CLASSES,
+    AccessClass,
+    sealed_partition_period,
+)
 from odyssey_fx.marketdata.domain.classification import (
     ClassificationDecision,
     ResolvedClassification,
@@ -403,22 +407,51 @@ class PartitionId:
 
     `__str__` は partition ディレクトリの相対パス（`USDJPY_1h_bid/RESEARCH_HISTORY`）。
     アクセス分類をディレクトリ名に含めることで、物理的な分離を保つ（D03 §3.8）。
+
+    OANDA MT5 の経路の 2 つの封印の区分（ADR-0038 第1項）は系列ごとに取引週で切る
+    （ADR-0038 第2項）ので、partition の始まり `period_start`（取引週の始まり。最初の
+    partition だけ 2024-01-01T00:00Z）を識別に持つ。ディレクトリは
+    `USDJPY_M1_bid/HOLDOUT_SINCE_2024/20240107T2200Z` の形（形は順 6 の S3 の仮置き）。
+    他の区分は `period_start` を持たない（`None`。既存の snapshot の識別子は変わらない）。
     """
 
     series: SeriesId
     access_class: AccessClass
+    period_start: UtcTime | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.series, SeriesId):
             raise MarketDataValueError("PartitionId.series must be a SeriesId")
         if not isinstance(self.access_class, AccessClass):
             raise MarketDataValueError("PartitionId.access_class must be an AccessClass")
+        if self.access_class in OANDA_SEALED_CLASSES:
+            if not isinstance(self.period_start, UtcTime):
+                raise MarketDataValueError(
+                    f"a {self.access_class.value} partition needs its trading-week start"
+                    " (ADR-0038 第2項)"
+                )
+            sealed_partition_period(self.period_start)  # 境目でなければ例外
+        elif self.period_start is not None:
+            raise MarketDataValueError(
+                f"only the OANDA MT5 sealed classes carry a period start, got"
+                f" {self.access_class.value} (ADR-0038 第2項)"
+            )
+
+    @property
+    def period(self) -> Interval | None:
+        """封印の区分の partition の期間（取引週。ADR-0038 第2項）。他の区分は `None`。"""
+        if self.period_start is None:
+            return None
+        return sealed_partition_period(self.period_start)
 
     @property
     def directory(self) -> str:
         """partition ディレクトリの相対パス（POSIX 区切り）。"""
         name = f"{self.series.symbol}_{self.series.timeframe.id}_{self.series.basis.value}"
-        return f"{name}/{self.access_class.value}"
+        if self.period_start is None:
+            return f"{name}/{self.access_class.value}"
+        week = self.period_start.value.strftime("%Y%m%dT%H%MZ")
+        return f"{name}/{self.access_class.value}/{week}"
 
     def __str__(self) -> str:
         return self.directory
@@ -514,7 +547,13 @@ class SeriesManifest:
                     f"partition {partition} does not belong to series {self.series_id}"
                 )
         normalized = tuple(
-            sorted(self.partitions, key=lambda partition: partition.access_class.value)
+            sorted(
+                self.partitions,
+                key=lambda partition: (
+                    partition.access_class.value,
+                    "" if partition.period_start is None else str(partition.period_start),
+                ),
+            )
         )
         if normalized != self.partitions:
             object.__setattr__(self, "partitions", normalized)

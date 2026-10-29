@@ -13,6 +13,11 @@
 - `UnsupportedCapability`: 初版が受け付けない能力の要求（D03 §3.6 の `SeededRandomDelay`）。
 - `SnapshotAlreadyExists`: 書き出し先の snapshot ディレクトリが既にある（D03 §3.7.2・§10。
   成果物の書き込みを「存在すれば失敗」に統一する規則 R4）。
+- `SealedBoundaryBar`: 始まりが 2024-01-01T00:00Z より前で終わりがそれ以後の足（D03 §16.1、
+  PR #109 の仮置き S2b-7）。
+- `AcquisitionStartUnset`: 取得の開始時点が空の間に 2024-01-01 以降の足を分類しようとした
+  （ADR-0038 第1項）。
+- `HoldoutStateUnknown`: 封印の区分の partition の初期状態を導けない（ADR-0038 第3項の 2・3）。
 - `Refill*`: 元データの再取得（補充）の失敗（D03 §14.12・§14.18 の 12。名前は 2026-10-01 の
   人間の決定）。基底は `MarketDataError` で、CLI は 1 行の失敗として表示し終了コード 1 で終える。
 """
@@ -27,7 +32,9 @@ if TYPE_CHECKING:
     from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 
 __all__ = [
+    "AcquisitionStartUnset",
     "HoldoutAccessViolation",
+    "HoldoutStateUnknown",
     "IntegrityCheckFailed",
     "MarketDataError",
     "MarketDataValueError",
@@ -45,6 +52,7 @@ __all__ = [
     "RefillSourceRefused",
     "RefillStoreInconsistent",
     "RefillValidationFailed",
+    "SealedBoundaryBar",
     "SnapshotAlreadyExists",
     "SnapshotNotApproved",
     "TimeLabelCorrectionFailed",
@@ -64,6 +72,30 @@ class HoldoutAccessViolation(MarketDataError):
     """許可されていない partition を読もうとした（D03 §6.1）。
 
     入力欠損ではない。`MissingInputPolicy` の対象にせず、実行を止める。
+    """
+
+
+class SealedBoundaryBar(MarketDataValueError):
+    """始まりが 2024-01-01T00:00Z より前で、終わりがそれ以後の足（D03 §16.1、ADR-0038 第0項の 3）。
+
+    取得の範囲とカレンダーから現れないはずの足なので、研究期間の snapshot の受入れでも封印の
+    取り込みの受入れでも構造エラーで止める（PR #109 の仮置き S2b-7。どちらも何も書かない）。
+    """
+
+
+class AcquisitionStartUnset(MarketDataError):
+    """取得の開始時点が空の間に、2024-01-01 以降の足を分類しようとした（ADR-0038 第1項）。
+
+    区分の境界が決まらないので、2024-01-01 以降の足を含む受入れを始めない（fail-closed）。
+    """
+
+
+class HoldoutStateUnknown(MarketDataError):
+    """封印の区分の partition の初期状態を導けない（ADR-0038 第3項の 2・3、ADR-0035 第3項）。
+
+    品質確認の閲覧の記録が読めない・構造の誤りがある、既にある partition の状態を導けない
+    （消費の記録が読めない・origin の既定ブランチ上の記録を確かめられない）ときに送出し、
+    受入れを始めない。
     """
 
 

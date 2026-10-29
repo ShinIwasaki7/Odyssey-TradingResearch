@@ -24,6 +24,7 @@ from typing import Any, Protocol
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.refill import (
     ArchiveProvenance,
     ArchiveRead,
@@ -93,8 +94,17 @@ class SnapshotStore(Protocol):
         """partition の足を書き出し、内容のダイジェスト（16進 64 文字）を返す。"""
         ...
 
-    def read_partition(self, snapshot_dir: str, partition_id: PartitionId) -> Sequence[Bar]:
-        """partition の足を昇順で読む。"""
+    def read_partition(
+        self,
+        snapshot_dir: str,
+        partition_id: PartitionId,
+        read_permit: QualityReadPermit | None = None,
+    ) -> Sequence[Bar]:
+        """partition の足を昇順で読む。
+
+        OANDA MT5 の経路の封印の区分の partition は、読み取りの許可の値（関所の品質確認の
+        許可。ADR-0036 第9項の 2）が覆うときだけ読む。値が無ければ読まない（3）。
+        """
         ...
 
     def write_manifest(self, snapshot_dir: str, manifest: SnapshotManifest) -> None:

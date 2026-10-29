@@ -14,7 +14,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.application.snapshot_access import ReadableSnapshot
-from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.classification import (
     ClassificationDecision,
@@ -78,10 +78,16 @@ def source(path: str, symbol_code: str = "USDJPY", timeframe_id: str = "1h") -> 
     )
 
 
+#: 人工の取引週の始まり（2026-01-04 は日曜。標準時なので 17:00 は 22:00Z）。
+SEALED_WEEK = UtcTime.parse("2026-01-04T22:00:00Z")
+
+
 def partition(series: SeriesId, access_class: AccessClass) -> PartitionRecord:
     """partition の記録を1件作る。"""
+    # OANDA MT5 の経路の封印の区分は取引週の始まりを識別に持つ（ADR-0038 第2項）。人工の週を使う。
+    week = SEALED_WEEK if access_class in OANDA_SEALED_CLASSES else None
     return PartitionRecord(
-        partition_id=PartitionId(series=series, access_class=access_class),
+        partition_id=PartitionId(series=series, access_class=access_class, period_start=week),
         interval=COVERED,
         bar_count=100,
         digest=digest_for(access_class.value[0].lower()),
