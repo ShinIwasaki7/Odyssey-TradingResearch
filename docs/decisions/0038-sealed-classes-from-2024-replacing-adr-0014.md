@@ -1,6 +1,6 @@
 # ADR-0038: ADR-0014 を置き換える。新たに取得する OANDA MT5 の 1 分足の 2024-01-01 以降は封印の区分として取り込み、封印（SEALED）で始める
 
-- 状態: 提案（2026-10-29。順 6 の封印レーンの文書 PR S2a（[D15](../design/D15_step6_adoption_path_plan.md) §2.2）。本 ADR の文面は PR #108 の merge で承認になり、同時に [ADR-0014](0014-period-access-classification.md) は廃止（本 ADR で置き換え済み）になる。区分の形（第1項）と partition の時間の切り方（第2項）は PR #108 の要決定 S2a-1・S2a-2 で人間が決めた（2026-10-29。どちらも (a)））
+- 状態: **承認**（2026-10-29。PR #108 の merge のコミット `7114c77` で承認になり、ADR-0014 は廃止された。本 ADR の状態の行は順 6 の S2b で直した）。以前の状態: 提案（2026-10-29。順 6 の封印レーンの文書 PR S2a（[D15](../design/D15_step6_adoption_path_plan.md) §2.2）。本 ADR の文面は PR #108 の merge で承認になり、同時に [ADR-0014](0014-period-access-classification.md) は廃止（本 ADR で置き換え済み）になる。区分の形（第1項）と partition の時間の切り方（第2項）は PR #108 の要決定 S2a-1・S2a-2 で人間が決めた（2026-10-29。どちらも (a)））
 - 決定者: ユーザー
 - 関連: [ADR-0014](0014-period-access-classification.md)（置き換える元）、[ADR-0037](0037-revised-constraint-on-data-from-2024.md)（制約の改定文。取得の開始時点）、[ADR-0035](0035-quality-check-access-vs-strategy-selection-access.md)・[ADR-0036](0036-quality-check-permit-in-holdout-gate.md)（閲覧の区別と品質確認の許可）、[D15](../design/D15_step6_adoption_path_plan.md) §0.1.2・§1.3・§3.7・§5.1・§5.5〜§5.7、[D03](../design/D03_marketdata_and_time.md) §3.8・§3.8.1・§15.3、[D09](../design/D09_multi_run_evaluation.md) §9.2・§9.3・§19、[D11](../design/D11_long_range_data_and_evaluation.md) §5.3（L-13・L-14・L-15・L-22・K-43・K-44）、[D12](../design/D12_data_source_strategy_review.md) D12-1
 
@@ -153,3 +153,4 @@ ADR-0014 の次の節は、文面を変えずに本 ADR の 2 つの封印の区
 | 2026-10-29 | 設計適合レビュー 1 巡目の指摘を反映: 2024-01-01 以降の区分には `CONSUMED` の opt-in 読み取りを引き継がない（第8項の 1。改定文の第1項の 3 の 3 に合わせた）、窓と区分の時刻の基準（第0項の 3）、第3項の 1 の参照の書き方 |
 | 2026-10-29 | 設計適合レビュー 2 巡目の指摘を反映: 第8項の 1 の読む経路の列挙から旧データの snapshot を外した（旧データの 2024 年以降はどの経路でも読まない） |
 | 2026-10-29 | 代替レビュー（Claude、2 巡目）の指摘を反映: 第3項の 3（例外 2）の対象を OANDA MT5 の経路の snapshot の本 ADR の 2 つの封印の区分に限り、旧データの snapshot の `LEGACY_HOLDOUT` を数えないと明記。既にある partition の状態を導けないときは受入れを始めない |
+| 2026-10-29 | 状態を承認に直した（PR #108 の merge のコミット `7114c77`。順 6 の封印レーンの文書 PR S2b）。決定の文は変えていない |
