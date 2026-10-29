@@ -74,7 +74,11 @@ from odyssey_fx.marketdata.domain.access import (
     next_trading_week_start,
     trading_week_start,
 )
-from odyssey_fx.marketdata.domain.errors import HoldoutStateUnknown, MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import (
+    HoldoutAccessViolation,
+    HoldoutStateUnknown,
+    MarketDataValueError,
+)
 from odyssey_fx.marketdata.domain.quality_access import (
     SEALED_INTAKE_OUTPUT_KINDS,
     AccessPeriod,
@@ -106,8 +110,10 @@ __all__ = [
     "SEALED_FETCH_KIND",
     "SEALED_FINALIZE_TOOL",
     "SealedAcceptance",
+    "SealedDataError",
     "SealedIntakeRefused",
     "accept_sealed",
+    "without_values",
     "existing_sealed_partitions",
     "finalize_request",
     "initial_state_provider",
@@ -139,6 +145,38 @@ SEALED_CONFIG_FILES: Final = (
 
 class SealedIntakeRefused(ConfigError):
     """封印の取り込みを始めない・分類・承認を拒む（何も読まない・書かない）。"""
+
+
+class SealedDataError(Mt5AcceptanceFailed):
+    """封印のデータを読む・変換する処理の途中の例外（元の文は出さない。値を含みうるため）。"""
+
+
+#: 文が件数・時刻・種別・置き場・ハッシュだけで、値を含まない例外（本基盤が封印の経路で送出する
+#: もの）。これ以外の例外は、封印のデータを読んだ後では文を出さない（D03 §16.4）。
+_VALUE_FREE_ERRORS: Final = (
+    ConfigError,
+    Mt5AcceptanceFailed,
+    HoldoutAccessViolation,
+    HoldoutStateUnknown,
+)
+
+
+def without_values[T](step: str, run: Callable[[], T]) -> T:
+    """封印のデータを読む処理を動かし、例外の文から値を除く（ADR-0037 第1項の 4、D03 §16.4）。
+
+    価格を含む行の解析・型の構築の失敗（例: 価格が正でない）は、その値を例外の文に含めることが
+    ある。本基盤が値を含めないと決めた例外（`_VALUE_FREE_ERRORS`）はそのまま通し、それ以外は
+    例外の種類と処理の名前だけを持つ `SealedDataError` に置き換える（元の例外は連ねない）。
+    """
+    try:
+        return run()
+    except _VALUE_FREE_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 文を出さない置き換えのため、すべて受ける
+        raise SealedDataError(
+            f"{type(exc).__name__} while {step}; the message is withheld because it may carry"
+            " values of the sealed data (counts, times and kinds only. D03 §16.4)"
+        ) from None
 
 
 def _rules_files(rules: Mt5Rules) -> list[Path]:
@@ -487,7 +525,7 @@ def accept_sealed(
     )
     minute_def = rules.timeframe_defs[datasource.minute_timeframe]
 
-    def tool(permit: QualityReadPermit) -> SealedAcceptance:
+    def build(permit: QualityReadPermit) -> PendingSnapshot:
         files = read_symbol_files(
             raw_dir, own, datasource.columns, read_permit=permit, location_prefix=location
         )
@@ -528,6 +566,12 @@ def accept_sealed(
             ),
             report=built.report,
             partition_bars=built.partition_bars,
+        )
+        return pending
+
+    def tool(permit: QualityReadPermit) -> SealedAcceptance:
+        pending = without_values(
+            "reading and converting the sealed raw files", lambda: build(permit)
         )
         directory = write(pending)
         return SealedAcceptance(pending=pending, directory=directory, raw_location=location)

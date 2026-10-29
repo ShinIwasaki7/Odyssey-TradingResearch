@@ -368,6 +368,35 @@ def test_a_periodic_record_reaching_before_the_acquisition_start_is_refused(
     assert _pending(repo) == [] and _log(repo).rows == ()
 
 
+def test_a_failure_while_parsing_the_sealed_prices_never_shows_a_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """価格の解析の失敗（正でない価格）の文に値を出さない（D03 §16.4）。"""
+    repo = _repo(tmp_path)
+    copy = _fetch(repo, tmp_path)
+    raw = repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE
+    (gz,) = list((raw / "USDJPY").glob("*.csv.gz"))
+    lines = gzip.decompress(gz.read_bytes()).decode("utf-8").splitlines()
+    cells = lines[1].split(",")
+    cells[1] = "-123.456"
+    lines[1] = ",".join(cells)
+    data = ("\n".join(lines) + "\n").encode("utf-8")
+    packed = probe.gzip_bytes(data)
+    gz.write_bytes(packed)
+
+    def rehash(payload: dict[str, Any]) -> None:
+        (entry,) = payload["files"].values()
+        entry.update(sha256_gz=probe._sha256_bytes(packed), sha256_csv=probe._sha256_bytes(data))
+
+    _edit_record(repo, copy, rehash)
+    assert _accept(repo, copy) != 0
+    err = capsys.readouterr().err
+    assert "-123.456" not in err and "123.456" not in err and "withheld" in err
+    assert _pending(repo) == []
+    start, end = _log(repo).rows
+    assert isinstance(end, QualityAccessEnd) and end.result is QualityAccessResult.STOPPED
+
+
 def test_a_consumed_period_does_not_return_to_sealed_on_a_new_intake(tmp_path: Path) -> None:
     """例外 2（ADR-0038 第3項の 3）。
 

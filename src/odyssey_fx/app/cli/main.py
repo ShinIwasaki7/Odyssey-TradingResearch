@@ -949,8 +949,11 @@ def _run_classify(args: argparse.Namespace, out: _Writer) -> int:
             provisional, final, finalized = run_quality_check(
                 repository_root=args.repo_root,
                 request=request,
-                tool=lambda permit: _classify_compute(
-                    args, out, store, pending_directory, manifest, report, permit
+                tool=lambda permit: sealed_intake.without_values(
+                    "classifying the sealed partitions",
+                    lambda: _classify_compute(
+                        args, out, store, pending_directory, manifest, report, permit
+                    ),
                 ),
             )
         except QualityCheckRefused as refused:
@@ -1061,7 +1064,9 @@ def _run_approve(args: argparse.Namespace, out: _Writer) -> int:
             run_quality_check(
                 repository_root=args.repo_root,
                 request=sealed_intake.finalize_request(args.repo_root, manifest),
-                tool=verify,
+                tool=lambda permit: sealed_intake.without_values(
+                    "verifying the sealed partitions", lambda: verify(permit)
+                ),
             )
         except QualityCheckRefused as refused:
             out.line(f"承認の検算を始めなかった・結果を出さなかった: {refused}")
