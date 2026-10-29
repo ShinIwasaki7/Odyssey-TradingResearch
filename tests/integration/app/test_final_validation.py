@@ -281,6 +281,14 @@ def test_4_without_a_proceed_review_or_a_fixation_the_application_is_refused(
     other = build_workspace(tmp_path / "b", fixation=False)
     outcome = _run(other)
     assert (outcome.exit_code, outcome.reason) == (EXIT_REFUSED, FinalReason.NOT_FIXED)
+    # 審査の行の固定した試行が読めなければ照合を省かず拒否する（Codex 2 巡目）。
+    fourth = build_workspace(tmp_path / "d")
+    review = fourth.repo / "research" / "adoption_reviews.jsonl"
+    row = json.loads(review.read_text())
+    del row["fixed_trials"]
+    review.write_text(json.dumps(row) + "\n")
+    fourth.commit_and_push("a review row without its fixed trials")
+    assert _run(fourth).reason is FinalReason.NOT_FIXED
     # 審査の行が「進めない」なら進めない。
     third = build_workspace(tmp_path / "c")
     write_review(third.repo, [third.key], result="DO_NOT_PROCEED")

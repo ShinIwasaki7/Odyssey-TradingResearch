@@ -1174,12 +1174,15 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
     review_trials = _review_fixed_trials(proceeds[mine])
     ctx.extras["review_row_sha256"] = hashlib.sha256(encode(proceeds[mine])).hexdigest()
     ctx.extras["fixation_sha256"] = hashlib.sha256(text).hexdigest()
-    if (fixation.experiment_id, fixation.execution) != (key.experiment_id, key.execution) or (
-        review_trials is not None and review_trials != fixation.fixed_trials
+    if (
+        (fixation.experiment_id, fixation.execution) != (key.experiment_id, key.execution)
+        or review_trials is None
+        or review_trials != fixation.fixed_trials
     ):
         raise _reason(
             FinalReason.NOT_FIXED,
-            "the fixation record does not match this execution or the fixed trials of the review",
+            "the fixation record does not match this execution, or the fixed trials of the review"
+            " cannot be read or differ (D09 §9.10.10 の 5)",
         )
     ctx.lines.append(f"候補の固定時点 T_fix: {fixation.t_fix}、長さ L: {fixation.length_days} 日")
     # 6. 申告
