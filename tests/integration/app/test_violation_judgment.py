@@ -548,3 +548,52 @@ def test_a_consumption_log_that_git_ignores_stops_before_anything_is_written(
     assert "失敗（base）" in capsys.readouterr().out
     assert _snapshot_bytes(repo) == before
     assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin)
+
+
+def test_a_committed_consumption_log_missing_from_the_working_tree_stops(
+    sealed_base: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """消えた記録を空の履歴と読んで、新しいファイルで履歴を置き換えない（Codex 1 巡目）。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    log = _final(repo) / "access_log.jsonl"
+    partition = existing_sealed_partitions(repo / "data" / "snapshots")[0].partition_id
+    line = {
+        "actor": "t",
+        "kind": "CONSUMED",
+        "partition": str(partition),
+        "purpose": "",
+        "recorded_at": "2026-11-15T00:00:00Z",
+    }
+    log.write_text(json.dumps(line, sort_keys=True) + "\n")
+    _git(repo, "add", str(log))
+    _git(repo, "commit", "--quiet", "-m", "one consumption")
+    _git(repo, "push", "--quiet", "origin", "main")
+    log.unlink()
+    before = _snapshot_bytes(repo)
+    capsys.readouterr()
+    assert _judge(repo, accept_id) == 1
+    printed = capsys.readouterr().out
+    assert "失敗（base）" in printed and "missing from the working tree" in printed
+    assert _snapshot_bytes(repo) == before and not log.exists()
+    assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin)
+
+
+def test_a_refused_commit_leaves_nothing_staged(
+    sealed_base: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """commit が断られたら（hook など）commit は無く、この回に index へ置いたファイルも外す。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    head = _git(repo, "rev-parse", "HEAD")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    capsys.readouterr()
+    assert _judge(repo, accept_id) == 1
+    assert "失敗（commit）" in capsys.readouterr().out
+    assert _git(repo, "rev-parse", "HEAD") == head == _origin_head(origin)
+    assert _git(repo, "diff", "--cached", "--name-only") == ""
+    hook.unlink()
+    assert _judge(repo, accept_id) == 0
+    assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin) != head

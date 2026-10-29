@@ -593,12 +593,14 @@ class HoldoutAccessLogStop(Exception):
 
     `stage` は止まった段（`base`（origin の確認）・`append`（追記）・`commit`・`push`）。
     `detail` は人間が読む理由（件数・識別子・git の終了コードだけ。価格を含まない）。
+    `commit` は push が origin に届いた後に止まったときの commit の識別子（それ以外は `None`）。
     """
 
-    def __init__(self, stage: str, detail: str) -> None:
+    def __init__(self, stage: str, detail: str, *, commit: str | None = None) -> None:
         super().__init__(f"{stage}: {detail}")
         self.stage = stage
         self.detail = detail
+        self.commit = commit
 
 
 @runtime_checkable

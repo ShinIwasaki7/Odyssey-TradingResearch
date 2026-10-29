@@ -132,17 +132,27 @@ class GitHoldoutAccessLog:
         self._branch = branch
 
     def _require_append_only(self, rel: str) -> None:
+        """作業木の `rel` が「HEAD の内容 + 追記」であること（HEAD に無ければ、無視されないこと）。
+
+        HEAD にある記録が作業木から消えていれば止める（消えた記録を空の履歴と読んで、新しい
+        ファイルで履歴を置き換えて commit しないため）。
+        """
         path = self._root / rel
+        committed = subprocess.run(  # noqa: S603
+            ["git", "-C", str(self._root), "show", f"HEAD:{rel}"],  # noqa: S607
+            capture_output=True,
+            check=False,
+        )
+        in_head = committed.returncode == 0
+        if in_head and not path.is_file():
+            raise HoldoutAccessLogStop(
+                "base",
+                f"{rel} is committed but missing from the working tree; restore it before anything"
+                " is appended (records are append-only)",
+            )
         if not path.is_file():
             return
-        if self._git("base", "ls-files", "--", rel).strip():
-            committed = subprocess.run(  # noqa: S603
-                ["git", "-C", str(self._root), "show", f"HEAD:{rel}"],  # noqa: S607
-                capture_output=True,
-                check=False,
-            )
-            if committed.returncode != 0:
-                raise HoldoutAccessLogStop("base", f"{rel} cannot be read from HEAD")
+        if in_head:
             if not path.read_bytes().startswith(committed.stdout):
                 raise HoldoutAccessLogStop(
                     "base",
@@ -222,7 +232,12 @@ class GitHoldoutAccessLog:
         )
         if staged.returncode == 0:
             return None  # 作業木は既に commit 済みの内容と同じ（やり直しで残りが無い）
-        self._git("commit", "commit", "--quiet", "-m", message, "--", *present)
+        try:
+            self._git("commit", "commit", "--quiet", "-m", message, "--", *present)
+        except HoldoutAccessLogStop:
+            # commit は作られていない。この回に index へ置いたファイルだけを外す。
+            self._git("commit", "reset", "--quiet", base, "--", *present)
+            raise
         commit = self._head("commit")
         try:
             self._git("push", "push", "--quiet", REMOTE, f"HEAD:refs/heads/{branch}")
@@ -234,11 +249,17 @@ class GitHoldoutAccessLog:
                 " working tree). Derive the state again before retrying (ADR-0014)",
             ) from stop
         # push は成功した。ここから先の失敗では commit を取り消さない（origin に届いている）。
-        reached = self._remote_head("push", branch)
+        try:
+            reached = self._remote_head("push", branch)
+        except HoldoutAccessLogStop as stop:
+            raise HoldoutAccessLogStop(
+                "push", f"{stop.detail} (the commit {commit} was pushed)", commit=commit
+            ) from stop
         if reached != commit:
             raise HoldoutAccessLogStop(
                 "push",
                 f"{REMOTE}/{branch} is {reached[:12]}, not the pushed commit {commit[:12]}",
+                commit=commit,
             )
         return commit
 

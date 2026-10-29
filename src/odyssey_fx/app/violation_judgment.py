@@ -352,5 +352,6 @@ def judge_violation(
     try:
         progress.commit = log.publish(paths, _message(plan, progress.consumed_now))
     except HoldoutAccessLogStop as stop:
+        progress.commit = stop.commit
         raise ViolationJudgmentStopped(stop.stage, stop.detail, progress) from stop
     return progress
