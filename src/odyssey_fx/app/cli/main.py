@@ -31,6 +31,10 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
   判定した閲覧について、判定の行を品質確認の閲覧の記録に追記し、違反の範囲に重なる封印の区分の
   `SEALED` の partition に消費の記録を追記して、commit・origin の既定ブランチへ push する
   （ADR-0035 第3項。`--dry-run` は何も書かない）。
+- `odyssey-fx experiment review`（順 6 の R3）: 探索の実験の 1 つの実行を、事前に固定した規則で
+  採用審査し、結果を審査台帳 `research/adoption_reviews.jsonl` に 1 行足す（D16 §11）。入口の検査は
+  試行台帳と登録簿だけで行い、候補でない実行は何も書かずに「進めない」（終了コード 7）。標準出力には
+  数値を出さない（結果の値・理由の識別子・合否・件数の累計・ハッシュだけ）。
 
 **実行と評価を別のコマンドに分ける**（D07 §4.1）。評価は run を実行し直さず、保存された
 判断履歴と manifest だけを読む。同じ run を別の指標集合の版で評価し直しても、`runs/` の
@@ -54,7 +58,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
-from odyssey_fx.app import composition
+from odyssey_fx.app import adoption_review, composition
 from odyssey_fx.app import mt5 as mt5_app
 from odyssey_fx.app.cli import summary
 from odyssey_fx.app.config import (
@@ -87,6 +91,7 @@ from odyssey_fx.evaluation.application.run_experiment import (
     ExperimentRefusal,
     ReproductionVerdict,
 )
+from odyssey_fx.evaluation.domain.adoption_review import ReviewReason, ReviewResult
 from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
 from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS
 from odyssey_fx.evaluation.domain.research_policy import PolicyCheckResult
@@ -143,6 +148,11 @@ _EXIT_REJECTED_BY_POLICY = 3
 _EXIT_FAILED_POST_RUN_CHECK = 4
 _EXIT_REFUSED = 5
 _EXIT_NOT_REPRODUCED = 6
+#: 採用審査の終了コード（D16 §11.2。仮置き 11）: 0 = 進める、7 = 進めない（入口の拒否を含む）、
+#: 8 = 保留、2 = 引数・台帳・登録簿・規則のファイルの読込の誤りと成果物の束縛の不一致、
+#: 1 = 審査台帳に完全な行を残せなかった（審査は行われていない扱い）。
+_EXIT_REVIEW_DO_NOT_PROCEED = 7
+_EXIT_REVIEW_DEFERRED = 8
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -420,6 +430,50 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     ledger_command.add_argument("--strategy", default=None, help="1つの戦略（strategy_id）に絞る")
+    review_command = experiment.add_parser(
+        "review",
+        help=(
+            "探索の実験の1つの実行を採用審査し、審査台帳に1行足す（D16 §11。標準出力に数値を"
+            "出さない）"
+        ),
+    )
+    review_command.set_defaults(command="experiment_review")
+    review_command.add_argument(
+        "--experiment-id", required=True, help="審査する実験の記録票の識別子（16 進 64 文字）"
+    )
+    review_command.add_argument(
+        "--execution", type=int, required=True, help="審査する試行台帳の実行番号（1 以上）"
+    )
+    review_command.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="試行台帳・登録簿・審査の規則のファイル・申告ファイル・審査台帳を読むリポジトリの根",
+    )
+    review_command.add_argument(
+        "--experiment-dir",
+        type=Path,
+        default=None,
+        help=(
+            "実験の版のディレクトリ（runs/experiments/<名前>/v<版>/）。入口を通った後にだけ開く"
+            "（入口で拒否するときは無くてよい。仮置き 13）"
+        ),
+    )
+    review_command.add_argument(
+        "--snapshots",
+        type=Path,
+        default=None,
+        help="snapshot の基点（data/snapshots/）。固定した試行の run に使う（研究履歴だけ）",
+    )
+    review_command.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "成果物の基点（固定した試行の run と、数値の記録 runs/experiments/<名前>/v<版>/"
+            "review/<乱数>/ を書く）"
+        ),
+    )
     reproduce = experiment.add_parser(
         "reproduce",
         help="記録票と結末記録だけから run と評価をやり直し、結果が一致するかを判定する（D07 §21）",
@@ -1779,6 +1833,95 @@ def _judgment_progress_lines(progress: JudgmentProgress) -> list[str]:
     ]
 
 
+#: 採用審査の結果から終了コードへ（D16 §11.2。仮置き 11）。
+_REVIEW_EXIT: dict[ReviewResult, int] = {
+    ReviewResult.PROCEED: _EXIT_OK,
+    ReviewResult.DO_NOT_PROCEED: _EXIT_REVIEW_DO_NOT_PROCEED,
+    ReviewResult.DEFERRED: _EXIT_REVIEW_DEFERRED,
+}
+
+#: 結果の表示（審査の保留は研究ポリシーの「保留の印」とは別物。D16 §9.1）。
+_REVIEW_TEXT: dict[ReviewResult, str] = {
+    ReviewResult.PROCEED: "進める",
+    ReviewResult.DO_NOT_PROCEED: "進めない",
+    ReviewResult.DEFERRED: "審査の保留（検査を終えられなかった。研究の保留の印とは別）",
+}
+
+
+def _review_lines(outcome: adoption_review.ReviewOutcome) -> list[str]:
+    """審査の結果の表示（数値を出さない。結果の値・理由の識別子・合否・件数・ハッシュだけ）。"""
+    lines = [
+        f"結果: {outcome.result.value}（{_REVIEW_TEXT[outcome.result]}）",
+        f"理由の識別子: {', '.join(item.value for item in outcome.reasons) or 'なし'}",
+    ]
+    entry = outcome.entry
+    if entry is None:
+        lines.append("審査記録: 書いていない（入口の拒否。候補でない実行は記録しない）")
+        return lines
+    for variant, floor in entry.evidence_floor.outcomes.items():
+        lines.append(f"証拠の最低線（{variant.value}）: {floor.value}")
+    lines.append(f"注記: {entry.evidence_floor.note}")
+    for variant, rows in entry.cost_model_fit.items():
+        shown = ", ".join(
+            f"{row.row.value}={row.outcome.value}"
+            + (f"[{'/'.join(item.value for item in row.capabilities)}]" if row.capabilities else "")
+            for row in rows
+        )
+        lines.append(f"費用・約定モデルの適合（{variant.value}）: {shown}")
+    for variant, state in entry.deflated_sharpe.items():
+        extra = [*state.reasons, *state.marks, *state.assumption_reasons]
+        lines.append(
+            f"割り引いた指標（{variant.value}。表示だけ）: {state.state}"
+            + (f"（{', '.join(extra)}）" if extra else "")
+        )
+    tally = entry.ledger_tally
+    lines.append(
+        "台帳の累計: 系譜の実行 L1 = "
+        f"{tally.lineage_executions}、系譜の試行 L2 = {tally.lineage_trials}、同じ検証区間を見た"
+        f"実行 L3 = {tally.overlapping_executions}、その試行 L4 = {tally.overlapping_trials}、"
+        f"同じ戦略の実行 L5 = {tally.same_strategy_executions}（候補より前だけの L3 ="
+        f" {tally.prior_overlapping_executions}、L4 = {tally.prior_overlapping_trials}）"
+    )
+    lines.append(f"申告: {entry.declaration.status.value}")
+    lines.append(
+        f"審査の規則: {entry.review_rules_ref.rules_id} 版 {entry.review_rules_ref.version}"
+    )
+    lines.append(
+        f"数値の記録（版管理の外。読むのは人間と分析役）: {outcome.record_directory}"
+        f"（SHA-256 {entry.numeric_record_digest.hex}）"
+    )
+    if outcome.line_digest is not None:
+        lines.append(f"審査台帳の行のダイジェスト: {outcome.line_digest.hex}")
+    lines.append("審査台帳の行のコミットと push は人間が行う（試行台帳と同じ）")
+    return lines
+
+
+def _run_experiment_review(args: argparse.Namespace, out: _Writer) -> int:
+    """探索の実験の1つの実行を採用審査する（D16 §11、`experiment review`）。"""
+    try:
+        outcome = adoption_review.review_experiment(
+            experiment_id=args.experiment_id,
+            execution=args.execution,
+            repo_root=args.repo_root,
+            experiment_dir=args.experiment_dir,
+            snapshots_root=args.snapshots,
+            out_root=args.out,
+        )
+    except adoption_review.ArtifactBindingMismatch as exc:
+        out.line(f"理由の識別子: {ReviewReason.ARTIFACT_BINDING_MISMATCH.value}")
+        sys.stderr.write(f"失敗: {exc}（何も書いていない）\n")
+        return _EXIT_READ_ERROR
+    except adoption_review.ReviewNotRecorded as exc:
+        sys.stderr.write(f"失敗: {exc}\n")
+        return _EXIT_FAILED
+    out.lines(_review_lines(outcome))
+    if outcome.sync_failed:
+        sys.stderr.write(
+            "注意: 審査台帳の行は書き終えたが、同期に失敗した（行は次の読込で有効。D16 §11.3）\n"
+        )
+    return _REVIEW_EXIT[outcome.result]
+
+
 # --- 入口 -------------------------------------------------------------------
 
 
@@ -1829,6 +1972,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "experiment_report": _run_experiment_report,
         "experiment_ledger": _run_experiment_ledger,
         "gate_judge_violation": _run_gate_judge_violation,
+        "experiment_review": _run_experiment_review,
     }
     try:
         return handlers[args.command](args, out)

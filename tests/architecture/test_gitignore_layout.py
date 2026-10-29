@@ -55,6 +55,8 @@ IGNORED_PATHS = [
     "research/trial_ledger.lock",
     # 品質確認の閲覧の記録の追記のロック（ADR-0035 第4項の 5 の 1）。版管理しない。
     "research/quality_access_log.lock",
+    # 採用審査の審査台帳の追記のロック（D16 §10.2）。版管理しない。
+    "research/adoption_reviews.lock",
 ]
 
 #: 補充分で追跡するファイル（補充の manifest と検証記録。ADR-0013 2026-10-01 改訂）。
@@ -135,6 +137,16 @@ def test_the_trial_ledger_is_tracked_and_placed_empty() -> None:
     """
     assert not _is_ignored("research/trial_ledger.jsonl")
     assert (REPO_ROOT / "research" / "trial_ledger.jsonl").is_file()
+
+
+def test_the_adoption_review_ledger_is_tracked_and_placed_empty() -> None:
+    """採用審査の審査台帳は版管理するファイルで、R3 の PR が空のファイルで置く（D16 §3.1 の順 0）。
+
+    無ければ審査の入口の順 0 が読込の誤りで止まる（追記では作らない）。ロック
+    （`research/adoption_reviews.lock`）だけが git 管理外である。
+    """
+    assert not _is_ignored("research/adoption_reviews.jsonl")
+    assert (REPO_ROOT / "research" / "adoption_reviews.jsonl").is_file()
 
 
 def test_the_quality_access_log_is_tracked_and_placed() -> None:

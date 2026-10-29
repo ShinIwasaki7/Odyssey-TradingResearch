@@ -38,6 +38,9 @@ research/trial_ledger.lock
 # 品質確認の閲覧の記録の追記のロック（ADR-0035 第4項の 5 の 1、D01 §10.4 v2.11）。追記の1回ごとに
 # 作って消すもので版管理しない。記録そのもの（research/quality_access_log.jsonl）は追跡する。
 research/quality_access_log.lock
+# 採用審査の審査台帳の追記のロック（D16 §10.2。順 6 の R3）。追記の1回ごとに作って消すもので版管理しない。
+# 審査台帳そのもの（research/adoption_reviews.jsonl）は追跡する（空のファイルで置く）。
+research/adoption_reviews.lock
 
 # --- Python -----------------------------------------------------------------
 __pycache__/

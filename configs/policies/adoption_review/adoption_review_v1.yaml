@@ -1,0 +1,39 @@
+# 採用審査の規則 版 1（D16 §10.3。順 6 の審査レーン R3 で、研究候補が 0 件のうちに版管理に固定した）
+#
+# 値はすべて 2026-10-30 の人間の決定（D16 §0.5 の原文。要決定 R1-3〜R1-7・R1-4 はすべて (a)、仮置き 5・8・9
+# は「このまま」）。R3 で新しく選んだ値は無い。**版を上げずに中身を変えない**（登録簿のダイジェストと照合され、
+# 中身を変えると審査の入口で `ENTRY_RULES_VERSION_CHANGED` になる）。直すときは新しい版を登録簿に足す
+# （新しい版は、その登録の後に開始した実行にだけ当たる。R1-10 (a)）。
+#
+# 証拠の最低線の件数は研究ポリシーの現行の版から審査のたびに読むので、ここには書かない（仮置き 4）。
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。
+
+schema_version: 1
+id: adoption_review
+version: 1
+
+cost_model_fit:
+  # 行 2-1: スプレッドの広がる時間帯への約定の集中（R1-6 (a)）。窓は週の開場（ニューヨークの日曜 17:00）
+  # から 2 時間だけ（仮置き 8）。窓の中の約定の割合が、窓が取引時間に占める割合の 2 倍を超えたら
+  # 「能力の追加が要る」（SPREAD_VARIATION）。
+  spread_session_concentration:
+    window: {anchor: WEEKLY_OPEN, length: "PT2H"}
+    max_ratio: "2"
+  # 行 2-2: 利幅に対する固定の費用（スプレッドと滑り）の割合（R1-7 (a)）。0.25 を超えたら「能力の追加が要る」。
+  fixed_cost_share: {max_share: "0.25"}
+  # 行 3: スワップ未計上（R1-5 (a)）。日替わり（ニューヨーク 17 時）をまたいだ完了取引が 1 件でもあれば
+  # 「能力の追加が要る」（SWAP_ROLLOVER）。
+  swap_rollover: {rule: ANY_CROSSING}
+  # 行 5: 換算は率 1 だけ。銘柄の決済通貨が口座の通貨と違えば「能力の追加が要る」（CURRENCY_CONVERSION）。
+  currency_conversion: {require_account_currency: true}
+  # 行 1・4・6: 宣言の読込がそれ以外の形を受け付けないので、常に「適合」（仮置き 9）。
+  declared_fits: [BAR_RESOLUTION, SINGLE_POSITION_MARKET_ENTRY, NON_LEARNING]
+
+deflated_sharpe:
+  # 割り引く値は最後の fold の選定区間の、選ばれた試行の値（R1-3 (a)）。表示だけで結果に使わない。
+  basis: LAST_FOLD_SELECTION
+  # 「仮定に合わない」の印の条件（仮置き 5）: 完了取引が 30 件未満、または資産の変化が 0 の取引日が過半。
+  assumption_flags: {min_trades: 30, max_flat_day_share: "0.5"}
+
+# 判定できない（入力の欠け・run の失敗・申告ファイルの欠け）ときの結果（R1-4 (a)）。
+undetermined_result: DEFERRED

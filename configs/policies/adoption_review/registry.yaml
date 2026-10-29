@@ -1,0 +1,19 @@
+# 採用審査の規則の版の登録簿（D16 §10.3。仮置き 10。研究ポリシーの登録簿 configs/policies/research/registry.yaml
+# と同じ形）
+#
+# 審査の道具（`odyssey-fx experiment review`）は、入口の検査の順 8 で当てる版を決め、その版の規則のファイル
+# （adoption_review_v<版>.yaml）から計算したダイジェストをこの登録簿の `digest` と照合する（違えば
+# `ENTRY_RULES_VERSION_CHANGED`）。読込がこのファイルへ書き足すことはしない。
+#
+# - `digest`: 規則のファイルの解決済みの値の正規化ダイジェスト（sha256 の 16 進 64 文字）。
+# - `effective_after`: 登録の時点の試行台帳（research/trial_ledger.jsonl）の末尾の行のダイジェスト。その版は、
+#   開始の行が台帳の中でこの行より後の位置にある実行にだけ当たる（R1-10 (a)。結果を見た後に作った版がその
+#   候補に当たらないように機械で塞ぐ）。版 1 は `null`（最初から効く。版 1 の登録より前の実行にも当たる）。
+#
+# **登録は人間が版を足すときに、規則のファイルと同じコミットで 1 行足す**。要素は書き換えも削除もしない
+# （過去の審査台帳の行が指す版を後から変えないため。保留の後のやり直しは最初の行の版で行う。仮置き 12）。
+# 版 1 は順 6 の R3 の PR で、研究候補が 0 件のうちに足した（D16 §10.3。値は 2026-10-30 の決定）。
+
+schema_version: 1
+entries:
+  - {id: adoption_review, version: 1, digest: "d1623445fd1407a6bcc0db1f49db14577a1e65dd05119ba399ac1d0cad0df03c", effective_after: null}
