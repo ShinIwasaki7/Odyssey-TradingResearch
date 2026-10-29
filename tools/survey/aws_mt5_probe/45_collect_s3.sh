@@ -65,7 +65,7 @@ done
 size=$("$PY_MAC" -I -c 'import os,sys; print(sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(sys.argv[1]) for f in fs))' "$stage")
 if [[ "$S3_KEY_PREFIX" == "$SEALED_S3_KEY_PREFIX" ]]; then
   # 封印の原ファイルの大きさは表示も記録もしない（D03 §16.4「見てはいけない値」。中身で決まる値）。上限は
-  # この回の回収だけで確かめる（通貨ごとの回収の合計は記録しない。S4a の PR の仮置き）。
+  # この回の回収だけで確かめる（通貨ごとの回収の合計は記録しない。PR #111 の仮置き S4a-13「このまま」）。
   collected=0
   (( size <= PROBE_COLLECT_LIMIT_BYTES )) \
     || die "この回の回収が上限 ${PROBE_COLLECT_LIMIT_BYTES} バイトを超える。置かない（大きさは表示しない）"

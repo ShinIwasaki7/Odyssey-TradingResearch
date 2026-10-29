@@ -13,7 +13,7 @@
 
 schema_version: 1
 tool: {name: oanda_mt5_sealed_finalize, version: "1"}
-config_digest: 92a7d54e5f8478740162b13e233cbee28dcff8ca93822c07038a9a3a46fe6d49
+config_digest: dc8ec71820a9e84ee3d5cbcbe4c8af4c0d2bd37b0706f5906d489d2e82a0f6c3
 datasource: oanda_mt5_m1
 check_kind: ACCEPTANCE
 classes: [HOLDOUT_SINCE_2024, FORWARD_HOLDOUT]

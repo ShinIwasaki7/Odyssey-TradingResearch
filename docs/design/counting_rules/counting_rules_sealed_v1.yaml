@@ -4,7 +4,8 @@
 # ファイルだけが違う: 時刻の規則の表は 2024 年以降の表 oanda_mt5_time_rules_sealed 版 1（D03 §16.2.3）、カレンダーは
 # fx_ny17_oanda 版 2（D03 §16.2.5）、年末年始の休場の定義ファイルは 2024 年以降の告知の分。研究期間の規則のファイルは
 # 1 バイトも変えないため（1 バイトでも変えたら新しい版。counting_rules_v1.yaml の注記）、別の識別のファイルにした
-# （順 6 の S4a の PR の仮置き）。封印の取り込みの受入れ（odyssey-fx data accept-mt5 --sealed）だけがこのファイルを読む。
+# （PR #111 の仮置き S4a-6。2026-10-29 に人間が「このまま（推奨）」と決定）。封印の取り込みの受入れ
+# （odyssey-fx data accept-mt5 --sealed）だけがこのファイルを読む。
 #
 # - v2_2017_year_end_closures: inherit は「告知の無い日は fx_ny17 版 2 の宣言を引き継ぐ」の意味で、2024 年以降も同じ扱い
 #   （PR #109 の要決定 S2b-3 (a)。項目の名前は研究期間の規則と同じにした。値が違えば実装が止まる）。
@@ -18,14 +19,15 @@ source_sections: "D03 §15.2・§15.4・§15.6・§15.7・§16.2、D06 §18.9"
 
 time_rule_table:
   file: docs/design/time_rules/time_rule_table_sealed_v1.yaml
-  approved_list: docs/design/time_rules/approved_time_rule_tables_sealed.yaml  # 研究期間の一覧は変えない（要決定 C）
+  approved_list: docs/design/time_rules/approved_time_rule_tables_sealed.yaml  # 研究期間の一覧は変えない（PR #111 の要決定 C (a)）
 
 calendar:
-  # 休場の判定（D03 §15.2 の順 1・§15.6 の 1・§16.2.5）。内容の承認は順 6 の S4a の PR の承認の対象（カレンダー）。
+  # 休場の判定（D03 §15.2 の順 1・§15.6 の 1・§16.2.5）。カレンダー fx_ny17_oanda 版 2（SHA-256 6af95a8d0b26f9b68d959f2b70e811eacb436ea92651df95912ca91a78924a7f）は
+  # 人間が承認した（2026-10-29、AskUserQuestion。PR #111 の承認の対象 項目 2「承認する（推奨）」。原文は D15 §0.5.7）。
   base: {id: fx_ny17, version: 2, file: configs/calendars/fx_ny17_v2.yaml}
   holiday_exceptions:
     file: tools/survey/oanda_holiday_exceptions_sealed_2026-10-29.json
-    sha256: 3af6d29eb263cbd713f7954ae248eff07a6fa316a853ff3a0d330aed863e40d7
+    sha256: 74eb57211482574cb6702e604680576f7635d20eb2a76d3241bfb896615793fc
   v2_2017_year_end_closures: inherit  # 告知の無い日は版 2 の宣言を引き継ぐ（PR #109 の要決定 S2b-3 (a)。上の注記）
   declared_as: {id: fx_ny17_oanda, version: 2, file: configs/calendars/fx_ny17_oanda_v2.yaml, sha256: 6af95a8d0b26f9b68d959f2b70e811eacb436ea92651df95912ca91a78924a7f}  # 中身は上の 2 つと研究期間の定義ファイルの和集合（D03 §16.2.5）
 
