@@ -1,0 +1,27 @@
+# 封印の取得の許可の窓（制約の改定文 ADR-0037 第4項。D15-2 (a)「ADR 1 本を正本にし、許可の窓を設定 1 つから
+# 読ませテスト」）。
+#
+# - 取得の道具（一括取得・定期取得の 2 段。tools/survey/sealed_fetch_plan.py と mt5_api_probe.py の sealedfetch）と
+#   本基盤の区分の境界（app.config.sealed_window。ADR-0038 第1項）は、窓をこのファイルからだけ読む。道具の中に
+#   日付を書かない（ADR-0037 第4項の 1）。
+# - allowed_start は改定文の値（ADR-0037 第2項の 1）。終わりは置かない。
+# - acquisition_start（取得の開始時点。一括取得と定期取得の境目、区分 HOLDOUT_SINCE_2024 と FORWARD_HOLDOUT の境目）は、
+#   PR #108 の merge のコミットの committer の時刻より後の、最初の完全な取引週の始まり（ニューヨークの日曜 17:00）
+#   （ADR-0037 第2項の 2）。merge の時刻 2026-10-29T09:37:55+09:00 = 2026-10-29T00:37:55Z（ニューヨークでは
+#   2026-10-28（水）20:37:55、夏時間）の後の最初の日曜 17:00 は 2026-11-01（日）17:00。米国の夏時間はこの日の
+#   02:00 に終わるので標準時（UTC−5）で 22:00Z（D03 §16.1 の候補値と同じ）。読込がこの計算と照合し、
+#   単体テストが merge のコミットの時刻を ADR-0037 の記録と照合する（ADR-0037 第4項の 4）。
+# - timeframe の M1 は MT5 の時間足の名前（TIMEFRAME_M1）。基盤の時間足の識別では 1m に当たる。
+# - 1 バイトでも変えると、取得の計画・受入れの許可の定義の設定のダイジェストが変わり、照合で止まる。
+
+schema_version: 1
+decision: ADR-0037
+datasource: oanda_mt5_m1
+price_basis: bid
+timeframe: M1
+symbols: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD]
+allowed_start: "2024-01-01T00:00:00Z"
+acquisition_start: "2026-11-01T22:00:00Z"
+acquisition_start_basis:
+  merge_commit: 7114c775b105e2be00d5f3deac2075d1dae7b90d
+  merge_commit_time: "2026-10-29T00:37:55Z"
