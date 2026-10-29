@@ -35,6 +35,9 @@ runs/
 # 試行台帳の追記のロック（D01 §10.4 v2.10、D09 v0.3 §10.12.1）。追記の1回ごとに作って消すもので
 # 版管理しない。台帳そのもの（research/trial_ledger.jsonl）は追跡する（空のファイルで置く）。
 research/trial_ledger.lock
+# 品質確認の閲覧の記録の追記のロック（ADR-0035 第4項の 5 の 1、D01 §10.4 v2.11）。追記の1回ごとに
+# 作って消すもので版管理しない。記録そのもの（research/quality_access_log.jsonl）は追跡する。
+research/quality_access_log.lock
 
 # --- Python -----------------------------------------------------------------
 __pycache__/

@@ -9,7 +9,10 @@ as-of ビュー（D03 §6）と公開フィード（D03 §7）は、どちらも
 1. **承認済みか**（D03 §3.7.1 の3）。承認の記録が入るまで、暫定 snapshot も最終ディレクトリ
    にある snapshot も読めない（`SnapshotNotApproved`）。
 2. **隔離区分を含まないか**（D03 §6.1）。未分類の隔離期間（`QUARANTINED_UNASSIGNED`）は
-   再分類まで**いかなる経路でも**許可集合に入らない（`HoldoutAccessViolation`）。
+   再分類まで**いかなる経路でも**許可集合に入らない（`HoldoutAccessViolation`）。OANDA MT5 の
+   経路の 2 つの封印の区分（ADR-0038）も、関所を通る最終検証のコマンドの場合だけ許可集合に
+   入る（D03 §6.1 v1.27）。その手順（D09 の後続版。D15 の R2・R4）が実装されるまでは、
+   どの経路でも入らない（順 6 の S3）。
 3. **manifest に記録された partition か**。記録にない partition を許可しても、そこに何が
    入っているかを snapshot から確かめられない。
 
@@ -31,7 +34,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.classification import require_recorded_classification
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
-from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
@@ -264,6 +267,27 @@ def _require_approved(manifest: SnapshotManifest) -> None:
         )
 
 
+def _reject_sealed_since_2024(allowed_partitions: frozenset[PartitionId]) -> None:
+    """OANDA MT5 の経路の封印の区分の partition を許可集合から締め出す（D03 §6.1 v1.27）。
+
+    この区分を読む経路は、受入れ（品質確認の許可の下）と関所を通る最終検証のコマンドだけで、
+    研究・開発用途の opt-in も当てない（ADR-0037 第1項の 3 の 3、ADR-0038 第8項の 1）。最終
+    検証のコマンド（D15 の R4）が実装されるまで、as-of ビュー・公開フィードの許可集合には
+    入れない。品質確認の許可（読み取りの許可の値）も許可集合へは入れない（ADR-0036 第5項の 1）。
+    """
+    sealed = sorted(
+        str(partition_id)
+        for partition_id in allowed_partitions
+        if partition_id.access_class in OANDA_SEALED_CLASSES
+    )
+    if sealed:
+        raise HoldoutAccessViolation(
+            f"sealed partitions from 2024 may not be granted to a view: {sealed}; only the"
+            " final verification command through the holdout gate reads them, and it is not"
+            " implemented yet (D03 §6.1, ADR-0037 第1項の 3 の 3, D15 の R4)"
+        )
+
+
 def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
     """未分類の隔離期間の partition を許可集合から締め出す（D03 §6.1）。
 
@@ -384,6 +408,7 @@ def require_readable_snapshot(
 
     manifest = snapshot.manifest
     _reject_quarantined(allowed_partitions)
+    _reject_sealed_since_2024(allowed_partitions)
     for partition_id in sorted(allowed_partitions, key=str):
         if manifest.partition_record(partition_id) is None:
             raise MarketDataValueError(

@@ -53,6 +53,8 @@ IGNORED_PATHS = [
     "data/raw/other/x.csv",
     # 試行台帳の追記のロック（D01 §10.4 v2.10、D09 v0.3 §10.12.1）。版管理しない。
     "research/trial_ledger.lock",
+    # 品質確認の閲覧の記録の追記のロック（ADR-0035 第4項の 5 の 1）。版管理しない。
+    "research/quality_access_log.lock",
 ]
 
 #: 補充分で追跡するファイル（補充の manifest と検証記録。ADR-0013 2026-10-01 改訂）。
@@ -133,6 +135,16 @@ def test_the_trial_ledger_is_tracked_and_placed_empty() -> None:
     """
     assert not _is_ignored("research/trial_ledger.jsonl")
     assert (REPO_ROOT / "research" / "trial_ledger.jsonl").is_file()
+
+
+def test_the_quality_access_log_is_tracked_and_placed() -> None:
+    """品質確認の閲覧の記録は版管理するファイルで、S3 が版管理で置く（ADR-0035 第4項の 5 の 5）。
+
+    無ければ記録に失敗したとして読み取りを始めない（追記では作らない）。ロック
+    （`research/quality_access_log.lock`）だけが git 管理外である。
+    """
+    assert not _is_ignored("research/quality_access_log.jsonl")
+    assert (REPO_ROOT / "research" / "quality_access_log.jsonl").is_file()
 
 
 def test_no_ignored_data_artifact_is_actually_tracked() -> None:

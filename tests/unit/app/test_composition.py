@@ -24,6 +24,7 @@ from odyssey_fx.marketdata.application.ports import RawFileContent, RawRow
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
+from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 from odyssey_fx.marketdata.domain.timeframe_def import FixedUtcAlignment, TimeframeDefinition
 from tests.fixtures.synthetic import market
@@ -68,7 +69,12 @@ class _StubStore:
     ) -> str:
         raise NotImplementedError("構成の試験では partition を書かない")
 
-    def read_partition(self, snapshot_dir: str, partition_id: PartitionId) -> Sequence[Bar]:
+    def read_partition(
+        self,
+        snapshot_dir: str,
+        partition_id: PartitionId,
+        read_permit: QualityReadPermit | None = None,
+    ) -> Sequence[Bar]:
         raise NotImplementedError("構成の試験では partition を読まない")
 
     def write_manifest(self, snapshot_dir: str, manifest: SnapshotManifest) -> None:

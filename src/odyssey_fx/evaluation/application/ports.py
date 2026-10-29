@@ -40,6 +40,12 @@ from odyssey_fx.evaluation.domain.search import (
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.evaluation.domain.variant import Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.quality_access import (
+    QualityAccessLogContents,
+    QualityAccessLogFailure,
+    QualityAccessRow,
+    QualityLogAppendRefused,
+)
 from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 
@@ -55,6 +61,7 @@ __all__ = [
     "ExperimentStore",
     "ManifestReadFailure",
     "ManifestSaveResult",
+    "QualityAccessLog",
     "ResultReadFailure",
     "ResultRepository",
     "SegmentPlanner",
@@ -557,4 +564,23 @@ class SnapshotCatalog(Protocol):
         self, snapshot: SnapshotRef, partitions: frozenset[PartitionId]
     ) -> Mapping[PartitionId, AccessClass]:
         """snapshot の manifest が記録する、各 partition のアクセス分類。"""
+        ...
+
+
+@runtime_checkable
+class QualityAccessLog(Protocol):
+    """品質確認の閲覧の記録の読み書き（D01 §4、ADR-0035 第4項、ADR-0036 第9項の 4）。
+
+    消費の記録（`HoldoutAccessLog`。snapshot の `access_log.jsonl`）とは別のポート・別の記録で
+    ある（P1-3「閲覧記録と消費記録を明確に区別する」）。実装は `marketdata.adapters` の記録の
+    ファイル（`research/quality_access_log.jsonl`）で、`app` が結線する。行の型は
+    `marketdata.domain`。
+    """
+
+    def read(self) -> QualityAccessLogContents | QualityAccessLogFailure:
+        """記録を読む。行の形と構造の誤り（ADR-0035 第4項の 6）に当たれば失敗を返す。"""
+        ...
+
+    def append(self, row: QualityAccessRow) -> QualityAccessRow | QualityLogAppendRefused:
+        """1 行を追記し、読み直して一致を確かめる。成功なら `row`、断れば理由を返す。"""
         ...
