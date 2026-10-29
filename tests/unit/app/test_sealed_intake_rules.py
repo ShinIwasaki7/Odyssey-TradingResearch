@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,10 +16,16 @@ from odyssey_fx.app.config.quality_checks import (
     QUALITY_CHECKS_DIRECTORY,
     load_quality_check_definitions,
 )
+from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
+from odyssey_fx.app.mt5 import load_datasource
 from odyssey_fx.app.sealed_intake import (
     SEALED_ACCEPT_TOOL,
+    SEALED_CONFIG_FILES,
     SEALED_FINALIZE_TOOL,
+    SYMBOL_SPECS_DIR,
+    SealedIntakeRefused,
     initial_state_provider,
+    require_symbol_spec_matches,
     sealed_config_digest,
 )
 from odyssey_fx.common.symbol import Symbol
@@ -76,6 +83,47 @@ def test_the_two_definitions_match_the_fixed_files_of_today() -> None:
     assert finalize.target_kind is QualityTargetKind.PARTITION
     assert finalize.timeframes == frozenset({"1m", "15m", "1h", "4h_ny17", "1d_ny17"})
     assert len(finalize.symbols) == 8
+
+
+# --- 銘柄の設定と検査 3（順 6 の S4b。D03 §16.3.1 の検査 3）-----------------------------------
+
+#: 研究期間の全期間取得（2026-10-16）の取得記録の版管理の写し。端末が返した 8 通貨の銘柄仕様
+#: （`symbols` の `point`・`digits`・`chart_mode`）だけを読む（価格・件数・時刻は読まない）。
+RESEARCH_FETCH_COPY = ROOT / "docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json"
+
+
+def test_the_symbol_settings_of_the_eight_agree_with_the_terminal_record() -> None:
+    """8 通貨の銘柄の設定は、OANDA MT5 の端末が研究期間の取得で返した銘柄仕様と同じ。
+
+    検査 3 が合格することで、設定の値の根拠を確かめる（価格データから推定しない）。研究期間の
+    取得記録の `symbols` は端末の `symbol_info` の値（`tools/survey/mt5_api_probe.py` の
+    `symbol_meta`）で、封印の取得の記録と同じ形。
+    """
+    record = json.loads(RESEARCH_FETCH_COPY.read_text(encoding="utf-8"))
+    window = load_sealed_window(ROOT / SEALED_WINDOW_PATH)
+    datasource = load_datasource(ROOT)
+    assert len(window.symbols) == 8
+    for symbol in window.symbols:
+        path = require_symbol_spec_matches(record, symbol, ROOT, datasource)
+        assert path == SYMBOL_SPECS_DIR / f"{symbol}.yaml"
+
+
+def test_the_symbol_settings_are_not_in_the_config_digest() -> None:
+    """銘柄の設定は許可の定義の設定のダイジェストの対象ではない。
+
+    S4b の仮置き。承認済みの 9 ファイル（PR #111 の仮置き S4a-7）のまま。
+    """
+    assert not any(path.is_relative_to(SYMBOL_SPECS_DIR) for path in SEALED_CONFIG_FILES)
+
+
+def test_the_symbol_check_compares_the_tick_digits_and_chart_mode() -> None:
+    datasource = load_datasource(ROOT)
+    good = {"symbols": {"EURUSD": {"chart_mode": 0, "point": 1e-05, "digits": 5}}}
+    assert require_symbol_spec_matches(good, Symbol("EURUSD"), ROOT, datasource)
+    for field, value in (("point", 0.0001), ("digits", 4), ("chart_mode", 1), ("digits", True)):
+        bad = {"symbols": {"EURUSD": {**good["symbols"]["EURUSD"], field: value}}}
+        with pytest.raises(SealedIntakeRefused, match=field):
+            require_symbol_spec_matches(bad, Symbol("EURUSD"), ROOT, datasource)
 
 
 # --- manifest の記録（ADR-0038 第3項、ADR-0036 第7項）---------------------------------------

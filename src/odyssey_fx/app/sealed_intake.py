@@ -5,7 +5,9 @@
 `marketdata`（受入れ・初期状態）と関所（`evaluation.application.holdout_gate`）を
 品質確認専用の入口（`app.quality_check.run_quality_check`）でつなぐだけ（D01 §7、ADR-0036 第9項）。
 
-- **受入れ**（`accept_sealed`）: 承認済みの許可の定義 `oanda_mt5_sealed_accept`（原ファイルが対象）
+- **受入れ**（`accept_sealed`）: 8 通貨のどれも同じ規則（D03 §16.3.2。順 6 の S4b）。読む前に
+  取得記録の銘柄仕様を銘柄の設定と照らし（検査 3。`require_symbol_spec_matches`）、承認済みの許可の
+  定義 `oanda_mt5_sealed_accept`（原ファイルが対象）
   の下で、取得記録の原ファイル（置き場とハッシュ）だけを読み（`read_symbol_files` が読む前に
   `covers_raw_file` で確かめる）、取引週の partition を作り、初期状態（ADR-0038 第3項）と閲覧の
   識別子・「品質確認の許可を要したか」（ADR-0036 第7項）を暫定 manifest に記録する。暫定 snapshot は
@@ -26,6 +28,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Final
 
@@ -36,6 +39,7 @@ from odyssey_fx.app.config.sealed_window import (
     SealedWindowConfig,
     load_sealed_window,
 )
+from odyssey_fx.app.config.symbols import load_symbol_spec
 from odyssey_fx.app.mt5 import (
     DEFAULT_MT5_DATASOURCE,
     DEFAULT_TIMEFRAMES_V2,
@@ -109,6 +113,7 @@ __all__ = [
     "SEALED_CONFIG_FILES",
     "SEALED_FETCH_KIND",
     "SEALED_FINALIZE_TOOL",
+    "SYMBOL_SPECS_DIR",
     "SealedAcceptance",
     "SealedDataError",
     "SealedIntakeRefused",
@@ -119,6 +124,7 @@ __all__ = [
     "initial_state_provider",
     "is_sealed_snapshot",
     "require_acceptance_completed",
+    "require_symbol_spec_matches",
     "sealed_config_digest",
     "sealed_raw_location",
 ]
@@ -141,6 +147,16 @@ SEALED_CONFIG_FILES: Final = (
     DEFAULT_TIMEFRAMES_V2,
     SEALED_WINDOW_PATH,
 )
+
+
+#: 銘柄の設定の置き場（D02 §5.2。D03 §16.3.1 の検査 3 が取得記録と照合する）。研究と共有する
+#: 設定なので、本経路のために書き換えない（研究の実験の記録が本文を持つため）。
+SYMBOL_SPECS_DIR: Final = Path("configs/symbols")
+
+#: 価格基準の宣言（列対応の宣言の `basis_declaration`）と、取得記録の `chart_mode`（MT5 の
+#: `SYMBOL_CHART_MODE_*`。0 が bid、1 が last）の対応（D12-26。D03 §16.3.1 の検査 3 の
+#: 「0 = bid」）。
+_CHART_MODE_OF_BASIS: Final = {"bid": 0}
 
 
 class SealedIntakeRefused(ConfigError):
@@ -313,6 +329,8 @@ class SealedAcceptance:
     pending: PendingSnapshot
     directory: str
     raw_location: str
+    #: 検査 3（銘柄の検査）で照合した銘柄の設定の置き場（合格したものだけがここに来る）。
+    symbol_spec: str
 
 
 def _fetch_record(path: Path) -> dict[str, object]:
@@ -378,6 +396,73 @@ def _require_inside_window(
                 f"{entry.rid}: 定期取得の要求が取得の開始時点 {window.acquisition_start} より前から"
                 "始まる（ADR-0037 第2項の 3）"
             )
+
+
+def _spec_value(value: object) -> Decimal | None:
+    """取得記録の `point`（JSON の数）を `Decimal` にする。
+
+    浮動小数は `repr`（最短の 10 進表記）を経て、二進の誤差を持ち込まない。
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        out = Decimal(repr(value)) if isinstance(value, float) else Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return out if out.is_finite() else None
+
+
+def require_symbol_spec_matches(
+    record: Mapping[str, object], symbol: Symbol, repo_root: Path, datasource: Mt5DataSourceConfig
+) -> Path:
+    """検査 3（D03 §16.3.1）: 取得記録の銘柄の `point`・`digits`・`chart_mode` が設定と同じか。
+
+    - `point` は銘柄の設定（`configs/symbols/<銘柄>.yaml`）の価格の刻み（`price_tick`）と同じ値。
+    - `digits` は価格の刻みの小数の桁数（`price_tick` を正規化した指数の符号を反転した値。
+      `"0.001"` なら 3、`"0.00001"` なら 5）。銘柄の設定は桁数を持たないので刻みから導く
+      （S4b の仮置き）。
+    - `chart_mode` は列対応の宣言の価格基準（bid）に当たる値（0）。
+
+    取得記録（価格を含まない）と設定だけを見るので、原ファイルを読む前に確かめる。食い違えば
+    何も読まず・書かずに止める。文は項目の名前だけ（値は設定と取得記録の銘柄仕様で、価格では
+    ないが、出力を合否に限るため出さない）。照合に使った銘柄の設定の置き場を返す。
+    """
+    path = SYMBOL_SPECS_DIR / f"{symbol}.yaml"
+    full = Path(repo_root) / path
+    if not full.is_file():
+        raise SealedIntakeRefused(
+            f"{symbol} の銘柄の設定 {path.as_posix()} が無い。検査 3（銘柄の検査）ができないので"
+            "受け入れない（D03 §16.3.1）"
+        )
+    spec = load_symbol_spec(full)
+    symbols = record.get("symbols")
+    meta = symbols.get(str(symbol)) if isinstance(symbols, Mapping) else None
+    if not isinstance(meta, Mapping):
+        raise SealedIntakeRefused(
+            f"取得記録に {symbol} の銘柄の記録（symbols）が無い。検査 3（銘柄の検査）ができないので"
+            "受け入れない（D03 §16.3.1）"
+        )
+    tick = spec.price_tick.normalize()
+    exponent = tick.as_tuple().exponent
+    digits = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    chart_mode = _CHART_MODE_OF_BASIS.get(datasource.basis_declaration.value.value)
+    mismatched = []
+    point = _spec_value(meta.get("point"))
+    if point is None or point != spec.price_tick:
+        mismatched.append("point")
+    recorded_digits = meta.get("digits")
+    if isinstance(recorded_digits, bool) or recorded_digits != digits:
+        mismatched.append("digits")
+    recorded_mode = meta.get("chart_mode")
+    if chart_mode is None or isinstance(recorded_mode, bool) or recorded_mode != chart_mode:
+        mismatched.append("chart_mode")
+    if mismatched:
+        raise SealedIntakeRefused(
+            f"検査 3（銘柄の検査）の不合格: 取得記録の {symbol} の {', '.join(mismatched)} が"
+            f"銘柄の設定 {path.as_posix()}（価格の刻み）・列対応の宣言 {datasource.ref}（価格基準）"
+            "と違う。何も読まずに止める（D03 §16.3.1）"
+        )
+    return path
 
 
 def _require_known_states(
@@ -503,6 +588,7 @@ def accept_sealed(
             f" {symbol} は受け入れない。取り直しの後に受け入れる（D03 §16.5.8）"
         )
     _require_inside_window(own, window, rules, record.get("stage"))
+    spec_path = require_symbol_spec_matches(record, symbol, root, datasource)
 
     # 初期状態の材料は読み取りの前にそろえる（読めなければ始めない。ADR-0038 第3項の 2・3）。
     # 重なりうる既にある partition の状態が導けないときも、原ファイルを読む前に止める。
@@ -574,7 +660,12 @@ def accept_sealed(
             "reading and converting the sealed raw files", lambda: build(permit)
         )
         directory = write(pending)
-        return SealedAcceptance(pending=pending, directory=directory, raw_location=location)
+        return SealedAcceptance(
+            pending=pending,
+            directory=directory,
+            raw_location=location,
+            symbol_spec=spec_path.as_posix(),
+        )
 
     if now is None or new_id is None:
         return run_quality_check(repository_root=root, request=request, tool=tool)

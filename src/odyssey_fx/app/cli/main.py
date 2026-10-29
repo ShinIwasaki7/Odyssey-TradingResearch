@@ -775,6 +775,10 @@ def _run_accept_mt5_sealed(args: argparse.Namespace, out: _Writer) -> int:
         out.line(f"時刻の規則の表: {table}、変換の組 {args.variant}")
         out.line(f"受け入れた要求（API の時刻の年月）: {' '.join(mt5_record.months)}")
     out.line(f"原データの置き場: {accepted.raw_location}")
+    out.line(
+        f"銘柄の検査（D03 §16.3.1 の検査 3）: 合格（取得記録の point・digits・chart_mode と"
+        f" {accepted.symbol_spec}・列対応の宣言の価格基準が一致）"
+    )
     out.lines(summary.series_lines(pending.manifest))
     out.lines(summary.sealed_partition_lines(pending.manifest))
     out.lines(summary.findings_lines(pending.report))
