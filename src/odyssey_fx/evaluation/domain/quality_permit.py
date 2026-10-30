@@ -43,7 +43,6 @@ __all__ = [
     "SEALED_INTAKE_DATASOURCE",
     "SEALED_INTAKE_SYMBOLS",
     "SEALED_RAW_ROOT",
-    "FinalEvaluationPermitNotImplemented",
     "QualityCheckDefinition",
     "QualityCheckRequest",
     "QualityPermitRefusal",
@@ -64,13 +63,6 @@ SEALED_INTAKE_SYMBOLS: Final = frozenset(
 #: PR #109 の仮置き S2b-6）。品質確認の許可が覆う原ファイルはこの下に限る（旧データの CSV
 #: `data/raw/market/` などを許可の対象にしない。ADR-0036 第4項）。
 SEALED_RAW_ROOT: Final = ("data", "raw", "oanda_mt5_sealed")
-
-
-class FinalEvaluationPermitNotImplemented(EvaluationError):
-    """最終評価の許可は D09 の後続版（D15 の R2）の承認まで実装しない（ADR-0036 第11項）。
-
-    呼ばれたら拒否する（実装は D15 の R4）。
-    """
 
 
 class QualityTargetKind(Enum):

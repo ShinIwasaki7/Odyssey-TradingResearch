@@ -41,6 +41,9 @@ research/quality_access_log.lock
 # 採用審査の審査台帳の追記のロック（D16 §10.2。順 6 の R3）。追記の1回ごとに作って消すもので版管理しない。
 # 審査台帳そのもの（research/adoption_reviews.jsonl）は追跡する（空のファイルで置く）。
 research/adoption_reviews.lock
+# 最終検証の台帳の追記のロック（D09 v0.5 §9.10.5、仮置き R2-5）。追記の1回ごとに作って消すもので
+# 版管理しない。台帳そのもの（research/final_validations.jsonl）は追跡する（空のファイルで置く）。
+research/final_validations.lock
 
 # --- Python -----------------------------------------------------------------
 __pycache__/

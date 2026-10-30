@@ -832,6 +832,26 @@ def test_8_experiment_run_does_not_call_the_holdout_gate(full: _Full) -> None:
     assert checks[PolicyCheck.RESEARCH_HISTORY_ONLY] is CheckOutcome.PASSED
 
 
+def test_the_final_validation_reads_the_facts_of_a_search_execution(
+    full: _Full, workspace: T02Workspace
+) -> None:
+    """最終検証の申請が読む候補の事実（記録票・結末記録・束縛の記録。D09 §9.10.10。R4）。
+
+    値は人工データの実験のもの。判定の値そのものは確かめない（成績を読まない）。
+    """
+    from odyssey_fx.app.config.loader import ConfigError
+    from odyssey_fx.app.final_validation import ExperimentCandidates
+
+    directory = _version(full.out, "full")
+    facts = ExperimentCandidates(workspace.repo).read(directory, 1)
+    assert (facts.key.experiment_name, facts.key.execution) == ("full", 1)
+    assert facts.symbols == frozenset({"USDJPY"})
+    assert facts.started_line_digest == full.lines[0].digest.hex
+    assert facts.record_snapshots.standard != facts.record_snapshots.candidate
+    with pytest.raises(ConfigError, match="実行番号"):
+        ExperimentCandidates(workspace.repo).read(directory, 2)
+
+
 def test_24_the_finished_line_copies_the_started_line(full: _Full) -> None:
     """結末の行は開始の行の項目を写し、`status`（実験の状態）/ `verdict`（組の判定）/ `results`
     （組ごとの結果）だけが結末記録の値になる（D09 §10.12.3 の3。行の形式版 2 では最上位の

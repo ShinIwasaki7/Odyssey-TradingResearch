@@ -6,14 +6,15 @@
 
 **partition の読み取りの許可の確かめ**（ADR-0036 第9項の 3、ADR-0037 第1項の 3 の 3）:
 OANDA MT5 の経路の 2 つの封印の区分の partition は、読み取りの許可の値（`QualityReadPermit`）が
-覆うときだけ読める。値が無ければ読まない（研究履歴だけを読む）。旧データの snapshot の区分
-（`LEGACY_HOLDOUT`・`QUARANTINED_UNASSIGNED`）の既存の扱い（as-of ビューの許可集合と
-隔離の拒否。D03 §6.1）は変えない。
+覆うとき、または関所の最終評価の許可の並び（`FinalReadGrant`。R4）が覆うときだけ読める。値が
+無ければ読まない（研究履歴だけを読む）。旧データの snapshot の 2024 年以降の区分は
+`snapshot_access.require_not_frozen_legacy` が塞ぐ（D09 §9.10.13 の 2。R4）。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Any, Final
 
 from odyssey_fx.common.symbol import Symbol
@@ -21,6 +22,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass
 from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
+from odyssey_fx.marketdata.domain.final_grant import FinalReadGrant
 from odyssey_fx.marketdata.domain.quality_access import (
     AccessPeriod,
     PartitionTarget,
@@ -56,12 +58,17 @@ _JUDGMENT: Final = "JUDGMENT"
 
 
 def require_partition_read_allowed(
-    partition_id: PartitionId, read_permit: QualityReadPermit | None
+    partition_id: PartitionId,
+    read_permit: QualityReadPermit | FinalReadGrant | None,
+    snapshot_dir: str | None = None,
 ) -> None:
     """partition を読んでよいかを確かめる。読めなければ `HoldoutAccessViolation`。
 
-    OANDA MT5 の経路の封印の区分は、許可の値が覆うときだけ読める（関所を迂回する読み取りの
-    経路を作らない。ADR-0036 第8項・第9項の 3）。他の区分はここでは拒否しない（既存の扱い）。
+    OANDA MT5 の経路の封印の区分は、品質確認の読み取りの許可の値（受入れ。ADR-0036 第9項の 3）
+    か、関所の最終評価の許可の並び（`FinalReadGrant`。最終検証のコマンド。D09 §9.10.3 の 4、
+    要決定 R2-3 (a)）が覆うときだけ読める（関所を迂回する読み取りの経路を作らない。ADR-0036
+    第8項）。最終評価の許可は snapshot ごとに覆うので、`snapshot_dir` の最後の名前で照らす。
+    他の区分はここでは拒否しない（旧データの 2024 年以降は `require_not_frozen_legacy`）。
     """
     if not isinstance(partition_id, PartitionId):
         raise MarketDataValueError("require_partition_read_allowed requires a PartitionId")
@@ -73,8 +80,16 @@ def require_partition_read_allowed(
             " the holdout gate (acceptance) or by the final verification command; no permit was"
             " given (ADR-0036 第9項の 3, ADR-0037 第1項の 3 の 3)"
         )
+    if isinstance(read_permit, FinalReadGrant):
+        name = None if snapshot_dir is None else PurePosixPath(snapshot_dir).name
+        if name is None or not read_permit.covers(name, partition_id):
+            raise HoldoutAccessViolation(
+                f"the final-evaluation permit {read_permit.permit_id} does not grant {partition_id}"
+                f" of the snapshot {name} (D09 §9.10.3 の 4)"
+            )
+        return
     if not isinstance(read_permit, QualityReadPermit):
-        raise MarketDataValueError("read_permit must be a QualityReadPermit")
+        raise MarketDataValueError("read_permit must be a QualityReadPermit or a FinalReadGrant")
     if not read_permit.covers_partition(partition_id):
         raise HoldoutAccessViolation(
             f"the quality-check permit {read_permit.permit_id} does not cover {partition_id}"

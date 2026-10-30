@@ -41,6 +41,7 @@ from odyssey_fx.marketdata.domain.quality_access import (
     ToolRef,
 )
 from odyssey_fx.marketdata.domain.snapshot import LegacyAccessRecord, LegacyObservation
+from tests.fixtures.git_origin import isolate_git
 from tests.fixtures.synthetic import market
 from tests.fixtures.synthetic import snapshots as synthetic
 from tests.integration.app.test_sealed_intake import (
@@ -85,6 +86,8 @@ def _git(repo: Path, *args: str) -> str:
 def _publish_repo(repo: Path, tmp_path: Path) -> Path:
     """`repo` を git の作業木にし、一時ディレクトリの bare の origin へ main を push する。"""
     assert tmp_path in repo.parents  # 一時ディレクトリの中だけで動かす
+    if (repo / ".git").exists():  # 写した作業木の git を捨てて作り直す
+        shutil.rmtree(repo / ".git")
     shutil.copy(ROOT / ".gitignore", repo / ".gitignore")
     _git(repo, "init", "--quiet")
     _git(repo, "symbolic-ref", "HEAD", "refs/heads/main")
@@ -94,6 +97,8 @@ def _publish_repo(repo: Path, tmp_path: Path) -> Path:
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "base")
     origin = tmp_path / "origin.git"
+    if origin.exists():  # `_repo` が作った origin を作り直す
+        shutil.rmtree(origin)
     subprocess.run(["git", "init", "--quiet", "--bare", str(origin)], check=True)
     _git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
     _git(repo, "remote", "add", "origin", str(origin))
@@ -112,11 +117,13 @@ def _origin_head(origin: Path) -> str:
 def sealed_base(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """確定済みの封印の snapshot（USDJPY・前向きの封印の区分の 1 週・5 系列）を持つリポジトリ。"""
     work = tmp_path_factory.mktemp("sealed_base")
-    repo = _repo(work)
-    copy = _fetch(repo, work)
-    assert _accept(repo, copy) == 0
-    (pending_dir,) = _pending(repo)
-    assert _classify(repo, pending_dir.name, work) == 0
+    with pytest.MonkeyPatch.context() as patch:
+        isolate_git(patch, work / "githome")
+        repo = _repo(work)
+        copy = _fetch(repo, work)
+        assert _accept(repo, copy) == 0
+        (pending_dir,) = _pending(repo)
+        assert _classify(repo, pending_dir.name, work) == 0
     shutil.rmtree(repo / "data" / "snapshots" / "_pending", ignore_errors=True)
     yield repo
 
@@ -252,13 +259,18 @@ def test_a_raw_file_judgment_consumes_every_sealed_partition_of_the_symbol_and_p
         "violated_conditions",
     }
     assert raw["row_kind"] == "JUDGMENT" and raw["schema_version"] == 1
-    # 消費の記録（今の AccessLogEntry の形の CONSUMED。理由として閲覧と判定の行を指す）。
+    # 消費の記録（版 1 の行。D09 §9.10.4・§9.10.13 の 1。理由 VIOLATION_JUDGMENT、許可の
+    # 識別子の欄に判定の行の識別子、閲覧の識別子、候補と目的は空）。
     final = _final(repo)
     lines = [json.loads(line) for line in (final / "access_log.jsonl").read_text().splitlines()]
     assert len(lines) == 5 and {line["kind"] for line in lines} == {"CONSUMED"}
-    assert {line["purpose"] for line in lines} == {
-        f"VIOLATION_JUDGMENT access_id={accept_id} judgment_row_id={judgment.row_id}"
-    }
+    assert {line["schema_version"] for line in lines} == {"1"}
+    assert {line["reason"] for line in lines} == {"VIOLATION_JUDGMENT"}
+    assert {line["permit_id"] for line in lines} == {judgment.row_id}
+    assert {line["access_id"] for line in lines} == {accept_id}
+    assert {line["purpose"] for line in lines} == {""}
+    assert all(line["candidate"] == {} for line in lines)
+    assert len({line["row_id"] for line in lines}) == 5
     assert {line["actor"] for line in lines} == {"人間"}
     states = existing_sealed_partitions(repo / "data" / "snapshots")
     assert len(states) == 5 and {item.state for item in states} == {HoldoutState.CONSUMED}
@@ -464,7 +476,7 @@ def test_a_failed_consumption_append_leaves_no_commit_and_a_retry_adds_only_the_
     repo, origin = _sealed_repo(sealed_base, tmp_path)
     accept_id = _access_ids(repo)[0]
     head = _git(repo, "rev-parse", "HEAD")
-    original = GitHoldoutAccessLog.append_consumed
+    original = GitHoldoutAccessLog.append_row
     calls = {"n": 0}
 
     def flaky(self: GitHoldoutAccessLog, *args: object, **kwargs: object) -> str:
@@ -473,13 +485,13 @@ def test_a_failed_consumption_append_leaves_no_commit_and_a_retry_adds_only_the_
             raise HoldoutAccessLogStop("append", "synthetic failure")
         return original(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(GitHoldoutAccessLog, "append_consumed", flaky)
+    monkeypatch.setattr(GitHoldoutAccessLog, "append_row", flaky)
     capsys.readouterr()
     assert _judge(repo, accept_id) == 1
     printed = capsys.readouterr().out
     assert "失敗（append）" in printed and "この回に 2 / 5 件追記した" in printed
     assert _git(repo, "rev-parse", "HEAD") == head == _origin_head(origin)
-    monkeypatch.setattr(GitHoldoutAccessLog, "append_consumed", original)
+    monkeypatch.setattr(GitHoldoutAccessLog, "append_row", original)
     retry = [
         "gate",
         "judge-violation",

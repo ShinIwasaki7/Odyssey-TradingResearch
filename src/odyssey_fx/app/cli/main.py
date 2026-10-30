@@ -500,8 +500,64 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("."),
         help="現在の環境の `uv.lock` を読むリポジトリの位置（設定ファイルは読まない）",
     )
+    _add_final_validate_parser(experiment)
     _add_gate_parsers(top)
     return parser
+
+
+def _add_final_validate_parser(
+    experiment: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """最終検証のコマンド（D09 v0.5 §9.10.7。仮置き R2-4 の決定「このまま」）。"""
+    final = experiment.add_parser(
+        "final-validate",
+        help=(
+            "選別を通った候補を封印期間で 1 回だけ確かめる（関所の最終評価の許可・消費の記録・"
+            "判定。D09 §9.10）"
+        ),
+    )
+    final.set_defaults(command="experiment_final_validate")
+    final.add_argument(
+        "--experiment-dir",
+        type=Path,
+        required=True,
+        help="実験の版のディレクトリ（runs/experiments/<名前>/v<版>/）",
+    )
+    final.add_argument("--execution", type=int, required=True, help="実行番号（試行台帳の番号）")
+    final.add_argument(
+        "--repo-root", type=Path, default=Path("."), help="リポジトリの根（git の作業木）"
+    )
+    final.add_argument(
+        "--snapshots",
+        type=Path,
+        default=None,
+        help="snapshot の基点（既定は <repo-root>/data/snapshots。リポジトリの中に置く）",
+    )
+    final.add_argument(
+        "--out", type=Path, default=Path("."), help="run の基点（この下に runs/<run_id>/ を作る）"
+    )
+    final.add_argument(
+        "--declaration",
+        type=Path,
+        default=None,
+        help="申告のファイル（research/declarations/ の YAML。申請・乾式実行で必須。仮置き R2-6）",
+    )
+    final.add_argument("--by", required=True, help="実行者")
+    mode = final.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="段 1・段 2 だけを行い、何も書かない")
+    mode.add_argument(
+        "--resume",
+        action="store_true",
+        help="状態 C の申請を同じ許可でやり直す（条件の仮置き R2-21〜29 が決まるまで常に拒否）",
+    )
+    mode.add_argument(
+        "--close-failed",
+        action="store_true",
+        help="状態 C の申請を、データを読まずに台帳の失敗の行で閉じる",
+    )
+    mode.add_argument(
+        "--withdraw", action="store_true", help="状態 A の候補を取り下げる（消費しない）"
+    )
 
 
 def _add_gate_parsers(top: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1732,6 +1788,55 @@ def _run_experiment_reproduce(args: argparse.Namespace, out: _Writer) -> int:
     return _EXIT_OK if report.verdict is ReproductionVerdict.REPRODUCED else _EXIT_NOT_REPRODUCED
 
 
+# --- experiment final-validate（D09 v0.5 §9.10）----------------------------
+
+
+def _run_experiment_final_validate(args: argparse.Namespace, out: _Writer) -> int:
+    """最終検証のコマンド（D09 §9.10.7）。出力は件数・時刻・識別子・終了コード・理由・判定だけ。"""
+    # 関所の最終評価の許可を含む結線は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import final_validation as final
+
+    mode = (
+        final.FinalMode.DRY_RUN
+        if args.dry_run
+        else final.FinalMode.RESUME
+        if args.resume
+        else final.FinalMode.CLOSE_FAILED
+        if args.close_failed
+        else final.FinalMode.WITHDRAW
+        if args.withdraw
+        else final.FinalMode.APPLY
+    )
+    repo_root = Path(args.repo_root)
+    snapshots = args.snapshots if args.snapshots is not None else repo_root / "data" / "snapshots"
+    outcome = final.final_validate(
+        final.FinalValidationRequest(
+            experiment_dir=args.experiment_dir,
+            execution=args.execution,
+            repo_root=repo_root,
+            snapshots_root=snapshots,
+            out_root=args.out,
+            declaration=args.declaration,
+            by=args.by,
+            mode=mode,
+        )
+    )
+    out.lines(outcome.lines)
+    if outcome.reason is not None:
+        out.line(f"理由: {outcome.reason.value}")
+    if outcome.exit_code != final.EXIT_OK:
+        out.line(f"詳細: {outcome.detail}")
+        if outcome.exit_code in (
+            final.EXIT_REFUSED,
+            final.EXIT_GATE_REFUSED,
+            final.EXIT_READ_ERROR,
+        ):
+            out.line("消費していない（データを読んでいない）")
+    out.line(f"終了コード: {outcome.exit_code}")
+    return outcome.exit_code
+
+
 # --- gate judge-violation（ADR-0035 第3項）----------------------------------
 
 
@@ -1971,6 +2076,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "experiment_reproduce": _run_experiment_reproduce,
         "experiment_report": _run_experiment_report,
         "experiment_ledger": _run_experiment_ledger,
+        "experiment_final_validate": _run_experiment_final_validate,
         "gate_judge_violation": _run_gate_judge_violation,
         "experiment_review": _run_experiment_review,
     }

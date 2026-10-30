@@ -9,10 +9,12 @@ as-of ビュー（D03 §6）と公開フィード（D03 §7）は、どちらも
 1. **承認済みか**（D03 §3.7.1 の3）。承認の記録が入るまで、暫定 snapshot も最終ディレクトリ
    にある snapshot も読めない（`SnapshotNotApproved`）。
 2. **隔離区分を含まないか**（D03 §6.1）。未分類の隔離期間（`QUARANTINED_UNASSIGNED`）は
-   再分類まで**いかなる経路でも**許可集合に入らない（`HoldoutAccessViolation`）。OANDA MT5 の
-   経路の 2 つの封印の区分（ADR-0038）も、関所を通る最終検証のコマンドの場合だけ許可集合に
-   入る（D03 §6.1 v1.27）。その手順（D09 の後続版。D15 の R2・R4）が実装されるまでは、
-   どの経路でも入らない（順 6 の S3）。
+   再分類まで**いかなる経路でも**許可集合に入らない（`HoldoutAccessViolation`）。旧データの
+   snapshot の封印期間（`LEGACY_HOLDOUT`）も入らない（2024 年以降の部分はどの経路でも読まない。
+   ADR-0038 第8項の 1、D09 §9.10.13 の 2。R4）。OANDA MT5 の経路の 2 つの封印の区分（ADR-0038）
+   は、関所の最終評価の許可の並び（`FinalReadGrant`。D09 §9.10.3 の 4、要決定 R2-3 (a)）が
+   覆う partition だけが許可集合に入り、その partition は並びが指す snapshot の manifest で
+   照合する（D03 §6.1 v1.27 の「最終検証のコマンドの場合だけ」。R4）。
 3. **manifest に記録された partition か**。記録にない partition を許可しても、そこに何が
    入っているかを snapshot から確かめられない。
 
@@ -34,7 +36,12 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.classification import require_recorded_classification
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
 from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
-from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, AccessClass
+from odyssey_fx.marketdata.domain.access import (
+    LEGACY_FROZEN_CLASSES,
+    OANDA_SEALED_CLASSES,
+    AccessClass,
+    is_frozen_legacy_partition,
+)
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
@@ -42,18 +49,21 @@ from odyssey_fx.marketdata.domain.errors import (
     PartitionContentMismatch,
     SnapshotNotApproved,
 )
+from odyssey_fx.marketdata.domain.final_grant import FinalReadGrant
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
 
 __all__ = [
     "PENDING_DIRECTORY",
+    "FinalSources",
     "PartitionedBars",
     "ReadableSnapshot",
     "VerifiedPartitionBars",
     "freeze_partition_bars",
     "readable_surface",
     "require_matching_partition_content",
+    "require_not_frozen_legacy",
     "require_readable_snapshot",
     "require_recorded_content",
     "require_report_digest",
@@ -267,25 +277,112 @@ def _require_approved(manifest: SnapshotManifest) -> None:
         )
 
 
-def _reject_sealed_since_2024(allowed_partitions: frozenset[PartitionId]) -> None:
+def _reject_sealed_since_2024(
+    allowed_partitions: frozenset[PartitionId], grant: FinalReadGrant | None
+) -> None:
     """OANDA MT5 の経路の封印の区分の partition を許可集合から締め出す（D03 §6.1 v1.27）。
 
     この区分を読む経路は、受入れ（品質確認の許可の下）と関所を通る最終検証のコマンドだけで、
-    研究・開発用途の opt-in も当てない（ADR-0037 第1項の 3 の 3、ADR-0038 第8項の 1）。最終
-    検証のコマンド（D15 の R4）が実装されるまで、as-of ビュー・公開フィードの許可集合には
-    入れない。品質確認の許可（読み取りの許可の値）も許可集合へは入れない（ADR-0036 第5項の 1）。
+    研究・開発用途の opt-in も当てない（ADR-0037 第1項の 3 の 3、ADR-0038 第8項の 1）。as-of
+    ビュー・執行系列ビューの許可集合に入るのは、最終評価の許可の並び（`grant`）が覆う partition
+    だけ（D09 §9.10.3 の 4）。品質確認の許可（読み取りの許可の値）は許可集合へは入れない
+    （ADR-0036 第5項の 1）。
     """
+    granted = frozenset() if grant is None else grant.partitions
     sealed = sorted(
         str(partition_id)
         for partition_id in allowed_partitions
-        if partition_id.access_class in OANDA_SEALED_CLASSES
+        if partition_id.access_class in OANDA_SEALED_CLASSES and partition_id not in granted
     )
     if sealed:
         raise HoldoutAccessViolation(
             f"sealed partitions from 2024 may not be granted to a view: {sealed}; only the"
-            " final verification command through the holdout gate reads them, and it is not"
-            " implemented yet (D03 §6.1, ADR-0037 第1項の 3 の 3, D15 の R4)"
+            " final verification command through the holdout gate reads them, under the"
+            " final-evaluation permit that lists them (D03 §6.1, ADR-0037 第1項の 3 の 3,"
+            " D09 §9.10.3 の 4)"
         )
+
+
+def _reject_legacy_holdout(allowed_partitions: frozenset[PartitionId]) -> None:
+    """旧データの snapshot の封印期間（`LEGACY_HOLDOUT`）を許可集合から締め出す（R4）。
+
+    旧データの snapshot の `LEGACY_HOLDOUT`（2024〜2025 年）は `CONSUMED` のまま使わず
+    （ADR-0038 第6項の 1）、2024 年以降の部分はどの経路でも読まない（第8項の 1。D09 §9.10.13
+    の 2）。最終検証も使わない（D09 §9.3 の 1）ので、どの経路もこの区分を許可集合に入れない。
+    """
+    legacy = sorted(
+        str(partition_id)
+        for partition_id in allowed_partitions
+        if partition_id.access_class is AccessClass.LEGACY_HOLDOUT
+    )
+    if legacy:
+        raise HoldoutAccessViolation(
+            f"legacy holdout partitions may never be granted to a view: {legacy}; the legacy"
+            " data from 2024 is frozen and read by no path (ADR-0038 第6項の 1・第8項の 1,"
+            " D09 §9.10.13 の 2)"
+        )
+
+
+def require_not_frozen_legacy(manifest: SnapshotManifest, partition_id: PartitionId) -> None:
+    """旧データの snapshot の 2024 年以降の partition なら読まない（D09 §9.10.13 の 2。R4）。
+
+    `SnapshotStore.read_partition` がファイルを開く前に呼ぶ（分類・承認の検算の読み取りも含む。
+    仮置き R2-15）。manifest に記録が無い partition も読まない（期間を確かめられない）。
+    """
+    if partition_id.access_class not in LEGACY_FROZEN_CLASSES:
+        return
+    record = manifest.partition_record(partition_id)
+    if record is None:
+        raise HoldoutAccessViolation(
+            f"{partition_id} is not recorded in the manifest; its period cannot be confirmed"
+            " and it is not read (ADR-0038 第8項の 1)"
+        )
+    if is_frozen_legacy_partition(partition_id.access_class, record.interval):
+        raise HoldoutAccessViolation(
+            f"{partition_id} holds legacy data from 2024 ({record.interval}); the legacy data"
+            " from 2024 is frozen and read by no path, not even for re-checking a"
+            " classification or an approval (ADR-0038 第8項の 1, D09 §9.10.13 の 2, 仮置き R2-15)"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FinalSources:
+    """最終評価の許可の並びと、並びが指す snapshot（D09 §9.10.3 の 4、要決定 R2-3 (a)）。
+
+    as-of ビュー・執行系列ビューは、研究履歴の partition を記録票の snapshot（`snapshot`）から、
+    並びの partition をここの snapshot から読む。構築時に、並びのすべての snapshot がそろい、
+    識別子が manifest と一致し、並びの partition がその manifest に記録されていることを確かめる。
+    """
+
+    grant: FinalReadGrant
+    snapshots: Mapping[str, ReadableSnapshot]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.grant, FinalReadGrant):
+            raise MarketDataValueError("FinalSources.grant must be a FinalReadGrant")
+        frozen = dict(self.snapshots)
+        for name, snapshot in frozen.items():
+            if not isinstance(snapshot, ReadableSnapshot):
+                raise MarketDataValueError("FinalSources.snapshots must hold ReadableSnapshot")
+            if str(snapshot.snapshot_id) != name:
+                raise MarketDataValueError(
+                    f"FinalSources: the snapshot {snapshot.snapshot_id} is keyed as {name}"
+                )
+        missing = sorted(self.grant.snapshot_ids - set(frozen))
+        if missing:
+            raise MarketDataValueError(f"FinalSources lacks the granted snapshots {missing}")
+        for item in self.grant.reads:
+            if frozen[item.snapshot_id].manifest.partition_record(item.partition_id) is None:
+                raise MarketDataValueError(
+                    f"the granted partition {item.partition_id} is not recorded in the snapshot"
+                    f" {item.snapshot_id}"
+                )
+        object.__setattr__(self, "snapshots", MappingProxyType(frozen))
+
+    def manifest_of(self, partition_id: PartitionId) -> SnapshotManifest | None:
+        """並びの partition を記録した manifest（並びに無ければ `None`）。"""
+        source = self.grant.source_of(partition_id)
+        return None if source is None else self.snapshots[source].manifest
 
 
 def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
@@ -372,8 +469,12 @@ def require_readable_snapshot(
     *,
     label: str,
     partition_bars: Mapping[PartitionId, Sequence[Bar]],
+    final_sources: FinalSources | None = None,
 ) -> Mapping[PartitionId, tuple[Bar, ...]]:
     """許可 partition と足が読み取りの条件を満たすことを確かめ、足の写しを返す。
+
+    `final_sources` は最終検証の run だけが渡す（関所の最終評価の許可の並びと、並びが指す
+    snapshot。D09 §9.10.3 の 4）。並びの partition は並びが指す snapshot の manifest で照合する。
 
     `snapshot` は既に承認・ディレクトリ名・識別子の検査を通った型なので、ここでは許可
     partition と足の内容だけを見る。
@@ -406,10 +507,15 @@ def require_readable_snapshot(
         # 先に写し取る。以降の照合も読み取りも、この写しだけを見る。
         frozen = freeze_partition_bars(partition_bars)
 
-    manifest = snapshot.manifest
+    if final_sources is not None and not isinstance(final_sources, FinalSources):
+        raise MarketDataValueError(f"{label}.final_sources must be FinalSources or None")
+    grant = None if final_sources is None else final_sources.grant
     _reject_quarantined(allowed_partitions)
-    _reject_sealed_since_2024(allowed_partitions)
+    _reject_legacy_holdout(allowed_partitions)
+    _reject_sealed_since_2024(allowed_partitions, grant)
     for partition_id in sorted(allowed_partitions, key=str):
+        source = None if final_sources is None else final_sources.manifest_of(partition_id)
+        manifest = snapshot.manifest if source is None else source
         if manifest.partition_record(partition_id) is None:
             raise MarketDataValueError(
                 f"partition {partition_id} is not recorded in the snapshot manifest"

@@ -82,6 +82,11 @@ from odyssey_fx.marketdata.domain.access import (
     next_trading_week_start,
     trading_week_start,
 )
+from odyssey_fx.marketdata.domain.consumption_log import (
+    AccessLogReadFailure,
+    ParsedAccessLog,
+    parse_access_log,
+)
 from odyssey_fx.marketdata.domain.errors import (
     HoldoutAccessViolation,
     HoldoutStateUnknown,
@@ -254,17 +259,41 @@ def _violations(repo_root: Path) -> tuple[ViolationScope, ...]:
     return violation_scopes(contents.rows)
 
 
-def _consumed_in_log(lines: Sequence[object], partition_id: PartitionId) -> bool | None:
-    """消費の記録に partition の消費の行があるか（行の形が読めなければ `None`）。"""
-    found = False
-    for line in lines:
-        if not isinstance(line, dict) or not {"kind", "partition"} <= set(line):
-            return None
-        if line["kind"] not in ("GRANTED", "CONSUMED", "RESEARCH_OPT_IN"):
-            return None
-        if line["partition"] == str(partition_id) and line["kind"] == "CONSUMED":
-            found = True
-    return found
+def read_consumption_log(
+    snapshots_root: Path, snapshot_id: str, manifest: SnapshotManifest
+) -> ParsedAccessLog | AccessLogReadFailure:
+    """作業木の snapshot の消費の記録を読み、構造の誤りを確かめる（D09 §9.10.4 の「読込」）。
+
+    ファイルが無ければ空の記録。読めない・構造の誤りがあれば `AccessLogReadFailure`。
+    """
+    path = Path(snapshots_root) / snapshot_id / "access_log.jsonl"
+    try:
+        data = path.read_bytes() if path.is_file() else b""
+    except OSError as exc:
+        return AccessLogReadFailure(line_number=None, detail=f"{type(exc).__name__}: {exc}")
+    return parse_consumption_bytes(data, manifest)
+
+
+def parse_consumption_bytes(
+    data: bytes, manifest: SnapshotManifest
+) -> ParsedAccessLog | AccessLogReadFailure:
+    """消費の記録の内容（作業木か origin の既定ブランチのもの）を snapshot の manifest で読む。"""
+    partitions = frozenset(str(record.partition_id) for record in manifest.partitions)
+    sealed = frozenset(
+        str(record.partition_id)
+        for record in manifest.partitions
+        if record.access_class in OANDA_SEALED_CLASSES
+    )
+    return parse_access_log(data, partitions=partitions, sealed_partitions=sealed)
+
+
+def _consumed_in_log(
+    parsed: ParsedAccessLog | AccessLogReadFailure, partition_id: PartitionId
+) -> bool | None:
+    """消費の記録に partition の消費の行があるか（記録が読めなければ `None`）。"""
+    if isinstance(parsed, AccessLogReadFailure):
+        return None
+    return str(partition_id) in parsed.consumed()
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,13 +356,10 @@ def snapshot_sealed_partitions(
         )
         if not oanda and not legacy_records:
             continue  # 旧データの LEGACY_HOLDOUT は既定では数えない（ADR-0038 第3項の 3）
-        try:
-            lines: Sequence[object] = list(store.read_access_log(directory.name))
-        except Exception:  # noqa: BLE001
-            lines = [None]
+        parsed = read_consumption_log(root, directory.name, manifest)
         if oanda:
             for item in manifest.sealed_initial_states:
-                state = _state_from(item.state, _consumed_in_log(lines, item.partition_id))
+                state = _state_from(item.state, _consumed_in_log(parsed, item.partition_id))
                 out.append(
                     SnapshotSealedPartition(
                         snapshot_id=directory.name,
@@ -344,7 +370,7 @@ def snapshot_sealed_partitions(
                 )
         for record in legacy_records:
             initial = initial_holdout_state(record, manifest.legacy_access)
-            state = _state_from(initial, _consumed_in_log(lines, record.partition_id))
+            state = _state_from(initial, _consumed_in_log(parsed, record.partition_id))
             out.append(
                 SnapshotSealedPartition(
                     snapshot_id=directory.name,
@@ -356,13 +382,34 @@ def snapshot_sealed_partitions(
     return out
 
 
+def require_consumption_logs_on_origin(repo_root: Path, snapshots_root: Path) -> None:
+    """作業木の消費の記録が origin の既定ブランチ上と同じことを確かめる（ADR-0038 第3項の 3）。
+
+    最終検証の段 2 (a) と同じ部品（`GitHoldoutAccessLog`）を使う（D09 §9.10.13 の 3、仮置き
+    R2-16）。origin に到達できない・リポジトリでない・食い違うときは `HoldoutStateUnknown`
+    （受入れを始めない。原ファイルを読まない）。
+    """
+    from odyssey_fx.app.holdout_access_log import GitHoldoutAccessLog
+    from odyssey_fx.evaluation.application.ports import HoldoutAccessLogStop
+
+    try:
+        GitHoldoutAccessLog(Path(repo_root), Path(snapshots_root)).require_logs_match_origin()
+    except HoldoutAccessLogStop as stop:
+        raise HoldoutStateUnknown(
+            f"the consumption logs of the existing snapshots cannot be confirmed against the"
+            f" default branch of origin ({stop.stage}: {stop.detail}); the acceptance does not"
+            " start and no raw file is read (ADR-0038 第3項の 3, D09 §9.10.13 の 3)"
+        ) from stop
+
+
 def existing_sealed_partitions(snapshots_root: Path) -> list[ExistingSealedPartition]:
     """既にある OANDA MT5 の経路の snapshot の封印の partition とその状態（ADR-0038 第3項の 3）。
 
     確定済みの snapshot（`data/snapshots/<snapshot_id>/`）を全部読む。暫定・退避（`_pending/`）は
     消費されないので数えない。manifest が読めない snapshot があれば、封印の区分を持つかどうかも
-    分からないので `HoldoutStateUnknown`（受入れを始めない）。消費の記録は作業木のものを読む
-    （origin の既定ブランチとの照合は最終検証の手順。D15 の R2・R4。S4a の仮置き）。
+    分からないので `HoldoutStateUnknown`（受入れを始めない）。消費の記録は作業木のものを読む。
+    origin の既定ブランチとの照合は、受入れが呼ぶ前に `require_consumption_logs_on_origin` で
+    行う（D09 §9.10.13 の 3。R4）。
     """
     return [item.partition for item in snapshot_sealed_partitions(snapshots_root)]
 
@@ -655,7 +702,10 @@ def accept_sealed(
     spec_path = require_symbol_spec_matches(record, symbol, root, datasource)
 
     # 初期状態の材料は読み取りの前にそろえる（読めなければ始めない。ADR-0038 第3項の 2・3）。
+    # 既にある partition の状態を導く前に、作業木の消費の記録が origin の既定ブランチ上の記録と
+    # 同じことを確かめる（D09 §9.10.13 の 3、仮置き R2-16。最終検証の段 2 (a) と同じ部品）。
     # 重なりうる既にある partition の状態が導けないときも、原ファイルを読む前に止める。
+    require_consumption_logs_on_origin(root, snapshots_root)
     existing = existing_sealed_partitions(snapshots_root)
     _require_known_states(existing, symbol, own, rules)
     provider = initial_state_provider(_violations(root), existing)

@@ -280,6 +280,7 @@ __all__ = [
     "read_ledger_binding",
     "read_ledger_binding_records",
     "read_selections",
+    "parse_trial_ledger_bytes",
     "read_trial_ledger_file",
     "read_trial_metrics",
     "read_unit_records",
@@ -3929,6 +3930,14 @@ def read_trial_ledger_file(path: Path) -> TrialLedgerContents | TrialLedgerReadF
             None,
             f"{TRIAL_LEDGER_PATH} cannot be read: {type(exc).__name__}: {exc.strerror}",
         )
+    return parse_trial_ledger_bytes(data)
+
+
+def parse_trial_ledger_bytes(data: bytes) -> TrialLedgerContents | TrialLedgerReadFailure:
+    """台帳の内容（作業木か origin の既定ブランチのもの）に読込の検査 L1〜L10 を当てる。
+
+    最終検証の申請が origin の既定ブランチ上の台帳を読む（D09 §9.10.10 の 2）ときにも使う。
+    """
     parts = data.split(b"\n")
     complete, fragment = parts[:-1], parts[-1]
     lines: list[TrialLedgerLine] = []

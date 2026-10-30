@@ -46,8 +46,9 @@ from odyssey_fx.marketdata.application.report_digest import (
 from odyssey_fx.marketdata.application.snapshot_access import (
     PENDING_DIRECTORY,
     ReadableSnapshot,
+    require_not_frozen_legacy,
 )
-from odyssey_fx.marketdata.domain.access import AccessClass, HoldoutState
+from odyssey_fx.marketdata.domain.access import LEGACY_FROZEN_CLASSES, AccessClass, HoldoutState
 from odyssey_fx.marketdata.domain.bar import (
     Bar,
     BarCoverage,
@@ -61,10 +62,12 @@ from odyssey_fx.marketdata.domain.classification import (
     ResolvedClassification,
 )
 from odyssey_fx.marketdata.domain.errors import (
+    HoldoutAccessViolation,
     MarketDataValueError,
     SnapshotAlreadyExists,
     SnapshotNotApproved,
 )
+from odyssey_fx.marketdata.domain.final_grant import FinalReadGrant
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
     CheckResult,
@@ -95,7 +98,12 @@ from odyssey_fx.marketdata.domain.snapshot import (
 from odyssey_fx.marketdata.domain.time_label_correction import TimeLabelCorrectionRecord
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef, TimeRuleVariant
 
-__all__ = ["MANIFEST_SCHEMA_VERSION", "ParquetSnapshotStore", "manifest_payload"]
+__all__ = [
+    "MANIFEST_SCHEMA_VERSION",
+    "ParquetSnapshotStore",
+    "manifest_from_bytes",
+    "manifest_payload",
+]
 
 #: `manifest.json` の形式版。読み込み時に未知の版を拒否する。
 #:
@@ -579,6 +587,23 @@ class _MissingColumn(Sequence[Any]):
         return 0
 
 
+def manifest_from_bytes(data: bytes, label: str) -> SnapshotManifest:
+    """`manifest.json` の内容（origin の既定ブランチ上のものなど）から manifest を作る。
+
+    `read_manifest` と同じく、書かれた `snapshot_id` と再計算した識別子の一致を確かめる
+    （最終検証が origin の既定ブランチ上の manifest を読む。D09 §9.10.3。R4）。
+    """
+    payload = json.loads(data.decode("utf-8"))
+    manifest = _manifest_from_payload(payload)
+    recorded = str(payload.get("snapshot_id", ""))
+    if recorded != str(manifest.snapshot_id()):
+        raise MarketDataValueError(
+            f"{label} records snapshot id {recorded!r} but its content hashes to"
+            f" {manifest.snapshot_id()}; the manifest has been altered (D03 §3.7.1)"
+        )
+    return manifest
+
+
 @dataclass(frozen=True, slots=True)
 class ParquetSnapshotStore:
     """partition の Parquet と manifest を扱う（D03 §8）。
@@ -710,14 +735,26 @@ class ParquetSnapshotStore:
         self,
         snapshot_dir: str,
         partition_id: PartitionId,
-        read_permit: QualityReadPermit | None = None,
+        read_permit: QualityReadPermit | FinalReadGrant | None = None,
     ) -> Sequence[Bar]:
         """partition の足を開始時刻の昇順で読む。
 
-        OANDA MT5 の経路の封印の区分の partition は、読み取りの許可の値が覆うときだけ読む
-        （ファイルを開く前に確かめる。ADR-0036 第9項の 3）。
+        OANDA MT5 の経路の封印の区分の partition は、読み取りの許可の値（品質確認の許可、または
+        関所の最終評価の許可の並び）が覆うときだけ読む（ファイルを開く前に確かめる。ADR-0036
+        第9項の 3、D09 §9.10.3 の 4）。旧データの snapshot の 2024 年以降の partition
+        （`LEGACY_HOLDOUT`・`QUARANTINED_UNASSIGNED`）は、manifest の記録の期間を見て、どの許可でも
+        読まない（ADR-0038 第8項の 1、D09 §9.10.13 の 2。分類・承認の検算の読み取りも含む）。
         """
-        require_partition_read_allowed(partition_id, read_permit)
+        if partition_id.access_class in LEGACY_FROZEN_CLASSES:
+            try:
+                manifest = self.read_manifest(snapshot_dir)
+            except Exception as exc:  # noqa: BLE001 - 期間を確かめられなければ読まない
+                raise HoldoutAccessViolation(
+                    f"the period of {partition_id} cannot be confirmed from the manifest"
+                    f" ({type(exc).__name__}); it is not read (ADR-0038 第8項の 1)"
+                ) from exc
+            require_not_frozen_legacy(manifest, partition_id)
+        require_partition_read_allowed(partition_id, read_permit, snapshot_dir)
         path = self._snapshot_path(snapshot_dir) / partition_id.directory / _PARTITION_FILE
         if not path.is_file():
             raise FileNotFoundError(f"partition file not found: {path}")
