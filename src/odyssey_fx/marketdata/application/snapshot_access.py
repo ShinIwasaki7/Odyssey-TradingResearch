@@ -381,8 +381,13 @@ class FinalSources:
 
     def manifest_of(self, partition_id: PartitionId) -> SnapshotManifest | None:
         """並びの partition を記録した manifest（並びに無ければ `None`）。"""
+        source = self.snapshot_of(partition_id)
+        return None if source is None else source.manifest
+
+    def snapshot_of(self, partition_id: PartitionId) -> ReadableSnapshot | None:
+        """並びの partition を読む snapshot（並びに無ければ `None`）。"""
         source = self.grant.source_of(partition_id)
-        return None if source is None else self.snapshots[source].manifest
+        return None if source is None else self.snapshots[source]
 
 
 def _reject_quarantined(allowed_partitions: frozenset[PartitionId]) -> None:
@@ -498,7 +503,7 @@ def require_readable_snapshot(
     # 同じ結果になる。許可集合と manifest の記録の検査は軽いので、下で毎回行う。
     frozen: Mapping[PartitionId, tuple[Bar, ...]]
     if isinstance(partition_bars, VerifiedPartitionBars) and partition_bars.verified_for(
-        snapshot, allowed_partitions
+        snapshot, allowed_partitions, final_sources
     ):
         verified = True
         frozen = partition_bars
@@ -563,9 +568,10 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
     （`readable_surface`）。読み取り面は読み取りの操作しか持たないので共有してよい。
     """
 
-    __slots__ = ("_allowed", "_bars", "_readable", "_snapshot")
+    __slots__ = ("_allowed", "_bars", "_final_sources", "_readable", "_snapshot")
 
     _allowed: frozenset[PartitionId]
+    _final_sources: FinalSources | None
     _bars: Mapping[PartitionId, tuple[Bar, ...]]
     _readable: PartitionedBars | None
     _snapshot: ReadableSnapshot
@@ -577,9 +583,15 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
         partition_bars: Mapping[PartitionId, Sequence[Bar]],
         *,
         label: str,
+        final_sources: FinalSources | None = None,
     ) -> None:
+        # `final_sources` は最終検証の run だけが渡す（D09 §9.10.3 の 4。R4b）。
         bars = require_readable_snapshot(
-            snapshot, allowed_partitions, label=label, partition_bars=partition_bars
+            snapshot,
+            allowed_partitions,
+            label=label,
+            partition_bars=partition_bars,
+            final_sources=final_sources,
         )
         # 照合を通った組（snapshot・許可集合・足）は後から付け替えられない（下の
         # `__setattr__`）。付け替えられると、snapshot A で照合した足を snapshot B の照合済み
@@ -587,6 +599,7 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
         object.__setattr__(self, "_bars", bars)
         object.__setattr__(self, "_snapshot", snapshot)
         object.__setattr__(self, "_allowed", allowed_partitions)
+        object.__setattr__(self, "_final_sources", final_sources)
         object.__setattr__(self, "_readable", None)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -604,10 +617,17 @@ class VerifiedPartitionBars(Mapping[PartitionId, tuple[Bar, ...]]):
         raise TypeError("VerifiedPartitionBars cannot be subclassed (D03 §3.7.1)")
 
     def verified_for(
-        self, snapshot: ReadableSnapshot, allowed_partitions: frozenset[PartitionId]
+        self,
+        snapshot: ReadableSnapshot,
+        allowed_partitions: frozenset[PartitionId],
+        final_sources: FinalSources | None = None,
     ) -> bool:
-        """この写しが、その snapshot・その許可集合で関門を通ったものか。"""
-        return self._snapshot is snapshot and self._allowed == allowed_partitions
+        """この写しが、その snapshot・許可集合（・最終評価の許可の並び）で関門を通ったものか。"""
+        return (
+            self._snapshot is snapshot
+            and self._allowed == allowed_partitions
+            and self._final_sources is final_sources
+        )
 
     def readable_for(self, allowed_partitions: frozenset[PartitionId]) -> PartitionedBars | None:
         """許可集合が同じなら、許可された partition の読み取り面（初回に1度だけ作る）。

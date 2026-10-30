@@ -2,8 +2,10 @@
 
 **人工データと一時の git リポジトリだけ**を使う（`tests/fixtures/final_validation.py`）。封印の
 snapshot は manifest だけの人工の形、origin は一時ディレクトリの bare リポジトリ、最終検証の run は
-人工の `FakeRunner`（段 2 (f)(g) と段 5 の本番の実装は R4 の要決定 A の決定の後）。戦略の成績・
-価格・2024 年以降の実データ・旧 CSV は読まない。番号は D09 §9.10.11 の受入テストの表の番号。
+人工の `FakeRunner`（段 2 (f)(g) と段 5 の本番の実装 `app.final_run` は R4b。人工データの
+本番の run は `tests/integration/app/test_final_run.py`）。やり直し（`--resume`）は要決定
+R2-8 (b)・仮置き R2-21〜R2-27（2026-10-30 に決定。R4b で実装）。戦略の成績・価格・2024 年以降の
+実データ・旧 CSV は読まない。番号はD09 §9.10.11 の受入テストの表の番号。
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from odyssey_fx.app.final_validation import (
     final_validate,
 )
 from odyssey_fx.app.final_validation_records import (
+    ATTEMPTS_DIRECTORY,
+    ATTEMPTS_FILE,
     FINAL_EVALUATION_FILE,
     FINAL_LOCK_FILE,
     PERMIT_FILE,
@@ -186,7 +190,7 @@ def test_1_the_first_application_consumes_records_and_validates(ws: FinalWorkspa
     # 控え・最終検証の記録・人が読む記録・台帳の行。
     final = _final(ws)
     assert sorted(p.name for p in final.iterdir()) == sorted(
-        [PERMIT_FILE, FINAL_EVALUATION_FILE, REPORT_FILE]
+        [PERMIT_FILE, FINAL_EVALUATION_FILE, REPORT_FILE, ATTEMPTS_FILE]
     )
     permit = json.loads((final / PERMIT_FILE).read_text())
     assert permit["review_row_sha256"] and permit["fixation_sha256"]
@@ -283,12 +287,16 @@ def test_4_without_a_proceed_review_or_a_fixation_the_application_is_refused(
     assert (outcome.exit_code, outcome.reason) == (EXIT_REFUSED, FinalReason.NOT_FIXED)
     # 審査の行の固定した試行が読めなければ照合を省かず拒否する（Codex 2 巡目）。
     fourth = build_workspace(tmp_path / "d")
-    review = fourth.repo / "research" / "adoption_reviews.jsonl"
-    row = json.loads(review.read_text())
-    del row["fixed_trials"]
-    review.write_text(json.dumps(row) + "\n")
-    fourth.commit_and_push("a review row without its fixed trials")
+    write_review(fourth.repo, [fourth.key], candidate_fixed=False)
+    fourth.commit_and_push("a review row without the fixed trial of a variant")
     assert _run(fourth).reason is FinalReason.NOT_FIXED
+    # 審査台帳は R3 の読込と同じ検査で読む: 手で書き換えた行（鎖・正規化の誤り）は終了コード 2
+    # （仮置き R4b-10）。
+    review = fourth.repo / "research" / "adoption_reviews.jsonl"
+    review.write_text(review.read_text().replace('"execution":1', '"execution":1 '))
+    fourth.commit_and_push("a review row edited by hand")
+    edited = _run(fourth)
+    assert (edited.exit_code, edited.reason) == (EXIT_READ_ERROR, None)
     # 審査の行が「進めない」なら進めない。
     third = build_workspace(tmp_path / "c")
     write_review(third.repo, [third.key], result="DO_NOT_PROCEED")
@@ -510,7 +518,14 @@ def test_14_a_second_execution_only_gets_the_next_window(ws: FinalWorkspace) -> 
 # --- 9・10・24: 消費の後の失敗・状態 C・やり直しの入口 -------------------------------------------
 
 
-def test_9_a_failure_after_consumption_waits_in_c_and_closes_as_failed(ws: FinalWorkspace) -> None:
+def _attempts(ws: FinalWorkspace) -> list[dict[str, Any]]:
+    path = _final(ws) / ATTEMPTS_FILE
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_9_a_failure_after_consumption_waits_in_c_and_a_resume_validates(
+    ws: FinalWorkspace,
+) -> None:
     outcome = _run(ws, FakeRunner(research=ws.research, fail_run=True))
     assert (outcome.exit_code, outcome.reason) == (
         EXIT_FAILED_AFTER_CONSUMPTION,
@@ -518,25 +533,130 @@ def test_9_a_failure_after_consumption_waits_in_c_and_closes_as_failed(ws: Final
     )
     assert len(_rows(ws)) == _TARGETS and _ledger(ws) == []  # 状態 C（台帳に書かない）
     assert not (_final(ws) / FINAL_LOCK_FILE).exists()
-    rows = len(_rows(ws))
-    # --resume は人間の決定（仮置き R2-21〜29）が出るまで常に拒否（何も書かない）。
-    resume = _run(ws, mode=FinalMode.RESUME)
-    assert (resume.exit_code, resume.reason) == (EXIT_GATE_REFUSED, FinalReason.RESUME_NOT_ALLOWED)
-    assert len(_rows(ws)) == rows and _ledger(ws) == []
+    assert [row["event"] for row in _attempts(ws)] == ["STARTED", "FAILED"]
+    logs = _logs(ws)
+    head = _origin_head(ws)
     # 引数なしは CONSUMED_WITHOUT_RECORD。
     plain = _run(ws)
     assert (plain.exit_code, plain.reason) == (
         EXIT_GATE_REFUSED,
         FinalReason.CONSUMED_WITHOUT_RECORD,
     )
+    # --resume は消費の行を増やさず、同じ許可で段 5 をやり直す（要決定 R2-8 (b)）。
+    runner = FakeRunner(research=ws.research)
+    resumed = _run(ws, runner, mode=FinalMode.RESUME)
+    assert resumed.exit_code == EXIT_OK, resumed.detail
+    assert _logs(ws) == logs and _origin_head(ws) == head
+    assert resumed.permit_id == {row["permit_id"] for row in _rows(ws)}.pop()
+    assert _ledger(ws) == ["COMPLETED"]
+    row = read_final_ledger(ws.repo).rows[0].payload
+    assert (row["resume_count"], row["resume_failures"]) == (1, ["FINAL_RUN_FAILED"])
+    record = json.loads((_final(ws) / FINAL_EVALUATION_FILE).read_text())
+    assert (record["resume_count"], record["resume_failures"]) == (1, ["FINAL_RUN_FAILED"])
+    assert [row["event"] for row in _attempts(ws)] == ["STARTED", "FAILED", "STARTED"]
+    assert _run(ws, mode=FinalMode.RESUME).reason is FinalReason.NOT_AWAITING_RECORD
+
+
+def test_9_a_failure_after_consumption_closes_as_failed(ws: FinalWorkspace) -> None:
+    assert _run(ws, FakeRunner(research=ws.research, fail_run=True)).exit_code == 9
     closed = _run(ws, mode=FinalMode.CLOSE_FAILED, no_declaration=True)
     assert closed.exit_code == EXIT_FAILED_AFTER_CONSUMPTION
     assert _ledger(ws) == ["FAILED_AFTER_CONSUMPTION"]
     row = read_final_ledger(ws.repo).rows[0].payload
     assert row["partition_count"] == _TARGETS and row["permit_id"]
+    assert row["t_fix"] == str(T_FIX)
+    assert (row["resume_count"], row["resume_failures"]) == (0, ["FINAL_RUN_FAILED"])
     again = _run(ws)
     assert (again.exit_code, again.reason) == (EXIT_REFUSED, FinalReason.ALREADY_CONSUMED)
     assert _run(ws, mode=FinalMode.RESUME).reason is FinalReason.NOT_AWAITING_RECORD
+
+
+def test_r4b_12_close_failed_without_the_permit_copy_takes_t_fix_from_the_fixation(
+    ws: FinalWorkspace,
+) -> None:
+    assert _run(ws, FakeRunner(research=ws.research, fail_run=True)).exit_code == 9
+    (_final(ws) / PERMIT_FILE).unlink()  # 段 4 の直後に止まった（人工）
+    closed = _run(ws, mode=FinalMode.CLOSE_FAILED, no_declaration=True)
+    assert closed.exit_code == EXIT_FAILED_AFTER_CONSUMPTION
+    row = read_final_ledger(ws.repo).rows[0].payload
+    assert row["t_fix"] == str(T_FIX) and row["consumption_commit"] == ""
+    assert any("origin の候補の固定の記録から補った" in line for line in closed.lines)
+
+
+# --- 24: やり直しの条件（仮置き R2-21〜R2-25） -------------------------------------------------
+
+
+def _failed_once(ws: FinalWorkspace) -> dict[str, bytes]:
+    assert _run(ws, FakeRunner(research=ws.research, fail_run=True)).exit_code == 9
+    return _logs(ws)
+
+
+def _refused_resume(ws: FinalWorkspace, runner: FakeRunner | None = None) -> None:
+    logs = _logs(ws)
+    files = sorted(str(path) for path in _final(ws).rglob("*"))
+    outcome = _run(ws, runner, mode=FinalMode.RESUME)
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_GATE_REFUSED,
+        FinalReason.RESUME_NOT_ALLOWED,
+    ), outcome.detail
+    assert _logs(ws) == logs and _ledger(ws) == []
+    assert sorted(str(path) for path in _final(ws).rglob("*")) == files
+    assert not (_final(ws) / FINAL_LOCK_FILE).exists()
+
+
+def test_24_resume_without_the_permit_copy_is_refused(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    (_final(ws) / PERMIT_FILE).unlink()
+    _refused_resume(ws)
+
+
+def test_24_resume_with_a_copy_that_differs_from_origin_is_refused(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    path = _final(ws) / PERMIT_FILE
+    copy = json.loads(path.read_text())
+    copy["targets"] = copy["targets"][1:]
+    path.write_text(json.dumps(copy))
+    _refused_resume(ws)
+
+
+def test_24_resume_with_changed_inputs_is_refused(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    runner = FakeRunner(research=ws.research, run_suffix="-changed")
+    _refused_resume(ws, runner)
+
+
+def test_24_resume_after_a_completed_run_or_an_evaluation_is_refused(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    runs = ws.repo / "out_runs"
+    runner = FakeRunner(research=ws.research, run_root=runs)
+    (runs / "run-standard" / "eval").mkdir(parents=True)
+    _refused_resume(ws, runner)
+
+
+def test_24_unreadable_or_exhausted_attempts_refuse_a_resume(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    path = _final(ws) / ATTEMPTS_FILE
+    original = path.read_bytes()
+    path.write_bytes(original + b"not json\n")
+    _refused_resume(ws)
+    path.write_bytes(original)
+    for _ in range(2):  # やり直しがまた失敗する（2 回まで）
+        again = _run(ws, FakeRunner(research=ws.research, fail_run=True), mode=FinalMode.RESUME)
+        assert again.exit_code == EXIT_FAILED_AFTER_CONSUMPTION and _ledger(ws) == []
+    assert [row["event"] for row in _attempts(ws)].count("STARTED") == 3
+    _refused_resume(ws)  # 上限 2 回を超える
+
+
+def test_24_a_resume_moves_the_partial_run_aside_without_opening_it(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    runs = ws.repo / "out_runs"
+    partial = runs / "run-standard"
+    partial.mkdir(parents=True)
+    (partial / "DECISIONS.parquet").write_bytes(b"partial")  # 途中の成果物（人工）
+    outcome = _run(ws, FakeRunner(research=ws.research, run_root=runs), mode=FinalMode.RESUME)
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    moved = _final(ws) / ATTEMPTS_DIRECTORY / "1" / "runs" / "run-standard" / "DECISIONS.parquet"
+    assert moved.read_bytes() == b"partial" and not partial.exists()
 
 
 def test_10_a_stopped_process_leaves_the_lock_and_c_after_the_lock_is_removed(
@@ -668,8 +788,11 @@ def test_16_the_dry_run_prints_counts_only_and_writes_nothing(ws: FinalWorkspace
 # --- 本番の結線と CLI ---------------------------------------------------------------------
 
 
-def test_the_production_runner_stops_before_anything_is_written(ws: FinalWorkspace) -> None:
-    """最終検証の run の本番の実装は R4 の要決定 A の後（段 2 の最初で止める。何も書かない）。"""
+def test_the_production_runner_refuses_a_candidate_without_research_artifacts(
+    ws: FinalWorkspace,
+) -> None:
+    """本番の最終検証の run（`app.final_run`）は、記録票・研究の成果物が無ければ段 2 (f) の
+    再計算で止まる（終了コード 7 `RECOMPUTATION_MISMATCH`。何も書かない）。"""
     before = _snapshot(ws)
     outcome = final_validate(
         FinalValidationRequest(
@@ -683,7 +806,10 @@ def test_the_production_runner_stops_before_anything_is_written(ws: FinalWorkspa
         ),
         candidates=_Candidates(ws.facts()),
     )
-    assert (outcome.exit_code, outcome.reason) == (EXIT_REFUSED, FinalReason.FINAL_RUN_UNAVAILABLE)
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.RECOMPUTATION_MISMATCH,
+    )
     assert _snapshot(ws) == before
 
 
@@ -759,3 +885,105 @@ def test_18_experiment_run_never_takes_the_final_permit_nor_calls_the_gate() -> 
     for module in ("app/composition.py", "evaluation/application/run_experiment.py"):
         text = (root / module).read_text(encoding="utf-8")
         assert "final_sources" not in text and "FinalReadGrant" not in text
+
+
+# --- R4b: 残った軽微な指摘 4 件（仮置き R4b-11〜R4b-14。実装を設計に合わせる） -----------------
+
+
+def _break_a_log(ws: FinalWorkspace) -> None:
+    path = ws.snapshots / ws.sealed.standard / "access_log.jsonl"
+    path.write_bytes((path.read_bytes() if path.exists() else b"") + b"not a json line\n")
+    ws.commit_and_push("a broken consumption log (synthetic)")
+
+
+def test_r4b_11_a_broken_log_is_read_only_to_tell_c_from_a(tmp_path: Path) -> None:
+    """壊れた消費の記録は C と A を分けるときだけ読む（B は 1、D は書き足して 7、A は 8）。"""
+    ws = build_workspace(tmp_path / "a")
+    _break_a_log(ws)
+    outcome = _run(ws)
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_GATE_REFUSED,
+        FinalReason.CONSUMPTION_LOG_BROKEN,
+    )
+    lock = _final(ws) / FINAL_LOCK_FILE
+    lock.parent.mkdir(parents=True)
+    lock.write_text("stopped\n")
+    assert (_run(ws).exit_code, _run(ws).reason) == (EXIT_FAILED, None)  # 状態 B
+    done = build_workspace(tmp_path / "d")
+    assert _run(done).exit_code == EXIT_OK
+    (done.repo / "research" / "final_validations.jsonl").write_bytes(b"")
+    _break_a_log(done)
+    filled = _run(done)
+    assert (filled.exit_code, filled.reason) == (EXIT_REFUSED, FinalReason.ALREADY_VALIDATED)
+    assert _ledger(done) == ["COMPLETED"]  # 状態 D の台帳の行の書き足し
+
+
+def test_r4b_13_a_report_failure_after_the_record_is_exit_1_and_state_d(
+    ws: FinalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from odyssey_fx.app import final_validation as module
+
+    original = module._report_text
+
+    def broken(record: Any) -> str:
+        raise OSError("the disk is full (synthetic)")
+
+    monkeypatch.setattr(module, "_report_text", broken)
+    outcome = _run(ws)
+    assert (outcome.exit_code, outcome.reason) == (EXIT_FAILED, None), outcome.detail
+    assert (_final(ws) / FINAL_EVALUATION_FILE).exists()
+    assert not (_final(ws) / REPORT_FILE).exists()
+    assert not (_final(ws) / FINAL_LOCK_FILE).exists()
+    assert _ledger(ws) == ["COMPLETED"]
+    monkeypatch.setattr(module, "_report_text", original)
+    again = _run(ws)
+    assert again.reason is FinalReason.ALREADY_VALIDATED
+    assert (_final(ws) / REPORT_FILE).exists()  # 次の起動の段 1 で書き足す
+    assert _ledger(ws) == ["COMPLETED"]
+
+
+class _AnotherPushAfterOurs(GitHoldoutAccessLog):
+    """消費の commit の push の直後に、別のクローンが origin へ push する（人工）。"""
+
+    def __init__(self, ws: FinalWorkspace, other: Path) -> None:
+        super().__init__(ws.repo, ws.snapshots)
+        self._other = other
+
+    def _push(self, branch: str) -> None:
+        super()._push(branch)
+        from tests.fixtures.git_origin import git
+
+        git(self._other, "pull", "--quiet", "origin", branch)
+        (self._other / "unrelated.txt").write_text("another clone\n")
+        git(self._other, "add", "unrelated.txt")
+        git(self._other, "commit", "--quiet", "-m", "an unrelated push")
+        git(self._other, "push", "--quiet", "origin", f"HEAD:{branch}")
+
+
+def test_r4b_14_a_push_followed_by_another_push_is_still_a_success(
+    ws: FinalWorkspace, tmp_path: Path
+) -> None:
+    from tests.fixtures.git_origin import git
+
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "--quiet", str(ws.origin), str(other))
+    git(other, "config", "user.name", "other")
+    git(other, "config", "user.email", "other@example.invalid")
+    outcome = _run(ws, log=_AnotherPushAfterOurs(ws, other))
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    assert _origin_head(ws) != outcome.commit  # 先頭は進んでいるが、消費の commit を含む
+    assert _ledger(ws) == ["COMPLETED"]
+
+
+def test_24_resume_with_rows_of_another_permit_is_refused(ws: FinalWorkspace) -> None:
+    _failed_once(ws)
+    path = ws.snapshots / ws.sealed.standard / "access_log.jsonl"
+    lines = path.read_text().splitlines()
+    row = json.loads(lines[0])
+    row["permit_id"] = "f" * 32
+    row["row_id"] = "e" * 32
+    from odyssey_fx.common.canonical import encode
+
+    path.write_text("\n".join([*lines, encode(row).decode("utf-8")]) + "\n")
+    ws.commit_and_push("a consumption row of another permit (synthetic)")
+    _refused_resume(ws)

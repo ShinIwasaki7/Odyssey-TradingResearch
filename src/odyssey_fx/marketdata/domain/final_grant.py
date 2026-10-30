@@ -21,7 +21,7 @@ from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.snapshot import PartitionId
 
-__all__ = ["FinalReadGrant", "GrantedRead"]
+__all__ = ["FinalReadGrant", "GrantedRead", "require_ordered_reads"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,3 +108,27 @@ class FinalReadGrant:
 def _start(partition_id: PartitionId) -> str:
     start = partition_id.period_start
     return "" if start is None else start.value.isoformat()
+
+
+def require_ordered_reads(reads: object, label: str) -> None:
+    """並びの形の規則（仮置き R2-9・R4b-2。`FinalReadGrant.reads` と同じ規則）。
+
+    要素は `GrantedRead`、partition の識別子は重ならず、系列の順・同じ系列の中は期間の始まりの順。
+    外れれば `MarketDataValueError`。run の設定の並び（`RunConfig.sealed_reads`。D06 v1.18 案 §3）
+    が使う（空の並びも受け付ける）。
+    """
+    if not isinstance(reads, tuple) or not all(isinstance(item, GrantedRead) for item in reads):
+        raise MarketDataValueError(f"{label} must be a tuple of GrantedRead")
+    seen: set[PartitionId] = set()
+    for item in reads:
+        if item.partition_id in seen:
+            raise MarketDataValueError(
+                f"the partition {item.partition_id} appears twice in {label}; one snapshot is"
+                " read for each partition (仮置き R2-9)"
+            )
+        seen.add(item.partition_id)
+    ordered = sorted(
+        reads, key=lambda item: (str(item.partition_id.series), _start(item.partition_id))
+    )
+    if list(reads) != ordered:
+        raise MarketDataValueError(f"{label} are ordered by series, then by the period start")

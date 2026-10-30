@@ -68,6 +68,7 @@ __all__ = [
     "ReviewLedgerContents",
     "ReviewLedgerReadFailure",
     "append_review_ledger_file",
+    "parse_review_ledger_bytes",
     "read_review_ledger_file",
     "review_line_bytes",
     "write_review_record",
@@ -343,6 +344,14 @@ def read_review_ledger_file(path: Path) -> ReviewLedgerContents | ReviewLedgerRe
             None,
             f"{ADOPTION_REVIEW_LEDGER_PATH} cannot be read: {type(exc).__name__}",
         )
+    return parse_review_ledger_bytes(data)
+
+
+def parse_review_ledger_bytes(data: bytes) -> ReviewLedgerContents | ReviewLedgerReadFailure:
+    """審査台帳の内容（バイト列）を `read_review_ledger_file` と同じ検査で読む。
+
+    最終検証が origin の既定ブランチ上の審査台帳を読む（D09 §9.10.15 の 3、仮置き R4b-10）。
+    """
     parts = data.split(b"\n")
     complete, fragment = parts[:-1], parts[-1]
     lines: list[AdoptionReviewLine] = []

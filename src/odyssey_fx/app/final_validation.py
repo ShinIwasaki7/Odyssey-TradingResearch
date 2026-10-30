@@ -17,15 +17,16 @@
 5. **公開と評価**: 検査 P2F の (2) と許可集合の照合 → 両組の run と評価（`FinalRunner.run`）→
    P4F・P5 → 判定（要決定 R2-7 (a)）→ 最終検証の記録 → 台帳の行 → ロックの削除。
 
-**消費の後のやり直し（`--resume`）**は入口だけを置き、やり直しの条件（仮置き R2-21〜R2-29。
-2026-10-30 の時点で未決）が人間に決まるまで常に拒否する（状態 C なら終了コード 8
-`RESUME_NOT_ALLOWED`、他の状態なら終了コード 7）。
+**消費の後のやり直し（`--resume`）**（要決定 R2-8 (b)、仮置き R2-21〜R2-27。2026-10-30 に決定。
+要決定 R4b-A (a) により R4b で実装）: 状態 C の申請を、同じ許可の識別子でだけ段 5 からやり直す。
+控えと origin の消費の行・段 2 を読み直した窓と予測が一致し（R2-22）、結果を見ていないこと
+（R2-23）、回数の上限 2 回（R2-25）を確かめ、前の試みの途中の成果物を開かずに `attempts/<n>/`
+へ退けて（R2-24）、消費の行を増やさずに段 5 を行う。外れれば何も書かずに終了コード 8
+`RESUME_NOT_ALLOWED`。
 
-**最終検証の run（段 2 (f)(g) と段 5 の run・評価）の本番の実装は、最終検証の run の実行設定が
-複数の snapshot をどう指すか（R4 の要決定 A）の決定の後**。本番の結線（`UnavailableFinalRunner`）は
-段 2 の最初で止め（終了コード 7 `FINAL_RUN_UNAVAILABLE`。何も書かない）、手順の残りは人工の
-`FinalRunner` を渡す受入テストで確かめる。順 6 では実データの最終検証を行わない（研究候補 0 件。
-D15 §0.1.2 の §3）。
+**最終検証の run（段 2 (f)(g) と段 5 の run・評価）の本番の実装**は `app.final_run`（R4b。D09
+§9.10.14）。受入テストは人工の `FinalRunner` も渡せる。順 6 では実データの最終検証を行わない
+（研究候補 0 件。D15 §0.1.2 の §3）。
 
 **出力は件数・時刻・識別子・終了コード・理由の識別子・判定の値だけ**。価格と指標の値は画面に
 出さない（指標は最終検証の記録とレポートに出す。D09 §9.10.7、D15 §9）。
@@ -57,6 +58,8 @@ from odyssey_fx.app.config.research_policy import (
 )
 from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
 from odyssey_fx.app.final_validation_records import (
+    ATTEMPTS_DIRECTORY,
+    ATTEMPTS_FILE,
     FINAL_EVALUATION_FILE,
     FINAL_LEDGER_PATH,
     FINAL_LOCK_FILE,
@@ -64,11 +67,13 @@ from odyssey_fx.app.final_validation_records import (
     REPORT_FILE,
     FinalLedger,
     FinalLedgerError,
+    append_attempt,
     append_ledger_row,
     candidate_payload,
     create_lock,
     final_directory,
     parse_final_ledger,
+    read_attempts,
     read_final_ledger,
     write_json_once,
 )
@@ -86,6 +91,11 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     read_experiment_outcome,
     read_ledger_binding,
 )
+from odyssey_fx.evaluation.adapters.review_store import (
+    ReviewLedgerReadFailure,
+    parse_review_ledger_bytes,
+    review_line_bytes,
+)
 from odyssey_fx.evaluation.application.holdout_gate import (
     consumption_rows_present,
     final_partitions_match_permit,
@@ -96,8 +106,10 @@ from odyssey_fx.evaluation.application.ports import (
     PushOutcomeUnknown,
     TrialLedgerReadFailure,
 )
+from odyssey_fx.evaluation.domain.adoption_review import AdoptionReviewLine, ReviewResult
 from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
 from odyssey_fx.evaluation.domain.final_validation import (
+    WINDOW_START,
     ApplicationState,
     CandidateKey,
     FinalEvaluationPermit,
@@ -131,6 +143,7 @@ from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore, manifest_from_bytes
 from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, HoldoutState
 from odyssey_fx.marketdata.domain.consumption_log import (
+    AccessLogEntryKind,
     AccessLogReadFailure,
     ConsumptionReason,
     ConsumptionRow,
@@ -157,7 +170,6 @@ __all__ = [
     "FinalRunner",
     "FinalValidationOutcome",
     "FinalValidationRequest",
-    "UnavailableFinalRunner",
     "final_validate",
 ]
 
@@ -394,10 +406,15 @@ class ExperimentCandidates:
 
 @dataclass(frozen=True, slots=True)
 class FinalRunPreparation:
-    """段 2 (f) の再計算の結果と、ウォームアップの長さ（窓の採点の始まりに使う。仮置き R2-10）。"""
+    """段 2 (f) の再計算の結果と、ウォームアップの長さ（窓の採点の始まりに使う。仮置き R2-10）。
+
+    `warmup_at` を渡すと、ウォームアップの長さを消費する範囲の始まりから数える（本番の run。R4b の
+    仮置き: 戦略の窓が求める足がその始まりからそろうまでの長さ）。渡さなければ `warmup` を使う。
+    """
 
     final_trials: Paired[int]
     warmup: timedelta
+    warmup_at: Callable[[UtcTime], timedelta] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,36 +462,6 @@ class FinalRunner(Protocol):
     ) -> FinalRunOutput: ...
 
 
-class UnavailableFinalRunner:
-    """本番の結線: 最終検証の run の実装は R4 の要決定 A の決定の後（何も書かずに止める）。"""
-
-    _DETAIL: Final = (
-        "the final-validation run (recomputing the selection and the verdict from the research"
-        " artifacts, and one continuous run per variant over several snapshots) is wired after"
-        " the human decides how its run configuration refers to several snapshots (R4 の要決定 A)."
-        " Nothing was written and nothing was consumed"
-    )
-
-    def prepare(
-        self, facts: CandidateFacts, experiment_dir: Path
-    ) -> FinalRunPreparation | WindowRefusal:
-        return WindowRefusal(FinalReason.FINAL_RUN_UNAVAILABLE, self._DETAIL)
-
-    def plan(
-        self, facts: CandidateFacts, window: FinalWindow, preparation: FinalRunPreparation
-    ) -> FinalRunPlan | WindowRefusal:
-        return WindowRefusal(FinalReason.FINAL_RUN_UNAVAILABLE, self._DETAIL)
-
-    def run(
-        self,
-        facts: CandidateFacts,
-        plan: FinalRunPlan,
-        permit: FinalEvaluationPermit,
-        variant: Variant,
-    ) -> FinalRunOutput:
-        raise RuntimeError(self._DETAIL)
-
-
 # --- origin の既定ブランチ上の記録 -----------------------------------------------------------
 
 
@@ -516,8 +503,15 @@ def _origin_snapshots(log: GitHoldoutAccessLog) -> dict[str, _OriginSnapshot]:
     return found
 
 
-def _sealed_facts(snapshots: Mapping[str, _OriginSnapshot]) -> list[SealedPartitionFact]:
-    """承認済みの OANDA MT5 の経路の snapshot の封印の partition と状態（D09 §9.10.3 の 1）。"""
+def _sealed_facts(
+    snapshots: Mapping[str, _OriginSnapshot], resume_permit: str | None = None
+) -> list[SealedPartitionFact]:
+    """承認済みの OANDA MT5 の経路の snapshot の封印の partition と状態（D09 §9.10.3 の 1）。
+
+    `resume_permit` はやり直し（`--resume`）の許可の識別子。その許可の消費の行だけがある
+    partition は窓に含める（`SEALED` と読む。D09 §9.10.3 の 1 の 4、仮置き R2-22）。ほかの許可・
+    版 0 の消費の行がある partition は `CONSUMED` のまま。
+    """
     out: list[SealedPartitionFact] = []
     for snapshot_id in sorted(snapshots):
         item = snapshots[snapshot_id]
@@ -531,7 +525,14 @@ def _sealed_facts(snapshots: Mapping[str, _OriginSnapshot]) -> list[SealedPartit
                 f"the consumption log of {snapshot_id} on origin is broken (line"
                 f" {item.log.line_number}: {item.log.detail}. D09 §9.10.4)",
             )
-        consumed = item.log.consumed()
+        consumed = set(item.log.consumed())
+        if resume_permit is not None:
+            others = {
+                line.partition
+                for line in item.log.legacy
+                if line.kind is AccessLogEntryKind.CONSUMED
+            } | {row.partition for row in item.log.rows if row.permit_id != resume_permit}
+            consumed = {name for name in consumed if name in others}
         variant = Variant(mt5.time_rule_table.variant.value)
         for initial in manifest.sealed_initial_states:
             record = manifest.partition_record(initial.partition_id)
@@ -572,45 +573,35 @@ def _candidate_rows(
     return rows
 
 
-def _review_rows(log: GitHoldoutAccessLog) -> list[dict[str, Any]]:
-    """origin の既定ブランチ上の採用審査の台帳の行（D16 v0.2 §10.2 の形の最小の読み方）。
+def _review_lines(log: GitHoldoutAccessLog) -> tuple[AdoptionReviewLine, ...]:
+    """origin の既定ブランチ上の採用審査の台帳を、R3 の読込と同じ検査（行の鎖を含む）で読む。
 
-    読む項目は `experiment_id`・`execution`・`result`・`fixed_trials`（仮置き R2-7）。R3 が台帳の
-    読込（鎖・正規化の検査）を実装したら置き換える。ファイルが無ければ行は無い。
+    D16 v0.2 §10、D09 §9.10.15 の 3（仮置き R4b-10）。読めない（無い・構造の誤り・鎖の切れ目）は
+    `ConfigError`（終了コード 2）。
     """
     data = log.read_at_origin(ADOPTION_REVIEWS_PATH.as_posix())
-    if not data:
-        return []
-    rows: list[dict[str, Any]] = []
-    for number, raw in enumerate(data.split(b"\n"), start=1):
-        if not raw.strip():
-            continue
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise ConfigError(f"{ADOPTION_REVIEWS_PATH} の {number} 行目が JSON でない") from exc
-        if not isinstance(payload, dict):
-            raise ConfigError(f"{ADOPTION_REVIEWS_PATH} の {number} 行目が対象でない")
-        rows.append(payload)
-    return rows
+    if data is None:
+        raise ConfigError(f"{ADOPTION_REVIEWS_PATH} is not on the default branch of origin")
+    contents = parse_review_ledger_bytes(data)
+    if isinstance(contents, ReviewLedgerReadFailure):
+        where = "" if contents.line_number is None else f" (line {contents.line_number})"
+        raise ConfigError(
+            f"{ADOPTION_REVIEWS_PATH} on origin cannot be read: {contents.kind.value}{where}:"
+            f" {contents.detail}"
+        )
+    return contents.lines
 
 
-def _review_key(row: Mapping[str, Any]) -> tuple[str, int] | None:
-    try:
-        return str(row["experiment_id"]), int(row["execution"])
-    except (KeyError, TypeError, ValueError):
+def _review_key(line: AdoptionReviewLine) -> tuple[str, int]:
+    return line.entry.experiment_id.hex, line.entry.execution
+
+
+def _review_fixed_trials(line: AdoptionReviewLine) -> Paired[int] | None:
+    """審査の記録の組ごとの固定した試行（D16 §4.1。固定できなかった組があれば `None`）。"""
+    fixed = line.entry.fixed_trials
+    if fixed.standard is None or fixed.candidate is None:
         return None
-
-
-def _review_fixed_trials(row: Mapping[str, Any]) -> Paired[int] | None:
-    """審査の記録の組ごとの固定した試行（`fixed_trials.<組>.trial_index`。D16 §10.2）。"""
-    fixed = row.get("fixed_trials")
-    if not isinstance(fixed, dict):
-        return None
-    try:
-        return Paired.build(lambda variant: int(fixed[variant.value]["trial_index"]))
-    except (KeyError, TypeError, ValueError):
-        return None
+    return Paired(standard=fixed.standard.trial_index, candidate=fixed.candidate.trial_index)
 
 
 # --- 表示 --------------------------------------------------------------------------------------
@@ -673,6 +664,8 @@ def _ledger_values(
     prior: int = 0,
     record_sha256: str = "",
     declaration_sha256: str = "",
+    resume_count: int = 0,
+    resume_failures: Sequence[str] = (),
 ) -> dict[str, Any]:
     return {
         "result": result.value,
@@ -685,7 +678,8 @@ def _ledger_values(
         "partitions_digest": _digest_of(targets) if targets else "",
         "consumption_commit": commit,
         "combined_verdict": combined,
-        "resume_count": 0,
+        "resume_count": resume_count,
+        "resume_failures": list(resume_failures),
         "prior_final_validations": prior,
         "reason": reason,
         "final_evaluation_sha256": record_sha256,
@@ -724,13 +718,23 @@ class _Context:
     facts: CandidateFacts
     worktree: FinalLedger
     origin: FinalLedger
-    snapshots: dict[str, _OriginSnapshot]
     final_dir: Path
     now: Callable[[], UtcTime]
     new_id: Callable[[], str]
     lines: list[str]
     #: 控えと最終検証の記録に写す値（審査・固定の記録のダイジェストと台帳の累計。D09 §9.10.5）。
     extras: dict[str, Any] = field(default_factory=dict)
+    _snapshots: dict[str, _OriginSnapshot] | None = None
+
+    @property
+    def snapshots(self) -> dict[str, _OriginSnapshot]:
+        """origin の既定ブランチ上の snapshot と消費の記録（要るときに 1 度だけ読む。R4b-11）。"""
+        if self._snapshots is None:
+            self._snapshots = _origin_snapshots(self.log)
+        return self._snapshots
+
+    def refresh(self) -> None:
+        self._snapshots = None
 
     @property
     def key(self) -> CandidateKey:
@@ -769,7 +773,7 @@ def final_validate(
         return _final_validate(
             request,
             candidates=candidates or ExperimentCandidates(request.repo_root),
-            runner=runner or UnavailableFinalRunner(),
+            runner=runner or _recorded_runner(request),
             log=log or GitHoldoutAccessLog(request.repo_root, request.snapshots_root),
             now=now,
             new_id=new_id,
@@ -791,6 +795,17 @@ def final_validate(
         return FinalValidationOutcome(
             exit_code=EXIT_READ_ERROR, reason=None, detail=str(exc), lines=lines
         )
+
+
+def _recorded_runner(request: FinalValidationRequest) -> FinalRunner:
+    """本番の最終検証の run（`app.final_run`。R4b。循環を避けて使う時点で読み込む）。"""
+    from odyssey_fx.app.final_run import RecordedFinalRunner  # noqa: PLC0415
+
+    return RecordedFinalRunner(
+        repo_root=request.repo_root,
+        snapshots_root=request.snapshots_root,
+        out_root=request.out_root,
+    )
 
 
 def _final_validate(
@@ -828,7 +843,6 @@ def _final_validate(
         facts=facts,
         worktree=worktree,
         origin=origin,
-        snapshots=_origin_snapshots(log),
         final_dir=final_directory(request.experiment_dir, facts.key.execution),
         now=now,
         new_id=new_id,
@@ -836,7 +850,7 @@ def _final_validate(
     )
     state = _state(ctx)
     lines.append(f"申請の状態: {state.value}")
-    outcome = _by_state(ctx, state)
+    outcome = _by_state(ctx, state, runner)
     if outcome is not None:
         outcome.state = state
         return outcome
@@ -879,6 +893,21 @@ def _final_validate(
 
 
 def _state(ctx: _Context) -> ApplicationState:
+    """申請の状態（D09 §9.10.6）。B・D・E・F・G はロック・手元の記録・台帳から、消費の記録を読まずに
+    導き、C と A を分けるときだけ origin の消費の記録を読む（仮置き R4b-11。壊れていれば 8）。"""
+    lock = (ctx.final_dir / FINAL_LOCK_FILE).exists()
+    record = (ctx.final_dir / FINAL_EVALUATION_FILE).exists()
+    results = frozenset(ctx.rows_of(ctx.key))
+    declared = ctx.declared_used(ctx.key.experiment_id)
+    first = derive_application_state(
+        lock=lock,
+        record=record,
+        results=results,
+        declared_used_for_experiment=declared,
+        consumed_on_origin=False,
+    )
+    if first is not ApplicationState.A_NOT_APPLIED:
+        return first
     broken = sorted(
         name
         for name, item in ctx.snapshots.items()
@@ -894,15 +923,17 @@ def _state(ctx: _Context) -> ApplicationState:
         )
     rows = _candidate_rows(ctx.snapshots, ctx.key)
     return derive_application_state(
-        lock=(ctx.final_dir / FINAL_LOCK_FILE).exists(),
-        record=(ctx.final_dir / FINAL_EVALUATION_FILE).exists(),
-        results=frozenset(ctx.rows_of(ctx.key)),
-        declared_used_for_experiment=ctx.declared_used(ctx.key.experiment_id),
+        lock=lock,
+        record=record,
+        results=results,
+        declared_used_for_experiment=declared,
         consumed_on_origin=bool(rows),
     )
 
 
-def _by_state(ctx: _Context, state: ApplicationState) -> FinalValidationOutcome | None:
+def _by_state(
+    ctx: _Context, state: ApplicationState, runner: FinalRunner
+) -> FinalValidationOutcome | None:
     """状態ごとの扱い（D09 §9.10.6 の表の「コマンドの起動」の列と、取り下げ・閉じる・やり直し）。"""
     mode = ctx.request.mode
     if state is ApplicationState.B_IN_PROGRESS:
@@ -917,11 +948,7 @@ def _by_state(ctx: _Context, state: ApplicationState) -> FinalValidationOutcome 
             raise _reason(
                 FinalReason.NOT_AWAITING_RECORD, f"--resume needs state C, got {state.value}"
             )
-        raise _reason(
-            FinalReason.RESUME_NOT_ALLOWED,
-            "the conditions of a resume (仮置き R2-21〜R2-29) are not decided by the human yet;"
-            " nothing was read and nothing was written (要決定 R2-8 (b) の入口だけ。R4)",
-        )
+        return _resume(ctx, runner)
     if mode is FinalMode.CLOSE_FAILED:
         if state is not ApplicationState.C_CONSUMED_WITHOUT_RECORD:
             raise _reason(
@@ -970,13 +997,23 @@ _STATE_REASON: Final[Mapping[ApplicationState, FinalReason]] = {
 
 
 def _backfill_completed(ctx: _Context) -> None:
-    """最終検証の記録があり台帳の行だけが無いとき、記録から `COMPLETED` の行を書き足す。"""
-    if FinalLedgerResult.COMPLETED in ctx.rows_of(ctx.key):
-        return
+    """状態 D の書き足し: 最終検証の記録から、無い `report.md`（仮置き R4b-13）と台帳の
+    `COMPLETED` の行（D09 §9.10.6 の D 行）を書き足す。"""
     path = ctx.final_dir / FINAL_EVALUATION_FILE
     if not path.is_file():
         return
     data = path.read_bytes()
+    report = ctx.final_dir / REPORT_FILE
+    if not report.exists():
+        try:
+            report.write_text(_report_text(json.loads(data.decode("utf-8"))), encoding="utf-8")
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            raise _Stop(
+                EXIT_FAILED, None, f"{REPORT_FILE} cannot be filled from the record: {exc}"
+            ) from exc
+        ctx.lines.append("最終検証の記録から report.md を書き足した")
+    if FinalLedgerResult.COMPLETED in ctx.rows_of(ctx.key):
+        return
     try:
         record = json.loads(data.decode("utf-8"))
         consumption = Interval(
@@ -997,6 +1034,8 @@ def _backfill_completed(ctx: _Context) -> None:
             prior=len(record["prior_final_validations"]),
             record_sha256=hashlib.sha256(data).hexdigest(),
             declaration_sha256=str(record["declaration_sha256"]),
+            resume_count=int(record.get("resume_count", 0)),
+            resume_failures=[str(item) for item in record.get("resume_failures", [])],
         )
     except (KeyError, TypeError, ValueError, KernelValueError) as exc:
         raise _Stop(
@@ -1038,6 +1077,20 @@ def _close_failed(ctx: _Context) -> FinalValidationOutcome:
             commit, t_fix = str(copy["consumption_commit"]), str(copy["t_fix"])
         except (KeyError, ValueError):
             commit, t_fix = "", ""
+    if not t_fix:
+        # 控えが無い・読めないときは origin の既定ブランチ上の候補の固定の記録から補う。読めなければ
+        # 空のまま閉じ、画面に出す（閉じる操作は止めない。仮置き R4b-12）。
+        t_fix = _fixation_t_fix(ctx)
+        if t_fix:
+            ctx.lines.append("固定時点 T_fix は origin の候補の固定の記録から補った")
+        else:
+            ctx.lines.append("固定時点 T_fix を補えなかった（台帳の行の t_fix は空）")
+    try:
+        attempts = read_attempts(ctx.final_dir)
+    except FinalLedgerError:
+        attempts = []
+        ctx.lines.append(f"{ATTEMPTS_FILE} を読めない（台帳の行のやり直しの回数は 0）")
+    started, failures = _attempt_summary(attempts)
     ctx.append(
         _ledger_values(
             result=FinalLedgerResult.FAILED_AFTER_CONSUMPTION,
@@ -1051,6 +1104,8 @@ def _close_failed(ctx: _Context) -> FinalValidationOutcome:
             targets=targets,
             commit=commit,
             prior=len(_prior_validations((ctx.worktree, ctx.origin), ctx.key)),
+            resume_count=max(started - 1, 0),
+            resume_failures=failures,
         )
     )
     ctx.lines.append(
@@ -1063,6 +1118,163 @@ def _close_failed(ctx: _Context) -> FinalValidationOutcome:
         "closed as failed",
         ctx.lines,
         state=ApplicationState.C_CONSUMED_WITHOUT_RECORD,
+    )
+
+
+def _fixation_t_fix(ctx: _Context) -> str:
+    """origin の既定ブランチ上の候補の固定の記録の `T_fix`（読めなければ空の文字列）。"""
+    rel = fixation_path(ctx.key.experiment_id, ctx.key.execution)
+    data = ctx.log.read_at_origin(rel.as_posix())
+    if data is None:
+        return ""
+    try:
+        return str(load_fixation(rel, text=data.decode("utf-8")).t_fix)
+    except (ConfigError, UnicodeDecodeError):
+        return ""
+
+
+def _attempt_summary(attempts: Sequence[Mapping[str, Any]]) -> tuple[int, list[str]]:
+    """試みの記録から、始めた試みの数と、失敗した試みの理由の識別子（仮置き R2-25・R2-27）。"""
+    started = sum(1 for row in attempts if row.get("event") == "STARTED")
+    failures = [str(row.get("reason", "")) for row in attempts if row.get("event") == "FAILED"]
+    return started, failures
+
+
+#: やり直しの回数の上限（仮置き R2-25）。
+MAX_RESUMES: Final = 2
+
+
+def _resume_refused(detail: str) -> _Stop:
+    return _reason(
+        FinalReason.RESUME_NOT_ALLOWED,
+        f"{detail}; nothing was read and nothing was written. Close it with --close-failed"
+        " (D09 §9.10.6 の C、仮置き R2-21〜R2-25)",
+    )
+
+
+def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
+    """状態 C の `--resume`（要決定 R2-8 (b)、仮置き R2-21〜R2-25・R2-27。R4b）。
+
+    やり直しの条件をすべて確かめ、通れば段 3 でロックを作り、段 4 を飛ばして同じ許可で段 5 を
+    行う（消費の行は増やさない）。外れれば何も書かずに終了コード 8 `RESUME_NOT_ALLOWED`。
+    """
+    # R2-22: 控えがあり、許可の識別子と消費の対象が origin の消費の行と一致する
+    path = ctx.final_dir / PERMIT_FILE
+    if not path.is_file():
+        raise _resume_refused(f"the permit copy {PERMIT_FILE} does not exist (仮置き R2-22)")
+    try:
+        copy = json.loads(path.read_text(encoding="utf-8"))
+        permit_id = str(copy["permit_id"])
+        copied_targets = sorted(str(item) for item in copy["targets"])
+        copied_scoring = str(copy["scoring_start"])
+        copied_predicted = {
+            variant.value: (
+                str(copy["predicted"][variant.value]["config_digest"]),
+                str(copy["predicted"][variant.value]["run_id"]),
+            )
+            for variant in VARIANTS
+        }
+        commit = str(copy["consumption_commit"])
+        prior = list(copy["prior_final_validations"])
+        declaration_sha = str(copy["declaration_sha256"])
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise _resume_refused(f"the permit copy cannot be read ({type(exc).__name__})") from exc
+    rows = _candidate_rows(ctx.snapshots, ctx.key)
+    if {row.permit_id for _, row in rows} != {permit_id} or sorted(
+        f"{snapshot}:{row.partition}" for snapshot, row in rows
+    ) != copied_targets:
+        raise _resume_refused(
+            "the consumption rows on origin do not match the permit copy (仮置き R2-22)"
+        )
+    # R2-23 の (1)・(4): 最終検証の記録と台帳の行が無い
+    if (ctx.final_dir / FINAL_EVALUATION_FILE).exists() or (ctx.final_dir / REPORT_FILE).exists():
+        raise _resume_refused("a final-validation record exists (仮置き R2-23)")
+    if any(
+        row.permit_id == permit_id for ledger in (ctx.worktree, ctx.origin) for row in ledger.rows
+    ):
+        raise _resume_refused("the ledger has a row of this permit (仮置き R2-23)")
+    # R2-25: 回数の記録と上限
+    try:
+        attempts = read_attempts(ctx.final_dir)
+    except FinalLedgerError as exc:
+        raise _resume_refused(f"{ATTEMPTS_FILE} cannot be read ({exc.detail})") from exc
+    started, failures = _attempt_summary(attempts)
+    if max(started - 1, 0) >= MAX_RESUMES:
+        raise _resume_refused(f"the attempts reached the limit of {MAX_RESUMES} resumes")
+    # 段 1・段 2 を読み直す（R2-22: 消費の対象・採点の始まり・予測が控えと同じ）
+    try:
+        fixation, _ = _eligibility(ctx)
+    except _Stop as stop:
+        if stop.exit_code == EXIT_READ_ERROR:
+            raise
+        raise _resume_refused(
+            f"stage 1 read again stops ({stop.reason.value if stop.reason else stop.exit_code}:"
+            f" {stop.detail})"
+        ) from stop
+    try:
+        permit, plan = _before_permit(ctx, runner, fixation, resume_permit=permit_id)
+    except _Stop as stop:
+        raise _resume_refused(
+            f"stage 2 read again stops ({stop.reason.value if stop.reason else stop.exit_code}:"
+            f" {stop.detail})"
+        ) from stop
+    predicted = {
+        variant.value: (
+            permit.predicted.of(variant).config_digest,
+            permit.predicted.of(variant).run_id,
+        )
+        for variant in VARIANTS
+    }
+    if (
+        sorted(_target_names(permit.window.targets)) != copied_targets
+        or str(permit.window.scoring_start) != copied_scoring
+        or predicted != copied_predicted
+    ):
+        raise _resume_refused(
+            "the window, the scoring start or the predicted runs read again differ from the"
+            " permit copy (仮置き R2-22)"
+        )
+    # R2-23 の (2)・(3): 評価の成果物が無く、run の成果物が完了していない
+    for directory in plan.run_directories:
+        if any((directory / name).exists() for name in ("eval", "manifest.json", "result.json")):
+            raise _resume_refused(
+                f"the run directory {directory.name} holds a completed run or an evaluation"
+                " (仮置き R2-23)"
+            )
+    ctx.lines.extend(_count_lines(permit.window))
+    # 段 3: ロック
+    lock = ctx.final_dir / FINAL_LOCK_FILE
+    try:
+        create_lock(lock)
+    except OSError as exc:
+        raise _Stop(EXIT_FAILED, None, f"the lock {lock.name} cannot be created ({exc})") from exc
+    attempt = started + 1
+    # R2-24: 前の試みの途中の成果物を、中身を開かずに attempts/<n>/ の下へ退ける
+    try:
+        for directory in plan.run_directories:
+            if directory.exists() or directory.is_symlink():
+                target = ctx.final_dir / ATTEMPTS_DIRECTORY / str(attempt - 1) / "runs"
+                target.mkdir(parents=True, exist_ok=True)
+                directory.rename(target / directory.name)
+                ctx.lines.append(f"前の試みの途中の run を退けた: {directory.name}")
+    except OSError as exc:
+        lock.unlink(missing_ok=True)
+        raise _Stop(
+            EXIT_FAILED, None, f"the partial run cannot be moved aside ({exc}); nothing was read"
+        ) from exc
+    ctx.lines.append(f"やり直し: 許可 {permit_id}、試み {attempt}（段 4 は飛ばした）")
+    return _publish_and_evaluate(
+        ctx,
+        runner,
+        permit,
+        plan,
+        fixation,
+        commit,
+        prior,
+        declaration_sha,
+        lock,
+        attempt=attempt,
+        earlier_failures=failures,
     )
 
 
@@ -1143,12 +1355,12 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
         "overlapping_trials": trials,
         "trial_ledger_head": contents.lines[-1].digest.hex if contents.lines else "",
     }
-    # 4. 採用審査
+    # 4. 採用審査（R3 の読込と同じ検査。仮置き R4b-10）
     try:
-        reviews = _review_rows(ctx.log)
+        reviews = _review_lines(ctx.log)
     except ConfigError as exc:
         raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
-    proceeds = [row for row in reviews if row.get("result") == "PROCEED"]
+    proceeds = [line for line in reviews if line.entry.result is ReviewResult.PROCEED]
     mine = next(
         (
             index
@@ -1172,7 +1384,9 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
     except (ConfigError, UnicodeDecodeError) as exc:
         raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
     review_trials = _review_fixed_trials(proceeds[mine])
-    ctx.extras["review_row_sha256"] = hashlib.sha256(encode(proceeds[mine])).hexdigest()
+    ctx.extras["review_row_sha256"] = hashlib.sha256(
+        review_line_bytes(proceeds[mine]).rstrip(b"\n")
+    ).hexdigest()
     ctx.extras["fixation_sha256"] = hashlib.sha256(text).hexdigest()
     if (
         (fixation.experiment_id, fixation.execution) != (key.experiment_id, key.execution)
@@ -1208,7 +1422,7 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
         )
     declaration_sha = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     if declaration.used_outside_viewing:
-        if ctx.request.mode is FinalMode.DRY_RUN:
+        if ctx.request.mode in (FinalMode.DRY_RUN, FinalMode.RESUME):
             ctx.lines.append("申告が「使った」: 本番の起動なら台帳に DECLARED_USED の行を書く")
         else:
             ctx.append(
@@ -1230,7 +1444,7 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
     # 8. 順番（要決定 R2-6 (a)）
     for row in proceeds[:mine]:
         other = _review_key(row)
-        if other is None or other == (key.experiment_id, key.execution):
+        if other == (key.experiment_id, key.execution):
             continue
         earlier = CandidateKey(
             experiment_id=other[0],
@@ -1248,9 +1462,14 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
 
 
 def _before_permit(
-    ctx: _Context, runner: FinalRunner, fixation: Fixation
+    ctx: _Context, runner: FinalRunner, fixation: Fixation, resume_permit: str | None = None
 ) -> tuple[FinalEvaluationPermit, FinalRunPlan]:
-    """段 2（何も書かない）。許可の値（まだ発行していない）と run の計画を返す。"""
+    """段 2（何も書かない）。許可の値（まだ発行していない）と run の計画を返す。
+
+    `resume_permit` はやり直しの許可の識別子（D09 §9.10.2 の「消費の後のやり直し」）。窓にその
+    許可の消費の行がある partition を含め、(d) をその許可の消費の行で読み替え、(c) の出力先の
+    確かめはやり直しの条件（仮置き R2-23）に任せる。
+    """
     facts = ctx.facts
     # (f) 再計算とウォームアップ
     prepared = runner.prepare(facts, ctx.request.experiment_dir)
@@ -1272,16 +1491,32 @@ def _before_permit(
         except (ConfigError, UnicodeDecodeError) as exc:
             raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
         excluded.append(other.forward_period)
-    window = derive_final_window(
-        _sealed_facts(ctx.snapshots),
-        symbols=facts.symbols,
-        t_fix=fixation.t_fix,
-        excluded=excluded,
-        length_days=fixation.length_days,
-        warmup=prepared.warmup,
-    )
-    if isinstance(window, WindowRefusal):
-        raise _refuse(window)
+    facts_now = _sealed_facts(ctx.snapshots, resume_permit)
+
+    def derive(warmup: timedelta) -> FinalWindow:
+        derived = derive_final_window(
+            facts_now,
+            symbols=facts.symbols,
+            t_fix=fixation.t_fix,
+            excluded=excluded,
+            length_days=fixation.length_days,
+            warmup=warmup,
+        )
+        if isinstance(derived, WindowRefusal):
+            raise _refuse(derived)
+        return derived
+
+    if prepared.warmup_at is None:
+        window = derive(prepared.warmup)
+    else:
+        # ウォームアップの長さは消費する範囲の始まりから数える（R4b の仮置き）。範囲の始まりは
+        # ウォームアップの長さによらないので、長さ 0 で範囲を導いてから数え直す。
+        first = derive(timedelta(0))
+        window = (
+            first
+            if first.consumption.start == WINDOW_START
+            else derive(prepared.warmup_at(first.consumption.start))
+        )
     holdout = facts.final_holdout
     assert holdout is not None  # noqa: S101 - 資格の確かめで済んでいる
     if not _covers(holdout.interval, window.consumption):
@@ -1299,8 +1534,8 @@ def _before_permit(
         )
     except HoldoutAccessLogStop as stop:
         raise _reason(FinalReason.ORIGIN_NOT_CONFIRMED, stop.detail) from stop
-    # (c) 出力先
-    if ctx.final_dir.exists() and any(ctx.final_dir.iterdir()):
+    # (c) 出力先（やり直しは控えと試みの記録があるので、仮置き R2-23 の確かめに任せる）
+    if resume_permit is None and ctx.final_dir.exists() and any(ctx.final_dir.iterdir()):
         raise _reason(FinalReason.OUTPUT_NOT_EMPTY, f"{ctx.final_dir} is not empty")
     # (e) 実行前のデータ能力検査（戦略によらない部分。manifest と検査報告だけ。仮置き R2-11）
     _capability(ctx, window)
@@ -1309,15 +1544,13 @@ def _before_permit(
     if isinstance(plan, WindowRefusal):
         raise _refuse(plan)
     existing = [path for path in plan.run_directories if path.exists()]
-    if existing:
+    if existing and resume_permit is None:
         raise _reason(FinalReason.OUTPUT_NOT_EMPTY, f"{len(existing)} run directory(ies) exist")
-    # 段 2 (d) と許可の値（関所。状態は origin の既定ブランチ上の消費の記録から）
-    states = {
-        (fact.snapshot_id, str(fact.partition_id)): fact.state
-        for fact in _sealed_facts(ctx.snapshots)
-    }
+    # 段 2 (d) と許可の値（関所。状態は origin の既定ブランチ上の消費の記録から。やり直しは
+    # この許可の消費の行だけがある partition を SEALED と読む。D09 §9.10.2）
+    states = {(fact.snapshot_id, str(fact.partition_id)): fact.state for fact in facts_now}
     permit = issue_final_evaluation_permit(
-        permit_id=ctx.new_id(),
+        permit_id=resume_permit or ctx.new_id(),
         candidate=ctx.key,
         t_fix=fixation.t_fix,
         length_days=fixation.length_days,
@@ -1512,12 +1745,32 @@ def _publish_and_evaluate(
     prior: Sequence[Mapping[str, str]],
     declaration_sha: str,
     lock: Path,
+    *,
+    attempt: int = 1,
+    earlier_failures: Sequence[str] = (),
 ) -> FinalValidationOutcome:
-    """段 5: 検査 P2F の (2) → run と評価 → P4F・P5 → 判定 → 記録 → 台帳 → ロックの削除。"""
+    """段 5: 試みの記録 → 検査 P2F の (2) → run と評価 → P4F・P5 → 判定 → 記録 → 台帳 → ロック。
+
+    `attempt` は段 5 の試みの番号（最初の試みが 1。やり直しで増える。仮置き R2-25）、
+    `earlier_failures` は前の試みの失敗の理由の識別子（仮置き R2-27）。
+    """
     facts = ctx.facts
+    started_at = ctx.now()
     try:
+        # 試みを始める時に 1 行足す（途中で止まっても数える。仮置き R2-25）
+        append_attempt(
+            ctx.final_dir,
+            {
+                "attempt": attempt,
+                "event": "STARTED",
+                "permit_id": permit.permit_id,
+                "recorded_at": str(started_at),
+                "actor": ctx.request.by,
+            },
+        )
         ctx.log.fetch_origin()
-        snapshots = _origin_snapshots(ctx.log)
+        ctx.refresh()
+        snapshots = ctx.snapshots
         rows: dict[tuple[str, str], set[str]] = {}
         for snapshot_id, item in snapshots.items():
             if isinstance(item.log, AccessLogReadFailure):
@@ -1558,22 +1811,39 @@ def _publish_and_evaluate(
             judged,
             combined,
             facts,
-            ctx.extras,
+            {
+                **ctx.extras,
+                "resume_count": attempt - 1,
+                "resume_failures": list(earlier_failures),
+            },
         )
         record_sha = write_json_once(ctx.final_dir / FINAL_EVALUATION_FILE, record)
-        (ctx.final_dir / REPORT_FILE).write_text(_report_text(record), encoding="utf-8")
     except _Stop as stop:
+        reason = (
+            stop.reason
+            if stop.exit_code == EXIT_FAILED_AFTER_CONSUMPTION and stop.reason is not None
+            else FinalReason.FINAL_RUN_FAILED
+        )
+        _attempt_failed(ctx, attempt, reason)
         lock.unlink(missing_ok=True)
         if stop.exit_code == EXIT_FAILED_AFTER_CONSUMPTION:
             raise
         raise _reason(FinalReason.FINAL_RUN_FAILED, stop.detail) from stop
     except Exception as exc:  # noqa: BLE001 - 段 5 のどの失敗も消費の後の失敗（状態 C）
+        _attempt_failed(ctx, attempt, FinalReason.FINAL_RUN_FAILED)
         lock.unlink(missing_ok=True)
         raise _reason(
             FinalReason.FINAL_RUN_FAILED,
             f"the final-validation run or its record failed ({type(exc).__name__}); the"
             " partitions are CONSUMED and the application waits in state C (要決定 R2-8 (b))",
         ) from exc
+    # 最終検証の記録を書いた後の失敗（report.md・台帳の行）は、どれも終了コード 1・状態 D。
+    # 次の起動の段 1 の D の書き足しで、無い report.md と台帳の行を記録から書き足す（R4b-13）。
+    problems: list[str] = []
+    try:
+        (ctx.final_dir / REPORT_FILE).write_text(_report_text(record), encoding="utf-8")
+    except OSError as exc:
+        problems.append(f"{REPORT_FILE} was not written ({type(exc).__name__})")
     try:
         append_ledger_row(
             ctx.request.repo_root,
@@ -1591,17 +1861,20 @@ def _publish_and_evaluate(
                 prior=len(prior),
                 record_sha256=record_sha,
                 declaration_sha256=declaration_sha,
+                resume_count=attempt - 1,
+                resume_failures=earlier_failures,
             ),
         )
     except FinalLedgerError as exc:
-        lock.unlink(missing_ok=True)
+        problems.append(f"the ledger row was not written ({exc})")
+    lock.unlink(missing_ok=True)
+    if problems:
         raise _Stop(
             EXIT_FAILED,
             None,
-            f"the record was written but the ledger row was not ({exc}); the next start fills it"
-            " (D09 §9.10.6 の B 行)",
-        ) from exc
-    lock.unlink(missing_ok=True)
+            "the record was written but " + "; ".join(problems) + ". The next start fills them"
+            " from the record (D09 §9.10.6 の B 行、仮置き R4b-13)",
+        )
     ctx.lines.append(f"最終検証の記録: {ctx.final_dir / FINAL_EVALUATION_FILE}")
     for variant, judged_item in judged.items():
         ctx.lines.append(f"  {variant.value} の組の判定: {judged_item.verdict.value}")
@@ -1616,6 +1889,22 @@ def _publish_and_evaluate(
         commit=commit,
         verdict=combined,
     )
+
+
+def _attempt_failed(ctx: _Context, attempt: int, reason: FinalReason) -> None:
+    """試みの失敗の理由を `attempts.jsonl` に足す（仮置き R2-27。書けなくても手順は変えない）。"""
+    try:
+        append_attempt(
+            ctx.final_dir,
+            {
+                "attempt": attempt,
+                "event": "FAILED",
+                "reason": reason.value,
+                "recorded_at": str(ctx.now()),
+            },
+        )
+    except OSError:
+        ctx.lines.append(f"{ATTEMPTS_FILE} に失敗の行を書けなかった")
 
 
 def _record_payload(

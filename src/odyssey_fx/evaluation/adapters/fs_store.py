@@ -45,6 +45,7 @@ from odyssey_fx.backtest.trace.manifest import (
     RunManifest,
     SeriesCoverageReport,
     config_digest_of,
+    config_mapping,
     legacy_config_digest_of,
 )
 from odyssey_fx.backtest.trace.recorder import (
@@ -225,6 +226,7 @@ from odyssey_fx.evaluation.domain.status import (
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
 from odyssey_fx.marketdata.domain.bar import BarKey
+from odyssey_fx.marketdata.domain.final_grant import GrantedRead
 from odyssey_fx.marketdata.domain.integrity import (
     CheckKind,
     CheckResult,
@@ -232,6 +234,7 @@ from odyssey_fx.marketdata.domain.integrity import (
     Severity,
 )
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
+from odyssey_fx.marketdata.domain.snapshot import PartitionId
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef, TimeRuleVariant
 from odyssey_fx.strategy.declarations.specs import (
     BoolValue,
@@ -704,7 +707,8 @@ def _manifest_payload(manifest: RunManifest) -> dict[str, Any]:
         "env_digest": manifest.env_digest.digest.hex,
         "git_commit": manifest.git_commit,
         "git_dirty": manifest.git_dirty,
-        "config": canonical_text(manifest.config),
+        # 封印の並びは空でないときだけ書く（D06 v1.18 案 §9.3 の 4、仮置き R4b-5）。
+        "config": canonical_text(config_mapping(manifest.config)),
         "phases": [{"rank": phase.rank, "name": phase.name} for phase in manifest.phases.ordered()],
         "id_allocator_snapshot": dict(manifest.id_allocator_snapshot),
         "symbol_spec_ref": canonical_text(manifest.symbol_spec_ref),
@@ -1092,7 +1096,46 @@ def _run_config_of(payload: Mapping[str, Any], timeframes: Mapping[str, Timefram
         # 終わり方の項目の無い旧い run manifest（2026-10-21 改訂の前）は今の振る舞いの
         # `MARK_TO_MARKET` と読む。識別子は保存値のまま（実装 PR の仮置き 62）。
         run_end=RunEndMode(payload.get("run_end", RunEndMode.MARK_TO_MARKET.value)),
+        # 封印の並びの無い run manifest は空の並びと読む（D06 v1.18 案 §9.3 の帰結 (3)）。
+        sealed_reads=tuple(
+            _granted_read_of(item, timeframes) for item in payload.get("sealed_reads", ())
+        ),
     )
+
+
+def _granted_read_of(
+    payload: Mapping[str, Any], timeframes: Mapping[str, TimeframeRef]
+) -> GrantedRead:
+    """封印の並びの要素（`{partition_id: <partition のディレクトリ>, snapshot_id}`）を読む。"""
+    return GrantedRead(
+        snapshot_id=str(payload["snapshot_id"]),
+        partition_id=partition_id_of(str(payload["partition_id"]), timeframes),
+    )
+
+
+def partition_id_of(text: str, timeframes: Mapping[str, TimeframeRef]) -> PartitionId:
+    """partition のディレクトリの文字列（`USDJPY_1m_bid/HOLDOUT_SINCE_2024/20240107T2200Z`）から
+    識別子を組み立てる（`PartitionId.canonical_str` の逆。時間足の版は `timeframes` から引く）。"""
+    parts = text.split("/")
+    if len(parts) not in (2, 3):
+        raise KernelValueError(f"invalid partition literal: {text!r}")
+    # 銘柄に `_` は無く、時間足の識別子には `_` がありうる（`1d_ny17`）。
+    symbol, _, rest = parts[0].partition("_")
+    timeframe_id, _, basis = rest.rpartition("_")
+    if not symbol or not timeframe_id or not basis:
+        raise KernelValueError(f"invalid partition literal: {text!r}")
+    series = _series_of(f"{symbol}/{timeframe_id}/{basis}", timeframes)
+    start = (
+        None
+        if len(parts) == 2
+        else UtcTime(datetime.strptime(parts[2], "%Y%m%dT%H%MZ").replace(tzinfo=UTC))
+    )
+    partition_id = PartitionId(
+        series=series, access_class=AccessClass(parts[1]), period_start=start
+    )
+    if str(partition_id) != text:
+        raise KernelValueError(f"the partition literal {text!r} is not in its canonical form")
+    return partition_id
 
 
 def _timeframes_of(payload: Mapping[str, Any]) -> dict[str, TimeframeRef]:

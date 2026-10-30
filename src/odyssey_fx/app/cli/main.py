@@ -548,7 +548,10 @@ def _add_final_validate_parser(
     mode.add_argument(
         "--resume",
         action="store_true",
-        help="状態 C の申請を同じ許可でやり直す（条件の仮置き R2-21〜29 が決まるまで常に拒否）",
+        help=(
+            "状態 C の申請を同じ許可の識別子で段 5 からやり直す（要決定 R2-8 (b)。条件は仮置き"
+            " R2-21〜R2-25。回数の上限 2 回。外れれば終了コード 8）"
+        ),
     )
     mode.add_argument(
         "--close-failed",
@@ -1832,7 +1835,7 @@ def _run_experiment_final_validate(args: argparse.Namespace, out: _Writer) -> in
             final.EXIT_GATE_REFUSED,
             final.EXIT_READ_ERROR,
         ):
-            out.line("消費していない（データを読んでいない）")
+            out.line("この起動では消費していない（データを読んでいない）")
     out.line(f"終了コード: {outcome.exit_code}")
     return outcome.exit_code
 

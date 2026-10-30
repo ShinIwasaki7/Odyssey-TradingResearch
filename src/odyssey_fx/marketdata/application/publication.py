@@ -33,6 +33,7 @@ from types import MappingProxyType
 
 from odyssey_fx.common.time import Interval, PhaseRank, UtcTime
 from odyssey_fx.marketdata.application.snapshot_access import (
+    FinalSources,
     ReadableSnapshot,
     readable_surface,
     require_readable_snapshot,
@@ -300,6 +301,7 @@ def _allowed_coverage(
     snapshot: ReadableSnapshot,
     allowed_partitions: frozenset[PartitionId],
     boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
+    final_sources: FinalSources | None = None,
 ) -> Mapping[SeriesId, tuple[Interval, ...]]:
     """系列ごとに、許可された partition が覆う区間を求める（D03 §6.1）。
 
@@ -313,6 +315,15 @@ def _allowed_coverage(
     """
     by_series: dict[SeriesId, list[Interval]] = {}
     for partition_id in allowed_partitions:
+        source = None if final_sources is None else final_sources.snapshot_of(partition_id)
+        if source is not None:
+            # 最終評価の許可の並びの partition は、その取引週（ADR-0038 第2項の期間）を覆いにする
+            # （週ごとの partition の間に休場の隙間を作らない。D09 §9.10.3 の 4。R4b）。
+            period = partition_id.period
+            granted = source.manifest.partition_record(partition_id)
+            if period is not None and granted is not None:
+                by_series.setdefault(partition_id.series, []).append(period)
+            continue
         record = snapshot.manifest.partition_record(partition_id)
         if record is None:  # pragma: no cover - 関門が先に拒否する
             continue
@@ -337,6 +348,7 @@ def _require_run_interval_inside_allowed(
     allowed_partitions: frozenset[PartitionId],
     run_interval: Interval,
     boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
+    final_sources: FinalSources | None = None,
 ) -> tuple[SeriesId, ...]:
     """実行区間が許可 partition の区間に収まることを確かめ、境界を出す系列を返す。
 
@@ -345,7 +357,7 @@ def _require_run_interval_inside_allowed(
     区間を封印期間に取れば、封印期間の判断が動き出す。区間の検査は構築時に行い、通らない
     要求は `HoldoutAccessViolation`（構造エラー）で止める（D03 §6.1）。
     """
-    coverage = _allowed_coverage(snapshot, allowed_partitions, boundaries)
+    coverage = _allowed_coverage(snapshot, allowed_partitions, boundaries, final_sources)
     if not coverage:
         raise HoldoutAccessViolation(
             "no partition was granted to this feed; there is no period it may cover (D03 §6.1)"
@@ -380,13 +392,21 @@ def _within_run(run_interval: Interval, moment: UtcTime) -> bool:
     return run_interval.start <= moment <= run_interval.end
 
 
-def _no_record_intervals(snapshot: ReadableSnapshot, series: SeriesId) -> tuple[Interval, ...]:
-    """MT5 経路の snapshot の全分無記録の足の区間（HistData の経路では空）。"""
-    if snapshot.manifest.conversion.mt5 is None:
-        return ()
+def _no_record_intervals(
+    snapshot: ReadableSnapshot, series: SeriesId, final_sources: FinalSources | None = None
+) -> tuple[Interval, ...]:
+    """MT5 経路の snapshot の全分無記録の足の区間（HistData の経路では空）。
+
+    最終検証の run（`final_sources`）は、並びが指す snapshot の分も合わせる（R4b）。
+    """
+    sources = [snapshot]
+    if final_sources is not None:
+        sources.extend(final_sources.snapshots[name] for name in sorted(final_sources.snapshots))
     return tuple(
         result.interval
-        for result in snapshot.report.results
+        for source in sources
+        if source.manifest.conversion.mt5 is not None
+        for result in source.report.results
         if result.kind is CheckKind.NO_RECORD_BAR and result.series == series
     )
 
@@ -397,6 +417,7 @@ def build_publication_log(
     partition_bars: Mapping[PartitionId, Sequence[Bar]],
     schedules: Mapping[SeriesId, SeriesSchedule],
     scenario: DelayScenario | None = None,
+    final_sources: FinalSources | None = None,
 ) -> PublicationLog:
     """遅延シナリオを適用した実現公開時刻の記録を作る（D03 §3.6）。
 
@@ -411,6 +432,7 @@ def build_publication_log(
         allowed_partitions,
         label="build_publication_log",
         partition_bars=partition_bars,
+        final_sources=final_sources,
     )
     readable = readable_surface(frozen, allowed_partitions)
     # 公開予定も写し取る。この関数は記録を作って返すだけなので呼び出し中に差し替えられる
@@ -441,7 +463,7 @@ def build_publication_log(
         # 遅延シナリオを当てた予定の公開時刻を記録する。
         # as-of ビューは、この時刻より前にその足を「準備不足」として見せない（D03 §15.7「予定の公開
         # 時刻（区間の終わり。遅延シナリオ込み）以後」）。公開フィードのイベントにはしない。
-        for interval in _no_record_intervals(snapshot, series):
+        for interval in _no_record_intervals(snapshot, series, final_sources):
             scheduled = schedule.scheduled_at(interval.end)
             available = (
                 scheduled
@@ -471,6 +493,7 @@ def build_feed(
     phase_ranks: Mapping[PublicationKind, PhaseRank] | None = None,
     internal_series: frozenset[SeriesId] = frozenset(),
     access_boundaries: AccessBoundaries = INITIAL_ACCESS_BOUNDARIES,
+    final_sources: FinalSources | None = None,
 ) -> PublicationFeed:
     """実行区間内の公開イベント列を組み立てる（D03 §7.1）。
 
@@ -509,12 +532,16 @@ def build_feed(
     if not isinstance(run_interval, Interval):
         raise MarketDataValueError("build_feed requires an Interval run_interval")
     frozen = require_readable_snapshot(
-        snapshot, allowed_partitions, label="build_feed", partition_bars=partition_bars
+        snapshot,
+        allowed_partitions,
+        label="build_feed",
+        partition_bars=partition_bars,
+        final_sources=final_sources,
     )
     readable = readable_surface(frozen, allowed_partitions)
     schedules = MappingProxyType(dict(schedules))
     boundary_series = _require_run_interval_inside_allowed(
-        snapshot, allowed_partitions, run_interval, access_boundaries
+        snapshot, allowed_partitions, run_interval, access_boundaries, final_sources
     )
 
     events: list[PublicationEvent] = []

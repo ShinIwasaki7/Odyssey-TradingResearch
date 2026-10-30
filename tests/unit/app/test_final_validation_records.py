@@ -34,6 +34,7 @@ def _values(result: FinalLedgerResult = FinalLedgerResult.WITHDRAWN) -> dict[str
         "consumption_commit": "",
         "combined_verdict": "",
         "resume_count": 0,
+        "resume_failures": [],
         "prior_final_validations": 0,
         "reason": "WITHDRAWN",
         "final_evaluation_sha256": "",
