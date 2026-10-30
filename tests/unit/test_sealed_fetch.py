@@ -3,7 +3,8 @@
 計画は版管理の窓の設定と 2024 年以降の時刻の規則の表から作る（データは読まない）。取得は偽の MT5 の
 API（人工の値）で動かし、AWS・端末にはつながない。確かめること: 窓は設定からだけ読む、2024-01-01
 より前・窓の外・8 通貨以外の要求は何も要求せずに止まる、一括取得は 272 要求（上限 300）、定期取得の
-窓は途切れも重なりも無い、出力（標準出力・記録）に価格が無い。
+窓は途切れも重なりも無い、一括取得の各通貨の最後の要求の終わりは週末の休場の中なら金曜の閉場に切り詰める
+（D15 §0.5.12）、出力（標準出力・記録）に価格が無い。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
+from odyssey_fx.app.mt5 import SEALED_COUNTING_RULES, load_mt5_rules
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.marketdata.domain.access import is_trading_week_start
 from tools.survey import mt5_api_probe as probe
@@ -57,13 +59,90 @@ def test_the_bulk_plan_is_272_monthly_requests_inside_the_window(bulk: planner.S
     assert usdjpy[0].api_from == datetime(2024, 1, 1, 2, tzinfo=UTC)
     assert usdjpy[0].utc_from == datetime(2024, 1, 1, tzinfo=UTC)
     # 最後の月は API の時刻の 2026-10（2026-11 の切れ端は週末の休場だけなので要求しない）。
+    # その終わりは週末の休場の中（API の時刻の 10 月末 = 2026-10-31T21:00Z、土曜）なので、金曜の
+    # 閉場 2026-10-30T21:00Z（API の時刻 2026-10-31 00:00。米国式 +3）に切り詰める（D15 §0.5.12）。
     assert usdjpy[-1].rid == "S-USDJPY-2026-10"
-    assert usdjpy[-1].api_to == datetime(2026, 11, 1, tzinfo=UTC)
+    assert usdjpy[-1].api_to == datetime(2026, 10, 31, tzinfo=UTC)
+    assert usdjpy[-1].utc_to == datetime(2026, 10, 30, 21, tzinfo=UTC)
+    assert usdjpy[-1].offset_to_hours == 3
     for a, b in zip(usdjpy, usdjpy[1:], strict=False):
         assert a.api_to == b.api_from  # API の時刻で途切れも重なりも無い
     for r in bulk.requests:
         assert datetime(2024, 1, 1, tzinfo=UTC) <= r.utc_from < r.utc_to
         assert r.utc_to <= datetime(2026, 11, 1, 22, tzinfo=UTC)
+
+
+def test_the_bulk_plan_can_start_at_the_friday_close_before_the_last_request_end() -> None:
+    """(i) 金曜の閉場ちょうど（2026-10-30T21:00Z = 10/31 06:00 JST）に計画が作れる。"""
+    plan = planner.build_plan(ROOT, probe.SEALED_STAGE_BULK, run_at=T("2026-10-30T21:00:00Z"))
+    assert len(plan.requests) == 272 and plan.payload["max_requests"] == 300
+    last = {r.pair: r for r in plan.requests}  # 通貨ごとの最後の要求
+    assert len(last) == 8
+    for r in last.values():
+        assert r.rid.endswith("-2026-10")
+        assert r.utc_to == datetime(2026, 10, 30, 21, tzinfo=UTC)
+        assert r.api_to == datetime(2026, 10, 31, tzinfo=UTC)
+    assert max(r.utc_to for r in plan.requests) == datetime(2026, 10, 30, 21, tzinfo=UTC)
+    # 窓の記録は設定の値のまま（窓の終わりは取得の開始時点）。
+    assert plan.payload["window"]["utc_to"] == "2026-11-01T22:00:00Z"
+
+
+def test_the_bulk_plan_is_refused_before_the_friday_close() -> None:
+    """(ii) 1 分前は要求の時点より後を含むので作らない（ADR-0037 第4項の 3 はそのまま）。"""
+    with pytest.raises(probe.SealedWindowError, match="要求の時点より後"):
+        planner.build_plan(ROOT, probe.SEALED_STAGE_BULK, run_at=T("2026-10-30T20:59:00Z"))
+
+
+def test_month_ends_other_than_the_last_are_not_clipped(bulk: planner.SealedPlan) -> None:
+    """(iii) 平日の月末も、途中の月の週末の月末も変わらない（切り詰めは各通貨の最後の要求だけ）。"""
+    by_rid = {r.rid: r for r in bulk.requests}
+    # 平日の月末（2026-09-30（水）。API の時刻の 10-01 00:00 = 2026-09-30T21:00Z）。
+    september = by_rid["S-USDJPY-2026-09"]
+    assert september.api_to == datetime(2026, 10, 1, tzinfo=UTC)
+    assert september.utc_to == datetime(2026, 9, 30, 21, tzinfo=UTC)
+    # 途中の月の週末の月末（2026-01-31（土）22:00Z。両方冬 +2）も API の時刻の月の境目のまま。
+    january = by_rid["S-USDJPY-2026-01"]
+    assert january.api_to == datetime(2026, 2, 1, tzinfo=UTC)
+    assert january.utc_to == datetime(2026, 1, 31, 22, tzinfo=UTC)
+    # 要求の始まりは変えない（API の時刻の 2026-08-01（土）00:00 = 2026-07-31T21:00Z。金曜の閉場）。
+    august = by_rid["S-USDJPY-2026-08"]
+    assert august.api_from == datetime(2026, 8, 1, tzinfo=UTC)
+    assert august.utc_from == datetime(2026, 7, 31, 21, tzinfo=UTC)
+
+
+def test_a_last_request_ending_at_the_sunday_open_is_not_clipped() -> None:
+    """窓の終わりが日曜の開場で、最後の要求がそこで終わるなら変えない（休場の中ではない）。"""
+    window = replace(
+        load_sealed_window(ROOT / SEALED_WINDOW_PATH),
+        acquisition_start=T("2026-10-04T21:00:00Z"),
+    )
+    table = load_mt5_rules(ROOT, SEALED_COUNTING_RULES).table
+    requests = planner.bulk_requests(window, table)
+    last = [r for r in requests if r.pair == "USDJPY"][-1]
+    assert last.rid == "S-USDJPY-2026-10"
+    assert (last.api_to, last.utc_to) == (
+        datetime(2026, 10, 5, tzinfo=UTC),
+        datetime(2026, 10, 4, 21, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize(
+    ("utc_to", "expected"),
+    [
+        # 夏時間の土曜 → 金曜 17:00 EDT = 21:00Z。
+        (datetime(2026, 10, 31, 21, tzinfo=UTC), datetime(2026, 10, 30, 21, tzinfo=UTC)),
+        # 冬時間の土曜 → 金曜 17:00 EST = 22:00Z。
+        (datetime(2026, 1, 31, 22, tzinfo=UTC), datetime(2026, 1, 30, 22, tzinfo=UTC)),
+        # 日曜の開場の 1 分前 → 金曜の閉場。
+        (datetime(2026, 11, 1, 21, 59, tzinfo=UTC), datetime(2026, 10, 30, 21, tzinfo=UTC)),
+        # 平日・金曜の閉場ちょうど・日曜の開場ちょうどはそのまま。
+        (datetime(2026, 9, 30, 21, tzinfo=UTC), datetime(2026, 9, 30, 21, tzinfo=UTC)),
+        (datetime(2026, 10, 30, 21, tzinfo=UTC), datetime(2026, 10, 30, 21, tzinfo=UTC)),
+        (datetime(2026, 11, 1, 22, tzinfo=UTC), datetime(2026, 11, 1, 22, tzinfo=UTC)),
+    ],
+)
+def test_the_friday_close_clip(utc_to: datetime, expected: datetime) -> None:
+    assert planner.clip_to_friday_close(utc_to) == expected
 
 
 def test_the_first_periodic_plan_is_one_week_from_the_acquisition_start(
