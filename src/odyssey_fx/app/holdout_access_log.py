@@ -456,16 +456,19 @@ class GitHoldoutAccessLog:
                 " before retrying (ADR-0014)",
             ) from stop
         # push は成功した。ここから先の失敗では commit を取り消さない（origin に届いている）。
-        try:
-            reached_head = self._remote_head("push", branch)
-        except HoldoutAccessLogStop as stop:
-            raise HoldoutAccessLogStop(
-                "push", f"{stop.detail} (the commit {commit} was pushed)", commit=commit
-            ) from stop
-        if reached_head != commit:
+        # 確かめは「origin の先頭が push した commit を含む（祖先）」（D09 仮置き R4b-14。push の
+        # 結果が分からないときの判定と同じ基準。間に別の push が積まれても人間の回復に回さない）。
+        reached = self.has_commit_at_origin(commit)
+        if reached is None:
             raise HoldoutAccessLogStop(
                 "push",
-                f"{REMOTE}/{branch} is {reached_head[:12]}, not the pushed commit {commit[:12]}",
+                f"{REMOTE} cannot be asked whether it holds the pushed commit {commit[:12]}",
+                commit=commit,
+            )
+        if not reached:
+            raise HoldoutAccessLogStop(
+                "push",
+                f"{REMOTE}/{branch} does not contain the pushed commit {commit[:12]}",
                 commit=commit,
             )
         return commit

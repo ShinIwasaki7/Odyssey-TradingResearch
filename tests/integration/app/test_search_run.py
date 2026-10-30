@@ -431,6 +431,33 @@ def test_the_same_version_rerun_retreats_the_records_and_counts_execution_2(
     assert lines[0].entry.execution_nonce != lines[2].entry.execution_nonce
 
 
+def test_r2_29_a_pending_final_validation_refuses_a_rerun_of_the_same_version(
+    workspace: T02Workspace, tmp_path: Path, full: _Full
+) -> None:
+    """同じ版の最終検証の申請が状態 B・C の間は `experiment run` を記録票の保存の前に拒否する
+    （終了コード 5、`FINAL_VALIDATION_PENDING`。D09 仮置き R2-29 の (1)・R4b-9）。"""
+    out = _seeded(full, tmp_path)
+    experiment = _experiment(workspace, "pending")
+    assert _run(workspace, out, experiment)[0] == 0
+    directory = _version(out, "pending")
+    manifest = (directory / "experiment_manifest.json").read_bytes()
+    final = directory / "final" / "1"
+    final.mkdir(parents=True)
+    (final / "final.lock").write_text("running\n")  # 状態 B（人工）
+    code, output = _run(workspace, out, experiment)
+    assert code == 5 and "FINAL_VALIDATION_PENDING" in output, output
+    (final / "final.lock").unlink()
+    (workspace.repo / "research" / "final_validations.jsonl").write_bytes(b"")
+    (final / "permit.json").write_text('{"permit_id": "' + "a" * 32 + '"}')  # 状態 C（人工）
+    code, output = _run(workspace, out, experiment)
+    assert code == 5 and "state C" in output, output
+    assert (directory / "experiment_manifest.json").read_bytes() == manifest
+    assert not (directory / "experiment_outcome.1.json").exists()  # 退避していない
+    assert len(_ledger(workspace)) == 2  # 台帳に書いていない
+    shutil.rmtree(directory / "final")
+    assert _run(workspace, out, experiment)[0] == 0  # 終われば再実行できる
+
+
 def test_a_search_rejected_by_the_pre_run_checks_writes_nothing_to_the_ledger(
     workspace: T02Workspace, tmp_path: Path
 ) -> None:

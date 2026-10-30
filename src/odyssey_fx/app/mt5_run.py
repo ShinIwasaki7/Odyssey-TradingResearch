@@ -50,6 +50,7 @@ __all__ = [
     "Mt5RunParts",
     "build_mt5_run_parts",
     "publication_rows",
+    "reads_start",
     "strategy_windows",
 ]
 
@@ -254,7 +255,7 @@ def _lookback_start(schedule: SeriesSchedule, start: UtcTime, count: int) -> Utc
     return earliest
 
 
-def _reads_start(
+def reads_start(
     schedule: SeriesSchedule, reads: Iterable[int | timedelta], start: UtcTime
 ) -> UtcTime:
     """戦略の窓が遡る最初の足の開始（能力検査の履歴の分。D06 §18.9 の 2）。"""
@@ -406,7 +407,7 @@ def build_mt5_run_parts(
         # 執行系列を戦略も読むなら、履歴の分も照合と報告の区間に入れる（D06 §18.9 の 2・4）。
         schedule = schedules.get(series)
         start = (
-            _reads_start(schedule, reads[series], run_interval.start)
+            reads_start(schedule, reads[series], run_interval.start)
             if schedule is not None and series in reads
             else run_interval.start
         )
@@ -425,7 +426,7 @@ def build_mt5_run_parts(
         schedule = schedules.get(series)
         if schedule is None:
             continue
-        start = _reads_start(schedule, series_reads, run_interval.start)
+        start = reads_start(schedule, series_reads, run_interval.start)
         reports.append(
             _series_report(
                 observation,

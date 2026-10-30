@@ -41,6 +41,7 @@ __all__ = [
     "RunManifest",
     "SeriesCoverageReport",
     "config_digest_of",
+    "config_mapping",
     "legacy_config_digest_of",
 ]
 
@@ -154,6 +155,23 @@ class DataCapabilityReport:
             raise KernelValueError("a runnable capability report has nothing to diagnose")
 
 
+def config_mapping(config: RunConfig, *, omit: frozenset[str] = frozenset()) -> dict[str, object]:
+    """`RunConfig` を正規化エンコードの mapping にする（D02 §9.3。dataclass と同じキー）。
+
+    封印の snapshot と partition の並び（`sealed_reads`）は**空のときキーを除く**（D06 v1.18 案
+    §9.3 の 1・4、仮置き R4b-5）。除いた mapping は項目を足す前の `RunConfig` の mapping と同じ
+    なので、既存の run の `ConfigDigest`・`RunId`・run manifest は変わらない。`omit` は旧い形の
+    照合で除く項目（`run_end`）。
+    """
+    if not isinstance(config, RunConfig):
+        raise KernelValueError("config_mapping requires a RunConfig")
+    return {
+        item.name: getattr(config, item.name)
+        for item in fields(config)
+        if item.name not in omit and not (item.name == "sealed_reads" and not config.sealed_reads)
+    }
+
+
 def config_digest_of(
     config: RunConfig,
     *,
@@ -178,7 +196,7 @@ def config_digest_of(
     if not isinstance(calendar_ref, str) or not calendar_ref:
         raise KernelValueError("config_digest_of requires a non-empty calendar reference")
     payload = {
-        "config": config,
+        "config": config_mapping(config),
         "symbol_spec_ref": symbol_spec_ref,
         "calendar_ref": calendar_ref,
         "timeframe_def_refs": tuple(timeframe_def_refs),
@@ -209,9 +227,7 @@ def legacy_config_digest_of(
         raise KernelValueError("legacy_config_digest_of requires a SymbolSpecRef")
     if not isinstance(calendar_ref, str) or not calendar_ref:
         raise KernelValueError("legacy_config_digest_of requires a non-empty calendar reference")
-    legacy = {
-        item.name: getattr(config, item.name) for item in fields(config) if item.name != "run_end"
-    }
+    legacy = config_mapping(config, omit=frozenset({"run_end"}))
     payload = {
         "config": legacy,
         "symbol_spec_ref": symbol_spec_ref,

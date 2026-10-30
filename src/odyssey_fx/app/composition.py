@@ -23,7 +23,7 @@ import platform
 import secrets
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
@@ -47,7 +47,8 @@ from odyssey_fx.app.config.research_policy import (
     load_research_policy_registry,
     research_policy_registry_path,
 )
-from odyssey_fx.app.mt5_run import build_mt5_run_parts, publication_rows
+from odyssey_fx.app.final_pending import pending_final_validation
+from odyssey_fx.app.mt5_run import DEFAULT_APPROVED_LIST, build_mt5_run_parts, publication_rows
 from odyssey_fx.backtest.application.run_backtest import RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig, RunEndMode
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
@@ -113,6 +114,7 @@ from odyssey_fx.evaluation.application.run_experiment import (
     PreparedSearch,
     PreparedTrial,
     RecordedSearch,
+    RefusalKind,
     ReproductionReport,
     ReproductionRow,
     ReproductionVerdict,
@@ -210,7 +212,7 @@ from odyssey_fx.marketdata.domain.errors import (
     RefillStoreInconsistent,
     TimeLabelCorrectionFailed,
 )
-from odyssey_fx.marketdata.domain.integrity import CheckResult
+from odyssey_fx.marketdata.domain.integrity import CheckResult, IntegrityReport
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.refill import (
     CalendarRef,
@@ -973,6 +975,27 @@ class _RunPlan:
     publication_log: PublicationLog
     #: リポジトリの基点（MT5 経路の run が承認済みの時刻の規則の表の一覧を読む。D06 §18.9 の 3）。
     repo_root: Path = Path(".")
+    #: 読み取りの面を外から渡す口（`None` なら `inputs` から組み立てる。`ReadSurfaces`）。
+    surfaces: ReadSurfaces | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadSurfaces:
+    """run の読み取りの面を外から渡す口（R4b。研究の run は使わない）。
+
+    最終検証の run（`app.final_run`）は、記録票の snapshot と関所の許可の並びが指す snapshot から
+    照合済みの足・as-of ビュー・執行系列ビュー・公開フィードの組み立てを作って渡す（D09 §9.10.3 の
+    4、D06 v1.18 案 §3）。`observation`・`integrity`・`approved_list` は MT5 の観測・能力検査に渡す
+    検査報告・承認済みの時刻の規則の表の一覧（R4b の番号付きの仮置き）。
+    """
+
+    verified: VerifiedPartitionBars
+    market_data: AsOfView
+    execution_view: ExecutionSeriesView
+    feed: Callable[..., PublicationFeed]
+    observation: Mt5Observation | None
+    integrity: IntegrityReport
+    approved_list: Path = DEFAULT_APPROVED_LIST
 
 
 def _plan_run(
@@ -1068,20 +1091,29 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
     # 履歴窓は受け口が構造だけを要求するので、合成が層をまたいで言い換える必要はない。
     # 読み取りの関門の内容照合は run の中で1度だけ行い、3つの読み取り経路で共有する
     # （`SnapshotInputs.verified_bars`）。照合の条件と失敗の型・文言は変わらない。
-    verified = inputs.verified_bars("AsOfView")
-    market_data = AsOfView(
-        snapshot=inputs.snapshot,
-        allowed_partitions=inputs.allowed_partitions,
-        schedules=inputs.schedules,
-        partition_bars=verified,
-        publication_log=plan.publication_log,
+    surfaces = plan.surfaces
+    verified = inputs.verified_bars("AsOfView") if surfaces is None else surfaces.verified
+    market_data = (
+        AsOfView(
+            snapshot=inputs.snapshot,
+            allowed_partitions=inputs.allowed_partitions,
+            schedules=inputs.schedules,
+            partition_bars=verified,
+            publication_log=plan.publication_log,
+        )
+        if surfaces is None
+        else surfaces.market_data
     )
-    execution_view = ExecutionSeriesView(
-        snapshot=inputs.snapshot,
-        series=experiment.execution_series,
-        allowed_partitions=inputs.allowed_partitions,
-        partition_bars=verified,
-        schedule=inputs.schedules[experiment.execution_series],
+    execution_view = (
+        ExecutionSeriesView(
+            snapshot=inputs.snapshot,
+            series=experiment.execution_series,
+            allowed_partitions=inputs.allowed_partitions,
+            partition_bars=verified,
+            schedule=inputs.schedules[experiment.execution_series],
+        )
+        if surfaces is None
+        else surfaces.execution_view
     )
     levels = experiment.execution_policy.resolution_hierarchy.levels
     # 系列ごとの足は、as-of ビューが関門を通した写しから1度だけ作った読み取り面を使い回す
@@ -1090,7 +1122,9 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
     bars_of = {series: surface.bars_or_empty(series) for series in inputs.schedules}
     # MT5 経路の snapshot なら、約定の側の 1 分足のビュー・被覆の報告・表22 を組み立てる
     # （D06 §18.2・§18.9・§18.10）。HistData の経路では何も足さない（D06 §18.1）。
-    observation = Mt5Observation.from_snapshot(inputs.snapshot)
+    observation = (
+        Mt5Observation.from_snapshot(inputs.snapshot) if surfaces is None else surfaces.observation
+    )
     mt5_parts = (
         None
         if observation is None
@@ -1104,6 +1138,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
             calendar=plan.calendar,
             run_interval=experiment.run_interval,
             repo_root=plan.repo_root,
+            approved_list=DEFAULT_APPROVED_LIST if surfaces is None else surfaces.approved_list,
             publication_log=plan.publication_log,
         )
     )
@@ -1112,7 +1147,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
     feed = (
         PublicationFeed(events=())
         if mt5_parts is not None and mt5_parts.has_shortfall
-        else build_feed(
+        else (build_feed if surfaces is None else surfaces.feed)(
             inputs.snapshot,
             inputs.allowed_partitions,
             verified,
@@ -1163,7 +1198,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
         symbol_spec=plan.spec,
         symbol_spec_ref=plan.symbol_spec_ref,
         calendar_ref=plan.calendar_ref,
-        integrity=inputs.snapshot.report,
+        integrity=inputs.snapshot.report if surfaces is None else surfaces.integrity,
         trace_sink=FileSystemTraceSink(root=artifacts_root, run_id=plan.run_id, replace=replace),
         result_writer=FileSystemResultWriter(root=artifacts_root),
         code_digest=plan.code,
@@ -2089,6 +2124,25 @@ def run_search_experiment(
         identity_of=recompute_experiment_id,
         repo_root=repo_root,
     )
+    # 同じ版の最終検証の申請が状態 B・C の間は、記録票の保存の前に拒否する（終了コード 5。D09
+    # 仮置き R2-29 の (1)・R4b-9。再実行の退避でやり直しの再計算の材料が動かないようにする）。
+    # 手元の `final/` と作業木の最終検証の台帳だけを見る（関所・origin の消費の記録は読まない）。
+    pending = pending_final_validation(store.directory, repo_root)
+    if pending is not None:
+        return ExperimentRunOutcome(
+            manifest=manifest,
+            result=ExperimentRefusal(
+                kind=RefusalKind.FINAL_VALIDATION_PENDING,
+                experiment_id=manifest.experiment_id,
+                detail=(
+                    f"{pending}; resume it (--resume) or close it (--close-failed) with"
+                    " `experiment final-validate` before running this version again (D09"
+                    " 仮置き R2-29 の (1))"
+                ),
+            ),
+            directory=store.directory,
+            expected_run_id=None,
+        )
     lineage = _lineage_request(loaded, store)
     runner, planner = _search_wiring(loaded, parts, artifacts_root)
     use_case = RunExperiment(

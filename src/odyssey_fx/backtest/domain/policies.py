@@ -32,6 +32,7 @@ from odyssey_fx.common.refs import CompiledStrategyRef, PolicyRef, SnapshotRef
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.bar import BarKey
+from odyssey_fx.marketdata.domain.final_grant import GrantedRead, require_ordered_reads
 from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 
 __all__ = [
@@ -406,6 +407,12 @@ class RunConfig:
 
     `run_end` は run の終わり方（2026-10-21 改訂。`RunEndMode`）。既定値 `MARK_TO_MARKET` も
     含めて常に `ConfigDigest` の入力に入る（dataclass の全項目がダイジェストに入る。D13-23 (a)）。
+
+    `sealed_reads` は封印の snapshot と partition の並び（D06 v1.18 案 §3。仮置き R4b-1・R4b-2・
+    R4b-4）。最終検証の run だけが空でない値を持ち（合成が関所の許可の並びから組み立てる）、
+    単一実行の設定・実験設定にはキーが無い。**空のときは `ConfigDigest` の材料に入れない**
+    （`backtest.trace.manifest.config_mapping`）ので、既存の run の識別子は変わらない。読む許可
+    ではない（読ませるのは関所の最終評価の許可だけ。ADR-0037 第8項）。
     """
 
     run_interval: Interval
@@ -420,10 +427,12 @@ class RunConfig:
     execution_series: SeriesId
     seed: int = 0
     run_end: RunEndMode = RunEndMode.MARK_TO_MARKET
+    sealed_reads: tuple[GrantedRead, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_interval, Interval):
             raise KernelValueError("RunConfig.run_interval must be an Interval")
+        require_ordered_reads(self.sealed_reads, "RunConfig.sealed_reads")
         if not isinstance(self.run_end, RunEndMode):
             raise KernelValueError("RunConfig.run_end must be a RunEndMode")
         if not isinstance(self.snapshot_ref, SnapshotRef):

@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -29,8 +28,11 @@ from odyssey_fx.app.final_validation import (
     FinalRunPlan,
     FinalRunPreparation,
 )
+from odyssey_fx.common.ids import ExperimentId
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
+from odyssey_fx.evaluation.adapters.review_store import review_line_bytes
+from odyssey_fx.evaluation.domain.adoption_review import FixedTrial, ReviewResult
 from odyssey_fx.evaluation.domain.final_validation import (
     CandidateKey,
     FinalEvaluationPermit,
@@ -64,6 +66,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
 )
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef, TimeRuleVariant
 from tests.fixtures.evaluation import trial_ledger
+from tests.fixtures.evaluation.adoption_review import review_entry, review_lines
 from tests.fixtures.evaluation.search_units import standard as evaluation_standard
 from tests.fixtures.git_origin import git, publish_repo
 from tests.fixtures.synthetic import market
@@ -71,6 +74,7 @@ from tests.fixtures.synthetic import snapshots as synthetic
 
 __all__ = [
     "ACQUISITION_START",
+    "window_config",
     "T_FIX",
     "FakeRunner",
     "FinalWorkspace",
@@ -205,6 +209,10 @@ class FakeRunner:
     extra_allowed: tuple[tuple[str, PartitionId], ...] = ()
     calls: list[str] = field(default_factory=list)
     trade_count: int = 40
+    #: 予測の `RunId` に足す文字（入力が変わったやり直しを作る。仮置き R2-22）。
+    run_suffix: str = ""
+    #: run の成果物の置き場（`plan.run_directories`。やり直しの条件 R2-23・R2-24 の確かめに使う）。
+    run_root: Path | None = None
 
     def prepare(self, facts: CandidateFacts, experiment_dir: Path) -> FinalRunPreparation:
         self.calls.append("prepare")
@@ -226,7 +234,8 @@ class FakeRunner:
         return FinalRunPlan(
             predicted=Paired.build(
                 lambda variant: PredictedRun(
-                    config_digest=f"config-{variant.value}", run_id=f"run-{variant.value}"
+                    config_digest=f"config-{variant.value}",
+                    run_id=f"run-{variant.value}{self.run_suffix}",
                 )
             ),
             research_partitions=research,
@@ -241,6 +250,11 @@ class FakeRunner:
                         *self.extra_allowed,
                     }
                 )
+            ),
+            run_directories=()
+            if self.run_root is None
+            else tuple(
+                self.run_root / f"run-{variant.value}{self.run_suffix}" for variant in VARIANTS
             ),
         )
 
@@ -360,7 +374,7 @@ class FinalWorkspace:
         return path
 
 
-def _window_config(repo: Path) -> None:
+def window_config(repo: Path) -> None:
     path = repo / "configs" / "acquisition" / "oanda_mt5_m1_sealed_window.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -379,30 +393,48 @@ def _window_config(repo: Path) -> None:
     )
 
 
-def write_review(repo: Path, keys: Sequence[CandidateKey], *, result: str = "PROCEED") -> None:
+def _fixed(trials: Paired[int] | None, variant: Variant) -> FixedTrial:
+    index = 2 if trials is None else trials.of(variant)
+    return FixedTrial(trial_index=index, assignment_digest=ContentDigest.sha256("d" * 64))
+
+
+def write_review(
+    repo: Path,
+    keys: Sequence[CandidateKey],
+    *,
+    result: str = "PROCEED",
+    candidate_fixed: bool = True,
+    trials: Paired[int] | None = None,
+) -> None:
+    """採用審査の台帳（R3 の形。行の鎖つき。D16 v0.2 §10.2）に候補ごとの結果の行を書く。"""
     path = repo / "research" / "adoption_reviews.jsonl"
-    lines = [
-        json.dumps(
-            {
-                "schema_version": 1,
-                "experiment_id": key.experiment_id,
-                "execution": key.execution,
-                "result": result,
-                "fixed_trials": {
-                    variant.value: {"trial_index": 2, "assignment_digest": "d" * 64}
-                    for variant in VARIANTS
-                },
-            },
-            sort_keys=True,
+    entries = [
+        replace(
+            review_entry(
+                ExperimentId(ContentDigest.sha256(key.experiment_id)),
+                key.execution,
+                result=ReviewResult(result),
+                nonce=f"{index + 1:x}" * 32,
+            ),
+            fixed_trials=Paired(
+                standard=_fixed(trials, Variant.STANDARD),
+                candidate=_fixed(trials, Variant.CANDIDATE) if candidate_fixed else None,
+            ),
         )
-        for key in keys
+        for index, key in enumerate(keys)
     ]
-    path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    path.write_bytes(b"".join(review_line_bytes(line) for line in review_lines(entries)))
 
 
 def write_fixation(
-    repo: Path, key: CandidateKey, *, t_fix: UtcTime = T_FIX, length_days: int = 364
+    repo: Path,
+    key: CandidateKey,
+    *,
+    t_fix: UtcTime = T_FIX,
+    length_days: int = 364,
+    trials: Paired[int] | None = None,
 ) -> None:
+    chosen = trials or Paired(standard=2, candidate=2)
     path = repo / "research" / "fixations" / f"{key.experiment_id}_{key.execution}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -412,8 +444,8 @@ def write_fixation(
         f't_fix: "{t_fix}"\n'
         f"length_days: {length_days}\n"
         "fixed_trials:\n"
-        "  standard: 2\n"
-        "  candidate: 2\n",
+        f"  standard: {chosen.standard}\n"
+        f"  candidate: {chosen.candidate}\n",
         encoding="utf-8",
     )
 
@@ -429,7 +461,7 @@ def build_workspace(
     (repo / "research").mkdir()
     (repo / "research" / "final_validations.jsonl").write_bytes(b"")
     (repo / "research" / "quality_access_log.jsonl").write_bytes(b"")
-    _window_config(repo)
+    window_config(repo)
     shutil.copytree(
         _ROOT / "docs" / "design" / "time_rules", repo / "docs" / "design" / "time_rules"
     )
@@ -452,6 +484,8 @@ def build_workspace(
     )
     if review:
         write_review(repo, [key])
+    else:
+        (repo / "research" / "adoption_reviews.jsonl").write_bytes(b"")
     if fixation:
         write_fixation(repo, key)
     experiment_dir = repo / "runs" / "experiments" / "exp_cand" / "v1"

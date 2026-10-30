@@ -333,6 +333,8 @@ class RefusalKind(Enum):
     MANIFEST_CONFLICT = "MANIFEST_CONFLICT"
     #: `runs/<expected_run_id>/` があり、再利用できない（D07 §19.6 の手順3・5）。
     RUN_ARTIFACT_CONFLICT = "RUN_ARTIFACT_CONFLICT"
+    #: 同じ版の最終検証の申請が状態 B・C（D09 仮置き R2-29 の (1)・R4b-9。合成が確かめる）。
+    FINAL_VALIDATION_PENDING = "FINAL_VALIDATION_PENDING"
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,7 +455,7 @@ def _initial_balance(prepared: PreparedSearch, variant: Variant) -> Money:
     raise KernelValueError("a search with a selected trial has a unit of every variant")
 
 
-def _segment_failure(end: PathSegmentEnd) -> str:
+def segment_failure(end: PathSegmentEnd) -> str:
     """区間の run の失敗の理由（経路の要約の `end_reason`。D13 §4.6 の表 2 の E5）。"""
     if end.run_status is not RunStatus.COMPLETED:
         return f"the segment run ended {end.run_status.value} (D13 §4.5。仮置き 16)"
@@ -994,7 +996,7 @@ class RunExperiment:
             if not done.succeeded:
                 end = PathEnd.INCOMPLETE
                 end_segment = segment.segment_index
-                end_reason = _segment_failure(done)
+                end_reason = segment_failure(done)
                 break
             settled = done.settled_equity
             if settled is None or done.trade_count is None:  # pragma: no cover - succeeded

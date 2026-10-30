@@ -24,10 +24,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from odyssey_fx.app.final_pending import (
+    FINAL_DIRECTORY,
+    FINAL_EVALUATION_FILE,
+    FINAL_LEDGER_PATH,
+    FINAL_LOCK_FILE,
+    PERMIT_FILE,
+)
 from odyssey_fx.common.canonical import encode
 from odyssey_fx.evaluation.domain.final_validation import CandidateKey, FinalLedgerResult
 
 __all__ = [
+    "ATTEMPTS_DIRECTORY",
     "ATTEMPTS_FILE",
     "FINAL_DIRECTORY",
     "FINAL_EVALUATION_FILE",
@@ -40,27 +48,26 @@ __all__ = [
     "FinalLedger",
     "FinalLedgerError",
     "LedgerRow",
+    "append_attempt",
     "append_ledger_row",
     "candidate_payload",
     "create_lock",
     "final_directory",
     "parse_final_ledger",
+    "read_attempts",
     "read_final_ledger",
     "write_json_once",
 ]
 
-#: 最終検証の台帳（リポジトリの根からの相対パス。D09 §9.10.5）。
-FINAL_LEDGER_PATH: Final = Path("research") / "final_validations.jsonl"
 #: 台帳の追記のロック（版管理しない。`.gitignore`）。
 FINAL_LEDGER_LOCK_PATH: Final = Path("research") / "final_validations.lock"
-#: 実験の版のディレクトリの下の最終検証の置き場（D09 §9.10.5）。
-FINAL_DIRECTORY: Final = "final"
-FINAL_LOCK_FILE: Final = "final.lock"
-PERMIT_FILE: Final = "permit.json"
-FINAL_EVALUATION_FILE: Final = "final_evaluation.json"
 REPORT_FILE: Final = "report.md"
-#: やり直しの試みの記録（仮置き R2-25。未決なので R4 では書かない）。
+#: 段 5 の試みの記録（仮置き R2-25・R2-27。2026-10-30 に決定。R4b）。試みを始める時（段 5 に
+#: 入る前）に `STARTED` の行を、その試みが消費の後の失敗で終わったら `FAILED` の行を足す。
+#: 最初の試み（段 4 の直後）も 1 回と数える（やり直しの回数は `STARTED` の行の数 − 1。R4b）。
 ATTEMPTS_FILE: Final = "attempts.jsonl"
+#: やり直しで退けた前の試みの途中の成果物の置き場（仮置き R2-24。`attempts/<n>/`）。
+ATTEMPTS_DIRECTORY: Final = "attempts"
 #: 台帳の行の書式の版。
 LEDGER_SCHEMA_VERSION: Final = 1
 
@@ -78,6 +85,7 @@ _ROW_KEYS: Final = frozenset(
         "consumption_commit",
         "combined_verdict",
         "resume_count",
+        "resume_failures",
         "prior_final_validations",
         "reason",
         "final_evaluation_sha256",
@@ -265,6 +273,46 @@ def append_ledger_row(repo_root: Path, values: Mapping[str, Any]) -> LedgerRow:
         return again.rows[-1]
     finally:
         lock.unlink(missing_ok=True)
+
+
+def read_attempts(final_dir: Path) -> list[dict[str, Any]]:
+    """`attempts.jsonl` の行（無ければ空。読めなければ `FinalLedgerError`。仮置き R2-25）。"""
+    path = Path(final_dir) / ATTEMPTS_FILE
+    if not (path.exists() or path.is_symlink()):
+        return []
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise FinalLedgerError(f"{ATTEMPTS_FILE} is not a plain file")
+        data = path.read_bytes()
+    except OSError as exc:
+        raise FinalLedgerError(f"{ATTEMPTS_FILE} cannot be read: {exc}") from exc
+    if data and not data.endswith(b"\n"):
+        raise FinalLedgerError(f"{ATTEMPTS_FILE} ends with a fragment")
+    rows: list[dict[str, Any]] = []
+    for number, raw in enumerate(data.split(b"\n")[:-1] if data else (), start=1):
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise FinalLedgerError(f"{ATTEMPTS_FILE} is not JSON", number) from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("event") not in ("STARTED", "FAILED")
+            or not isinstance(payload.get("attempt"), int)
+            or encode(payload) != raw
+        ):
+            raise FinalLedgerError(f"{ATTEMPTS_FILE} has an unknown row", number)
+        rows.append(payload)
+    return rows
+
+
+def append_attempt(final_dir: Path, payload: Mapping[str, Any]) -> None:
+    """`attempts.jsonl` に 1 行足して同期する（失敗は `OSError`）。"""
+    path = Path(final_dir) / ATTEMPTS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as handle:
+        handle.write(encode(dict(payload)) + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def final_directory(experiment_dir: Path, execution: int) -> Path:
