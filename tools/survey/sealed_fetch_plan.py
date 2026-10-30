@@ -12,8 +12,13 @@ API の時刻に直す（PR #109 の仮置き S2b-9）。作った計画は Wind
   1 か月（全期間取得と同じ。D12 付録 K-16）。最初の月は API の時刻で allowed_start を直した時刻から
   始め、許可の窓より前を要求しない（ADR-0037 第4項の 3）。窓の端の月の切れ端のうち、UTC で週末の
   休場（金曜 17:00〜日曜 17:00 ニューヨーク）に収まるものは要求しない（足が存在すべき分が無く、
-  0 本の月になるため。PR #109 の仮置き S2b-14）。取得の開始時点の値では 34 か月 × 8 通貨
-  = 272 要求。
+  0 本の月になるため。PR #109 の仮置き S2b-14）。同じ考えを窓の終わりの側にも当て、各通貨の
+  最後の要求の終わりが週末の休場の中に落ちるときは、その終わりを直前の金曜 17:00 ニューヨーク
+  （閉場）に切り詰める（休場の中の部分は足が無いので要求しない。足は 1 本も失わない）。こうすると
+  取引データがそろう金曜の閉場の後に起動できる（要求の時点より後を含む要求は出さない規則
+  ADR-0037 第4項の 3 はそのまま。2026-10-30 の人間の決定「(a) 最小の変更」。D15 §0.5.12）。
+  途中の月の境目と要求の始まりは変えない（API の時刻の 1 か月の並びを途切れなく保つ）。取得の
+  開始時点の値では 34 か月 × 8 通貨 = 272 要求、最後の要求の終わりは 2026-10-30T21:00Z。
 - **定期取得**（``periodic``）: 初回（前の回の終わりを渡さない）は [取得の開始時点, 次の取引週の
   始まり)（D15-3b (a)「初回だけ 1 週間分」）。2 回目以降は [前の回の終わり, 実行の時点の月の始まり
   以前の最後の取引週の境目)（前の月の終わり以前の最後の取引週の境目。PR #109 の要決定 S2b-7 (a)）。
@@ -39,7 +44,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -74,6 +79,7 @@ __all__ = [
     "SealedPlan",
     "bulk_requests",
     "build_plan",
+    "clip_to_friday_close",
     "periodic_window",
     "weekend_only",
 ]
@@ -124,13 +130,47 @@ def from_api(
     return api - timedelta(hours=offset), offset
 
 
-def weekend_only(utc_from: datetime, utc_to: datetime) -> bool:
-    """[utc_from, utc_to) が 1 つの週末の休場（金曜 17:00〜日曜 17:00 ニューヨーク）に収まるか。"""
-    week_open = next_trading_week_start(trading_week_start(UtcTime(utc_from))).value
+def _weekend_after(moment: datetime) -> tuple[datetime, datetime]:
+    """``moment`` を含む取引週の終わりの週末の休場 [金曜 17:00, 日曜 17:00) ニューヨーク（UTC）。"""
+    week_open = next_trading_week_start(trading_week_start(UtcTime(moment))).value
     local_open = week_open.astimezone(TRADING_WEEK_ZONE)
     friday = datetime.combine(local_open.date() - timedelta(days=2), time(17, 0))
     friday_close = UtcTime.from_local(friday, TRADING_WEEK_ZONE).value
+    return friday_close, week_open
+
+
+def weekend_only(utc_from: datetime, utc_to: datetime) -> bool:
+    """[utc_from, utc_to) が 1 つの週末の休場（金曜 17:00〜日曜 17:00 ニューヨーク）に収まるか。"""
+    friday_close, week_open = _weekend_after(utc_from)
     return friday_close <= utc_from and utc_to <= week_open
+
+
+def clip_to_friday_close(utc_to: datetime) -> datetime:
+    """要求の終わりが週末の休場の中に落ちるなら、直前の金曜 17:00 ニューヨーク（閉場）を返す。
+
+    「中」は金曜の閉場より後で日曜の開場より前（両端を含まない）。閉場・開場ちょうどや平日の
+    終わりはそのまま返す（2026-10-30 の人間の決定「(a) 最小の変更」。D15 §0.5.12）。
+    """
+    friday_close, week_open = _weekend_after(utc_to)
+    return friday_close if friday_close < utc_to < week_open else utc_to
+
+
+def _clip_last(table: TimeRuleTable, request: SealedRequest) -> SealedRequest:
+    """その通貨の最後の要求の終わりを、週末の休場の中なら金曜の閉場に切り詰める。
+
+    API の時刻と変換は表の標準の組で直し（``to_api``）、受入れと同じ読み方（終わりは 1 分前の
+    暦日で表を引く ``from_api``）で同じ UTC に戻ることを確かめる。
+    """
+    clipped = clip_to_friday_close(request.utc_to)
+    if clipped == request.utc_to:
+        return request
+    api_to, offset = to_api(table, request.pair, clipped)
+    back, back_offset = from_api(table, request.pair, api_to, exclusive_end=True)
+    if (back, back_offset) != (clipped, offset) or not request.utc_from < clipped:
+        raise SealedWindowError(
+            f"{request.rid}: 終わりを金曜の閉場 {clipped.isoformat()} に切り詰められない"
+        )
+    return replace(request, api_to=api_to, utc_to=clipped, offset_to_hours=offset)
 
 
 def _month_start(year: int, month: int) -> datetime:
@@ -149,13 +189,19 @@ def _pairs(window: SealedWindowConfig) -> list[str]:
 
 
 def bulk_requests(window: SealedWindowConfig, table: TimeRuleTable) -> list[SealedRequest]:
-    """一括取得の要求（通貨の順、各通貨の中は古い月から）。"""
+    """一括取得の要求（通貨の順、各通貨の中は古い月から）。
+
+    各通貨の最後の要求の終わりだけを ``_clip_last`` で金曜の閉場に切り詰める（途中の月の境目は
+    API の時刻の月の境目のまま。定期取得の窓の終わりは日曜 17:00 の取引週の境目で、休場の中に
+    落ちないので当てない）。
+    """
     if window.acquisition_start is None:
         raise SealedWindowError(
             "取得の開始時点が空。一括取得の窓の終わりが決まらない（ADR-0037 第4項の 3）"
         )
     out: list[SealedRequest] = []
     for pair in _pairs(window):
+        own: list[SealedRequest] = []
         api_start, _ = to_api(table, pair, window.allowed_start.value)
         api_end, _ = to_api(table, pair, window.acquisition_start.value)
         month = _month_start(api_start.year, api_start.month)
@@ -166,7 +212,7 @@ def bulk_requests(window: SealedWindowConfig, table: TimeRuleTable) -> list[Seal
             utc_hi, off_hi = from_api(table, pair, hi, exclusive_end=True)
             if lo < hi and not weekend_only(utc_lo, utc_hi):
                 tag = f"{month.year:04d}-{month.month:02d}"
-                out.append(
+                own.append(
                     SealedRequest(
                         rid=f"S-{pair}-{tag}",
                         pair=pair,
@@ -181,6 +227,9 @@ def bulk_requests(window: SealedWindowConfig, table: TimeRuleTable) -> list[Seal
                     )
                 )
             month = nxt
+        if own:
+            own[-1] = _clip_last(table, own[-1])
+        out.extend(own)
     return out
 
 
