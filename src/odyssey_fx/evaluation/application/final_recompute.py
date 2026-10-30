@@ -115,6 +115,8 @@ class _Evaluated:
     result: BacktestResult
     metrics: tuple[MetricRecord, ...]
     status: EvaluationStatus
+    result_digest: ContentDigest
+    manifest: RunManifest
 
 
 class _Research:
@@ -149,42 +151,54 @@ class _Research:
         run_evaluation_id: ContentDigest,
         result_digest: ContentDigest,
     ) -> _Evaluated:
-        """保存済みの run を評価し直し、束縛と結果のダイジェストを確かめる（手順 1・4）。"""
+        """保存済みの run を評価し直し、束縛と結果のダイジェストを確かめる（手順 1・4）。
+
+        評価し直した結果は同じ `RunId` の記録の間で使い回すが、束縛（run manifest の
+        `ConfigDigest` と環境）・保存済みの評価・記録の結果のダイジェストとの照合は、呼ぶたびに
+        その記録の値で行う（同じ run を共有する別の記録の誤りを見落とさない）。
+        """
         cached = self._cache.get(run_id)
         if cached is None:
             manifest = self.repository.read_manifest(run_id)
             if not isinstance(manifest, RunManifest):
                 raise _Mismatch(f"{label}: the run manifest of {run_id} cannot be read")
-            code, lock, env = self.environment
-            if (
-                manifest.config_digest != config_digest
-                or manifest.code_digest != code
-                or manifest.lock_digest != lock
-                or manifest.env_digest != env
-            ):
-                raise _Mismatch(
-                    f"{label}: the run manifest of {run_id} is not bound to the recorded"
-                    " configuration and environment"
-                )
             result = self.repository.read_result(run_id)
             if not isinstance(result, BacktestResult):
                 raise _Mismatch(f"{label}: the result of {run_id} cannot be read")
             report = self.evaluator.evaluate(
                 result, self.repository, self.manifest.metric_set_version, self.calendar
             )
-            cached = _Evaluated(result=result, metrics=report.metrics, status=report.status)
-            stored = self.repository.read_evaluation(run_id, RunEvaluationId(run_evaluation_id))
-            if not isinstance(stored, StoredEvaluation):
-                raise _Mismatch(f"{label}: the stored evaluation of {run_id} cannot be read")
-            if (
-                report.manifest.result_digest != result_digest
-                or stored.result_digest != result_digest
-                or report.status is not stored.status
-            ):
-                raise _Mismatch(
-                    f"{label}: the result digest recomputed from {run_id} differs from the record"
-                )
+            cached = _Evaluated(
+                result=result,
+                metrics=report.metrics,
+                status=report.status,
+                result_digest=report.manifest.result_digest,
+                manifest=manifest,
+            )
             self._cache[run_id] = cached
+        code, lock, env = self.environment
+        bound = cached.manifest
+        if (
+            bound.config_digest != config_digest
+            or bound.code_digest != code
+            or bound.lock_digest != lock
+            or bound.env_digest != env
+        ):
+            raise _Mismatch(
+                f"{label}: the run manifest of {run_id} is not bound to the recorded"
+                " configuration and environment"
+            )
+        stored = self.repository.read_evaluation(run_id, RunEvaluationId(run_evaluation_id))
+        if not isinstance(stored, StoredEvaluation):
+            raise _Mismatch(f"{label}: the stored evaluation of {run_id} cannot be read")
+        if (
+            cached.result_digest != result_digest
+            or stored.result_digest != result_digest
+            or cached.status is not stored.status
+        ):
+            raise _Mismatch(
+                f"{label}: the result digest recomputed from {run_id} differs from the record"
+            )
         return cached
 
     def unit(self, record: TrialRunRecord, config_digest: ConfigDigest) -> _Evaluated:

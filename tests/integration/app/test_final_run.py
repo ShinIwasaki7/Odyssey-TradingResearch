@@ -361,6 +361,37 @@ def test_a_tampered_research_record_stops_the_recomputation_before_consumption(
     assert not final_directory(directory, 1).exists()
 
 
+def test_a_wrong_digest_on_a_record_that_shares_its_run_is_caught(
+    env: _Env, tmp_path: Path
+) -> None:
+    """同じ run を共有する 2 つの試行記録の後の方だけの結果のダイジェストの誤りも見つける
+    （評価し直した結果を使い回しても、照合は記録ごとに行う。Codex 1 巡目）。"""
+    copy = tmp_path / "out"
+    shutil.copytree(env.clean, copy)
+    directory = copy / "runs/experiments/final_case/v1"
+    units = directory / "search" / "standard" / "units"
+    shared: dict[str, list[tuple[tuple[int, int, int], Path]]] = {}
+    for path in units.glob("*.json"):
+        if path.name.endswith(".start.json"):
+            continue
+        fold, phase, trial = path.stem.split("_")
+        order = (int(fold[1:]), 0 if phase == "TRAIN" else 1, int(trial[1:]))
+        run = json.loads(path.read_text())["run_id"]
+        shared.setdefault(json.dumps(run, sort_keys=True), []).append((order, path))
+    groups = [sorted(items) for items in shared.values() if len(items) > 1]
+    assert groups, "the synthetic search has no shared run"
+    later = groups[0][-1][1]
+    payload = json.loads(later.read_text())
+    payload["result_digest"]["hex"] = "0" * 64
+    later.write_text(json.dumps(payload))
+    outcome = _validate(env, tmp_path / "final_out", directory)
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.RECOMPUTATION_MISMATCH,
+    ), outcome.detail
+    assert not final_directory(directory, 1).exists()
+
+
 def test_1_the_production_run_validates_with_the_sealed_reads(env: _Env, tmp_path: Path) -> None:
     """受入テスト 1 を本番の run で: 消費・両組の run と評価・記録・台帳。予測 RunId が一致する。"""
     final_out = tmp_path / "final_out"
