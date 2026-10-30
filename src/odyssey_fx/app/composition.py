@@ -100,6 +100,7 @@ from odyssey_fx.evaluation.adapters.search_report import ledger_listing, write_s
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.evaluation.application.ports import (
+    BacktestRunner,
     ResultReadFailure,
     SegmentRunPlan,
     TrialLedgerContents,
@@ -251,6 +252,7 @@ __all__ = [
     "EvaluationOutcome",
     "ExperimentRunOutcome",
     "ReproductionOutcome",
+    "ReviewRunWiring",
     "RunOutcome",
     "SnapshotInputs",
     "TrialLedgerStop",
@@ -274,6 +276,7 @@ __all__ = [
     "recompute_experiment_id",
     "report_experiment",
     "reproduce_experiment",
+    "review_run_wiring",
     "run_experiment",
     "snapshot_store",
     "symbol_spec_ref_of",
@@ -2595,6 +2598,48 @@ def _reproduce_search(
         " run_id, result_digest, the selections and the passed balances",
         rows,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewRunWiring:
+    """採用審査の固定した試行の run の結線（D16 §4.2。R3）。
+
+    `prepared` は記録票の本文から組み立て直した探索の準備（記録票は保存済みのもの）、`runner` は
+    記録票に固定した単位の `RunConfig` だけを走らせる runner（成果物は `artifacts_root` に書く）。
+    """
+
+    prepared: PreparedSearch
+    runner: BacktestRunner
+
+
+def review_run_wiring(
+    *,
+    manifest: ExperimentManifest,
+    snapshots_root: Path,
+    repo_root: Path,
+    artifacts_root: Path,
+) -> ReviewRunWiring | str:
+    """記録票の本文だけから探索の準備を組み立て直し、固定した試行の run を結線する（D16 §4.2）。
+
+    別プロセスでの再現（`_reproduce_search`）と同じ手順で、元の実験設定ファイルは読まない。試行の
+    計画（割当・コンパイルの結果・予測 `ConfigDigest`）が記録票と食い違えば理由の文字列を返す
+    （審査はその組の検査を「判定できない」にする。run はしない）。
+    """
+    loaded = experiment_v2_from_texts(
+        {role: manifest.file(role).text for role in TEXT_ROLES},
+        {item.role.removeprefix("symbol:"): item.text for item in manifest.symbol_files()},
+        registry=INITIAL_CATALOG,
+        metric_set_versions=METRIC_SET_VERSIONS,
+    )
+    parts = _prepare_search(
+        loaded=loaded, snapshots_root=snapshots_root, repo_root=repo_root, registry=INITIAL_CATALOG
+    )
+    if parts.prepared.manifest.trials != manifest.trials:
+        return "the trials rebuilt from the manifest do not reach the recorded units"
+    rebuilt = replace(parts.prepared, manifest=manifest)
+    parts = replace(parts, prepared=rebuilt)
+    runner, _ = _search_wiring(loaded, parts, artifacts_root)
+    return ReviewRunWiring(prepared=rebuilt, runner=runner)
 
 
 def _tampering(manifest: ExperimentManifest, outcome: ExperimentOutcome) -> str | None:
