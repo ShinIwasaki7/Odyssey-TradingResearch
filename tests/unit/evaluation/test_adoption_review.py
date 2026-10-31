@@ -374,7 +374,7 @@ def _swap_fit(trades: Sequence[TradeRecord], calendar: TradingCalendar | None) -
 
 def test_the_holding_median_counts_the_trading_day_ends_each_trade_crosses() -> None:
     """D16 §7.4（2026-11-01 決定）: 保有中にまたいだニューヨーク 17 時の回数の中央値。"""
-    weekend = trade("2015-01-09T20:00:00Z", "2015-01-12T03:00:00Z")  # 金曜 15 時〜月曜 22 時
+    weekend = trade("2015-01-09T20:00:00Z", "2015-01-12T03:00:00Z")  # NY の金曜 15 時〜日曜 22 時
     three_days = trade("2015-01-05T10:00:00Z", "2015-01-07T23:00:00Z")  # 月・火・水の終わり
     intraday = trade("2015-01-13T09:00:00Z", "2015-01-13T13:15:00Z")
     # 週末（土日）は開場時間が無く取引日に数えない（D07 §5.5 の `N` と同じ）ので、週末またぎは 1。
