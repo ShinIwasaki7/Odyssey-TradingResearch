@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import time, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -58,7 +58,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialLedgerLine,
 )
 from odyssey_fx.evaluation.domain.variant import Paired
-from odyssey_fx.marketdata.domain.calendar import TradingCalendar
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar, WeeklyMoment
 from tests.fixtures.evaluation.adoption_review import (
     REPO_ROOT,
     review_entry,
@@ -326,6 +326,7 @@ def test_an_intraday_trade_with_a_wide_move_fits_every_row() -> None:
     # 0.02（入場のスプレッド）+ 0.01 + 0.01（滑り）÷ 0.50
     assert result.measures.fixed_cost_share == Decimal("0.08")
     assert result.measures.crossing_trades == 0
+    assert result.measures.holding_median_trading_days == 0  # 同じ取引日の中で決済
     # 窓（週の開場から 2 時間）は 5 日の取引時間（120 時間）の 1/60
     assert result.measures.time_share is not None
     assert abs(result.measures.time_share - Decimal(2) / Decimal(120)) < Decimal("1e-20")
@@ -351,6 +352,52 @@ def test_row_3_a_single_trade_across_the_day_end_needs_swap_rollover() -> None:
     rows = {row.row: row for row in result.rows}
     assert rows[CostModelRow.SWAP_ROLLOVER].capabilities == (Capability.SWAP_ROLLOVER,)
     assert result.measures.crossing_trades == 1
+
+
+_TWO_WEEKS = (
+    Interval(
+        start=UtcTime.parse("2015-01-04T22:00:00Z"), end=UtcTime.parse("2015-01-16T22:00:00Z")
+    ),
+)
+
+
+def _swap_fit(trades: Sequence[TradeRecord], calendar: TradingCalendar | None) -> CostFitResult:
+    return cost_model_fit(
+        rules=_rules(),
+        trades=trades,
+        intervals=_TWO_WEEKS,
+        calendar=calendar,
+        symbol=Symbol("USDJPY"),
+        account_currency=CurrencyCode("JPY"),
+    )
+
+
+def test_the_holding_median_counts_the_trading_day_ends_each_trade_crosses() -> None:
+    """D16 §7.4（2026-11-01 決定）: 保有中にまたいだニューヨーク 17 時の回数の中央値。"""
+    weekend = trade("2015-01-09T20:00:00Z", "2015-01-12T03:00:00Z")  # NY の金曜 15 時〜日曜 22 時
+    three_days = trade("2015-01-05T10:00:00Z", "2015-01-07T23:00:00Z")  # 月・火・水の終わり
+    intraday = trade("2015-01-13T09:00:00Z", "2015-01-13T13:15:00Z")
+    # 週末（土日）は開場時間が無く取引日に数えない（D07 §5.5 の `N` と同じ）ので、週末またぎは 1。
+    alone = _swap_fit([weekend], _calendar())
+    assert alone.measures.holding_median_trading_days == 1
+    result = _swap_fit([weekend, three_days, intraday], _calendar())
+    assert result.measures.holding_median_trading_days == 1  # 回数 [1, 3, 0] の中央値
+    assert result.measures.crossing_trades == 2
+    even = _swap_fit([three_days, intraday], _calendar())
+    assert even.measures.holding_median_trading_days == Decimal("1.5")  # 中央の 2 つの平均
+
+
+def test_the_holding_median_is_missing_without_trading_day_ends() -> None:
+    weekend = trade("2015-01-09T20:00:00Z", "2015-01-12T03:00:00Z")
+    # 週の開場と閉場の時刻が違うと取引日の境界が 1 つに決まらない（取引日単位の休場は外す）。
+    uneven = replace(_calendar(), weekly_close=WeeklyMoment(weekday=4, at=time(16, 0)), closures=())
+    assert uneven.trading_day_boundary is None
+    result = _swap_fit([weekend], uneven)
+    assert _outcomes(result)[CostModelRow.SWAP_ROLLOVER] is FitOutcome.UNDETERMINED
+    assert result.measures.holding_median_trading_days is None
+    assert result.measures.crossing_trades is None
+    unreadable = _swap_fit([weekend], None)
+    assert unreadable.measures.holding_median_trading_days is None
 
 
 def test_row_5_an_account_in_another_currency_needs_conversion() -> None:

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -855,7 +856,7 @@ class CostFitMeasures:
     fixed_cost_share: Decimal | None
     crossing_trades: int | None
     crossing_share: Decimal | None
-    holding_median: timedelta | None
+    holding_median_trading_days: Decimal | None
     settlement_currency: str
     account_currency: str
 
@@ -986,40 +987,48 @@ def _spread_rows(
     return outcome, measures
 
 
-def _median(spans: Sequence[timedelta]) -> timedelta | None:
-    if not spans:
+def _median_count(counts: Sequence[int]) -> Decimal | None:
+    """件数の中央値（偶数個なら中央の 2 つの平均。診断の中央値と同じ取り方）。空なら `None`。"""
+    if not counts:
         return None
-    ordered = sorted(spans)
+    ordered = sorted(counts)
     middle = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[middle]
-    return (ordered[middle - 1] + ordered[middle]) / 2
+    with localcontext(kernel_context()):
+        if len(ordered) % 2:
+            return decimal_from_int(ordered[middle])
+        return decimal_from_int(ordered[middle - 1] + ordered[middle]) / decimal_from_int(2)
 
 
 def _swap_row(
     trades: Sequence[TradeRecord], intervals: Sequence[Interval], calendar: TradingCalendar
 ) -> tuple[FitOutcome, dict[str, object]]:
-    """行 3（スワップ未計上）: 日替わり（取引日の終わり）をまたいだ完了取引（R1-5 (a)）。"""
-    ends: list[UtcTime] = []
+    """行 3（スワップ未計上）: 日替わり（取引日の終わり）をまたいだ完了取引（R1-5 (a)）。
+
+    保有時間の中央値は取引日の数（D16 §7.4。2026-11-01 決定）: 完了取引ごとに `(入場, 決済]` に
+    入る取引日の終わり（D07 §5.5 の `N` と同じ数え方。`trading_day_ends`）を数え、その中央値。
+    取引日の終わりが決まらないカレンダーでは値なし。
+    """
+    ends: set[UtcTime] = set()
     for interval in intervals:
         found = trading_day_ends(calendar, interval)
         if found is None:
             return FitOutcome.UNDETERMINED, {
                 "crossing_trades": None,
                 "crossing_share": None,
-                "holding_median": _median([trade.holding for trade in trades]),
+                "holding_median_trading_days": None,
             }
-        ends.extend(found)
-    crossing = sum(
-        1
+        ends.update(found)
+    ordered = sorted(ends)
+    counts = [
+        bisect_right(ordered, trade.exit_at.time) - bisect_right(ordered, trade.entry_at.time)
         for trade in trades
-        if any(trade.entry_at.time < end <= trade.exit_at.time for end in ends)
-    )
+    ]
+    crossing = sum(1 for count in counts if count >= 1)
     outcome = FitOutcome.NEEDS_CAPABILITY if crossing >= 1 else FitOutcome.FITS
     return outcome, {
         "crossing_trades": crossing,
         "crossing_share": _share(crossing, len(trades)),
-        "holding_median": _median([trade.holding for trade in trades]),
+        "holding_median_trading_days": _median_count(counts),
     }
 
 
@@ -1077,7 +1086,7 @@ def cost_model_fit(
         fixed_cost_share=value(spread_values, "fixed_cost_share", Decimal),
         crossing_trades=value(swap_values, "crossing_trades", int),
         crossing_share=value(swap_values, "crossing_share", Decimal),
-        holding_median=value(swap_values, "holding_median", timedelta),
+        holding_median_trading_days=value(swap_values, "holding_median_trading_days", Decimal),
         settlement_currency=settlement.code,
         account_currency=account_currency.code,
     )
