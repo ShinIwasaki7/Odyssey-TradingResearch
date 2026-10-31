@@ -234,7 +234,7 @@ upper = base(h_stop) + cpu(h_stop) + egress * 1 * (1 + tax)
 if cap == "-":
     verdict = "1 回の上限の決定なし"
 else:
-    verdict = f"上限 {float(cap):.2f} の内" if upper <= float(cap) else f"上限 {float(cap):.2f} を超える（起動しない。司令塔に報告）"
+    verdict = f"上限 {float(cap):.2f} の内" if upper <= float(cap) else f"上限 {float(cap):.2f} を超える（この表示は起動を止めない。go の前に司令塔に報告し、起動しない）"
 print(f"    {kind}: CPU クレジット {credits}。終了まで（{h_dead:.1f} 時間、送信 0.1 GB）約 {expect:.2f}、"
       f"上限（自動の停止 {h_stop:.1f} 時間、送信 1 GB）約 {upper:.2f}"
       f"（うち CPU の無制限の追加分 約 {cpu(h_stop):.2f}）→ {verdict}")
