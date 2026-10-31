@@ -150,6 +150,9 @@ if [[ -f "$STATE_FILE" ]]; then
   now=$(date +%s)
   hours=$("$PY_MAC" -I -c "import sys; print(f'{(int(sys.argv[1]) - int(sys.argv[2])) / 3600:.2f}')" "$now" "$LAUNCHED_AT_EPOCH")
   echo "== 費用の概算（起動 ${LAUNCHED_AT_UTC} から終了まで ${hours} 時間。Cost Explorer の反映は翌日）"
+  # 期限の延長（96_extend_limits.sh）の記録は状態のファイル（退避した state.env.done-*）に残る。
+  echo "  期限: ${LIMITS_SOURCE}。終了 $(utc_of "$DEADLINE_AT_EPOCH")・自動の停止 $(utc_of "$SHUTDOWN_AT_EPOCH")"
+  [[ -z "${EXTEND_COUNT:-}" ]] || echo "  CPU のクレジットの無制限の追加分は含まない（延長の見積りは 96_extend_limits.sh の表示）"
   "$PY_MAC" -I - "$hours" "$PRICE_INSTANCE_HOUR" "$PRICE_GP3_GB_MONTH" "$PRICE_IPV4_HOUR" "$TAX_RATE" "$PROBE_ROOT_GB" <<'PY'
 import sys
 h, inst, gp3, ip4, tax, gb = map(float, sys.argv[1:])

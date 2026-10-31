@@ -172,26 +172,68 @@ require_profile() {
 # --- 状態（インスタンス ID・起動の時刻など。秘密情報は書かない） -------------------------
 load_state() {
   [[ -f "$STATE_FILE" ]] || die "状態のファイルが無い: ${STATE_FILE}（10_launch.sh の前）"
+  # 延長の値は状態のファイルからだけ読む（環境変数では上書きできない）。
+  unset EXTEND_COUNT EXTEND_APPLIED_AT_UTC EXTEND_CUTOFF_AT_EPOCH EXTEND_DEADLINE_AT_EPOCH EXTEND_SHUTDOWN_AT_EPOCH
   # shellcheck disable=SC1090
   source "$STATE_FILE"
   : "${INSTANCE_ID:?}" "${LAUNCHED_AT_EPOCH:?}" "${PROBE_DATE:?}"
-}
-save_state() {  # save_state KEY VALUE
-  mkdir -p "$STATE_DIR"
-  touch "$STATE_FILE"
-  grep -v "^$1=" "$STATE_FILE" >"${STATE_FILE}.tmp" || true
-  printf '%s=%q\n' "$1" "$2" >>"${STATE_FILE}.tmp"
-  mv "${STATE_FILE}.tmp" "$STATE_FILE"
+  effective_limits
 }
 
-# 起動から終了の時刻（PROBE_DEADLINE_SECONDS）を超えていたら、終了（90_teardown.sh）以外は進めない。
+# 3 つの期限（UNIX 秒）を決める。状態に延長（96_extend_limits.sh が書く EXTEND_*_AT_EPOCH）があればその値、
+# 無ければ既定（起動の時刻 + 起動の種類ごとの秒数）。打ち切り・終了・Windows の自動の停止を使う箇所は、
+# 必ずこの値を使う（39・95・20・check_deadline）。延長は人間の明示の決定の後だけ（D15 §2.6）。
+#   CUTOFF_AT_EPOCH    要求の打ち切り（この後は新しい要求を出さない）
+#   DEADLINE_AT_EPOCH  作業役が必ず終了する時刻（95_deadline_guard.sh と check_deadline）
+#   SHUTDOWN_AT_EPOCH  Windows の中の自動の停止（止め忘れの備え。20_prepare.sh・96 が予約する）
+effective_limits() {
+  CUTOFF_AT_EPOCH="${EXTEND_CUTOFF_AT_EPOCH:-$(( LAUNCHED_AT_EPOCH + REQUEST_TIME_LIMIT_SECONDS ))}"
+  DEADLINE_AT_EPOCH="${EXTEND_DEADLINE_AT_EPOCH:-$(( LAUNCHED_AT_EPOCH + PROBE_DEADLINE_SECONDS ))}"
+  SHUTDOWN_AT_EPOCH="${EXTEND_SHUTDOWN_AT_EPOCH:-$(( LAUNCHED_AT_EPOCH + PROBE_SHUTDOWN_SECONDS ))}"
+  [[ "$CUTOFF_AT_EPOCH" =~ ^[0-9]+$ && "$DEADLINE_AT_EPOCH" =~ ^[0-9]+$ && "$SHUTDOWN_AT_EPOCH" =~ ^[0-9]+$ ]] \
+    || die "状態の期限が数でない（${STATE_FILE}）"
+  LIMITS_SOURCE="既定"
+  [[ -n "${EXTEND_COUNT:-}" ]] && LIMITS_SOURCE="延長 ${EXTEND_COUNT} 回目（${EXTEND_APPLIED_AT_UTC:-}）"
+  return 0
+}
+utc_of() {  # utc_of <UNIX 秒> → YYYY-MM-DDTHH:MM:SSZ（macOS と Linux の date の違いを避ける）
+  "$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"
+}
+save_state() { save_state_many "$1" "$2"; }  # save_state KEY VALUE
+# 複数の項目を 1 回の置き換えでまとめて書く（途中で止まっても一部だけが書かれることが無い）。
+# 同時に書く別のスクリプト（39 の SEALED_SENT と 96 の延長など）の更新を消さないよう、ロックのディレクトリ
+# （${STATE_FILE}.lock。mkdir は原子的）を取り、一時ファイルはプロセスごとに別の名前にする。
+save_state_many() {  # save_state_many KEY VALUE [KEY VALUE ...]
+  local lock="${STATE_FILE}.lock" i tmp
+  local -a pats=()
+  mkdir -p "$STATE_DIR"
+  touch "$STATE_FILE"
+  for (( i = 1; ; i++ )); do
+    mkdir "$lock" 2>/dev/null && break
+    (( i < 300 )) || die "状態のファイルのロック ${lock} を 30 秒取れない（別のスクリプトが書いている。止まったスクリプトの残りなら rmdir ${lock}）"
+    sleep 0.1
+  done
+  for (( i = 1; i <= $#; i += 2 )); do pats+=(-e "^${!i}="); done
+  tmp=$(mktemp "${STATE_FILE}.tmp.XXXXXX")
+  grep -v "${pats[@]}" "$STATE_FILE" >"$tmp" || true
+  while (( $# >= 2 )); do
+    printf '%s=%q\n' "$1" "$2" >>"$tmp"
+    shift 2
+  done
+  mv "$tmp" "$STATE_FILE"
+  rmdir "$lock"
+}
+
+# 終了の時刻（DEADLINE_AT_EPOCH。既定は起動 + PROBE_DEADLINE_SECONDS、延長があればその値）を超えていたら、
+# 終了（90_teardown.sh）以外は進めない。
 check_deadline() {
-  local now elapsed
+  local now elapsed limit_min
   now=$(date +%s)
   elapsed=$(( now - LAUNCHED_AT_EPOCH ))
-  log "起動からの経過: $(( elapsed / 60 )) 分（終了 $(( PROBE_DEADLINE_SECONDS / 60 )) 分）"
-  if (( elapsed >= PROBE_DEADLINE_SECONDS )); then
-    die "起動から $(( PROBE_DEADLINE_SECONDS / 60 )) 分を超えた。90_teardown.sh --execute で終了する"
+  limit_min=$(( (DEADLINE_AT_EPOCH - LAUNCHED_AT_EPOCH) / 60 ))
+  log "起動からの経過: $(( elapsed / 60 )) 分（終了 ${limit_min} 分。${LIMITS_SOURCE}）"
+  if (( now >= DEADLINE_AT_EPOCH )); then
+    die "起動から ${limit_min} 分（$(utc_of "$DEADLINE_AT_EPOCH")）を超えた。90_teardown.sh --execute で終了する"
   fi
 }
 
@@ -275,21 +317,23 @@ wait_bucket_absent() {  # wait_bucket_absent <bucket>
   return 1
 }
 
-# Windows の中の自動の停止を、承認済みの時刻（起動の時刻 + PROBE_SHUTDOWN_SECONDS。全期間取得は 4 時間 30 分）に予約し直す
+# Windows の中の自動の停止を、承認済みの時刻（SHUTDOWN_AT_EPOCH。既定は起動の時刻 + PROBE_SHUTDOWN_SECONDS、延長があればその値）に予約し直す
 # PowerShell（20_prepare.sh が実行のたびに SSM で送る。人間の決定 2026-10-17 の (A)。D12 付録 K-18 の⑤）。
 # 起動の時の予約（10_launch.sh の user-data の shutdown /s /t）は初回の起動で 1 回だけ動き、再起動（msiexec の
 # 3010 の後など）で消えるため。起動の時刻は Mac の状態のファイルの LAUNCHED_AT_EPOCH（10_launch.sh が run-instances
 # の直後に記録。load_state が無ければ止める）。残りの秒数は Windows の時計で計算する。既存の予約を shutdown /a で
 # 取り消してから予約するので、何度実行しても予約は 1 つで、時刻は同じ（冪等）。残りが 60 秒未満なら予約せずに止める。
 autostop_ps() {  # autostop_ps <停止の時刻（UNIX 秒）>
-  local at="$1"
+  local at="$1" mins
+  mins=$(( PROBE_SHUTDOWN_SECONDS / 60 ))
+  [[ -n "${LAUNCHED_AT_EPOCH:-}" ]] && mins=$(( (at - LAUNCHED_AT_EPOCH) / 60 ))
   cat <<PS
 \$ErrorActionPreference = 'Stop'
 \$at = [DateTimeOffset]::FromUnixTimeSeconds(${at})
 \$t = [int][math]::Floor((\$at - [DateTimeOffset]::UtcNow).TotalSeconds)
 if (\$t -lt 60) { throw "auto stop time already reached or too close: \$(\$at.UtcDateTime.ToString('u')) (\$t s)" }
 cmd /c "shutdown /a >nul 2>&1"
-shutdown /s /t \$t /c "odyssey-mt5-probe auto stop (launch + $(( PROBE_SHUTDOWN_SECONDS / 60 ))m, rescheduled)"
+shutdown /s /t \$t /c "odyssey-mt5-probe auto stop (launch + ${mins}m, rescheduled)"
 if (\$LASTEXITCODE -ne 0) { throw "shutdown /s failed: \$LASTEXITCODE" }
 "auto stop scheduled: \$(\$at.UtcDateTime.ToString('u')) (in \$t s)"
 PS
