@@ -1,0 +1,18 @@
+# 分類ファイル（形式版 2。D03 §4 の 9・§16.3.5）: 取得日 2026-10-31 の一括取得（封印）の EURJPY 標準の組（standard）。
+#
+# 状態: **提案（人間の承認の前。まだ実行していない）**。人間が EURJPY を承認したら、この分類で確定する。
+#
+# 対象: `uv run odyssey-fx data accept-mt5 --sealed --fetch-date 2026-10-31 --symbol EURJPY --variant standard --manifest-copy docs/data/sealed/2026-10-31_bulk/manifest.json --out data/snapshots`
+# の暫定 snapshot（provisional_id cf518e4920891d0ab9de58ebe5bb3a1d0c310ce490c283f3ea0c8a1507cb7c1a）。
+# 分類対象の警告（存在すべき足の欠落・休場帯の足 UNEXPECTED_BAR）は 0 件なので、分類は空（確定だけを行う）。
+#
+# カレンダーは変えず、再実行も要らないので `calendar` は書かない（研究期間の順 2 の候補の組と同じ形）。価格は含まない。
+#
+# 実行（承認の後。リポジトリの根で）:
+#   uv run odyssey-fx data classify --pending cf518e4920891d0ab9de58ebe5bb3a1d0c310ce490c283f3ea0c8a1507cb7c1a \
+#     --decisions docs/data/sealed/2026-10-31_bulk/EURJPY/standard/classification.yaml \
+#     --timeframes configs/calendars/timeframes_v2.yaml --out data/snapshots
+
+schema_version: 2
+
+decisions: []
