@@ -199,12 +199,29 @@ effective_limits() {
 utc_of() {  # utc_of <UNIX 秒> → YYYY-MM-DDTHH:MM:SSZ（macOS と Linux の date の違いを避ける）
   "$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"
 }
-save_state() {  # save_state KEY VALUE
+save_state() { save_state_many "$1" "$2"; }  # save_state KEY VALUE
+# 複数の項目を 1 回の置き換えでまとめて書く（途中で止まっても一部だけが書かれることが無い）。
+# 同時に書く別のスクリプト（39 の SEALED_SENT と 96 の延長など）の更新を消さないよう、ロックのディレクトリ
+# （${STATE_FILE}.lock。mkdir は原子的）を取り、一時ファイルはプロセスごとに別の名前にする。
+save_state_many() {  # save_state_many KEY VALUE [KEY VALUE ...]
+  local lock="${STATE_FILE}.lock" i tmp
+  local -a pats=()
   mkdir -p "$STATE_DIR"
   touch "$STATE_FILE"
-  grep -v "^$1=" "$STATE_FILE" >"${STATE_FILE}.tmp" || true
-  printf '%s=%q\n' "$1" "$2" >>"${STATE_FILE}.tmp"
-  mv "${STATE_FILE}.tmp" "$STATE_FILE"
+  for (( i = 1; ; i++ )); do
+    mkdir "$lock" 2>/dev/null && break
+    (( i < 300 )) || die "状態のファイルのロック ${lock} を 30 秒取れない（別のスクリプトが書いている。止まったスクリプトの残りなら rmdir ${lock}）"
+    sleep 0.1
+  done
+  for (( i = 1; i <= $#; i += 2 )); do pats+=(-e "^${!i}="); done
+  tmp=$(mktemp "${STATE_FILE}.tmp.XXXXXX")
+  grep -v "${pats[@]}" "$STATE_FILE" >"$tmp" || true
+  while (( $# >= 2 )); do
+    printf '%s=%q\n' "$1" "$2" >>"$tmp"
+    shift 2
+  done
+  mv "$tmp" "$STATE_FILE"
+  rmdir "$lock"
 }
 
 # 終了の時刻（DEADLINE_AT_EPOCH。既定は起動 + PROBE_DEADLINE_SECONDS、延長があればその値）を超えていたら、

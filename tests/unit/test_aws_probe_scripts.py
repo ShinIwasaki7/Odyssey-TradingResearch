@@ -859,6 +859,8 @@ def _extend_env(tmp_path: Path) -> tuple[dict[str, str], int, Path]:
     _write_sealed_state(tmp_path, launched)
     decision = tmp_path / "decision.txt"
     decision.write_text(DECISION_TEXT, encoding="utf-8")
+    # 取得の動作中の検査（pgrep）を、この機械で動いている本物の取得に反応しない名前にする
+    env["PROBE_FETCH_PGREP_PATTERN"] = f"fake_fetch_{tmp_path.name}[.]sh"
     return env, launched, decision
 
 
@@ -973,9 +975,53 @@ def test_extend_dry_run_writes_nothing_and_shows_the_cost(tmp_path: Path) -> Non
     assert r.returncode == 0, r.stderr
     assert "(dry-run)" in r.stderr
     assert f"→ {_iso(deadline)}" in r.stderr
-    assert "CPU の無制限の追加分" in r.stderr
+    assert "CPU の無制限の追加分（起動から自動の停止まで 5.50 時間" in r.stderr
+    assert "この起動の見込み" in r.stderr
     assert "この起動の上限の合計" in r.stderr
     assert state.read_text(encoding="utf-8") == before
     assert not (_state_dir(tmp_path) / "extend_1_decision.txt").exists()
     assert not any(c[0] in ("ssm", "ec2") for c in _calls(tmp_path))
     assert _limits(env) == (launched + 7200, launched + 10800, launched + 12600)
+
+
+@needs_bash
+def test_extend_refuses_while_the_fetch_is_running(tmp_path: Path) -> None:
+    env, launched, decision = _extend_env(tmp_path)
+    state = _state_dir(tmp_path) / "state.env"
+    before = state.read_text(encoding="utf-8")
+    fetch = tmp_path / f"fake_fetch_{tmp_path.name}.sh"
+    fetch.write_text("#!/bin/sh\n/bin/sleep 30\n", encoding="utf-8")
+    fetch.chmod(0o755)
+    proc = subprocess.Popen(["/bin/sh", str(fetch)])
+    try:
+        args = [*_extend_args(decision, *_extended(launched)), "--execute"]
+        r = _run("96_extend_limits.sh", args, env)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert r.returncode != 0
+    assert "取得（39_sealed_fetch.sh）が動いている" in r.stderr
+    assert state.read_text(encoding="utf-8") == before
+    assert not any(c[0] == "ssm" for c in _calls(tmp_path))
+
+
+@needs_bash
+def test_save_state_from_two_processes_keeps_every_update(tmp_path: Path) -> None:
+    env, _, _ = _extend_env(tmp_path)
+    writer = (
+        f'source "{SCRIPTS / "lib.sh"}"; '
+        'for i in $(seq 1 40); do save_state "K_${W}_${i}" "$i"; done'
+    )
+    procs = [
+        subprocess.Popen(["bash", "-c", writer], env={**env, "W": w}, stderr=subprocess.PIPE)
+        for w in ("A", "B")
+    ]
+    for pr in procs:
+        _, err = pr.communicate(timeout=120)
+        assert pr.returncode == 0, err
+    text = (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8")
+    for w in ("A", "B"):
+        for i in range(1, 41):
+            assert f"K_{w}_{i}={i}" in text.splitlines()
+    assert "LAUNCHED_AT_EPOCH=" in text
+    assert not (_state_dir(tmp_path) / "state.env.lock").exists()
