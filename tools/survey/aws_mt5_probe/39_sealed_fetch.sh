@@ -6,7 +6,7 @@
 # 窓は版管理の設定 configs/acquisition/oanda_mt5_m1_sealed_window.yaml からだけ読む。Mac でも Windows でも、
 # 計画の要求をすべて窓と照らし、1 つでも外れれば何も要求せずに止まる（ADR-0037 第4項の 3）。
 # 起動の種類（PROBE_RUN_KIND）は sealed-bulk（一括取得）か sealed-periodic（定期取得）で、計画の段と一致する
-# こと。上限（lib.sh）: 一括は打ち切り 2 時間・終了 3 時間・要求 300、定期は打ち切り 1 時間・終了 2 時間・
+# こと。上限（lib.sh。人間の決定で延長したときは状態の延長の値。96_extend_limits.sh）: 一括は打ち切り 2 時間・終了 3 時間・要求 300、定期は打ち切り 1 時間・終了 2 時間・
 # 要求 9（計画の max_requests。道具が manifest で数える）。通貨のこの回の最初の要求が 0 本なら、その通貨の
 # 残りを出さずに止まる。価格は Windows の CSV と S3 と data/raw/oanda_mt5_sealed/ にだけ置き、ログ・標準出力
 # には件数・時刻・SHA-256 だけを出す（ADR-0037 第7項）。取得の実行・起動は毎回の人間の go の後だけ。
@@ -67,10 +67,11 @@ load_state
 check_deadline
 assert_tagged_instance "$INSTANCE_ID"
 elapsed=$(( $(date +%s) - LAUNCHED_AT_EPOCH ))
-(( elapsed < REQUEST_TIME_LIMIT_SECONDS )) \
-  || die "要求の打ち切り（起動から $(( REQUEST_TIME_LIMIT_SECONDS / 60 )) 分）に達した。要求は出さない。45_collect_s3.sh で回収し、90_teardown.sh --execute で終了する"
+stop_at="$CUTOFF_AT_EPOCH"  # 既定は起動 + REQUEST_TIME_LIMIT_SECONDS。延長（96_extend_limits.sh）があればその値
+stop_min=$(( (stop_at - LAUNCHED_AT_EPOCH) / 60 ))
+(( $(date +%s) < stop_at )) \
+  || die "要求の打ち切り（起動から ${stop_min} 分。${LIMITS_SOURCE}）に達した。要求は出さない。45_collect_s3.sh で回収し、90_teardown.sh --execute で終了する"
 assert_no_trading_calls
-stop_at=$(( LAUNCHED_AT_EPOCH + REQUEST_TIME_LIMIT_SECONDS ))
 win_out='C:\probe\out\sealed'
 win_plan='C:\probe\sealed_plan.json'
 win_window='C:\probe\sealed_window.yaml'
@@ -86,7 +87,7 @@ cat >&2 <<INFO
   計画: ${plan}（要求 ${planned}、上限 ${max_requests}。SHA-256 $(sha256_of "$plan")）
   窓の設定: ${WINDOW_FILE}（SHA-256 $(sha256_of "$WINDOW_FILE")）
   通貨: ${pairs}$( [[ $redo == 1 ]] && echo "（0 本だった要求のやり直しだけ）" )
-  打ち切り: $(date -u -r "$stop_at" +%H:%M:%SZ)（起動から $(( REQUEST_TIME_LIMIT_SECONDS / 60 )) 分）。経過 $(( elapsed / 60 )) 分
+  打ち切り: $(date -u -r "$stop_at" +%H:%M:%SZ)（起動から ${stop_min} 分。${LIMITS_SOURCE}）。終了 $(utc_of "$DEADLINE_AT_EPOCH")。経過 $(( elapsed / 60 )) 分
   Windows の出力: ${win_out}\\<通貨>\\*.csv.gz、manifest.json、fetch_log.jsonl
   S3 の一時バケット: ${bucket:-まだ無い（${S3_BUCKET_PREFIX}${PROBE_DATE}-<乱数 8 桁> を作る）}
   Mac の置き場: ${SEALED_ROOT}/${PROBE_DATE}/<通貨>/（.gitignore の data/raw/* で版管理の外）
@@ -179,7 +180,7 @@ done
 case "$stop" in
   "") log "指定の通貨を終えた。0 本の要求が残れば 39_sealed_fetch.sh --plan ${plan} --redo-empty --execute（上限の内）。終わったら 90_teardown.sh --execute" ;;
   first_request_empty) log "停止: 通貨のこの回の最初の要求が 0 本（端末の取り寄せが始まっていない）。他の通貨で確かめずに司令塔に報告する" ;;
-  time_limit) log "停止: 要求の打ち切り（起動から $(( REQUEST_TIME_LIMIT_SECONDS / 60 )) 分）。済んだ分は回収済み。90_teardown.sh --execute" ;;
+  time_limit) log "停止: 要求の打ち切り（起動から ${stop_min} 分）。済んだ分は回収済み。90_teardown.sh --execute" ;;
   request_limit) log "停止: 要求の上限 ${max_requests}。済んだ分は回収済み。90_teardown.sh --execute" ;;
   *) log "停止: ${stop}。済んだ分は回収済み。司令塔に報告する" ;;
 esac

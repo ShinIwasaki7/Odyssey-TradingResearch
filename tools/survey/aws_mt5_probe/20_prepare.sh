@@ -12,11 +12,12 @@ check_deadline
 assert_tagged_instance "$INSTANCE_ID"
 
 tool_sha=$(sha256_of "$PROBE_TOOL")
-autostop_at=$(( LAUNCHED_AT_EPOCH + PROBE_SHUTDOWN_SECONDS ))
+autostop_at="$SHUTDOWN_AT_EPOCH"  # 既定は起動 + PROBE_SHUTDOWN_SECONDS。延長があればその値
+autostop_min=$(( (autostop_at - LAUNCHED_AT_EPOCH) / 60 ))
 autostop_utc=$("$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$autostop_at")
 cat >&2 <<INFO
 == 準備の計画（${INSTANCE_ID}）
-  1. SSM の接続を待ち、Windows の中の自動の停止を ${autostop_utc}（起動 + $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分）に予約し直す（実行のたび）
+  1. SSM の接続を待ち、Windows の中の自動の停止を ${autostop_utc}（起動 + ${autostop_min} 分）に予約し直す（実行のたび）
   2. Python のインストーラー（${PY_INSTALLER_URL}）を取り、SHA-256 ${PY_INSTALLER_SHA256} を確かめ、全ユーザーに入れる
   3. pip で ${MT5_PY_PACKAGE} を入れ、import できるかを確かめる（端末にはつながない）
   4. AWS CLI v2（S3 に置く道具。付録 K-17.4 の 1）: 既に入っていれば入れない。入れるときは
@@ -33,7 +34,7 @@ trap 'rm -rf "$work"' EXIT
 
 # 自動の停止を承認済みの時刻に予約し直す（実行のたび。再起動で消えた予約を戻す。人間の決定 2026-10-17 の (A)）。
 autostop_ps "$autostop_at" >"$work/autostop.ps1"
-log "Windows の中の自動の停止を ${autostop_utc}（起動 + $(( PROBE_SHUTDOWN_SECONDS / 60 )) 分）に予約し直す"
+log "Windows の中の自動の停止を ${autostop_utc}（起動 + ${autostop_min} 分）に予約し直す"
 ssm_ps "$INSTANCE_ID" 120 "$work/autostop.ps1"
 
 cat >"$work/py.ps1" <<PS

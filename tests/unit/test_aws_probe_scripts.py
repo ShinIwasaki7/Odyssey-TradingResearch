@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -810,3 +811,171 @@ def test_autostop_ps_schedules_when_more_than_60_seconds_remain(tmp_path: Path) 
     m = re.fullmatch(r"shutdown /s /t (\d+) /c .*", log[1])
     assert m is not None, log
     assert 60 <= int(m.group(1)) <= 150
+
+
+# --- 作業上限の延長（96_extend_limits.sh。人間の明示の決定の後だけ。D15 §2.6） ---
+
+DECISION_TEXT = (
+    "切り替えを行いました。作業が完了するまで続けてたいです。ただし1時間おきにチェックして"
+    "進捗状況を確認し、見込み時間及び総費用を概算して私に報告し承認を得てください\n"
+)
+
+
+def _iso(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_sealed_state(tmp_path: Path, launched: int) -> None:
+    (_state_dir(tmp_path) / "state.env").write_text(
+        f"INSTANCE_ID=i-0123\nLAUNCHED_AT_EPOCH={launched}\nLAUNCHED_AT_UTC={_iso(launched)}\n"
+        f"DEADLINE_UTC={_iso(launched + 10800)}\nPROBE_DATE=2026-10-31\nRUN_KIND=sealed-bulk\n",
+        encoding="utf-8",
+    )
+
+
+def _limits(env: dict[str, str]) -> tuple[int, int, int]:
+    """lib.sh の load_state の後の 3 つの期限（打ち切り・終了・自動の停止）。"""
+    r = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{SCRIPTS / "lib.sh"}"; load_state; '
+            'echo "$CUTOFF_AT_EPOCH $DEADLINE_AT_EPOCH $SHUTDOWN_AT_EPOCH"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    a, b, c = r.stdout.split()
+    return int(a), int(b), int(c)
+
+
+def _extend_env(tmp_path: Path) -> tuple[dict[str, str], int, Path]:
+    env = _env(tmp_path, {})
+    launched = int(datetime.now(tz=UTC).timestamp()) - 90 * 60
+    _write_sealed_state(tmp_path, launched)
+    decision = tmp_path / "decision.txt"
+    decision.write_text(DECISION_TEXT, encoding="utf-8")
+    return env, launched, decision
+
+
+def _extended(launched: int) -> tuple[int, int, int]:
+    """延長の後の打ち切り・終了・自動の停止（起動 + 4 時間・5 時間・5 時間 30 分）。"""
+    return launched + 4 * 3600, launched + 5 * 3600, launched + 5 * 3600 + 1800
+
+
+def _extend_args(decision: Path, cutoff: int, deadline: int, shutdown: int) -> list[str]:
+    return [
+        "--cutoff-until",
+        _iso(cutoff),
+        "--deadline-until",
+        _iso(deadline),
+        "--shutdown-until",
+        _iso(shutdown),
+        "--decision-file",
+        str(decision),
+    ]
+
+
+@needs_bash
+def test_limits_without_extension_are_the_defaults(tmp_path: Path) -> None:
+    env, launched, _ = _extend_env(tmp_path)
+    assert _limits(env) == (launched + 7200, launched + 10800, launched + 12600)
+    # 環境変数では上書きできない
+    env.update(EXTEND_DEADLINE_AT_EPOCH="9999999999", EXTEND_COUNT="1")
+    assert _limits(env) == (launched + 7200, launched + 10800, launched + 12600)
+
+
+@needs_bash
+def test_extend_replaces_the_three_limits_and_keeps_the_launch_record(tmp_path: Path) -> None:
+    env, launched, decision = _extend_env(tmp_path)
+    state = _state_dir(tmp_path) / "state.env"
+    before = state.read_text(encoding="utf-8")
+    cutoff, deadline, shutdown = _extended(launched)
+    args = [*_extend_args(decision, cutoff, deadline, shutdown), "--execute"]
+    r = _run("96_extend_limits.sh", args, env)
+    assert r.returncode == 0, r.stderr
+    assert _limits(env) == (cutoff, deadline, shutdown)
+    after = state.read_text(encoding="utf-8")
+    # 起動の記録（起動の時刻・既定の終了の時刻・起動の種類）は書き換えない
+    for line in before.splitlines():
+        assert line in after.splitlines()
+    assert "EXTEND_COUNT=1" in after
+    assert f"EXTEND_1_DEADLINE_UTC={_iso(deadline)}" in after
+    assert f"EXTEND_1_PREV_DEADLINE_UTC={_iso(launched + 10800)}" in after
+    assert "EXTEND_1_RUN_KIND=sealed-bulk" in after
+    sha = hashlib.sha256(DECISION_TEXT.encode("utf-8")).hexdigest()
+    assert f"EXTEND_1_DECISION_SHA256={sha}" in after
+    copy = _state_dir(tmp_path) / "extend_1_decision.txt"
+    assert copy.read_text(encoding="utf-8") == DECISION_TEXT
+    # 状態のファイルは ASCII のまま（lib.sh の sed・grep が多バイトの文字で止まらない）。
+    # 原文は base64 で戻せる
+    after.encode("ascii")
+    m = re.search(r"^EXTEND_1_DECISION_B64=(\S+)$", after, re.MULTILINE)
+    assert m is not None
+    assert base64.b64decode(m.group(1)).decode("utf-8") == DECISION_TEXT
+    # Windows の自動の停止を新しい時刻に予約し直した（取り消しの後に予約）
+    (ps,) = _autostop_scripts(tmp_path)
+    assert f"FromUnixTimeSeconds({shutdown})" in ps
+    assert ps.index('cmd /c "shutdown /a') < ps.index("shutdown /s /t $t")
+    assert "(launch + 330m, rescheduled)" in ps
+    # 20_prepare.sh の予約し直しも延長の値を使う
+    r2 = _run("20_prepare.sh", [], env)
+    assert r2.returncode == 0, r2.stderr
+    assert f"自動の停止を {_iso(shutdown)}（起動 + 330 分）" in r2.stderr
+    # 2 回目の延長は回数が増え、今の期限より前への「延長」は拒否する
+    r3 = _run(
+        "96_extend_limits.sh",
+        [*_extend_args(decision, cutoff, deadline - 60, shutdown), "--execute"],
+        env,
+    )
+    assert r3.returncode != 0
+    assert "今の期限" in r3.stderr
+    r4 = _run(
+        "96_extend_limits.sh",
+        [*_extend_args(decision, cutoff + 600, deadline + 600, shutdown + 600), "--execute"],
+        env,
+    )
+    assert r4.returncode == 0, r4.stderr
+    assert "EXTEND_COUNT=2" in state.read_text(encoding="utf-8")
+    assert _limits(env) == (cutoff + 600, deadline + 600, shutdown + 600)
+
+
+@needs_bash
+@pytest.mark.parametrize("which", ["cutoff", "deadline", "shutdown"])
+def test_extend_refuses_a_time_before_the_default(tmp_path: Path, which: str) -> None:
+    env, launched, decision = _extend_env(tmp_path)
+    state = _state_dir(tmp_path) / "state.env"
+    before = state.read_text(encoding="utf-8")
+    t = {"cutoff": launched + 7200, "deadline": launched + 10800, "shutdown": launched + 12600}
+    t[which] -= 60  # 既定より 1 分前
+    r = _run(
+        "96_extend_limits.sh",
+        [*_extend_args(decision, t["cutoff"], t["deadline"], t["shutdown"]), "--execute"],
+        env,
+    )
+    assert r.returncode != 0
+    assert "既定" in r.stderr and "短縮に使えない" in r.stderr
+    assert state.read_text(encoding="utf-8") == before
+    assert not any(c[0] == "ssm" for c in _calls(tmp_path))
+
+
+@needs_bash
+def test_extend_dry_run_writes_nothing_and_shows_the_cost(tmp_path: Path) -> None:
+    env, launched, decision = _extend_env(tmp_path)
+    state = _state_dir(tmp_path) / "state.env"
+    before = state.read_text(encoding="utf-8")
+    cutoff, deadline, shutdown = _extended(launched)
+    r = _run("96_extend_limits.sh", _extend_args(decision, cutoff, deadline, shutdown), env)
+    assert r.returncode == 0, r.stderr
+    assert "(dry-run)" in r.stderr
+    assert f"→ {_iso(deadline)}" in r.stderr
+    assert "CPU の無制限の追加分" in r.stderr
+    assert "この起動の上限の合計" in r.stderr
+    assert state.read_text(encoding="utf-8") == before
+    assert not (_state_dir(tmp_path) / "extend_1_decision.txt").exists()
+    assert not any(c[0] in ("ssm", "ec2") for c in _calls(tmp_path))
+    assert _limits(env) == (launched + 7200, launched + 10800, launched + 12600)
