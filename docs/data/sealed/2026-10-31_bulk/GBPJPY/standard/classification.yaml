@@ -1,6 +1,6 @@
 # 分類ファイル（形式版 2。D03 §4 の 9・§16.3.5）: 取得日 2026-10-31 の一括取得（封印）の GBPJPY 標準の組（standard）。
 #
-# 状態: **提案（人間の承認の前。まだ実行していない）**。人間が GBPJPY を承認したら、この分類で確定する。
+# 状態: **実行済み**。2026-10-31 の人間の承認「8 通貨すべて承認（推奨）」の後に、この分類で確定した（記入した分類 0 件）。
 #
 # 対象: `uv run odyssey-fx data accept-mt5 --sealed --fetch-date 2026-10-31 --symbol GBPJPY --variant standard --manifest-copy docs/data/sealed/2026-10-31_bulk/manifest.json --out data/snapshots`
 # の暫定 snapshot（provisional_id 37281ded30e0cac5bb68dc85737a2ff12c2fa81d638d11debafee18d0e9f6944）。
