@@ -1,0 +1,21 @@
+# 分類ファイル（形式版 2。D03 §4 の 9・§16.3.5）: 取得日 2026-10-31 の一括取得（封印）の GBPUSD 候補の組（candidate）。
+#
+# 状態: **実行済み**。2026-10-31 の人間の承認「8 通貨すべて承認（推奨）」の後に、この分類で確定した（記入した分類 0 件）。
+#
+# 対象: `uv run odyssey-fx data accept-mt5 --sealed --fetch-date 2026-10-31 --symbol GBPUSD --variant candidate --manifest-copy docs/data/sealed/2026-10-31_bulk/manifest.json --out data/snapshots`
+# の暫定 snapshot（provisional_id f870122154cb42034f605c053adb5353925099da34f3e4bffea922039d833910）。
+# 分類対象の警告（存在すべき足の欠落・休場帯の足 UNEXPECTED_BAR）は 0 件なので、分類は空（確定だけを行う）。
+#
+# カレンダーの外に出た 1 分足（CANDIDATE_OUT_OF_CALENDAR。12 週・713 本）は分類の対象ではなく、
+# 足の生成に使わず件数だけを検査報告に載せる（D12-97 (a)、D03 §15.6 の 2）。
+#
+# カレンダーは変えず、再実行も要らないので `calendar` は書かない（研究期間の順 2 の候補の組と同じ形）。価格は含まない。
+#
+# 実行（承認の後。リポジトリの根で）:
+#   uv run odyssey-fx data classify --pending f870122154cb42034f605c053adb5353925099da34f3e4bffea922039d833910 \
+#     --decisions docs/data/sealed/2026-10-31_bulk/GBPUSD/candidate/classification.yaml \
+#     --timeframes configs/calendars/timeframes_v2.yaml --out data/snapshots
+
+schema_version: 2
+
+decisions: []

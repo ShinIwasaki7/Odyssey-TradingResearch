@@ -1,0 +1,18 @@
+# 分類ファイル（形式版 2。D03 §4 の 9・§16.3.5）: 取得日 2026-10-31 の一括取得（封印）の USDJPY 標準の組（standard）。
+#
+# 状態: **実行済み**。2026-10-31 の人間の承認「8 通貨すべて承認（推奨）」の後に、この分類で確定した（記入した分類 0 件）。
+#
+# 対象: `uv run odyssey-fx data accept-mt5 --sealed --fetch-date 2026-10-31 --symbol USDJPY --variant standard --manifest-copy docs/data/sealed/2026-10-31_bulk/manifest.json --out data/snapshots`
+# の暫定 snapshot（provisional_id 5dfc17c701ab82093eae6264e08a2dee07f1bbe5e92becc31a079a9a8fdc37f9）。
+# 分類対象の警告（存在すべき足の欠落・休場帯の足 UNEXPECTED_BAR）は 0 件なので、分類は空（確定だけを行う）。
+#
+# カレンダーは変えず、再実行も要らないので `calendar` は書かない（研究期間の順 2 の候補の組と同じ形）。価格は含まない。
+#
+# 実行（承認の後。リポジトリの根で）:
+#   uv run odyssey-fx data classify --pending 5dfc17c701ab82093eae6264e08a2dee07f1bbe5e92becc31a079a9a8fdc37f9 \
+#     --decisions docs/data/sealed/2026-10-31_bulk/USDJPY/standard/classification.yaml \
+#     --timeframes configs/calendars/timeframes_v2.yaml --out data/snapshots
+
+schema_version: 2
+
+decisions: []

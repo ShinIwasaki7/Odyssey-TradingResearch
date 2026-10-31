@@ -342,11 +342,20 @@ def test_the_store_refuses_a_sealed_partition_before_opening_any_file(tmp_path: 
 # --- 版管理の記録（監査 PR #76 の後からの記録。ADR-0035 第5項）---------------------------
 
 
-def test_the_committed_log_holds_exactly_the_retroactive_audit_access() -> None:
+def test_the_committed_log_begins_with_the_retroactive_audit_access() -> None:
+    # 版管理の記録は追記専用（D01 §10.4）。先頭の 2 行は監査の後からの記録で、それより後は関所が
+    # その場で書いた行（封印の取り込みの受入れなど。S5a の記録 PR から）だけ。
     contents = read_quality_access_log_file(REPO_ROOT / QUALITY_ACCESS_LOG_PATH)
     assert isinstance(contents, QualityAccessLogContents)
     assert not contents.torn_tail
-    start, end = contents.rows
+    start, end, *later = contents.rows
+    # 判定の行（ADR-0035 第3項）は記録の種別を持たないので、開始の行と終了の行だけを見る。
+    paired = [row for row in later if isinstance(row, QualityAccessStart | QualityAccessEnd)]
+    assert all(row.record_kind is QualityRecordKind.LIVE for row in paired)
+    later_starts = {row.access_id for row in paired if isinstance(row, QualityAccessStart)}
+    later_ends = {row.access_id for row in paired if isinstance(row, QualityAccessEnd)}
+    assert later_starts == later_ends
+    assert len(paired) == 2 * len(later_starts)
     assert isinstance(start, QualityAccessStart) and isinstance(end, QualityAccessEnd)
     assert start.access_id == end.access_id
     assert start.record_kind is end.record_kind is QualityRecordKind.RETROACTIVE

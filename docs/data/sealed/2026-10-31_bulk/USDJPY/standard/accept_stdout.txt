@@ -1,0 +1,35 @@
+暫定の識別子（provisional_id）: 5dfc17c701ab82093eae6264e08a2dee07f1bbe5e92becc31a079a9a8fdc37f9
+品質確認の閲覧の識別子: b12cc370c45692a5a390efa0ba9f4355（許可の下で読んだ）
+時刻の規則の表: TimeRuleTableRef(table_id='oanda_mt5_time_rules_sealed', version=1, sha256='f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3', variant=<TimeRuleVariant.STANDARD: 'standard'>)、変換の組 standard
+受け入れた要求（API の時刻の年月）: 2024-01 2024-02 2024-03 2024-04 2024-05 2024-06 2024-07 2024-08 2024-09 2024-10 2024-11 2024-12 2025-01 2025-02 2025-03 2025-04 2025-05 2025-06 2025-07 2025-08 2025-09 2025-10 2025-11 2025-12 2026-01 2026-02 2026-03 2026-04 2026-05 2026-06 2026-07 2026-08 2026-09 2026-10
+原データの置き場: data/raw/oanda_mt5_sealed/2026-10-31
+銘柄の検査（D03 §16.3.1 の検査 3）: 合格（取得記録の point・digits・chart_mode と configs/symbols/USDJPY.yaml・列対応の宣言の価格基準が一致）
+系列ごとの足数:
+  USDJPY/15m/bid: 70560 本  [2024-01-01T22:00:00Z, 2026-10-30T21:00:00Z)
+  USDJPY/1d_ny17/bid: 735 本  [2024-01-01T22:00:00Z, 2026-10-30T21:00:00Z)
+  USDJPY/1h/bid: 17640 本  [2024-01-01T22:00:00Z, 2026-10-30T21:00:00Z)
+  USDJPY/1m/bid: 1056334 本  [2024-01-01T22:00:00Z, 2026-10-30T21:00:00Z)
+  USDJPY/4h_ny17/bid: 4410 本  [2024-01-01T22:00:00Z, 2026-10-30T21:00:00Z)
+封印の区分の partition（取引週。区分 × 系列）:
+  HOLDOUT_SINCE_2024 USDJPY/15m/bid: 148 週（2024-01-01T00:00:00Z 〜 2026-10-25T21:00:00Z）、初期状態 SEALED 148
+  HOLDOUT_SINCE_2024 USDJPY/1d_ny17/bid: 148 週（2024-01-01T00:00:00Z 〜 2026-10-25T21:00:00Z）、初期状態 SEALED 148
+  HOLDOUT_SINCE_2024 USDJPY/1h/bid: 148 週（2024-01-01T00:00:00Z 〜 2026-10-25T21:00:00Z）、初期状態 SEALED 148
+  HOLDOUT_SINCE_2024 USDJPY/1m/bid: 148 週（2024-01-01T00:00:00Z 〜 2026-10-25T21:00:00Z）、初期状態 SEALED 148
+  HOLDOUT_SINCE_2024 USDJPY/4h_ny17/bid: 148 週（2024-01-01T00:00:00Z 〜 2026-10-25T21:00:00Z）、初期状態 SEALED 148
+完全性検査（系列 × 種別の件数）:
+  USDJPY/15m/bid  INFO  PARTIAL_COVERAGE_BAR: 1 件
+  USDJPY/1d_ny17/bid  INFO  PARTIAL_COVERAGE_BAR: 1 件
+  USDJPY/1h/bid  INFO  PARTIAL_COVERAGE_BAR: 1 件
+  USDJPY/1m/bid  INFO  UNRECORDED_MINUTES: 1350 件
+  USDJPY/4h_ny17/bid  INFO  PARTIAL_COVERAGE_BAR: 1 件
+  合計: 1354 件（ERROR 0 件、WARN 0 件、INFO 1354 件）
+
+観測できない項目（1 分足では保証しない）（一覧 `mt5_m1_unobservable` 版 1）:
+  T1 時刻の変換規則: 時刻の規則の表 版 1 で確認済みは行 3 だけ。他の行の変換は仮定付き
+  T2 逆行・重複: tick の逆行・重複
+  T3 ask ≥ bid: 各 tick の ask ≥ bid。1 分足のスプレッドが 0 以上でも、足の中の全 tick で ask ≥ bid とは読まない
+  T4 tick の間隔の上限: 1 分より短い配信断。無記録の分が配信断か取引の少ない分かは見分けない
+  T5 週末・休場との整合: 1 分の中の tick の件数
+  T6 開場と閉場の位置: 1 分より細かい位置
+  T7 配信断の公表: —
+  （層 2）足の中の値: 足の中の価格の順序、ask の 4 値、tick の数（`tick_volume` の数え方は未確認）
