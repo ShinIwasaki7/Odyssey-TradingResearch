@@ -28,7 +28,7 @@ SSM（AWS Systems Manager。インスタンスの中でコマンドを実行す�
 
 - AWS CLI は `lib.sh` の `aws_p` でだけ呼び、プロファイル `odyssey-mt5-probe`・リージョン `ap-northeast-1` に固定する。環境変数の認証情報は消してから呼ぶ。認証情報のファイルは読まない。
 - 作るものにはタグ `Project=odyssey-mt5-probe` と、`odyssey-mt5-probe` を含む名前を付ける。消すのはこのタグのものだけ。
-- 構成: t3.medium、CPU クレジットは標準、gp3 60 GB（終了時に削除。上限。拡張しない）、Elastic IP なし、IMDSv2 必須、受信は RDP を人間の IP（`PROBE_RDP_CIDR`、既定 126.221.39.9/32）からだけ、シャットダウンの動作は停止、Windows の中で 4 時間 30 分後に自動の停止（`PROBE_SHUTDOWN_SECONDS`）。
+- 構成: t3.medium、CPU クレジットは起動の種類で決まる（全期間取得などは標準、封印の取得 `sealed-bulk`・`sealed-periodic` だけ無制限。下の「CPU クレジットの方式」）、gp3 60 GB（終了時に削除。上限。拡張しない）、Elastic IP なし、IMDSv2 必須、受信は RDP を人間の IP（`PROBE_RDP_CIDR`、既定 126.221.39.9/32）からだけ、シャットダウンの動作は停止、Windows の中で 4 時間 30 分後に自動の停止（`PROBE_SHUTDOWN_SECONDS`）。
 - 作業上限（全期間取得。付録 K-16.6。人間の第 18 回の決定「案のとおり」）: 起動から 2 時間 30 分で要求を打ち切り（`FULL_TIME_LIMIT_SECONDS`。`38_full_fetch.sh` と道具の `--stop-at-epoch` が止まる）、4 時間で終了（`PROBE_DEADLINE_SECONDS`。`check_deadline` と `95_deadline_guard.sh`）、要求 750（`FULL_MAX_REQUESTS`。道具が manifest で前の回から通して数える）。終了の時刻を過ぎたら `90_teardown.sh` と `45_collect_s3.sh` 以外は動かない。前回（最後の調査。付録 K-10.3）の値は 1 時間 30 分・2 時間・2 時間 30 分だった。
 - 起動の種類は `PROBE_RUN_KIND=fullfetch`（`lib.sh`）。この起動では一覧の外の要求を出す段（`30_run_probe.sh`・`35_time_survey.sh`・`36_sync_trigger.sh`）と最後の調査（`37_final_survey.sh`）は動かない（`forbid_in_final_run`・状態の `RUN_KIND`）。
 - 回収（SSM の出力で受け取る zip と、S3 から受け取るファイル）の合計は 1 GB まで（`PROBE_COLLECT_LIMIT_BYTES`。送信の上限のうち道具で数えられる分。RDP の通信は数えられない）。
@@ -205,6 +205,30 @@ D03 §16.5（運用手順の案。PR #109 で人間が決めた要決定 S2b-1�
 
 上限を超えそうなら止めて報告する。延長は人間の明示の決定（D15 §2.6）。
 
+### CPU クレジットの方式（封印の取得だけ無制限。人間の決定 2026-10-31。D15 §0.5.13）
+
+- **何が起きたか**: S5a（一括取得、2026-10-31）は CPU クレジット「標準」固定で起動し、取得の途中でクレジットが
+  尽きて t3.medium の速度が基準の 20% に落ちた。人間が管理者コンソールで「無制限」に切り替えて完走した
+  （起動から終了まで 1.91 時間、費用 約 0.21 米ドル、うち無制限の追加分 0.03 米ドル以下）。
+- **決めたこと**: 封印の取得（`PROBE_RUN_KIND=sealed-bulk`・`sealed-periodic`）は `10_launch.sh` が
+  `--credit-specification CpuCredits=unlimited` で起動する。全期間取得（`fullfetch`）は従来どおり標準。
+  方式は `lib.sh` の `run_kind_profile` にだけ書き（環境変数では変えられない）、起動の時に状態のファイル
+  （`_state/state.env`）の `CPU_CREDITS` に書く。起動の後に読み取りで確かめた値を `CPU_CREDITS_APPLIED` に書き、
+  要求と違えばログに「注意」を出す（止めない。司令塔に報告する）。起動の時刻の項目は変えない。
+- **費用への影響**（米ドル、税込み。`00_check.sh` の 9 が起動の種類ごとに表示する）: 無制限の追加分は、基準を超えて
+  使った分だけ vCPU 2 × 0.096 米ドル/時（Windows の単価。`PRICE_CREDIT_VCPU_HOUR`、税別）かかる。2 vCPU を
+  使い続けた上限で数える（基準の分を差し引かない、保守的な上限）。
+
+  | 取得 | 上限（自動の停止まで、送信 1 GB） | うち無制限の追加分 | 1 回の費用の上限（決定） |
+  |---|---|---|---|
+  | 一括取得 | 約 1.19（3.5 時間） | 約 0.74 | 2（D15-18c (a)）の内 |
+  | 定期取得 | 約 0.89（2.5 時間） | 約 0.53 | 1（D15-3c (a)）の内 |
+
+  上の「費用」の表の見積り（実際に使う分）は変えない。S5a の実績では無制限の追加分は 0.03 米ドル以下だった。
+  上限を延ばしたとき（`96_extend_limits.sh`）は、その表示の「CPU の無制限の追加分」で上限の内かを確かめる。
+- **切り替えの方針**: 起動の後に人間が管理者コンソールで方式を切り替える必要は無くなった。標準に戻すのは、
+  人間の新しい決定で `run_kind_profile` を変える PR だけ。全期間取得を無制限にするのも同じ。
+
 ### 上限の延長（人間の明示の決定の後だけ。`96_extend_limits.sh`）
 
 作業の上限（要求の打ち切り・必ず終了する時刻・Windows の自動の停止）は起動の種類ごとの既定（`lib.sh`）で決まり、
@@ -229,7 +253,7 @@ D03 §16.5（運用手順の案。PR #109 で人間が決めた要決定 S2b-1�
 
 1. 起動の前（課金なし）: Mac の作業木を main に合わせる（`git pull`。受入れは作業木の消費の記録から初期状態を導く。
    origin との照合は R4 で足す。PR #111 の要決定 D「(a) R4 で照合を足す（推奨）」）。S3・S4a・S4b が merge 済み、表とカレンダー（2024 年以降）が承認済みで期間を覆う、
-   許可の定義が merge 済みであることを確かめる。計画を作る（`sealed_fetch_plan`）。`00_check.sh` で見積りを出す。
+   許可の定義が merge 済みであることを確かめる。計画を作る（`sealed_fetch_plan`）。`00_check.sh` で見積りを出す（9 の起動の種類ごとの行が「上限 … の内」であること。7 の起動の権限が CPU クレジットの標準・無制限とも「あり」であること）。
 2. 司令塔が go を問う（上の「いつ」の表の「添えるもの」）。回答の原文を記録する。
 3. go の後: `PROBE_RUN_KIND=sealed-bulk 10_launch.sh --execute` → `95_deadline_guard.sh` を裏で起動 →
    `20_prepare.sh --execute` → 人間に RDP の合図。

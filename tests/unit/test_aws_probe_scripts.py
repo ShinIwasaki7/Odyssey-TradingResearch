@@ -75,8 +75,22 @@ elif args[0] == "ec2":
         print(0)
     elif cmd == "ec2 describe-instances" and "--instance-ids" in args:
         print("203.0.113.10" if "PublicIpAddress" in q else "odyssey-mt5-probe")
+    elif cmd == "ec2 run-instances":
+        # 起動（10_launch.sh）。要求した CPU クレジットの方式を覚え、読み取りの応答に使う
+        (d / "credits").write_text(opt("--credit-specification").split("=", 1)[1])
+        print("i-0fake")
+    elif cmd == "ec2 describe-instance-credit-specifications":
+        print(sc.get("credits_applied") or (d / "credits").read_text())
     else:
-        print("")
+        # 10_launch.sh の読み取りと作成の応答（他のスクリプトは使わない）
+        print({
+            "ec2 describe-images": "ami-0fake",
+            "ec2 describe-vpcs": "vpc-0fake",
+            "ec2 describe-instance-type-offerings": "ap-northeast-1a",
+            "ec2 describe-subnets": "subnet-0fake",
+            "ec2 create-security-group": "sg-0fake",
+            "ec2 create-key-pair": "fake-key-material",
+        }.get(cmd, ""))
 elif cmd == "s3api create-bucket":
     print("{}")
 elif cmd == "s3api head-bucket":
@@ -1025,3 +1039,109 @@ def test_save_state_from_two_processes_keeps_every_update(tmp_path: Path) -> Non
             assert f"K_{w}_{i}={i}" in text.splitlines()
     assert "LAUNCHED_AT_EPOCH=" in text
     assert not (_state_dir(tmp_path) / "state.env.lock").exists()
+
+
+# --- 封印の取得の起動の CPU クレジット（人間の決定 2026-10-31。D15 §0.5.13） ---
+
+
+_CREDITS = [
+    ("sealed-bulk", "unlimited"),
+    ("sealed-periodic", "unlimited"),
+    ("fullfetch", "standard"),
+]
+
+
+def _launch(
+    tmp_path: Path, kind: str, args: list[str], scenario: dict[str, object] | None = None
+) -> subprocess.CompletedProcess[str]:
+    env = _env(tmp_path, scenario or {})
+    env["PROBE_RUN_KIND"] = kind
+    return _run("10_launch.sh", args, env)
+
+
+def _state_values(tmp_path: Path) -> dict[str, str]:
+    text = (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8")
+    return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+
+@needs_bash
+@pytest.mark.parametrize(("kind", "credits"), _CREDITS)
+def test_launch_dry_run_shows_the_credit_mode_and_starts_nothing(
+    tmp_path: Path, kind: str, credits: str
+) -> None:
+    r = _launch(tmp_path, kind, [])
+    assert r.returncode == 0, r.stderr
+    label = "無制限（unlimited" if credits == "unlimited" else "標準（standard）"
+    assert f"CPU クレジット: {label}" in r.stderr
+    called = {" ".join(c[:2]) for c in _calls(tmp_path)}
+    assert not called & {"ec2 run-instances", "ec2 create-security-group", "ec2 create-key-pair"}
+    assert not (_state_dir(tmp_path) / "state.env").exists()
+
+
+@needs_bash
+@pytest.mark.parametrize(("kind", "credits"), _CREDITS)
+def test_launch_uses_unlimited_only_for_the_sealed_kinds_and_records_it(
+    tmp_path: Path, kind: str, credits: str
+) -> None:
+    r = _launch(tmp_path, kind, ["--execute"])
+    assert r.returncode == 0, r.stderr
+    runs = [c for c in _calls(tmp_path) if c[:2] == ["ec2", "run-instances"]]
+    assert len(runs) == 1
+    assert runs[0][runs[0].index("--credit-specification") + 1] == f"CpuCredits={credits}"
+    state = _state_values(tmp_path)
+    assert state["RUN_KIND"] == kind
+    assert state["CPU_CREDITS"] == credits
+    assert state["CPU_CREDITS_APPLIED"] == credits
+    assert state["INSTANCE_ID"] == "i-0fake"
+    assert "LAUNCHED_AT_EPOCH" in state
+    assert f"CPU クレジット: {credits}（要求どおり）" in r.stderr
+
+
+@needs_bash
+def test_launch_reports_when_the_applied_credit_mode_differs(tmp_path: Path) -> None:
+    r = _launch(tmp_path, "sealed-bulk", ["--execute"], {"credits_applied": "standard"})
+    assert r.returncode == 0, r.stderr
+    assert "注意: CPU クレジットが要求（unlimited）と違う: standard" in r.stderr
+    assert _state_values(tmp_path)["CPU_CREDITS_APPLIED"] == "standard"
+
+
+def _lib(env: dict[str, str], code: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", f'source "{SCRIPTS / "lib.sh"}"; {code}'],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
+@needs_bash
+def test_the_sealed_upper_bound_with_unlimited_credits_stays_within_the_cost_cap(
+    tmp_path: Path,
+) -> None:
+    r = _lib(_env(tmp_path, {}), "print_run_kind_costs")
+    assert r.returncode == 0, r.stderr
+    lines = {ln.split(":")[0].strip(): ln for ln in r.stdout.splitlines()}
+    assert "CPU クレジット unlimited" in lines["sealed-bulk"]
+    assert "→ 上限 2.00 の内" in lines["sealed-bulk"]
+    assert "CPU クレジット unlimited" in lines["sealed-periodic"]
+    assert "→ 上限 1.00 の内" in lines["sealed-periodic"]
+    assert "CPU クレジット standard" in lines["fullfetch"]
+    upper = {}
+    for kind in ("sealed-bulk", "sealed-periodic"):
+        m = re.search(r"上限（自動の停止 [0-9.]+ 時間、送信 1 GB）約 ([0-9.]+)", lines[kind])
+        assert m is not None, lines[kind]
+        upper[kind] = float(m.group(1))
+    assert upper["sealed-bulk"] <= 2.0
+    assert upper["sealed-periodic"] <= 1.0
+
+
+@needs_bash
+def test_state_credit_mode_is_read_only_from_the_state_file(tmp_path: Path) -> None:
+    env = _env(tmp_path, {})
+    _write_state(tmp_path)
+    env["CPU_CREDITS"] = "unlimited"
+    r = _lib(env, 'load_state; echo "[${CPU_CREDITS:-}]"')
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "[]"
