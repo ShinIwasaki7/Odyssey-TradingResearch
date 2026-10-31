@@ -66,12 +66,19 @@ else
 fi
 
 echo "== 7. 起動の権限の試し（EC2 の --dry-run。起動しない・課金なし）"
-dry=$(aws_p ec2 run-instances --dry-run --image-id "$ami_id" --instance-type "$PROBE_INSTANCE_TYPE" \
-  --count 1 --credit-specification CpuCredits=standard \
-  --iam-instance-profile "Name=${PROBE_SSM_ROLE}" \
-  --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
-  --tag-specifications "$(tag_spec instance)" "$(tag_spec volume)" 2>&1 || true)
-if grep -q DryRunOperation <<<"$dry"; then echo "  起動の権限: あり（DryRunOperation）"; else echo "  起動の権限の試しの結果: ${dry}"; fi
+# CPU クレジットの 2 つの方式を両方試す（標準は全期間取得など、無制限は封印の取得。lib.sh の run_kind_profile）。
+for credits in standard unlimited; do
+  dry=$(aws_p ec2 run-instances --dry-run --image-id "$ami_id" --instance-type "$PROBE_INSTANCE_TYPE" \
+    --count 1 --credit-specification "CpuCredits=${credits}" \
+    --iam-instance-profile "Name=${PROBE_SSM_ROLE}" \
+    --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
+    --tag-specifications "$(tag_spec instance)" "$(tag_spec volume)" 2>&1 || true)
+  if grep -q DryRunOperation <<<"$dry"; then
+    echo "  起動の権限（CPU クレジット ${credits}）: あり（DryRunOperation）"
+  else
+    echo "  起動の権限の試しの結果（CPU クレジット ${credits}）: ${dry}"
+  fi
+done
 dry=$(aws_p ec2 create-security-group --dry-run --group-name "${PROBE_NAME}-check" \
   --description "dry-run only" --vpc-id "$vpc" --tag-specifications "$(tag_spec security-group)" 2>&1 || true)
 if grep -q DryRunOperation <<<"$dry"; then echo "  セキュリティグループの作成の権限: あり"; else echo "  結果: ${dry}"; fi
@@ -99,4 +106,6 @@ print(f"  止め忘れの 1 時間あたり（標準のクレジット、60 GB�
 print("  使用済み（前回までの 2 回。付録 K-4・K-9.4）: 約 0.48")
 print("  人間の目安: 総額 5 米ドル以内（D12-20）")
 PY
+echo "  起動の種類ごと（今の起動の種類は ${PROBE_RUN_KIND}）:"
+print_run_kind_costs
 echo "  AMI（記録用）: ${ami_id} ${ami_name}"

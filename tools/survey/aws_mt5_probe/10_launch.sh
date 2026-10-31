@@ -40,10 +40,18 @@ shutdown /s /t ${PROBE_SHUTDOWN_SECONDS} /c "odyssey-mt5-probe auto stop ($(( PR
 </powershell>
 PS
 
+# CPU クレジットの方式は起動の種類で決まる（lib.sh の run_kind_profile。封印の取得だけ無制限。D15 §0.5.13）。
+case "$PROBE_CPU_CREDITS" in
+  standard)  credits_label="標準（standard）" ;;
+  unlimited) credits_label="無制限（unlimited。基準を超えた分は vCPU ${PROBE_VCPUS} × ${PRICE_CREDIT_VCPU_HOUR} 米ドル/時（税別）まで。見積りは 00_check.sh の 9）" ;;
+  *) die "知らない CPU クレジットの方式: ${PROBE_CPU_CREDITS}" ;;
+esac
+
 cat >&2 <<INFO
 == 起動の計画（課金が始まる）
   AMI: ${ami_id}（${PROBE_AMI_NAME_PATTERN} の最新）
-  型: ${PROBE_INSTANCE_TYPE}、CPU クレジット: 標準、IMDSv2 必須
+  型: ${PROBE_INSTANCE_TYPE}、IMDSv2 必須
+  CPU クレジット: ${credits_label}
   ディスク: gp3 ${PROBE_ROOT_GB} GB、終了時に削除
   ネットワーク: ${vpc} / ${subnet}、自動のパブリック IPv4 を 1 つ（Elastic IP は使わない）
   受信: RDP（TCP 3389）を ${PROBE_RDP_CIDR} からだけ
@@ -81,7 +89,7 @@ instance_id=$(aws_p ec2 run-instances --image-id "$ami_id" --instance-type "$PRO
   --key-name "$key_name" \
   --network-interfaces "DeviceIndex=0,SubnetId=${subnet},Groups=${sg_id},AssociatePublicIpAddress=true,DeleteOnTermination=true" \
   --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${PROBE_ROOT_GB},VolumeType=gp3,DeleteOnTermination=true}" \
-  --credit-specification CpuCredits=standard \
+  --credit-specification "CpuCredits=${PROBE_CPU_CREDITS}" \
   --instance-initiated-shutdown-behavior stop \
   --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
   --iam-instance-profile "Name=${PROBE_SSM_ROLE}" \
@@ -96,8 +104,19 @@ save_state DEADLINE_UTC "$(date -u -r $(( launched + PROBE_DEADLINE_SECONDS )) +
 save_state PROBE_DATE "$probe_date"
 save_state AMI_ID "$ami_id"
 save_state RUN_KIND "$PROBE_RUN_KIND"
+save_state CPU_CREDITS "$PROBE_CPU_CREDITS"
 log "起動: ${instance_id}（起動 $(date -u -r "$launched" +%H:%M:%SZ)、必ず終了する時刻 $(date -u -r $(( launched + PROBE_DEADLINE_SECONDS )) +%H:%M:%SZ)）"
 
 aws_p ec2 wait instance-running --instance-ids "$instance_id"
+# 起動の要求どおりの CPU クレジットの方式になったかを読んで確かめる（読み取りだけ）。違っても止めない
+# （インスタンスは動いていて状態も書いた。片付けは 90_teardown.sh）。司令塔に報告する。
+applied=$(aws_p ec2 describe-instance-credit-specifications --instance-ids "$instance_id" \
+  --query "InstanceCreditSpecifications[0].CpuCredits" --output text 2>/dev/null || echo "読めない")
+save_state CPU_CREDITS_APPLIED "$applied"
+if [[ "$applied" == "$PROBE_CPU_CREDITS" ]]; then
+  log "CPU クレジット: ${applied}（要求どおり）"
+else
+  log "注意: CPU クレジットが要求（${PROBE_CPU_CREDITS}）と違う: ${applied}。司令塔に報告する"
+fi
 aws_p ec2 describe-instances --instance-ids "$instance_id" \
   --query "Reservations[0].Instances[0].[InstanceId,State.Name,InstanceType,PublicIpAddress,Placement.AvailabilityZone]" --output text

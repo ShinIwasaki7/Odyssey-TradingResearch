@@ -20,6 +20,7 @@ readonly PROBE_TAG_KEY="Project"
 readonly PROBE_TAG_VALUE="odyssey-mt5-probe"
 readonly PROBE_NAME="odyssey-mt5-probe"
 readonly PROBE_INSTANCE_TYPE="t3.medium"              # D12-22 (a)
+readonly PROBE_VCPUS=2                               # t3.medium の vCPU の数（CPU クレジットの無制限の追加分の見積り）
 readonly PROBE_ROOT_GB=60                             # gp3、終了時に削除。上限 60 GB（人間の第 10 回の決定）。拡張しない
 readonly PROBE_AMI_NAME_PATTERN="Windows_Server-2022-English-Full-Base-*"
 readonly PROBE_SSM_ROLE="odyssey-mt5-probe-ssm-role"  # 人間が作る（付録 K-1）。インスタンスプロファイルも同名
@@ -105,6 +106,20 @@ readonly REPO_PY
 #   sealed-periodic 封印の定期取得（ADR-0037。PR #109 の仮置き S2b-10）。打ち切り 1 時間・終了 2 時間・自動の停止 2 時間 30 分
 # 要求の上限は、全期間取得は FULL_MAX_REQUESTS、封印の取得は計画の max_requests（計画の数 ＋ 1 割の切り上げ。
 # 一括 300・定期 9）で、道具が manifest で数える。
+# CPU クレジットの方式（10_launch.sh の --credit-specification）は、封印の取得（sealed-*）だけ無制限（unlimited）、
+# それ以外は標準（standard）。人間の決定「封印取得は無制限で起動（推奨）」（2026-10-31。D15 §0.5.13）。S5a（一括取得）
+# では標準のためクレジットが尽きて速度が基準の 20% に落ち、人間が管理者コンソールで無制限に切り替えて完走した。
+# 無制限の追加分の上限は vCPU 2 × PRICE_CREDIT_VCPU_HOUR × 時間で、自動の停止までの上限でも 1 回の費用の上限
+# （一括 2 米ドル・定期 1 米ドル。D15-18c・D15-3c）の内（00_check.sh の 9 で表示する）。
+# run_kind_profile <種類> → 「自動の停止 終了 打ち切り（秒）CPU クレジット 1 回の費用の上限（米ドル。- は無し）」
+run_kind_profile() {
+  case "$1" in
+    fullfetch)       echo "16200 14400 9000 standard -" ;;
+    sealed-bulk)     echo "12600 10800 7200 unlimited 2" ;;
+    sealed-periodic) echo "9000 7200 3600 unlimited 1" ;;
+    *) return 1 ;;
+  esac
+}
 _state_kind=""
 if [[ -f "$STATE_FILE" ]]; then
   _state_kind=$(sed -n 's/^RUN_KIND=//p' "$STATE_FILE" | tail -n 1)
@@ -115,16 +130,16 @@ if [[ -n "$_state_kind" && -n "${PROBE_RUN_KIND:-}" && "$_state_kind" != "$PROBE
 fi
 PROBE_RUN_KIND="${_state_kind:-${PROBE_RUN_KIND:-fullfetch}}"
 readonly PROBE_RUN_KIND
-case "$PROBE_RUN_KIND" in
-  fullfetch)       _shutdown=16200; _deadline=14400; _cutoff=9000 ;;
-  sealed-bulk)     _shutdown=12600; _deadline=10800; _cutoff=7200 ;;
-  sealed-periodic) _shutdown=9000;  _deadline=7200;  _cutoff=3600 ;;
-  *) printf '[lib] 停止: 知らない起動の種類 PROBE_RUN_KIND=%s\n' "$PROBE_RUN_KIND" >&2; exit 1 ;;
-esac
+if ! _profile=$(run_kind_profile "$PROBE_RUN_KIND"); then
+  printf '[lib] 停止: 知らない起動の種類 PROBE_RUN_KIND=%s\n' "$PROBE_RUN_KIND" >&2; exit 1
+fi
+read -r _shutdown _deadline _cutoff _credits _cap <<<"$_profile"
 readonly PROBE_SHUTDOWN_SECONDS="$_shutdown"          # Windows の中の自動の停止（止め忘れの備え）
 readonly PROBE_DEADLINE_SECONDS="$_deadline"          # 作業役が必ず終了する時刻（95_deadline_guard.sh と check_deadline）
 readonly REQUEST_TIME_LIMIT_SECONDS="$_cutoff"        # 要求の打ち切り（この後は新しい要求を出さず、回収に移る）
-unset _shutdown _deadline _cutoff _state_kind
+readonly PROBE_CPU_CREDITS="$_credits"                # standard か unlimited（10_launch.sh が起動に使い、状態の CPU_CREDITS に書く）
+readonly RUN_COST_CAP_USD="$_cap"                     # 1 回の費用の上限（米ドル。- は無し）
+unset _shutdown _deadline _cutoff _credits _cap _profile _state_kind
 
 # 環境変数の認証情報や別のプロファイルが紛れ込まないようにする。
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE \
@@ -174,6 +189,7 @@ load_state() {
   [[ -f "$STATE_FILE" ]] || die "状態のファイルが無い: ${STATE_FILE}（10_launch.sh の前）"
   # 延長の値は状態のファイルからだけ読む（環境変数では上書きできない）。
   unset EXTEND_COUNT EXTEND_APPLIED_AT_UTC EXTEND_CUTOFF_AT_EPOCH EXTEND_DEADLINE_AT_EPOCH EXTEND_SHUTDOWN_AT_EPOCH
+  unset CPU_CREDITS CPU_CREDITS_APPLIED  # CPU クレジットの方式の記録も状態のファイルからだけ読む
   # shellcheck disable=SC1090
   source "$STATE_FILE"
   : "${INSTANCE_ID:?}" "${LAUNCHED_AT_EPOCH:?}" "${PROBE_DATE:?}"
@@ -196,6 +212,36 @@ effective_limits() {
   [[ -n "${EXTEND_COUNT:-}" ]] && LIMITS_SOURCE="延長 ${EXTEND_COUNT} 回目（${EXTEND_APPLIED_AT_UTC:-}）"
   return 0
 }
+# 起動の種類ごとの見積り（lib.sh の run_kind_profile の時間・CPU クレジットの方式・1 回の費用の上限）。
+# 無制限の追加分の上限は vCPU 数 × 単価 × 時間（基準の分のクレジットを差し引かない、保守的な上限）。
+print_run_kind_costs() {
+  local kind k_shutdown k_deadline k_credits k_cap
+  for kind in fullfetch sealed-bulk sealed-periodic; do
+    read -r k_shutdown k_deadline _ k_credits k_cap <<<"$(run_kind_profile "$kind")"
+    "$PY_MAC" -I - "$kind" "$k_shutdown" "$k_deadline" "$k_credits" "$k_cap" "$PROBE_VCPUS" \
+      "$PRICE_INSTANCE_HOUR" "$PRICE_GP3_GB_MONTH" "$PRICE_IPV4_HOUR" "$PRICE_EGRESS_GB" "$PRICE_CREDIT_VCPU_HOUR" \
+      "$TAX_RATE" "$PROBE_ROOT_GB" <<'PY'
+import sys
+kind, shutdown, deadline, credits, cap = sys.argv[1:6]
+vcpus, inst, gp3, ip4, egress, credit, tax, gb = map(float, sys.argv[6:14])
+def base(hours):
+    return (inst * hours + gb * gp3 * hours / 720 + ip4 * hours) * (1 + tax)
+def cpu(hours):
+    return vcpus * credit * hours * (1 + tax) if credits == "unlimited" else 0.0
+h_dead, h_stop = int(deadline) / 3600, int(shutdown) / 3600
+expect = base(h_dead) + cpu(h_dead) + egress * 0.1 * (1 + tax)
+upper = base(h_stop) + cpu(h_stop) + egress * 1 * (1 + tax)
+if cap == "-":
+    verdict = "1 回の上限の決定なし"
+else:
+    verdict = f"上限 {float(cap):.2f} の内" if upper <= float(cap) else f"上限 {float(cap):.2f} を超える（この表示は起動を止めない。go の前に司令塔に報告し、起動しない）"
+print(f"    {kind}: CPU クレジット {credits}。終了まで（{h_dead:.1f} 時間、送信 0.1 GB）約 {expect:.2f}、"
+      f"上限（自動の停止 {h_stop:.1f} 時間、送信 1 GB）約 {upper:.2f}"
+      f"（うち CPU の無制限の追加分 約 {cpu(h_stop):.2f}）→ {verdict}")
+PY
+  done
+}
+
 utc_of() {  # utc_of <UNIX 秒> → YYYY-MM-DDTHH:MM:SSZ（macOS と Linux の date の違いを避ける）
   "$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"
 }
