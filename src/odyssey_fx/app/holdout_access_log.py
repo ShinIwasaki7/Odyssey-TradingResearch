@@ -439,8 +439,8 @@ class GitHoldoutAccessLog:
                     raise PushOutcomeUnknown(
                         "push",
                         f"{stop.detail}; {REMOTE} cannot be asked whether the commit"
-                        f" {commit[:12]} arrived. The lock and the local commit stay; a human"
-                        " checks origin (D09 §9.10.2 の段 4)",
+                        f" {commit[:12]} arrived. The local commit stays; a human checks origin"
+                        " (D09 §9.10.2 の段 4)",
                         commit=commit,
                     ) from stop
                 if reached:

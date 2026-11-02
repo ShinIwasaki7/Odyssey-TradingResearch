@@ -547,6 +547,7 @@ def test_a_cut_push_response_that_cannot_be_checked_keeps_the_local_commit(
     local = _git(repo, "rev-parse", "HEAD")
     assert local != head == _origin_head(origin)  # commit は手元に残り、origin には無い
     assert "失敗（push）" in printed and "cannot be asked" in printed
+    assert "lock" not in printed  # 違反判定コマンドは公開の時点でロックを持たない
     assert f"commit: {local}（push の結果が分からない。手元に残した" in printed
     assert "commit 済みの内容に戻した" not in printed
     assert _git(repo, "status", "--porcelain") == ""  # 追記は手元の commit に入っている
