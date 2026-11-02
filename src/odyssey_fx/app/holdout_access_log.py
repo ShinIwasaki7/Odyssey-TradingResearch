@@ -9,7 +9,7 @@
    する（`.git` の中だけを書く）。
    - `require_published_base`（後からの違反の判定の管理コマンド。PR #114）: 手元の既定ブランチの
      先頭が origin の先頭と同じことと、commit するファイルの作業木の内容が手元の先頭の内容の後ろに
-     行を足しただけであること（やり直しで追記を残す方式）。
+     行を足しただけであること（追記・commit の途中で止まった回の追記をやり直しに含める）。
    - `require_clean_base`（最終検証の段 2 (a)。D09 §9.10.2）: 作業木が既定ブランチの上にあり、
      先頭が origin の先頭と同じで（仮置き R2-20）、消費の対象を持つ snapshot の manifest が先頭に
      あり、その消費の記録が無視されず、作業木の内容が先頭の内容と同じ（追記が無い）こと。
@@ -18,8 +18,9 @@
      snapshot の消費の記録の作業木の内容が origin の既定ブランチ上の内容と同じこと。
 2. **追記**: `append_row` が版 1 の消費の行（D09 §9.10.4）を 1 行追記し、読み直して一致を確かめる。
 3. **公開**: `publish` が渡したファイルだけを commit し、origin の既定ブランチへ push する（強制
-   しない）。push が断られたら commit を取り消す。最終検証（`restore_on_reject`）は追記した
-   ファイルもコミット済みの内容に戻す（origin に届いていない行は記録ではない。仮置き R2-2）。
+   しない）。push が断られたら commit を取り消す。`restore_on_reject` なら追記したファイルも
+   コミット済みの内容に戻す（origin に届いていない行は記録ではない。仮置き R2-2）。最終検証と
+   後からの違反の判定の管理コマンドの両方が使う（PR #117 の仮置き 3 への人間の決定）。
    push の結果が分からないとき（`confirm_unknown`）は、もう一度 origin の先頭を尋ね、消費の
    commit があれば成功、無ければ拒否と同じ扱い、尋ねられなければ `PushOutcomeUnknown`。
 
@@ -438,8 +439,8 @@ class GitHoldoutAccessLog:
                     raise PushOutcomeUnknown(
                         "push",
                         f"{stop.detail}; {REMOTE} cannot be asked whether the commit"
-                        f" {commit[:12]} arrived. The lock and the local commit stay; a human"
-                        " checks origin (D09 §9.10.2 の段 4)",
+                        f" {commit[:12]} arrived. The local commit stays; a human checks origin"
+                        " (D09 §9.10.2 の段 4)",
                         commit=commit,
                     ) from stop
                 if reached:

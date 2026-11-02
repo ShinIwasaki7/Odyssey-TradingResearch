@@ -438,12 +438,14 @@ def test_a_pending_sealed_snapshot_in_the_range_stops(
 # --- 途中で止まったとき（部分的な commit を残さない・やり直し）----------------------------------
 
 
-def test_a_rejected_push_leaves_no_commit_and_a_retry_completes(
+def test_a_rejected_push_restores_the_appended_lines_and_a_retry_starts_over(
     sealed_base: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """push が断られたら commit を取り消し、追記も commit 済みの内容に戻す（最終検証と同じ）。"""
     repo, origin = _sealed_repo(sealed_base, tmp_path)
     accept_id = _access_ids(repo)[0]
     head = _git(repo, "rev-parse", "HEAD")
+    before = _snapshot_bytes(repo)
     hook = origin / "hooks" / "pre-receive"
     hook.write_text("#!/bin/sh\nexit 1\n")
     hook.chmod(0o755)
@@ -451,20 +453,106 @@ def test_a_rejected_push_leaves_no_commit_and_a_retry_completes(
     assert _judge(repo, accept_id) == 1
     printed = capsys.readouterr().out
     assert "失敗（push）" in printed and "commit: なし" in printed
-    assert "消費の記録: この回に 5 / 5 件追記した" in printed
+    assert "restored to the committed content" in printed
+    assert "commit 済みの内容に戻した（origin には何も届いていない" in printed
     assert _git(repo, "rev-parse", "HEAD") == head == _origin_head(origin)  # commit は残らない
     assert _git(repo, "diff", "--cached", "--name-only") == ""
+    assert _git(repo, "status", "--porcelain") == ""  # 追記は残らない
+    assert _snapshot_bytes(repo) == before
+    assert not [row for row in _rows(repo).rows if isinstance(row, QualityAccessJudgment)]
     hook.unlink()
     assert _judge(repo, accept_id) == 0
     printed = capsys.readouterr().out
-    assert "既にあったので追記しなかった（やり直し）" in printed
-    assert "消費の記録: この回に 0 / 0 件追記した" in printed
+    assert "判定の行: この回に追記した" in printed  # 判定の行の追記から始め直す
+    assert "消費の記録: この回に 5 / 5 件追記した" in printed
     judgments = [row for row in _rows(repo).rows if isinstance(row, QualityAccessJudgment)]
     assert len(judgments) == 1
     lines = (_final(repo) / "access_log.jsonl").read_text().splitlines()
     assert len(lines) == 5
+    assert {json.loads(line)["permit_id"] for line in lines} == {judgments[0].row_id}
     assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin) != head
     assert _git(repo, "status", "--porcelain") == ""
+
+
+def _cut_push(monkeypatch: pytest.MonkeyPatch, *, reach: bool, ask: bool) -> None:
+    """push の応答が途切れる（人工）。`reach` なら origin に届き、`ask` でなければ尋ね直せない。"""
+    original = GitHoldoutAccessLog._push
+
+    def cut(self: GitHoldoutAccessLog, branch: str) -> None:
+        if reach:
+            original(self, branch)
+        raise HoldoutAccessLogStop("push", "the response was cut (synthetic)")
+
+    monkeypatch.setattr(GitHoldoutAccessLog, "_push", cut)
+    if not ask:
+        monkeypatch.setattr(GitHoldoutAccessLog, "has_commit_at_origin", lambda self, commit: None)
+
+
+def test_a_cut_push_response_that_reached_origin_is_a_success(
+    sealed_base: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """push の結果が分からなければ origin に尋ね直し、届いていれば成功（終了コード 0）。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    head = _git(repo, "rev-parse", "HEAD")
+    _cut_push(monkeypatch, reach=True, ask=True)
+    capsys.readouterr()
+    assert _judge(repo, accept_id) == 0
+    printed = capsys.readouterr().out
+    assert "（origin の既定ブランチへ push した）" in printed
+    assert _git(repo, "rev-parse", "HEAD") == _origin_head(origin) != head
+    assert _git(repo, "status", "--porcelain") == ""
+    assert len((_final(repo) / "access_log.jsonl").read_text().splitlines()) == 5
+
+
+def test_a_cut_push_response_that_did_not_reach_origin_is_a_rejection(
+    sealed_base: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """尋ね直して届いていなければ、断られたときと同じく commit を取り消し、追記を戻す。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    head = _git(repo, "rev-parse", "HEAD")
+    before = _snapshot_bytes(repo)
+    _cut_push(monkeypatch, reach=False, ask=True)
+    capsys.readouterr()
+    assert _judge(repo, accept_id) == 1
+    printed = capsys.readouterr().out
+    assert "失敗（push）" in printed and "commit: なし" in printed
+    assert "commit 済みの内容に戻した" in printed
+    assert _git(repo, "rev-parse", "HEAD") == head == _origin_head(origin)
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _snapshot_bytes(repo) == before
+
+
+def test_a_cut_push_response_that_cannot_be_checked_keeps_the_local_commit(
+    sealed_base: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """origin に尋ね直せなければ、commit と追記を手元に残して止める（終了コード 1）。"""
+    repo, origin = _sealed_repo(sealed_base, tmp_path)
+    accept_id = _access_ids(repo)[0]
+    head = _git(repo, "rev-parse", "HEAD")
+    _cut_push(monkeypatch, reach=False, ask=False)
+    capsys.readouterr()
+    assert _judge(repo, accept_id) == 1
+    printed = capsys.readouterr().out
+    local = _git(repo, "rev-parse", "HEAD")
+    assert local != head == _origin_head(origin)  # commit は手元に残り、origin には無い
+    assert "失敗（push）" in printed and "cannot be asked" in printed
+    assert "lock" not in printed  # 違反判定コマンドは公開の時点でロックを持たない
+    assert f"commit: {local}（push の結果が分からない。手元に残した" in printed
+    assert "commit 済みの内容に戻した" not in printed
+    assert _git(repo, "status", "--porcelain") == ""  # 追記は手元の commit に入っている
+    assert len((_final(repo) / "access_log.jsonl").read_text().splitlines()) == 5
+    _no_price(printed)
 
 
 def test_a_failed_consumption_append_leaves_no_commit_and_a_retry_adds_only_the_rest(
@@ -641,10 +729,13 @@ def test_another_judgment_with_sealed_partitions_left_stops_first(
 def test_an_unpublished_consumption_of_another_judgment_is_committed_with_the_log(
     sealed_base: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """前の判定の push が断られて残った消費の記録は、次の判定の commit に一緒に入る。"""
+    """前の判定の commit が断られて残った消費の記録は、次の判定の commit に一緒に入る。
+
+    push が断られたときは追記を戻す（最終検証にそろえた）ので、残るのは commit の前に止まった回。
+    """
     repo, origin = _sealed_repo(sealed_base, tmp_path)
     accept_id = _access_ids(repo)[0]
-    hook = origin / "hooks" / "pre-receive"
+    hook = repo / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nexit 1\n")
     hook.chmod(0o755)
     assert _judge(repo, accept_id) == 1
