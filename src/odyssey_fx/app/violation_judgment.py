@@ -18,8 +18,20 @@ fail-closed に行う（ADR-0035 第3項の「書き手と経路」。PR #110 �
 
 書き込みを始める前に、記録の読込・閲覧の開始の行・partition の状態・暫定 snapshot・ロック・
 origin の状態をすべて確かめる。途中で止まったときは、どこまで進んだかを件数と識別子だけで返し、
-部分的な commit を残さない（push が断られたら commit を取り消す）。作業木に足した行は消さない
-（追記専用。やり直しで残りだけを足して commit する）。
+部分的な commit を残さない。公開は最終検証（`app.final_validation` の段 4）と同じ方式にそろえる
+（PR #117 の仮置き 3 への人間の決定「最終検証側にそろえる」。2026-11-02）:
+
+- push が断られたら、commit を取り消し、追記した判定の行と消費の記録も commit 済みの内容に戻す
+  （origin に届いていない行は記録ではない。D09 §9.10.2・仮置き R2-2。`restore_on_reject`）。
+  やり直しは判定の行の追記から始め直す。
+- push の結果が分からないとき（応答が途切れた）は、origin に尋ね直す（`confirm_unknown`）。
+  届いていれば成功、届いていなければ断られたときと同じ扱い、尋ねられなければ commit を手元に
+  残して止め、origin に届いたかを人間が確かめる。
+- 追記や commit の途中で止まったときは、作業木に足した行を残し、やり直しで残りだけを足して
+  commit する（判定の行が既にあれば追記を飛ばす。PR #107 の要決定 S1-2）。
+
+終了コードは今までどおり（止まったら 1）。判定の行の追記のロックは追記の 1 回ごとに作って消す
+ので、公開の時点では持っていない（消すロックは無い）。
 
 **価格を読まない**: 読むのは品質確認の閲覧の記録・manifest・消費の記録だけで、partition の
 足（価格）を開かない。出力は件数・識別子・時刻だけ。
@@ -36,7 +48,11 @@ from typing import Final
 
 from odyssey_fx.app.sealed_intake import SnapshotSealedPartition, snapshot_sealed_partitions
 from odyssey_fx.common.time import UtcTime
-from odyssey_fx.evaluation.application.ports import HoldoutAccessLog, HoldoutAccessLogStop
+from odyssey_fx.evaluation.application.ports import (
+    HoldoutAccessLog,
+    HoldoutAccessLogStop,
+    PushOutcomeUnknown,
+)
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.adapters.quality_access_log_store import (
     QUALITY_ACCESS_LOCK_PATH,
@@ -86,6 +102,10 @@ class JudgmentProgress:
     differing: tuple[str, ...] = ()
     written_snapshots: list[str] = field(default_factory=list)
     commit: str | None = None
+    #: push が断られ、この回の追記（判定の行と消費の記録）を commit 済みの内容に戻した。
+    restored: bool = False
+    #: push の結果が分からない（`commit` は手元にあり、origin に届いたかは人間が確かめる）。
+    push_outcome_unknown: bool = False
 
 
 class ViolationJudgmentStopped(Exception):
@@ -383,8 +403,19 @@ def judge_violation(
         if item.snapshot_id not in progress.written_snapshots:
             progress.written_snapshots.append(item.snapshot_id)
     try:
-        progress.commit = log.publish(paths, _message(plan, progress.consumed_now))
+        progress.commit = log.publish(
+            paths,
+            _message(plan, progress.consumed_now),
+            restore_on_reject=True,
+            confirm_unknown=True,
+        )
+    except PushOutcomeUnknown as unknown:
+        progress.commit = unknown.commit
+        progress.push_outcome_unknown = True
+        raise ViolationJudgmentStopped(unknown.stage, unknown.detail, progress) from unknown
     except HoldoutAccessLogStop as stop:
         progress.commit = stop.commit
+        # 最終検証と同じ見分け方（段 4）: push の段で commit が無ければ、断られて追記を戻した。
+        progress.restored = stop.stage == "push" and stop.commit is None
         raise ViolationJudgmentStopped(stop.stage, stop.detail, progress) from stop
     return progress

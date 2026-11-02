@@ -1920,10 +1920,22 @@ def _judgment_progress_lines(progress: JudgmentProgress) -> list[str]:
         None: "追記していない",
     }[progress.judgment_appended]
     written = ", ".join(progress.written_snapshots) or "なし"
-    commit = (
-        f"{progress.commit}（origin の既定ブランチへ push した）"
-        if progress.commit is not None
-        else "なし"
+    if progress.commit is None:
+        commit = "なし"
+    elif progress.push_outcome_unknown:
+        commit = (
+            f"{progress.commit}（push の結果が分からない。手元に残した。origin に届いたかを人間が"
+            "確かめる）"
+        )
+    else:
+        commit = f"{progress.commit}（origin の既定ブランチへ push した）"
+    restored = (
+        [
+            "push が断られたので、この回の追記（判定の行と消費の記録）を commit 済みの内容に"
+            "戻した（origin には何も届いていない。やり直しは判定の行の追記から始め直す）"
+        ]
+        if progress.restored
+        else []
     )
     differing = (
         [f"既にある判定の行と入力が違う項目（既にある行を使った）: {', '.join(progress.differing)}"]
@@ -1938,6 +1950,7 @@ def _judgment_progress_lines(progress: JudgmentProgress) -> list[str]:
         f"消費の記録: この回に {progress.consumed_now} / {progress.to_consume} 件追記した"
         f"（追記した snapshot: {written}）",
         f"commit: {commit}",
+        *restored,
     ]
 
 
