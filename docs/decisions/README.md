@@ -42,3 +42,5 @@
 | [0036](0036-quality-check-permit-in-holdout-gate.md) | 2024 年以降のデータの品質確認の読み取りは、読み取りの関所の品質確認専用の許可を通す | D11 §6 の 6-7c、D15 §2.2 の S1 |
 | [0037](0037-revised-constraint-on-data-from-2024.md) | 2024-01-01 以降のデータは OANDA MT5 の 1 分足の取得と関所の下での封印の取り込みだけを許し、閲覧は引き続き禁止する（制約の改定文） | D15 §2.2 の S2a（D15-2） |
 | [0038](0038-sealed-classes-from-2024-replacing-adr-0014.md) | ADR-0014 を置き換える。新たに取得する OANDA MT5 の 1 分足の 2024-01-01 以降は封印の区分として取り込み、封印で始める | D15 §2.2 の S2a |
+| [0039](0039-mt5-route-replaces-d11-expansion-prerequisites.md) | OANDA MT5 の経路では、他の通貨へ広げる前提（D11 §9 の順 14）を、USDJPY と同じ最小の規則で置き換える（提案） | D17 §2.4 の A1（D17-2） |
+| [0040](0040-quality-check-permit-extended-to-research-raw-files.md) | 品質確認の許可の定義が覆ってよい範囲を、研究期間の原ファイルの確認の読み取りへ広げる（ADR-0036 第4項の追補。提案） | D17 §2.4 の A1（D17-12・D17-15） |
