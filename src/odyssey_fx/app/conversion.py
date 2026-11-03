@@ -159,14 +159,19 @@ class SnapshotConversionQuotes:
     脚の足は、換算の snapshot にある通貨ペアは換算の snapshot から、執行の通貨ペア（USDCHF の
     1 本目の脚）は執行の snapshot から、読み取りの関門を通した研究履歴の partition の 1 分足だけを
     読む（仮置き C1-19: 執行足・参照価格を流用しない）。
+
+    `snapshots` は通貨ペアからその系列を持つ snapshot への対応で、1 分足の有無によらず持つ
+    （1 分足の無い通貨ペアの脚も、能力検査の結果にどの snapshot を見たかを残す。D06 §19.8 の 1）。
     """
 
     symbols: frozenset[Symbol]
     minutes: Mapping[Symbol, _MinuteBars]
     fallback_timeframe: TimeframeRef
+    snapshots: Mapping[Symbol, SnapshotRef] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "minutes", MappingProxyType(dict(self.minutes)))
+        object.__setattr__(self, "snapshots", MappingProxyType(dict(self.snapshots)))
 
     def last_minute(self, symbol: Symbol, moment: UtcTime) -> Bar | None:
         found = self.minutes.get(symbol)
@@ -180,9 +185,12 @@ class SnapshotConversionQuotes:
 
     def snapshot_of(self, symbol: Symbol) -> SnapshotRef:
         found = self.minutes.get(symbol)
-        if found is None:
-            raise MarketDataValueError(f"no snapshot supplies the 1m bars of {symbol} (D06 §19.4)")
-        return found.snapshot_ref
+        if found is not None:
+            return found.snapshot_ref
+        ref = self.snapshots.get(symbol)
+        if ref is None:
+            raise MarketDataValueError(f"no snapshot supplies the series of {symbol} (D06 §19.4)")
+        return ref
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +260,13 @@ def conversion_supply(
             record.series_id for record in manifest.series if record.series_id.symbol == symbol
         )
     quotes = SnapshotConversionQuotes(
-        symbols=frozenset(sources), minutes=minutes, fallback_timeframe=fallback_timeframe
+        symbols=frozenset(sources),
+        minutes=minutes,
+        fallback_timeframe=fallback_timeframe,
+        snapshots={
+            symbol: SnapshotRef(snapshot_id=source.snapshot.manifest.snapshot_id())
+            for symbol, source in sources.items()
+        },
     )
 
     def shortfall(series: SeriesId, interval: Interval) -> tuple[tuple[Interval, str], ...]:

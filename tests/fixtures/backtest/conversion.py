@@ -29,6 +29,7 @@ from odyssey_fx.backtest.domain.policies import (
     RunConfig,
 )
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
+from odyssey_fx.backtest.portfolio.conversion import ConversionQuotes
 from odyssey_fx.backtest.trace.manifest import config_digest_of
 from odyssey_fx.common.ids import IdAllocator, SnapshotId
 from odyssey_fx.common.money import Price, PriceOffset, decimal_from_str
@@ -192,7 +193,7 @@ def run_converted(
     signal_bars: Sequence[Bar],
     execution_bars: Sequence[Bar],
     run_interval: Interval,
-    quotes: FakeQuotes | None,
+    quotes: ConversionQuotes | None,
     account: AccountSpec = ACCOUNT,
     cost_model: CostModel = COST_MODEL,
     calendar: TradingCalendar = CALENDAR,
@@ -265,7 +266,10 @@ def run_converted(
         if quotes is None
         else ConversionSupply(
             quotes=quotes,
-            present=frozenset(minute_series(item) for item in quotes.bars)
+            present=frozenset(
+                minute_series(item)
+                for item in (quotes.bars if isinstance(quotes, FakeQuotes) else {})
+            )
             if present is None
             else present,
             shortfall=lambda series, interval: tuple(
