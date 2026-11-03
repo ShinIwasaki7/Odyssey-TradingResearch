@@ -18,6 +18,7 @@ from odyssey_fx.app.config.quality_checks import (
 )
 from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
 from odyssey_fx.app.mt5 import load_datasource
+from odyssey_fx.app.research_raw_verify import RESEARCH_VERIFY_TOOL
 from odyssey_fx.app.sealed_intake import (
     SEALED_ACCEPT_TOOL,
     SEALED_CONFIG_FILES,
@@ -71,14 +72,17 @@ def _pid(timeframe: str = "1m", start: UtcTime = WEEK) -> PartitionId:
 # --- 許可の定義（configs/quality_checks/）----------------------------------------------------
 
 
-def test_the_two_definitions_match_the_fixed_files_of_today() -> None:
+def test_the_two_sealed_definitions_match_the_fixed_files_of_today() -> None:
     definitions = {
         definition.tool: definition
         for definition in load_quality_check_definitions(ROOT / QUALITY_CHECKS_DIRECTORY)
     }
-    assert set(definitions) == {SEALED_ACCEPT_TOOL, SEALED_FINALIZE_TOOL}
+    # 承認済みの定義は封印の 2 つと研究期間用の 1 つ（D17 の AP。照合は
+    # test_research_verify_rules）。
+    assert set(definitions) == {SEALED_ACCEPT_TOOL, SEALED_FINALIZE_TOOL, RESEARCH_VERIFY_TOOL}
     digest = sealed_config_digest(ROOT)
-    assert all(definition.config_digest == digest for definition in definitions.values())
+    assert definitions[SEALED_ACCEPT_TOOL].config_digest == digest
+    assert definitions[SEALED_FINALIZE_TOOL].config_digest == digest
     assert definitions[SEALED_ACCEPT_TOOL].target_kind is QualityTargetKind.RAW_FILE
     finalize = definitions[SEALED_FINALIZE_TOOL]
     assert finalize.target_kind is QualityTargetKind.PARTITION
