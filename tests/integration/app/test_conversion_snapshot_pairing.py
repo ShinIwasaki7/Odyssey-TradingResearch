@@ -243,3 +243,22 @@ def test_ct17_the_converted_run_passes_the_single_currency_check(
     assert pl.read_parquet(run_directory / "FILLS.parquet").height == 2
     kinds = set(pl.read_parquet(run_directory / "EVIDENCE.parquet")["kind"].to_list())
     assert {"ADMISSION", "FILL", "MARK_TO_MARKET"} <= kinds
+
+
+def test_ct15_a_mid_bar_resumption_converts_with_the_minute_that_ended_just_before(
+    converted: tuple[dict[str, Any], dict[str, Any], Path],
+) -> None:
+    """CT-15（決定 (18) (a)）: MT5 の経路の執行足の途中の再開の分（20:36。EURUSD の 20:34〜20:36 が
+    無記録）の時価評価の換算は、処理点の直前に終わった USDJPY の 1 分足（20:35）から取り、古さは
+    1 分に収まる。15 分の境目（20:45 の決済）の処理点では、その足の最後の分（20:44）から取る。"""
+    outcome, _, out = converted
+    evidence = pl.read_parquet(out / "runs" / outcome["run_id"] / "EVIDENCE.parquet")
+
+    def observed(kind: str) -> dict[str, str]:
+        rows = evidence.filter(pl.col("kind") == kind).iter_rows(named=True)
+        return {
+            row["at_time"]: json.loads(row["conversion_paths"][0])["observed_at"] for row in rows
+        }
+
+    assert observed("MARK_TO_MARKET")["2026-01-23T20:36:00Z"] == "2026-01-23T20:35:00Z"
+    assert observed("FILL")["2026-01-23T20:45:00Z"] == "2026-01-23T20:44:00Z"

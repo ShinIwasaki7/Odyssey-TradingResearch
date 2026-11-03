@@ -135,10 +135,20 @@ def _call(argv: list[str]) -> None:
     assert code == 0, f"{argv} exited with {code}\n{buffer.getvalue()}"
 
 
-def _accept(repo: Path, symbol: Symbol, variant: TimeRuleVariant, prices: Mapping) -> str:  # type: ignore[type-arg]
+#: EURUSD の無記録の分（執行足の途中の再開の分 20:36 を作る。CT-15。USDJPY には無記録を作らない）。
+EURUSD_UNRECORDED: Final = (Interval(start=_at("20:34"), end=_at("20:36")),)
+
+
+def _accept(
+    repo: Path,
+    symbol: Symbol,
+    variant: TimeRuleVariant,
+    prices: Mapping,  # type: ignore[type-arg]
+    unrecorded: tuple[Interval, ...] = (),
+) -> str:
     table = m5.write_rule_files(repo, pairs=("USDJPY", "EURUSD", "USDCHF"))
     calendar = market.calendar()
-    rows = m5.minute_rows(calendar, DATA, prices=prices)
+    rows = m5.minute_rows(calendar, DATA, prices=prices, unrecorded=unrecorded)
     year, month = DATA.start.value.year, DATA.start.value.month
     pending = m5.build_pending(
         calendar, table, [m5.MonthSpec(year, month, rows)], variant=variant, symbol=symbol
@@ -202,7 +212,7 @@ def build_conversion_workspace(root: Path) -> ConversionWorkspace:
     yen = _prices_150()
     snapshots = {
         ("EURUSD", TimeRuleVariant.STANDARD): _accept(
-            repo, EURUSD, TimeRuleVariant.STANDARD, _scaled(yen)
+            repo, EURUSD, TimeRuleVariant.STANDARD, _scaled(yen), EURUSD_UNRECORDED
         ),
         ("USDJPY", TimeRuleVariant.STANDARD): _accept(repo, USDJPY, TimeRuleVariant.STANDARD, {}),
         ("USDJPY", TimeRuleVariant.CANDIDATE): _accept(repo, USDJPY, TimeRuleVariant.CANDIDATE, {}),
