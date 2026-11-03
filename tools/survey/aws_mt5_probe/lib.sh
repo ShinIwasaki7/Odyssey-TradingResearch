@@ -246,16 +246,37 @@ utc_of() {  # utc_of <UNIX 秒> → YYYY-MM-DDTHH:MM:SSZ（macOS と Linux の d
   "$PY_MAC" -I -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"
 }
 save_state() { save_state_many "$1" "$2"; }  # save_state KEY VALUE
+# 状態のファイルのロックのディレクトリを 1 回だけ作ってみる。作れたら 0、既にあれば 17（EEXIST と同じ番号）、
+# それ以外の失敗はそれ以外の値。Python が異常終了したとき（終了コード 1 など）を「既にある」と読まないよう、
+# 既にあるときだけに 17 を使う。
+# mkdir コマンドは使わない。コマンドの実装によっては、2 つのプロセスが同時に作ると両方に成功を返し、
+# 2 つが同時にロックを持つ（Ubuntu 26.04 の Rust 版 coreutils（uutils 0.10.0）の mkdir。CI で再現した）。
+# OS の mkdir(2) を直接呼ぶ Python なら、作れるのは必ず 1 つのプロセスだけになる。
+_state_lock_try() {  # _state_lock_try <ロックのディレクトリ>
+  "$PY_MAC" -I -c '
+import os, sys
+try:
+    os.mkdir(sys.argv[1])
+except FileExistsError:
+    sys.exit(17)
+except OSError as e:
+    print(e, file=sys.stderr)
+    sys.exit(2)
+' "$1"
+}
 # 複数の項目を 1 回の置き換えでまとめて書く（途中で止まっても一部だけが書かれることが無い）。
 # 同時に書く別のスクリプト（39 の SEALED_SENT と 96 の延長など）の更新を消さないよう、ロックのディレクトリ
-# （${STATE_FILE}.lock。mkdir は原子的）を取り、一時ファイルはプロセスごとに別の名前にする。
+# （${STATE_FILE}.lock。_state_lock_try で原子的に作る）を取り、一時ファイルはプロセスごとに別の名前にする。
 save_state_many() {  # save_state_many KEY VALUE [KEY VALUE ...]
-  local lock="${STATE_FILE}.lock" i tmp
+  local lock="${STATE_FILE}.lock" i tmp rc
   local -a pats=()
   mkdir -p "$STATE_DIR"
   touch "$STATE_FILE"
   for (( i = 1; ; i++ )); do
-    mkdir "$lock" 2>/dev/null && break
+    rc=0
+    _state_lock_try "$lock" || rc=$?
+    (( rc != 0 )) || break
+    (( rc == 17 )) || die "状態のファイルのロック ${lock} を作れない（終了コード ${rc}）"
     (( i < 300 )) || die "状態のファイルのロック ${lock} を 30 秒取れない（別のスクリプトが書いている。止まったスクリプトの残りなら rmdir ${lock}）"
     sleep 0.1
   done

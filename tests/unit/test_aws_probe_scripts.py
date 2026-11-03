@@ -1020,8 +1020,22 @@ def test_extend_refuses_while_the_fetch_is_running(tmp_path: Path) -> None:
 
 
 @needs_bash
-def test_save_state_from_two_processes_keeps_every_update(tmp_path: Path) -> None:
+@pytest.mark.parametrize("exclusive_mkdir", [True, False], ids=["mkdir", "non_exclusive_mkdir"])
+def test_save_state_from_two_processes_keeps_every_update(
+    tmp_path: Path, exclusive_mkdir: bool
+) -> None:
     env, _, _ = _extend_env(tmp_path)
+    if not exclusive_mkdir:
+        # 既にあっても成功を返す mkdir コマンドに差し替える。Ubuntu 26.04 の
+        # Rust 版 coreutils（uutils 0.10.0）の mkdir は、2 つのプロセスが同時に
+        # 作ると両方に成功を返すことがあり、CI で 2 つが同時にロックを持って
+        # rmdir が失敗した。ロックが mkdir コマンドの排他に頼っていないことを、
+        # どの機械でも確かめる。
+        real_mkdir = shutil.which("mkdir")
+        assert real_mkdir is not None
+        shim = tmp_path / "bin" / "mkdir"
+        shim.write_text(f'#!/bin/sh\nexec "{real_mkdir}" -p "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
     writer = (
         f'source "{SCRIPTS / "lib.sh"}"; '
         'for i in $(seq 1 40); do save_state "K_${W}_${i}" "$i"; done'
@@ -1038,6 +1052,28 @@ def test_save_state_from_two_processes_keeps_every_update(tmp_path: Path) -> Non
         for i in range(1, 41):
             assert f"K_{w}_{i}={i}" in text.splitlines()
     assert "LAUNCHED_AT_EPOCH=" in text
+    assert not (_state_dir(tmp_path) / "state.env.lock").exists()
+
+
+@needs_bash
+def test_save_state_stops_at_once_when_the_lock_cannot_be_made(tmp_path: Path) -> None:
+    # Python が異常終了したとき（終了コード 1）を「ロックが既にある」と読まず、待たずに止まる
+    env, _, _ = _extend_env(tmp_path)
+    broken = tmp_path / "bin" / "broken_python"
+    broken.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    broken.chmod(0o755)
+    before = (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8")
+    r = subprocess.run(
+        ["bash", "-c", f'source "{SCRIPTS / "lib.sh"}"; save_state K_X 1'],
+        env={**env, "PY_MAC": str(broken)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode != 0
+    assert "を作れない（終了コード 1）" in r.stderr
+    assert "30 秒取れない" not in r.stderr
+    assert (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8") == before
     assert not (_state_dir(tmp_path) / "state.env.lock").exists()
 
 
