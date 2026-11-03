@@ -92,7 +92,9 @@ class MonthTimes:
     """adapters が読んだ月のファイル 1 つ（バイト列の SHA-256 と、時刻の列だけの行の列）。
 
     `times` は遅延の列で、1 行ごとに時刻の列の整数（列の数が違う・整数でない行は `None`）を返す。
-    途中で読めなくなれば `RawFileUnreadable` を送出する。`sha256` が取得記録と違うときや
+    途中で読めなくなれば `RawFileUnreadable` を送出する。ファイルが無い・読めないときは
+    `readable` を偽にし、`sha256` は空（ファイル単位の不合格。その回は止めない）。`sha256` が
+    取得記録と違うときや
     `readable` が偽・`header_ok` が偽のときは読まない（`times` を消費しない）。
     """
 
@@ -165,10 +167,10 @@ def pre_read_problems(
 def _read_problem(
     entry: Mt5FetchEntry, read: MonthTimes, table: TimeRuleTable, symbol: Symbol, limit: int
 ) -> RawVerifyReason | None:
-    if read.sha256 != entry.sha256_gz:
-        return RawVerifyReason.HASH_MISMATCH
     if not read.readable:
         return RawVerifyReason.FILE_UNREADABLE
+    if read.sha256 != entry.sha256_gz:
+        return RawVerifyReason.HASH_MISMATCH
     if not read.header_ok:
         return RawVerifyReason.HEADER_MISMATCH
     pair = str(symbol)

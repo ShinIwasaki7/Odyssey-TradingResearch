@@ -37,6 +37,7 @@ import gzip
 import hashlib
 import io
 import json
+import zlib
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -329,7 +330,11 @@ def read_month_times(
         raise MarketDataValueError("a verification read needs a QualityReadPermit")
     if read_permit.classes != RESEARCH_QUALITY_CLASSES:
         raise MarketDataValueError("a verification read is only under a research-history permit")
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        # 欠けた・読めないファイルはファイル単位の不合格（その回を止めない。ハッシュは無い）。
+        return MonthTimes(sha256="", readable=False, header_ok=False, times=())
     digest = hashlib.sha256(raw).hexdigest()
     if digest != entry.sha256_gz:
         return MonthTimes(sha256=digest, readable=True, header_ok=False, times=())
@@ -341,7 +346,7 @@ def read_month_times(
     stream = gzip.GzipFile(fileobj=io.BytesIO(raw))
     try:
         header = stream.readline().decode("utf-8").rstrip("\r\n")
-    except (OSError, EOFError, UnicodeDecodeError):
+    except (OSError, EOFError, UnicodeDecodeError, zlib.error):
         return MonthTimes(sha256=digest, readable=False, header_ok=False, times=())
     if header != ",".join(columns):
         return MonthTimes(sha256=digest, readable=True, header_ok=False, times=())
@@ -354,7 +359,7 @@ def read_month_times(
                 cells = line.decode("utf-8").rstrip("\r\n").split(",")
                 cell = cells[index] if len(cells) == width else ""
                 yield int(cell) if cell.isascii() and cell.isdigit() else None
-        except (OSError, EOFError, UnicodeDecodeError):
+        except (OSError, EOFError, UnicodeDecodeError, zlib.error):
             raise RawFileUnreadable("the raw file cannot be read to its end") from None
 
     return MonthTimes(sha256=digest, readable=True, header_ok=True, times=times())

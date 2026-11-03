@@ -87,6 +87,13 @@ def _gz(times: list[int]) -> bytes:
     return gzip.compress(("\n".join(lines) + "\n").encode("utf-8"), mtime=0)
 
 
+def _csv_bytes(data: bytes) -> bytes:
+    try:
+        return gzip.decompress(data)
+    except (OSError, EOFError):
+        return data  # 壊れた人工の gzip（展開できない）
+
+
 def _repo(
     tmp_path: Path,
     months: tuple[tuple[int, int], ...] = ((2019, 3), (2019, 4)),
@@ -95,6 +102,7 @@ def _repo(
     extra: dict[tuple[int, int], tuple[int, ...]] | None = None,
     definition_symbols: str = "EURUSD, USDJPY",
     definition: bool = True,
+    raw_bytes: dict[tuple[int, int], bytes] | None = None,
 ) -> Path:
     repo = tmp_path / "repo"
     for rel in COPIED:
@@ -107,7 +115,7 @@ def _repo(
     for year, month in months:
         times = _month_rows(year, month, extra=(extra or {}).get((year, month), ()))
         name = f"{symbol}/{symbol}_{year}-{month:02d}_m1.csv.gz"
-        data = _gz(times)
+        data = (raw_bytes or {}).get((year, month), _gz(times))
         (raw / symbol).mkdir(parents=True, exist_ok=True)
         (raw / name).write_bytes(data)
         start = datetime(year, month, 1, tzinfo=UTC)
@@ -122,7 +130,7 @@ def _repo(
             "first_bar_time": times[0],
             "last_bar_time": max(times[0], times[-1]),
             "sha256_gz": hashlib.sha256(data).hexdigest(),
-            "sha256_csv": hashlib.sha256(gzip.decompress(data)).hexdigest(),
+            "sha256_csv": hashlib.sha256(_csv_bytes(data)).hexdigest(),
         }
     manifest = json.dumps({"files": files}, indent=1).encode("utf-8")
     (raw / "manifest.json").write_bytes(manifest)
@@ -285,6 +293,28 @@ def test_a_file_whose_bytes_differ_from_the_record_fails_without_being_read(
     assert _verify(repo) == 1
     printed = capsys.readouterr().out
     assert "HASH_MISMATCH" in printed and "合格 1 件、不合格 1 件" in printed
+    _, end = _rows(repo)
+    assert isinstance(end, QualityAccessEnd) and end.result is QualityAccessResult.COMPLETED
+
+
+def test_a_missing_or_broken_file_fails_alone_and_the_rest_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """読めないファイル（欠けた・記録のハッシュと一致する壊れた gzip）はそのファイルだけ不合格。"""
+    broken = _gz(_month_rows(2019, 4))[:40]  # gzip の頭だけ（展開できない）
+    repo = _repo(tmp_path, months=((2019, 3), (2019, 4), (2019, 5)), raw_bytes={(2019, 4): broken})
+    entry = next(iter(_manifest(repo).values()))
+    (repo / "data" / "raw" / "oanda_mt5" / FETCH_DATE / str(entry["file"])).unlink()
+    out = tmp_path / "verify.json"
+    capsys.readouterr()
+    assert _verify(repo, out) == 1
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert [(row["result"], row["reason"]) for row in payload["files"]] == [
+        ("FAIL", "FILE_UNREADABLE"),
+        ("FAIL", "FILE_UNREADABLE"),
+        ("PASS", None),
+    ]
+    assert payload["stopped"] is False
     _, end = _rows(repo)
     assert isinstance(end, QualityAccessEnd) and end.result is QualityAccessResult.COMPLETED
 
