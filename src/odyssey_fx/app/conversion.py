@@ -187,11 +187,18 @@ class SnapshotConversionQuotes:
 
 @dataclass(frozen=True, slots=True)
 class ConversionSource:
-    """換算の脚を読む snapshot 1 つ（読み取りの関門を通した足と許可集合）。"""
+    """換算の脚を読む snapshot 1 つ（読み取りの関門を通した足と許可集合）。
+
+    `observation` は取得不足の区間を引く検査報告の索引（`None` なら `snapshot` の検査報告から
+    作る）。最終検証の run は、研究履歴の snapshot の検査報告に、関所の許可の並びが指す封印の
+    snapshot の検査報告を合わせた索引を渡す（足は研究履歴の partition と並びの partition の両方を
+    `partition_bars` に持つ。D06 v1.20 案 §19.14）。
+    """
 
     snapshot: ReadableSnapshot
     allowed_partitions: frozenset[PartitionId]
     partition_bars: Mapping[PartitionId, Sequence[Bar]]
+    observation: Mt5Observation | None = None
 
 
 def _minute_series(manifest: SnapshotManifest, symbol: Symbol) -> SeriesId | None:
@@ -236,7 +243,11 @@ def conversion_supply(
             snapshot_ref=SnapshotRef(snapshot_id=manifest.snapshot_id()),
             bars=surface.bars_or_empty(series),
         )
-        observations[series] = Mt5Observation.from_snapshot(source.snapshot)
+        observations[series] = (
+            source.observation
+            if source.observation is not None
+            else Mt5Observation.from_snapshot(source.snapshot)
+        )
         symbol_series[series] = tuple(
             record.series_id for record in manifest.series if record.series_id.symbol == symbol
         )

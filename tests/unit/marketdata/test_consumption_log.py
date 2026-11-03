@@ -133,3 +133,40 @@ def test_rows_check_the_items_of_their_reason() -> None:
     assert violation.key == (SEALED, "p" * 32)
     with pytest.raises(MarketDataValueError):
         _row(access_id="x" * 32)  # 最終検証の行は閲覧の識別子を持たない
+
+
+def test_a_conversion_read_row_is_read_but_never_consumes() -> None:
+    """D06 v1.20 案 §19.14（仮置き C1-16 (a)）: `CONVERSION_READ` の行は封印の partition に書け、
+    状態の導出に数えない。同じ partition の同じ許可の消費の行と鍵が重なれば構造の誤り。"""
+    from odyssey_fx.marketdata.domain.consumption_log import ConsumptionKind
+
+    read = _row(kind=ConsumptionKind.CONVERSION_READ)
+    parsed = _parse(consumption_line_bytes(read) + consumption_line_bytes(_row(OTHER)))
+    assert isinstance(parsed, ParsedAccessLog)
+    assert parsed.consumed() == frozenset({OTHER})
+    assert parsed.rows[0].kind is ConsumptionKind.CONVERSION_READ and not parsed.rows[0].consumes
+    assert json.loads(consumption_line_bytes(read))["kind"] == "CONVERSION_READ"
+    duplicate = _parse(consumption_line_bytes(read) + consumption_line_bytes(_row()))
+    assert isinstance(duplicate, AccessLogReadFailure)
+    # 封印の区分でない partition への換算用の読み取りの行は構造の誤り。
+    outside = _parse(consumption_line_bytes(_row(LEGACY, kind=ConsumptionKind.CONVERSION_READ)))
+    assert isinstance(outside, AccessLogReadFailure) and "not a sealed" in outside.detail
+    # 知らない種別は構造の誤り（C2 より前の読込が CONVERSION_READ を止めたのと同じ規則）。
+    line = json.loads(consumption_line_bytes(read))
+    line["kind"] = "SOME_FUTURE_KIND"
+    from odyssey_fx.common.canonical import encode
+
+    assert isinstance(_parse(encode(line) + b"\n"), AccessLogReadFailure)
+
+
+def test_a_conversion_read_row_is_written_by_a_final_evaluation_only() -> None:
+    from odyssey_fx.marketdata.domain.consumption_log import ConsumptionKind
+
+    with pytest.raises(MarketDataValueError, match="CONVERSION_READ"):
+        _row(
+            kind=ConsumptionKind.CONVERSION_READ,
+            reason=ConsumptionReason.VIOLATION_JUDGMENT,
+            candidate=None,
+            access_id="q" * 32,
+            purpose="",
+        )

@@ -309,12 +309,16 @@ def final_partitions_match_permit(
     permit: FinalEvaluationPermit,
     allowed: Paired[frozenset[tuple[str, PartitionId]]],
     record_snapshots: Paired[str],
+    conversion_snapshots: Paired[str] | None = None,
 ) -> WindowRefusal | None:
     """研究ポリシーの検査 P2F（`final_partitions_match_permit`）の (1)・(3)（D09 §9.10.8）。
 
     (1) 組ごとの許可集合が、研究履歴の partition と許可の値の並びの partition の和に等しい（それ
-    以外の封印の区分・隔離の区分・旧データの 2024 年以降の partition を含まない）。(3) 研究履歴の
-    partition は記録票の snapshot のものだけ。合格なら `None`。
+    以外の封印の区分・隔離の区分・旧データの 2024 年以降の partition を含まない。並びは消費の対象
+    と換算用の読み取りの対象のうちその組の run が読む部分。D06 v1.20 案 §19.14）。(3) 研究履歴の
+    partition は記録票の snapshot のものだけ。記録票の snapshot は、取引する通貨ペアの snapshot
+    （`record_snapshots`）と、記録票の換算の snapshot（`conversion_snapshots`。円以外の決済通貨の
+    候補だけ。人間の決定 (23) (a)）。合格なら `None`。
     """
     for variant in VARIANTS:
         expected = permit.allowed_set(variant)
@@ -334,21 +338,29 @@ def final_partitions_match_permit(
                     f"P2F (1): {partition_id} of the {variant.value} run is neither research"
                     " history nor a partition of the permit (D09 §9.10.8)",
                 )
-            if snapshot != record_snapshots.of(variant):
+            recorded = {record_snapshots.of(variant)}
+            if conversion_snapshots is not None:
+                recorded.add(conversion_snapshots.of(variant))
+            if snapshot not in recorded:
                 return WindowRefusal(
                     FinalReason.P2F_NOT_PASSED,
                     f"P2F (3): the research-history partition {partition_id} of the"
-                    f" {variant.value} run is read from {snapshot}, not from the snapshot of the"
-                    f" manifest {record_snapshots.of(variant)} (D09 §9.10.8)",
+                    f" {variant.value} run is read from {snapshot}, not from the snapshots of the"
+                    f" manifest {sorted(recorded)} (D09 §9.10.8、人間の決定 (23) (a))",
                 )
     return None
 
 
 def consumption_rows_present(
-    permit: FinalEvaluationPermit, rows_on_origin: Mapping[tuple[str, str], frozenset[str]]
+    permit: FinalEvaluationPermit,
+    rows_on_origin: Mapping[tuple[str, str], frozenset[str]],
+    conversion_rows_on_origin: Mapping[tuple[str, str], frozenset[str]] | None = None,
 ) -> WindowRefusal | None:
     """P2F の (2): 消費の対象のすべての partition に、この許可の識別子の消費の行が origin の
-    既定ブランチ上にある（`rows_on_origin` は `(snapshot_id, partition)` → 許可の識別子の集合）。"""
+    既定ブランチ上にある（`rows_on_origin` は `(snapshot_id, partition)` → 消費の行の許可の
+    識別子の集合）。換算用の読み取りの対象のすべての partition には、この許可の換算用の読み取りの
+    行（`CONVERSION_READ`）が origin の既定ブランチ上にある（`conversion_rows_on_origin`。
+    D06 v1.20 案 §19.14 の P2F の (2)）。"""
     missing = sorted(
         f"{snapshot}:{partition_id}"
         for snapshot, partition_id in permit.window.targets
@@ -359,6 +371,18 @@ def consumption_rows_present(
             FinalReason.RECORD_NOT_ON_ORIGIN,
             f"P2F (2): {len(missing)} target partition(s) have no consumption row of the permit"
             f" {permit.permit_id} on origin (first: {missing[0]}. D09 §9.10.8)",
+        )
+    conversion_rows = conversion_rows_on_origin or {}
+    unread = sorted(
+        f"{snapshot}:{partition_id}"
+        for snapshot, partition_id in permit.window.conversion
+        if permit.permit_id not in conversion_rows.get((snapshot, str(partition_id)), frozenset())
+    )
+    if unread:
+        return WindowRefusal(
+            FinalReason.RECORD_NOT_ON_ORIGIN,
+            f"P2F (2): {len(unread)} conversion-read partition(s) have no conversion-read row of"
+            f" the permit {permit.permit_id} on origin (first: {unread[0]}. D06 §19.14)",
         )
     return None
 
@@ -383,9 +407,12 @@ def issue_final_evaluation_permit(
     `(snapshot_id, partition)` の状態）を確かめ、許可の値を組み立てる。許可の発行の行は書かない
     （仮置き R2-2）。許可は控えとロックとして手元にだけ持つ。
     """
+    # 換算用の読み取りの対象も `SEALED` であること（`CONSUMED` は換算にも読まない。D06 v1.20 案
+    # §19.14。やり直しはこの許可の換算用の読み取りの行がある partition を `SEALED` と読む。
+    # 決定 (24)）。
     not_sealed = sorted(
         f"{snapshot}:{partition_id}"
-        for snapshot, partition_id in window.targets
+        for snapshot, partition_id in (*window.targets, *window.conversion)
         if states.get((snapshot, str(partition_id))) is not HoldoutState.SEALED
     )
     if not_sealed:

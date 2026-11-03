@@ -105,3 +105,26 @@ def test_a_failed_json_write_leaves_no_file_under_the_final_name(
     assert len(digest) == 64 and [p.name for p in target.parent.iterdir()] == [target.name]
     with pytest.raises(FileExistsError):
         records.write_json_once(target, {"a": 2})
+
+
+def test_a_row_with_conversion_reads_is_version_2_and_both_versions_are_read(repo: Path) -> None:
+    """仮置き C1-17: 換算用の読み取りの項目を持つ行は版 2、持たない行は版 1 のまま。両方読める。"""
+    append_ledger_row(repo, _values())
+    append_ledger_row(
+        repo,
+        {**_values(), "conversion_read_count": 4, "conversion_reads_digest": "d" * 64},
+    )
+    ledger = read_final_ledger(repo)
+    assert [row.payload["schema_version"] for row in ledger.rows] == [1, 2]
+    assert ledger.rows[1].payload["conversion_read_count"] == 4
+    # 版 1 の行に換算用の項目を足した行・版 2 で項目を欠く行は読めない。
+    with pytest.raises(FinalLedgerError):
+        append_ledger_row(repo, {**_values(), "conversion_read_count": 4})
+    from odyssey_fx.common.canonical import encode
+
+    broken = {**dict(ledger.rows[0].payload), "schema_version": 2}
+    with pytest.raises(FinalLedgerError, match="keys"):
+        parse_final_ledger(encode(broken) + b"\n")
+    unknown = {**dict(ledger.rows[0].payload), "schema_version": 3}
+    with pytest.raises(FinalLedgerError, match="schema_version"):
+        parse_final_ledger(encode(unknown) + b"\n")

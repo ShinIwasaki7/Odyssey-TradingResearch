@@ -11,6 +11,13 @@
   run のカレンダーは封印の snapshot のカレンダーで、研究履歴の期間の取引セッションが記録票の
   カレンダーと同じことを確かめる（2026-10-30 の人間の決定「(a) 封印のカレンダー（版 2）で走らせる
   （推奨）」）。続けて戦略に依存するデータ能力検査（仮置き R4b-8。manifest と検査報告だけ）。
+- **円以外の決済通貨の候補**（D06 v1.20 案 §19.14）: 段 2 (g) で、`RunConfig` の換算の snapshot を
+  記録票のその組の換算の snapshot にし、並びに換算用の読み取りの対象（USDJPY の 1 分足）を入れる。
+  研究期間の側は、換算の snapshot を記録票の snapshot と同じ組の照合（D06 §19.2）で、記録票の
+  カレンダー（版 1）と照合し、研究履歴の期間の取引セッションの確かめを換算の snapshot にも当てる
+  （人間の決定 (22) (a)）。封印の側は、並びの各週の換算用の読み取りの対象と執行の通貨ペアの
+  partition の snapshot の manifest を照合する（同じ組・同じ取得の回。仮置き C1-14）。段 5 では、
+  換算の脚の 1 分足を、記録票の換算の snapshot（研究履歴）と並びの封印の partition から供給する。
 - **段 5**（`run`）: 記録票の snapshot（研究履歴）と関所の許可の並びが指す封印の snapshot から
   as-of ビュー・執行系列ビュー・公開フィードを組み立て（`FinalSources`）、組の 1 本の連続口座の run
   と評価を行い、終わりの決済の費用を引いた後の資産の点を足した資産の系列から判定の指標を数える
@@ -50,6 +57,12 @@ from odyssey_fx.app.composition import (
 from odyssey_fx.app.config.calendars import load_calendar
 from odyssey_fx.app.config.experiment_v2 import TEXT_ROLES, ExperimentV2, experiment_v2_from_texts
 from odyssey_fx.app.config.loader import ConfigError
+from odyssey_fx.app.conversion import (
+    ConversionSnapshotMismatch,
+    ConversionSource,
+    conversion_supply,
+    require_conversion_pairing,
+)
 from odyssey_fx.app.final_validation import (
     SEALED_APPROVED_TABLES,
     CandidateFacts,
@@ -58,6 +71,7 @@ from odyssey_fx.app.final_validation import (
     FinalRunPreparation,
 )
 from odyssey_fx.app.mt5_run import reads_start, strategy_reads
+from odyssey_fx.backtest.application.run_backtest import ConversionSupply
 from odyssey_fx.backtest.domain.policies import RunConfig, RunEndMode
 from odyssey_fx.backtest.trace.manifest import RunManifest, config_digest_of
 from odyssey_fx.backtest.trace.result import BacktestResult, RunStatus
@@ -310,6 +324,9 @@ class RecordedFinalRunner:
             return _refusal(FinalReason.RECOMPUTATION_MISMATCH, "prepare was not called")
         record = self._records[experiment_dir]
         sealed: dict[str, SnapshotManifest] = {}
+        conversion_refs = {
+            variant: record.loaded.body_of(variant).conversion_snapshot_ref for variant in VARIANTS
+        }
         try:
             for variant in VARIANTS:
                 for item in window.reads.of(variant):
@@ -321,6 +338,11 @@ class RecordedFinalRunner:
             }
             research = {variant: item.manifest for variant, item in opened.items()}
             reports = {variant: item.report for variant, item in opened.items()}
+            converting = {
+                variant: store.open_readable(str(ref.snapshot_id)).manifest
+                for variant, ref in conversion_refs.items()
+                if ref is not None
+            }
         except Exception as exc:  # noqa: BLE001 - 読めなければ能力検査の不合格
             return _refusal(
                 FinalReason.DATA_CAPABILITY_NOT_MET,
@@ -334,6 +356,12 @@ class RecordedFinalRunner:
         )
         if mismatch is not None:
             return _refusal(FinalReason.DATA_CAPABILITY_NOT_MET, mismatch)
+        refusal = _research_conversion_refusal(record, calendar, research, converting)
+        if refusal is not None:
+            return refusal
+        refusal = _sealed_conversion_refusal(window, sealed)
+        if refusal is not None:
+            return refusal
         code, lock, env = code_digest(), lock_digest(self._repo_root), env_digest()
         calendar_ref = calendar_ref_of(calendar)
         interval = Interval(start=window.scoring_start, end=window.consumption.end)
@@ -365,15 +393,29 @@ class RecordedFinalRunner:
         self._planned = planned
         # 研究履歴の partition は、並びがその系列の封印の partition を持つ系列だけを読む（R4b の
         # 仮置き: 封印の期間に足の無い系列は run 区間を覆えない。公開フィードの覆いの検査）。
-        research_partitions = Paired.build(
-            lambda variant: tuple(
+        # 円以外の決済通貨の候補は、記録票の換算の snapshot の研究履歴の partition も同じ規則で
+        # 読む（研究履歴の期間の換算。D06 v1.20 案 §19.14、D09 §9.10.3 の 8 の v0.7 案）。
+        conversion_allowed = record.manifest.conversion_allowed_partitions
+
+        def research_of(variant: Variant) -> tuple[tuple[str, PartitionId], ...]:
+            series = {read.partition_id.series for read in window.reads.of(variant)}
+            own = tuple(
                 (facts.record_snapshots.of(variant), item.partition_id)
                 for item in research[variant].partitions
                 if str(item.partition_id) in record.manifest.allowed_partitions.of(variant)  # type: ignore[union-attr]
-                and item.partition_id.series
-                in {read.partition_id.series for read in window.reads.of(variant)}
+                and item.partition_id.series in series
             )
-        )
+            ref = conversion_refs[variant]
+            if ref is None or not isinstance(conversion_allowed, Paired):
+                return own
+            return own + tuple(
+                (str(ref.snapshot_id), item.partition_id)
+                for item in converting[variant].partitions
+                if str(item.partition_id) in conversion_allowed.of(variant)
+                and item.partition_id.series in series
+            )
+
+        research_partitions = Paired.build(research_of)
         return FinalRunPlan(
             predicted=Paired.build(
                 lambda variant: PredictedRun(
@@ -466,6 +508,15 @@ class RecordedFinalRunner:
                 store.read_partition(item.snapshot_id, item.partition_id, read_permit=grant)
             )
         sources = FinalSources(grant=grant, snapshots=readables)
+        # 換算用の読み取りの対象の足は換算の脚の供給にだけ渡す（執行の側の入力に入れない。
+        # D06 v1.20 案 §19.14）。
+        conversion_reads = {partition for _, partition in permit.window.conversion}
+        conversion_bars = {
+            key: bars for key, bars in sealed_bars.items() if key in conversion_reads
+        }
+        sealed_bars = {
+            key: bars for key, bars in sealed_bars.items() if key not in conversion_reads
+        }
         schedules = {
             series: SeriesSchedule(
                 series=series, timeframe_def=schedule.timeframe_def, calendar=planned.calendar
@@ -505,6 +556,20 @@ class RecordedFinalRunner:
             if len(tables) != 1:
                 raise KernelValueError("the sealed snapshots name more than one time-rule table")
             observation = Mt5Observation.from_report(merged, next(iter(tables)))
+        conversion = self._conversion(
+            record,
+            planned,
+            plan.research_partitions.of(variant),
+            conversion_bars,
+            sources,
+            readables,
+            conversion_reads,
+            ExecutionSource(
+                snapshot=inputs.snapshot,
+                allowed_partitions=inputs.allowed_partitions,
+                observation=observation,
+            ),
+        )
         experiment = record.loaded.body_of(variant).with_run_interval(planned.config.run_interval)
         verified = VerifiedPartitionBars(
             inputs.snapshot,
@@ -547,6 +612,7 @@ class RecordedFinalRunner:
             observation=observation,
             integrity=merged,
             approved_list=SEALED_APPROVED_TABLES,
+            conversion=None if conversion is None else conversion(verified),
         )
         spec = environment.symbol_specs[experiment.execution_series.symbol]
         code, lock, env = code_digest(), lock_digest(self._repo_root), env_digest()
@@ -593,8 +659,226 @@ class RecordedFinalRunner:
             summary=summary,
         )
 
+    def _conversion(
+        self,
+        record: _Record,
+        planned: _Planned,
+        research_partitions: tuple[tuple[str, PartitionId], ...],
+        conversion_bars: Mapping[PartitionId, tuple[Bar, ...]],
+        sources: FinalSources,
+        readables: Mapping[str, ReadableSnapshot],
+        conversion_reads: frozenset[PartitionId] | set[PartitionId],
+        execution: ExecutionSource,
+    ) -> Callable[[VerifiedPartitionBars], ConversionSupply] | None:
+        """換算の脚の供給（円以外の決済通貨の候補だけ。D06 v1.20 案 §19.14）。
+
+        脚の 1 分足は、記録票の換算の snapshot の研究履歴の partition（研究履歴の期間）と、関所の
+        許可の並びの換算用の読み取りの対象（封印の期間）から読む。どちらも読み取りの関門を通す
+        （並びの partition は並びが指す封印の snapshot の manifest で照合する）。執行の通貨ペアの
+        脚（USDCHF 型）は執行の側の入力（研究履歴と並びの消費の対象）から読む。取得不足の区間は、
+        研究履歴の snapshot の検査報告に並びの封印の snapshot の検査報告を合わせた索引から引く。
+        脚の観測の参照の snapshot は記録票の換算の snapshot（番号付きの仮置き）。
+        """
+        ref = planned.config.conversion_snapshot_ref
+        if ref is None:
+            return None
+        environment = record.loaded.environment
+        conversion_id = str(ref.snapshot_id)
+        research = open_snapshot_inputs(
+            snapshots_root=self._snapshots_root,
+            snapshot_id=conversion_id,
+            calendar=environment.calendar,
+            timeframe_defs=environment.timeframe_defs,
+        )
+        allowed_research = (
+            frozenset(item for snapshot, item in research_partitions if snapshot == conversion_id)
+            & research.allowed_partitions
+        )
+        allowed = allowed_research | frozenset(conversion_bars)
+        verified = VerifiedPartitionBars(
+            research.snapshot,
+            allowed,
+            {
+                **{key: research.partition_bars[key] for key in allowed_research},
+                **conversion_bars,
+            },
+            label="ConversionQuotes",
+            final_sources=sources,
+        )
+        sealed_sources = sorted(
+            {
+                item.snapshot_id
+                for item in sources.grant.reads
+                if item.partition_id in conversion_reads
+            }
+        )
+        merged = IntegrityReport(
+            results=(
+                *research.snapshot.report.results,
+                *(result for name in sealed_sources for result in readables[name].report.results),
+            )
+        )
+        tables = {
+            readables[name].manifest.conversion.mt5.time_rule_table  # type: ignore[union-attr]
+            for name in sealed_sources
+        }
+        mt5 = research.snapshot.manifest.conversion.mt5
+        table = next(iter(tables)) if len(tables) == 1 else None
+        if table is None and mt5 is not None:
+            table = mt5.time_rule_table
+        observation = None if table is None else Mt5Observation.from_report(merged, table)
+        minute = next(
+            (item for item in record.timeframe_refs if item.id == "1m"),
+            planned.config.execution_series.timeframe,
+        )
+
+        def supply(execution_bars: VerifiedPartitionBars) -> ConversionSupply:
+            return conversion_supply(
+                execution=ConversionSource(
+                    snapshot=execution.snapshot,
+                    allowed_partitions=execution.allowed_partitions,
+                    partition_bars=execution_bars,
+                    observation=execution.observation,
+                ),
+                conversion=ConversionSource(
+                    snapshot=research.snapshot,
+                    allowed_partitions=allowed,
+                    partition_bars=verified,
+                    observation=observation,
+                ),
+                fallback_timeframe=minute,
+            )
+
+        return supply
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionSource:
+    """最終検証の run の執行の側の入力（換算の脚の供給に渡す。USDCHF 型の 1 本目の脚）。"""
+
+    snapshot: ReadableSnapshot
+    allowed_partitions: frozenset[PartitionId]
+    observation: Mt5Observation | None
+
 
 # --- 補助 ------------------------------------------------------------------------------------
+
+
+def _research_conversion_refusal(
+    record: _Record,
+    sealed_calendar: TradingCalendar,
+    research: Mapping[Variant, SnapshotManifest],
+    converting: Mapping[Variant, SnapshotManifest],
+) -> WindowRefusal | None:
+    """研究期間の側の換算の snapshot の確かめ（D06 v1.20 案 §19.14、人間の決定 (22) (a)）。
+
+    組ごとに、換算の snapshot を記録票の取引する通貨ペアの snapshot と同じ組の照合（D06 §19.2 の
+    6 項目）で比べる。照合の行 4 の「run に渡したカレンダー」は記録票のカレンダー（研究期間の
+    snapshot の版 1）と読む。続けて、研究履歴の期間の取引セッションが記録票のカレンダーと run の
+    カレンダー（封印の snapshot の版）とで同じことを、換算の snapshot にも当てる。違えば止める
+    （終了コード 7。理由の識別子は記録票の snapshot の確かめと同じ `DATA_CAPABILITY_NOT_MET`）。
+    """
+    calendar = record.loaded.environment.calendar
+    for variant, manifest in sorted(converting.items(), key=lambda pair: pair[0].value):
+        try:
+            require_conversion_pairing(
+                research[variant],
+                manifest,
+                calendar_id=calendar.id,
+                calendar_version=calendar.version,
+                execution_id=str(research[variant].snapshot_id()),
+                conversion_id=str(manifest.snapshot_id()),
+            )
+        except ConversionSnapshotMismatch as exc:
+            return _refusal(
+                FinalReason.DATA_CAPABILITY_NOT_MET,
+                f"the {variant.value} conversion snapshot of the record: {exc}",
+            )
+        mismatch = _research_sessions_differ(calendar, sealed_calendar, (manifest,))
+        if mismatch is not None:
+            return _refusal(
+                FinalReason.DATA_CAPABILITY_NOT_MET,
+                f"the {variant.value} conversion snapshot of the record: {mismatch}"
+                " (人間の決定 (22) (a))",
+            )
+    return None
+
+
+def _sealed_conversion_refusal(
+    window: FinalWindow, sealed: Mapping[str, SnapshotManifest]
+) -> WindowRefusal | None:
+    """並びの各週の換算用の読み取りの対象と執行の通貨ペアの partition の照合（仮置き C1-14）。
+
+    組ごと・週ごとに、換算用の読み取りの対象（USDJPY の 1 分足）を読む snapshot と、同じ週の
+    執行の通貨ペアの partition を読む snapshot の manifest（価格を含まない）を次で比べる:
+    (1) 組（時刻の規則の表の `variant`）、(2) 時刻の規則の表（識別・版・SHA-256）、(3) 取得の回
+    （取得記録の SHA-256 `conversion.mt5.fetch_manifest_sha256`。封印の snapshot は取得の回 ×
+    通貨 × 組ごとに作られ、取得記録 `manifest.json` は取得の 1 回に 1 つ。D03 §16.3.3・§16.3.6）、
+    (4) カレンダーと集約規則の版、(5) 承認。食い違えば `CONVERSION_PARTITION_MISMATCH`（終了
+    コード 7。何も書かない）。
+    """
+    if not window.conversion:
+        return None
+    converting = set(window.conversion)
+    for variant in VARIANTS:
+        by_week: dict[str, tuple[set[str], set[str]]] = {}
+        for item in window.reads.of(variant):
+            start = str(item.partition_id.period_start)
+            executed, converted = by_week.setdefault(start, (set(), set()))
+            if (item.snapshot_id, item.partition_id) in converting:
+                converted.add(item.snapshot_id)
+            else:
+                executed.add(item.snapshot_id)
+        for week, (executed, converted) in sorted(by_week.items()):
+            for left in sorted(converted):
+                for right in sorted(executed):
+                    problems = _acquisition_problems(sealed[left], sealed[right])
+                    if problems:
+                        return _refusal(
+                            FinalReason.CONVERSION_PARTITION_MISMATCH,
+                            f"the {variant.value} conversion-read partition of the week {week}"
+                            f" in {left} does not pair with the executed partition in {right}:"
+                            f" {'; '.join(problems)} (D06 §19.14、仮置き C1-14)",
+                        )
+    return None
+
+
+def _acquisition_problems(conversion: SnapshotManifest, execution: SnapshotManifest) -> list[str]:
+    """同じ組・同じ取得の回の 5 項目の食い違い（識別子・版・組の名前だけ。価格を含まない）。"""
+    problems: list[str] = []
+    left, right = conversion.conversion.mt5, execution.conversion.mt5
+    if left is None or right is None:
+        return ["route: both snapshots must be OANDA MT5 snapshots"]
+    if left.time_rule_table.variant != right.time_rule_table.variant:
+        problems.append(
+            f"variant: {left.time_rule_table.variant.value} vs"
+            f" {right.time_rule_table.variant.value}"
+        )
+    tables = [
+        (item.table_id, item.version, item.sha256)
+        for item in (left.time_rule_table, right.time_rule_table)
+    ]
+    if tables[0] != tables[1]:
+        problems.append(
+            f"time rule table: {tables[0][0]} v{tables[0][1]} vs {tables[1][0]} v{tables[1][1]}"
+        )
+    if left.fetch_manifest_sha256 != right.fetch_manifest_sha256:
+        problems.append(
+            f"acquisition round: fetch manifest {left.fetch_manifest_sha256[:12]} vs"
+            f" {right.fetch_manifest_sha256[:12]}"
+        )
+    calendars = [
+        (item.calendar_id, item.calendar_version, item.aggregation_rule_version)
+        for item in (conversion.conversion, execution.conversion)
+    ]
+    if calendars[0] != calendars[1]:
+        problems.append(
+            f"calendar / aggregation: {calendars[0][0]}@v{calendars[0][1]} {calendars[0][2]} vs"
+            f" {calendars[1][0]}@v{calendars[1][1]} {calendars[1][2]}"
+        )
+    if not conversion.is_approved or not execution.is_approved:
+        problems.append("approval: both snapshots must be approved")
+    return problems
 
 
 def _recorded(directory: Path, variant: Variant) -> RecordedResearch:
