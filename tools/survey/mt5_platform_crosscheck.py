@@ -45,7 +45,12 @@ from pathlib import Path
 from typing import Any
 
 from odyssey_fx.app.composition import code_version
-from odyssey_fx.app.mt5 import accept_mt5_in_memory, load_datasource, load_mt5_rules
+from odyssey_fx.app.mt5 import (
+    accept_mt5_in_memory,
+    load_datasource,
+    load_mt5_rules,
+    load_verified_raw,
+)
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.read_readiness import read_resets
@@ -347,6 +352,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(".").resolve()
     rules = load_mt5_rules(repo)
     datasource = load_datasource(repo)
+    # 許可なしの読み取りは確認済みハッシュの一覧に載るファイルだけ（ADR-0036 第8項、D03 §17.7）。
+    verified = load_verified_raw(repo, Path(args.root).name)
     months = [(int(text[:4]), int(text[5:7])) for text in args.months]
     tool_dir = Path(args.feasibility_dir)
     inputs = {
@@ -379,6 +386,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     created_at=UtcTime(datetime.now(UTC)),
                     boundaries=INITIAL_ACCESS_BOUNDARIES,
                     code_version=code_version(),
+                    verified=verified,
                     months=group,
                 )
                 daily = SeriesId(

@@ -64,6 +64,7 @@ from odyssey_fx.marketdata.domain.access import HoldoutState
 from odyssey_fx.marketdata.domain.consumption_log import ConsumptionReason, ConsumptionRow
 from odyssey_fx.marketdata.domain.errors import HoldoutStateUnknown, MarketDataValueError
 from odyssey_fx.marketdata.domain.quality_access import (
+    RESEARCH_QUALITY_CLASSES,
     QualityAccessJudgment,
     QualityAccessLogFailure,
     QualityAccessStart,
@@ -195,6 +196,17 @@ def plan_judgment(
     if start is None:
         raise ViolationJudgmentStopped(
             "read", f"the quality access log has no start row of the access {access_id!r}", progress
+        )
+    if start.classes == RESEARCH_QUALITY_CLASSES:
+        # 研究期間の原ファイルの確認の読み取りの閲覧は違反の範囲に入れない（ADR-0040 第3項の 3。
+        # A1-10）。2024 年以降の行に当たった閲覧を違反の判定に回すか・範囲をどうするかは人間が
+        # 決める（同第3項の 4。A1-6）。本コマンドはその扱いを決めずに止める（何も書かない）。
+        raise ViolationJudgmentStopped(
+            "research-history",
+            f"the access {access_id!r} is a verification read of research raw files; it is not"
+            " in the violation scope, and how to handle one that hit a row from 2024 is decided"
+            " by a human (D03 §17.6 の 4, ADR-0040 第3項の 3・4). Nothing was written",
+            progress,
         )
     existing = next(
         (

@@ -51,6 +51,7 @@ from odyssey_fx.marketdata.domain.snapshot import (
     QualityReadRecord,
     SealedInitialState,
 )
+from odyssey_fx.marketdata.domain.verified_raw import VerifiedRawFile, VerifiedRawList
 from tests.fixtures.mt5 import market as m5
 from tests.fixtures.synthetic import market, snapshots
 
@@ -239,12 +240,59 @@ def _entry(requested_to: str) -> Mt5FetchEntry:
     )
 
 
+#: 確認済みハッシュの一覧の人工の 1 行（D03 §17.3。許可なしの読み取りは一覧に載るファイルだけ）。
+_LISTED = "data/raw/oanda_mt5/d/USDJPY/USDJPY_2023-12_m1.csv.gz"
+_VERIFIED = VerifiedRawList(
+    fetch_date="d",
+    fetch_manifest_sha256="e" * 64,
+    declared_period_end=T("2024-01-01T00:00:00Z"),
+    files=(
+        VerifiedRawFile(location=_LISTED, symbol=Symbol("USDJPY"), sha256="a" * 64, access_id="x"),
+    ),
+    source="configs/datasources/oanda_mt5_m1_verified_raw_d.yaml",
+    source_sha256="f" * 64,
+)
+
+
 def test_without_a_permit_a_request_past_2024_is_never_read(tmp_path: Path) -> None:
     path = tmp_path / "oanda_mt5" / "x.csv.gz"
-    require_raw_read_allowed(path, _entry("2024-01-01T00:00:00Z"), read_permit=None, location=None)
+    require_raw_read_allowed(
+        path,
+        _entry("2024-01-01T00:00:00Z"),
+        read_permit=None,
+        location=_LISTED,
+        verified=_VERIFIED,
+        digest="a" * 64,
+    )
     with pytest.raises(HoldoutAccessViolation, match="past 2024-01-01"):
         require_raw_read_allowed(
-            path, _entry("2024-01-01T00:01:00Z"), read_permit=None, location=None
+            path,
+            _entry("2024-01-01T00:01:00Z"),
+            read_permit=None,
+            location=_LISTED,
+            verified=_VERIFIED,
+            digest="a" * 64,
+        )
+
+
+def test_without_a_permit_only_a_listed_file_with_the_same_hash_is_read(tmp_path: Path) -> None:
+    """ADR-0036 第8項、D03 §17.7: 一覧が無い・載っていない・ハッシュが違えば読まない。"""
+    path = tmp_path / "oanda_mt5" / "x.csv.gz"
+    entry = _entry("2024-01-01T00:00:00Z")
+    with pytest.raises(HoldoutAccessViolation, match="no verified hash list"):
+        require_raw_read_allowed(path, entry, read_permit=None, location=_LISTED, digest="a" * 64)
+    with pytest.raises(HoldoutAccessViolation, match="is not in the verified hash list"):
+        require_raw_read_allowed(
+            path,
+            entry,
+            read_permit=None,
+            location=_LISTED.replace("2023-12", "2023-11"),
+            verified=_VERIFIED,
+            digest="a" * 64,
+        )
+    with pytest.raises(HoldoutAccessViolation, match="but the verified hash list"):
+        require_raw_read_allowed(
+            path, entry, read_permit=None, location=_LISTED, verified=_VERIFIED, digest="c" * 64
         )
 
 

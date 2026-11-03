@@ -339,7 +339,8 @@ def test_the_quality_permit_and_the_final_evaluation_permit_are_separate(tmp_pat
         ({"check_kind": QualityCheckKind.GAP_LIST}, "acceptance"),
         ({"classes": frozenset({AccessClass.QUARANTINED_UNASSIGNED})}, "two OANDA MT5 sealed"),
         ({"classes": frozenset({AccessClass.LEGACY_HOLDOUT})}, "two OANDA MT5 sealed"),
-        ({"classes": frozenset({AccessClass.RESEARCH_HISTORY})}, "two OANDA MT5 sealed"),
+        # 研究履歴だけの区分は研究期間の定義の規則で確かめる（受入れの種類では作れない。ADR-0040）。
+        ({"classes": frozenset({AccessClass.RESEARCH_HISTORY})}, "research-history"),
         ({"output_kinds": frozenset({QualityOutputKind.EVIDENCE})}, "ADR-0037"),
         ({"period": AccessPeriod(start=T("2023-01-01T00:00:00Z"), end=None)}, "2024"),
         ({"config_digest": "nothex"}, "hex"),

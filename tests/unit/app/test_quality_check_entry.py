@@ -281,6 +281,8 @@ def _imported_modules(path: Path) -> set[str]:
         "evaluation/application/holdout_gate.py",
         "evaluation/domain/quality_permit.py",
         "app/config/quality_checks.py",
+        "app/research_raw_verify.py",
+        "marketdata/application/raw_verification.py",
     ],
 )
 def test_the_quality_path_never_assembles_a_backtest_or_a_strategy(relative: str) -> None:
