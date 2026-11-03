@@ -346,3 +346,42 @@ def test_a_delay_rule_reaching_one_unit_interval_is_accepted(tmp_path: Path) -> 
     assert loaded.search is not None
     assert [fold.train.start for fold in loaded.search.split.folds] == [_day(0), _day(1), _day(5)]
     assert [fold.partial for fold in loaded.search.split.folds] == [True, False, False]
+
+
+# --- 換算の snapshot（D06 v1.20 案 §19.2。CT-10） ------------------------------
+
+
+def test_ct10_each_variant_uses_its_own_conversion_snapshot(tmp_path: Path) -> None:
+    """CT-10: 探索の実験では組ごとに対応する換算の snapshot が使われる（同じ名前の組）。"""
+    from dataclasses import replace
+
+    from odyssey_fx.common.ids import SnapshotId
+    from odyssey_fx.common.refs import ContentDigest, SnapshotRef
+    from odyssey_fx.evaluation.domain.variant import Paired, Variant
+
+    root = _workspace(tmp_path)
+    loaded = _load(write_search_experiment(root), root)
+    assert loaded.search is not None
+    assert loaded.search.conversion_snapshots is None
+    assert loaded.body_of(Variant.STANDARD).conversion_snapshot_ref is None
+    pair = Paired(
+        standard=SnapshotRef(SnapshotId(ContentDigest.sha256("a" * 64))),
+        candidate=SnapshotRef(SnapshotId(ContentDigest.sha256("b" * 64))),
+    )
+    converted = replace(loaded, search=replace(loaded.search, conversion_snapshots=pair))
+    for variant in (Variant.STANDARD, Variant.CANDIDATE):
+        body = converted.body_of(variant)
+        assert body.snapshot_ref == loaded.search.snapshots.of(variant)
+        assert body.conversion_snapshot_ref == pair.of(variant)
+
+
+def test_ct10_a_yen_search_experiment_refuses_conversion_snapshots(tmp_path: Path) -> None:
+    """CT-10: 決済通貨が口座通貨と同じ探索の実験に `conversion_snapshots` を書けば拒否する。"""
+    root = _workspace(tmp_path)
+    path = write_search_experiment(root)
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text + f'\nconversion_snapshots: {{standard: "{"a" * 64}", candidate: "{"b" * 64}"}}\n',
+        encoding="utf-8",
+    )
+    assert "換算の snapshot" in _refused(path, root)
