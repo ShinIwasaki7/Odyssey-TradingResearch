@@ -67,7 +67,8 @@ class RawVerifyReason(Enum):
     HEADER_MISMATCH = "HEADER_MISMATCH"
     #: 列の数が違う・時刻の列が整数でない行がある。
     ROW_MALFORMED = "ROW_MALFORMED"
-    #: 時刻の規則の表が覆わない暦日の行がある（UTC に直せない。その場で止める）。
+    #: 時刻の規則の表が覆わない暦日の行・暦日に直せない時刻の行がある（UTC に直せない。その場で
+    #: 止める）。
     TIME_RULE_NOT_COVERED = "TIME_RULE_NOT_COVERED"
     #: 足の終わりが 2024-01-01T00:00Z 以降の行がある（その場で止める。ADR-0040 第3項の 4）。
     ROW_AT_OR_AFTER_2024 = "ROW_AT_OR_AFTER_2024"
@@ -185,7 +186,12 @@ def _read_problem(
             if first is None:
                 first = api_time
             last = api_time
-            rule = table.row_for(pair, api_date_of(api_time))
+            try:
+                day = api_date_of(api_time)
+            except (ValueError, OverflowError, OSError):
+                # 暦日に直せない時刻（桁の違う値など）は表で引けず、2024 年より前と言えない。
+                return RawVerifyReason.TIME_RULE_NOT_COVERED
+            rule = table.row_for(pair, day)
             if rule is None:
                 return RawVerifyReason.TIME_RULE_NOT_COVERED
             minute = api_time - api_time % _MINUTE

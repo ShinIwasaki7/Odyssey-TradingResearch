@@ -172,6 +172,22 @@ def test_a_row_the_table_does_not_cover_stops_as_well(table: TimeRuleTable) -> N
     assert result.stopped  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize("value", [1483228800000, 10**20])
+def test_a_time_that_is_no_calendar_day_stops_as_not_covered(
+    table: TimeRuleTable, value: int
+) -> None:
+    """ミリ秒の値など、暦日に直せない時刻の行も表で引けないので止める（例外で抜けない）。"""
+    first = _entry("a", [BASE, value, BASE + 60])
+    second = _entry("b", [BASE])
+    result, opened = _verify(
+        table,
+        [(first, _read(first, [BASE, value, BASE + 60])), (second, _read(second, [BASE]))],
+    )
+    assert opened == ["a"]
+    assert result.verdicts[0].reason is RawVerifyReason.TIME_RULE_NOT_COVERED  # type: ignore[attr-defined]
+    assert result.stopped and result.unread == 1  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize(
     ("times", "changes", "entry_changes", "reason"),
     [
