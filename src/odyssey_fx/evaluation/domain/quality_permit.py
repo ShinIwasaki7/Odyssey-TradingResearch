@@ -11,6 +11,13 @@
 封印の取り込みの受入れの検査だけ（ADR-0037 第9項、D03 §3.8.1 の注記）。出力は件数・時刻の範囲・
 区間・ハッシュ・合否だけ（ADR-0037 第1項の 4）。本モジュールの型はこれらを構築時に確かめる。
 
+**研究期間の定義**（ADR-0040 第1項・第2項。D03 §17.5・§17.6 の 1）: 研究期間の原ファイル
+（`data/raw/oanda_mt5/<取得日>/<通貨>/`）の確認の読み取り（`RAW_FILE_VERIFICATION`）だけを覆う
+定義も置ける。1 つの定義は研究履歴の区分だけか、2 つの封印の区分だけのどちらかを覆い、混ぜた定義と
+隔離の区分を含む定義は拒む。研究履歴の定義は、期間が [2016-01-01T00:00Z, 2024-01-01T00:00Z) の
+内側、種類が確認の読み取り、対象が原ファイル、出力が件数・ハッシュ・合否の部分集合に限る。封印の
+定義の規則は変えない。原ファイルの置き場の根は区分で決まる（`QualityCheckDefinition.raw_root`）。
+
 **要求**（`QualityCheckRequest`）: 実行しようとする道具の名前と版・設定のダイジェスト・要求する
 区分と期間・対象。関所は要求が承認済みの定義と一致することを確かめてから許可を出す。
 """
@@ -22,6 +29,7 @@ from enum import Enum
 from typing import Final
 
 from odyssey_fx.common.symbol import Symbol
+from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.domain.errors import EvaluationError
 from odyssey_fx.marketdata.domain.access import (
     OANDA_SEALED_CLASSES,
@@ -29,6 +37,8 @@ from odyssey_fx.marketdata.domain.access import (
     AccessClass,
 )
 from odyssey_fx.marketdata.domain.quality_access import (
+    RESEARCH_QUALITY_CLASSES,
+    RESEARCH_VERIFY_OUTPUT_KINDS,
     SEALED_INTAKE_OUTPUT_KINDS,
     AccessPeriod,
     PartitionTarget,
@@ -38,8 +48,11 @@ from odyssey_fx.marketdata.domain.quality_access import (
     RawFileTarget,
     ToolRef,
 )
+from odyssey_fx.marketdata.domain.verified_raw import RESEARCH_RAW_ROOT
 
 __all__ = [
+    "RESEARCH_PERIOD",
+    "RESEARCH_RAW_ROOT",
     "SEALED_INTAKE_DATASOURCE",
     "SEALED_INTAKE_SYMBOLS",
     "SEALED_RAW_ROOT",
@@ -63,6 +76,12 @@ SEALED_INTAKE_SYMBOLS: Final = frozenset(
 #: PR #109 の仮置き S2b-6）。品質確認の許可が覆う原ファイルはこの下に限る（旧データの CSV
 #: `data/raw/market/` などを許可の対象にしない。ADR-0036 第4項）。
 SEALED_RAW_ROOT: Final = ("data", "raw", "oanda_mt5_sealed")
+
+#: 研究履歴の区分の期間 `[2016-01-01T00:00Z, 2024-01-01T00:00Z)`（D03 §3.8）。研究期間の定義の
+#: 期間はこの内側に限る（ADR-0040 第1項の 1）。
+RESEARCH_PERIOD: Final = AccessPeriod(
+    start=UtcTime.from_components(2016, 1, 1), end=SEALED_RESEARCH_UNTIL
+)
 
 
 class QualityTargetKind(Enum):
@@ -95,6 +114,9 @@ class QualityCheckDefinition:
     """承認済みの品質確認の道具の許可の定義（ADR-0036 第4項）。
 
     `source` は定義ファイルの置き場（拒否の理由に示すためのもの。照合には使わない）。
+
+    区分が研究履歴だけなら研究期間の定義（確認の読み取り）、2 つの封印の区分の中なら封印の定義
+    として、それぞれの規則を確かめる（ADR-0040 第2項。モジュールの説明文）。
     """
 
     tool: ToolRef
@@ -119,27 +141,23 @@ class QualityCheckDefinition:
                 f" ({SEALED_INTAKE_DATASOURCE}), got {self.datasource!r} (ADR-0036 第4項、"
                 " ADR-0037 第1項の 2。旧データの CSV の 2024 年以降は対象にしない)"
             )
-        if self.check_kind is not QualityCheckKind.ACCEPTANCE:
-            raise EvaluationError(
-                "the only quality check allowed on data from 2024 is the acceptance of the"
-                f" sealed intake, got {self.check_kind} (ADR-0037 第9項、D03 §3.8.1)"
-            )
+        if not isinstance(self.check_kind, QualityCheckKind):
+            raise EvaluationError("QualityCheckDefinition.check_kind must be a QualityCheckKind")
         _require_classes(self.classes, "QualityCheckDefinition.classes")
-        outside = sorted(item.value for item in self.classes if item not in OANDA_SEALED_CLASSES)
-        if outside:
+        if AccessClass.RESEARCH_HISTORY in self.classes and not self.is_research:
             raise EvaluationError(
-                f"a quality-check permit may only cover the two OANDA MT5 sealed classes, got"
-                f" {outside} (隔離の区分は隔離を保つ。ADR-0036 第4項・第6項、ADR-0038 第6項)"
+                "a quality-check permit covers the research-history class alone or the two OANDA"
+                f" MT5 sealed classes only; got {sorted(item.value for item in self.classes)}"
+                " (混ぜた定義は拒む。ADR-0040 第2項の 1)"
             )
         if not isinstance(self.period, AccessPeriod):
             raise EvaluationError("QualityCheckDefinition.period must be an AccessPeriod")
-        if self.period.start < SEALED_RESEARCH_UNTIL:
-            raise EvaluationError(
-                f"the period of a quality-check permit starts at {SEALED_RESEARCH_UNTIL} or"
-                f" later, got {self.period.start} (ADR-0037 第2項の 1)"
-            )
         if not isinstance(self.target_kind, QualityTargetKind):
             raise EvaluationError("QualityCheckDefinition.target_kind must be a QualityTargetKind")
+        if self.is_research:
+            self._require_research_scope()
+        else:
+            self._require_sealed_scope()
         if (
             not isinstance(self.symbols, frozenset)
             or not self.symbols
@@ -166,16 +184,70 @@ class QualityCheckDefinition:
             or not all(isinstance(item, QualityOutputKind) for item in self.output_kinds)
         ):
             raise EvaluationError("QualityCheckDefinition.output_kinds must be a non-empty set")
-        extra = sorted(
-            kind.value for kind in self.output_kinds if kind not in SEALED_INTAKE_OUTPUT_KINDS
-        )
+        allowed = RESEARCH_VERIFY_OUTPUT_KINDS if self.is_research else SEALED_INTAKE_OUTPUT_KINDS
+        extra = sorted(kind.value for kind in self.output_kinds if kind not in allowed)
         if extra:
+            if self.is_research:
+                raise EvaluationError(
+                    "the verification read of the research raw files may only output counts,"
+                    f" hashes and pass/fail, got {extra} (ADR-0040 第1項の 5)"
+                )
             raise EvaluationError(
                 f"the sealed intake may only output counts, times, intervals, hashes and"
                 f" pass/fail, got {extra} (ADR-0037 第1項の 4)"
             )
         if not isinstance(self.source, str) or not self.source:
             raise EvaluationError("QualityCheckDefinition.source must be a non-empty str")
+
+    @property
+    def is_research(self) -> bool:
+        """研究期間の定義（区分が研究履歴だけ）か。"""
+        return self.classes == RESEARCH_QUALITY_CLASSES
+
+    @property
+    def raw_root(self) -> tuple[str, ...]:
+        """原ファイルの置き場の根（区分で決まる。ADR-0040 第2項の 2）。"""
+        return RESEARCH_RAW_ROOT if self.is_research else SEALED_RAW_ROOT
+
+    def _require_research_scope(self) -> None:
+        """研究期間の定義の規則（ADR-0040 第1項、D03 §17.6 の 1）。"""
+        if self.check_kind is not QualityCheckKind.RAW_FILE_VERIFICATION:
+            raise EvaluationError(
+                "a quality-check permit on the research-history class only covers the"
+                f" verification read of raw files (RAW_FILE_VERIFICATION), got {self.check_kind}"
+                " (ADR-0040 第1項の 4・6)"
+            )
+        if not RESEARCH_PERIOD.contains_period(self.period):
+            raise EvaluationError(
+                f"the period of a research-history quality-check permit must lie inside"
+                f" [{RESEARCH_PERIOD.start}, {RESEARCH_PERIOD.end}), got"
+                f" [{self.period.start}, {self.period.end}) (ADR-0040 第1項の 1)"
+            )
+        if self.target_kind is not QualityTargetKind.RAW_FILE:
+            raise EvaluationError(
+                "a research-history quality-check permit only covers raw files"
+                f" (RAW_FILE), got {self.target_kind.value} (ADR-0040 第1項の 5)"
+            )
+
+    def _require_sealed_scope(self) -> None:
+        """封印の定義の規則（ADR-0036 第4項・ADR-0037。今までのまま）。"""
+        if self.check_kind is not QualityCheckKind.ACCEPTANCE:
+            raise EvaluationError(
+                "the only quality check allowed on data from 2024 is the acceptance of the"
+                f" sealed intake, got {self.check_kind} (ADR-0037 第9項、D03 §3.8.1)"
+            )
+        outside = sorted(item.value for item in self.classes if item not in OANDA_SEALED_CLASSES)
+        if outside:
+            raise EvaluationError(
+                f"a quality-check permit may only cover the two OANDA MT5 sealed classes or the"
+                f" research-history class alone, got {outside} (隔離の区分は隔離を保つ。混ぜた"
+                " 定義は拒む。ADR-0036 第4項・第6項、ADR-0038 第6項、ADR-0040 第2項の 1・4)"
+            )
+        if self.period.start < SEALED_RESEARCH_UNTIL:
+            raise EvaluationError(
+                f"the period of a quality-check permit starts at {SEALED_RESEARCH_UNTIL} or"
+                f" later, got {self.period.start} (ADR-0037 第2項の 1)"
+            )
 
 
 @dataclass(frozen=True, slots=True)

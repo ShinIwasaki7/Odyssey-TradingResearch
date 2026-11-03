@@ -51,10 +51,11 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import shutil
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
@@ -117,6 +118,7 @@ from odyssey_fx.marketdata.application.snapshot_access import (
 from odyssey_fx.marketdata.domain.access import INITIAL_ACCESS_BOUNDARIES, SealedAccessBoundaries
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
+from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
 from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
 from odyssey_fx.marketdata.domain.refill import RefillFilter
@@ -241,6 +243,40 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "--sealed のとき: 取得記録の版管理の写し"
             "（docs/data/sealed/<取得日>_<段>/manifest.json）"
+        ),
+    )
+
+    verify_raw = data.add_parser(
+        "verify-raw-mt5",
+        help=(
+            "研究期間の原ファイルを品質確認の許可の下で確かめる（確認の読み取り。確認済み"
+            "ハッシュの一覧の材料。D03 §17.4、ADR-0040）"
+        ),
+    )
+    verify_raw.add_argument("--fetch-date", required=True, help="取得日（例 2026-10-16）")
+    verify_raw.add_argument("--symbol", required=True, help="通貨（例 EURJPY）。1 回で 1 通貨")
+    verify_raw.add_argument(
+        "--raw-root",
+        type=Path,
+        default=None,
+        help=(
+            "原データを実際に読む基点（既定は列対応の宣言の root。許可の対象と結果の置き場は"
+            "正規の置き場 data/raw/oanda_mt5/<取得日>/ のまま）"
+        ),
+    )
+    verify_raw.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help="リポジトリの位置（規則・許可・記録の基点）",
+    )
+    verify_raw.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "結果の JSON の書き出し先（置き場・ハッシュ・合否・閲覧の識別子だけ。省略可。"
+            "既にあれば失敗）"
         ),
     )
 
@@ -834,7 +870,10 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
     研究期間の受入れ（`--sealed` なし）は、区分を OANDA MT5 の経路の境界で決め（ADR-0038 第0項の
     1）、封印の区分の足が現れれば何も書かずに失敗する（D03 §16.1、PR #109 の仮置き S2b-7）。原
     ファイルは許可の値なしで読むので、封印の置き場の下と 2024-01-01 を越える要求のファイルは読まない
-    （ADR-0036 第8項。`read_symbol_files`）。暫定 manifest には「品質確認の許可を要しなかった」と
+    （ADR-0036 第8項。`read_symbol_files`）。さらに、読む前に確認済みハッシュの一覧（取得日ごとの
+    `configs/datasources/oanda_mt5_m1_verified_raw_<取得日>.yaml`）と照合し、一覧が無い・載って
+    いない・ハッシュが違うファイルがあれば何も読まずに止まる（ADR-0036 第8項、D03 §17.7）。画面に
+    照合の行を出す（D03 §17.9 の終了条件 6）。暫定 manifest には「品質確認の許可を要しなかった」と
     記録する（ADR-0036 第7項）。`--sealed` は封印の取り込み（`_run_accept_mt5_sealed`）。
     """
     if args.sealed:
@@ -847,6 +886,7 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
     months = (
         None if args.months is None else [(int(text[:4]), int(text[5:7])) for text in args.months]
     )
+    verified = mt5_app.load_verified_raw(args.repo_root, args.fetch_date)
     created_at = composition.now_utc()
     pending = mt5_app.accept_mt5_in_memory(
         rules=rules,
@@ -857,9 +897,17 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
         created_at=created_at,
         boundaries=SealedAccessBoundaries(acquisition_start=None),
         code_version=composition.code_version(),
+        verified=verified,
         months=months,
         docs_manifest_copy=args.repo_root / datasource.docs_copy_for(args.fetch_date),
     )
+    sources = pending.manifest.sources
+    unmatched = [item.path for item in sources if verified.sha256_of(item.path) != item.sha256]
+    if unmatched:  # pragma: no cover - 読む前の照合で止まる（照合の行が事実と違わないための確かめ）
+        raise HoldoutAccessViolation(
+            f"{len(unmatched)} source file(s) of the snapshot are not in the verified hash list"
+            f" {verified.source} with the same SHA-256 (first: {unmatched[0]}); nothing is written"
+        )
     pending = PendingSnapshot(
         manifest=pending.manifest.with_quality_read(QualityReadRecord(permit_required=False)),
         report=pending.report,
@@ -883,11 +931,75 @@ def _run_accept_mt5(args: argparse.Namespace, out: _Writer) -> int:
     used = () if mt5_record is None else mt5_record.months
     out.line(f"受け入れた年月（API の時刻）: {' '.join(used) if used else 'なし'}")
     out.line(f"原データの置き場: {(raw_root / args.fetch_date).as_posix()}")
+    out.line(
+        f"確認済みハッシュの一覧との照合: 一致（受け入れた原ファイル {len(sources)} 件がすべて"
+        f"一覧 {verified.source}（SHA-256 {verified.source_sha256}）に載り、読む前のハッシュが"
+        "一致した。D03 §17.7）"
+    )
     out.lines(summary.series_lines(pending.manifest))
     out.lines(summary.findings_lines(pending.report))
     # 観測できない項目の一覧は画面出力にだけ毎回出す（D03 §15.6 の 5。検査報告には入れない）。
     out.lines(summary.unobservable_lines())
     return _EXIT_OK
+
+
+def _run_verify_raw_mt5(args: argparse.Namespace, out: _Writer) -> int:
+    """研究期間の原ファイルの確認の読み取り（D03 §17.4。関所の品質確認の許可の下。1 通貨）。
+
+    出力は件数・置き場・ハッシュ・合否と不合格の理由の種類の名前・閲覧の識別子だけ（ADR-0040
+    第1項の 5）。時刻・区間・価格を出さない。終了コードは、すべて合格なら 0、不合格のファイルが
+    あれば 1、途中で止めた・許可が出ない・読む前の照合に外れたときも 1。
+    """
+    # 確認の読み取りの結線（関所を含む）は使うときだけ読み込む（探索・run の経路の CLI の import で
+    # 関所を読み込まないため。tests/integration/app/test_search_run.py の test_8）。
+    from odyssey_fx.app import research_raw_verify as verify
+    from odyssey_fx.app.quality_check import QualityCheckRefused
+
+    if args.out is not None and args.out.exists():
+        raise ConfigError(f"--out {args.out} は既にある（上書きしない）")
+    try:
+        verification = verify.verify_research_raw(
+            repo_root=args.repo_root,
+            fetch_date=args.fetch_date,
+            symbol=Symbol(args.symbol),
+            raw_root=args.raw_root,
+        )
+    except QualityCheckRefused as refused:
+        out.line(f"確認の読み取りを始めなかった（何も読んでいない）: {refused}")
+        return _EXIT_FAILED
+    except verify.ResearchVerifyStopped as stopped:
+        verification = stopped.verification
+        last = verification.result.verdicts[-1]
+        out.line(
+            f"確認の読み取りを途中で停止した（閲覧の識別子 {verification.access_id}。終了の行は"
+            "「途中で停止」）。違反の判定に回すかは人間が決める（ADR-0040 第3項の 4）"
+        )
+        reason = "" if last.reason is None else last.reason.value
+        out.line(f"止めたファイル: {last.location} {last.sha256} {reason}")
+        out.line(f"読まなかったファイル: {verification.result.unread} 件")
+        _write_verification(args.out, verify.verification_payload(verification))
+        return _EXIT_FAILED
+    result = verification.result
+    out.line(
+        f"品質確認の閲覧の識別子: {verification.access_id}（許可の下で読んだ。終了の行は「完了」）"
+    )
+    out.line(f"取得記録の SHA-256: {verification.fetch_manifest_sha256}")
+    out.line(f"設定のダイジェスト: {verification.config_digest}")
+    for item in result.verdicts:
+        reason = "" if item.reason is None else f" {item.reason.value}"
+        out.line(f"{'PASS' if item.passed else 'FAIL'} {item.location} {item.sha256}{reason}")
+    out.line(f"合格 {result.passed} 件、不合格 {result.failed} 件")
+    _write_verification(args.out, verify.verification_payload(verification))
+    return _EXIT_OK if result.failed == 0 else _EXIT_FAILED
+
+
+def _write_verification(path: Path | None, payload: Mapping[str, object]) -> None:
+    """確認の読み取りの結果の JSON を書く（`path` が無ければ書かない。既にあれば書かない）。"""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def _run_accept_mt5_sealed(args: argparse.Namespace, out: _Writer) -> int:
@@ -2081,6 +2193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handlers: dict[str, Callable[[argparse.Namespace, _Writer], int]] = {
         "accept": _run_accept,
         "accept-mt5": _run_accept_mt5,
+        "verify-raw-mt5": _run_verify_raw_mt5,
         "classify": _run_classify,
         "approve": _run_approve,
         "refill_plan": _run_refill_plan,

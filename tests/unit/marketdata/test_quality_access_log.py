@@ -126,9 +126,12 @@ def test_a_live_access_names_its_permit_and_hashes_every_raw_file() -> None:
     _start(targets=(unhashed,), record_kind=QualityRecordKind.RETROACTIVE)
 
 
-def test_the_research_history_is_not_a_quality_access_class() -> None:
-    with pytest.raises(MarketDataValueError, match="outside the allowed set"):
+def test_the_research_history_is_a_quality_access_class_only_for_the_verification_read() -> None:
+    """研究履歴の区分の行は研究期間の原ファイルの確認の読み取りだけ（ADR-0040 第1項・第3項）。"""
+    with pytest.raises(MarketDataValueError, match="verification read"):
         _start(classes=frozenset({AccessClass.RESEARCH_HISTORY}))
+    with pytest.raises(MarketDataValueError, match="outside the allowed set"):
+        _start(classes=frozenset({AccessClass.RESEARCH_HISTORY, AccessClass.HOLDOUT_SINCE_2024}))
 
 
 def test_a_judgment_names_only_the_conditions_1_3_6() -> None:

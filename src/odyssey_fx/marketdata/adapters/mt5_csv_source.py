@@ -18,12 +18,24 @@
    API の時刻の 2024-01-01T00:00 より後の要求のファイルも読まない（研究期間の取得の上限を越える
    要求。原ファイルは既定で 2024 年以降を含むものとして扱う。ADR-0036 第8項）。取得記録
    （`manifest.json`。件数・時刻・ハッシュだけで価格を含まない）は許可なしで読む。
+3. 許可の値が無いときは、さらに、ファイルの正規の置き場（`data/raw/oanda_mt5/<取得日>/<通貨>/
+   <ファイル>`。実際に読む場所に依らない）が確認済みハッシュの一覧（`VerifiedRawList`。
+   D03 §17.3）に載り、読む前に計算したバイト列の SHA-256 が一覧の値と一致することを求める
+   （ADR-0036 第8項、ADR-0040 第4項、D03 §17.7）。一覧が無ければ何も読まない。2 の確かめは
+   一覧に加えて続けて当てる（A1-8）。受入れは全ファイルを読む前に
+   `require_listed_before_reading` で全件を照らし、読むときにも同じバイト列で照らし直す。
+
+**確認の読み取り**（ADR-0036 第8項の 2、ADR-0040 第3項、D03 §17.4）: `read_month_times` は
+許可の値（研究履歴の区分の確認の読み取り）が覆うファイルを、時刻の列（`time`）だけを返す形で
+読む。価格・スプレッド・出来高の列は数値にしない・保持しない。判定は
+`marketdata.application.raw_verification`。
 """
 
 from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -36,16 +48,20 @@ from odyssey_fx.marketdata.application.mt5_acceptance import (
     Mt5RawRow,
     Mt5ReadFile,
 )
+from odyssey_fx.marketdata.application.raw_verification import MonthTimes, RawFileUnreadable
 from odyssey_fx.marketdata.domain.access import SEALED_RESEARCH_UNTIL
 from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
-from odyssey_fx.marketdata.domain.quality_access import QualityReadPermit
+from odyssey_fx.marketdata.domain.quality_access import RESEARCH_QUALITY_CLASSES, QualityReadPermit
+from odyssey_fx.marketdata.domain.verified_raw import VerifiedRawList
 
 __all__ = [
     "SEALED_RAW_DIRECTORY",
     "file_sha256",
     "read_fetch_manifest",
     "read_month_file",
+    "read_month_times",
     "read_symbol_files",
+    "require_listed_before_reading",
     "require_raw_read_allowed",
 ]
 
@@ -60,19 +76,23 @@ def require_raw_read_allowed(
     *,
     read_permit: QualityReadPermit | None,
     location: str | None,
+    verified: VerifiedRawList | None = None,
+    digest: str | None = None,
 ) -> None:
     """月のファイルを行に分けて読んでよいかを確かめる（読めなければ `HoldoutAccessViolation`）。
 
-    `location` はリポジトリの根からの POSIX 相対パス（許可の対象の置き場と同じ書き方）。許可の値が
-    あるときは置き場とハッシュの両方の一致を求める。無いときは封印の置き場の下と、2024-01-01 を
-    越える要求のファイルを拒む（モジュールの説明文）。
+    `location` はリポジトリの根からの POSIX 相対パス（許可の対象・一覧の行の置き場と同じ書き方。
+    許可なしの読み取りでは正規の置き場）。`digest` は読む前に計算したバイト列の SHA-256（渡さな
+    ければここで計算する）。許可の値があるときは置き場とハッシュの両方の一致を求める。無いときは
+    封印の置き場の下と、2024-01-01 を越える要求のファイルを拒み、確認済みハッシュの一覧
+    `verified` に置き場が載りハッシュが一致することを求める（モジュールの説明文）。
     """
     if read_permit is not None:
         if not isinstance(read_permit, QualityReadPermit):
             raise MarketDataValueError("read_permit must be a QualityReadPermit")
         if location is None:
             raise MarketDataValueError("a permitted raw read needs the file's repository location")
-        digest = file_sha256(path)
+        digest = file_sha256(path) if digest is None else digest
         if not read_permit.covers_raw_file(location, digest):
             raise HoldoutAccessViolation(
                 f"the quality-check permit {read_permit.permit_id} does not cover the raw file"
@@ -91,6 +111,65 @@ def require_raw_read_allowed(
             " taken to contain data from 2024 unless proven otherwise, and is read only under a"
             " quality-check permit. Nothing was read (ADR-0036 第8項)"
         )
+    if verified is None:
+        raise HoldoutAccessViolation(
+            f"{path} is read without a quality-check permit, but no verified hash list"
+            " (configs/datasources/oanda_mt5_m1_verified_raw_<fetch date>.yaml) was given; a raw"
+            " file is taken to contain data from 2024 unless it is listed. Nothing was read"
+            " (ADR-0036 第8項, D03 §17.7)"
+        )
+    if not isinstance(verified, VerifiedRawList):
+        raise MarketDataValueError("verified must be a VerifiedRawList")
+    if location is None:
+        raise MarketDataValueError(
+            "a raw read without a permit needs the file's canonical location"
+        )
+    listed = verified.sha256_of(location)
+    if listed is None:
+        raise HoldoutAccessViolation(
+            f"the raw file {location} is not in the verified hash list {verified.source}; it is"
+            " read only under a quality-check permit. Nothing was read (ADR-0036 第8項,"
+            " D03 §17.7 の 2)"
+        )
+    digest = file_sha256(path) if digest is None else digest
+    if digest != listed:
+        raise HoldoutAccessViolation(
+            f"the raw file {location} has SHA-256 {digest}, but the verified hash list"
+            f" {verified.source} records {listed}. Nothing was read (ADR-0036 第8項,"
+            " D03 §17.7 の 3)"
+        )
+
+
+def require_listed_before_reading(
+    root: Path,
+    entries: Iterable[Mt5FetchEntry],
+    *,
+    location_prefix: str,
+    verified: VerifiedRawList | None,
+    months: Iterable[tuple[int, int]] | None = None,
+) -> int:
+    """許可なしで読む前に、読むすべてのファイルを確認済みハッシュの一覧で照らす（D03 §17.7）。
+
+    ファイルのバイト列をダイジェストへ畳み込むだけで、行に分けない・解析しない（ADR-0036 第8項の
+    2）。1 つでも外れれば `HoldoutAccessViolation`（何も読まない）。照らしたファイルの数を返す。
+    `location_prefix` は `root` の正規の置き場（`data/raw/oanda_mt5/<取得日>`）。
+    """
+    wanted = None if months is None else set(months)
+    count = 0
+    for entry in entries:
+        if not entry.acquired:
+            continue
+        if wanted is not None and not _month_in(entry, wanted):
+            continue
+        require_raw_read_allowed(
+            root / entry.file,
+            entry,
+            read_permit=None,
+            location=f"{location_prefix}/{entry.file}",
+            verified=verified,
+        )
+        count += 1
+    return count
 
 
 def file_sha256(path: Path) -> str:
@@ -146,17 +225,27 @@ def read_month_file(
     *,
     read_permit: QualityReadPermit | None = None,
     location_prefix: str | None = None,
+    verified: VerifiedRawList | None = None,
 ) -> Mt5ReadFile:
     """月のファイル 1 つを読む。見出しが宣言と違えば `header_ok` を偽にする（照合は
     application）。
 
-    読む前に `require_raw_read_allowed` で関所の下の読み取りかを確かめる。`location_prefix` は
-    `root` のリポジトリの根からの POSIX 相対パス（許可の値を渡すときに要る）。
+    読む前に `require_raw_read_allowed` で関所の下の読み取りか（許可なしなら一覧に載りハッシュが
+    一致するか）を確かめる。確かめに使うハッシュは、行に分けるのと同じバイト列から計算する（確かめた
+    後にファイルが替わっても、確かめていないバイト列を読まない）。`location_prefix` は `root` の
+    リポジトリの根からの POSIX 相対パス（許可の値・一覧を渡すときに要る）。
     """
     path = root / entry.file
     location = None if location_prefix is None else f"{location_prefix}/{entry.file}"
-    require_raw_read_allowed(path, entry, read_permit=read_permit, location=location)
     raw = path.read_bytes()
+    require_raw_read_allowed(
+        path,
+        entry,
+        read_permit=read_permit,
+        location=location,
+        verified=verified,
+        digest=hashlib.sha256(raw).hexdigest(),
+    )
     text = gzip.decompress(raw)
     lines = text.decode("utf-8").splitlines()
     header_ok = bool(lines) and lines[0] == ",".join(columns)
@@ -194,11 +283,13 @@ def read_symbol_files(
     months: Iterable[tuple[int, int]] | None = None,
     read_permit: QualityReadPermit | None = None,
     location_prefix: str | None = None,
+    verified: VerifiedRawList | None = None,
 ) -> dict[str, Mt5ReadFile]:
     """取得済みの要求のファイルを読む（`months` を渡せば、その年月の要求だけ）。
 
     どのファイルも読む前に関所の下の読み取りかを確かめる（`require_raw_read_allowed`）。1 つでも
-    外れれば、その前に読んだものも返さずに止まる。
+    外れれば、その前に読んだものも返さずに止まる。許可なしの受入れは、呼ぶ前に
+    `require_listed_before_reading` で全件を照らす（何も読まずに止まるため）。
     """
     wanted = None if months is None else set(months)
     out: dict[str, Mt5ReadFile] = {}
@@ -208,9 +299,65 @@ def read_symbol_files(
         if wanted is not None and not _month_in(entry, wanted):
             continue
         out[entry.rid] = read_month_file(
-            root, entry, columns, read_permit=read_permit, location_prefix=location_prefix
+            root,
+            entry,
+            columns,
+            read_permit=read_permit,
+            location_prefix=location_prefix,
+            verified=verified,
         )
     return out
+
+
+def read_month_times(
+    path: Path,
+    entry: Mt5FetchEntry,
+    columns: Sequence[str],
+    *,
+    read_permit: QualityReadPermit,
+    location: str,
+) -> MonthTimes:
+    """確認の読み取りの 1 ファイル（D03 §17.4 の 3 の 3）。時刻の列だけを遅延の列で返す。
+
+    バイト列を 1 回読み、SHA-256 が取得記録の `sha256_gz` と違えば展開せずに返す（不合格の判定は
+    application）。一致すれば、研究履歴の区分の読み取りの許可の値がその置き場とハッシュを覆うことを
+    確かめてから展開する（覆わなければ `HoldoutAccessViolation`。何も展開しない）。行は 1 行ずつ
+    展開し、時刻の列の文字列だけを整数にする（価格の列は分けた文字列を捨てる。数値にしない）。
+    例外の文に行の中身を入れない（`RawFileUnreadable`）。
+    """
+    if not isinstance(read_permit, QualityReadPermit):
+        raise MarketDataValueError("a verification read needs a QualityReadPermit")
+    if read_permit.classes != RESEARCH_QUALITY_CLASSES:
+        raise MarketDataValueError("a verification read is only under a research-history permit")
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != entry.sha256_gz:
+        return MonthTimes(sha256=digest, readable=True, header_ok=False, times=())
+    if not read_permit.covers_raw_file(location, digest):
+        raise HoldoutAccessViolation(
+            f"the quality-check permit {read_permit.permit_id} does not cover the raw file"
+            f" {location} with SHA-256 {digest}; nothing was read (ADR-0036 第8項・第9項の 3)"
+        )
+    stream = gzip.GzipFile(fileobj=io.BytesIO(raw))
+    try:
+        header = stream.readline().decode("utf-8").rstrip("\r\n")
+    except (OSError, EOFError, UnicodeDecodeError):
+        return MonthTimes(sha256=digest, readable=False, header_ok=False, times=())
+    if header != ",".join(columns):
+        return MonthTimes(sha256=digest, readable=True, header_ok=False, times=())
+    width = len(columns)
+    index = list(columns).index("time")
+
+    def times() -> Iterable[int | None]:
+        try:
+            for line in stream:
+                cells = line.decode("utf-8").rstrip("\r\n").split(",")
+                cell = cells[index] if len(cells) == width else ""
+                yield int(cell) if cell.isascii() and cell.isdigit() else None
+        except (OSError, EOFError, UnicodeDecodeError):
+            raise RawFileUnreadable("the raw file cannot be read to its end") from None
+
+    return MonthTimes(sha256=digest, readable=True, header_ok=True, times=times())
 
 
 def _month_in(entry: Mt5FetchEntry, wanted: set[tuple[int, int]]) -> bool:

@@ -30,6 +30,7 @@ from odyssey_fx.marketdata.domain.unobservable import (
     UNOBSERVABLE_TITLE,
     unobservable_identity,
 )
+from odyssey_fx.marketdata.domain.verified_raw import VerifiedRawFile, VerifiedRawList
 from tests.fixtures.mt5 import market as m5
 from tests.fixtures.synthetic import market
 
@@ -143,9 +144,25 @@ def test_accept_mt5_prints_the_list_at_the_end(
     def accepted(**_: Any) -> object:
         return pending
 
+    # 確認済みハッシュの一覧（D03 §17.7）は暫定 snapshot の原ファイルの置き場とハッシュで作る。
+    verified = VerifiedRawList(
+        fetch_date="synthetic",
+        fetch_manifest_sha256="b" * 64,
+        declared_period_end=UtcTime.parse("2024-01-01T00:00:00Z"),
+        files=tuple(
+            VerifiedRawFile(
+                location=item.path, symbol=item.symbol, sha256=item.sha256, access_id="synthetic"
+            )
+            for item in pending.manifest.sources
+        ),
+        source="configs/datasources/oanda_mt5_m1_verified_raw_synthetic.yaml",
+        source_sha256="c" * 64,
+    )
+
     monkeypatch.setattr(mt5_app, "load_mt5_rules", lambda root: rules)
     monkeypatch.setattr(mt5_app, "load_datasource", lambda root: datasource)
     monkeypatch.setattr(mt5_app, "accept_mt5_in_memory", accepted)
+    monkeypatch.setattr(mt5_app, "load_verified_raw", lambda root, fetch_date: verified)
     capsys.readouterr()
     code = main(
         [

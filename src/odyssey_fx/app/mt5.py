@@ -8,6 +8,10 @@
 全期間の集計の道具（PR-B）と
 基盤が同じ入口（`load_mt5_rules`）で同じファイルを読むので、規則を別々に持たない（2026-10-17 の
 指示 3-C）。
+
+研究期間の受入れ（品質確認の許可を要しない読み取り）は、原ファイルを読む前に確認済みハッシュの
+一覧（`configs/datasources/oanda_mt5_m1_verified_raw_<取得日>.yaml`。`load_verified_raw`）と
+照合する（ADR-0036 第8項、ADR-0040 第4項、D03 §17.7。`accept_mt5_in_memory`）。
 """
 
 from __future__ import annotations
@@ -22,12 +26,14 @@ from odyssey_fx.app.config.calendars import load_calendar, load_timeframes
 from odyssey_fx.app.config.counting_rules import load_counting_rules
 from odyssey_fx.app.config.mt5_datasource import Mt5DataSourceConfig, load_mt5_datasource
 from odyssey_fx.app.config.time_rules import load_time_rule_table
+from odyssey_fx.app.config.verified_raw import load_verified_raw_list, verified_raw_path
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.adapters.mt5_csv_source import (
     file_sha256,
     read_fetch_manifest,
     read_symbol_files,
+    require_listed_before_reading,
 )
 from odyssey_fx.marketdata.application.acceptance import PendingSnapshot
 from odyssey_fx.marketdata.application.mt5_acceptance import (
@@ -37,13 +43,14 @@ from odyssey_fx.marketdata.application.mt5_acceptance import (
 )
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.counting_rules import CountingRules
-from odyssey_fx.marketdata.domain.errors import MarketDataValueError
+from odyssey_fx.marketdata.domain.errors import HoldoutAccessViolation, MarketDataValueError
 from odyssey_fx.marketdata.domain.time_rule import (
     TimeRuleTable,
     TimeRuleVariant,
     check_lookup_agreement,
 )
 from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
+from odyssey_fx.marketdata.domain.verified_raw import VerifiedRawList
 
 __all__ = [
     "DEFAULT_COUNTING_RULES",
@@ -53,7 +60,9 @@ __all__ = [
     "Mt5Rules",
     "accept_mt5_in_memory",
     "load_mt5_rules",
+    "load_verified_raw",
     "require_calendar_matches_derivation",
+    "require_list_matches_fetch_record",
 ]
 
 #: 数え方の規則 版 1（D03 §15.12。PR #84 で置かれる）。
@@ -195,6 +204,53 @@ def check_calendar_derivation(repo_root: Path, rules: Mt5Rules) -> int:
     return require_calendar_matches_derivation(rules.calendar, base, holidays, window=window)
 
 
+def load_verified_raw(repo_root: Path, fetch_date: str) -> VerifiedRawList:
+    """取得日の確認済みハッシュの一覧を読む（D03 §17.7 の 1）。
+
+    一覧が無ければ `HoldoutAccessViolation`（研究期間の原ファイルは許可なしでは読めない。A2 の
+    merge から A3a の merge までの間はこの状態。A1-8）。読込の検査に反すれば `ConfigError`。
+    """
+    path = Path(repo_root) / verified_raw_path(fetch_date)
+    if not path.is_file():
+        raise HoldoutAccessViolation(
+            f"there is no verified hash list for the fetch date {fetch_date}"
+            f" ({verified_raw_path(fetch_date).as_posix()}); raw files are taken to contain data"
+            " from 2024 unless listed, so nothing is read without a quality-check permit"
+            " (ADR-0036 第8項, D03 §17.7 の 1)"
+        )
+    return load_verified_raw_list(path, fetch_date=fetch_date)
+
+
+def require_list_matches_fetch_record(
+    verified: VerifiedRawList,
+    entries: Sequence[Mt5FetchEntry],
+    *,
+    fetch_manifest_sha256: str,
+    location_prefix: str,
+) -> None:
+    """一覧が受入れの読む取得記録と食い違わないか（D03 §17.3 の 5）。
+
+    一覧の `fetch_manifest_sha256` が取得記録の SHA-256 と一致し、一覧の各行の置き場が取得記録の
+    ファイル（正規の置き場 `location_prefix/<file>`）で、`sha256` がそのファイルの `sha256_gz` と
+    一致すること。一致しなければ一覧を誤りとして止める（何も読まない。`HoldoutAccessViolation`）。
+    """
+    if verified.fetch_manifest_sha256 != fetch_manifest_sha256:
+        raise HoldoutAccessViolation(
+            f"the verified hash list {verified.source} was made for the fetch record"
+            f" {verified.fetch_manifest_sha256}, not for {fetch_manifest_sha256}; the list is"
+            " taken to be wrong and nothing is read (D03 §17.3 の 5)"
+        )
+    recorded = {f"{location_prefix}/{entry.file}": entry for entry in entries}
+    for item in verified.files:
+        entry = recorded.get(item.location)
+        if entry is None or entry.symbol != item.symbol or entry.sha256_gz != item.sha256:
+            raise HoldoutAccessViolation(
+                f"the row {item.location} of the verified hash list {verified.source} does not"
+                " match the fetch record (missing file, other symbol or other sha256_gz); the"
+                " list is taken to be wrong and nothing is read (D03 §17.3 の 5)"
+            )
+
+
 def accept_mt5_in_memory(
     *,
     rules: Mt5Rules,
@@ -205,15 +261,23 @@ def accept_mt5_in_memory(
     created_at: UtcTime,
     boundaries: Mt5Boundaries,
     code_version: str,
+    verified: VerifiedRawList | None,
     months: Iterable[tuple[int, int]] | None = None,
     docs_manifest_copy: Path | None = None,
     source_prefix: str | None = None,
 ) -> PendingSnapshot:
     """原データから暫定 snapshot をメモリの上に作る（書き出さない。D03 §15.3 の 1〜8）。
 
-    `raw_dir` は `data/raw/oanda_mt5/<取得日>`。`docs_manifest_copy` を渡すと、版管理の写しと原本の
-    取得記録のハッシュが一致することを確かめる（D03 §15.3 の 1）。`months` を渡すと、その年月
-    （API の時刻）の要求だけで受け入れる（範囲の外は snapshot の外）。
+    `raw_dir` は `data/raw/oanda_mt5/<取得日>`（実際の置き場。`--raw-root` で別の場所を指せる）。
+    `docs_manifest_copy` を渡すと、版管理の写しと原本の取得記録のハッシュが一致することを確かめる
+    （D03 §15.3 の 1）。`months` を渡すと、その年月（API の時刻）の要求だけで受け入れる（範囲の外は
+    snapshot の外）。
+
+    品質確認の許可を要しない読み取りなので、月のファイルを行に分けて読む前に確認済みハッシュの
+    一覧 `verified` と照合する（D03 §17.7。`None` なら何も読まずに止まる）: 一覧が取得記録と
+    食い違わない（`require_list_matches_fetch_record`）、読むすべてのファイルの正規の置き場
+    （列対応の宣言の `root`/<取得日>/<file>。`raw_dir` に依らない）が一覧に載りハッシュが一致する
+    （`require_listed_before_reading`）。読むときにも同じバイト列で照らし直す。
     """
     manifest_path = raw_dir / datasource.fetch_manifest
     manifest_sha = file_sha256(manifest_path)
@@ -229,12 +293,21 @@ def accept_mt5_in_memory(
         for entry in entries
         if entry.symbol == symbol and (wanted is None or _month_of(entry) in wanted)
     ]
-    files = read_symbol_files(raw_dir, own, datasource.columns)
-    prefix = (
-        source_prefix
-        if source_prefix is not None
-        else f"{datasource.root.as_posix()}/{raw_dir.name}"
+    canonical = f"{datasource.root.as_posix()}/{raw_dir.name}"
+    if verified is not None:
+        if verified.fetch_date != raw_dir.name:
+            raise HoldoutAccessViolation(
+                f"the verified hash list {verified.source} is for the fetch date"
+                f" {verified.fetch_date}, not {raw_dir.name}; nothing is read (D03 §17.7)"
+            )
+        require_list_matches_fetch_record(
+            verified, entries, fetch_manifest_sha256=manifest_sha, location_prefix=canonical
+        )
+    require_listed_before_reading(raw_dir, own, location_prefix=canonical, verified=verified)
+    files = read_symbol_files(
+        raw_dir, own, datasource.columns, location_prefix=canonical, verified=verified
     )
+    prefix = source_prefix if source_prefix is not None else canonical
     minute_def = rules.timeframe_defs[datasource.minute_timeframe]
     return build_mt5_pending(
         created_at=created_at,

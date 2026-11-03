@@ -2,7 +2,10 @@
 
 2024 年以降の区分（封印の区分と隔離の区分。`PROTECTED_CLASSES`）の品質確認の閲覧は、
 リポジトリの根の `research/quality_access_log.jsonl` に 1 行 1 JSON で必ず記録する
-（ADR-0035 第4項の 5）。消費の記録（snapshot の `access_log.jsonl`）とは別の記録で、
+（ADR-0035 第4項の 5）。研究期間の原ファイルの確認の読み取り（研究履歴の区分だけ。
+`RESEARCH_QUALITY_CLASSES`。ADR-0040 第1項・第3項の 2、D03 §17.4）も同じファイルに同じ行の形で
+書く。研究履歴の区分の行は封印の区分の行と混ぜない（1 行の区分は研究履歴だけか 2024 年以降の
+区分だけ。ADR-0040 第2項の 1）。消費の記録（snapshot の `access_log.jsonl`）とは別の記録で、
 `HoldoutState` の導出に使わない（P1-3）。
 
 1 回の閲覧は 2 行で記録する（ADR-0035 第4項の 6）。
@@ -42,6 +45,8 @@ from odyssey_fx.marketdata.domain.snapshot import PartitionId
 
 __all__ = [
     "PRE_PERMIT_MECHANISM",
+    "RESEARCH_QUALITY_CLASSES",
+    "RESEARCH_VERIFY_OUTPUT_KINDS",
     "SEALED_INTAKE_OUTPUT_KINDS",
     "VIOLABLE_CONDITIONS",
     "AccessPeriod",
@@ -84,6 +89,10 @@ class QualityCheckKind(Enum):
     RECONCILIATION = "RECONCILIATION"
     #: 監査（時刻と件数の数え上げ）。監査 PR #76 の後からの記録（ADR-0035 第5項）。
     AUDIT_COUNT = "AUDIT_COUNT"
+    #: 研究期間の原ファイルの確認の読み取り（足の終わりがすべて 2024-01-01T00:00Z より前かを
+    #: 確かめ、ハッシュを記録する。ADR-0036 第8項の 2、ADR-0040 第1項の 6、D03 §17.4。
+    #: 研究履歴の区分の定義だけが使う。2024 年以降の定義は `ACCEPTANCE` だけのまま）。
+    RAW_FILE_VERIFICATION = "RAW_FILE_VERIFICATION"
 
 
 class QualityOutputKind(Enum):
@@ -109,6 +118,17 @@ SEALED_INTAKE_OUTPUT_KINDS: Final = frozenset(
         QualityOutputKind.PASS_FAIL,
     }
 )
+
+
+#: 研究期間の原ファイルの確認の読み取りが出してよいもの（件数・ハッシュ・合否だけ。時刻・区間・
+#: 価格は出さない。ADR-0040 第1項の 5、D03 §17.5 の `output_kinds`。A1-7）。
+RESEARCH_VERIFY_OUTPUT_KINDS: Final = frozenset(
+    {QualityOutputKind.COUNTS, QualityOutputKind.HASHES, QualityOutputKind.PASS_FAIL}
+)
+
+#: 研究期間の原ファイルの確認の読み取りが覆う区分（研究履歴だけ。ADR-0040 第1項の 1・第2項の 1）。
+#: 1 つの閲覧の区分は、これだけか、2024 年以降の区分だけのどちらか（混ぜない）。
+RESEARCH_QUALITY_CLASSES: Final = frozenset({AccessClass.RESEARCH_HISTORY})
 
 
 class QualityRecordKind(Enum):
@@ -235,6 +255,17 @@ def _require_classes(classes: object, label: str, allowed: frozenset[AccessClass
         raise MarketDataValueError(f"{label} contains classes outside the allowed set: {outside}")
 
 
+def _require_class_shape(classes: object, label: str, protected: frozenset[AccessClass]) -> bool:
+    """区分が `protected` の部分集合か、研究履歴だけ（`RESEARCH_QUALITY_CLASSES`）かを確かめる。
+
+    研究履歴だけなら真を返す（ADR-0040 第2項の 1。両方を混ぜた区分は拒む）。
+    """
+    if classes == RESEARCH_QUALITY_CLASSES:
+        return True
+    _require_classes(classes, label, protected)
+    return False
+
+
 def _require_output_kinds(kinds: object, label: str) -> None:
     if not isinstance(kinds, frozenset) or not kinds:
         raise MarketDataValueError(f"{label} must be a non-empty frozenset of QualityOutputKind")
@@ -272,7 +303,9 @@ class QualityAccessStart:
             raise MarketDataValueError("QualityAccessStart.accessed_at must be a UtcTime")
         if not isinstance(self.tool, ToolRef):
             raise MarketDataValueError("QualityAccessStart.tool must be a ToolRef")
-        _require_classes(self.classes, "QualityAccessStart.classes", PROTECTED_CLASSES)
+        research = _require_class_shape(
+            self.classes, "QualityAccessStart.classes", PROTECTED_CLASSES
+        )
         if not isinstance(self.period, AccessPeriod):
             raise MarketDataValueError("QualityAccessStart.period must be an AccessPeriod")
         _require_output_kinds(self.output_kinds, "QualityAccessStart.output_kinds")
@@ -282,6 +315,14 @@ class QualityAccessStart:
             raise MarketDataValueError("QualityAccessStart.check_kind must be a QualityCheckKind")
         if not isinstance(self.record_kind, QualityRecordKind):
             raise MarketDataValueError("QualityAccessStart.record_kind must be a QualityRecordKind")
+        if research and (
+            self.check_kind is not QualityCheckKind.RAW_FILE_VERIFICATION
+            or not all(isinstance(target, RawFileTarget) for target in self.targets)
+        ):
+            raise MarketDataValueError(
+                "an access to the research-history class is only the verification read of raw"
+                " files (RAW_FILE_VERIFICATION of RAW_FILE targets. ADR-0040 第1項の 4・6)"
+            )
         if self.record_kind is QualityRecordKind.LIVE:
             if self.permit_id == PRE_PERMIT_MECHANISM:
                 raise MarketDataValueError(
@@ -531,6 +572,11 @@ def violation_scopes(rows: Sequence[QualityAccessRow]) -> tuple[ViolationScope, 
     ファイルの期間がまだ無いので、ADR-0035 第3項の「期間が分からなければ、封印の区分の全体と
     重なるとみなす」を当てる）。構造の誤りがある行の列には使わない（呼び出し側が先に
     `quality_log_defect` で止める）。
+
+    研究履歴の区分の閲覧（研究期間の原ファイルの確認の読み取り）は違反の範囲に入れない
+    （ADR-0040 第3項の 3。A1-10）。確認の読み取りが 2024 年以降の行に当たった閲覧の扱いは
+    人間が決める（同第3項の 4。A1-6）ので、そのような閲覧に判定の行があれば範囲を導かずに
+    `MarketDataValueError` で止める（作業役も本関数も扱いを決めない）。
     """
     defect = quality_log_defect(rows)
     if defect is not None:
@@ -543,6 +589,13 @@ def violation_scopes(rows: Sequence[QualityAccessRow]) -> tuple[ViolationScope, 
     for row in rows:
         if not isinstance(row, QualityAccessJudgment):
             continue
+        if starts[row.access_id].classes == RESEARCH_QUALITY_CLASSES:
+            raise MarketDataValueError(
+                f"the access {row.access_id!r} of the judgment row {row.row_id!r} is a"
+                " research-history verification read; such an access is not in the violation"
+                " scope, and the handling of one that hit a row from 2024 is decided by a human"
+                " (not derived here. D03 §17.6 の 4, ADR-0040 第3項の 3・4)"
+            )
         for target in starts[row.access_id].targets:
             if isinstance(target, PartitionTarget):
                 scopes.append(
@@ -560,8 +613,10 @@ class QualityReadPermit:
     """読み取りの許可の値（ADR-0036 第9項の 2。`marketdata.domain` に置く型）。
 
     関所が品質確認の許可と開始の行の記録に成功した後に作る。対象の区分は OANDA MT5 の経路の
-    2 つの封印の区分に限る（隔離の区分は品質確認の許可があっても隔離を保ち、旧データの
-    2024 年以降は許可の対象にしない。ADR-0036 第4項・第6項）。as-of ビューの許可 partition
+    2 つの封印の区分か、研究履歴の区分だけ（研究期間の原ファイルの確認の読み取り。ADR-0040
+    第1項。混ぜない）に限る（隔離の区分は品質確認の許可があっても隔離を保ち、旧データの
+    2024 年以降は許可の対象にしない。ADR-0036 第4項・第6項）。研究履歴の区分の値の出力の種類は
+    件数・ハッシュ・合否だけ（`RESEARCH_VERIFY_OUTPUT_KINDS`）。as-of ビューの許可 partition
     集合には入れない（ADR-0036 第5項の 1）。
     """
 
@@ -580,11 +635,23 @@ class QualityReadPermit:
         _require_text(self.access_id, "QualityReadPermit.access_id")
         if not isinstance(self.tool, ToolRef):
             raise MarketDataValueError("QualityReadPermit.tool must be a ToolRef")
-        _require_classes(self.classes, "QualityReadPermit.classes", OANDA_SEALED_CLASSES)
+        research = _require_class_shape(
+            self.classes, "QualityReadPermit.classes", OANDA_SEALED_CLASSES
+        )
         if not isinstance(self.period, AccessPeriod):
             raise MarketDataValueError("QualityReadPermit.period must be an AccessPeriod")
         _require_targets(self.targets, "QualityReadPermit.targets")
         _require_output_kinds(self.output_kinds, "QualityReadPermit.output_kinds")
+        if research:
+            extra = sorted(
+                kind.value for kind in self.output_kinds if kind not in RESEARCH_VERIFY_OUTPUT_KINDS
+            )
+            if extra:
+                raise MarketDataValueError(
+                    "a read permit for the research-history class may only output counts,"
+                    f" hashes and pass/fail, got {extra} (ADR-0040 第1項の 5)"
+                )
+            return
         outside = sorted(
             kind.value for kind in self.output_kinds if kind not in SEALED_INTAKE_OUTPUT_KINDS
         )

@@ -17,6 +17,10 @@ S3 で実装した（`HoldoutGate`）。最終評価の許可は R4 で実装す
 4. **終了の行**: 道具の終了（完了・途中で停止）を受け取り、終了の行を追記する。書けなければ
    失敗を返す（入口は結果を出さずに失敗として終わる。PR #80 の仮置き 13）。
 
+研究期間の原ファイルの確認の読み取り（ADR-0040。区分は研究履歴だけ）も同じ手順で許可する。
+原ファイルの置き場の根は定義の区分で決まる（研究履歴は `data/raw/oanda_mt5/`、封印の区分は
+`data/raw/oanda_mt5_sealed/`。ADR-0040 第2項の 2）。
+
 消費の記録（`access_log.jsonl`）は書かない。`HoldoutState` は変わらない。品質確認の許可で
 最終評価・run・探索の実験の入力は作れない（読み取りの許可の値は as-of ビューの許可集合へ
 渡す型ではない。ADR-0036 第5項）。
@@ -42,7 +46,6 @@ from odyssey_fx.evaluation.domain.final_validation import (
     WindowRefusal,
 )
 from odyssey_fx.evaluation.domain.quality_permit import (
-    SEALED_RAW_ROOT,
     QualityCheckDefinition,
     QualityCheckRequest,
     QualityPermitRefusal,
@@ -128,7 +131,7 @@ def _target_problem(
             return f"the raw file {target.location} has no hash"
         if target.symbol is None or target.symbol not in definition.symbols:
             return f"the symbol of the raw file {target.location} is not in the definition"
-        return _raw_location_problem(target)
+        return _raw_location_problem(target, definition.raw_root)
     partition = target.partition_id
     if definition.target_kind is not QualityTargetKind.PARTITION:
         return f"the partition {partition} is not a target kind of the definition"
@@ -143,26 +146,31 @@ def _target_problem(
     return None
 
 
-def _raw_location_problem(target: RawFileTarget) -> str | None:
-    """原ファイルが封印の原ファイルの置き場にあり、その通貨の場所にあるか（ADR-0036 第4項）。
+def _raw_location_problem(target: RawFileTarget, raw_root: tuple[str, ...]) -> str | None:
+    """原ファイルが定義の区分の原ファイルの置き場にあり、その通貨の場所にあるか。
 
-    置き場は `data/raw/oanda_mt5_sealed/<取得日>/<通貨>/<ファイル>`（D03 §16 の PR #109 の
-    仮置き S2b-6）。この外のファイル（旧データの CSV `data/raw/market/`、HistData の 1 分足
-    `data/raw/histdata/`、研究期間の `data/raw/oanda_mt5/` など）には許可を出さない。
+    置き場の根は定義の区分で決まる（ADR-0040 第2項の 2。`QualityCheckDefinition.raw_root`）:
+    封印の区分なら `data/raw/oanda_mt5_sealed/<取得日>/<通貨>/<ファイル>`（D03 §16 の PR #109 の
+    仮置き S2b-6。ADR-0036 第4項）、研究履歴の区分なら `data/raw/oanda_mt5/<取得日>/<通貨>/
+    <ファイル>`（D03 §17.6 の 2、ADR-0040 第1項の 3）。置き場はパスの部分ごとに比べるので、
+    `oanda_mt5` と `oanda_mt5_sealed`・`oanda_mt5x` を取り違えない。この外のファイル（旧データの
+    CSV `data/raw/market/`、HistData の 1 分足 `data/raw/histdata/`、区分の違う置き場など）には
+    許可を出さない。
     """
     location = target.location
     parts = PurePosixPath(location).parts
-    root = len(SEALED_RAW_ROOT)
+    root = len(raw_root)
     if (
         location.startswith("/")
         or "\\" in location
         or any(part in ("", ".", "..") for part in location.split("/"))
         or len(parts) < root + 3
-        or parts[:root] != SEALED_RAW_ROOT
+        or parts[:root] != raw_root
     ):
         return (
-            f"the raw file {location} is not under {'/'.join(SEALED_RAW_ROOT)}/<date>/<symbol>/;"
-            " only the OANDA MT5 sealed raw files may be covered (ADR-0036 第4項)"
+            f"the raw file {location} is not under {'/'.join(raw_root)}/<date>/<symbol>/;"
+            " only the OANDA MT5 raw files of the class of the definition may be covered"
+            " (ADR-0036 第4項, ADR-0040 第2項の 2)"
         )
     if parts[root + 1] != str(target.symbol):
         return f"the raw file {location} is not in the directory of its symbol {target.symbol}"
