@@ -46,25 +46,34 @@ def cost_entries(
     currency: CurrencyCode,
     conversion: ConversionRate,
     spread_applied: bool = True,
+    commission_conversion: ConversionRate | None = None,
 ) -> tuple[CostEntry, ...]:
     """1件の約定に紐付く費用の記録（D06 §7.6・§9.2）。
 
     `spread_applied=False` は、提示価格の幅を通さずに価格が決まった約定
     （保護水準そのものを基準にした決済など）を表す。買い側でも幅の費用は立たない。
+
+    `currency` は口座通貨、`conversion` は決済通貨から口座通貨への率 `X_f`（D06 v1.20 案
+    §19.6 の (2)）。滑りとスプレッドは価格の単位なので原通貨額は決済通貨（`conversion` の
+    `from_currency`）で、計上額は `X_f` で口座通貨にする。手数料は口座通貨建てのまま換算せず、
+    `commission_conversion`（口座通貨 → 口座通貨の恒等の率。仮置き C1-9）を記録する。`None` なら
+    `conversion` を使う（決済通貨が口座通貨と同じ run。今までと同じ記録）。
     """
     if purpose not in (FillPurpose.ENTRY, FillPurpose.CLOSE):
         raise KernelValueError(f"unknown fill purpose: {purpose!r}")
     slippage_offset = model.entry_slippage if purpose == FillPurpose.ENTRY else model.close_slippage
+    settlement = conversion.from_currency
+    commission_rate = conversion if commission_conversion is None else commission_conversion
     with localcontext(kernel_context()):
         commission = Money(model.commission_per_unit.amount * quantity.units, currency)
-        slippage = Money(slippage_offset.value * quantity.units, currency)
-        spread = Money(model.spread_model.offset.value * quantity.units, currency)
+        slippage = Money(slippage_offset.value * quantity.units, settlement)
+        spread = Money(model.spread_model.offset.value * quantity.units, settlement)
     entries = [
         CostEntry(
             kind=CostKind.COMMISSION,
             native=commission,
-            account=convert(commission, conversion),
-            conversion=conversion,
+            account=convert(commission, commission_rate),
+            conversion=commission_rate,
         ),
         CostEntry(
             kind=CostKind.SLIPPAGE_IN_PRICE,

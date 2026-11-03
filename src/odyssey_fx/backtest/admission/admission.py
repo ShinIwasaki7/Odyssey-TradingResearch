@@ -191,13 +191,18 @@ def decide_entry(
     reference_quote: ReferenceQuote | None,
     decision_bid: Price | None,
     adverse_fill_limit: PriceOffset | None,
-    conversion: ConversionRate,
+    conversion: ConversionRate | None,
     new_assessment_id: Callable[[], EvidenceId],
     evidence_ref: EvidenceRef,
     run_end: UtcTime | None = None,
     carry_not_allowed: CarryNotAllowedDetail | None = None,
+    conversion_failure: Reason | None = None,
 ) -> AdmissionOutcome:
     """新規エントリーの要求を受け付ける（D06 §5.2・§5.3・§6.4・§6.5）。
+
+    `conversion` が `None`（受付の時点で換算できない）なら `conversion_failure` の理由
+    （`DATA_ERROR`）で、手順5 まで到達した審査記録を残して受付前拒否する（D06 v1.20 案 §19.6、
+    仮置き C1-8）。
 
     `new_assessment_id` は審査記録の識別子を採番する関数である。**手順3 まで到達した試行
     だけ**が審査記録を持つ（D06 §4.4）ので、そこへ進むと決まってから採番する。先に採番
@@ -231,7 +236,8 @@ def decide_entry(
     assessment_id = new_assessment_id()
     # 換算率からその根拠記録へ辿れるようにする（上位設計書 §4.7.9 C）。審査記録の識別子は
     # 手順3 へ進むと決まってから採番するので、率へ結び付けられるのもここが最初になる。
-    conversion = replace(conversion, evidence=EvidenceRef(evidence_id=assessment_id))
+    if conversion is not None:
+        conversion = replace(conversion, evidence=EvidenceRef(evidence_id=assessment_id))
 
     assessment, rejection = assess_entry(
         payload,
@@ -246,6 +252,7 @@ def decide_entry(
         decision_bid=decision_bid,
         adverse_fill_limit=adverse_fill_limit,
         conversion=conversion,
+        conversion_failure=conversion_failure,
     )
     if rejection is not None:
         return _rejected(request, rejection, assessment)

@@ -24,8 +24,9 @@ from odyssey_fx.backtest.domain.policies import (
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
+from odyssey_fx.common.money import CurrencyCode
 from odyssey_fx.common.reason import Reason
-from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
+from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest, SnapshotRef
 from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import SymbolSpecRef
 from odyssey_fx.common.time import Interval, PhaseSet
@@ -35,6 +36,8 @@ from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef
 
 __all__ = [
+    "ConversionCapability",
+    "ConversionLegCapability",
     "CoverageCapability",
     "DataCapabilityReport",
     "ResumptionCounts",
@@ -86,6 +89,35 @@ class CoverageCapability:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversionLegCapability:
+    """換算の経路の 1 脚の能力検査（D06 v1.20 案 §19.8 の 1・2。件数・時刻だけで価格を含めない）。
+
+    `series` は脚の 1 分足の系列、`snapshot_ref` はそれを読む snapshot、`present` はその系列が
+    snapshot にあるか、`shortfall` は run 区間と重なる取得不足の区間と理由。
+    """
+
+    series: SeriesId
+    snapshot_ref: SnapshotRef
+    inverted: bool
+    present: bool
+    shortfall: tuple[tuple[Interval, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionCapability:
+    """換算の能力検査の結果（D06 v1.20 案 §19.8。仮置き C1-11）。
+
+    決済通貨が口座通貨と違う run だけが持つ（同じ run では `None` で、run manifest に書かない）。
+    `route_found` は経路を組めたか（D06 §19.3。組めなければ `legs` は空）。
+    """
+
+    settlement: CurrencyCode
+    account: CurrencyCode
+    route_found: bool
+    legs: tuple[ConversionLegCapability, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ResumptionCounts:
     """run manifest の「再開」群（D06 §18.10）。"""
 
@@ -114,9 +146,11 @@ class DataCapabilityReport:
     reason: Reason | None = None
     diagnostics: tuple[str, ...] = ()
     coverage: CoverageCapability | None = None
+    conversion: ConversionCapability | None = None
     """不合格の理由を1件ずつ書いた文（D06 §10.5 の手順6「不合格の個別結果を落とさない」）。
 
     `coverage` は MT5 経路の被覆の報告（D06 §18.9 の 3・4）。HistData の経路では `None`。
+    `conversion` は換算の能力検査（D06 v1.20 案 §19.8）。決済通貨が口座通貨と同じ run では `None`。
 
     銘柄仕様の食い違い・許容不利約定幅の不足・下位足を走査する手段の不在といった不合格は、
     完全性検査にも階層の検査にも現れない。理由コードだけを残すと、判断履歴からは
@@ -162,13 +196,19 @@ def config_mapping(config: RunConfig, *, omit: frozenset[str] = frozenset()) -> 
     §9.3 の 1・4、仮置き R4b-5）。除いた mapping は項目を足す前の `RunConfig` の mapping と同じ
     なので、既存の run の `ConfigDigest`・`RunId`・run manifest は変わらない。`omit` は旧い形の
     照合で除く項目（`run_end`）。
+
+    換算の snapshot（`conversion_snapshot_ref`）も**`None` のときキーを除く**（D06 v1.20 案 §19.2、
+    仮置き C1-1）。封印の並びと同じ作り方で、換算の snapshot を持たない既存の run の識別子と
+    run manifest は変わらない。
     """
     if not isinstance(config, RunConfig):
         raise KernelValueError("config_mapping requires a RunConfig")
     return {
         item.name: getattr(config, item.name)
         for item in fields(config)
-        if item.name not in omit and not (item.name == "sealed_reads" and not config.sealed_reads)
+        if item.name not in omit
+        and not (item.name == "sealed_reads" and not config.sealed_reads)
+        and not (item.name == "conversion_snapshot_ref" and config.conversion_snapshot_ref is None)
     }
 
 

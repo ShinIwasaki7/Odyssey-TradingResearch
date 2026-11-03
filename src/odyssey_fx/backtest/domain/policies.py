@@ -276,12 +276,24 @@ class CostModel:
         with localcontext(kernel_context()):
             return self.commission_per_unit.amount * _ROUND_TRIP + self.close_slippage.value
 
-    def budget_for(self, quantity: Quantity, currency: CurrencyCode) -> Money:
-        """予約に含める費用予算 `C(Q)`（D06 §7.6）。"""
+    def budget_for(
+        self, quantity: Quantity, currency: CurrencyCode, rate: Decimal | None = None
+    ) -> Money:
+        """予約に含める費用予算 `C(Q)`（D06 §7.6）。口座通貨建て。
+
+        `rate` は決済通貨から口座通貨への率 `X_a`（D06 v1.20 案 §19.6 の (1)）。滑りの項（価格の
+        単位）にだけ掛け、手数料の項（口座通貨）には掛けない（D17-11 (a)）。`None` は率 1。
+        """
         if not isinstance(quantity, Quantity):
             raise KernelValueError("CostModel.budget_for requires a Quantity")
         with localcontext(kernel_context()):
-            return Money(self.budget_per_unit() * quantity.units, currency)
+            per_unit = (
+                self.budget_per_unit()
+                if rate is None
+                else self.commission_per_unit.amount * _ROUND_TRIP
+                + self.close_slippage.value * rate
+            )
+            return Money(per_unit * quantity.units, currency)
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +425,11 @@ class RunConfig:
     単一実行の設定・実験設定にはキーが無い。**空のときは `ConfigDigest` の材料に入れない**
     （`backtest.trace.manifest.config_mapping`）ので、既存の run の識別子は変わらない。読む許可
     ではない（読ませるのは関所の最終評価の許可だけ。ADR-0037 第8項）。
+
+    `conversion_snapshot_ref` は換算の snapshot（D06 v1.20 案 §19.2。仮置き C1-1）。決済通貨が
+    口座通貨と違う run だけが持ち（換算の率を読む承認済みの USDJPY の snapshot）、要否の規則
+    （仮置き C1-3）は合成（`app`）が確かめる。**`None` のときは `ConfigDigest` の材料に入れない**
+    （`backtest.trace.manifest.config_mapping`）ので、既存の run の識別子は変わらない。
     """
 
     run_interval: Interval
@@ -428,11 +445,18 @@ class RunConfig:
     seed: int = 0
     run_end: RunEndMode = RunEndMode.MARK_TO_MARKET
     sealed_reads: tuple[GrantedRead, ...] = ()
+    conversion_snapshot_ref: SnapshotRef | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_interval, Interval):
             raise KernelValueError("RunConfig.run_interval must be an Interval")
         require_ordered_reads(self.sealed_reads, "RunConfig.sealed_reads")
+        if self.conversion_snapshot_ref is not None and not isinstance(
+            self.conversion_snapshot_ref, SnapshotRef
+        ):
+            raise KernelValueError(
+                "RunConfig.conversion_snapshot_ref must be a SnapshotRef or None"
+            )
         if not isinstance(self.run_end, RunEndMode):
             raise KernelValueError("RunConfig.run_end must be a RunEndMode")
         if not isinstance(self.snapshot_ref, SnapshotRef):

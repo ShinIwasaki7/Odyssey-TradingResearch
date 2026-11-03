@@ -39,6 +39,8 @@ from odyssey_fx.backtest.domain.policies import (
     RunEndMode,
 )
 from odyssey_fx.backtest.trace.manifest import (
+    ConversionCapability,
+    ConversionLegCapability,
     CoverageCapability,
     DataCapabilityReport,
     ResumptionCounts,
@@ -840,7 +842,7 @@ def _capability_payload(report: DataCapabilityReport) -> dict[str, Any]:
     両方が同じ内容を持つのは、`FAILED_CAPABILITY` の run では判断履歴の表が空になりうる
     ため、結果からも直接読めるようにするという D06 §9.4 の要求による。
     """
-    return {
+    payload: dict[str, Any] = {
         "compiled_match": report.compiled_match,
         "runnable": report.runnable,
         "reason": None if report.reason is None else report.reason.code.value,
@@ -849,6 +851,60 @@ def _capability_payload(report: DataCapabilityReport) -> dict[str, Any]:
         "diagnostics": list(report.diagnostics),
         "coverage": _coverage_payload(report.coverage),
     }
+    # 換算の能力検査は決済通貨が口座通貨と違う run だけが持ち、`None` のときは書かない
+    # （D06 v1.20 案 §19.8、仮置き C1-11。既存の run manifest の形を変えない）。
+    if report.conversion is not None:
+        payload["conversion"] = _conversion_payload(report.conversion)
+    return payload
+
+
+def _conversion_payload(report: ConversionCapability) -> dict[str, Any]:
+    """換算の能力検査（D06 v1.20 案 §19.8）。系列・snapshot・区間だけで価格を含めない。"""
+    return {
+        "settlement": report.settlement.code,
+        "account": report.account.code,
+        "route_found": report.route_found,
+        "legs": [
+            {
+                "series": str(leg.series),
+                "snapshot_id": str(leg.snapshot_ref.snapshot_id),
+                "inverted": leg.inverted,
+                "present": leg.present,
+                "shortfall": [
+                    {"interval": _interval_payload(interval), "reasons": reasons}
+                    for interval, reasons in leg.shortfall
+                ],
+            }
+            for leg in report.legs
+        ],
+    }
+
+
+def _conversion_of(
+    payload: Mapping[str, Any] | None, timeframes: Mapping[str, TimeframeRef]
+) -> ConversionCapability | None:
+    if payload is None:
+        return None
+    return ConversionCapability(
+        settlement=CurrencyCode(str(payload["settlement"])),
+        account=CurrencyCode(str(payload["account"])),
+        route_found=bool(payload["route_found"]),
+        legs=tuple(
+            ConversionLegCapability(
+                series=_series_of(item["series"], timeframes),
+                snapshot_ref=SnapshotRef(
+                    snapshot_id=SnapshotId(_digest_of(item["snapshot_id"], "conversion leg"))
+                ),
+                inverted=bool(item["inverted"]),
+                present=bool(item["present"]),
+                shortfall=tuple(
+                    (_interval_of(entry["interval"]), str(entry["reasons"]))
+                    for entry in item["shortfall"]
+                ),
+            )
+            for item in payload["legs"]
+        ),
+    )
 
 
 def _result_payload(result: BacktestResult) -> dict[str, Any]:
@@ -1068,6 +1124,7 @@ def _capability_report_of(
         reason=_reason_of(payload.get("reason")),
         diagnostics=tuple(payload.get("diagnostics", ())),
         coverage=_coverage_of(payload.get("coverage"), timeframes),
+        conversion=_conversion_of(payload.get("conversion"), timeframes),
     )
 
 
@@ -1099,6 +1156,16 @@ def _run_config_of(payload: Mapping[str, Any], timeframes: Mapping[str, Timefram
         # 封印の並びの無い run manifest は空の並びと読む（D06 v1.18 案 §9.3 の帰結 (3)）。
         sealed_reads=tuple(
             _granted_read_of(item, timeframes) for item in payload.get("sealed_reads", ())
+        ),
+        # 換算の snapshot の無い run manifest は `None` と読む（D06 v1.20 案 §19.2。仮置き C1-1）。
+        conversion_snapshot_ref=None
+        if payload.get("conversion_snapshot_ref") is None
+        else SnapshotRef(
+            snapshot_id=SnapshotId(
+                _digest_of(
+                    payload["conversion_snapshot_ref"]["snapshot_id"], "conversion SnapshotId"
+                )
+            )
         ),
     )
 

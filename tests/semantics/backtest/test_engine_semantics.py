@@ -543,7 +543,8 @@ def test_the_conversion_rate_points_at_its_evidence_record() -> None:
 
 
 def test_an_account_currency_unlike_the_settlement_currency_blocks_the_run() -> None:
-    """D06 §8.5: 段階2 は恒等換算だけを通す。決済通貨と口座通貨が違えば実行前に止める。"""
+    """D06 §8.5・v1.20 案 §19.8 の 1: 決済通貨と口座通貨が違い、換算の経路を組めなければ実行前に
+    止める（換算の snapshot が無いので経路が無い）。"""
     from dataclasses import replace
 
     from odyssey_fx.backtest.application.run_backtest import capability_report
@@ -571,7 +572,8 @@ def test_an_account_currency_unlike_the_settlement_currency_blocks_the_run() -> 
     )
 
     assert report.runnable is False
-    assert any("settles in" in text for text in report.diagnostics)
+    assert any("no conversion path" in text for text in report.diagnostics)
+    assert report.conversion is not None and report.conversion.route_found is False
 
     output = run_backtest(
         signal_bars=signal_bars(),

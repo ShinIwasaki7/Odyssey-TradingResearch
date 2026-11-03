@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, localcontext
@@ -43,7 +44,10 @@ from odyssey_fx.backtest.engine.loop import (
 )
 from odyssey_fx.backtest.engine.phases import BACKTEST_PHASES
 from odyssey_fx.backtest.execution.protection_hits import ExcusedSpans, hierarchy_checks
+from odyssey_fx.backtest.portfolio.conversion import ConversionQuotes, resolve_route
 from odyssey_fx.backtest.trace.manifest import (
+    ConversionCapability,
+    ConversionLegCapability,
     CoverageCapability,
     DataCapabilityReport,
     ResumptionCounts,
@@ -59,18 +63,35 @@ from odyssey_fx.common.reason import Reason, ReasonCode
 from odyssey_fx.common.refs import CodeDigest, ConfigDigest, EnvDigest, LockDigest
 from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.symbol import SymbolSpec, SymbolSpecRef
+from odyssey_fx.common.time import Interval
 from odyssey_fx.common.timeframe import TimeframeRef
 from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
+from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.strategy.compiler.compiled import CompiledStrategy
 from odyssey_fx.strategy.runtime.ports import StrategyRuntime
 
-__all__ = ["Mt5Capability", "RunBacktest", "capability_report"]
+__all__ = ["ConversionSupply", "Mt5Capability", "RunBacktest", "capability_report"]
 
 _ZERO = decimal_from_int(0)
 
 
 #: 「判断時刻と同じ時刻に始まる足も候補に含める」ための最小の後戻り（`engine.loop` と同じ）。
 _TINY = timedelta(microseconds=1)
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionSupply:
+    """換算の脚の供給と、その能力検査の材料（D06 v1.20 案 §19.3・§19.8）。合成（`app`）が作る。
+
+    - `quotes`: 脚の 1 分足の供給（`ConversionQuotes`。経路を探す集合を含む）。
+    - `present`: 経路の脚に使える 1 分足の系列（snapshot に系列があるもの）。
+    - `shortfall`: 系列と区間から、その区間と重なる取得不足の区間と理由を返す関数（検査報告から。
+      D03 §15.6 の `ACQUISITION_SHORTFALL`）。
+    """
+
+    quotes: ConversionQuotes
+    present: frozenset[SeriesId]
+    shortfall: Callable[[SeriesId, Interval], tuple[tuple[Interval, str], ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +134,8 @@ def capability_report(
     intrabar_series: IntrabarSeries | None = None,
     execution_series: ExecutionSeries | None = None,
     mt5: Mt5Capability | None = None,
+    conversion_policy: ConversionPolicy | None = None,
+    conversion: ConversionSupply | None = None,
 ) -> DataCapabilityReport:
     """実行前のデータ能力検査（D06 §10.5、MT5 経路は §18.9）。合格・
     不合格のどちらでも全体を保存する。
@@ -190,16 +213,7 @@ def capability_report(
         reasons.append(
             "the execution series has no bar at the first scheduled open of the run interval"
         )
-    if config.execution_series.symbol.quote != config.account.currency:
-        # 段階2 は恒等換算だけを通す（D06 §8.5）。決済通貨と口座通貨が違う組み合わせは、
-        # 換算の経路が無いまま予約額・損益・費用を口座通貨として記録してしまうので、
-        # 実行する前に止める。
-        reasons.append(
-            "stage 2 only settles in the account currency;"
-            f" {config.execution_series.symbol} settles in"
-            f" {config.execution_series.symbol.quote} but the account is"
-            f" {config.account.currency}"
-        )
+    conversion_report = _conversion_capability(config, conversion_policy, conversion, reasons)
     if cost_model.commission_per_unit.currency != config.account.currency:
         # 手数料は原通貨のまま口座へ計上される（D06 §7.6）。口座通貨と違う通貨で与えられると、
         # 換算の経路を通さないまま数字だけが口座通貨として扱われ、予約額・費用・残高・末尾の
@@ -243,6 +257,62 @@ def capability_report(
         reason=None if runnable else Reason(ReasonCode.DATA_ERROR),
         diagnostics=tuple(reasons),
         coverage=None if mt5 is None else mt5.coverage,
+        conversion=conversion_report,
+    )
+
+
+def _conversion_capability(
+    config: RunConfig,
+    policy: ConversionPolicy | None,
+    supply: ConversionSupply | None,
+    reasons: list[str],
+) -> ConversionCapability | None:
+    """換算の能力検査（D06 v1.20 案 §19.8 の手順 2d。仮置き C1-11）。
+
+    決済通貨が口座通貨と同じなら検査しない（`None`）。違えば、執行の snapshot と換算の
+    snapshot の系列の集合から経路を組めること（§19.3）、各脚の 1 分足の系列があること、その系列に
+    run 区間と重なる取得不足が無いこと（§18.9 の 2 を換算に使う系列にも当てる）を確かめる。
+    無記録の分では実行不可にしない（古さは run の中で規則 9 が測る）。今までの「決済通貨が口座通貨と
+    違えば一律に実行不可」はこの検査に置き換えた。
+    """
+    settlement = config.execution_series.symbol.quote
+    account = config.account.currency
+    if settlement == account:
+        return None
+    available = frozenset() if supply is None else supply.quotes.symbols
+    route = None if policy is None else resolve_route(settlement, account, available, policy)
+    if route is None or supply is None:
+        reasons.append(
+            f"no conversion path from {settlement} to {account} in the series of the execution"
+            " and conversion snapshots (D06 §19.3, §19.8 の 1)"
+        )
+        return ConversionCapability(settlement=settlement, account=account, route_found=False)
+    legs: list[ConversionLegCapability] = []
+    for hop in route:
+        series = supply.quotes.series_of(hop.symbol)
+        present = series in supply.present
+        shortfall = supply.shortfall(series, config.run_interval) if present else ()
+        if not present:
+            reasons.append(
+                f"the conversion leg {series} is not in the snapshot it is read from"
+                " (D06 §19.4, §19.8 の 1)"
+            )
+        for interval, text in shortfall:
+            reasons.append(
+                f"acquisition shortfall on the conversion series {series} in {interval}"
+                f" ({text}); a shortfall is not read as unrecorded minutes (D06 §19.8 の 2)"
+            )
+        legs.append(
+            ConversionLegCapability(
+                series=series,
+                snapshot_ref=supply.quotes.snapshot_of(hop.symbol),
+                inverted=hop.inverted,
+                present=present,
+                shortfall=shortfall,
+            )
+        )
+    return ConversionCapability(
+        settlement=settlement, account=account, route_found=True, legs=tuple(legs)
     )
 
 
@@ -281,6 +351,7 @@ class RunBacktest:
         mt5_capability: Mt5Capability | None = None,
         publication_rows: tuple[PublicationRow, ...] = (),
         history_resets: tuple[HistoryResetRow, ...] = (),
+        conversion: ConversionSupply | None = None,
     ) -> None:
         """実行に要るポートとポリシー、そして**実行の出どころ**を受け取る。
 
@@ -318,6 +389,7 @@ class RunBacktest:
         self._mt5 = mt5_capability
         self._publication_rows = publication_rows
         self._history_resets = history_resets
+        self._conversion = conversion
 
     def config_digest(self, config: RunConfig) -> ConfigDigest:
         """この実行の `ConfigDigest`（D06 §9.3）。
@@ -356,6 +428,8 @@ class RunBacktest:
             intrabar_series=self._intrabar,
             execution_series=self._execution_series,
             mt5=self._mt5,
+            conversion_policy=self._conversion_policy,
+            conversion=self._conversion,
         )
         engine = BacktestEngine(
             config=config,
@@ -376,6 +450,7 @@ class RunBacktest:
             intrabar_series=self._intrabar,
             strategy_priority=self._priority,
             minutes=self._minutes,
+            conversion_quotes=None if self._conversion is None else self._conversion.quotes,
         )
         engine.execute()
 
