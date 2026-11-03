@@ -1055,6 +1055,28 @@ def test_save_state_from_two_processes_keeps_every_update(
     assert not (_state_dir(tmp_path) / "state.env.lock").exists()
 
 
+@needs_bash
+def test_save_state_stops_at_once_when_the_lock_cannot_be_made(tmp_path: Path) -> None:
+    # Python が異常終了したとき（終了コード 1）を「ロックが既にある」と読まず、待たずに止まる
+    env, _, _ = _extend_env(tmp_path)
+    broken = tmp_path / "bin" / "broken_python"
+    broken.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    broken.chmod(0o755)
+    before = (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8")
+    r = subprocess.run(
+        ["bash", "-c", f'source "{SCRIPTS / "lib.sh"}"; save_state K_X 1'],
+        env={**env, "PY_MAC": str(broken)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode != 0
+    assert "を作れない（終了コード 1）" in r.stderr
+    assert "30 秒取れない" not in r.stderr
+    assert (_state_dir(tmp_path) / "state.env").read_text(encoding="utf-8") == before
+    assert not (_state_dir(tmp_path) / "state.env.lock").exists()
+
+
 # --- 封印の取得の起動の CPU クレジット（人間の決定 2026-10-31。D15 §0.5.13） ---
 
 
