@@ -1975,6 +1975,13 @@ def experiment_manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     }
     if manifest.is_search:
         payload.update(_search_manifest_items(manifest))
+    # 換算の snapshot は決済通貨が口座通貨と違う実験だけ書く（D07 §19.2 の v2.17 案）。
+    if manifest.conversion_snapshot_id is not None:
+        assert manifest.conversion_allowed_partitions is not None  # noqa: S101 - 対で持つ
+        payload["conversion_snapshot_id"] = _snapshot_ids_payload(manifest.conversion_snapshot_id)
+        payload["conversion_allowed_partitions"] = _partitions_payload(
+            manifest.conversion_allowed_partitions
+        )
     return payload
 
 
@@ -2043,7 +2050,30 @@ def experiment_manifest_from_payload(payload: Mapping[str, Any]) -> ExperimentMa
         git_commit=payload["git_commit"],
         git_dirty=payload["git_dirty"],
         **search,
+        **_conversion_manifest_values(payload),
     )
+
+
+def _conversion_manifest_values(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """記録票の換算の snapshot と許可 partition（無ければ空。D07 §19.2 の v2.17 案）。"""
+    if "conversion_snapshot_id" not in payload:
+        return {}
+    raw_id = payload["conversion_snapshot_id"]
+    raw_partitions = payload["conversion_allowed_partitions"]
+    return {
+        "conversion_snapshot_id": _paired_of(
+            raw_id,
+            lambda raw: SnapshotId(_digest_of(raw, "conversion_snapshot_id")),
+            "conversion_snapshot_id",
+        )
+        if isinstance(raw_id, Mapping)
+        else SnapshotId(_digest_of(raw_id, "conversion_snapshot_id")),
+        "conversion_allowed_partitions": _paired_of(
+            raw_partitions, _partitions_of, "conversion_allowed_partitions"
+        )
+        if isinstance(raw_id, Mapping)
+        else _partitions_of(raw_partitions),
+    }
 
 
 def _optional_hex(value: ContentDigest | None) -> str | None:
