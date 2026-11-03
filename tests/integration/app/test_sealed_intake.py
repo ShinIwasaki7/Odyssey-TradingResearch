@@ -15,6 +15,7 @@ AUDUSD）にも同じ経路を当てる。偽の API は通貨ごとに銘柄仕
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import shutil
 from datetime import UTC, datetime, timedelta
@@ -757,6 +758,24 @@ def test_the_research_acceptance_refuses_the_sealed_raw_directory(
     research_copy = repo / f"docs/data/oanda_mt5_full_fetch_{FETCH_DATE}/manifest.json"
     research_copy.parent.mkdir(parents=True)
     shutil.copy(repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE / "manifest.json", research_copy)
+    # 確認済みハッシュの一覧（D03 §17.7）に載せても、封印の置き場の下は読まない（A1-8 の
+    # 「順 6 の代わりの仕組みも続けて当てる」）。一覧は封印の取得記録のファイルを研究期間の
+    # 正規の置き場の名前で載せた人工のもの。
+    record = repo / "data/raw/oanda_mt5_sealed" / FETCH_DATE / "manifest.json"
+    rows = "".join(
+        f"  - {{location: data/raw/oanda_mt5/{FETCH_DATE}/{entry.file}, symbol: {entry.symbol},"
+        f" sha256: {entry.sha256_gz}, access_id: synthetic, result: PASS}}\n"
+        for entry in read_fetch_manifest(record)
+    )
+    (repo / f"configs/datasources/oanda_mt5_m1_verified_raw_{FETCH_DATE}.yaml").write_text(
+        "schema_version: 1\nid: oanda_mt5_m1_verified_raw\nversion: 1\ndatasource: oanda_mt5_m1\n"
+        f'fetch_date: "{FETCH_DATE}"\n'
+        f"fetch_manifest_sha256: {hashlib.sha256(record.read_bytes()).hexdigest()}\n"
+        'verified_by: {name: synthetic, version: "1"}\n'
+        f"permit_definition_sha256: {'a' * 64}\n"
+        'declared_period_end: "2024-01-01T00:00:00Z"\nfiles:\n' + rows,
+        encoding="utf-8",
+    )
     assert (
         main(
             [
