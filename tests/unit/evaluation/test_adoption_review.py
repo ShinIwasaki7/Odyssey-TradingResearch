@@ -405,6 +405,100 @@ def test_row_5_an_account_in_another_currency_needs_conversion() -> None:
     assert _outcomes(result)[CostModelRow.CURRENCY_CONVERSION] is FitOutcome.NEEDS_CAPABILITY
 
 
+# --- 行 5 の版 2（D16 v0.4 案 §7.2・§13 の T4b。D06 §19.16 の CT-19 の規則の層）------------
+
+
+def _rules_of(version: int) -> ReviewRules:
+    rules, _ = load_adoption_review_rules(
+        REPO_ROOT / f"configs/policies/adoption_review/adoption_review_v{version}.yaml",
+        version=version,
+    )
+    return rules
+
+
+def _row_5(rules: ReviewRules, symbol: str) -> CostFitRow:
+    """円口座で `symbol` の候補を審査したときの行 5（行 5 は銘柄だけで決まる）。"""
+    result = cost_model_fit(
+        rules=rules,
+        trades=[trade("2015-01-07T09:00:00Z", "2015-01-07T13:15:00Z")],
+        intervals=_WEEK,
+        calendar=_calendar(),
+        symbol=Symbol(symbol),
+        account_currency=CurrencyCode("JPY"),
+    )
+    (row,) = [row for row in result.rows if row.row is CostModelRow.CURRENCY_CONVERSION]
+    return row
+
+
+_NEEDS_CONVERSION = CostFitRow(
+    row=CostModelRow.CURRENCY_CONVERSION,
+    outcome=FitOutcome.NEEDS_CAPABILITY,
+    capabilities=(Capability.CURRENCY_CONVERSION,),
+)
+_CONVERSION_FITS = CostFitRow(
+    row=CostModelRow.CURRENCY_CONVERSION, outcome=FitOutcome.FITS, capabilities=()
+)
+
+
+@pytest.mark.parametrize("symbol", ["EURUSD", "GBPUSD", "AUDUSD", "USDCHF"])
+def test_row_5_version_2_fits_usd_and_chf_settlement_while_version_1_needs_conversion(
+    symbol: str,
+) -> None:
+    """CT-19: 決済通貨が米ドル・スイスフランの候補は版 2 で `FITS`、版 1 で `NEEDS_CAPABILITY`。"""
+    assert _row_5(_rules_of(2), symbol) == _CONVERSION_FITS
+    assert _row_5(_rules_of(1), symbol) == _NEEDS_CONVERSION
+
+
+def test_row_5_version_2_still_needs_conversion_outside_its_list_and_fits_the_yen() -> None:
+    """T4b: 一覧に無い決済通貨（英ポンド・カナダドル）は版 2 でも `NEEDS_CAPABILITY`。
+
+    円の決済通貨は両版で `FITS`。
+    """
+    assert _rules_of(2).convertible_settlement_currencies == (
+        CurrencyCode("CHF"),
+        CurrencyCode("USD"),
+    )
+    assert _row_5(_rules_of(2), "EURGBP") == _NEEDS_CONVERSION
+    assert _row_5(_rules_of(2), "USDCAD") == _NEEDS_CONVERSION
+    for version in (1, 2):
+        assert _row_5(_rules_of(version), "USDJPY") == _CONVERSION_FITS
+        assert _row_5(_rules_of(version), "EURJPY") == _CONVERSION_FITS
+
+
+def test_version_1_rules_carry_no_convertible_settlement_currencies() -> None:
+    """版 1 の形の規則は一覧を持たない（行 5 は版 1 のときと同じ規則のまま）。"""
+    assert _rules_of(1).convertible_settlement_currencies == ()
+    assert _rules_of(1).require_account_currency is True
+    assert _rules_of(2).require_account_currency is True
+
+
+def test_a_usd_candidate_started_before_version_2_is_reviewed_with_version_1() -> None:
+    """CT-19 の当て方（T7c と同じ）: 版 2 の登録より前に開始した米ドルの候補は版 1 で
+    `NEEDS_CAPABILITY`、登録より後に開始した候補は版 2 で `FITS`。"""
+    first = _with_policy(started("a", purpose=StandardPurpose.STANDARD))
+    second = _with_policy(started("b", purpose=StandardPurpose.STANDARD))
+    lines = chain([first, finished(first, verdict=SearchVerdict.MEETS_STANDARD), second])
+    v2 = ReviewRulesEntry(
+        rules_id="adoption_review", version=2, digest=digest("v2"), effective_after=lines[1].digest
+    )
+    registry = (_RULES_V1, v2)
+    before = applicable_rules_entry(lines, registry, lines[0])
+    after = applicable_rules_entry(lines, registry, lines[2])
+    assert (before.version, after.version) == (1, 2)
+    assert _row_5(_rules_of(before.version), "EURUSD") == _NEEDS_CONVERSION
+    assert _row_5(_rules_of(after.version), "EURUSD") == _CONVERSION_FITS
+
+
+def test_review_rules_reject_a_malformed_convertible_list() -> None:
+    rules = _rules_of(2)
+    with pytest.raises(KernelValueError):
+        replace(rules, convertible_settlement_currencies=(CurrencyCode("USD"), CurrencyCode("CHF")))
+    with pytest.raises(KernelValueError):
+        replace(rules, convertible_settlement_currencies=(CurrencyCode("USD"), CurrencyCode("USD")))
+    with pytest.raises(KernelValueError):
+        replace(rules, require_account_currency=False)
+
+
 def test_missing_spread_costs_count_as_zero_and_missing_slippage_is_undetermined() -> None:
     """T13: スプレッドの費用の値なし（売りの約定・保護水準での決済）は 0 として数える。"""
     no_spread = _fit(

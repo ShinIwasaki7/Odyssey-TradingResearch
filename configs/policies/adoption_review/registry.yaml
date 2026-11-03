@@ -13,7 +13,10 @@
 # **登録は人間が版を足すときに、規則のファイルと同じコミットで 1 行足す**。要素は書き換えも削除もしない
 # （過去の審査台帳の行が指す版を後から変えないため。保留の後のやり直しは最初の行の版で行う。仮置き 12）。
 # 版 1 は順 6 の R3 の PR で、研究候補が 0 件のうちに足した（D16 §10.3。値は 2026-10-30 の決定）。
+# 版 2 は順 7 の換算の実装 PR（C2）で足した（行 5 の版 2。D16 v0.4 案 §7.2・§10.3、D06 §19.13）。
+# `effective_after` は登録の時点の試行台帳の末尾の行（4 行目）のダイジェスト。
 
 schema_version: 1
 entries:
   - {id: adoption_review, version: 1, digest: "d1623445fd1407a6bcc0db1f49db14577a1e65dd05119ba399ac1d0cad0df03c", effective_after: null}
+  - {id: adoption_review, version: 2, digest: "87a73fa796c10e5a780acc4b7f9c21831b115f67a083f48e749e1c80033603f6", effective_after: "3900e80297420a9b6e1ec463eb07b7355b242d0f8f791d5f46c4de22f7e976ed"}

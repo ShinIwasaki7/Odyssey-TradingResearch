@@ -72,7 +72,7 @@ from tests.fixtures.acceptance.t02_workspace import (
     build_workspace,
     install_candidate,
 )
-from tests.fixtures.evaluation.adoption_review import REPO_ROOT
+from tests.fixtures.evaluation.adoption_review import REPO_ROOT, install_version_1_rules
 from tests.fixtures.evaluation.research_policies import (
     TEST_BASIS,
     append_registry_entry,
@@ -231,7 +231,7 @@ def restore(env: _Env) -> Iterator[None]:
     (repo / ADOPTION_REVIEW_LEDGER_PATH).write_bytes(b"")
     (repo / ADOPTION_REVIEW_LOCK_PATH).unlink(missing_ok=True)
     shutil.rmtree(repo / _RULES, ignore_errors=True)
-    shutil.copytree(REPO_ROOT / _RULES, repo / _RULES)
+    install_version_1_rules(repo)
     shutil.rmtree(repo / "research/declarations", ignore_errors=True)
     _declare(repo, env.experiment_id, 1, used=False)
     yield
@@ -366,13 +366,13 @@ def test_t6_failed_fixed_trial_runs_defer(env: _Env, tmp_path: Path) -> None:
 
 
 def _register_v2(env: _Env) -> None:
-    """規則の版 2（値を 1 つ変えた）を、今の試行台帳の末尾の行の後から効く版として登録する。"""
+    """版管理の規則の版 2（行 5 の版 2。D16 v0.4 案 §10.3）を、人工の試行台帳の今の末尾の行の
+    後から効く版として登録する（版管理の登録簿の版 2 の行と同じ形。`effective_after` だけが人工の
+    台帳の行）。"""
     repo = env.workspace.repo
-    v1 = (repo / _RULES / "adoption_review_v1.yaml").read_text(encoding="utf-8")
-    v2 = v1.replace("\nversion: 1\n", "\nversion: 2\n", 1).replace(
-        'max_share: "0.25"', 'max_share: "0.5"'
+    shutil.copyfile(
+        REPO_ROOT / _RULES / "adoption_review_v2.yaml", repo / _RULES / "adoption_review_v2.yaml"
     )
-    (repo / _RULES / "adoption_review_v2.yaml").write_text(v2, encoding="utf-8")
     _, rules_digest = load_adoption_review_rules(
         repo / _RULES / "adoption_review_v2.yaml", version=2
     )

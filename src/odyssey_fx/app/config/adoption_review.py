@@ -6,6 +6,12 @@
   できないときの結果（R1-4 (a)）。**検査の規則はコードに置き、ファイルは値だけを持つ**（研究
   ポリシーと同じ。D07 §20.2）。ダイジェストは**解決済みの値**（長さは秒数、閾値は `Decimal`）の
   正規化ダイジェストで、同じ値の書き方の揺れ（`"PT2H"` と `"PT120M"`）では変わらない。
+  行 5（換算）の `currency_conversion` は 2 つの形のどちらか 1 つを持つ: 版 1 の形
+  `{require_account_currency: <真偽>}` と、版 2 の形
+  `{convertible_settlement_currencies: [<通貨>…]}`
+  （D16 v0.4 案 §10.3。D06 §19.13。決済通貨が口座の通貨と同じか一覧にあれば `FITS`。一覧は
+  通貨コードの順に並べ直してからダイジェストに入れるので、書く順では変わらない）。版 1 の形の
+  ダイジェストの材料は前と同じ（版 1 の登録簿の値は変わらない）。
 - **規則の登録簿** `configs/policies/adoption_review/registry.yaml`: 版・ダイジェスト・効き始めの
   行（`effective_after`。登録の時点の試行台帳の末尾の行のダイジェスト。版 1 は `null`＝最初から
   効く。R1-10 (a)）。要素は書き換えも削除もしない（研究ポリシーの登録簿と同じ規則。D09 §10.9）。
@@ -29,6 +35,7 @@ from odyssey_fx.app.config.scalars import parse_duration, require_decimal
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import ExperimentId
+from odyssey_fx.common.money import CurrencyCode
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.evaluation.domain.adoption_review import (
     CostModelRow,
@@ -87,7 +94,10 @@ class _SwapModel(StrictModel):
 
 
 class _ConversionModel(StrictModel):
-    require_account_currency: bool
+    """行 5 の形。版 1 の形（`require_account_currency`）か版 2 の形（一覧）のどちらか 1 つ。"""
+
+    require_account_currency: bool | None = None
+    convertible_settlement_currencies: list[str] | None = None
 
 
 class _CostModelFitModel(StrictModel):
@@ -164,6 +174,40 @@ def _member[EnumT: (WindowAnchor, SwapRule, DsrBasis, ReviewResult, CostModelRow
         raise ConfigError(f"{label}: {value!r} は {allowed} のどれでもない") from None
 
 
+def _conversion_of(
+    model: _ConversionModel, path: Path
+) -> tuple[bool, tuple[CurrencyCode, ...], dict[str, object]]:
+    """行 5 の形を読み、`(require_account_currency, 一覧, ダイジェストの材料)` を返す。
+
+    - 版 1 の形 `{require_account_currency: <真偽>}`: 一覧は空。材料は版 1 のときと同じ。
+    - 版 2 の形 `{convertible_settlement_currencies: [<通貨>…]}`（D16 v0.4 案 §10.3）: 口座の
+      通貨を求め（`require_account_currency` は真）、一覧にある決済通貨も `FITS` にする。一覧は
+      空でなく、重複のない 3 文字の通貨コード（順はコードの順に並べ直す）。
+    - 両方を書いた・どちらも書かないときは設定の誤り。
+    """
+    label = f"{path}: cost_model_fit.currency_conversion"
+    required, listed = model.require_account_currency, model.convertible_settlement_currencies
+    if required is not None and listed is None:
+        return required, (), {"require_account_currency": required}
+    if required is not None or listed is None:
+        raise ConfigError(
+            f"{label} は require_account_currency（版 1 の形）と convertible_settlement_currencies"
+            "（版 2 の形）のどちらか 1 つだけを持つ（D16 v0.4 案 §10.3）"
+        )
+    if not listed:
+        raise ConfigError(f"{label}.convertible_settlement_currencies が空（版 1 の形を使う）")
+    if len(set(listed)) != len(listed):
+        raise ConfigError(f"{label}.convertible_settlement_currencies に重複がある（{listed}）")
+    try:
+        currencies = tuple(CurrencyCode(code) for code in sorted(listed))
+    except KernelValueError as exc:
+        raise ConfigError(f"{label}.convertible_settlement_currencies: {exc}") from exc
+    material: dict[str, object] = {
+        "convertible_settlement_currencies": [item.code for item in currencies]
+    }
+    return True, currencies, material
+
+
 def load_adoption_review_rules(
     path: Path, *, version: int, text: str | None = None
 ) -> tuple[ReviewRules, ContentDigest]:
@@ -184,6 +228,7 @@ def load_adoption_review_rules(
     concentration = fit.spread_session_concentration
     length = parse_duration(concentration.window.length, f"{path}: window.length")
     flags = model.deflated_sharpe.assumption_flags
+    required, convertible, conversion_material = _conversion_of(fit.currency_conversion, path)
     try:
         rules = ReviewRules(
             rules_id=model.id,
@@ -195,7 +240,7 @@ def load_adoption_review_rules(
                 fit.fixed_cost_share.max_share, f"{path}: max_share"
             ),
             swap_rule=_member(SwapRule, fit.swap_rollover.rule, f"{path}: swap_rollover.rule"),
-            require_account_currency=fit.currency_conversion.require_account_currency,
+            require_account_currency=required,
             declared_fits=tuple(
                 _member(CostModelRow, item, f"{path}: declared_fits") for item in fit.declared_fits
             ),
@@ -207,6 +252,7 @@ def load_adoption_review_rules(
             undetermined_result=_member(
                 ReviewResult, model.undetermined_result, f"{path}: undetermined_result"
             ),
+            convertible_settlement_currencies=convertible,
         )
     except KernelValueError as exc:
         raise ConfigError(f"{path}: 審査の規則として成立しない: {exc}") from exc
@@ -224,7 +270,7 @@ def load_adoption_review_rules(
             },
             "fixed_cost_share": {"max_share": rules.max_fixed_cost_share},
             "swap_rollover": {"rule": rules.swap_rule},
-            "currency_conversion": {"require_account_currency": rules.require_account_currency},
+            "currency_conversion": conversion_material,
             "declared_fits": rules.declared_fits,
         },
         "deflated_sharpe": {
