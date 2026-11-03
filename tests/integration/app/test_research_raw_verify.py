@@ -210,6 +210,26 @@ def test_a_the_research_definition_permits_the_read_and_the_files_pass(
         assert "2019-03-04T12" not in text  # 時刻を出さない
 
 
+def test_a_the_approved_definition_file_permits_the_read_on_synthetic_files(
+    tmp_path: Path,
+) -> None:
+    """版管理の許可の定義（D17 の AP。人間が merge で承認）をそのまま置いて、照合が通り合否が出る。
+
+    原ファイルは人工。規則のファイルは版管理の写しなので、設定のダイジェストは今のファイルと同じ。
+    """
+    repo = _repo(tmp_path, definition=False)
+    approved = Path("configs") / "quality_checks" / "oanda_mt5_research_raw_verify.yaml"
+    (repo / approved).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(ROOT / approved, repo / approved)
+    out = tmp_path / "verify.json"
+    assert _verify(repo, out) == 0
+    start, end = _rows(repo)
+    assert isinstance(start, QualityAccessStart) and isinstance(end, QualityAccessEnd)
+    assert end.result is QualityAccessResult.COMPLETED
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["counts"] == {"pass": 2, "fail": 0, "unread": 0}
+
+
 def test_b_a_symbol_outside_the_definition_is_never_read(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

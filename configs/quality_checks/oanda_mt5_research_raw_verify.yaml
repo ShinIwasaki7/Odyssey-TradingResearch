@@ -1,0 +1,24 @@
+# 品質確認の許可の定義（ADR-0036 第4項・ADR-0040 第1項・第2項。人間が PR の merge で承認する。順 7 の受入れレーン AP）。
+#
+# 道具: 研究期間の原ファイル（data/raw/oanda_mt5/<取得日>/<通貨>/ の下。取得記録のハッシュと一致するものだけ）の
+# 確認の読み取り（odyssey-fx data verify-raw-mt5。D03 §17.4）。時刻の列だけを読み、足の終わりがすべて
+# 2024-01-01T00:00Z より前であることを確かめる。価格・スプレッド・出来高の列は数値にしない・保持しない。
+# 出力は件数・ハッシュ・合否だけ（ADR-0040 第1項の 5。時刻・区間・価格は出さない）。
+#
+# - ファイル名（拡張子を除く）は道具の名前と同じ。1 つの道具に承認済みの版は 1 つ（PR #110 の仮置き S3-9）。
+# - 区分は研究履歴だけ（封印の区分と混ぜない。ADR-0040 第2項の 1）。期間は研究履歴の区分の期間（D03 §3.8）。
+# - config_digest は確認の読み取りが読む固定のファイル（時刻の規則の表 版 1・承認済みの表の一覧・列対応の宣言
+#   oanda_mt5_m1 版 1）の置き場と SHA-256 の正規化 JSON の SHA-256
+#   （odyssey_fx.app.research_raw_verify.research_config_digest。D03 §17.5、A1-9）。
+#   どれか 1 バイトでも変われば関所は許可を出さない（定義を直して人間が承認し直す）。単体テストで今のファイルと照合する。
+# - timeframes は時間足の定義の識別（1m など。M1 の綴りは使わない）。
+
+schema_version: 1
+tool: {name: oanda_mt5_research_raw_verify, version: "1"}
+config_digest: ca8e3ecbde13b686d90ba23e2f3138fad127e7a3d3ecb405898497cc13ab32ad
+datasource: oanda_mt5_m1
+check_kind: RAW_FILE_VERIFICATION
+classes: [RESEARCH_HISTORY]
+period: {start: "2016-01-01T00:00:00Z", end: "2024-01-01T00:00:00Z"}
+targets: {kind: RAW_FILE, symbols: [USDJPY, USDCHF, AUDJPY, EURUSD, EURJPY, GBPJPY, GBPUSD, AUDUSD], timeframes: [1m]}
+output_kinds: [COUNTS, HASHES, PASS_FAIL]

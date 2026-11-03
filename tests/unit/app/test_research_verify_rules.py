@@ -14,6 +14,7 @@ from odyssey_fx.app.config.loader import ConfigError
 from odyssey_fx.app.config.quality_checks import (
     QUALITY_CHECKS_DIRECTORY,
     load_quality_check_definition,
+    load_quality_check_definitions,
 )
 from odyssey_fx.app.config.verified_raw import load_verified_raw_list, verified_raw_path
 from odyssey_fx.app.research_raw_verify import (
@@ -43,8 +44,9 @@ ROOT = Path(__file__).resolve().parents[3]
 T = UtcTime.parse
 
 #: 今の固定のファイルから計算した研究期間用の許可の定義の設定のダイジェスト（D03 §17.5 の
-#: `config_digest`。A1-9）。研究期間用の許可の定義（D17 の AP）はこの値を書く。固定のファイルの
-#: どれか 1 バイトでも変われば値が変わり、このテストが落ちる（定義を直して人間が承認し直す）。
+#: `config_digest`。A1-9）。研究期間用の許可の定義（D17 の AP）はこの値を書いている。
+#: 固定のファイルのどれか 1 バイトでも変われば値が変わり、このテストが落ちる
+#: （定義を直して人間が承認し直す）。
 RESEARCH_DIGEST_OF_TODAY = "ca8e3ecbde13b686d90ba23e2f3138fad127e7a3d3ecb405898497cc13ab32ad"
 
 
@@ -57,15 +59,14 @@ def test_the_research_config_digest_covers_the_three_fixed_files_of_today() -> N
     assert research_config_digest(ROOT) == RESEARCH_DIGEST_OF_TODAY
 
 
-def test_the_research_definition_file_matches_the_fixed_files_once_it_is_approved() -> None:
-    """研究期間用の許可の定義（D03 §17.5）は D17 の AP で人間が merge して置く。
+def test_the_research_definition_file_matches_the_fixed_files_of_today() -> None:
+    """研究期間用の許可の定義（D03 §17.5）は D17 の AP で人間が merge して置いた。
 
-    AP の merge の前はファイルが無いので照合できない（A2 の PR 本文の仮置きに「AP の merge 後に
-    照合」と書いた。合格の扱いにしない）。merge の後は、設定のダイジェストと項目を照合する。
+    設定のダイジェストと項目を、A2 の計算と型の値に照合する（A2 の仮置き A2-5 の「AP の merge 後に
+    照合」）。ファイルが無いことは合格の扱いにしない。
     """
     path = ROOT / QUALITY_CHECKS_DIRECTORY / f"{RESEARCH_VERIFY_TOOL.name}.yaml"
-    if not path.exists():
-        pytest.skip("研究期間用の許可の定義は D17 の AP の merge で置かれる（照合は AP の後）")
+    assert path.is_file()
     definition = load_quality_check_definition(path)
     assert definition.tool == RESEARCH_VERIFY_TOOL
     assert definition.config_digest == research_config_digest(ROOT)
@@ -74,7 +75,24 @@ def test_the_research_definition_file_matches_the_fixed_files_once_it_is_approve
     assert definition.period == RESEARCH_PERIOD
     assert definition.target_kind is QualityTargetKind.RAW_FILE
     assert definition.output_kinds == RESEARCH_VERIFY_OUTPUT_KINDS
-    assert len(definition.symbols) == 8
+    assert definition.symbols == frozenset(
+        Symbol(code)
+        for code in ("USDJPY", "USDCHF", "AUDJPY", "EURUSD", "EURJPY", "GBPJPY", "GBPUSD", "AUDUSD")
+    )
+    assert definition.timeframes == frozenset({"1m"})
+    assert definition.datasource == "oanda_mt5_m1"
+    assert definition.config_digest == RESEARCH_DIGEST_OF_TODAY
+
+
+def test_the_whole_definition_directory_loads_with_the_research_definition() -> None:
+    """研究履歴の定義を足しても、置き場の定義の全体（封印の 2 つを含む）が読込の誤りにならない。
+
+    関所（`app.quality_check`）は置き場の全体を読んで作るので、1 つでも誤りなら
+    封印の取り込みも止まる。
+    """
+    definitions = load_quality_check_definitions(ROOT / QUALITY_CHECKS_DIRECTORY)
+    assert RESEARCH_VERIFY_TOOL in {definition.tool for definition in definitions}
+    assert len(definitions) == 3
 
 
 # --- 確認済みハッシュの一覧の読込（D03 §17.3 の 4） ---------------------------------------------
