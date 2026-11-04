@@ -1,0 +1,185 @@
+# 検証戦略 B の戦略宣言・EURUSD 版（順 7 の機構確認 M1。D17 §2.5、D17 の仮置き 6）
+#
+# `configs/strategies/strategy_b_v1.yaml`（USDJPY の系列を直接書いた検証戦略 B）の本文から、
+# **系列の通貨ペアだけを USDJPY から EURUSD に替えた**新しいファイル。部品・部品の版・入力の参照元・
+# 起動条件・パラメータ・役割・同時保持は元のファイルと同じ（D17 の仮置き 6「部品・パラメータは
+# 変えない。戦略の識別子は新しくする」。2026-11-02 に人間が「このまま」と決定）。パラメータは
+# 本数・倍率・向きだけで、価格の単位の値を持たない。
+#
+# 戦略の識別子は `strategy_b_eurusd`（元の `strategy_b` と別）、版 1。
+#
+# `schema_version` は戦略宣言の保存形式の版（D04 §3）。
+
+schema_version: 1
+
+strategy_id: "strategy_b_eurusd"
+version: 1
+
+# 15分足4本（1時間）まで確認を待ち、成立しなければ取引機会を期限切れで終える（D05 §9.2）。
+entry_policy:
+  kind: "AWAIT_CONFIRMATION"
+  deadline: {kind: "BARS", bars: 4}
+  on_deadline: "EXPIRE"
+
+# 発注要求を作る直前まで、日足の終値が日足 EMA を上回っていることを再検査する（D05 §9.2）。
+opportunity_validity:
+  bindings:
+    - source: "daily_above_ema.condition"
+      mode: "REQUIRE_UNTIL_ORDER_REQUEST"
+      on_missing: {kind: "SKIP_EVALUATION"}
+
+components:
+  - instance_id: "daily_ema"
+    component: "ema"
+    component_version: 2
+    inputs:
+      prices:
+        - "market:EURUSD/1d_ny17/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 20}
+      window_bars: {type: "INT", value: 60}
+    triggers:
+      - {name: "d1", when: "bar_close", series: "EURUSD/1d_ny17/bid"}
+
+  - instance_id: "daily_above_ema"
+    component: "price_compare"
+    component_version: 2
+    inputs:
+      left:
+        - "market:EURUSD/1d_ny17/bid:CLOSE"
+      right:
+        - "output:daily_ema.value"
+    parameters:
+      operator: {type: "STR", value: "GT"}
+    triggers:
+      - {name: "d1", when: "bar_close", series: "EURUSD/1d_ny17/bid"}
+
+  - instance_id: "no_short"
+    component: "constant_condition"
+    component_version: 1
+    parameters:
+      value: {type: "BOOL", value: false}
+    triggers:
+      - {name: "d1", when: "bar_close", series: "EURUSD/1d_ny17/bid"}
+
+  - instance_id: "market_state"
+    component: "permission_from_condition"
+    component_version: 2
+    inputs:
+      long_allowed:
+        - "output:daily_above_ema.condition"
+      short_allowed:
+        - "output:no_short.condition"
+    triggers:
+      - {name: "d1", when: "bar_close", series: "EURUSD/1d_ny17/bid"}
+
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 2
+    inputs:
+      price:
+        - "market:EURUSD/1h/bid:CLOSE"
+      level:
+        - "market:EURUSD/1d_ny17/bid:HIGH"
+    parameters:
+      direction: {type: "STR", value: "LONG"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "m15_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/15m/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 20}
+      window_bars: {type: "INT", value: 60}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "EURUSD/15m/bid"}
+
+  - instance_id: "m15_above_ema"
+    component: "price_compare"
+    component_version: 1
+    inputs:
+      left:
+        - "market:EURUSD/15m/bid:CLOSE"
+      right:
+        - "output:m15_ema.value"
+    parameters:
+      operator: {type: "STR", value: "GT"}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "EURUSD/15m/bid"}
+
+  - instance_id: "entry_filter"
+    component: "condition_filter"
+    component_version: 1
+    inputs:
+      condition:
+        - "output:m15_above_ema.condition"
+      opportunity:
+        - "runtime:OPPORTUNITY"
+    parameters:
+      include_start_bar: {type: "BOOL", value: true}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "EURUSD/15m/bid"}
+
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 2
+    inputs:
+      confirmation:
+        - "output:entry_filter.confirmation"
+      opportunity:
+        - "runtime:OPPORTUNITY"
+    triggers:
+      - {name: "conf", when: "input_event", input_name: "confirmation"}
+
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 2
+    inputs:
+      confirmation:
+        - "output:entry_filter.confirmation"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "conf", when: "input_event", input_name: "confirmation"}
+
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:LOW"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MIN"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "trailing"
+    component: "trailing_stop"
+    component_version: 1
+    inputs:
+      position:
+        - "runtime:POSITION"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+# どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。
+roles:
+  market_state: "market_state.permission"
+  trigger: "entry_trigger.opportunity"
+  execution_filter: "entry_filter.confirmation"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "trailing.action"
+
+# 取引機会を同時にいくつ保持するか（ADR-0032）。
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
