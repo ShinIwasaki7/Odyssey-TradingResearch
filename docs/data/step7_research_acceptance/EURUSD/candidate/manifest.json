@@ -1,4 +1,9 @@
 {
+  "approval": {
+    "approved_at": "2026-11-04T01:16:20.143917Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
   "basis_declaration": {
     "value": "bid",
     "verified": false
@@ -155,6 +160,10 @@
     "time_convention": "api_time_via_time_rule_table"
   },
   "created_at": "2026-11-03T16:30:24.945817Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:16:20.143917Z",
+    "declared_by": "ShinIwasaki7"
+  },
   "integrity_report_ref": {
     "algorithm": "sha256",
     "hex": "cf4ad7816a51c5c5b67f84c1d207b5747e5f4f4a979b1b2ef42922d26e03eb3c"

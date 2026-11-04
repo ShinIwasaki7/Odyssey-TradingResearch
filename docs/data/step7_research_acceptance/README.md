@@ -5,9 +5,9 @@
 - 受入れ・分類を行ったコミット: `c5a9f33b7d2bcf23c865353ada8dd6b09803e94a`（origin/main）。固定ファイル 7 つ（D12 §12.1）と確認済みハッシュの一覧（`configs/datasources/oanda_mt5_m1_verified_raw_2026-10-16.yaml`、SHA-256 `2b548743e16e33da162427efff8d73df6b00c409d29b9f178a6aefcb2ceae64f`）の SHA-256 は `acceptance_summary.md` §2。
 - 全期間の集計（PR #85）との突き合わせ: 14 個すべて一致（`acceptance_summary.md` §5）。
 - 分類ファイルの要約（週・区間・本数・分類）: `acceptance_summary.md` §4。分類の確認の原文: `human_decision_2026-11-04_classification.md`。
-- 承認: まだ（質問 2 の後に `data approve` で記入する）。
+- 承認: 2026-11-04 に人間が「7 通貨すべて承認（推奨）」と回答し（原文は `human_decision_2026-11-04_approval.md`）、14 個に承認を記入した（承認者 `ShinIwasaki7`。下の「承認の記録」）。
 
-列: 作った足は確定の後の 1 分・15 分・1 時間・4 時間・日足の数。無記録の分・取得不足は 1 分足の系列の数。除いた足は分類で除いた 1 分足（標準の組）。カレンダーの外の足は候補の組で足の生成に使わず件数だけを報告した 1 分足（D12-97 (a)）。manifest の SHA-256 は承認の前の値。
+列: 作った足は確定の後の 1 分・15 分・1 時間・4 時間・日足の数。無記録の分・取得不足は 1 分足の系列の数。除いた足は分類で除いた 1 分足（標準の組）。カレンダーの外の足は候補の組で足の生成に使わず件数だけを報告した 1 分足（D12-97 (a)）。manifest の SHA-256 は承認の前の値（承認の後の値は下の「承認の記録」）。
 
 | 通貨 | 組 | 最終の識別子 | 暫定の識別子 | 原ファイル（数・行） | 作った足（1m・15m・1h・4h・1d） | 無記録の分 | 取得不足 | 休場帯の足（分類前） | カレンダーの外の足 | 除いた足 | 除いた理由 | 分類ファイル SHA-256 | manifest SHA-256 | integrity_report SHA-256 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -49,7 +49,31 @@
    uv run odyssey-fx data classify --pending <暫定の識別子> --decisions docs/data/step7_research_acceptance/<通貨>/<組>/classification.yaml \
      --timeframes configs/calendars/timeframes_v2.yaml --out <本体の作業ディレクトリ>/data/snapshots
    ```
-4. 質問 2（snapshot の承認）の後に承認の記入（未実行）:
+4. 質問 2（snapshot の承認）の後に承認の記入（14 回、1 個ずつ順に）:
    ```
    uv run odyssey-fx data approve --snapshot <最終の識別子> --by ShinIwasaki7 --out <本体の作業ディレクトリ>/data/snapshots
    ```
+
+## 承認の記録（2026-11-04）
+
+人間の決定（2026-11-04、質問ツール）: 「7 通貨すべて承認（推奨）」。質問と回答の原文は `human_decision_2026-11-04_approval.md`（司令塔の記録の逐語の写し）。
+
+| 通貨 | 組 | 承認した snapshot（先頭 12 桁） | 承認の後の `manifest.json` の SHA-256 | 承認者 | 承認の時刻（UTC） |
+|---|---|---|---|---|---|
+| EURJPY | 標準 | `db6cf465bcfd` | `da7f5b8cbac7b29a6e360968c3a8527e383e2a57fe8750424ec9aa5276336162` | ShinIwasaki7 | 2026-11-04T01:08:49.988722Z |
+| EURJPY | 候補 | `504750223048` | `dbedf2c1f358faf00ff51a35488353d547dd8dd614ad2a3e48c7e4ffb6c1fb7c` | ShinIwasaki7 | 2026-11-04T01:09:55.207764Z |
+| GBPJPY | 標準 | `455d1d38f924` | `fc7b36d5a8a11f40bf6b800acf38df16fc1ab72424b4e9e59313ed4ea2e544cf` | ShinIwasaki7 | 2026-11-04T01:10:59.657801Z |
+| GBPJPY | 候補 | `3141cedcd378` | `c28026551a6557175a30e8c7222c1490244166048566f3272306b376d7f0d9d8` | ShinIwasaki7 | 2026-11-04T01:12:06.822492Z |
+| AUDJPY | 標準 | `dc411b9ec105` | `141cf7df0c825100d06add25ba64ce2f31f18864856814ee234ae28eab94d26c` | ShinIwasaki7 | 2026-11-04T01:13:11.304630Z |
+| AUDJPY | 候補 | `ce0aac848a58` | `032c531e0bbce60777dc78167eecdd39505966403948c6e08cc835844679a1dc` | ShinIwasaki7 | 2026-11-04T01:14:16.681305Z |
+| EURUSD | 標準 | `4e6eb8d40df0` | `86dbbf38c7d759759354996ef59c976ab7472ff78695274b71a7a6f3fba5a52a` | ShinIwasaki7 | 2026-11-04T01:15:18.359718Z |
+| EURUSD | 候補 | `9c03bc1283e5` | `a3caf27767d4040fc307571a33d870d8624d95644ef1bf931bb6ba4962f62b63` | ShinIwasaki7 | 2026-11-04T01:16:20.143917Z |
+| GBPUSD | 標準 | `b9ca3a2142bf` | `133ec231f468efba63540d3f87c12b89f1e5ef5f3c79bb1af856803f74a9132a` | ShinIwasaki7 | 2026-11-04T01:17:21.212014Z |
+| GBPUSD | 候補 | `35bcd732a0d6` | `061955feb97fac540afb6d94c12e6bbfa0c8582dce6843cfc3841a37d091840d` | ShinIwasaki7 | 2026-11-04T01:18:24.157934Z |
+| AUDUSD | 標準 | `07362e2223e9` | `230e40ad61b91c8e46d6ebb40f56b5f64587311a99841cb7e71e88bc1c9dac59` | ShinIwasaki7 | 2026-11-04T01:19:26.600547Z |
+| AUDUSD | 候補 | `b9d213ea6fd9` | `5d306a31ee409fa997d6bdce61e8e0c9f4a7fc6c322d92f788f174bb5f6ffcaa` | ShinIwasaki7 | 2026-11-04T01:20:31.124074Z |
+| USDCHF | 標準 | `1139abd01c3d` | `ead2acfb2c844c51371ad630d1c86b2a2ff0a32c5e46b7f8cf6caba84008671f` | ShinIwasaki7 | 2026-11-04T01:21:35.100570Z |
+| USDCHF | 候補 | `3d5e44b84807` | `be48d9169b203dec4b79700e5807daa8ade766219762a2f4aef95ae2b3156da2` | ShinIwasaki7 | 2026-11-04T01:22:38.676589Z |
+
+- 14 個とも、承認で識別子は変わらない（manifest の `snapshot_id` がディレクトリ名と一致）。検査報告は確定のときとバイト単位で同じ。承認で manifest に足されたのは承認の記録と価格基準の宣言の記録（bid、検証済みではない）だけ。承認のコメントは空（USDJPY の順 2・封印の一括取得と同じ）。
+- 承認の後の `manifest.json` を `data/snapshots/<識別子>/` と `<通貨>/<組>/` に入れ直した（同じバイト列）。承認の画面出力は `<通貨>/<組>/approve_stdout.txt`。
