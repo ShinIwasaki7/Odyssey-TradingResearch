@@ -1,13 +1,16 @@
-"""換算の経路の規則（D06 v1.20 案 §19.3〜§19.5。CT-8・CT-13・CT-15）。人工の率だけを使う。"""
+"""換算の経路の規則（D06 v1.20 案 §19.3〜§19.5、v1.21 案のずれの測り方）。人工の率だけを使う。
+
+CT-8・CT-13・CT-15 と、CT-30 の規則の層（ずれも休場を除いて測る。決定 (28) (a)）。
+"""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 import pytest
 
-from odyssey_fx.backtest.domain.policies import ConversionPolicy
+from odyssey_fx.backtest.domain.policies import ConversionPath, ConversionPolicy
 from odyssey_fx.backtest.portfolio.conversion import (
     ConversionFailure,
     ConversionUnavailable,
@@ -15,6 +18,7 @@ from odyssey_fx.backtest.portfolio.conversion import (
     observe_path,
     require_usable,
     resolve_route,
+    session_skew,
     session_staleness,
 )
 from odyssey_fx.common.money import CurrencyCode
@@ -29,6 +33,7 @@ from tests.fixtures.backtest.conversion import (
     minute_series,
 )
 from tests.fixtures.backtest.harness import CALENDAR
+from tests.fixtures.synthetic import market
 
 JPY = CurrencyCode("JPY")
 USD = CurrencyCode("USD")
@@ -136,3 +141,111 @@ def test_ct15_the_leg_is_the_last_minute_that_ended_by_the_processing_point() ->
     in_bar = [bar for bar in minutes if _at(9, 0).value <= bar.bar_start.value < _at(9, 15).value]
     last = in_bar[-1]
     assert (boundary.rate, boundary.observed_at) == (last.close.value, last.bar_start)
+
+
+# --- 決定 (28) (a): ずれも休場を除いて測る（v1.21 案 §19.5。CT-30 の規則の層） ------------
+
+
+def _pivot(quotes: FakeQuotes, at: UtcTime) -> ConversionPath:
+    return observe_path((RouteHop(USDCHF, True), RouteHop(USDJPY)), at, quotes)
+
+
+def test_session_skew_equals_the_recorded_skew_inside_a_session() -> None:
+    """通常: 休場をまたがない 2 本の脚では、休場を除いたずれは記録の `skew`（実際の差）と同じ。"""
+    holes = (Interval(start=_at(8, 50), end=_at(9, 0)),)
+    quotes = FakeQuotes(
+        symbols=frozenset({USDCHF, USDJPY}),
+        bars={
+            USDCHF: minute_rates(USDCHF, _SPAN, "0.8", holes=holes),
+            USDJPY: minute_rates(USDJPY, _SPAN, "150"),
+        },
+    )
+    path = _pivot(quotes, _at(9, 0))
+    assert path.skew == timedelta(minutes=10)
+    assert session_skew(path, CALENDAR) == path.skew
+    require_usable(path, _at(9, 0), POLICY, CALENDAR)
+
+
+def test_session_skew_of_fewer_than_two_legs_is_zero() -> None:
+    """脚が 0 本（恒等）・1 本（直接）の経路のずれは 0。"""
+    quotes = FakeQuotes(
+        symbols=frozenset({USDJPY}), bars={USDJPY: minute_rates(USDJPY, _SPAN, "150")}
+    )
+    assert session_skew(observe_path((), _at(9, 0), quotes), CALENDAR) == timedelta(0)
+    assert session_skew(observe_path((RouteHop(USDJPY),), _at(9, 0), quotes), CALENDAR) == (
+        timedelta(0)
+    )
+
+
+#: 金曜（2026-01-09）の閉場と日曜（2026-01-11）の開場（ニューヨーク 17:00 = 22:00Z）。
+_FRIDAY_CLOSE = UtcTime.from_components(2026, 1, 9, 22, 0)
+_SUNDAY_OPEN = UtcTime.from_components(2026, 1, 11, 22, 0)
+_WEEKEND = Interval(start=_FRIDAY_CLOSE - timedelta(hours=1), end=_SUNDAY_OPEN + timedelta(hours=1))
+
+
+def test_session_skew_excludes_the_weekend_close() -> None:
+    """週またぎ: 金曜の閉場の直前の脚と日曜の開場の後の脚のずれは、週末の時間を数えない。"""
+    sunday_hole = (Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=10)),)
+    quotes = FakeQuotes(
+        symbols=frozenset({USDCHF, USDJPY}),
+        bars={
+            USDCHF: minute_rates(USDCHF, _WEEKEND, "0.8", holes=sunday_hole),
+            USDJPY: minute_rates(USDJPY, _WEEKEND, "150"),
+        },
+    )
+    at = _SUNDAY_OPEN + timedelta(minutes=10)
+    path = _pivot(quotes, at)
+    assert path.observed_at == _FRIDAY_CLOSE - timedelta(minutes=1)
+    # 記録のずれは実際の差（48 時間 10 分）のまま。
+    assert path.skew == timedelta(hours=48, minutes=10)
+    # 休場を除くと、金曜の 1 分と日曜の 9 分。
+    assert session_skew(path, CALENDAR) == timedelta(minutes=10)
+    assert session_staleness(path, at, CALENDAR) == timedelta(minutes=11)
+    require_usable(path, at, POLICY, CALENDAR)
+
+
+def test_session_skew_excludes_a_holiday_closure() -> None:
+    """祝日またぎ: 平日の休場をまたぐ 2 本の脚のずれも、休場の時間を数えない。"""
+    holiday = market.calendar(
+        closures=(
+            market.closure(date(2026, 1, 7), start=time(10, 0), end=time(16, 0), note="test"),
+        )
+    )
+    closes = UtcTime.from_components(2026, 1, 7, 15, 0)  # NY 10:00、休場の始まり
+    reopens = UtcTime.from_components(2026, 1, 7, 21, 0)  # NY 16:00、休場の終わり
+    span = Interval(start=closes - timedelta(hours=1), end=reopens + timedelta(hours=1))
+    hole = (Interval(start=reopens, end=reopens + timedelta(minutes=5)),)
+    quotes = FakeQuotes(
+        symbols=frozenset({USDCHF, USDJPY}),
+        bars={
+            USDCHF: minute_rates(USDCHF, span, "0.8", holes=hole, calendar=holiday),
+            USDJPY: minute_rates(USDJPY, span, "150", calendar=holiday),
+        },
+    )
+    at = reopens + timedelta(minutes=5)
+    path = _pivot(quotes, at)
+    assert path.skew == timedelta(hours=6, minutes=5)
+    assert session_skew(path, holiday) == timedelta(minutes=5)
+    require_usable(path, at, POLICY, holiday)
+
+
+def test_session_skew_beyond_the_limit_is_still_rejected_across_the_weekend() -> None:
+    """休場を除いても 15 分を超えるずれは SKEW_EXCEEDED。長さは休場を除いたずれ。"""
+    holes = (
+        Interval(start=_FRIDAY_CLOSE - timedelta(minutes=10), end=_FRIDAY_CLOSE),
+        Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=10)),
+    )
+    quotes = FakeQuotes(
+        symbols=frozenset({USDCHF, USDJPY}),
+        bars={
+            USDCHF: minute_rates(USDCHF, _WEEKEND, "0.8", holes=holes),
+            USDJPY: minute_rates(USDJPY, _WEEKEND, "150"),
+        },
+    )
+    path = _pivot(quotes, _SUNDAY_OPEN + timedelta(minutes=10))
+    assert session_skew(path, CALENDAR) == timedelta(minutes=20)
+    with pytest.raises(ConversionUnavailable) as raised:
+        require_usable(path, _SUNDAY_OPEN + timedelta(minutes=10), POLICY, CALENDAR)
+    assert raised.value.failure is ConversionFailure.SKEW_EXCEEDED
+    assert raised.value.length == timedelta(minutes=20)
+    assert raised.value.series == minute_series(USDCHF)
