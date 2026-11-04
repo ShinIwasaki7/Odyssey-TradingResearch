@@ -17,10 +17,10 @@ run の根拠記録（表15 の `at_time` と `conversion_paths` の観測時刻
 数え方は `odyssey_fx.backtest.portfolio.conversion` の `session_staleness` と同じ（カレンダーの
 `sessions` で区切り、区切りの中に収まる記録のある 1 分足だけを数える）。
 
-**読むのは時刻の列だけ**: 根拠記録は `kind`・`at_time`・`conversion_paths`（経路の JSON から
-`observed_at` と脚の有無だけを取り出す。率は読まない）、snapshot は取引の通貨ペアの 1 分足の
-研究期間の partition（`RESEARCH_HISTORY`）の `bar_start` だけ。価格・率・数量・金額は出さない。
-出すのは件数と分の数だけ。
+**使うのは時刻だけ**: 根拠記録は `kind`・`at_time`・`conversion_paths` の列を読み、経路の JSON
+（率を含む）を解いて `observed_at` と脚の有無だけを使う（率の値は使わず、出さない）。snapshot は
+取引の通貨ペアの 1 分足の研究期間の partition（`RESEARCH_HISTORY`）の `bar_start` だけを読む。
+価格・率・数量・金額は出さない。出すのは件数と分の数だけ。
 
 使い方（リポジトリの根で）::
 
