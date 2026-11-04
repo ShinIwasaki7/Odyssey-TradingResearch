@@ -8,6 +8,10 @@
 3. 損益・記録・manifest・再現が整合する（D07 §10.2・§21.1）。
 4. 2 組の間で被覆が変わる日足が、戦略 B の公開記録の差として現れる（D12 §12.5 の 3 行目）。
 
+日足の系列と順 2 の集計の通貨ペアは、run manifest の執行系列（`config.execution_series`）の
+通貨ペアから決める（順 7 の機構確認 M1 のやり直し。D17 §2.5、人間の決定 (30)）。順 3 の USDJPY の
+run では `USDJPY/1d_ny17/bid` と `USDJPY` になり、順 3 の判定と同じになる。
+
 判定は 3 値（`PASS` 合格／`FAIL` 不合格／`UNVERIFIABLE` 確認不能（仮定付き））。確認不能は合格に
 数えない（D12 §0.1.34 の決定 3）。道具に入力が渡されなかった判定は `NOT_EVALUATED`（未判定）とする。
 
@@ -49,6 +53,8 @@ import polars as pl
 from odyssey_fx.app.config.calendars import load_calendar
 from odyssey_fx.backtest.domain.orders import CloseCause, OrderStatus
 from odyssey_fx.backtest.domain.positions import PositionStatus
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.evaluation.domain.metrics import EVALUATION_OUTCOME_KEYS, MISSING_INPUT_KEYS
 from odyssey_fx.marketdata.domain.readiness import ReadKind
 
@@ -62,6 +68,7 @@ __all__ = [
     "check_history_reset_scoring",
     "check_integrity",
     "check_skips_match_resets",
+    "daily_series",
     "load_run",
     "main",
 ]
@@ -77,8 +84,9 @@ RESET_DAY: Final = ("2022-12-25T22:00:00Z", "2022-12-26T22:00:00Z")
 DIFFERENCE_COLUMNS: Final = ("pair", "scope", "key", "field")
 #: 判定 1 が記録する評価の集計の必須項目（D07 §28.3 の `UNRECORDED_EVENT`。決定 31・33）。
 RESET_COUNT_KEYS: Final = ("HISTORY_RESETS", "HISTORY_RESET_MINUTES")
-#: 判定 4 で比べる日足の系列（D12 §12.5.1 の判定 4）。
-DAILY_SERIES: Final = "USDJPY/1d_ny17/bid"
+#: 判定 1・4 で見る日足の系列の形（D12 §12.5.1 の判定 4）。通貨ペアは run の執行系列の通貨ペア
+#: （`daily_series`。D17 §2.5、人間の決定 (30)）。
+DAILY_SERIES_FORMAT: Final = "{pair}/1d_ny17/bid"
 #: 判定 4 で比べる被覆の列（D12 §12.5.1 の決定 4「記録のある分数だけ」）。
 COVERAGE_COLUMN: Final = "recorded_minutes"
 #: システムによる強制決済の決済の契機（D06 §7.5 の緊急決済。D12 §12.5.1、決定 24）。
@@ -211,6 +219,9 @@ class RunArtifacts:
     time_rule_table_ref: Mapping[str, Any]
     history_reset_count: int
     tables: Mapping[str, list[dict[str, Any]]]
+    #: run manifest の執行系列（`config.execution_series`）の通貨ペア。判定 1・4 の日足の系列と
+    #: 順 2 の集計の通貨ペアを決める（D17 §2.5、人間の決定 (30)）。読めなければ空。
+    pair: str = ""
     evaluation: Mapping[str, Any] | None = None
     consistency: list[dict[str, Any]] = field(default_factory=list)
     unrecorded_event_counts: Mapping[str, int] = field(default_factory=dict)
@@ -266,6 +277,21 @@ def _read_table(path: Path, columns: Sequence[str]) -> list[dict[str, Any]]:
     return pl.read_parquet(path, columns=list(columns)).to_dicts()
 
 
+def _pair_of(series: object) -> str:
+    """執行系列の表記（`EURUSD/15m/bid`）の通貨ペア。読めなければ空（manifest の形式の誤り）。"""
+    if not isinstance(series, str) or series.count("/") != 2:
+        return ""
+    try:
+        return str(Symbol(series.split("/", 1)[0]))
+    except KernelValueError:
+        return ""
+
+
+def daily_series(pair: str) -> str:
+    """判定 1・4 で見る日足の系列（`<通貨ペア>/1d_ny17/bid`）。"""
+    return DAILY_SERIES_FORMAT.format(pair=pair)
+
+
 def load_run(
     name: str,
     experiment_dir: Path,
@@ -289,7 +315,7 @@ def load_run(
     except _READ_ERRORS as exc:
         errors["outcome"] = _describe(exc)
 
-    run_id = status = config_digest = snapshot_id = ""
+    run_id = status = config_digest = snapshot_id = pair = ""
     run_interval = (_EPOCH, _EPOCH)
     table_ref: Mapping[str, Any] = {}
     reset_count = 0
@@ -307,6 +333,7 @@ def load_run(
             snapshot_id = config["snapshot_ref"]["snapshot_id"]
             table_ref = manifest["time_rule_table_ref"]
             reset_count = manifest["resumption_counts"]["history_resets"]
+            pair = _pair_of(config["execution_series"])
             invalid = [
                 label
                 for label, ok in (
@@ -317,6 +344,7 @@ def load_run(
                     ("time_rule_table_ref", _is_table_ref(table_ref)),
                     ("resumption_counts.history_resets", _is_count(reset_count)),
                     ("run_interval", run_interval[0] < run_interval[1]),
+                    ("execution_series", bool(pair)),
                 )
                 if not ok
             ]
@@ -404,6 +432,7 @@ def load_run(
         time_rule_table_ref=table_ref if isinstance(table_ref, Mapping) else {},
         history_reset_count=reset_count if _is_count(reset_count) else 0,
         tables=tables,
+        pair=pair,
         evaluation=evaluation,
         consistency=consistency,
         unrecorded_event_counts=unrecorded,
@@ -625,7 +654,8 @@ def _check_history_reset_scoring(
         if day_start <= _time(row["no_record_bar_key_bar_start"]) < day_end
     ]
     # 日足を読む戦略（B）は日足の窓の行、読まない戦略（A）はその日の無記録の足の行（決定 1）。
-    daily = [(start, stop, row) for start, stop, row in on_day if row["series"] == DAILY_SERIES]
+    series = daily_series(run.pair)
+    daily = [(start, stop, row) for start, stop, row in on_day if row["series"] == series]
     chosen = daily or on_day
     targets = [(start, stop) for start, stop, _ in chosen]
     parts: dict[str, str] = {"a_completed": PASS if run.status == _COMPLETED else FAIL}
@@ -1037,8 +1067,11 @@ def trading_day_label(bar_end: datetime, tz: tzinfo) -> str:
     return (bar_end.astimezone(tz) - timedelta(microseconds=1)).date().isoformat()
 
 
-def read_daily_differences(path: Path, pair: str = "USDJPY") -> set[str]:
-    """順 2 の集計の、組の間で被覆が変わる日足の取引日（`candidate_differences.csv`）。"""
+def read_daily_differences(path: Path, pair: str) -> set[str]:
+    """順 2 の集計の、組の間で被覆が変わる日足の取引日（`candidate_differences.csv`）。
+
+    `pair` は run の執行系列の通貨ペア（D17 §2.5、人間の決定 (30)）。既定値は置かない。
+    """
     with path.open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         missing = [name for name in DIFFERENCE_COLUMNS if name not in (reader.fieldnames or ())]
@@ -1077,10 +1110,12 @@ def _check_daily_differences(
 ) -> dict[str, Any]:
     """判定 4: 戦略 B の日足の `recorded_minutes` が違う取引日と、順 2 の集計の取引日の一致。"""
 
+    series = daily_series(standard.pair)
+
     def daily(run: RunArtifacts) -> dict[str, int]:
         out: dict[str, int] = {}
         for row in run.tables["PUBLICATIONS"]:
-            if row["bar_key_series"] != DAILY_SERIES:
+            if row["bar_key_series"] != series:
                 continue
             minutes = row[COVERAGE_COLUMN]
             if not _is_count(minutes):  # 欠けた・形式の違う被覆は比べない（不合格）
@@ -1096,6 +1131,13 @@ def _check_daily_differences(
     }
     if problems:
         return _invalid_rows_result(problems)
+    if not standard.pair or standard.pair != candidate.pair:
+        # 通貨ペアの違う 2 本（または通貨ペアの読めない run）は比べない（不合格）。
+        return {
+            "result": FAIL,
+            "parts": {},
+            "detail": {"invalid_fields": ["pair"], "pairs": [standard.pair, candidate.pair]},
+        }
     left, right = daily(standard), daily(candidate)
     empty = [
         label
@@ -1122,6 +1164,8 @@ def _check_daily_differences(
         "result": _combine(parts.values()),
         "parts": parts,
         "detail": {
+            "pair": standard.pair,
+            "daily_series": series,
             "daily_bars_standard": len(left),
             "daily_bars_candidate": len(right),
             "differing_days": len(differing),
@@ -1184,6 +1228,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         results[name] = {
             "run_id": artifacts.run_id,
             "snapshot_id": artifacts.snapshot_id,
+            "pair": artifacts.pair,
             "read_errors": dict(artifacts.errors),
             "missing_fields_on_load": list(artifacts.field_problems),
             "run_interval": [_iso(artifacts.run_interval[0]), _iso(artifacts.run_interval[1])],
@@ -1198,7 +1243,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         standard, candidate = (runs[name] for name in args.pair_b)
         calendar_path, differences_path = Path(args.calendar), Path(args.differences)
         try:
-            expected = read_daily_differences(differences_path)
+            # 通貨ペアが読めなければ集計を引けない（不合格。既定値で埋めない）
+            if not standard.pair:
+                raise _FormatError("判定 4 の標準の組の run の執行系列の通貨ペアが読めない")
+            expected = read_daily_differences(differences_path, standard.pair)
             tz = load_calendar(calendar_path).tz
         except Exception as exc:  # 集計・カレンダーが読めなければ判定 4 は不合格（止めない）
             check_4 = {"result": FAIL, "parts": {}, "detail": {"read_errors": _describe(exc)}}
