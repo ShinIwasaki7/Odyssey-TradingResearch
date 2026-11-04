@@ -1,8 +1,8 @@
 """順 7 の機構確認 M1: run の判断履歴の換算の記録を、値を読まずに数える（記録用の一回の道具）。
 
-D06 §19.7 の記録の置き場（根拠記録 表15 の `conversion_paths`、受付の審査記録 表6 の
-`conversion_*`、約定 表9 の `costs`）に、換算の率・観測時刻が書かれている件数と、古さを導ける
-件数（処理点の時刻と経路の観測時刻の両方がある経路。仮置き C1-7）を数える。
+D06 §19.7 の記録の置き場（根拠記録 表15 の `conversion_paths` と `market_refs`、受付の審査記録
+表6 の `conversion_*`、約定 表9 の `costs`）に、換算の率・観測時刻が書かれている件数と、古さを
+導ける件数（処理点の時刻と経路の観測時刻の両方がある経路。仮置き C1-7）を数える。
 
 **率の値・価格・数量・金額は出さない**。出すのは件数と通貨の名前だけ。率は「空でないか」だけを見る。
 
@@ -29,16 +29,18 @@ def _present(value: Any) -> bool:
 
 def count(run_dir: Path) -> dict[str, Any]:
     evidence = pl.read_parquet(
-        run_dir / "EVIDENCE.parquet", columns=["kind", "at_time", "conversion_paths"]
+        run_dir / "EVIDENCE.parquet", columns=["kind", "at_time", "market_refs", "conversion_paths"]
     )
     kinds: Counter[str] = Counter()
-    rows_with_paths = paths = legged = legs = 0
+    rows_with_paths = paths = legged = legs = rows_with_refs = 0
+    legs_by_series: Counter[str] = Counter()
     rate_ok = observed_ok = staleness_ok = 0
-    for kind, at_time, items in evidence.iter_rows():
+    for kind, at_time, refs, items in evidence.iter_rows():
         kinds[kind] += 1
         if not items:
             continue
         rows_with_paths += 1
+        rows_with_refs += bool(refs)
         for item in items:
             path = json.loads(item)
             paths += 1
@@ -46,6 +48,8 @@ def count(run_dir: Path) -> dict[str, Any]:
             if path_legs:
                 legged += 1
                 legs += len(path_legs)
+                for leg in path_legs:
+                    legs_by_series[str(leg.get("series"))] += 1
             rate_ok += _present(path.get("rate"))
             observed_ok += _present(path.get("observed_at"))
             staleness_ok += _present(path.get("observed_at")) and _present(at_time)
@@ -89,6 +93,8 @@ def count(run_dir: Path) -> dict[str, Any]:
         "conversion_paths": paths,
         "conversion_paths_with_legs": legged,
         "conversion_legs": legs,
+        "conversion_legs_by_series": dict(sorted(legs_by_series.items())),
+        "evidence_rows_with_conversion_paths_and_market_refs": rows_with_refs,
         "conversion_paths_with_rate": rate_ok,
         "conversion_paths_with_observed_at": observed_ok,
         "conversion_paths_staleness_derivable": staleness_ok,
