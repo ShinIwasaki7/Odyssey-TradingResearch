@@ -1,4 +1,4 @@
-"""円以外の決済通貨の換算の受入テスト（D06 v1.20 案 §19.16 の CT-2〜7・12・16・17・21・29）。
+"""円以外の決済通貨の換算の受入テスト（D06 v1.20 案 §19.16 の CT-2〜7・12・16・17・21・29・30）。
 
 人工データだけを使う（T01 の人工の足を別の通貨ペアの系列に付け替え、換算の脚は人工の率の
 1 分足）。実データ・成績・実価格は読まない。値の検算は手計算の式（D06 §19.6）で行う。
@@ -10,6 +10,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, time, timedelta
 from decimal import ROUND_DOWN, Decimal, localcontext
 from typing import Final
+
+import pytest
 
 from odyssey_fx.backtest.domain.fills import CostKind, FillRecord
 from odyssey_fx.backtest.domain.positions import Position
@@ -504,3 +506,46 @@ def test_ct29_a_holiday_closure_is_excluded_from_staleness_too() -> None:
     assert session_staleness(path, at, holiday) == timedelta(minutes=6)
     policy = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=15))
     require_usable(path, at, policy, holiday)
+
+
+# --- CT-30: 週明け直後の 2 本の脚のずれ（決定 (28) (a)。v1.21 案 §19.5） ---------------------
+
+
+def test_ct30_two_legs_across_the_weekend_count_their_skew_without_the_close() -> None:
+    """CT-30: 金曜の閉場の直前の脚と週明けの開場の後の脚のずれは、休場を除いて上限内と数える。
+
+    日曜の開場から 10 分、USDCHF にまだ記録が無く（最後は金曜 21:59）、USDJPY は開場の後の分を
+    持つ。記録のずれ（実際の差）は 48 時間を超えるが、休場を除いたずれは 10 分で換算できる。
+    15 分の境目の処理点（開場から 15 分）では、休場を除いた古さが 16 分になり、理由は古さの超過に
+    なる（ずれは 15 分ちょうどで上限内）。
+    """
+    from odyssey_fx.backtest.domain.policies import ConversionPolicy
+    from odyssey_fx.backtest.portfolio.conversion import (
+        ConversionFailure,
+        ConversionUnavailable,
+        RouteHop,
+        observe_path,
+        require_usable,
+        session_skew,
+    )
+    from tests.fixtures.backtest.harness import CALENDAR
+
+    policy = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=15))
+    route = (RouteHop(USDCHF, True), RouteHop(USDJPY))
+    holes = {USDCHF: (Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=15)),)}
+    quotes = _quotes(
+        {USDCHF: "0.8", USDJPY: "150"}, symbols=(USDCHF, USDJPY), holes=holes, span=_WEEKEND_QUOTES
+    )
+    at = _SUNDAY_OPEN + timedelta(minutes=10)
+    path = observe_path(route, at, quotes)
+    assert path.observed_at == _FRIDAY_CLOSE - timedelta(minutes=1)
+    assert path.skew > timedelta(hours=48)
+    assert session_skew(path, CALENDAR) == timedelta(minutes=10)
+    require_usable(path, at, policy, CALENDAR)
+    boundary = _SUNDAY_OPEN + timedelta(minutes=15)
+    late = observe_path(route, boundary, quotes)
+    assert session_skew(late, CALENDAR) == timedelta(minutes=15)
+    with pytest.raises(ConversionUnavailable) as raised:
+        require_usable(late, boundary, policy, CALENDAR)
+    assert raised.value.failure is ConversionFailure.STALENESS_EXCEEDED
+    assert raised.value.length == timedelta(minutes=16)

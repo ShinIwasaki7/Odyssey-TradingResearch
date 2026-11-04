@@ -21,8 +21,10 @@
 検査の順は (1) 経路を組めるか → (2) 各脚の観測があるか → (3) ずれ（規則6）→ (4) 古さ
 （規則9）で、最初に当たった理由を返す（仮置き C1-20）。古さは**休場の時間を除いて**測る
 （観測時刻から処理点までのうち、run の取引カレンダーのセッションの中の時間だけを数える。
-決定 (25) (a)）。上限は `ConversionPolicy.max_observation_skew` をずれと古さで共有する
-（仮置き C1-6）。上限ちょうどは許す。
+決定 (25) (a)）。ずれも同じ測り方で、2 本の脚の観測時刻の間のセッションの中の時間を数える
+（決定 (28) (a)。v1.21 案 §19.5）。記録の `ConversionPath.skew`（規則5）は実際の差のまま
+残す。上限は `ConversionPolicy.max_observation_skew` をずれと古さで共有する（仮置き C1-6）。
+上限ちょうどは許す。
 
 経路の**宣言型**（`ConversionPath` / `ConversionLeg`）は `domain.policies` にある。根拠記録
 （`trace`）がそれを項目に持つ一方、中間層4つは相互に import できないためで、ここには経路を
@@ -63,6 +65,7 @@ __all__ = [
     "require_usable",
     "resolve_path",
     "resolve_route",
+    "session_skew",
     "session_staleness",
 ]
 
@@ -256,17 +259,39 @@ def observe_path(
     return ConversionPath(legs=tuple(legs), rate=rate, observed_at=oldest, skew=newest - oldest)
 
 
+def _session_time(start: UtcTime, end: UtcTime, calendar: TradingCalendar) -> timedelta:
+    """`start` から `end` までのうち、カレンダーのセッションの中の時間（休場の時間を除く）。
+
+    `end` が `start` 以前なら 0。古さ（規則9）とずれ（規則6）が同じ測り方を使う。
+    """
+    if not start < end:
+        return timedelta(0)
+    total = timedelta(0)
+    for session in calendar.sessions(Interval(start=start, end=end)):
+        total += session.end - session.start
+    return total
+
+
 def session_staleness(path: ConversionPath, at: UtcTime, calendar: TradingCalendar) -> timedelta:
     """休場の時間を除いた古さ（観測時刻から処理点までのセッションの中の時間。決定 (25) (a)）。
 
     恒等換算の古さは 0。休場をまたがない処理点では `at − observed_at` と同じ。
     """
-    if path.is_identity or not path.observed_at < at:
+    if path.is_identity:
         return timedelta(0)
-    total = timedelta(0)
-    for session in calendar.sessions(Interval(start=path.observed_at, end=at)):
-        total += session.end - session.start
-    return total
+    return _session_time(path.observed_at, at, calendar)
+
+
+def session_skew(path: ConversionPath, calendar: TradingCalendar) -> timedelta:
+    """休場の時間を除いたずれ（2 本の脚の観測時刻の間のセッションの中の時間。決定 (28) (a)）。
+
+    脚が 2 本未満なら 0。休場をまたがない 2 本の脚では記録の `path.skew`（実際の差）と同じ。
+    いちばん新しい脚は処理点より前なので、この値は同じ処理点の `session_staleness` を超えない。
+    """
+    if len(path.legs) < 2:
+        return timedelta(0)
+    newest = max((leg.observed_at for leg in path.legs), key=lambda value: value.value)
+    return _session_time(path.observed_at, newest, calendar)
 
 
 def require_usable(
@@ -277,18 +302,21 @@ def require_usable(
 ) -> None:
     """ずれ（規則6）と古さ（規則9）の上限を確かめる。超えれば `ConversionUnavailable`。
 
-    上限ちょうどは許す（「超えたら」）。ずれを古さより先に見る（仮置き C1-20）。
+    どちらも休場の時間を除いて測る（決定 (25) (a)・(28) (a)）。上限ちょうどは許す
+    （「超えたら」）。ずれを古さより先に見る（仮置き C1-20）。
     """
     if path.is_identity:
         return
     limit = policy.max_observation_skew
-    if path.skew > limit:
+    skew = session_skew(path, calendar)
+    if skew > limit:
         raise ConversionUnavailable(
             ConversionFailure.SKEW_EXCEEDED,
-            f"the conversion legs are {path.skew} apart, more than {limit} (D06 §8.5.1 の規則6)",
+            f"the conversion legs are {skew} apart in session time, more than {limit}"
+            " (D06 §8.5.1 の規則6)",
             series=_oldest_series(path),
             path=path,
-            length=path.skew,
+            length=skew,
         )
     staleness = session_staleness(path, at, calendar)
     if staleness > limit:
