@@ -1,0 +1,103 @@
+# 検証戦略 A の戦略宣言・EURUSD 版（順 7 の機構確認 M1。D17 §2.5、D17 の仮置き 6）
+#
+# `configs/strategies/strategy_a_v1.yaml`（USDJPY の系列を直接書いた検証戦略 A）の本文から、
+# **系列の通貨ペアだけを USDJPY から EURUSD に替えた**新しいファイル。部品・部品の版・入力の参照元・
+# 起動条件・パラメータ・役割・同時保持は元のファイルと同じ（D17 の仮置き 6「部品・パラメータは
+# 変えない。戦略の識別子は新しくする」。2026-11-02 に人間が「このまま」と決定）。パラメータは
+# 本数・倍率・向きだけで、価格の単位の値を持たない。
+#
+# 戦略の識別子は `strategy_a_eurusd`（元の `strategy_a` と別）、版 1。
+#
+# `schema_version` は戦略宣言の保存形式の版（D04 §3）。
+
+schema_version: 1
+
+strategy_id: "strategy_a_eurusd"
+version: 1
+
+entry_policy: {kind: "IMMEDIATE"}
+
+opportunity_validity:
+  bindings: []
+
+components:
+  - instance_id: "breakout_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:HIGH"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MAX"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:LOW"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MIN"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 1
+    inputs:
+      price:
+        - "market:EURUSD/1h/bid:CLOSE"
+      level:
+        - "output:breakout_level.level"
+    parameters:
+      direction: {type: "STR", value: "LONG"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 1
+    inputs:
+      opportunity:
+        - "output:entry_trigger.opportunity"
+    triggers:
+      - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 1
+    inputs:
+      opportunity:
+        - "output:entry_trigger.opportunity"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+  - instance_id: "take_profit"
+    component: "fixed_rr_take_profit"
+    component_version: 1
+    inputs:
+      position:
+        - "runtime:POSITION"
+    parameters:
+      reward_risk: {type: "FLOAT", value: 2.0}
+    triggers:
+      - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+
+# どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。
+roles:
+  trigger: "entry_trigger.opportunity"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "take_profit.action"
+
+# 取引機会を同時にいくつ保持するか（ADR-0032）。
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
