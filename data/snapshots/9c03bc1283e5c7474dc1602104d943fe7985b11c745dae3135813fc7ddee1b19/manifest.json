@@ -1,0 +1,1610 @@
+{
+  "approval": {
+    "approved_at": "2026-11-04T01:16:20.143917Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-11-04T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-11-03T21:00:00Z",
+              "start": "2017-11-04T22:00:00Z"
+            },
+            {
+              "end": "2019-11-02T21:00:00Z",
+              "start": "2018-11-03T22:00:00Z"
+            },
+            {
+              "end": "2020-10-24T21:00:00Z",
+              "start": "2019-11-02T22:00:00Z"
+            },
+            {
+              "end": "2021-10-30T21:00:00Z",
+              "start": "2020-10-24T22:00:00Z"
+            },
+            {
+              "end": "2022-10-29T21:00:00Z",
+              "start": "2021-10-30T22:00:00Z"
+            },
+            {
+              "end": "2023-10-28T21:00:00Z",
+              "start": "2022-10-29T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-10-28T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "EURUSD"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "candidate",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 15
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:30:24.945817Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:16:20.143917Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "cf4ad7816a51c5c5b67f84c1d207b5747e5f4f4a979b1b2ef42922d26e03eb3c"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174024,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "2850067ddf1131de78df0b5a8525b88a771658b572cf0d7425a31a92576c2c7d"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURUSD",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "ba5ae901c4afe95b0ba386df7c9289afff2cd1ddf8cba01a218011a8b302cd47"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURUSD",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43514,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "87416109eea55efa7e49327622f77af3d0ca46d2f84a22bea1967432d444d610"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURUSD",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2598959,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "61b82d18528674e8b75653ce15762d7f71affc1c3a941965df3313dbbd716944"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURUSD",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10887,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "762f8381f0c62336bf82505c7995fc0a3a177c42ceb2f320a8d957775119c9cb"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURUSD",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "cf4ad7816a51c5c5b67f84c1d207b5747e5f4f4a979b1b2ef42922d26e03eb3c"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174024,
+      "coverage_counts": {
+        "built_bars": 174024,
+        "no_record_bars": 312,
+        "partial_bars": 3790,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 16041
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURUSD",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURUSD",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1354,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 16041
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURUSD",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURUSD",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43514,
+      "coverage_counts": {
+        "built_bars": 43514,
+        "no_record_bars": 70,
+        "partial_bars": 1996,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 16041
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURUSD",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURUSD",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2598959,
+      "coverage_counts": {
+        "built_bars": 2598959,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 16041
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURUSD",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10887,
+      "coverage_counts": {
+        "built_bars": 10887,
+        "no_record_bars": 9,
+        "partial_bars": 1694,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 16041
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURUSD",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURUSD",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "9c03bc1283e5c7474dc1602104d943fe7985b11c745dae3135813fc7ddee1b19",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31667,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31667,
+      "sha256": "84fa68fec1bcb022ccef6791d154d4012fa59ab93892eababe46d40a516bea0e",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28790,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28790,
+      "sha256": "c483ea961b05b687744a126ffe847c90b33bbde8ae6117042a5e5c73cc03a479",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32967,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32967,
+      "sha256": "4cfd111af7f99b29331e7904c4e54c2eb6d9549937361ce78912575918f594f8",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28786,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28786,
+      "sha256": "0bbd4fae4e6f58ea403f4d5dbcd06ef23ede9f355c80071f7f18c5bc8738d8d9",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33102,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33102,
+      "sha256": "dd3dd07e9774b0f3996605cdb79fd70486ec52f3a69c3f154d25df45b2e480e3",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31481,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31481,
+      "sha256": "a5850c455fe84b47f9baadb36adf59af4d6cf040d2ae5a4dbdf3de55a9733b0f",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29575,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29575,
+      "sha256": "9af8a99d641d962dbab3ba3fc329ab80ee1ab65cf45b8488962c3397d771973c",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32371,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32371,
+      "sha256": "d4c91815a821b7a42d0a0b288346eb0db8fc45d433c4e9b87eb50c51665fcbc8",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29934,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29934,
+      "sha256": "83dae3fa7696d7700c9b35b0f992337939ee5dc22efe13dca672f5ef649b1989",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31658,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31658,
+      "sha256": "5c8bdeba8ec8cce4ca0b0819e1ab017c7bb223de3aae68667c1cb2ec4fdcab55",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31604,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31604,
+      "sha256": "d97d1b974cf21c90bd13db9356da990c0ce6e3102a516f33588b8f1c134c19e6",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28420,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28420,
+      "sha256": "c4642f64189ae2bd1457601105b29693538058bc713cb8c21aeec5c5b48df82f",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31623,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31623,
+      "sha256": "b87c4c8244687c72f4838d26c1260e2a3a922c71117fc876c45ca26e48f98578",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28795,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28795,
+      "sha256": "0848bf93622010fccb9e95d3bf363e5f9001b6ee69cd231fd4b0f70eb009d086",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31541,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31541,
+      "sha256": "eb4a0eb82cab353710ee727e97b8c515600b2a170105a3e577f22e676438fdd2",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30216,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30216,
+      "sha256": "b1b5c9d30df3155404bb65ba5c3f5b3c6970e8a472f06d0785f909752913031d",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33113,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33113,
+      "sha256": "1bde1ae6843189835e6c40c56355df30746e3d2986a3284856db306344eb1f4b",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30203,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30203,
+      "sha256": "c4d0be4edc3d5ec66527a100042b6c010e6e56c883faa7b7a607460de475870d",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31664,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31664,
+      "sha256": "8ad6e35558b13761087c42955b340f2a2712536506f8503b04fd64bfd6c24e1a",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33106,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33106,
+      "sha256": "68e8dabc27f4655a54b7d690251791e3305b0b4244709dd70e0796d7ed398448",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28778,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28778,
+      "sha256": "a49641582da0402011d58d006719a8d45150bcc654609925b961df3c4ba29e00",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "1d83846154b90c8587f509b3706266c2dec8a5ace869204d3b64b90435094574",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31605,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31605,
+      "sha256": "ccda64b937e7431c3efeac13c1358424ffd1d48647f183677fe477ea6f9444af",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28182,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28182,
+      "sha256": "a76ec96dbc875ef8fc8b61d82e82ffad78f9874442652de06fb3a846450f958f",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31306,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31306,
+      "sha256": "4cd978c26cfd768f257ec405123e9972ca3ac3d3c3811f5a5547c86188031277",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28775,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28775,
+      "sha256": "4ed65ae7017f1de03b4d9121bc14e24f02096dce430162612d2f46cd65d84041",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30047,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30047,
+      "sha256": "6914ea1645d11fe71f678edd3e50b193d13fb1e2a0fa23fea750cc6b78fea95c",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31654,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31654,
+      "sha256": "460a524bf43d385637ca12cd8f0a6257ce4cf1b445e125353586f6afd2ffae71",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33085,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33085,
+      "sha256": "d983ce403e275eddeb29872f073c5744810dbb63bdd39a41474889610fc3f300",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28777,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28777,
+      "sha256": "b02bd138e0d251ac3d64431246a89d6c68637b1ed74f1f3a3ef10ac0ad457f35",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33096,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33096,
+      "sha256": "608a5f0edd1948105a99a3b56d177e832ae7ab52e497f317649f794b19029534",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31642,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31642,
+      "sha256": "e8c2b88ff019916c21d4af42e0535e45422c91157b1de187cd0ea981587e68a8",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30222,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30222,
+      "sha256": "ad99c67a517307bbfe0b5f00ae05fa130043dbf9fb416ca3ae0100c0a9436c92",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "8338bc9e9a993fdf70f20c29937b855ef33a32aaa41cad121b55a616d356c998",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29968,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29968,
+      "sha256": "abfd8a834823026ece24e54e403bd91a5ab360aada3080d0d806596731e41157",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30133,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30133,
+      "sha256": "a8c4847034e42d907b1ee426350e08193e4dbb6af5c4216cb0e3f59df70a01a6",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31582,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31582,
+      "sha256": "478325d6c6c077dd846377704866580dbf3ab774e17cf0b7697c12c95522ca29",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28736,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28736,
+      "sha256": "862847e8149d2c2244f680074121fbb40fe7c064b320ff2499e387acd8aef496",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31582,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31582,
+      "sha256": "1fc8b60e04e3dd32c34e448025d48355ec710668fcc761200833ca54796bc1ec",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31510,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31510,
+      "sha256": "0cc4a4aac8685bd4a92b36d1a60fcd0d4662387a71b908728335fe1459e95e86",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30132,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30132,
+      "sha256": "7d3878eabeccc6a88ad853dff5911e996a794fabf9745bc950a222f7935d34b8",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31587,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31587,
+      "sha256": "4ec4e4a85d2f4b09bcbdcc55f54f8f7cc9e0cd6145d314b614226d8023e001d9",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32970,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32970,
+      "sha256": "1f4c46983ca9ef228b0d94189ccd42ec61f73b09da3f00700d0381326543f49f",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30128,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30128,
+      "sha256": "70ee334e9130b1636e63aef22ca63b9c9f6226b3669d4fc233619b11cab63e73",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31511,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31511,
+      "sha256": "b14a8e9607f4c2d1a1e3a34680ce10c604bcd2339bde92d2499e8358f4a7dd55",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31517,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31517,
+      "sha256": "a2daf21948d2498e66a688adee27d6b948d052667e6dccfa580837cdce96f244",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30152,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30152,
+      "sha256": "b47bfad49bd082f1a5787226b63299bc68debeed57a7bb5cd306275e044bc5cf",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31573,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31573,
+      "sha256": "0319f19f05237b185eb63957949f550adfeb1306395d835375cf2a11bcbcfd91",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28700,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28700,
+      "sha256": "af74c79eac909d6066135b1f3b8c444c7c735c88b8ae39a280d7e007f092cfb2",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28709,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28709,
+      "sha256": "31f40c5da0ab9449288ca3df91c18f68c39817ec5b694abbfa1aaf43b373121d",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32958,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32958,
+      "sha256": "e7668d45a9f2df66fd38ef0f2492c2ccd039806d6f3967e11b53e0380d064e75",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31489,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31489,
+      "sha256": "9360f595f0a23b78d6a73e96bf6b34200f01c527f253ab18684a2d1b3e4e7cb2",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29965,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29965,
+      "sha256": "cc3e5815799f751ced864142440d5c0eca5ae6ca71d3de612022699fc42d9591",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31328,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31328,
+      "sha256": "2d64f84418517688fd2aa46ff9352b55984f31295d5fc0ff79f5db713e761fc5",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31315,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31315,
+      "sha256": "e08d6ead3fb7eeb70ddc37811d53c8c5ddea2babaad7ed2dc0dd233b446951f6",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31307,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31307,
+      "sha256": "ef707bce65df9242676fa1a78ba2bf2dd5367ad8e83ee21a6d4471c859920db2",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31309,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31309,
+      "sha256": "11a62f46f651858fc8e0e0fdaabd1a0c9dce671cbb994c2653430af21433a540",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30014,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30014,
+      "sha256": "75e7f4e9c3ada5cacc41d72f47459fb3486c90c47b403934aab093d731df9c1e",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31530,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31530,
+      "sha256": "bdf89a2141f473af3ecb577e1bb2f3261a9775c53eb1ab820f90196bba654f55",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32977,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32977,
+      "sha256": "d3d08ba9e6fb7abc490e1df0e56667c3ad065b7e4ee3f78b4cd09c7bf95f8986",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30133,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30133,
+      "sha256": "24beb65b79026e4b196bbc52dc23f78ed124ac746e679f781e7a1d4bf9f08b0a",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28724,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28724,
+      "sha256": "eb3067c1cec565610ac0686dfb10656b467d8835bb063500bd83af13a18c8d67",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32975,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32975,
+      "sha256": "6a677fe1d6a5303e7c4c3e62d25a7b4924865d846f3f13d7bbf82ac613c54aa5",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30107,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30107,
+      "sha256": "8ee7482a4d7f521430bf861fc2700f96fa270082958d3044f34f9dd3c8aa3973",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31542,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31542,
+      "sha256": "aab1ec656727116c0df2857457e8a6de89d9c0e81207df6fcec7ba1b00877c2d",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31424,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31424,
+      "sha256": "58a6c2c721abc090ff56625205a8df292d3bdb1d332af4f9e4254543cc8d8c3e",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29966,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29966,
+      "sha256": "10c31d6d3cf276b115f30a0fece318ddc38a85b78348514f0628fa70825f9cc1",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32899,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32899,
+      "sha256": "8084cfa435e1742dea167a9c199327fab386bcc0d859492fe0be1c06822717c1",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31544,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31544,
+      "sha256": "e837c3737a441c6e15703af32c280a1fc5a1e1185c7315542c2560ce1b7eedef",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30057,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30057,
+      "sha256": "478fcd320af942ff256a37df097c7f363b9d7e6f8e181e633a7a9f200cea8533",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31496,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31496,
+      "sha256": "f9317fabf18e9b76bf6d17e014323d356960939c3371d646bc16e8db3b7e4caf",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30007,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30007,
+      "sha256": "f887cc0bcf3864705104da86bc143d0d54e72fcb040e9f7cb6d8bd782727efeb",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31254,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31254,
+      "sha256": "4864bcea32d0d687a02fe1adcbd720e20425f0586c43d2d32555759a0ff27865",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28623,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28623,
+      "sha256": "bad33e6f96fdc882fceaca730c232bcb4862831b2b7ff716be7a06a80e9ce649",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32878,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32878,
+      "sha256": "91e877f714da5caa1cd0fa303e6cbd2ea3389a5bfe8b9b713e43f17cf3c4ccdf",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28527,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28527,
+      "sha256": "cc09aea65c0a04e8fd1fa592068a11c194848e95eabf0bf99558cde3ec0b7b94",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32829,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32829,
+      "sha256": "6e9d33cad5236ee3f25d1b3c2bd8ab565dd4d389390361c5a628ad75f63548d8",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31449,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31449,
+      "sha256": "8dcc563b4bb511db11dd7e17071edc4993544de266911b216e9dce091b1617bc",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29983,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29983,
+      "sha256": "183818bdb39682e9895d41ad8484a8e5e8bc28fa02b409c0394c7debeaaf54e9",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32889,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32889,
+      "sha256": "7914676eb178d334aa07999a97a191f53426fba47bad5107377f040678e5afcf",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30001,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30001,
+      "sha256": "760acd239367c4d67174e3766dcacb57d6803d6b752db408f6a426088ef1a2fb",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31478,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31478,
+      "sha256": "487c30031b84303dc14daff34efa32023fd91d6eb6c6261adf7e6f37e56378f5",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31502,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31502,
+      "sha256": "335894db1ad5f79752f39625d870fc1380c50ebd8af332b1b6e94eed3e23ae83",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURUSD/EURUSD_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28741,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28741,
+      "sha256": "d14070263371ca2bd381798a868ce94ca48dc8c1eb630bf42dc17acbc2c3f454",
+      "symbol": "EURUSD",
+      "timeframe": "1m@v1"
+    }
+  ]
+}

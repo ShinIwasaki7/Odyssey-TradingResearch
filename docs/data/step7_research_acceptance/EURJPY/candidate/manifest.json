@@ -1,0 +1,1610 @@
+{
+  "approval": {
+    "approved_at": "2026-11-04T01:09:55.207764Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-11-04T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-11-03T21:00:00Z",
+              "start": "2017-11-04T22:00:00Z"
+            },
+            {
+              "end": "2019-11-02T21:00:00Z",
+              "start": "2018-11-03T22:00:00Z"
+            },
+            {
+              "end": "2020-10-24T21:00:00Z",
+              "start": "2019-11-02T22:00:00Z"
+            },
+            {
+              "end": "2021-10-30T21:00:00Z",
+              "start": "2020-10-24T22:00:00Z"
+            },
+            {
+              "end": "2022-10-29T21:00:00Z",
+              "start": "2021-10-30T22:00:00Z"
+            },
+            {
+              "end": "2023-10-28T21:00:00Z",
+              "start": "2022-10-29T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-10-28T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "EURJPY"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "candidate",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 15
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:09:16.648989Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:09:55.207764Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "16b96c96c0ea9d393c44b2824f0e72cf82cc3ca1707d9b16931534fe0f054dfb"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174009,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "32b19a698f1a3c2cacb562779e320b563e25ee15b0ea95988342b6bf436b5548"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "9f889c9ec2f709f535d1c394ad8cfb9c273869edf97e860755a038ead8a0c0e6"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43514,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "e6769b8c45a5e82bb91d071e5313a5f42f5c93c7ab78b982a6ab092d430f3c9c"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2602704,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "c691ca148464010fac1854d285ba65681cb36100e847cd76b3fd2dfbde65e032"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:03:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10887,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "d379dcd8b446f02eb5ddedfb2094f93afb8dddf21a4a27ab275fbe6c9a5dec10"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "16b96c96c0ea9d393c44b2824f0e72cf82cc3ca1707d9b16931534fe0f054dfb"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174009,
+      "coverage_counts": {
+        "built_bars": 174009,
+        "no_record_bars": 327,
+        "partial_bars": 2339,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12296
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1154,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12296
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43514,
+      "coverage_counts": {
+        "built_bars": 43514,
+        "no_record_bars": 70,
+        "partial_bars": 1416,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12296
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2602704,
+      "coverage_counts": {
+        "built_bars": 2602704,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12296
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:03:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10887,
+      "coverage_counts": {
+        "built_bars": 10887,
+        "no_record_bars": 9,
+        "partial_bars": 1363,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12296
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "50475022304808c7468b638bdc1536e2bef906e28b6a2618a03ed80bcd713545",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31667,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31667,
+      "sha256": "fd11ff82a456a5ddfe61b808eacd89cc47d0badab6ae268c5f657cf3f2877485",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28792,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28792,
+      "sha256": "8a058e5ece190866d2c6248b76d3bfee314d789b0a5be58e62afda796447eaf2",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32970,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32970,
+      "sha256": "480fc65962855c5370ecea72eaab2328b10cf5124fdfeac579062f4164b50ed2",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28787,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28787,
+      "sha256": "dc07bf6f625905820cbb0929b85583f38f3b66e398102dc3666503701ce88668",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "42c9635634e8410efab926a9e71f33c5d68050283c4e118c3c12a4935b58497c",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31553,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31553,
+      "sha256": "4bdc8caa40c4f49ddeed2df273529a9abb7755dddc2262c5327b5c4469e16ac7",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29626,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29626,
+      "sha256": "e07d4b9589ad4acef2b21b27b884c72f3d0e37eaa25443d841d774441ea60138",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32451,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32451,
+      "sha256": "864ee09ab1e73453cfed649dfeaf911ab7bda5a321f9dc0195b70d6bc7797d8d",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29935,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29935,
+      "sha256": "7d86087c688c7fd3f0e662e8d93707a53a0ac9f97b2768ab9cfa3f4a9d2f1eda",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31666,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31666,
+      "sha256": "f6dcf4bbcc0f5d061a6c95ea34d02fe510a9dbd24561f64b6b8566acb875db4a",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31618,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31618,
+      "sha256": "91274c1940a91ad8c6bf7f2a19c1e99522641e939d3e653c1789a6c8ef112e60",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28430,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28430,
+      "sha256": "c382ba31c11c3ac45b8d36272569335cbe88659095b4af47601d0050a91add4b",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31632,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31632,
+      "sha256": "911943c989f9e51e9820abc3f0b7e0809cf406896f4d523dd297d3a331c10a27",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28797,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28797,
+      "sha256": "b45027f2d422552e434fb19cfb41d0ca33c6759f1c88da9f20684c27b2c062ca",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31550,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31550,
+      "sha256": "39a3fe38731afe11553e47f4ba4a51bf14f2cde27a3e1f818e5ade92e22085d3",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30217,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30217,
+      "sha256": "925864750e7a03e8593dca48d19e2733ae15693fdfde92e2a6b2ed5abe0f8ade",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33113,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33113,
+      "sha256": "0806f1cff3b1359ff4503d315c389a7a2acfedcd567fd879cd8f055afc18c241",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30202,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30202,
+      "sha256": "56e2afb8aec5880725b7013abb688a358020282c0e0a088c5f3a4387aa2a9907",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31669,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31669,
+      "sha256": "3dc4eebab539158d3c15957d76d9c0cdfafa41c585b216aaced355d6deb13cd3",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "a19a63cbfceb288cbd9a6f972fae0aa49a621d2b4b04136c3d020b50caeb20cf",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28781,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28781,
+      "sha256": "43a3555c9477627cacf6a995a31cd8588f72a6b46c45d2bea321014438a8a5db",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33109,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33109,
+      "sha256": "0057289c44934b7c716ac3fd530eaa36d90055887dd2f18cdc33f1ad9be485fb",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31606,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31606,
+      "sha256": "b84d6a6178b287daaf8f51ecd263782f55d9e86e50ddd5ec25bc07b8bb86fbee",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28185,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28185,
+      "sha256": "2bdca033f747a8620af87febc63d70a67a6fc3fc71ed922ef07629b50ab1bc7c",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31303,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31303,
+      "sha256": "01a3c581c1bc03f241d11517f7a2f0a17166f0b498f5b7898293bf7049bbaf26",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28775,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28775,
+      "sha256": "90d9f1cffb6a4f5e00bd5db82ebd7e4afd9f235e6e9bb502d0a5efcc48fd4394",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30047,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30047,
+      "sha256": "f95af304141818d98d7ff4101cb20f3e77c9776b6304690acf181ac8844fa414",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31660,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31660,
+      "sha256": "226527ec5fcb3b36dd4b1f6258150565c93e5b44411199761413d9a2c9c92168",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33088,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33088,
+      "sha256": "53674fb55910fb4ebff34db4f070570d668bb5bc68aab02ec7ba8edd3c3c5192",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28780,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28780,
+      "sha256": "58f4b3bcd76004aa413ea5a95f910d070b5a036ab08b99fb79f64b4e50cc3bde",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33101,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33101,
+      "sha256": "bc3c75dbcc130885526a934a2a020c02cc390e6cb8df3874423fa7131245e40e",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31644,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31644,
+      "sha256": "9642cc23f6661a9c252fc973e17c970e1d47c10a812145856a3fbf5ff21b667f",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30222,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30222,
+      "sha256": "ac3dba63351f81aac329e271c1b56b675ed921758bb430f7bb6213f6c5226490",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "8fc1986981b6055ad649d0328efaa6c2ab663d3d10703eef7b7af749248a02e2",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29845,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29845,
+      "sha256": "cc2721a457680d56247787849a643ffc4c9690c3ddeef3993525dd43605edf0c",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30187,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30187,
+      "sha256": "7e235b858b02ff91269ff227186046679b1d5716ea63194c0c2d28bb3eaa84da",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31639,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31639,
+      "sha256": "40517cbb82b23238715689244e6287044bc2e25db54c98a685e0d38cc7462600",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28764,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28764,
+      "sha256": "901a5b3acfd9ab6eeca68459cf4de7622fed2f8aa306a00cdd0baa145f9fc72a",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31621,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31621,
+      "sha256": "12732778bda138c40ebf32c00dded3b106d6a1f0278ef4b7464cb980f8dcdfda",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31606,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31606,
+      "sha256": "c9aaae04dbdf28cbf25a7d97e3c5a34c19509b30bd5ff64eeff2a838c5fb7029",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30169,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30169,
+      "sha256": "e4e2d5a5928d352f487662b31b6f97114ccc16231cd9ab10937197577adf9d0a",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31588,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31588,
+      "sha256": "3360fd59bac5e74ab5f741f95fe9dd834e210b3a88264c1443dbe9b6473d2112",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33018,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33018,
+      "sha256": "9ed92864e34ab6d20140bf60b26d23350e1afa6b24ce7b1a576a5e09bb55af0d",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30167,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30167,
+      "sha256": "78db76073c1d48c3bf24cb16c5ad9ed64d1ef456c6610fd3be879b8fe9ba027c",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31616,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31616,
+      "sha256": "d03780b6eadbc38dd65b7984a994e3f723624029b2cb2511e62b8055507bc9ee",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31531,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31531,
+      "sha256": "0bb6687ac6fc349ef7688e5cbafb608e8e126a77ae2c9fd4ee8802bd5d33ac8d",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30191,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30191,
+      "sha256": "efb04ae15984c3ba9e27faf93c928640beb5d44085b70f5cd7ff5fe2b4d20c9f",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31623,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31623,
+      "sha256": "6ab88a46ca74f2617683b342cae434ae856791aac8b230850e4a3447fd680d7a",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28743,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28743,
+      "sha256": "0e1c6603ba5a8f74a9c9ada23d2d5f4dd5d2b6c69d6dacdbb13ce77fec8c33d6",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28752,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28752,
+      "sha256": "1d2d1e26d23168f751aa8e5ac35e8df5c79b5418ce8cbb1fc50843766735910c",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32956,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32956,
+      "sha256": "cf5dcb1587909d336ac11f556bb39ef365531ea41eb00c13224a72f3c2b17fdb",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31471,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31471,
+      "sha256": "63f9d2966e16daee43b4c0e690d4bfec03096f338542cd7978fe302d1d4ced7d",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29934,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29934,
+      "sha256": "6b3e283c422a9e3d9a79a5882a2990da920b19932c483c37baa0a1c893c638bc",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31422,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31422,
+      "sha256": "7e00ecd70456cb6a08af3c228df9407ded8042fd282303713681b4563b403637",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31400,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31400,
+      "sha256": "e9fb3def0292a5da4f0549e34dcbefc48c5ba3bbab16bf345bc20f7666c5f006",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31417,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31417,
+      "sha256": "ac8840e491d2a2309f563cd2a972482509587440d9a86125315ce7086e65b5e7",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31421,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31421,
+      "sha256": "c4d7df2231f5094ed347d509c5fac0e7d4b11e813bb4a5cb5c8fb1e337058cfe",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29992,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29992,
+      "sha256": "e3e955a07b64bfd4a651e7e77832a22831e2aad359c1f02d2a521906da97492e",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31536,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31536,
+      "sha256": "52d9b0531c5ebb437d1e89b8682d75a094fc4cdc7e3936d32ea1bbf820990375",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32948,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32948,
+      "sha256": "835c3c99b058d3d7a40a9428e90ae9e4f3c2dee990a63a9f776c066b22250902",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30101,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30101,
+      "sha256": "1ba9478747f87b1044f79b7e35e1b940966f84df462854b7948a9a98a50f3052",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28665,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28665,
+      "sha256": "2ecb29ef2506c98265392d51a0d3b6173dd14a10527d486f9328126500638128",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32989,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32989,
+      "sha256": "5dd84464eca999f955e1ba5b52e5368334770fa7fe89659cc030a56462075445",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30100,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30100,
+      "sha256": "b7471f3433920f36c7ba49023d2b570c656fdfbfca214332ddb9f7ab10c1b8f7",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31521,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31521,
+      "sha256": "bc8f84a498d5f6c235a85041633582ce1d60041d8df2a1251d617898f11c0cb9",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31504,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31504,
+      "sha256": "c316773eacbea2bc23353775b16b334bf8da3d8f3f2a16c3ebf3945e540fb23f",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30062,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30062,
+      "sha256": "17948c5a542e24f96b0a3ee4a042954c48e9e1c16aae0b02b2b92861c5bea0ed",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32922,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32922,
+      "sha256": "60430a93d7e065e766b6f5e63de9c6147d6ec80e2b5a382c32fcc02c5ce37da0",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31577,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31577,
+      "sha256": "8797f40f24d70c62d2956a8f148e90522b85102af2d384ee3ed0477da6bb15b3",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30189,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30189,
+      "sha256": "034c6a39e9aac79dc8ff22c7666c301d0e0c4611fec2d78314438be75f02cc5f",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31656,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31656,
+      "sha256": "8965c289cea0db218b33d3c13e960cee905b12b56fcd579ad18b5717ce659a21",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30205,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30205,
+      "sha256": "6081e4375a283a286c8435563dd5724dc377d0176f85257f49ba6f27145d3fab",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31543,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31543,
+      "sha256": "fe7e6ddba09ee01b928d4217efa68bd87723de3facdfe5a532b0c758175b0b48",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28769,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28769,
+      "sha256": "06635f2c5b78027563b75cbcdae71684070477d234293652432b7a7b6f910251",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33078,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33078,
+      "sha256": "32115da48dd44a4b0e5019c16242fd5f0ede77ee56bec0c993321d8bbcd75ff4",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28745,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28745,
+      "sha256": "1a666e6a43fbcd35f824237adcd6df9b960097b6ba31eed2f0510fcfc9485d7a",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33066,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33066,
+      "sha256": "041eba87f752f949a1c7927fec96557924d6c15da06e9adc7f88ce335dad9118",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31616,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31616,
+      "sha256": "3137f9130519348c0e8fd0323d08fcb75708c576590bb6c79aaa31460b807a5a",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30166,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30166,
+      "sha256": "9782c93108f8346bbb63da4088dc9e978a11ceebb952ef80a9cb58aabcf63348",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33073,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33073,
+      "sha256": "ad4ceeafe4ff5e82488451b34d496878042c83f95c10a4fdaa61e9031d022537",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30172,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30172,
+      "sha256": "60d26de5a1b8ce1173b12b33953ee9f7b8b73d1113c13623b4d6a58e92ebd3a9",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31587,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31587,
+      "sha256": "8fd502e98cf7ce0547bdbb00c66dc5f4aafe93dd2bf4964f614550ec455efb7d",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31565,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31565,
+      "sha256": "7e05dd3914b22a10bf0efa3f53646bdb46e3d6cd87f3e6fe3e2e467dbd9e6440",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/EURJPY/EURJPY_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28731,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28731,
+      "sha256": "9441686b0680c4c8c41ff709df3c136b93dcbca36abed851c72bd0a219fdbbe2",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    }
+  ]
+}

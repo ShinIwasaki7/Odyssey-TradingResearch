@@ -1,0 +1,2685 @@
+{
+  "approval": {
+    "approved_at": "2026-11-04T01:19:26.600547Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-10-27 の週（NY 暦の日曜）。金曜の閉場の後の約 1 時間の 1 分足 58 本。米国式なら営業時間に当たる観測の事実で、時刻の規則の表の次の版の検討材料（D12 §11.7.10）。表 版 1 は変えない（D12-99・D12-135 (a)）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-12-25T22:08:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-22 の週。2019-12-26 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 5 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-29 の週。2020-01-02 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    }
+  ],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-10-28T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-10-27T21:00:00Z",
+              "start": "2017-10-28T22:00:00Z"
+            },
+            {
+              "end": "2019-10-26T21:00:00Z",
+              "start": "2018-10-27T22:00:00Z"
+            },
+            {
+              "end": "2020-10-31T21:00:00Z",
+              "start": "2019-10-26T22:00:00Z"
+            },
+            {
+              "end": "2021-11-06T21:00:00Z",
+              "start": "2020-10-31T22:00:00Z"
+            },
+            {
+              "end": "2022-11-05T21:00:00Z",
+              "start": "2021-11-06T22:00:00Z"
+            },
+            {
+              "end": "2023-11-04T21:00:00Z",
+              "start": "2022-11-05T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-11-04T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "AUDUSD"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:40:36.964422Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:19:26.600547Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "113c6a5c80f16ebabd696dc10eb5825b6e03ef56936fc959e7a05256d117e69f"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174071,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "d79525782bc3bb68671acd78063a6a04e3117b00fc8fcfebb9144de8ac499563"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "28e4f05abb2c63f8768ade754eb63e5b9516c1851814a07eb6d67c83af260796"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43524,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "4541ffd226c82916e655cc34182579ad8d3f9ea395721c5b171f83546bee2a1c"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2597759,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "8feceaf34a42598a93a1c929739744b14df45013c76ed34e6839e254542b8769"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:01:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10887,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "ecc0453d737f017a838f2946461e87ea09b2ce1bb2f57c7b0808ff387ac4709b"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDUSD",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "bfce1efec8ba201759044b8f5cca8e27e04668c67e1aa5c1177b641ef2ac7c47"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:01:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:02:00Z",
+        "start": "2019-11-01T21:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:03:00Z",
+        "start": "2019-11-01T21:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:04:00Z",
+        "start": "2019-11-01T21:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:05:00Z",
+        "start": "2019-11-01T21:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:06:00Z",
+        "start": "2019-11-01T21:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:07:00Z",
+        "start": "2019-11-01T21:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:08:00Z",
+        "start": "2019-11-01T21:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:09:00Z",
+        "start": "2019-11-01T21:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:10:00Z",
+        "start": "2019-11-01T21:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:11:00Z",
+        "start": "2019-11-01T21:10:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:12:00Z",
+        "start": "2019-11-01T21:11:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:13:00Z",
+        "start": "2019-11-01T21:12:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:14:00Z",
+        "start": "2019-11-01T21:13:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:15:00Z",
+        "start": "2019-11-01T21:14:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:16:00Z",
+        "start": "2019-11-01T21:15:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:17:00Z",
+        "start": "2019-11-01T21:16:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:18:00Z",
+        "start": "2019-11-01T21:17:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:19:00Z",
+        "start": "2019-11-01T21:18:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:20:00Z",
+        "start": "2019-11-01T21:19:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:21:00Z",
+        "start": "2019-11-01T21:20:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:22:00Z",
+        "start": "2019-11-01T21:21:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:23:00Z",
+        "start": "2019-11-01T21:22:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:24:00Z",
+        "start": "2019-11-01T21:23:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:25:00Z",
+        "start": "2019-11-01T21:24:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:26:00Z",
+        "start": "2019-11-01T21:25:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:27:00Z",
+        "start": "2019-11-01T21:26:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:28:00Z",
+        "start": "2019-11-01T21:27:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:29:00Z",
+        "start": "2019-11-01T21:28:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:30:00Z",
+        "start": "2019-11-01T21:29:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:31:00Z",
+        "start": "2019-11-01T21:30:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:32:00Z",
+        "start": "2019-11-01T21:31:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:33:00Z",
+        "start": "2019-11-01T21:32:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:34:00Z",
+        "start": "2019-11-01T21:33:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:35:00Z",
+        "start": "2019-11-01T21:34:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:36:00Z",
+        "start": "2019-11-01T21:35:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:37:00Z",
+        "start": "2019-11-01T21:36:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:38:00Z",
+        "start": "2019-11-01T21:37:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:39:00Z",
+        "start": "2019-11-01T21:38:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:40:00Z",
+        "start": "2019-11-01T21:39:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:41:00Z",
+        "start": "2019-11-01T21:40:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:42:00Z",
+        "start": "2019-11-01T21:41:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:43:00Z",
+        "start": "2019-11-01T21:42:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:44:00Z",
+        "start": "2019-11-01T21:43:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:45:00Z",
+        "start": "2019-11-01T21:44:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:46:00Z",
+        "start": "2019-11-01T21:45:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:47:00Z",
+        "start": "2019-11-01T21:46:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:48:00Z",
+        "start": "2019-11-01T21:47:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:49:00Z",
+        "start": "2019-11-01T21:48:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:50:00Z",
+        "start": "2019-11-01T21:49:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:51:00Z",
+        "start": "2019-11-01T21:50:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:52:00Z",
+        "start": "2019-11-01T21:51:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:53:00Z",
+        "start": "2019-11-01T21:52:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:54:00Z",
+        "start": "2019-11-01T21:53:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:55:00Z",
+        "start": "2019-11-01T21:54:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:56:00Z",
+        "start": "2019-11-01T21:55:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:57:00Z",
+        "start": "2019-11-01T21:56:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:57:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:01:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:02:00Z",
+        "start": "2019-12-25T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:03:00Z",
+        "start": "2019-12-25T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:07:00Z",
+        "start": "2019-12-25T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:08:00Z",
+        "start": "2019-12-25T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:01:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:02:00Z",
+        "start": "2020-01-01T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:03:00Z",
+        "start": "2020-01-01T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:04:00Z",
+        "start": "2020-01-01T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:05:00Z",
+        "start": "2020-01-01T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:06:00Z",
+        "start": "2020-01-01T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:07:00Z",
+        "start": "2020-01-01T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:08:00Z",
+        "start": "2020-01-01T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:09:00Z",
+        "start": "2020-01-01T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    }
+  ],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174071,
+      "coverage_counts": {
+        "built_bars": 174071,
+        "no_record_bars": 265,
+        "partial_bars": 4403,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17241
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDUSD",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1435,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17241
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDUSD",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43524,
+      "coverage_counts": {
+        "built_bars": 43524,
+        "no_record_bars": 60,
+        "partial_bars": 2275,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17241
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDUSD",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2597759,
+      "coverage_counts": {
+        "built_bars": 2597759,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17241
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:01:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDUSD",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10887,
+      "coverage_counts": {
+        "built_bars": 10887,
+        "no_record_bars": 9,
+        "partial_bars": 1926,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17241
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDUSD",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDUSD",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "07362e2223e99b24030b61433c0cc6a78c1a34cbbe9708e1cc04adb744bfe75d",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31539,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31539,
+      "sha256": "6175ed100b7eb71d77bfe1589ffcc7db07858e83f947e422096213d0ee620b82",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28771,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28771,
+      "sha256": "08e1b741e3412ec2d7200150739592eef930633cd614b8e0cd03974379755f17",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32956,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32956,
+      "sha256": "438cf615460590b734ffa077e5a41792d3d71f59ce99b1c026763c9f6c9f8e36",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28702,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28702,
+      "sha256": "0fe675065eeb7c2fad9df601efe715723e9827d1f1b918a5f103f42131ff87b7",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33053,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33053,
+      "sha256": "ac5765fb8a61dc65572dd7f968eafb8615f85b23d2adbbf118075254751284ae",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31581,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31581,
+      "sha256": "851ddef9e80ffcca424e931ab4da27d62ca38b3f43b72f381df3e6500d928a01",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29682,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29682,
+      "sha256": "0f5530d1cbcad56ce05a2a10de31bb4239204256576770d355b7e93685f940cf",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32444,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32444,
+      "sha256": "a0d233ca2ffb7e783b46c9538dd62cb327dbbd03d4cf9454439ffc040b1eacf9",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29917,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29917,
+      "sha256": "1567e86c9fa7674609d37fa9e1ad73b6135ae879fee5939c1ba2c7f9dcef3b77",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31643,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31643,
+      "sha256": "b117153e20e011871735913c4967c842ca547055213a3de61b585587ba6d61f2",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31592,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31592,
+      "sha256": "fba313a6097073b546fec50b051b67e110e3b55cc6137f2426e84c858b4e807e",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28422,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28422,
+      "sha256": "1f9819cfc60b77afa001ab7c494e99e389fe79281d843c2e2aab730d58e3b2a0",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31615,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31615,
+      "sha256": "fec39c7aeb3d21bb31ee0cd819812928d92afacdcde119561823dffbdcad8f88",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28795,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28795,
+      "sha256": "c1ef09f31eeba420165b5ed6b062be0c23082bdfe522cb57d8145ecd97fc6360",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31540,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31540,
+      "sha256": "67ecf0039773f6abd7234c183994be2b0a837ccd49043e1ddc58bed0e1e1aaaf",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30214,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30214,
+      "sha256": "0a028c8febb8e8bda63f10d92e16a195615e793320a9014b9968e6c899155c0c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33107,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33107,
+      "sha256": "c256ebf5885d4633dfef72f2d537734366513e339fe20d2b840c31f39de5943f",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30202,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30202,
+      "sha256": "8ebad3efdad31c02bde111f435f37f3e397ba5e342381fcfcb8e0b6c544269fd",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31663,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31663,
+      "sha256": "138724d86ef78aa7cbaacf7cb01008265a6baecc17ae8fbc20df7e0adbe5cfc1",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33102,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33102,
+      "sha256": "74df237ba7e30c4074dcf59f509ab024f65e37ecef2d2878f9a23884cd64db79",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28775,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28775,
+      "sha256": "0325b2690447bf9ff042ef06114c45aec3e97c8baf975009ed3b804ab25ffb8b",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33104,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33104,
+      "sha256": "4132486e94a40c9b50ee0616311a9cc99f741884954eb39060660ea7a53056b9",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31605,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31605,
+      "sha256": "fe93fa02ca92f82caa0efb4a9c835b5f2f46a582720e42c26cfe97945c8b19a3",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28184,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28184,
+      "sha256": "801fbc87aeb878ddcafb10a85dae1b73dc9b0e6073cb5fca4f4b310583a9cbfc",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31307,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31307,
+      "sha256": "cce5cee35929d81ad27084e39c71ea5ed7ccc1478639c0186d28aca0e98b4b39",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28773,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28773,
+      "sha256": "4148438fadcd4d19f2b146b95d793ab459611792bc03e6cdb49fa1cbd1c2aaf1",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30045,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30045,
+      "sha256": "c807871d2a3c139e185d7bf71f8e0cc7f12fb457023e4cb45c1435aec0a2b787",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31653,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31653,
+      "sha256": "db99692f75f8c99c493b03556ce9f7da1dc19acfa51faa18ca044c3c9d3c868c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33079,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33079,
+      "sha256": "93815e1857fbb739d3385ecb85483ae08b1faf525fa742def48908b89633beca",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28774,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28774,
+      "sha256": "4a420ad7c6ca88928f89ee21340a6d9d0c8d1b7050ca88d233da51e8dd4bc553",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33094,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33094,
+      "sha256": "708053bae348830aa0a94faee4d3cd30461ffec5f87d471e0d741db52096ddeb",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31642,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31642,
+      "sha256": "879956a9f9f143c745ec069d6402aebfc39d67c22093217b82549dc9ca67b212",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30220,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30220,
+      "sha256": "98e0586dd68809f5339e477e0561691b348bdf47b2e9b19421add9ef4bf878e5",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33107,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33107,
+      "sha256": "704cae970268cded79d314d9d4ce7e1e2680c9fb3dd2f2fdd036be7c19b11246",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29845,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29845,
+      "sha256": "4bbbe28123217022d2fcf8e1ee57e4a85ee7f47c530b051b70afa9a774d507d5",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30145,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30145,
+      "sha256": "aaf1aeeae2db77d72f3f87daf402f12aa5edc1d3b9444788c3d8d3cab582e98c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31603,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31603,
+      "sha256": "7f45f210d7ce64c9c9989e0a8a9ef202c57b3517c7a4f3a4327df36d7f34cfc6",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28740,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28740,
+      "sha256": "5043eff3f4edfec11ce0d84db1d912909cd9fe03ab3e17a40565753ac472c6c7",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31586,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31586,
+      "sha256": "a12c9089a301885afec210ea678b99394ab97dbccac749afab424ffd49642dc5",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31463,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31463,
+      "sha256": "11809b931518bec2926924f150e108cf906c58ad644c3be2da0b9624cdf8df09",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30102,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30102,
+      "sha256": "7724d34adef1eb60bc19648b76108fed27348c9aaddd73d71735f072f869ee64",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31532,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31532,
+      "sha256": "a38e7db3ecd8dd01729f863f63b71e1afc305903c68cfe07133a89e2ea97d0d6",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32911,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32911,
+      "sha256": "8f1cfcc4a6393050d19873a9711cf3402c4fab5061b77ed068df372c06495303",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30077,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30077,
+      "sha256": "42956166bd9b4da109bb07098b942ac0117e59d2ea0725d48e122d61f339c4ce",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31483,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31483,
+      "sha256": "641f948b4d9ad5f5d71ab36d03d225642f8c51308a4ad8b9dffbd423f848f1c0",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31411,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31411,
+      "sha256": "6e65337893684fa274b87d2e58c0b1ebd86c4cf893efe88625cf77fda9790991",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30115,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30115,
+      "sha256": "4a91a5ad5ef113424aa681e32ffa95ca35608bd474079111bc4a59708dff03b4",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31540,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31540,
+      "sha256": "6ba1442adce197f9a85eca617d8b3a88d7f09ebe62d16ebac13e6ddb7e8bbba3",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28709,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28709,
+      "sha256": "cb0b8d11a65cb4b6dbfd0b9d4e2580d066e7a2497a3f64fdc3936687349595a8",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28713,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28713,
+      "sha256": "582db01b820e258517a6d06e49e0400518cac87c6d90b8df382fb3439c0123d7",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32984,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32984,
+      "sha256": "d283ab5b8769e69d881ecd07ac85ce19e84506379bd48861c1eba759a23f27a5",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31454,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31454,
+      "sha256": "ee08026db3b0fe0ce1740cd42778ccf355819d35e90634537eb30ac193c272c5",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29959,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29959,
+      "sha256": "8be70c74c5a476984663f9d783e728b51292d3d4c5770724090f38f67af51d1c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31314,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31314,
+      "sha256": "56d8c68ad388c1db8510fec69f4427ef7138615a9e26b2728860d6c45e1438a3",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31302,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31302,
+      "sha256": "dbd2e52a4ca74618a7a92f2bd3eecbac8a4fe2b264bfe145a506f3631b5706ff",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31267,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31267,
+      "sha256": "3ee17b42f08b4a5c1ec7a4639dbc7d2750b2d8cdb08b122abd404599db5e9cc3",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31233,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31233,
+      "sha256": "7b745d59292e5616e31b11db5c98951b5e8543bae44a645a0ff1e0439aed22a8",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29852,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29852,
+      "sha256": "72cf3816466edfddfe8e29608a081546fdba24d350f7abaa435c4c71505a516f",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31415,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31415,
+      "sha256": "5e762c4f96d54b0108871787b16207c41c9bde5506dc6ffd99d9d995fd28c236",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32824,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32824,
+      "sha256": "5632e3159afc7a273c3ff444e83e905c01e287d3c007201e577d0119bb9e7e0c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30013,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30013,
+      "sha256": "73944ab569b1892bbcf4493b84a3f20b5a6375802e9249b9fe7615447a5432b3",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28672,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28672,
+      "sha256": "9195a98792fc35917548289e90de545dc3b02873570d2adb45b5b4882264e4db",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32873,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32873,
+      "sha256": "929ac3a227046f5d460b1b62c29a7f7a45f2eded381e70ac8a1653b3d841c86e",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29942,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29942,
+      "sha256": "3a991c3a8afd8dafeffbc4a816f4a3068c9f52eb157adfd186966a5097475102",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31441,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31441,
+      "sha256": "b68edcedae85fb0d9ab047a40204a120bd69ef9a6216a7fa506c9c7bc89b311c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31275,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31275,
+      "sha256": "3a4c19d4de482399d20491e2ef558e613a13298ba9a08dfcd540f69192d89dea",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29891,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29891,
+      "sha256": "45cde6c5bf9b5cdf4b409646e96d77b90dcaf3efd1837c7697fac9faf2a2cb49",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32799,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32799,
+      "sha256": "8f9be03a2fb63311e27e44e2d541eb3e32047a098d915d45f3ec08b19f166d0e",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31434,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31434,
+      "sha256": "458543d94e74aca2207fbf53ebb19252818030adc278e95ad9a425d3008eda0e",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30074,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30074,
+      "sha256": "31e231f7810c430041e71889686021a873b3b9f5a2b5fcca12b500a9a69fc568",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31558,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31558,
+      "sha256": "bceb239966e7fa98d6975089bb069777f5a1a61a197f5efc4ca178fc5ce23519",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30089,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30089,
+      "sha256": "6b2caf9184deef95a91043cf686760d9b1f0b23c9770e7fbf859dd2b7cb79026",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31172,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31172,
+      "sha256": "dff22f67ef71235d6bed0faedb91fe47d34c8ff5bb3db8d47255c06b0eba83a9",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28664,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28664,
+      "sha256": "f6f26ea055dd3465813f89278ea2d984e02ee2d4673ba5c268c88c5c996846c5",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32957,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32957,
+      "sha256": "381e001d043a04ce1923d5b9fa248ebd1c7f24847cfd6e95b404c36cf435c5f4",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28560,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28560,
+      "sha256": "1bb7afc80051481ae889ed5b167c7dbeb59e0584f6d4bdfc5bfbfa8d6db230a9",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32876,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32876,
+      "sha256": "083e840766bcc0d2f3ecb047b264c8eea8095e66caba199baedc3409e58107a2",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31487,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31487,
+      "sha256": "d8526361919da66d1a0c10cf29e2ec92dbd7697d30a6f0c88e8a9cbb69a8a0a1",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29973,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29973,
+      "sha256": "ffcd4d62c87995a6b97b4edb930b6b4bcab2bdacfde336691aa0dbb067afa8de",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32864,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32864,
+      "sha256": "faefbfb80914b1952bc063fcca5c0e8e095b0ce4f32dc96b2ae4103eb5f396b4",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30002,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30002,
+      "sha256": "f6ad35abfd599a9a330ec149e05db4c6f49a20b043647e5fce3fb0f4f6f61d6a",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31453,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31453,
+      "sha256": "4bbc1778a3542d19f69f4ac019ba6b002ae6c5cdae7c672b48babdabd9953994",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31529,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31529,
+      "sha256": "8febda8f84c5caecf11bc5d78ec3a06ac793128b14aa3c76f89c8060a981283c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDUSD/AUDUSD_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28753,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28753,
+      "sha256": "df2767d63f6f2ce3727c798de95e058273508f13e2a1c9f302b2d6b54c58b66c",
+      "symbol": "AUDUSD",
+      "timeframe": "1m@v1"
+    }
+  ]
+}

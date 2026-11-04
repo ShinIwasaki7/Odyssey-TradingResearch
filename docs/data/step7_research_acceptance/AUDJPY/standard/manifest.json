@@ -1,0 +1,2755 @@
+{
+  "approval": {
+    "approved_at": "2026-11-04T01:13:11.304630Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-10-27 の週（NY 暦の日曜）。金曜の閉場の後の約 1 時間の 1 分足 58 本。米国式なら営業時間に当たる観測の事実で、時刻の規則の表の次の版の検討材料（D12 §11.7.10）。表 版 1 は変えない（D12-99・D12-135 (a)）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-12-25T22:10:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-22 の週。2019-12-26 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-29 の週。2020-01-02 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "1m@v1"
+        }
+      ]
+    }
+  ],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-10-28T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-10-27T21:00:00Z",
+              "start": "2017-10-28T22:00:00Z"
+            },
+            {
+              "end": "2019-10-26T21:00:00Z",
+              "start": "2018-10-27T22:00:00Z"
+            },
+            {
+              "end": "2020-10-31T21:00:00Z",
+              "start": "2019-10-26T22:00:00Z"
+            },
+            {
+              "end": "2021-11-06T21:00:00Z",
+              "start": "2020-10-31T22:00:00Z"
+            },
+            {
+              "end": "2022-11-05T21:00:00Z",
+              "start": "2021-11-06T22:00:00Z"
+            },
+            {
+              "end": "2023-11-04T21:00:00Z",
+              "start": "2022-11-05T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-11-04T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "AUDJPY"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:20:15.102484Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:13:11.304630Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "8df4f679b173d16a9259f7b4bfb4639923d52c8ef9fabeb89b0076e828965865"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174054,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "f585c1368e9a1ec9dfe6fc8c2813e84013414de5c490a908f63d49133d47b893"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "67be258ded1ac01127c0ed029b5ef1bb432087e17af69c1becc77e77fc87c9f1"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43527,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "634512bff36ad84210023e3886380526984f679473216c41ddd107c80e3dc817"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2604948,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "b54aeb71741e2e6aabe784471ac345c829d1de4891d7f9fdb7de1c2234c5490c"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:02:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10887,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "3a4cd620ac23b7890c2cd1d26119fd4228f24cddb8ebe4d084425a355ad3e8dc"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "AUDJPY",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "c679e07c08a1aeb7e36b3cfa0f10709e5fef82ef99aefa996a8fdb66b6733252"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:01:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:02:00Z",
+        "start": "2019-11-01T21:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:03:00Z",
+        "start": "2019-11-01T21:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:04:00Z",
+        "start": "2019-11-01T21:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:05:00Z",
+        "start": "2019-11-01T21:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:06:00Z",
+        "start": "2019-11-01T21:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:07:00Z",
+        "start": "2019-11-01T21:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:08:00Z",
+        "start": "2019-11-01T21:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:09:00Z",
+        "start": "2019-11-01T21:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:10:00Z",
+        "start": "2019-11-01T21:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:11:00Z",
+        "start": "2019-11-01T21:10:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:12:00Z",
+        "start": "2019-11-01T21:11:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:13:00Z",
+        "start": "2019-11-01T21:12:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:14:00Z",
+        "start": "2019-11-01T21:13:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:15:00Z",
+        "start": "2019-11-01T21:14:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:16:00Z",
+        "start": "2019-11-01T21:15:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:17:00Z",
+        "start": "2019-11-01T21:16:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:18:00Z",
+        "start": "2019-11-01T21:17:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:19:00Z",
+        "start": "2019-11-01T21:18:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:20:00Z",
+        "start": "2019-11-01T21:19:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:21:00Z",
+        "start": "2019-11-01T21:20:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:22:00Z",
+        "start": "2019-11-01T21:21:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:23:00Z",
+        "start": "2019-11-01T21:22:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:24:00Z",
+        "start": "2019-11-01T21:23:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:25:00Z",
+        "start": "2019-11-01T21:24:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:26:00Z",
+        "start": "2019-11-01T21:25:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:27:00Z",
+        "start": "2019-11-01T21:26:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:28:00Z",
+        "start": "2019-11-01T21:27:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:29:00Z",
+        "start": "2019-11-01T21:28:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:30:00Z",
+        "start": "2019-11-01T21:29:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:31:00Z",
+        "start": "2019-11-01T21:30:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:32:00Z",
+        "start": "2019-11-01T21:31:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:33:00Z",
+        "start": "2019-11-01T21:32:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:34:00Z",
+        "start": "2019-11-01T21:33:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:35:00Z",
+        "start": "2019-11-01T21:34:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:36:00Z",
+        "start": "2019-11-01T21:35:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:37:00Z",
+        "start": "2019-11-01T21:36:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:38:00Z",
+        "start": "2019-11-01T21:37:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:39:00Z",
+        "start": "2019-11-01T21:38:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:40:00Z",
+        "start": "2019-11-01T21:39:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:41:00Z",
+        "start": "2019-11-01T21:40:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:42:00Z",
+        "start": "2019-11-01T21:41:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:43:00Z",
+        "start": "2019-11-01T21:42:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:44:00Z",
+        "start": "2019-11-01T21:43:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:45:00Z",
+        "start": "2019-11-01T21:44:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:46:00Z",
+        "start": "2019-11-01T21:45:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:47:00Z",
+        "start": "2019-11-01T21:46:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:48:00Z",
+        "start": "2019-11-01T21:47:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:49:00Z",
+        "start": "2019-11-01T21:48:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:50:00Z",
+        "start": "2019-11-01T21:49:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:51:00Z",
+        "start": "2019-11-01T21:50:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:52:00Z",
+        "start": "2019-11-01T21:51:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:53:00Z",
+        "start": "2019-11-01T21:52:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:54:00Z",
+        "start": "2019-11-01T21:53:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:55:00Z",
+        "start": "2019-11-01T21:54:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:56:00Z",
+        "start": "2019-11-01T21:55:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:57:00Z",
+        "start": "2019-11-01T21:56:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:57:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:01:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:02:00Z",
+        "start": "2019-12-25T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:03:00Z",
+        "start": "2019-12-25T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:04:00Z",
+        "start": "2019-12-25T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:05:00Z",
+        "start": "2019-12-25T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:06:00Z",
+        "start": "2019-12-25T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:07:00Z",
+        "start": "2019-12-25T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:08:00Z",
+        "start": "2019-12-25T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:09:00Z",
+        "start": "2019-12-25T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:10:00Z",
+        "start": "2019-12-25T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:01:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:02:00Z",
+        "start": "2020-01-01T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:03:00Z",
+        "start": "2020-01-01T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:04:00Z",
+        "start": "2020-01-01T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:05:00Z",
+        "start": "2020-01-01T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:06:00Z",
+        "start": "2020-01-01T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:07:00Z",
+        "start": "2020-01-01T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:08:00Z",
+        "start": "2020-01-01T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:09:00Z",
+        "start": "2020-01-01T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    }
+  ],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174054,
+      "coverage_counts": {
+        "built_bars": 174054,
+        "no_record_bars": 282,
+        "partial_bars": 2116,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 10052
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDJPY",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1182,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 10052
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDJPY",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43527,
+      "coverage_counts": {
+        "built_bars": 43527,
+        "no_record_bars": 57,
+        "partial_bars": 1468,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 10052
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDJPY",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2604948,
+      "coverage_counts": {
+        "built_bars": 2604948,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 10052
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:02:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDJPY",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10887,
+      "coverage_counts": {
+        "built_bars": 10887,
+        "no_record_bars": 9,
+        "partial_bars": 1410,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 10052
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "AUDJPY",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "AUDJPY",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "dc411b9ec1054b073d0c610d74bad27a6801d85c9b46f76ff0a0ac705dc36843",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31640,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31640,
+      "sha256": "f71b580175213159fe00af963ce0165b26a1bbfd1bee5f69999547bf263047d4",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28773,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28773,
+      "sha256": "0d6a0493bac2b9d7ece9d20269ca6575c4f6e0a8674068754bbe505988ff44be",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32955,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32955,
+      "sha256": "514a74e099156373635a978faf3c4b6af82403fee93f91599b9f950e1c8dc7b3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28769,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28769,
+      "sha256": "ebc3f4ae445b50417366765c68a8dbff4d56753f994db7ae0f6f6ccab7f61518",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33105,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33105,
+      "sha256": "6f3b998d11499eeac7f3a57a82c1fa0bddec782d6afd083fab06e7ecc1e4b395",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31584,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31584,
+      "sha256": "345a8c346daf5ba3c542a0ca5d7fc523904c04fde862333e97cd0ea70e331ace",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29618,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29618,
+      "sha256": "c21ebd0e0d9c7f662482fba7709d7e6a8f96eda054ee66c28d26e8031471668c",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32442,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32442,
+      "sha256": "9b8c283f377c9919de2eacbb9592e70e4d93d91cd0a834deca17a5e05fd3051d",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29925,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29925,
+      "sha256": "ace46a85c803eeead225a07fc5971dd013670e17c0b15298dffb9f2e7187c169",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31663,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31663,
+      "sha256": "ee24974f963fb20f18c2b7774614b204361a831fd39cbd588dca9efde406a7ad",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31611,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31611,
+      "sha256": "abda94779ad1416f87b45f671b5e7a27fbdfa781425b44ea514558c69c0da866",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28423,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28423,
+      "sha256": "fd357f9bce5e3b2eb6e763e8212863386afed6f59d9eefb985c9b9f5005bf861",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31609,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31609,
+      "sha256": "f91cdbb805b01227b0f1d5143cd0d1ab0967313a1f94a81e164cb909808ac1fa",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28795,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28795,
+      "sha256": "b1d17707c62fcc49c4518e26af001fe3d5592e687958ac8b8470bd4fd31aacf3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31549,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31549,
+      "sha256": "5741821a075734347f6a2e119e675a5802f8923811792b87b4226fcf5bfb0756",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30211,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30211,
+      "sha256": "d8713cbf7d5bacb847fb72aebba646db1b98557bfd76abd5e0f3a1ff85ff1aee",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33109,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33109,
+      "sha256": "a54fd533aef873cef5705a17e8b4bad209a0f2b0120120efdac2d1818705c243",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30201,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30201,
+      "sha256": "f3b70f3eec8aa0aab0d71f37e5c9458516dbce3594ee78881c6e56ab317fa57b",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31660,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31660,
+      "sha256": "708b9ce4031784a7be0016d9f3a757546b078e9db473677564e6af1d0c7e0f46",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33099,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33099,
+      "sha256": "6ce9e7e433166bdb465aa2f4233c20694e918bdafc3a27f15916bea9d84c7d6b",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28781,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28781,
+      "sha256": "8afc7811db1d4a83fd1c1b77f76993c28601052869af944c0ebe40d5780f83cc",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33113,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33113,
+      "sha256": "54d8e6fe8ac3d1fe7476418592f75de049172dd639e13b216f461ee36878fc70",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31607,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31607,
+      "sha256": "074da8d71bf3eacdcd9b637445bfb761fda7812f03587cafabb61f340aedfad9",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28185,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28185,
+      "sha256": "cb0ac106230f01f46b72f5560ebff96ef5a4216640de22e7427722278e12a3c3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31303,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31303,
+      "sha256": "fb96eca168eefc6072088dcc29503039543db01c9f3c7ed4d6c4049624e15be5",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28776,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28776,
+      "sha256": "5ffd0ab6399c552e57555a1ca692d148d9cca4c45e1c0c926bdd141c798d246a",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30047,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30047,
+      "sha256": "6c33b93b5a81a77499e51b4520415a1a2ac0a5222a07d8f7944937f8a1eee95c",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31661,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31661,
+      "sha256": "f03a30dd51874730d868094ad6259870e5cb4de70d2f76663addb17441a892b1",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33086,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33086,
+      "sha256": "7baa677137b456d3dcaebe4a6d3b7e5d1770aab46d5fdb0d3908045b05cf36ec",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28781,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28781,
+      "sha256": "a3c0e5a2295f3df5442cae976e5f923aaa6448f3c50049243de762216e67e5bd",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33101,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33101,
+      "sha256": "c78d4e5172544cab584fe543fa408c84ce3c06e9d458d1d56049e1df6fd10747",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31645,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31645,
+      "sha256": "5ff8e901bee29f05dc096a6aa136b31d3268418ec7c90ff450dbb4da04889613",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30224,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30224,
+      "sha256": "6926bd5e6b1759630ff241822222b8c3541a5a2de89abe33760dcd0411957616",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33107,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33107,
+      "sha256": "2853a66496abcc237be64f573f89e2774febf41fb74eb13a5e804ef2c51b6862",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29967,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29967,
+      "sha256": "29ee391d36d80abd1f768c65e036dd184a5fa599a9d5c7c139781ca3f8a2b9f3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30178,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30178,
+      "sha256": "a510f3768029b3c2ad93a766cc5fa42600e72c1c9263207ee86f6a0d180a4509",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31634,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31634,
+      "sha256": "baae87880e01a4001bf2eeb018d02b1126a25f9eb3aa80e16fd5e5c0361034d0",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28768,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28768,
+      "sha256": "24402633f1c8805d90c30a0be416fe72340f7bd862737242a2c2d583f556bf84",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31633,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31633,
+      "sha256": "b2f0fe706b8a968d2e907b3d4cb04810710cfe0fa30d22dc893c28553c078b60",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31515,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31515,
+      "sha256": "ad1c98586169fcbcdfa6712406eb8162733e6a7ea4e6d137cf0f96297f401bb3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30141,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30141,
+      "sha256": "ae8273cfb9ec84534c6ce046508a52a9602913f191a894ae4479d3e80f2bfb72",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31602,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31602,
+      "sha256": "1cc62ef9b39e7dca7e1507b7133a58147bf4deab7cd0c11359c6cf601b4a3e19",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33022,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33022,
+      "sha256": "9d1581366e44a90e90503b15fa0e9fa651b3b63b13241787f7ac28182338598b",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30152,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30152,
+      "sha256": "ddeb1ce9be2174997f44095b67d6a19f1d7fb94d3657b8b8ac8d067610f9cdfa",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31618,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31618,
+      "sha256": "c7adbc3b7157e3c5c8b33fcdb698cc9c385a594f9b9567461564b179fa21d3bd",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31551,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31551,
+      "sha256": "02414465deaa215a83481a9d2cf0fec300e818c68dd80062e23f46f05de54c0e",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30203,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30203,
+      "sha256": "3c9b1e0c9782282cef72387e2448d000fa2d21ca40973e2ebebad6402944d31e",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31630,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31630,
+      "sha256": "7ed5651f6a2a9f34341a074ba59af456a5d4338acd148842f7b570d6c0fab20a",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28757,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28757,
+      "sha256": "2157fbc940b80fffc8178c0647f03ea4b2783308686d5f890cca95e3eba50d51",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28761,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28761,
+      "sha256": "ce06009cda651d585e080dcf572f02f1094011ec16b3168b3784b9d6d9c8138c",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33080,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33080,
+      "sha256": "37fa4b42f0a38626b0cdceb37ce66fa7a69ba9ca78348d448f7061fd115431f8",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31579,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31579,
+      "sha256": "27084504377ff9e14c0b5825222985f9e899587433c916a949e248dc8122d939",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30166,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30166,
+      "sha256": "8df2ca9666f08b7e35eabbd58bee29c940e9ced0b115566ba0c8d9aa8df31384",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31591,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31591,
+      "sha256": "f4de678fc77a26cd7266d33c7f366f69ab8d9e6d5fd7abe5c699530054ecbb4e",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31546,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31546,
+      "sha256": "6259883012a71b0daf40c7d5a844f38bc5bd57b299510e847973db45cfe9afa1",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31546,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31546,
+      "sha256": "97f3403ad19171f8f47eee6f802b3dd09216a0f99c01eca9240cec727124602d",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31565,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31565,
+      "sha256": "0d1b48487440a71125e3a4ac9ec2622f778fa9ba60b9ae5b44a9fc40d44a7064",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30125,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30125,
+      "sha256": "2f438cd007ec0d9ae61b8f6e1ea2c2833621dda8ae804252ba92fa6635c7b068",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31629,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31629,
+      "sha256": "b79b07b28bee77558f04d07edc7b3c167cedced7a956477d44f50e2eaada44d7",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33034,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33034,
+      "sha256": "369ea824a8c9f3f0e9ef78a414a63830db1be4d4a73f4e12cafdbb575e4ac124",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30205,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30205,
+      "sha256": "d69e8cfb8215cdaad1d01e4027fa4e8cbe7c77933ea3c0b1ac88103d1e337979",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28772,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28772,
+      "sha256": "6de8a4514006ec3cf89459ec19e90f73e78fb57024bc64f6635a246303ba5bc3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33059,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33059,
+      "sha256": "8b2bb8a03be0976a0795e5a6aceb1af32079916955bfed20798e240ed06aa401",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30146,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30146,
+      "sha256": "d05b9fabb9aea2a3dc014c7b636e02092f98af58f1841503fe759f09b9456930",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31613,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31613,
+      "sha256": "75e3a578f98f21d7f5a9c39336be8081e2a9cb9c6639802ac4a988c76acc0f39",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31527,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31527,
+      "sha256": "66ff7d1197609c7fcdb1a3319055a4bb9a9fb4a0ec86bf687932679510de555a",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30102,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30102,
+      "sha256": "8e808b6e1e8c041e5819a02ed7846377c97b2595bfad5d359186b9aa04d1a53b",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32959,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32959,
+      "sha256": "6211856b3f344ff7f307e80a6a4c15d0111df4374ac59ea8830daed21d845a22",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31567,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31567,
+      "sha256": "f4380c7fcecd96dbce9b84cf51dd969a8417887178dda4a778c80d6aba75106d",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30193,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30193,
+      "sha256": "2212c0431a4195d8f9e3a5e4b91129b6fc5fb817d651b3b612faefec878cae7e",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31633,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31633,
+      "sha256": "471792be61c66607ab1eb7c40285799bc25ff28e02292970140d9eb3459b931f",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30173,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30173,
+      "sha256": "4479bd7958c229c386a89ce8e078450115e6c8d08d22a47882fe2035370d8475",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31393,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31393,
+      "sha256": "2a99ddc379bf6672e4fb59496abd3517fddcdf1c1dba527bf5ab36bf153b111e",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28762,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28762,
+      "sha256": "16a127ad08332900fba30ec86d680bbd08e681ad8128b75cb5e2e20b6d247560",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33078,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33078,
+      "sha256": "da83109ca9d6a17f16b0c14f6ac7540ab9d0985eb84d285415141b0fe067cefd",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28745,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28745,
+      "sha256": "a852b7aa5c1370f6d0cf009511e34f70b6bc783ec037f9ee3bbd013d0a076afe",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33051,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33051,
+      "sha256": "a6b5484fd6ef38ee0fbc0a7865ef596d6e1c98cdbbf989241d8420acc3e0fcc4",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31615,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31615,
+      "sha256": "59f86bdb61db53a89b7a8e77c9985d0e4fca90f2f77b98591e1094951f722199",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30071,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30071,
+      "sha256": "df637d32e50277d4a1149a59caf738fe996156e7822039685e8d6a4252e4ced3",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33052,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33052,
+      "sha256": "167b391da2b30f3c832f91f24d7e003ec77e2e35f0b1fb3af82530dc2e2276de",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30140,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30140,
+      "sha256": "ec8ad618eb3b7f7e005abb75f6c07e2d077103539ddf13d87371b3623ab3dd5b",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31630,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31630,
+      "sha256": "88526fdc8c9cbbe06dd9a1333593ef1fd82b8673be06e5d9a6237ed0096ea819",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31634,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31634,
+      "sha256": "47c0996aeb99fb68848256b42523eac0ea38a0dd6174f9862611cf66411f1452",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/AUDJPY/AUDJPY_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28755,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28755,
+      "sha256": "a534bf390e190c01407a4a63eb16b3e849329a089c560479c48ba807bd7ce137",
+      "symbol": "AUDJPY",
+      "timeframe": "1m@v1"
+    }
+  ]
+}

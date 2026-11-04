@@ -1,0 +1,2772 @@
+{
+  "approval": {
+    "approved_at": "2026-11-04T01:17:21.212014Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2018-03-16T21:01:00Z",
+        "start": "2018-03-16T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2018-03-11 の週。カレンダーの休場帯の 1 分足 1 本。全期間の集計（PR #85）で同じ週・同じ本数を人間が分類済み（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-10-27 の週（NY 暦の日曜）。金曜の閉場の後の約 1 時間の 1 分足 58 本。米国式なら営業時間に当たる観測の事実で、時刻の規則の表の次の版の検討材料（D12 §11.7.10）。表 版 1 は変えない（D12-99・D12-135 (a)）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-12-25T22:10:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-22 の週。2019-12-26 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 9 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-29 の週。2020-01-02 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      ]
+    }
+  ],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-10-28T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-10-27T21:00:00Z",
+              "start": "2017-10-28T22:00:00Z"
+            },
+            {
+              "end": "2019-10-26T21:00:00Z",
+              "start": "2018-10-27T22:00:00Z"
+            },
+            {
+              "end": "2020-10-31T21:00:00Z",
+              "start": "2019-10-26T22:00:00Z"
+            },
+            {
+              "end": "2021-11-06T21:00:00Z",
+              "start": "2020-10-31T22:00:00Z"
+            },
+            {
+              "end": "2022-11-05T21:00:00Z",
+              "start": "2021-11-06T22:00:00Z"
+            },
+            {
+              "end": "2023-11-04T21:00:00Z",
+              "start": "2022-11-05T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-11-04T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "GBPUSD"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:33:47.823168Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:17:21.212014Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "d2dbf17f0ace54e9d7cbab884372e9c3d05725bb1907f32397c793d4394b7a7c"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174070,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "0ee6cbf74ee3d3e0c9e223992494520f646b21775a8c2ac39d2213ad7ca1a4fc"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "04ca302c189ee56c0a0287352cc5baf4bd9b6f97b6d9afd8c95f579c415fb498"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43526,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "f7cbc16be507a7f453217a0705224b4ad250a17280ad2210dffa366a2c84820b"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2597096,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "c09d56e262ba4052e821298c4f529ee6c602b648595db5e68db386b1e68bee0e"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:01:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10887,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "b19f0205eaf13c1586b28e49ad75a3f2fe0c90c60cc4c59d8d1895b2d9d7aa36"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "951c7c4d89813f8104f0662b99eb06dfb0dbc7142abd3fc782c998afc96f1d51"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2018-03-16T21:01:00Z",
+        "start": "2018-03-16T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:01:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:02:00Z",
+        "start": "2019-11-01T21:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:03:00Z",
+        "start": "2019-11-01T21:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:04:00Z",
+        "start": "2019-11-01T21:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:05:00Z",
+        "start": "2019-11-01T21:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:06:00Z",
+        "start": "2019-11-01T21:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:07:00Z",
+        "start": "2019-11-01T21:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:08:00Z",
+        "start": "2019-11-01T21:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:09:00Z",
+        "start": "2019-11-01T21:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:10:00Z",
+        "start": "2019-11-01T21:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:11:00Z",
+        "start": "2019-11-01T21:10:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:12:00Z",
+        "start": "2019-11-01T21:11:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:13:00Z",
+        "start": "2019-11-01T21:12:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:14:00Z",
+        "start": "2019-11-01T21:13:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:15:00Z",
+        "start": "2019-11-01T21:14:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:16:00Z",
+        "start": "2019-11-01T21:15:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:17:00Z",
+        "start": "2019-11-01T21:16:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:18:00Z",
+        "start": "2019-11-01T21:17:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:19:00Z",
+        "start": "2019-11-01T21:18:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:20:00Z",
+        "start": "2019-11-01T21:19:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:21:00Z",
+        "start": "2019-11-01T21:20:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:22:00Z",
+        "start": "2019-11-01T21:21:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:23:00Z",
+        "start": "2019-11-01T21:22:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:24:00Z",
+        "start": "2019-11-01T21:23:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:25:00Z",
+        "start": "2019-11-01T21:24:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:26:00Z",
+        "start": "2019-11-01T21:25:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:27:00Z",
+        "start": "2019-11-01T21:26:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:28:00Z",
+        "start": "2019-11-01T21:27:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:29:00Z",
+        "start": "2019-11-01T21:28:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:30:00Z",
+        "start": "2019-11-01T21:29:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:31:00Z",
+        "start": "2019-11-01T21:30:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:32:00Z",
+        "start": "2019-11-01T21:31:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:33:00Z",
+        "start": "2019-11-01T21:32:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:34:00Z",
+        "start": "2019-11-01T21:33:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:35:00Z",
+        "start": "2019-11-01T21:34:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:36:00Z",
+        "start": "2019-11-01T21:35:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:37:00Z",
+        "start": "2019-11-01T21:36:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:38:00Z",
+        "start": "2019-11-01T21:37:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:39:00Z",
+        "start": "2019-11-01T21:38:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:40:00Z",
+        "start": "2019-11-01T21:39:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:41:00Z",
+        "start": "2019-11-01T21:40:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:42:00Z",
+        "start": "2019-11-01T21:41:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:43:00Z",
+        "start": "2019-11-01T21:42:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:44:00Z",
+        "start": "2019-11-01T21:43:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:45:00Z",
+        "start": "2019-11-01T21:44:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:46:00Z",
+        "start": "2019-11-01T21:45:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:47:00Z",
+        "start": "2019-11-01T21:46:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:48:00Z",
+        "start": "2019-11-01T21:47:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:49:00Z",
+        "start": "2019-11-01T21:48:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:50:00Z",
+        "start": "2019-11-01T21:49:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:51:00Z",
+        "start": "2019-11-01T21:50:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:52:00Z",
+        "start": "2019-11-01T21:51:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:53:00Z",
+        "start": "2019-11-01T21:52:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:54:00Z",
+        "start": "2019-11-01T21:53:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:55:00Z",
+        "start": "2019-11-01T21:54:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:56:00Z",
+        "start": "2019-11-01T21:55:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:57:00Z",
+        "start": "2019-11-01T21:56:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:57:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:01:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:02:00Z",
+        "start": "2019-12-25T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:03:00Z",
+        "start": "2019-12-25T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:04:00Z",
+        "start": "2019-12-25T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:05:00Z",
+        "start": "2019-12-25T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:06:00Z",
+        "start": "2019-12-25T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:07:00Z",
+        "start": "2019-12-25T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:08:00Z",
+        "start": "2019-12-25T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:10:00Z",
+        "start": "2019-12-25T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:01:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:02:00Z",
+        "start": "2020-01-01T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:03:00Z",
+        "start": "2020-01-01T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:04:00Z",
+        "start": "2020-01-01T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:05:00Z",
+        "start": "2020-01-01T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:06:00Z",
+        "start": "2020-01-01T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:07:00Z",
+        "start": "2020-01-01T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:08:00Z",
+        "start": "2020-01-01T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:09:00Z",
+        "start": "2020-01-01T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    }
+  ],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174070,
+      "coverage_counts": {
+        "built_bars": 174070,
+        "no_record_bars": 266,
+        "partial_bars": 4236,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17904
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1397,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17904
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43526,
+      "coverage_counts": {
+        "built_bars": 43526,
+        "no_record_bars": 58,
+        "partial_bars": 2235,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17904
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2597096,
+      "coverage_counts": {
+        "built_bars": 2597096,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17904
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:01:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10887,
+      "coverage_counts": {
+        "built_bars": 10887,
+        "no_record_bars": 9,
+        "partial_bars": 1839,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 17904
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "b9ca3a2142bf7c498c5b0b1fb803c0c44df6938dad76a11bd6203e9667437f6e",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31613,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31613,
+      "sha256": "5bded70789d6c9ab6d30eec5cd5680927fd8c4b0df6a3aae1abbaa6f1e828b95",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28752,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28752,
+      "sha256": "4201fbaadbee4900104b94b5280ad9899ce194ba1bdfd4cf5a58c54cd1e3527e",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32958,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32958,
+      "sha256": "7a0d06ca442a066f73c276a660542a64b4c89904d954061fc8e5306fd208b4bd",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28755,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28755,
+      "sha256": "3e85d7ebdd0dd662c12d83c7c64be789b4c8785e27298029a27fa9750b75d4fb",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33088,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33088,
+      "sha256": "a726fa30a90aab4625bfcfb9f23320285fa3db610c9758a0a5d7ab80da9fb473",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31548,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31548,
+      "sha256": "999e1486c68c33f3cc4dc9499ed4997f2c71b441849675f734fcba0d99377b1e",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29615,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29615,
+      "sha256": "57b9e3498b7eab6c521bd16068dcbc021270981c9b048cc0ebd0060dc122ccb2",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32342,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32342,
+      "sha256": "109e695a88a52a8d8d8fa7c3d254cb04681362b5dc4fd455f91a56dcb7cff05b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29926,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29926,
+      "sha256": "ebd8dd2898784b02c6b86024b11295384526214ea736403da1d2db8f9a9ccfa0",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31624,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31624,
+      "sha256": "9350638e2a437992319531edd814d6b6ef6d17df9f33b1398e420f185c8fcfb7",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31606,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31606,
+      "sha256": "22ca67b7ab65c1bcd5f3e3b7756d2766e34e7d820bbe76595ba67952606c44af",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28420,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28420,
+      "sha256": "818705707c01564b637becb49238441f6cc11090fac3bdc5c671b0673080f1ca",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31616,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31616,
+      "sha256": "7ad7c25e362e5b0f49b014dc68b82a67d7b53d20e3ff0c0b2a31227b43ff94eb",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28795,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28795,
+      "sha256": "27e1bc46acc004274f69fabe0e3d3d7e78356a4639ccaf6a1f32ea00e266e7d7",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31547,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31547,
+      "sha256": "35772d8c6c5818315cb4ba18edb47f70fe9e5f486a6197f2d9d43b4fbf873e13",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30215,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30215,
+      "sha256": "9f4173e912059b0b8fe4e43ed20a5afba75c2e0277ef3f64bdcc4b3978dde00a",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33110,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33110,
+      "sha256": "7c2ce9ae1757310d4828566dee36dc0256502f621acecaea9f76d4c4a2a296e8",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30200,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30200,
+      "sha256": "45f6841027a1e2e7f51306c979b5a8e19b811786ba47fe1ed13a49b53753e65a",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31667,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31667,
+      "sha256": "3356cc2405311d40108a91672d6936ad108d0edb7293f6dff1725ca0f7ccbd0b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "b0bed6864ba24bc69b9b5b13faf1559502723875b1382dc3b6af40ea06a94759",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28777,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28777,
+      "sha256": "68934fda42e5a24fefc7716575a50238614732879e334906504e492c8b0e02f3",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33107,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33107,
+      "sha256": "9c3b2247ff8d2eddbda162c13976cc1eae02a63b216755eb92d465913f51e847",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31605,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31605,
+      "sha256": "c24ecb91508d32aba6d5d8c1311eccdbd4aabb3c28aab3b5110d5aed9abae56e",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28180,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28180,
+      "sha256": "9ebb3a8190c5a072d16d3393e3b3eb3fa83a7fa3aefc8fa1c9227f7e2ff5cc72",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31306,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31306,
+      "sha256": "287c77ca6836d58261e2e3af2c45482bf3d961de7bc41dc44d0a2a1ecfd0dfa8",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28773,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28773,
+      "sha256": "ede14ec4914d28ba95088e1415666f3c33809274da55f70f74b7012804645783",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30047,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30047,
+      "sha256": "6da34fec45a1577316afae8f1b1fd89ebb8aa7a294d17d10bfa5a7585478b237",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31661,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31661,
+      "sha256": "dd1fec2f253c14e1d90dd701c047e326de5f258f7a964b896eb426842737baff",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33085,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33085,
+      "sha256": "4b60b462c8aeb03fa178d370826fbd98d6fa0effe235c6c08afb97d77e403e40",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28779,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28779,
+      "sha256": "f2068dac2ad1603700cd2e1569fca561f0ab6336b71d99b98ae7474f049dc89f",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33099,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33099,
+      "sha256": "4ace2ef905933b8f3f609912cbae6974cf51720a43c1fcf0883e9d222222df7e",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31643,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31643,
+      "sha256": "78a1574aab4296ff10ea7f695b8b708e1acd87cef951deb7656f2ef0c6515e5b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30221,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30221,
+      "sha256": "9c9cef083a3cbbb4f45b602e803e9a60d6c7a563c9a698689b5f5134ac49d53d",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33105,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33105,
+      "sha256": "43f996735110b24a35a970a68fcae947ac93fda13dba474d819cc3da1f08c0d8",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29966,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29966,
+      "sha256": "bfd4fb2affe82e3183c2a096a0ea331a9863fbef1c0f387a3714ed7c8c0dd66c",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30166,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30166,
+      "sha256": "127937fd77b53ac752cc3168d0bf04aace1418bfea9abfd92ef4c78e61260883",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31553,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31553,
+      "sha256": "441fdfd56b14076990ac8b8c32417063ef5fc0b4aa106025710ad0bf00956601",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28713,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28713,
+      "sha256": "21c563d0214e0a41a6a62d8e0c2fa9c9e9d0ecb4821b666f09e4e1845bf08f3a",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31570,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31570,
+      "sha256": "4e0c368af6e04edbf32219f43056b00cf7921e8273cf285553b46f9d4de86507",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31349,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31349,
+      "sha256": "0fe4612c561b679d9354c01fc129ff8d0db65e76631d0f575ef155f13b660cf8",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29995,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29995,
+      "sha256": "d009d2762b5dfb32309af31c4f3a3bbf8a74cd56c206dc8961b15bc43bd68df6",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31542,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31542,
+      "sha256": "c69f95780a5df203b8d3e1da387313119e5134630832335a4c9977c805672bb2",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32863,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32863,
+      "sha256": "4497ed7c957f0e773fa5ba5a3078c0f0ee8864c5b9aef553233ddb151e31d03d",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30073,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30073,
+      "sha256": "bd72c5b0f1d0f6bd5a146dfa6eed5111878aa7b242ad5990dc13308a9d37cdf4",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31467,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31467,
+      "sha256": "eb6754ecdc10c6c9f52eb8cd37d23710ee97891a97942af59d45dcd9b46cd752",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31445,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31445,
+      "sha256": "ff4be30a199c3acae4cc36f48349bd65827bcbab4d79e3f7d78b7fb0d2a32da9",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30153,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30153,
+      "sha256": "f0f4bd64107f27729371e8ec7f024ad729b80e5f8b18f5cd2f57ed715533d46b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31578,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31578,
+      "sha256": "0343ab7f8b54fc114f1c8bee7112ab17d8d673c5f4ab5e0731127e1eeba0e0e0",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28641,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28641,
+      "sha256": "d511e25354b0c5ed51b2f3dd03def220c7dea797d9c7d54a4d460722ac8b587e",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28720,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28720,
+      "sha256": "c1d77cde44b5f4e35b1244893ca46b9b1209eda358d3c0178523446afefcdcce",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32913,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32913,
+      "sha256": "ae36606e6f5ad51e1ffc4100a595973cfb2101f27eee3a63ceac142b4fcb1381",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31398,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31398,
+      "sha256": "e893bd5988f19c1d7a7ea43bb11f4f48092b213e6f821a526e7178155af3827b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29866,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29866,
+      "sha256": "2a3a6a18c0c8773cf4a556b32f257113877836487db3b20120d9ff0e8d89d8c4",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31319,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31319,
+      "sha256": "81acff57c15bcd4adef09dc8382156439a66272ef1cd632ec644d57dc5427527",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31390,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31390,
+      "sha256": "d74602aa9a5289b18985c43132d2dc3f4cba5c3f6d1e2cab879beeffd307c36a",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31343,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31343,
+      "sha256": "8ff66470f5c707f4dfac38a56e12425609876ebfe8f70f39a77bc195b3abb0fa",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31403,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31403,
+      "sha256": "ad7f852ccbf82bb5ad991195405f2393088539451bccce8fcb7a27850272dccd",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29847,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29847,
+      "sha256": "34c35e3228aab062a447aca30ee526413261d1b6522b9dda78e08bc56af1a914",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31480,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31480,
+      "sha256": "22f58c8a12afaa4cb68cb4df4ac9ab6b02c7d3fdcd04993d294da2c20f65ece9",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32837,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32837,
+      "sha256": "600770be7155a1d005020bfee5a925053b38298f141a1a372321a55471426ab9",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29980,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29980,
+      "sha256": "10ac8ea4a2cd4eef6c0adc5c068add9a1d65c0ed5c320388cc7c96b6a84392d1",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28551,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28551,
+      "sha256": "9a726c7a86f77c31ccb129b2f7c7cd6b45bad2d0d2439571bd769b7439ac52da",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32819,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32819,
+      "sha256": "de736d74e385b396d54fee7f2d4003047b514b600bca99e076593c51069b9540",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29947,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29947,
+      "sha256": "3794008d6c10c1cda578244718b953f81fae193b1011618538521501bc3cd67d",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31356,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31356,
+      "sha256": "7b2c2058e3d374c9e89c9998490d3e28004be5c9cde563ebd0bb9c52c639b227",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31219,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31219,
+      "sha256": "3f859a01e34c2f9cd9e80ed09a9b3119814fe915622b7189b93bbf1ea1dcb32b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29918,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29918,
+      "sha256": "674b837ec7ee8164c3282a8cc10a00111db251cbcc0515f4ed2fcf4c91472034",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32793,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32793,
+      "sha256": "14fc170a421a41432b04b2a3286f0d9479ae92c982d08b941a59ff5e44b23433",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31451,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31451,
+      "sha256": "e46d3391e3cd31014dadd08bc513092a49f6b40752480e6e98c30bf8d4ca9ef0",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30069,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30069,
+      "sha256": "cfa0082c4cc7742cef81f552c87aaa8584b52f7409d07891838a497e3412d2c8",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31532,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31532,
+      "sha256": "fc47c705c712a653d31df900557cc842b18cabbeda113a401485c4ea4b6507d2",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30025,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30025,
+      "sha256": "1940d760f19b194ed229e3545212cb0bab2f6ed4a1672ec5b7e7ac96f6bcc7aa",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31245,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31245,
+      "sha256": "7ebfdc3a2dc79c9bf14ba9782c576b30df10a31fa4c0211d9848a4bf28b0d82a",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28632,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28632,
+      "sha256": "748c713a5e060370cc6f41cbf0b35f0c3cb0dd1789b19df7dfd035d621920d0c",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32851,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32851,
+      "sha256": "aae93414a3290b6fcf9e485d7c5935a7c74fc41783bee2415eedfcbf50c425d6",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28477,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28477,
+      "sha256": "dd674bab5ba15672469c1349b2b6f0c6dee5b11080d2253740c40fd1ed8653df",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32886,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32886,
+      "sha256": "b227983eda782792f4e4d285b6fe1241fd62d78390a2961265a1cffbdd98a581",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31468,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31468,
+      "sha256": "42b95f8e68bfac23ca00440d1fdd1806dcd8ae23cb29835a20f5e650ab458236",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29995,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29995,
+      "sha256": "e59da4a1b29abb546e2949e85143f92ecf522912825d906798fa4283adfb0c1c",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32931,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32931,
+      "sha256": "c66996f3b15e1392a4523db9f3e96a019c03dc42fb5e20ccca990622df6f72dc",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29988,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29988,
+      "sha256": "5d1dfbc74071b01d9efc55f324344436c0ad41d6bb8b81240d0d21799a769d18",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31409,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31409,
+      "sha256": "6529c78650fab1eab31d7c16817b32c081d927faf659887258859ab8faac63f5",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31441,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31441,
+      "sha256": "406572f1c19be13d52882312df5f81a81fb13cba08e4503e1ddb3100122d7d1b",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPUSD/GBPUSD_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28708,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28708,
+      "sha256": "013f467af73d7033af06c52221483f0dd335107653952a338646e8a5bbb6aa10",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    }
+  ]
+}

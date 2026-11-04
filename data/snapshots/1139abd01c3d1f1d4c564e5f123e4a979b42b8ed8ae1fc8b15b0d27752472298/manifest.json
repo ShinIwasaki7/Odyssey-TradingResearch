@@ -1,0 +1,2671 @@
+{
+  "approval": {
+    "approved_at": "2026-11-04T01:21:35.100570Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-10-27 の週（NY 暦の日曜）。金曜の閉場の後の約 1 時間の 1 分足 58 本。米国式なら営業時間に当たる観測の事実で、時刻の規則の表の次の版の検討材料（D12 §11.7.10）。表 版 1 は変えない（D12-99・D12-135 (a)）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-12-25T22:07:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-22 の週。2019-12-26 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 5 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-29 の週。2020-01-02 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 9 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1m@v1"
+        }
+      ]
+    }
+  ],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-10-28T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-10-27T21:00:00Z",
+              "start": "2017-10-28T22:00:00Z"
+            },
+            {
+              "end": "2019-10-26T21:00:00Z",
+              "start": "2018-10-27T22:00:00Z"
+            },
+            {
+              "end": "2020-10-31T21:00:00Z",
+              "start": "2019-10-26T22:00:00Z"
+            },
+            {
+              "end": "2021-11-06T21:00:00Z",
+              "start": "2020-10-31T22:00:00Z"
+            },
+            {
+              "end": "2022-11-05T21:00:00Z",
+              "start": "2021-11-06T22:00:00Z"
+            },
+            {
+              "end": "2023-11-04T21:00:00Z",
+              "start": "2022-11-05T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-11-04T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "USDCHF"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:47:23.474848Z",
+  "declaration_record": {
+    "declared_at": "2026-11-04T01:21:35.100570Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "55c5da149c0b027e449c819b316deb6aa9150da9cfa5a4bb943f3c8fed97c2c7"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174071,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "eefc8137010e9e825a594b6d2c91b6b7fd5615c15dc06564d8839083f1a03a16"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "95a50fe70c4f1a8a7229aec947fc78484839f9e44d40677f59d4abf0a310e381"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43524,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "16bc8b193b561fa8a67a0e91d7b911d56af208749bf66b190693df2548e126c7"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2591528,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "c273bba3746c63b0ff998173c226ab9ab8801efa8638e7afe3c0257f9bbb11f2"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10887,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "97a61da0fc35d4d0dc31904498618982e66bd7184c3cc2c154150f2aef9d1b4e"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "4a983e579d2daf6d759b5538d86658702b797439326b2662810273bc81177790"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:01:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:02:00Z",
+        "start": "2019-11-01T21:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:03:00Z",
+        "start": "2019-11-01T21:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:04:00Z",
+        "start": "2019-11-01T21:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:05:00Z",
+        "start": "2019-11-01T21:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:06:00Z",
+        "start": "2019-11-01T21:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:07:00Z",
+        "start": "2019-11-01T21:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:08:00Z",
+        "start": "2019-11-01T21:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:09:00Z",
+        "start": "2019-11-01T21:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:10:00Z",
+        "start": "2019-11-01T21:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:11:00Z",
+        "start": "2019-11-01T21:10:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:12:00Z",
+        "start": "2019-11-01T21:11:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:13:00Z",
+        "start": "2019-11-01T21:12:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:14:00Z",
+        "start": "2019-11-01T21:13:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:15:00Z",
+        "start": "2019-11-01T21:14:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:16:00Z",
+        "start": "2019-11-01T21:15:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:17:00Z",
+        "start": "2019-11-01T21:16:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:18:00Z",
+        "start": "2019-11-01T21:17:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:19:00Z",
+        "start": "2019-11-01T21:18:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:20:00Z",
+        "start": "2019-11-01T21:19:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:21:00Z",
+        "start": "2019-11-01T21:20:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:22:00Z",
+        "start": "2019-11-01T21:21:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:23:00Z",
+        "start": "2019-11-01T21:22:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:24:00Z",
+        "start": "2019-11-01T21:23:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:25:00Z",
+        "start": "2019-11-01T21:24:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:26:00Z",
+        "start": "2019-11-01T21:25:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:27:00Z",
+        "start": "2019-11-01T21:26:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:28:00Z",
+        "start": "2019-11-01T21:27:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:29:00Z",
+        "start": "2019-11-01T21:28:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:30:00Z",
+        "start": "2019-11-01T21:29:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:31:00Z",
+        "start": "2019-11-01T21:30:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:32:00Z",
+        "start": "2019-11-01T21:31:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:33:00Z",
+        "start": "2019-11-01T21:32:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:34:00Z",
+        "start": "2019-11-01T21:33:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:35:00Z",
+        "start": "2019-11-01T21:34:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:36:00Z",
+        "start": "2019-11-01T21:35:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:37:00Z",
+        "start": "2019-11-01T21:36:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:38:00Z",
+        "start": "2019-11-01T21:37:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:39:00Z",
+        "start": "2019-11-01T21:38:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:40:00Z",
+        "start": "2019-11-01T21:39:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:41:00Z",
+        "start": "2019-11-01T21:40:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:42:00Z",
+        "start": "2019-11-01T21:41:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:43:00Z",
+        "start": "2019-11-01T21:42:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:44:00Z",
+        "start": "2019-11-01T21:43:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:45:00Z",
+        "start": "2019-11-01T21:44:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:46:00Z",
+        "start": "2019-11-01T21:45:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:47:00Z",
+        "start": "2019-11-01T21:46:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:48:00Z",
+        "start": "2019-11-01T21:47:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:49:00Z",
+        "start": "2019-11-01T21:48:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:50:00Z",
+        "start": "2019-11-01T21:49:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:51:00Z",
+        "start": "2019-11-01T21:50:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:52:00Z",
+        "start": "2019-11-01T21:51:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:53:00Z",
+        "start": "2019-11-01T21:52:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:54:00Z",
+        "start": "2019-11-01T21:53:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:55:00Z",
+        "start": "2019-11-01T21:54:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:56:00Z",
+        "start": "2019-11-01T21:55:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:57:00Z",
+        "start": "2019-11-01T21:56:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:57:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:01:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:03:00Z",
+        "start": "2019-12-25T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:04:00Z",
+        "start": "2019-12-25T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:05:00Z",
+        "start": "2019-12-25T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:07:00Z",
+        "start": "2019-12-25T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:01:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:03:00Z",
+        "start": "2020-01-01T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:04:00Z",
+        "start": "2020-01-01T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:05:00Z",
+        "start": "2020-01-01T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:06:00Z",
+        "start": "2020-01-01T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:07:00Z",
+        "start": "2020-01-01T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:08:00Z",
+        "start": "2020-01-01T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:09:00Z",
+        "start": "2020-01-01T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    }
+  ],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174071,
+      "coverage_counts": {
+        "built_bars": 174071,
+        "no_record_bars": 265,
+        "partial_bars": 6006,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 23472
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1515,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 23472
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43524,
+      "coverage_counts": {
+        "built_bars": 43524,
+        "no_record_bars": 60,
+        "partial_bars": 3299,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 23472
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2591528,
+      "coverage_counts": {
+        "built_bars": 2591528,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 23472
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10887,
+      "coverage_counts": {
+        "built_bars": 10887,
+        "no_record_bars": 9,
+        "partial_bars": 2302,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 23472
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "1139abd01c3d1f1d4c564e5f123e4a979b42b8ed8ae1fc8b15b0d27752472298",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31632,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31632,
+      "sha256": "c98916b5112564a517c852d2656e17289ddaa8d7e772f78620e5a2522423eb9e",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28763,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28763,
+      "sha256": "e85625d7326d0d8601bb5c28d69f2c8ac8e47cfe93bdd4d8f205d215cd3274f1",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32903,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32903,
+      "sha256": "f160e13daf20a3f4edae13f1c4b533dd2ad65a0a43c5dd12d709346995bc49d6",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28641,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28641,
+      "sha256": "3a59d037d1381231d4c30f98a89650280f57f82952c4d00641c2bf0e7ef30187",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32987,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32987,
+      "sha256": "67af08681bad9e83ad6e7e41299dd5c6af4c07f81777b3e9533290b7d6f84fb0",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31441,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31441,
+      "sha256": "5a218a10560fe98d6b08e0a105f5f41a1f1887de07d84d2a4b8eba04f0790f8a",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29613,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29613,
+      "sha256": "0275b2b972504c0d36dd8383528951ea45986921662f995e5def117ef841a297",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32310,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32310,
+      "sha256": "f556124a118851ba1d0c6d72095fa0b8ed27183892522411172f7e4bdccaf9ae",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29912,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29912,
+      "sha256": "c4e8da6fda7b6d7184de8c7d52eefddad4ffd4a445b759f1ab22be0718fe5b08",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31597,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31597,
+      "sha256": "602e787922927124de8e4179a9dff33dfd26d00c101f94fbab13aca72fabef66",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31599,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31599,
+      "sha256": "5d88925101d338fe1909a3ba715f229fde0f1d6a30ed51f18108fa86e514212b",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28407,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28407,
+      "sha256": "1231d5f67aff86f5f0e701944062c96acab19a60b1a46582b65943713584b501",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31601,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31601,
+      "sha256": "f9a2cee0a1eb9a3291d142a97f7aac627c6b19bd1d2ccf3d220bf319c4b86b12",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28784,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28784,
+      "sha256": "18ab1e99412d79ba45f954e85e1395cec652bfdfa78d113b3128ab290081bdd9",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31533,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31533,
+      "sha256": "bd1eb18e00949b64b635801b858123f6f03e8e67548acb52ce3625e65cbc968a",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30211,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30211,
+      "sha256": "d1a6148e8ae69be5b76f35e3618144258dfb2b112cce9f1aaf20641d0a4fb790",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33106,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33106,
+      "sha256": "2f4e43145d4703846e146b9cfdb3bd9688f3ea1fb68e8ecdd749b64e6869ca0f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30196,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30196,
+      "sha256": "0191f20138b11f4c29ba671420390996b039c6e9c1eeb6f8a9bba23fecbdd382",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31663,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31663,
+      "sha256": "bd2e308c0de2a9ae15636a5211771f7023c4739d08d160003e358d89dbcdc317",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33093,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33093,
+      "sha256": "d32f3d0678b242ab73de665e6175ee111456de17db27938c5bad535af8038474",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28744,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28744,
+      "sha256": "d92460141dae43e915217e74bc70ca57155da05ca7a79fbf06a79f728bf5790f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33097,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33097,
+      "sha256": "e6ed6dd0450473b6ebd86e3077ea277619d876ee3164e429a2498d3e486bd25b",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31595,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31595,
+      "sha256": "8a802f9031ad7beb2a3d7c6820321c0d4d8ea0904bb02bdb041c6e0d85d96c55",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28176,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28176,
+      "sha256": "65859aa3421dfa4785aefd0b78df894ddf4f13a08c6e2e47afb5b1058d579f8f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31303,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31303,
+      "sha256": "76b7a3e41df22fd70d6d389d8ca980a438010731ccb0546fdb7fb08eced685e9",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28770,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28770,
+      "sha256": "518e3bd50d42eea6ae47c2f55aef22c8926b2d0f0d471b34bcba5e78ceaf8a23",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30032,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30032,
+      "sha256": "d04d974e17e360ff167a79996821233141b6658cd02dc73233c5b9ab5d54e4bc",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31635,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31635,
+      "sha256": "b76673f9b208fb80017514be3456e8f5f833f7f1c43b5873b143761b96cb55b1",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33072,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33072,
+      "sha256": "2db5fa7a134db4ef191cd2d2fc5ed0ffaa8738788440a7cec4f9854b4cb883aa",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28773,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28773,
+      "sha256": "1a3513209c9a437ff5d902b2b25a16dfda28d78906d51a36ac23ca9c40d37313",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33100,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33100,
+      "sha256": "aaf1876e3f2fd65dd8870dae50e417ff42bec5be2844c7335417a89fdd1d04c2",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31636,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31636,
+      "sha256": "9474e044017bcf3234d5808f2ddcd0c0ee4df9ea4afc15ddb8e5bccd224b8b4a",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30214,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30214,
+      "sha256": "46dab754bfd57da50a7235077abad90b2dbf48c91d2ea33022de98f6672e22f0",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33103,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33103,
+      "sha256": "f380b8d709986bf81d3b8714544c56bdca324143f6ad867f5f263b5ef0b28041",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29844,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29844,
+      "sha256": "4edfd38b12306b8c0498cc23755aa04fc9d9e81d14e5c37e1cf5a03114dc12d9",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30091,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30091,
+      "sha256": "5193c5de0d383c658e01ac2210070deb76b65ceafa58e3a95ebfadab4d88d107",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31586,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31586,
+      "sha256": "29fd8fc9d96433fd5c39fed7d5e08bf218516a3bb2b6e01aafb2b6b313b1e766",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28727,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28727,
+      "sha256": "78da1452dbdbeff736e0c11c3b27d1779c31cb3632738dbc84a98eb7a05a9163",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31600,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31600,
+      "sha256": "76a842838cfcff60c4a0885f004ab16df18a666373593b394b670da0c22d3324",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31517,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31517,
+      "sha256": "fc38930fd2421d4cba5674347bb9ba7c9af573b04feee88ab69d8c15f0b35305",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30078,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30078,
+      "sha256": "5536d20d894bd92bc8b4c8bc8942184f2596eccc947a9f14b14d82a17a3709b9",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31537,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31537,
+      "sha256": "bed73b486d64c2fba537ddc7a2846a574fca08318b098140c7bb043880ebb7b2",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32905,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32905,
+      "sha256": "d8127d25d04ccc1dc9f1ff886c3905ff173b79a2b35aeb6ad984c62d96688feb",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30055,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30055,
+      "sha256": "2dee46ce7afe967d399a28fc186edf03a9161e3bb0588158544ebee2444c4054",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31432,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31432,
+      "sha256": "2c523def0e2e19c3737953ed45262a2480c12262a37ba2500303830041b212ac",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31423,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31423,
+      "sha256": "81da8e06e2245f52767d48aea6ebe7c6b8211abf05ce93446b580264b2408558",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30008,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30008,
+      "sha256": "8653a053327f768ef1377adf25a751d17dd422a28153ea5eba4cf645c28c49ba",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31435,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31435,
+      "sha256": "942f2fd7559b626abeb435cabc89068cfb6ae8759b9f9384e4a1437984afb39a",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28605,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28605,
+      "sha256": "ec84f128c708f577ea64afab34d2f40052a2796245fc66bda7cdfd0f565246b4",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28617,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28617,
+      "sha256": "5762192f70b161db4aa7e4c91e67e98a1eabaee6eb438e23a5b24f9bbc5db53f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32820,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32820,
+      "sha256": "9de463462ad67d5c10b2991e57cc623366fc90be716b438362dd0dab30477f2a",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31269,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31269,
+      "sha256": "d78dfd114385fadf326472665501a21b204d845b39a5145dbed2a353f99a7330",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29789,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29789,
+      "sha256": "6034109f90f1d1ffde1eeaff90c02f1efdd696b26bbfedd30a8c4a609e2f3451",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31053,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31053,
+      "sha256": "cdb7c89a1674e359a60f98670e3b8d8007589ed117f201332957fd8fb764031a",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30919,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30919,
+      "sha256": "9b99df404c76b5fa3ab32789ec028defbc9b351ac751a41e99924dc52ba7b12d",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30839,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30839,
+      "sha256": "6ee07dae0bb7dbbd60c57eee5e6a5ec46f9e856b327ff83a4d4baec68b7c4f67",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31038,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31038,
+      "sha256": "242802756093c43ed7b8c310c60d6c8b2b344c1d827f4ba91f176ae29d1e9237",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29508,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29508,
+      "sha256": "da60a58905a61365248207e7e453234ae010cd21c7acc3d04820db8c0d757f5f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31245,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31245,
+      "sha256": "26c67f98f7a4104664cb312b0593deac4f84ca2ec51c0b3abe64bd73769c60a9",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32592,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32592,
+      "sha256": "2da348bcd846f7e17a89871f71d167113eee7af424f11be37d13edea12ae847c",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29848,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29848,
+      "sha256": "bfbfcee14d58109e14272c30f8cce8c2a8662e074271b36aa2b9011f8ee2ff5e",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28534,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28534,
+      "sha256": "a879a7dde543f381343734f3e6d39b1d32b37dca35b1087493b7c355e11a2bc5",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32733,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32733,
+      "sha256": "25f0f016b5c92d78757ee08bab09e34eb3db54f4db3066d4f59e3b5a809b8c51",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29714,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29714,
+      "sha256": "4e54ed4708f561b06cdafa673bd7bdd08f0c1555cc20e2ef68db524a64e97d7b",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31156,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31156,
+      "sha256": "fcde7458c68149b9cb12b9402f6efe1f4873a26241ad1ad576935aaa3b95a291",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31172,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31172,
+      "sha256": "5c896dafd6aac17aa3df4470133e3617ecad612830a2ab9d67e7627406203b82",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29812,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29812,
+      "sha256": "0f024699b982ee08344e1de835b99ef09eae86cf2e35b370c11bb783f5a3c53b",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32580,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32580,
+      "sha256": "d5434514586d545c56e3fd6909b6a0db3ec3cd6cae261ae172498ba4dd36212e",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31281,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31281,
+      "sha256": "dcf0520aff031152ba273363888deb1d28dd3952e788a4ab33cd707881709663",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29939,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29939,
+      "sha256": "37658376c1cfb3eae2355e157c05896d505ffb5c5c1daaa49ae98f26489de98f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31424,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31424,
+      "sha256": "8890f09db39906c349dd7ba9abd139d528ca6921f2f8912127b30d9987f32906",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29971,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29971,
+      "sha256": "fbebe704de63cf57bcb30075af1f3d231ce16cd7ad1e7c5969d4eca99ac5c1b9",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31225,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31225,
+      "sha256": "fa4390e79afe99db41e98fe5517c5d8f9e8c57da34aeb16a31257c99e4e373d5",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28529,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28529,
+      "sha256": "6622293862336b429f83b6fd78b744506e2d67762205149da51b504e9b962b70",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32789,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32789,
+      "sha256": "843d149e669053543f8eaeac25e2b3924a80288ad954d6af5b2461b47567bddd",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28509,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28509,
+      "sha256": "776b2e7eb54d01dc46614f9c07701a297ba52b5effb8df45a5d9cdca50b69e57",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32842,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32842,
+      "sha256": "74d18bed1d907672a73d8ce2248ace0287769ad305f21c61f7d89c995cf1f7f4",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31420,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31420,
+      "sha256": "e17c7a82496b3fde6ce41133cc80ddd4ddd457451ce389b1cb6e2fe7d646381e",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29976,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29976,
+      "sha256": "a17857a905125330e2b80c3bf58159013cbec4ffeedf6bd132b6e79453db74cf",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32816,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32816,
+      "sha256": "fe80ff9b4f41af696b4d994f123fa185d414b7e8f710c3251128f0048f3e896f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29997,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29997,
+      "sha256": "b175cda65e84c57d24888d74fd686d2d1ef1e8686e2d8a4c5a28666a463df60d",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31451,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31451,
+      "sha256": "62c105ffb454eec6374262c6bdeea6efe07da49c61456facb3998b3dbed53dec",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31450,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31450,
+      "sha256": "3147b376ededffbec092d7afdad03788381ef6235dd9c4e49a2bd3fde13cc425",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/USDCHF/USDCHF_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28658,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28658,
+      "sha256": "09da5d64a53d28d3830ff847b954312bb21222029928d1f3b55798ba9a174c0f",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    }
+  ]
+}
