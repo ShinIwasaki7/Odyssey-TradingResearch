@@ -1,4 +1,4 @@
-"""円以外の決済通貨の換算の受入テスト（D06 v1.20 案 §19.16 の CT-2〜7・12・16・17・21・29・30）。
+"""円以外の決済通貨の換算の受入テスト（D06 v1.20 案 §19.16 の CT-2〜7・12・16・17・21・29〜33）。
 
 人工データだけを使う（T01 の人工の足を別の通貨ペアの系列に付け替え、換算の脚は人工の率の
 1 分足）。実データ・成績・実価格は読まない。値の検算は手計算の式（D06 §19.6）で行う。
@@ -34,6 +34,7 @@ from tests.fixtures.backtest.conversion import (
     EURUSD,
     USDCHF,
     USDJPY,
+    FakeMinutes,
     FakeQuotes,
     minute_rates,
     minute_series,
@@ -92,6 +93,7 @@ def _run(
     execution: tuple[Bar, ...] | None = None,
     signal: tuple[Bar, ...] | None = None,
     run_interval: Interval = RUN_INTERVAL,
+    minutes: FakeMinutes | None = None,
 ) -> RunOutput:
     return run_converted(
         symbol=symbol,
@@ -99,6 +101,7 @@ def _run(
         execution_bars=relabel(execution_bars() if execution is None else execution, symbol),
         run_interval=run_interval,
         quotes=quotes,
+        minutes=minutes,
     )
 
 
@@ -549,3 +552,141 @@ def test_ct30_two_legs_across_the_weekend_count_their_skew_without_the_close() -
         require_usable(late, boundary, policy, CALENDAR)
     assert raised.value.failure is ConversionFailure.STALENESS_EXCEEDED
     assert raised.value.length == timedelta(minutes=16)
+
+
+# --- CT-31〜CT-33: 取引の通貨ペアにも記録の無い時間（決定 (31) (a)。v1.22 案 §19.5） -----------
+
+
+def _traded(symbol: Symbol, holes: Sequence[Interval] = ()) -> FakeMinutes:
+    """取引の通貨ペア（執行系列の通貨ペア）の 1 分足（MT5 経路の run。`holes` の分は無記録）。"""
+    gaps = tuple(holes)
+    return FakeMinutes(
+        minute_series=minute_series(symbol),
+        bars=minute_rates(symbol, QUOTES_SPAN, "1.1", holes=gaps),
+        unrecorded=gaps,
+    )
+
+
+def _cause(output: RunOutput) -> str:
+    reason = output.manifest.reason
+    assert reason is not None
+    detail = reason.detail
+    cause = getattr(detail, "cause", None)
+    assert isinstance(cause, str)
+    return cause
+
+
+def test_ct31_mark_to_market_converts_while_both_pairs_are_unrecorded() -> None:
+    """CT-31: USDJPY と EURUSD の両方が 60 分無記録の間も、建玉の時価評価は換算されて run が続く。
+
+    9:30〜10:30 に両方が無記録。休場だけを除いた古さは 9:45 で 16 分（今までの測り方では run の
+    失敗）だが、EURUSD に記録のある分だけを数えると観測の分の 1 分。記録の `at − observed_at` は
+    実際の差のまま。EURUSD の 1 分足を持たない run（仮置き C4-2）は今までの測り方で失敗する。
+    """
+    hole = (Interval(start=_at(9, 30), end=_at(10, 30)),)
+    quotes = _quotes({USDJPY: "150"}, holes={USDJPY: hole})
+    ok = _run(EURUSD, quotes=quotes, minutes=_traded(EURUSD, hole))
+    assert ok.result.status is RunStatus.COMPLETED, ok.manifest.reason
+    inside = [
+        row
+        for row in _evidence(ok, EvidenceKind.MARK_TO_MARKET)
+        if row.conversion_paths and _at(9, 45) <= row.at.time <= _at(10, 30)
+    ]
+    assert inside, "the open position must be marked inside the hole"
+    for row in inside:
+        assert row.conversion_paths[0].observed_at == _at(9, 29)
+    assert max(row.at.time - row.conversion_paths[0].observed_at for row in inside) == (
+        timedelta(minutes=61)
+    )
+    without = _run(EURUSD, quotes=quotes)
+    assert without.result.status is RunStatus.FAILED_DATA_ERROR
+    assert "0:16:00 old in session time at" in _cause(without)
+
+
+def test_ct31_a_traded_pair_recording_every_minute_keeps_the_previous_outcome() -> None:
+    """CT-31: EURUSD がセッションの毎分に記録を持てば、結果は決定 (25) (a) の測り方と同じ。
+
+    USDJPY だけが 9:30〜10:30 に無記録なら、1 分足を持つ run も持たない run も 9:45 の時価評価で
+    同じ古さ（16 分）の超過で失敗する。
+    """
+    quotes = _quotes(
+        {USDJPY: "150"}, holes={USDJPY: (Interval(start=_at(9, 30), end=_at(10, 30)),)}
+    )
+    with_minutes = _run(EURUSD, quotes=quotes, minutes=_traded(EURUSD))
+    without = _run(EURUSD, quotes=quotes)
+    assert with_minutes.result.status is RunStatus.FAILED_DATA_ERROR
+    assert without.result.status is RunStatus.FAILED_DATA_ERROR
+    assert "0:16:00 old in session time counting only minutes" in _cause(with_minutes)
+    assert "0:16:00 old in session time at" in _cause(without)
+
+
+def test_ct32_staleness_of_exactly_15_counted_minutes_converts_and_16_fails() -> None:
+    """CT-32: USDJPY が無記録の間に EURUSD が記録を持つ分だけを数え、15 分ちょうどは換算できる。
+
+    USDJPY の最後の観測は 9:44（9:45〜10:30 が無記録）。EURUSD が 9:59〜10:30 に無記録なら、
+    10:00〜10:30 の処理点の古さはどれも 15 分ちょうどで run が続く。EURUSD が 10:00 から無記録
+    なら 10:00 の古さは 16 分で FAILED_DATA_ERROR、理由の長さも 16 分（仮置き C4-5）。
+    """
+    quotes = _quotes(
+        {USDJPY: "150"}, holes={USDJPY: (Interval(start=_at(9, 45), end=_at(10, 30)),)}
+    )
+    exact = _run(
+        EURUSD,
+        quotes=quotes,
+        minutes=_traded(EURUSD, (Interval(start=_at(9, 59), end=_at(10, 30)),)),
+    )
+    assert exact.result.status is RunStatus.COMPLETED, exact.manifest.reason
+    over = _run(
+        EURUSD,
+        quotes=quotes,
+        minutes=_traded(EURUSD, (Interval(start=_at(10, 0), end=_at(10, 30)),)),
+    )
+    assert over.result.status is RunStatus.FAILED_DATA_ERROR
+    cause = _cause(over)
+    assert "STALENESS_EXCEEDED" in cause
+    assert "0:16:00 old in session time counting only minutes the traded pair recorded" in cause
+
+
+def test_ct32_admission_is_still_rejected_before_the_order_when_only_usdjpy_is_stale() -> None:
+    """CT-32: EURUSD が記録を持つ間の USDJPY の 30 分の無記録は、今の規則のまま受付前の拒否。"""
+    before = {USDJPY: (Interval(start=_at(8, 30), end=_at(9, 0)),)}
+    rejected = _run(EURUSD, quotes=_quotes({USDJPY: "150"}, holes=before), minutes=_traded(EURUSD))
+    assessment = rejected.rows(TraceTable.RISK_ASSESSMENTS)[0]
+    assert assessment.reached_step == 5  # type: ignore[attr-defined]
+    decision = rejected.rows(TraceTable.ATTEMPT_DECISIONS)[0].primary  # type: ignore[attr-defined]
+    assert decision.reason.code is ReasonCode.DATA_ERROR
+    assert rejected.result.status is RunStatus.COMPLETED
+
+
+def test_ct33_two_legs_convert_while_the_traded_usdchf_is_unrecorded() -> None:
+    """CT-33（仮置き C4-6）: USDCHF が無記録で USDJPY だけが記録を持つ間も換算できる。
+
+    9:30〜10:30 に USDCHF（取引の通貨ペア・1 本目の脚）が無記録。USDCHF の 1 分足を持つ run は
+    ずれも古さも USDCHF に記録のある分だけを数えて上限内で、run が続く。持たない run は今までの
+    測り方で失敗する。USDCHF に記録があり USDJPY が 9:29 から無記録なら、9:45 のずれは 16 分で
+    換算不可（検査の順でずれが先）。
+    """
+    rates = {USDCHF: "0.8", USDJPY: "150"}
+    hole = (Interval(start=_at(9, 30), end=_at(10, 30)),)
+    quotes = _quotes(rates, symbols=(USDCHF, USDJPY), holes={USDCHF: hole})
+    ok = _run(USDCHF, quotes=quotes, minutes=_traded(USDCHF, hole))
+    assert ok.result.status is RunStatus.COMPLETED, ok.manifest.reason
+    inside = [
+        row
+        for row in _evidence(ok, EvidenceKind.MARK_TO_MARKET)
+        if row.conversion_paths and _at(9, 45) <= row.at.time <= _at(10, 30)
+    ]
+    assert inside
+    # 記録のずれ（実際の差）は上限を超えたまま残る（10:30 で 60 分）。
+    assert max(row.conversion_paths[0].skew for row in inside) == timedelta(minutes=60)
+    assert _run(USDCHF, quotes=quotes).result.status is RunStatus.FAILED_DATA_ERROR
+    moving = _quotes(
+        rates,
+        symbols=(USDCHF, USDJPY),
+        holes={USDJPY: (Interval(start=_at(9, 29), end=_at(10, 30)),)},
+    )
+    skewed = _run(USDCHF, quotes=moving, minutes=_traded(USDCHF))
+    assert skewed.result.status is RunStatus.FAILED_DATA_ERROR
+    cause = _cause(skewed)
+    assert "SKEW_EXCEEDED" in cause
+    assert "0:16:00 apart" in cause

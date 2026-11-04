@@ -22,8 +22,11 @@
 （規則9）で、最初に当たった理由を返す（仮置き C1-20）。古さは**休場の時間を除いて**測る
 （観測時刻から処理点までのうち、run の取引カレンダーのセッションの中の時間だけを数える。
 決定 (25) (a)）。ずれも同じ測り方で、2 本の脚の観測時刻の間のセッションの中の時間を数える
-（決定 (28) (a)。v1.21 案 §19.5）。記録の `ConversionPath.skew`（規則5）は実際の差のまま
-残す。上限は `ConversionPolicy.max_observation_skew` をずれと古さで共有する（仮置き C1-6）。
+（決定 (28) (a)。v1.21 案 §19.5）。さらに、取引の通貨ペア（執行系列の通貨ペア。仮置き C4-1）
+の 1 分足が渡されたときは、その 1 分足に記録の無い分も古さとずれに数えない（決定 (31) (a)。
+v1.22 案 §19.5、仮置き C4-6）。渡されない run（取引の通貨ペアの 1 分足を持たない run）は
+休場だけを除く（仮置き C4-2）。記録の `ConversionPath.skew`（規則5）は実際の差のまま残す。
+上限は `ConversionPolicy.max_observation_skew` をずれと古さで共有する（仮置き C1-6）。
 上限ちょうどは許す。
 
 経路の**宣言型**（`ConversionPath` / `ConversionLeg`）は `domain.policies` にある。根拠記録
@@ -33,6 +36,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, localcontext
@@ -58,6 +62,7 @@ __all__ = [
     "ConversionFailure",
     "ConversionQuotes",
     "ConversionUnavailable",
+    "RecordedMinutes",
     "RouteHop",
     "identity_path",
     "observe_path",
@@ -139,6 +144,17 @@ class ConversionQuotes(Protocol):
     def series_of(self, symbol: Symbol) -> SeriesId: ...
 
     def snapshot_of(self, symbol: Symbol) -> SnapshotRef: ...
+
+
+@runtime_checkable
+class RecordedMinutes(Protocol):
+    """取引の通貨ペアの記録のある 1 分足（D06 v1.22 案 §19.5 の決定 (31) の (ii)。仮置き C4-2）。
+
+    `minute_bars_in(interval)` は、区間に始まる記録のある 1 分足（時刻順）。MT5 経路の執行系列の
+    1 分足（`backtest.engine.loop.MinuteObservation`）がそのまま満たす。
+    """
+
+    def minute_bars_in(self, interval: Interval) -> Sequence[Bar]: ...
 
 
 def identity_path(at: UtcTime) -> ConversionPath:
@@ -259,39 +275,66 @@ def observe_path(
     return ConversionPath(legs=tuple(legs), rate=rate, observed_at=oldest, skew=newest - oldest)
 
 
-def _session_time(start: UtcTime, end: UtcTime, calendar: TradingCalendar) -> timedelta:
-    """`start` から `end` までのうち、カレンダーのセッションの中の時間（休場の時間を除く）。
+def _session_time(
+    start: UtcTime,
+    end: UtcTime,
+    calendar: TradingCalendar,
+    recorded: RecordedMinutes | None = None,
+) -> timedelta:
+    """`start` から `end` までのうち、古さ・ずれに数える時間。
 
-    `end` が `start` 以前なら 0。古さ（規則9）とずれ（規則6）が同じ測り方を使う。
+    `recorded` が無ければ、カレンダーのセッションの中の時間（休場の時間を除く。決定 (25) (a)）。
+    あれば、1 分ごとの区間 `[m, m + 1 分)` のうち (i) セッションの中にあり (ii) 取引の通貨ペアの
+    1 分足に記録のあるものの長さ（決定 (31) (a)。v1.22 案 §19.5、仮置き C4-1・C4-2）。数える分は
+    どれも `end` までに終わっている（`m + 1 分 ≤ end`）ので、将来の足を見ない。`end` が `start`
+    以前なら 0。古さ（規則9）とずれ（規則6）が同じ測り方を使う。
     """
     if not start < end:
         return timedelta(0)
     total = timedelta(0)
     for session in calendar.sessions(Interval(start=start, end=end)):
-        total += session.end - session.start
+        if recorded is None:
+            total += session.end - session.start
+            continue
+        for bar in recorded.minute_bars_in(session):
+            if session.start <= bar.bar_start and bar.bar_end <= session.end:
+                total += bar.bar_end - bar.bar_start
     return total
 
 
-def session_staleness(path: ConversionPath, at: UtcTime, calendar: TradingCalendar) -> timedelta:
-    """休場の時間を除いた古さ（観測時刻から処理点までのセッションの中の時間。決定 (25) (a)）。
+def session_staleness(
+    path: ConversionPath,
+    at: UtcTime,
+    calendar: TradingCalendar,
+    recorded: RecordedMinutes | None = None,
+) -> timedelta:
+    """判定に使う古さ（観測時刻から処理点まで。決定 (25) (a)・(31) (a)）。
 
-    恒等換算の古さは 0。休場をまたがない処理点では `at − observed_at` と同じ。
+    休場の時間を除き、`recorded`（取引の通貨ペアの 1 分足）があれば記録の無い分も除く。
+    恒等換算の古さは 0。休場をまたがず、取引の通貨ペアが毎分記録を持つ処理点では
+    `at − observed_at` と同じ。
     """
     if path.is_identity:
         return timedelta(0)
-    return _session_time(path.observed_at, at, calendar)
+    return _session_time(path.observed_at, at, calendar, recorded)
 
 
-def session_skew(path: ConversionPath, calendar: TradingCalendar) -> timedelta:
-    """休場の時間を除いたずれ（2 本の脚の観測時刻の間のセッションの中の時間。決定 (28) (a)）。
+def session_skew(
+    path: ConversionPath,
+    calendar: TradingCalendar,
+    recorded: RecordedMinutes | None = None,
+) -> timedelta:
+    """判定に使うずれ（2 本の脚の観測時刻の間。決定 (28) (a)、仮置き C4-6）。
 
-    脚が 2 本未満なら 0。休場をまたがない 2 本の脚では記録の `path.skew`（実際の差）と同じ。
-    いちばん新しい脚は処理点より前なので、この値は同じ処理点の `session_staleness` を超えない。
+    古さと同じ測り方（休場を除き、`recorded` があれば取引の通貨ペアに記録の無い分も除く）。
+    脚が 2 本未満なら 0。休場をまたがず、取引の通貨ペアが毎分記録を持つ 2 本の脚では記録の
+    `path.skew`（実際の差）と同じ。いちばん新しい脚は処理点より前なので、この値は同じ処理点・
+    同じ `recorded` の `session_staleness` を超えない。
     """
     if len(path.legs) < 2:
         return timedelta(0)
     newest = max((leg.observed_at for leg in path.legs), key=lambda value: value.value)
-    return _session_time(path.observed_at, newest, calendar)
+    return _session_time(path.observed_at, newest, calendar, recorded)
 
 
 def require_usable(
@@ -299,31 +342,39 @@ def require_usable(
     at: UtcTime,
     policy: ConversionPolicy,
     calendar: TradingCalendar,
+    recorded: RecordedMinutes | None = None,
 ) -> None:
     """ずれ（規則6）と古さ（規則9）の上限を確かめる。超えれば `ConversionUnavailable`。
 
-    どちらも休場の時間を除いて測る（決定 (25) (a)・(28) (a)）。上限ちょうどは許す
-    （「超えたら」）。ずれを古さより先に見る（仮置き C1-20）。
+    どちらも休場の時間を除いて測る（決定 (25) (a)・(28) (a)）。`recorded`（取引の通貨ペアの
+    1 分足。MT5 経路の run）があれば、その 1 分足に記録の無い分も除く（決定 (31) (a)、仮置き
+    C4-2・C4-6）。上限ちょうどは許す（「超えたら」）。ずれを古さより先に見る（仮置き C1-20）。
+    理由の長さは判定に使った値（仮置き C3-2・C4-5）。
     """
     if path.is_identity:
         return
     limit = policy.max_observation_skew
-    skew = session_skew(path, calendar)
+    measure = (
+        "session time"
+        if recorded is None
+        else "session time counting only minutes the traded pair recorded"
+    )
+    skew = session_skew(path, calendar, recorded)
     if skew > limit:
         raise ConversionUnavailable(
             ConversionFailure.SKEW_EXCEEDED,
-            f"the conversion legs are {skew} apart in session time, more than {limit}"
+            f"the conversion legs are {skew} apart in {measure}, more than {limit}"
             " (D06 §8.5.1 の規則6)",
             series=_oldest_series(path),
             path=path,
             length=skew,
         )
-    staleness = session_staleness(path, at, calendar)
+    staleness = session_staleness(path, at, calendar, recorded)
     if staleness > limit:
         raise ConversionUnavailable(
             ConversionFailure.STALENESS_EXCEEDED,
-            f"the conversion observation at {path.observed_at} is {staleness} old in session"
-            f" time at {at}, more than {limit} (D06 §19.5 の規則9)",
+            f"the conversion observation at {path.observed_at} is {staleness} old in {measure}"
+            f" at {at}, more than {limit} (D06 §19.5 の規則9)",
             series=_oldest_series(path),
             path=path,
             length=staleness,
