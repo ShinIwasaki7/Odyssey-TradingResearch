@@ -8,6 +8,8 @@ T01 の人工の足（`tests/fixtures/backtest/paths.py`）を別の通貨ペア
 - `minute_rates(symbol, interval, rate, holes)`: 区間のセッションの各分に、終値が `rate`（関数なら
   分ごとの値）の 1 分足を作る。`holes` の分は作らない（無記録）。
 - `FakeQuotes`: 通貨ペアごとの 1 分足から `ConversionQuotes` を満たす。
+- `FakeMinutes`: 取引の通貨ペア（執行系列の通貨ペア）の 1 分足と無記録の区間から、MT5 経路の
+  `MinuteObservation`（と換算の `RecordedMinutes`）を満たす（D06 v1.22 案 §19.5 の決定 (31)）。
 - `run_converted(...)`: 執行の通貨ペア・口座・換算の脚を指定して run を 1 回通す。
 """
 
@@ -28,7 +30,7 @@ from odyssey_fx.backtest.domain.policies import (
     ResolutionHierarchy,
     RunConfig,
 )
-from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
+from odyssey_fx.backtest.engine.loop import EngineContext, MinuteObservation, TraceOutputSink
 from odyssey_fx.backtest.portfolio.conversion import ConversionQuotes
 from odyssey_fx.backtest.trace.manifest import config_digest_of
 from odyssey_fx.common.ids import IdAllocator, SnapshotId
@@ -37,6 +39,7 @@ from odyssey_fx.common.refs import SnapshotRef, run_id
 from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.marketdata.application.mt5_observation import Resumption
 from odyssey_fx.marketdata.domain.bar import Bar, Provenance, ProvenanceKind
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.integrity import IntegrityReport
@@ -75,6 +78,7 @@ __all__ = [
     "MINUTE_REF",
     "USDCHF",
     "USDJPY",
+    "FakeMinutes",
     "FakeQuotes",
     "minute_rates",
     "relabel",
@@ -172,6 +176,53 @@ class FakeQuotes:
         return self.snapshots.get(symbol, CONVERSION_SNAPSHOT)
 
 
+@dataclass(frozen=True, slots=True)
+class FakeMinutes:
+    """取引の通貨ペアの 1 分足と無記録の区間（MT5 経路の `MinuteObservation` の偽物）。
+
+    `bars` は記録のある 1 分足、`unrecorded` はセッションの中の無記録の区間（`minute_rates` の
+    `holes` と同じ区間を渡す）。再開の分は、無記録の区間の終わりで 1 分足のある分。
+    """
+
+    minute_series: SeriesId
+    bars: tuple[Bar, ...]
+    unrecorded: tuple[Interval, ...] = ()
+
+    def _ordered(self) -> list[Bar]:
+        return sorted(self.bars, key=lambda bar: bar.bar_start.value)
+
+    def minute_bars_in(self, interval: Interval) -> tuple[Bar, ...]:
+        return tuple(bar for bar in self._ordered() if interval.contains(bar.bar_start))
+
+    def minute_bar_at(self, minute: UtcTime) -> Bar | None:
+        return next((bar for bar in self.bars if bar.bar_start == minute), None)
+
+    def last_bar_before(self, moment: UtcTime) -> Bar | None:
+        before = [bar for bar in self._ordered() if bar.bar_start < moment]
+        return before[-1] if before else None
+
+    def resumption_at(self, minute: UtcTime) -> Resumption | None:
+        if self.minute_bar_at(minute) is None:
+            return None
+        for hole in self.unrecorded:
+            if hole.end == minute:
+                return Resumption(minute=minute, unrecorded_from=hole.start)
+        return None
+
+    def resumptions_in(self, interval: Interval) -> tuple[Resumption, ...]:
+        found = (self.resumption_at(hole.end) for hole in self.unrecorded)
+        return tuple(
+            item
+            for item in sorted(
+                (item for item in found if item is not None), key=lambda item: item.minute.value
+            )
+            if interval.contains(item.minute)
+        )
+
+    def is_unrecorded(self, minute: UtcTime) -> bool:
+        return any(hole.contains(minute) for hole in self.unrecorded)
+
+
 def _spec(symbol: Symbol) -> SymbolSpec:
     """人工の銘柄仕様（どの通貨ペアでも T01 の足の刻みに合わせる）。
 
@@ -201,11 +252,13 @@ def run_converted(
     shortfall: Mapping[SeriesId, tuple[tuple[Interval, str], ...]] | None = None,
     present: frozenset[SeriesId] | None = None,
     conversion_snapshot: SnapshotRef | None = CONVERSION_SNAPSHOT,
+    minutes: MinuteObservation | None = None,
 ) -> RunOutput:
     """執行の通貨ペア `symbol` の run を 1 回通す（換算の脚は `quotes`）。
 
     `signal_bars` と `execution_bars` は `symbol` の系列の足を渡す（`relabel` で付け替える）。
-    `quotes` が `None` なら換算の脚の供給を渡さない（決済通貨が円の run）。
+    `quotes` が `None` なら換算の脚の供給を渡さない（決済通貨が円の run）。`minutes` は取引の
+    通貨ペアの 1 分足（MT5 経路の run。渡さなければ 1 分足を持たない run）。
     """
     signal = SeriesId(symbol=symbol, timeframe=market.TF_1H.ref, basis=PriceBasis.BID)
     execution = SeriesId(symbol=symbol, timeframe=TF_15M.ref, basis=PriceBasis.BID)
@@ -305,6 +358,7 @@ def run_converted(
         timeframe_refs=TIMEFRAME_REFS,
         publication_rows=published,
         conversion=supply,
+        minutes=minutes,
     )
     result = use_case.run(config, compiled)
     assert writer.manifest is not None

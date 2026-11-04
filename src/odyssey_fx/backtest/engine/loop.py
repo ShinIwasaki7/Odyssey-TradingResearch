@@ -1645,7 +1645,9 @@ class BacktestEngine:
         """処理点の時刻 `at` の換算の経路（D06 v1.20 案 §19.3〜§19.5）。
 
         決済通貨が口座通貨と同じなら恒等換算。違えば各脚を 1 分足から引き、ずれと古さ（休場を
-        除いて測る）の上限を確かめる。換算できなければ `ConversionUnavailable`。
+        除いて測る）の上限を確かめる。MT5 経路の run では、執行系列の通貨ペア（取引の通貨ペア）の
+        1 分足に記録の無い分も数えない（決定 (31) (a)。v1.22 案 §19.5、仮置き C4-1・C4-2・C4-6）。
+        換算できなければ `ConversionUnavailable`。
         """
         route = self._route
         if route is None:
@@ -1655,7 +1657,7 @@ class BacktestEngine:
                 " in the series the run reads (D06 §19.3)",
             )
         path = observe_path(route, at, self._quotes)
-        require_usable(path, at, self._conversion_policy, self._calendar)
+        require_usable(path, at, self._conversion_policy, self._calendar, self._minutes)
         return path
 
     def _path_or_fail(self, at: UtcTime, phase: str) -> ConversionPath:
