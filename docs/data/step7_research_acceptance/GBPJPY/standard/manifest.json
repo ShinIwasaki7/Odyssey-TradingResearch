@@ -1,0 +1,2732 @@
+{
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-10-27 の週（NY 暦の日曜）。金曜の閉場の後の約 1 時間の 1 分足 58 本。米国式なら営業時間に当たる観測の事実で、時刻の規則の表の次の版の検討材料（D12 §11.7.10）。表 版 1 は変えない（D12-99・D12-135 (a)）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2019-12-25T22:10:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-22 の週。2019-12-26 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 9 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "1m@v1"
+        }
+      ]
+    },
+    {
+      "calendar_ref": null,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "note": "2019-12-29 の週。2020-01-02 の取引日の東京サーバーの再開の遅れ（NY 17:00〜17:10。カレンダー fx_ny17_oanda 版 1 の休場の宣言）の時間帯の 1 分足 10 本（D12-99）",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series": [
+        {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "1m@v1"
+        }
+      ]
+    }
+  ],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 1,
+    "code_version": "a82654be8cfaad2e91ff29d852ab1141d160e20b012275226bed345d743c5ee4",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2017-10-28T21:00:00Z",
+              "start": "2016-12-31T22:00:00Z"
+            },
+            {
+              "end": "2018-10-27T21:00:00Z",
+              "start": "2017-10-28T22:00:00Z"
+            },
+            {
+              "end": "2019-10-26T21:00:00Z",
+              "start": "2018-10-27T22:00:00Z"
+            },
+            {
+              "end": "2020-10-31T21:00:00Z",
+              "start": "2019-10-26T22:00:00Z"
+            },
+            {
+              "end": "2021-11-06T21:00:00Z",
+              "start": "2020-10-31T22:00:00Z"
+            },
+            {
+              "end": "2022-11-05T21:00:00Z",
+              "start": "2021-11-06T22:00:00Z"
+            },
+            {
+              "end": "2023-11-04T21:00:00Z",
+              "start": "2022-11-05T22:00:00Z"
+            },
+            {
+              "end": "2023-12-31T22:00:00Z",
+              "start": "2023-11-04T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2023-12-31T22:00:00Z",
+            "start": "2016-12-31T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "GBPJPY"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53",
+      "months": [
+        "2017-01",
+        "2017-02",
+        "2017-03",
+        "2017-04",
+        "2017-05",
+        "2017-06",
+        "2017-07",
+        "2017-08",
+        "2017-09",
+        "2017-10",
+        "2017-11",
+        "2017-12",
+        "2018-01",
+        "2018-02",
+        "2018-03",
+        "2018-04",
+        "2018-05",
+        "2018-06",
+        "2018-07",
+        "2018-08",
+        "2018-09",
+        "2018-10",
+        "2018-11",
+        "2018-12",
+        "2019-01",
+        "2019-02",
+        "2019-03",
+        "2019-04",
+        "2019-05",
+        "2019-06",
+        "2019-07",
+        "2019-08",
+        "2019-09",
+        "2019-10",
+        "2019-11",
+        "2019-12",
+        "2020-01",
+        "2020-02",
+        "2020-03",
+        "2020-04",
+        "2020-05",
+        "2020-06",
+        "2020-07",
+        "2020-08",
+        "2020-09",
+        "2020-10",
+        "2020-11",
+        "2020-12",
+        "2021-01",
+        "2021-02",
+        "2021-03",
+        "2021-04",
+        "2021-05",
+        "2021-06",
+        "2021-07",
+        "2021-08",
+        "2021-09",
+        "2021-10",
+        "2021-11",
+        "2021-12",
+        "2022-01",
+        "2022-02",
+        "2022-03",
+        "2022-04",
+        "2022-05",
+        "2022-06",
+        "2022-07",
+        "2022-08",
+        "2022-09",
+        "2022-10",
+        "2022-11",
+        "2022-12",
+        "2023-01",
+        "2023-02",
+        "2023-03",
+        "2023-04",
+        "2023-05",
+        "2023-06",
+        "2023-07",
+        "2023-08",
+        "2023-09",
+        "2023-10",
+        "2023-11",
+        "2023-12"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3",
+        "table_id": "oanda_mt5_time_rules",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 365,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-03T16:13:21.309312Z",
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "eac3e370072705e9f90f98141791c11dc4308e22b5bd91fead1fe989a9a5c9a5"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 174000,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "5ef9d5214bb36e87a5628d233ccba0e858eff9fa2dda0822da4f777aa2a1b805"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 1815,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "99813a75af03838e060be9f5f5ed56b53fe11282b578fdf257881e48e49b7c82"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 43511,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "8849ae5b2b0e5063d9bdd71604c717dc121b53da8d1fd653bf358d8c65e0add2"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 2603859,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "2968b29011080176653298a90d4c54df96bd0cb366a2ef9f195c11af80d07e5e"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:04:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 10885,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "077a6ac84627311391e53a755f922e14ebc428e92967f7e7a2d6b676e7e84ee9"
+      },
+      "interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "RESEARCH_HISTORY",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPJPY",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "2f4346b403258a07a0a4800e1298725cc7e363c45765e55d001ee9d761403ed5"
+  },
+  "quality_read": {
+    "access_id": null,
+    "permit_required": false
+  },
+  "resolved_classifications": [
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:01:00Z",
+        "start": "2019-11-01T21:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:02:00Z",
+        "start": "2019-11-01T21:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:03:00Z",
+        "start": "2019-11-01T21:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:04:00Z",
+        "start": "2019-11-01T21:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:05:00Z",
+        "start": "2019-11-01T21:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:06:00Z",
+        "start": "2019-11-01T21:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:07:00Z",
+        "start": "2019-11-01T21:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:08:00Z",
+        "start": "2019-11-01T21:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:09:00Z",
+        "start": "2019-11-01T21:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:10:00Z",
+        "start": "2019-11-01T21:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:11:00Z",
+        "start": "2019-11-01T21:10:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:12:00Z",
+        "start": "2019-11-01T21:11:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:13:00Z",
+        "start": "2019-11-01T21:12:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:14:00Z",
+        "start": "2019-11-01T21:13:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:15:00Z",
+        "start": "2019-11-01T21:14:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:16:00Z",
+        "start": "2019-11-01T21:15:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:17:00Z",
+        "start": "2019-11-01T21:16:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:18:00Z",
+        "start": "2019-11-01T21:17:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:19:00Z",
+        "start": "2019-11-01T21:18:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:20:00Z",
+        "start": "2019-11-01T21:19:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:21:00Z",
+        "start": "2019-11-01T21:20:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:22:00Z",
+        "start": "2019-11-01T21:21:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:23:00Z",
+        "start": "2019-11-01T21:22:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:24:00Z",
+        "start": "2019-11-01T21:23:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:25:00Z",
+        "start": "2019-11-01T21:24:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:26:00Z",
+        "start": "2019-11-01T21:25:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:27:00Z",
+        "start": "2019-11-01T21:26:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:28:00Z",
+        "start": "2019-11-01T21:27:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:29:00Z",
+        "start": "2019-11-01T21:28:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:30:00Z",
+        "start": "2019-11-01T21:29:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:31:00Z",
+        "start": "2019-11-01T21:30:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:32:00Z",
+        "start": "2019-11-01T21:31:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:33:00Z",
+        "start": "2019-11-01T21:32:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:34:00Z",
+        "start": "2019-11-01T21:33:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:35:00Z",
+        "start": "2019-11-01T21:34:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:36:00Z",
+        "start": "2019-11-01T21:35:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:37:00Z",
+        "start": "2019-11-01T21:36:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:38:00Z",
+        "start": "2019-11-01T21:37:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:39:00Z",
+        "start": "2019-11-01T21:38:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:40:00Z",
+        "start": "2019-11-01T21:39:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:41:00Z",
+        "start": "2019-11-01T21:40:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:42:00Z",
+        "start": "2019-11-01T21:41:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:43:00Z",
+        "start": "2019-11-01T21:42:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:44:00Z",
+        "start": "2019-11-01T21:43:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:45:00Z",
+        "start": "2019-11-01T21:44:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:46:00Z",
+        "start": "2019-11-01T21:45:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:47:00Z",
+        "start": "2019-11-01T21:46:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:48:00Z",
+        "start": "2019-11-01T21:47:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:49:00Z",
+        "start": "2019-11-01T21:48:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:50:00Z",
+        "start": "2019-11-01T21:49:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:51:00Z",
+        "start": "2019-11-01T21:50:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:52:00Z",
+        "start": "2019-11-01T21:51:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:53:00Z",
+        "start": "2019-11-01T21:52:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:54:00Z",
+        "start": "2019-11-01T21:53:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:55:00Z",
+        "start": "2019-11-01T21:54:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:56:00Z",
+        "start": "2019-11-01T21:55:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:57:00Z",
+        "start": "2019-11-01T21:56:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-11-01T21:58:00Z",
+        "start": "2019-11-01T21:57:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:01:00Z",
+        "start": "2019-12-25T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:02:00Z",
+        "start": "2019-12-25T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:03:00Z",
+        "start": "2019-12-25T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:04:00Z",
+        "start": "2019-12-25T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:05:00Z",
+        "start": "2019-12-25T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:06:00Z",
+        "start": "2019-12-25T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:07:00Z",
+        "start": "2019-12-25T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:09:00Z",
+        "start": "2019-12-25T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2019-12-25T22:10:00Z",
+        "start": "2019-12-25T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:01:00Z",
+        "start": "2020-01-01T22:00:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:02:00Z",
+        "start": "2020-01-01T22:01:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:03:00Z",
+        "start": "2020-01-01T22:02:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:04:00Z",
+        "start": "2020-01-01T22:03:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:05:00Z",
+        "start": "2020-01-01T22:04:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:06:00Z",
+        "start": "2020-01-01T22:05:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:07:00Z",
+        "start": "2020-01-01T22:06:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:08:00Z",
+        "start": "2020-01-01T22:07:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:09:00Z",
+        "start": "2020-01-01T22:08:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "excluded_bar_count": 1,
+      "interval": {
+        "end": "2020-01-01T22:10:00Z",
+        "start": "2020-01-01T22:09:00Z"
+      },
+      "kind": "UNEXPECTED_BAR",
+      "outcome": "OUT_OF_SESSION_DATA",
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    }
+  ],
+  "schema_version": 2,
+  "series": [
+    {
+      "bar_count": 174000,
+      "coverage_counts": {
+        "built_bars": 174000,
+        "no_record_bars": 336,
+        "partial_bars": 2186,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 11141
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPJPY",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 1815,
+      "coverage_counts": {
+        "built_bars": 1815,
+        "no_record_bars": 1,
+        "partial_bars": 1149,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 11141
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPJPY",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 43511,
+      "coverage_counts": {
+        "built_bars": 43511,
+        "no_record_bars": 73,
+        "partial_bars": 1489,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 11141
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPJPY",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 2603859,
+      "coverage_counts": {
+        "built_bars": 2603859,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 11141
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:04:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPJPY",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 10885,
+      "coverage_counts": {
+        "built_bars": 10885,
+        "no_record_bars": 11,
+        "partial_bars": 1385,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 11141
+      },
+      "covered_interval": {
+        "end": "2023-12-29T22:00:00Z",
+        "start": "2017-01-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "RESEARCH_HISTORY",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPJPY",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPJPY",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "455d1d38f924f2711aea51eebea7d5d8d24708505e64c7085c7b099333fa5188",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31653,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31653,
+      "sha256": "dce24d5525ce58c8ee55a821734f009838565599bb9ead9a6833e9c84c1f89d8",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28791,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28791,
+      "sha256": "e972af2ff7e0b7b96939f3c9d420d14ccf13c673fb57130be5ff6f20c32c4f32",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32966,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32966,
+      "sha256": "78a67e47f49909a6cdff7f897125741f522af029d3e76ba6b407a3cfc55e3a56",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28779,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28779,
+      "sha256": "d8efa51365ea8438ef20b4ca231f22375d214d29df57ead033b5cb11cf4d49ee",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33106,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33106,
+      "sha256": "4a4f6c8c1e4ef76416a13d230a5037033a99da9c6b2d27c288b662e0e2745e96",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31595,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31595,
+      "sha256": "b08c73453c5c7390b77c89b533be14413aa826f264e714e8055226df7e8a01ae",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29649,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29649,
+      "sha256": "dd9ff21f9a2a5c5845a47deeac52574422a1d188d2ce9c2c60db1d5c2e08166b",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31553,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31553,
+      "sha256": "d521f75636bc52c06b4a4121cedd84142a1715e933308a11f1b7aa928384ce82",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29925,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29925,
+      "sha256": "6871813c24aa8741f0bae630ab4f9718d8c07914c05b9b0354e1ceda2aae27ff",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31661,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31661,
+      "sha256": "ab2c1f58e9053b9b36a6270591445ec3c52a0459fc1e920c5648e31e31ed88af",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31616,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31616,
+      "sha256": "78529c2ff0a14a38ea2e8b169dd4276929bcdd0d67bc4f10db2640355bab9b5e",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2017-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28433,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28433,
+      "sha256": "062a1dfde4208db35317b6ea510e078d51fba830c7f673c1dac5e9bf744c55c0",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31625,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31625,
+      "sha256": "b85030149416ff2217936cdcd1d0973ac78ea060ca68dff2f1106944a7fb8cf2",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28796,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28796,
+      "sha256": "c8863c015e2d4adc0cdf590200cbe669fa6c02e13b17b99e0ed391f5572e479f",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31548,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31548,
+      "sha256": "4f32bf5506c2aa17b01c10e6ed2c87979a97cfa605906a590529c2afe7392117",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30213,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30213,
+      "sha256": "20c16e2134faf4db8f9be7c3911581b8ef0847d4eb36ecfb83dac8bb2cdff7dd",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33113,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33113,
+      "sha256": "038ccd9ce2aa8aba95b15d7f8c35ca2907590f0cd64963062816f4395bc0c1c8",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30201,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30201,
+      "sha256": "de695a5ae004c9f7ed8bd2f48f3eec86bfb817d15adc9ee55b94a3d695a3e2fb",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31668,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31668,
+      "sha256": "53f78b1ca1d58ee24d5dbd51ad7897e2dc65dcd98ef93d61b481ba05ff88a333",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33105,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33105,
+      "sha256": "52afa205cecc01b37245e39b396b85874ee4e604e18f4f56d45508d106ac7373",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28781,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28781,
+      "sha256": "c6a7f38fdb1b0d525ce307490d6c77b9aca4d99405aaf2607c6e86b2ba464d3a",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33108,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33108,
+      "sha256": "34130a444d81a7d2105d882d34be91b7795759c6377afb690b35c5c94edb03da",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31607,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31607,
+      "sha256": "2e37edf7c5cdfb771d5329ea51049df422d46d4c508b0751d0c37a54073d1f54",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2018-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28185,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28185,
+      "sha256": "ff5fb0776405161be60ac47ad2edc33d3f5647359e5f59f790a70ed0414268f9",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31299,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31299,
+      "sha256": "59bcfaa84733d44c144c0d1b17d93d6fb4c5343a4cee5146c9141a0805dff9c8",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28771,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28771,
+      "sha256": "1f621c5e22b1d42dde9b25b530c2d9387d03293b0950054bd94bc3c9aa182b45",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30048,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30048,
+      "sha256": "fca14475d393b065fd904614e8669dbc85c7df98cb8fadbab42dc0bba8b9e74c",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31658,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31658,
+      "sha256": "9a17b11f3ef44733f6746c1b57b13ae3ee0c1fd3e953c7e662d67487180961b8",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33089,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33089,
+      "sha256": "354eda3439e7f6c7158c0e36785049527ffd28ea890c61fd7f08bf16507a5f58",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28778,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28778,
+      "sha256": "db0db1811a88cf5ba575ef249909267c88e475902f5f12a632f28e39df9723ea",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33104,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33104,
+      "sha256": "299bd3ebf3bb8a685ba3345ea7d0f82b5ffda3669a08d048066b3c974c6ea7f2",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31647,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31647,
+      "sha256": "6d68240b80fa0d2f38233c5e5bda799bcbd3927f8034b70c652b7eb11c6a00ba",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30222,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30222,
+      "sha256": "012ec4f6eadc11e71038ce7501c1b1aac44a574c9125f05064013b0bad286a46",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33106,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33106,
+      "sha256": "21a6405008e2f439fd8fb2b77e66be515a9ec95f2a8ffd1f6b8575eb643d0853",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 29847,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 29847,
+      "sha256": "f83a0d4f9e3fb498593cd436ce98fc981287fac356f98a4de4c39dc4372c8095",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2019-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30188,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30188,
+      "sha256": "baaa0037bc02b402d5544f24acc89aa52ea3ec84a5c22c0ce8c4e49683617688",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31630,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31630,
+      "sha256": "3cffb94a07ff2a3d226f514c3376402c31364c8c9f4e5e77a6e5e013e4971e70",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28759,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28759,
+      "sha256": "2cf38fc07c4408b2d11bed3bc41c2ab1fa0f8d96ddcde2ec477fad9bed75afb5",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31634,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31634,
+      "sha256": "dc3d662a8bef66645a9f42e2a8928d436c305d853bd98bf2c7d1b956d1962fd8",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31542,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31542,
+      "sha256": "b39bd5c91ae29c70a2d7307d5796d56760f9fa6c44acb86c34959b752a2e9012",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30159,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30159,
+      "sha256": "f2325a9d4bc5b1ab127cd508404b1743be35c6c7e4ab964dc0a641681b858e62",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31623,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31623,
+      "sha256": "cb88e4491ab7636f576c45fa0bf95635b57ee8c3c780036a757d631d8829e9db",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33018,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33018,
+      "sha256": "398dd02b5b043744b572320c963943aa97bb6c5642533905d0abf121328850aa",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30136,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30136,
+      "sha256": "165d90a17afcf4a0b22e665247f57d5d5df7b3383ec3c4c074c1d8189c67f67d",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31635,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31635,
+      "sha256": "6beec944d925c308c5f349588cfc79ac8de5c225dd3b37b032392409e1bd04b9",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31591,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31591,
+      "sha256": "f160947d470a8da5f169456b9a64284f51575df917682b26f03c9a6c4137dd60",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30217,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30217,
+      "sha256": "2fa053e536faf2321c33e81ab8f944164e474474187953bb2c9b03dbf185ce3d",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2020-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31639,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31639,
+      "sha256": "3b8d6325b0390db97fbf94f25a2509e28d18b1ef16f19d3584dae5bc0f7e8537",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28760,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28760,
+      "sha256": "95afdd356b43561374a02b011f804738e994a43a2ec7c554bc9b136072ee8931",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28768,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28768,
+      "sha256": "5bc43c6551a6deae5820488d735b114ba2b29de8421b5d6691b04f0ce7cd7e9d",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33051,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33051,
+      "sha256": "f3d79aad4f06bff46e5751dfcb3efcde9db3c97817411fcc1ff0690707f8d9bb",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31576,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31576,
+      "sha256": "a20337a15f0c5b1d0ee3f9cf1670d21c511a30f8b4a702b6c91dbc61f6ed917d",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30170,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30170,
+      "sha256": "ccb64654c325000daa8fbeb34944eb8409829de6acdf7e7a97ad1a6e7a9b53f2",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31586,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31586,
+      "sha256": "d6f6e32ea775d653b12a02881c2cb8f01125171a84f4aabb15ef1723654f2b73",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31578,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31578,
+      "sha256": "5a99f4f0f764d0892044cacd555ffbfa254eaa4ea0ea314f9232da47a3248400",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31581,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31581,
+      "sha256": "f02d38ed5649daf853b976599c54785bbc59a4e08cc3e1006273760dec0c71a5",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31569,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31569,
+      "sha256": "dc4e88962ddb6645e09f5433cdb7c0086cbee4a6d1f4237756808d9536b7fed8",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30125,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30125,
+      "sha256": "f1d482c72accad1480e9d1a5008da07778293258a1eb30464b4b02ec37607f13",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31618,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31618,
+      "sha256": "fa8a68c77416ff0a0061148439443279e0302b69290093a321849c8e852c6281",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2021-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33006,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33006,
+      "sha256": "c7b0852cd9d6a1e6e49ea15b189494d2df11ce1976a2cd34bf7977b87a92ddc6",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30177,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30177,
+      "sha256": "d7d2bc7706bd3d1c25525b868f1de3a297e14e0f5077cf9b5b6e17337548517a",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28741,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28741,
+      "sha256": "6a22c65fd9c46f3332711e64b73c48222a8bf8cf3ded3f4cdd3b98e5c044f0ed",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33034,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33034,
+      "sha256": "eb1cbcd903161e6485b5d7fd52ee008f8acd2d186d933a2017c524dcf102083c",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30138,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30138,
+      "sha256": "364ea72d943f7119f106ccf203f89be1f836f8d9e2ebe0302b4e4f94443bad4f",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31557,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31557,
+      "sha256": "63ccf5e823a0950129014358abbae2a569c3f2d7e0fa15334b6a7d68d94bc6b4",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31503,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31503,
+      "sha256": "2d2746d26099ab7989843efe31d2c6f462d3385876c3936e65d1c554de0f28f3",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30117,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30117,
+      "sha256": "eb983502a7d37f6bbc6bbdaf44b0c3bddc2aec3c21b4ee3920e00a854f13e7d6",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 32927,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 32927,
+      "sha256": "5c89ef95c811cfa41333bc48be9526a6efc2dd45c4668f0c53ede1583920eafe",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31586,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31586,
+      "sha256": "2da977dffaed5e3e5720cbc2ee1a0580ef9b8f7fe8f71e3cc12f4a918dc6c070",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30203,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30203,
+      "sha256": "ab963fb5aa226480298042ac92f952db400d431cb4921a76d1847039860a2a85",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31615,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31615,
+      "sha256": "bce97592f53c3c63ffce52c50d61ff5bd04b0c5fc73546baa91b13a9893ab0f4",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2022-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30156,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30156,
+      "sha256": "3c44e26c9d1d3b76ee467a78f9e1278c5449df47ffe0c2a9965ad4c6bf15e823",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-01_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31397,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31397,
+      "sha256": "5dd73df8068cf59dfefc376b466de500d5b3cba15c489b1fa6e865a2c4ba0b7c",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-02_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28755,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28755,
+      "sha256": "afe6bf6162cfb3695b58db9b88f2cb77de4fa0ed6fa29bd4f67eb36746512875",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-03_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33057,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33057,
+      "sha256": "9ae19d7ea6541739305f695a1260d324dcf9436af420b1cd22edf13b9a7d6bab",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-04_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28724,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28724,
+      "sha256": "fa8e708df093c178ae08c6c9ee1e16884e99cfc276548452166013ecf0370e5a",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-05_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33036,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33036,
+      "sha256": "327e64068049973179bfb2d703672b370c235e7e9c2b8d534fbc3db81591e2be",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-06_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31612,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31612,
+      "sha256": "bad42354c37bcc502dba7c4fddac9bb9aa03f41fdc8ddf59a49fc7c29b6a4e58",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-07_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30119,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30119,
+      "sha256": "702192b5d1366624bb7ccad8ad5f754052d04ab3b48b8dfdf57982008f2f421d",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-08_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 33022,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 33022,
+      "sha256": "e408d023930c97950a3250d66200460ef49c2f5a6204658de9cd9a68c5029d2e",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-09_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 30124,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 30124,
+      "sha256": "2b20e12937c26dbc114623451a38b26daec6276dda9279c505b465175da45f68",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-10_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31606,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31606,
+      "sha256": "b8757d228c1ab6f647c899cb67850f09db0ebe2718fb35695d9944cb18c3007a",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-11_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 31572,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 31572,
+      "sha256": "c3a6ae98b2a1c925963c3a21b57819e73a6658a672cef3e6ceeb2c4ab8d71249",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    },
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5/2026-10-16/GBPJPY/GBPJPY_2023-12_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 28753,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 28753,
+      "sha256": "d5bf6ac69f32c479c2ab654d1a3f8bd7d43d40e43e82cc61776c8fc823f05045",
+      "symbol": "GBPJPY",
+      "timeframe": "1m@v1"
+    }
+  ]
+}
