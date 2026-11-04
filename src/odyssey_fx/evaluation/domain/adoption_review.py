@@ -223,6 +223,12 @@ class ReviewRules:
     """審査の規則のファイルの値（D16 §10.3。値は 2026-10-30 の要決定の決定）。
 
     最低件数は研究ポリシーから読むので持たない（仮置き 4）。
+
+    `convertible_settlement_currencies` は行 5 の版 2（D16 v0.4 案 §7.2。D06 §19.13）の「換算の
+    能力が実装された決済通貨の一覧」（通貨コードの順、重複なし）。版 1 の形の規則のファイルでは
+    空で、行 5 は版 1 と同じ規則（決済通貨が口座の通貨と同じときだけ `FITS`）になる。一覧を
+    持てるのは `require_account_currency` が真のときだけ（口座の通貨を求めない規則に一覧は
+    意味を持たない）。
     """
 
     rules_id: str
@@ -238,6 +244,7 @@ class ReviewRules:
     dsr_min_trades: int
     dsr_max_flat_day_share: Decimal
     undetermined_result: ReviewResult
+    convertible_settlement_currencies: tuple[CurrencyCode, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.rules_id, str) or not _NAME.fullmatch(self.rules_id):
@@ -255,6 +262,24 @@ class ReviewRules:
             raise KernelValueError("ReviewRules.swap_rule must be a SwapRule")
         if not isinstance(self.require_account_currency, bool):
             raise KernelValueError("ReviewRules.require_account_currency must be a bool")
+        convertible = self.convertible_settlement_currencies
+        if not isinstance(convertible, tuple) or not all(
+            isinstance(item, CurrencyCode) for item in convertible
+        ):
+            raise KernelValueError(
+                "ReviewRules.convertible_settlement_currencies must be a tuple of CurrencyCode"
+            )
+        codes = [item.code for item in convertible]
+        if codes != sorted(set(codes)):
+            raise KernelValueError(
+                "ReviewRules.convertible_settlement_currencies must be sorted by code without"
+                f" duplicates, got {codes}"
+            )
+        if convertible and not self.require_account_currency:
+            raise KernelValueError(
+                "ReviewRules.convertible_settlement_currencies needs require_account_currency"
+                " (D16 v0.4 案 §7.2 の行 5 の版 2)"
+            )
         if self.declared_fits != DECLARED_ROWS:
             raise KernelValueError(
                 "ReviewRules.declared_fits must be exactly"
@@ -1046,13 +1071,17 @@ def cost_model_fit(
     `trades` は固定した試行の 5 本の run の完了取引（どれかの run が失敗していれば `None`）。
     `intervals` は 5 つの検証区間、`calendar` は記録票の取引カレンダー（読めなければ `None`）。
     行 1・4・6 は宣言の形で常に `FITS`（仮置き 9）。行 5 は銘柄の決済通貨と口座の通貨。
+    行 5 の版 2（D16 v0.4 案 §7.2。D06 §19.13）では、決済通貨が口座の通貨と違っても、規則の
+    「換算の能力が実装された決済通貨の一覧」にあれば `FITS`（版 1 の形の規則では一覧が空）。
     """
     if not isinstance(rules, ReviewRules):
         raise KernelValueError("cost_model_fit requires ReviewRules")
     settlement = symbol.quote
     conversion = (
         FitOutcome.FITS
-        if not rules.require_account_currency or settlement == account_currency
+        if not rules.require_account_currency
+        or settlement == account_currency
+        or settlement in rules.convertible_settlement_currencies
         else FitOutcome.NEEDS_CAPABILITY
     )
     if trades is None or calendar is None:

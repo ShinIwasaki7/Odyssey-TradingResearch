@@ -289,6 +289,13 @@ class ExperimentManifest:
     evaluation_standard: EvaluationStandard | None = None
     final_holdout: FinalHoldoutSpec | None = None
     trials: tuple[TrialPlan, ...] = ()
+    #: 換算の snapshot とその許可 partition（D07 §19.2 の v2.17 案。D06 v1.20 案 §19.2、人間の決定
+    #: (23) (a)）。決済通貨が口座通貨と違う実験だけが持ち（探索の実験は組の写像）、円の実験では
+    #: `None`（識別の入力にも入れない。既存の `experiment_id` を変えない）。
+    conversion_snapshot_id: SnapshotId | Paired[SnapshotId] | None = None
+    conversion_allowed_partitions: (
+        Mapping[str, AccessClass] | Paired[Mapping[str, AccessClass]] | None
+    ) = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.experiment_id, ExperimentId):
@@ -371,6 +378,46 @@ class ExperimentManifest:
             self.pre_run_checks,
             SEARCH_PRE_RUN_CHECKS if self.is_search else PRE_RUN_CHECKS,
             "ExperimentManifest.pre_run_checks",
+        )
+        self._check_conversion()
+
+    def _check_conversion(self) -> None:
+        """換算の snapshot と許可 partition は対で持つ（探索は組の写像。D07 §19.2 v2.17 案）。"""
+        snapshot = self.conversion_snapshot_id
+        partitions = self.conversion_allowed_partitions
+        if (snapshot is None) != (partitions is None):
+            raise KernelValueError(
+                "ExperimentManifest.conversion_snapshot_id and .conversion_allowed_partitions"
+                " are both present or both absent (D07 §19.2 の v2.17 案)"
+            )
+        if snapshot is None or partitions is None:
+            return
+        if self.is_search:
+            if not isinstance(snapshot, Paired) or not isinstance(partitions, Paired):
+                raise KernelValueError(
+                    "a search manifest holds the conversion snapshot ids and their allowed"
+                    " partitions per variant (D07 §19.2 の v2.17 案)"
+                )
+            snapshot.require(SnapshotId, "ExperimentManifest.conversion_snapshot_id")
+            object.__setattr__(
+                self,
+                "conversion_allowed_partitions",
+                partitions.map(
+                    lambda _, value: _partitions(
+                        value, "ExperimentManifest.conversion_allowed_partitions"
+                    )
+                ),
+            )
+            return
+        if not isinstance(snapshot, SnapshotId) or isinstance(partitions, Paired):
+            raise KernelValueError(
+                "a single-run manifest holds one conversion snapshot id and one set of its"
+                " allowed partitions"
+            )
+        object.__setattr__(
+            self,
+            "conversion_allowed_partitions",
+            _partitions(partitions, "ExperimentManifest.conversion_allowed_partitions"),
         )
 
     @property
@@ -510,6 +557,15 @@ def experiment_id_of(
         payload["evaluation_standard"] = manifest.evaluation_standard
         payload["final_holdout"] = manifest.final_holdout
         payload["trials"] = list(manifest.trials)
+    if manifest.conversion_snapshot_id is not None:
+        # 決済通貨が口座通貨と違う実験だけ、換算の snapshot と許可 partition を識別の入力 4 に
+        # 入れる（単一実行の実験でも入れる。D07 §19.2 の v2.17 案、D09 §10.2 の v0.7 案、仮置き
+        # C1-1）。円の実験では項目ごと省き、既存の `experiment_id` を変えない。
+        assert manifest.conversion_allowed_partitions is not None  # noqa: S101 - 対で持つ
+        payload["conversion_snapshot_id"] = manifest.conversion_snapshot_id
+        payload["conversion_allowed_partitions"] = _partitions_payload(
+            manifest.conversion_allowed_partitions
+        )
     return ExperimentId(digest(payload))
 
 

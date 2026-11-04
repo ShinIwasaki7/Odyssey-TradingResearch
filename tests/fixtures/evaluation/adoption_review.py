@@ -37,9 +37,45 @@ from odyssey_fx.evaluation.domain.adoption_review import (
 from odyssey_fx.evaluation.domain.metrics import TradeRecord, trade_outcome, trade_profit
 from odyssey_fx.evaluation.domain.variant import Paired
 
-__all__ = ["REPO_ROOT", "rules_ref", "review_entry", "review_lines", "trade"]
+__all__ = [
+    "REPO_ROOT",
+    "RULES_DIRECTORY",
+    "install_version_1_rules",
+    "rules_ref",
+    "review_entry",
+    "review_lines",
+    "trade",
+]
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[3]
+#: 版管理の審査の規則の置き場（リポジトリの根からの相対パス）。
+RULES_DIRECTORY: Final = Path("configs/policies/adoption_review")
+#: 登録簿の要素の行の書き出し（版 1 の要素だけを残すときに見分ける）。
+_ENTRY_PREFIX: Final = "  - {id: adoption_review, version: "
+
+
+def install_version_1_rules(repo: Path) -> Path:
+    """人工の作業場に、版管理の審査の規則の版 1 と、版 1 の要素だけの登録簿を置く。
+
+    版管理の登録簿の版 2 以上の要素は、実リポジトリの試行台帳の行を `effective_after` に持つ
+    （R1-10 (a)）。人工の試行台帳にその行は無いので、そのまま写すと当てる版を決められない
+    （登録簿の誤り）。人工の作業場では版 1 だけから始め、版 2 はテストが人工の台帳の行で登録する。
+    置き場（`<repo>/configs/policies/adoption_review`）を返す。
+    """
+    source = REPO_ROOT / RULES_DIRECTORY
+    target = Path(repo) / RULES_DIRECTORY
+    target.mkdir(parents=True, exist_ok=True)
+    name = "adoption_review_v1.yaml"
+    (target / name).write_bytes((source / name).read_bytes())
+    kept = [
+        line
+        for line in (source / "registry.yaml").read_text(encoding="utf-8").splitlines(True)
+        if not line.startswith(_ENTRY_PREFIX) or line.startswith(f"{_ENTRY_PREFIX}1,")
+    ]
+    (target / "registry.yaml").write_text("".join(kept), encoding="utf-8")
+    return target
+
+
 _JPY: Final = CurrencyCode("JPY")
 _PHASE: Final = PhaseRank(rank=0, name="EXECUTION_OPEN")
 

@@ -6,9 +6,12 @@
 - **版 0**（版の項目を持たない今までの行。`AccessLogEntry` の 5 項目 `kind`・`partition`・
   `recorded_at`・`actor`・`purpose`。値はすべて文字列）。追記専用で書き換えないので、読み続ける。
 - **版 1**（D09 §9.10.4 の表。仮置き R2-3 の決定「このまま」）。`schema_version` = `"1"`、
-  `row_id`、`kind` = `CONSUMED` だけ、`partition`、`reason`、`permit_id`、`candidate`、
-  `access_id`、`recorded_at`、`actor`、`purpose`。行の鍵は `(partition, permit_id)`。符号化は
-  正規化エンコード（鍵を整列し空白を入れない。D02 §9.3）で 1 行 1 JSON。
+  `row_id`、`kind`、`partition`、`reason`、`permit_id`、`candidate`、`access_id`、
+  `recorded_at`、`actor`、`purpose`。行の鍵は `(partition, permit_id)`。符号化は正規化エンコード
+  （鍵を整列し空白を入れない。D02 §9.3）で 1 行 1 JSON。`kind` は `CONSUMED`（消費）か
+  `CONVERSION_READ`（換算用の読み取り。D06 v1.20 案 §19.14、仮置き C1-16 (a)。円以外の決済通貨の
+  候補の最終検証で、換算のためだけに読む執行の通貨ペアでない通貨ペアの封印の partition。**消費に
+  数えない**。ADR-0038 第8項の 1 の 2026-11-03 の注記）。
 
 行の型は関所（`evaluation`）も使うので `marketdata.domain` に置く（`evaluation` は
 `marketdata.application` を参照できない。D01 §3.2 の契約 F7。D09 §9.10.4 の「型の置き場」）。
@@ -36,6 +39,7 @@ __all__ = [
     "AccessLogEntryKind",
     "AccessLogReadFailure",
     "ConsumptionCandidate",
+    "ConsumptionKind",
     "ConsumptionReason",
     "ConsumptionRow",
     "LegacyLine",
@@ -80,6 +84,20 @@ class AccessLogEntryKind(Enum):
     GRANTED = "GRANTED"
     CONSUMED = "CONSUMED"
     RESEARCH_OPT_IN = "RESEARCH_OPT_IN"
+
+
+class ConsumptionKind(Enum):
+    """版 1 の行の種別（D09 §9.10.4 の `kind`。D06 v1.20 案 §19.14 の仮置き C1-16 (a)）。
+
+    - `CONSUMED`: 消費（この行があれば partition は `CONSUMED`）。
+    - `CONVERSION_READ`: 換算用の読み取り（最終検証の許可の下で換算の脚としてだけ読んだ記録）。
+      状態の導出に数えない（partition は `SEALED` のまま。決定 (21) (b)）。理由は
+      `FINAL_EVALUATION` だけ。版 1 の行の種別が `CONSUMED` だけだった読込（C2 より前の道具）は、
+      この行を知らない種別として構造の誤りで止める側に倒れる（読み違えない）。
+    """
+
+    CONSUMED = "CONSUMED"
+    CONVERSION_READ = "CONVERSION_READ"
 
 
 class ConsumptionReason(Enum):
@@ -144,12 +162,14 @@ class ConsumptionCandidate:
 
 @dataclass(frozen=True, slots=True)
 class ConsumptionRow:
-    """版 1 の消費の行 1 行（D09 §9.10.4。`kind` は常に `CONSUMED`）。
+    """版 1 の消費の記録の行 1 行（D09 §9.10.4）。`kind` の既定は `CONSUMED`。
 
     - 最終検証・前向き検証: `permit_id` は許可の識別子、`candidate` は候補、`access_id` は空、
       `purpose` は記録票の `final_holdout.purpose` の写し。
     - 後からの違反の判定: `permit_id` は判定の行の識別子、`candidate` は空（`None`）、
       `access_id` は品質確認の閲覧の識別子、`purpose` は空。
+    - 換算用の読み取り（`kind` = `CONVERSION_READ`。仮置き C1-16 (a)）: 理由は
+      `FINAL_EVALUATION`、許可の識別子・候補・目的は同じ許可の消費の行と同じ。
     """
 
     row_id: str
@@ -161,8 +181,19 @@ class ConsumptionRow:
     recorded_at: UtcTime
     actor: str
     purpose: str
+    kind: ConsumptionKind = ConsumptionKind.CONSUMED
 
     def __post_init__(self) -> None:
+        if not isinstance(self.kind, ConsumptionKind):
+            raise MarketDataValueError("ConsumptionRow.kind must be a ConsumptionKind")
+        if (
+            self.kind is ConsumptionKind.CONVERSION_READ
+            and self.reason is not ConsumptionReason.FINAL_EVALUATION
+        ):
+            raise MarketDataValueError(
+                "a CONVERSION_READ row is written by a final evaluation only (D06 §19.14、"
+                "仮置き C1-16 (a))"
+            )
         for name in ("row_id", "partition", "permit_id", "actor"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
@@ -192,6 +223,11 @@ class ConsumptionRow:
         """行の鍵 `(partition, permit_id)`（D09 §9.10.4）。"""
         return (self.partition, self.permit_id)
 
+    @property
+    def consumes(self) -> bool:
+        """状態の導出に数える行か（消費の行。換算用の読み取りの行は数えない）。"""
+        return self.kind is ConsumptionKind.CONSUMED
+
 
 def consumption_row_payload(row: ConsumptionRow) -> dict[str, object]:
     """版 1 の行の値（文字列。`candidate` だけが文字列の値を持つ入れ子の対象）。"""
@@ -199,7 +235,7 @@ def consumption_row_payload(row: ConsumptionRow) -> dict[str, object]:
         "access_id": row.access_id,
         "actor": row.actor,
         "candidate": {} if row.candidate is None else row.candidate.payload(),
-        "kind": AccessLogEntryKind.CONSUMED.value,
+        "kind": row.kind.value,
         "partition": row.partition,
         "permit_id": row.permit_id,
         "purpose": row.purpose,
@@ -239,14 +275,24 @@ class ParsedAccessLog:
     rows: tuple[ConsumptionRow, ...]
 
     def consumed(self) -> frozenset[str]:
-        """消費の行（版 0 の `CONSUMED` と版 1 の行）がある partition の識別子の文字列。"""
+        """消費の行（版 0 と版 1 の `CONSUMED` の行）がある partition の識別子の文字列。
+
+        換算用の読み取りの行（`CONVERSION_READ`）は数えない（その partition は `SEALED` のまま。
+        D06 v1.20 案 §19.14、決定 (21) (b)）。
+        """
         return frozenset(
             {line.partition for line in self.legacy if line.kind is AccessLogEntryKind.CONSUMED}
-            | {row.partition for row in self.rows}
+            | {row.partition for row in self.rows if row.consumes}
         )
 
     def rows_of_permit(self, permit_id: str) -> tuple[ConsumptionRow, ...]:
         return tuple(row for row in self.rows if row.permit_id == permit_id)
+
+
+#: 封印の区分の partition に受け付ける行の種別（版 0 の `CONSUMED` と版 1 の 2 つ）。
+_SEALED_KINDS: Final = frozenset(
+    {AccessLogEntryKind.CONSUMED.value, ConsumptionKind.CONVERSION_READ.value}
+)
 
 
 def _failure(number: int | None, detail: str) -> AccessLogReadFailure:
@@ -267,8 +313,7 @@ def _row_of(payload: Mapping[str, object]) -> ConsumptionRow:
         )
     if not _str_values(payload, _V1_KEYS - {"candidate"}):
         raise KernelValueError("the values of a version-1 row are strings")
-    if payload["kind"] != AccessLogEntryKind.CONSUMED.value:
-        raise KernelValueError(f"a version-1 row writes CONSUMED only, got {payload['kind']!r}")
+    kind = ConsumptionKind(str(payload["kind"]))  # 知らない種別は ValueError（構造の誤り）
     candidate_value = payload["candidate"]
     if not isinstance(candidate_value, dict):
         raise KernelValueError("the candidate of a version-1 row is an object")
@@ -292,6 +337,7 @@ def _row_of(payload: Mapping[str, object]) -> ConsumptionRow:
         recorded_at=UtcTime.parse(str(payload["recorded_at"])),
         actor=str(payload["actor"]),
         purpose=str(payload["purpose"]),
+        kind=kind,
     )
 
 
@@ -320,8 +366,11 @@ def parse_access_log(
     はそのうち 2 つの封印の区分のもの。次はすべて構造の誤り（その snapshot の状態を導けない）:
     JSON でない行、改行で終わらない最後の行、正規化と一致しない版 1 の行、知らない
     `schema_version`・`kind`・`reason`、版 1 の行の必須の項目の欠け、鍵の重複、2 つの封印の
-    区分の partition への `GRANTED`・`RESEARCH_OPT_IN` の行、manifest に無い partition を指す行。
-    版 0 の行どうしの重複は数えない（鍵を持たない）。
+    区分の partition への `GRANTED`・`RESEARCH_OPT_IN` の行、manifest に無い partition を指す行、
+    封印の区分でない partition への換算用の読み取りの行（`CONVERSION_READ`。換算用の読み取りは
+    封印の partition だけに書く。C2 の仮置き）。版 0 の行どうしの重複は数えない（鍵を持たない）。
+    封印の区分の partition に受け付ける種別は、版 0 の `CONSUMED` と版 1 の `CONSUMED`・
+    `CONVERSION_READ`（D06 v1.20 案 §19.14、仮置き C1-16 (a)）。
     """
     if not isinstance(data, bytes):
         raise MarketDataValueError("parse_access_log requires bytes")
@@ -347,18 +396,24 @@ def parse_access_log(
                     raise KernelValueError(
                         "the version-1 line is not in the canonical encoding of its row (D02 §9.3)"
                     )
-                partition, kind = row.partition, AccessLogEntryKind.CONSUMED
+                partition, kind = row.partition, row.kind.value
             else:
                 line = _legacy_of(payload)
-                partition, kind = line.partition, line.kind
+                partition, kind = line.partition, line.kind.value
         except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
             return _failure(number, f"{type(exc).__name__}: {exc}")
         if partition not in partitions:
             return _failure(number, f"the line points at {partition}, which the manifest lacks")
-        if partition in sealed_partitions and kind is not AccessLogEntryKind.CONSUMED:
+        if partition in sealed_partitions and kind not in _SEALED_KINDS:
             return _failure(
                 number,
-                f"a {kind.value} line on the sealed partition {partition} (ADR-0038 第8項の 1)",
+                f"a {kind} line on the sealed partition {partition} (ADR-0038 第8項の 1)",
+            )
+        if partition not in sealed_partitions and kind == ConsumptionKind.CONVERSION_READ.value:
+            return _failure(
+                number,
+                f"a CONVERSION_READ line on {partition}, which is not a sealed partition"
+                " (D06 §19.14)",
             )
         if "schema_version" in payload:
             if row.key in keys:

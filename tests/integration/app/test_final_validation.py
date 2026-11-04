@@ -987,3 +987,477 @@ def test_24_resume_with_rows_of_another_permit_is_refused(ws: FinalWorkspace) ->
     path.write_text("\n".join([*lines, encode(row).decode("utf-8")]) + "\n")
     ws.commit_and_push("a consumption row of another permit (synthetic)")
     _refused_resume(ws)
+
+
+# --- CT-23〜CT-25・CT-27・CT-28: 円以外の決済通貨の候補の換算用の読み取り（D06 §19.14） ---------
+#
+# 執行の通貨ペアの封印の snapshot（EURUSD・GBPUSD の 1 時間足と日足）と、換算の脚の USDJPY の
+# 1 分足の封印の snapshot を、manifest だけの人工の形で両組に足す（足のファイルは書かない。段 1〜
+# 段 4 は足を読まない）。run は人工の `FakeRunner`（本番の run は `test_final_run.py`）。
+
+
+def _series(symbol: str, timeframe: str) -> Any:
+    from odyssey_fx.common.symbol import Symbol
+    from tests.fixtures.synthetic import market
+
+    return market.series(Symbol(symbol), timeframe)
+
+
+def _conversion_ws(
+    tmp_path: Path,
+    *,
+    usdjpy_periods: Any = None,
+    usdjpy_reports: Paired[Any] | None = None,
+) -> tuple[FinalWorkspace, dict[str, Paired[str]]]:
+    """人工の作業場に、EURUSD・GBPUSD と換算の脚の USDJPY の 1 分足の封印の snapshot を足す。"""
+    from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant
+    from tests.fixtures.final_validation import sealed_manifest, weeks, write_snapshot
+
+    ws = build_workspace(tmp_path)
+    periods = weeks()
+    variants = Paired(standard=TimeRuleVariant.STANDARD, candidate=TimeRuleVariant.CANDIDATE)
+    ids: dict[str, Paired[str]] = {}
+    for symbol in ("EURUSD", "GBPUSD"):
+        ids[symbol] = variants.map(
+            lambda _, variant, symbol=symbol: write_snapshot(  # type: ignore[misc]
+                ws.snapshots,
+                sealed_manifest(
+                    variant,
+                    periods,
+                    series=(_series(symbol, "1h"), _series(symbol, "1d")),
+                ),
+            )
+        )
+    minute = (_series("USDJPY", "1m"),)
+    ids["USDJPY_1m"] = variants.map(
+        lambda name, variant: write_snapshot(
+            ws.snapshots,
+            sealed_manifest(
+                variant,
+                periods if usdjpy_periods is None else usdjpy_periods.of(name),
+                series=minute,
+            ),
+            None if usdjpy_reports is None else usdjpy_reports.of(name),
+        )
+    )
+    ws.commit_and_push("sealed snapshots of EURUSD, GBPUSD and the USDJPY 1m conversion leg")
+    return ws, ids
+
+
+#: 人工の記録票の換算の snapshot（研究期間の USDJPY。組ごと。開かない識別子）。
+_CONVERSION_RECORD = Paired(standard="j" * 64, candidate="k" * 64)
+
+
+def _non_yen(ws: FinalWorkspace, **changes: Any) -> CandidateFacts:
+    """EURUSD の候補（決済通貨が米ドル。換算の脚は USDJPY）。"""
+    base = ws.facts(
+        symbols=frozenset({"EURUSD"}),
+        conversion_symbols=frozenset({"USDJPY"}),
+        conversion_snapshots=_CONVERSION_RECORD,
+    )
+    return replace(base, **changes)
+
+
+def _converting_runner(ws: FinalWorkspace, **changes: Any) -> FakeRunner:
+    return FakeRunner(research=ws.research, conversion_research=_CONVERSION_RECORD, **changes)
+
+
+def _candidates(ws: FinalWorkspace, names: list[str]) -> dict[str, tuple[CandidateKey, str]]:
+    """試行台帳・採用審査・固定の記録に人工の候補を並べ（`names` の順）、鍵と開始の行を返す。"""
+    from tests.fixtures.evaluation import trial_ledger
+
+    entries = []
+    openings = {}
+    for name in names:
+        opening = trial_ledger.started(name, purpose=StandardPurpose.STANDARD)
+        openings[name] = opening
+        entries.extend(
+            [opening, trial_ledger.finished(opening, verdict=SearchVerdict.MEETS_STANDARD)]
+        )
+    lines = trial_ledger.chain(entries)
+    trial_ledger.write_ledger(ws.repo, lines)
+    out: dict[str, tuple[CandidateKey, str]] = {}
+    for index, name in enumerate(names):
+        key = (
+            ws.key
+            if name == "cand"
+            else CandidateKey(
+                experiment_id=trial_ledger.experiment_id(name).hex,
+                execution=1,
+                experiment_name=f"exp_{name}",
+                experiment_version=1,
+            )
+        )
+        out[name] = (key, lines[2 * index].digest.hex)
+        write_fixation(ws.repo, key)
+    write_review(ws.repo, [out[name][0] for name in names])
+    ws.commit_and_push("synthetic candidates reviewed and fixed")
+    return out
+
+
+def _run_as(
+    ws: FinalWorkspace,
+    facts: CandidateFacts,
+    runner: FakeRunner,
+    *,
+    mode: FinalMode = FinalMode.APPLY,
+) -> FinalValidationOutcome:
+    """候補ごとの実験の版のディレクトリで最終検証を起動する（控えの置き場が候補ごとに別）。"""
+    directory = ws.repo / "runs" / "experiments" / facts.key.experiment_name / "v1"
+    directory.mkdir(parents=True, exist_ok=True)
+    return final_validate(
+        FinalValidationRequest(
+            experiment_dir=directory,
+            execution=facts.key.execution,
+            repo_root=ws.repo,
+            snapshots_root=ws.snapshots,
+            out_root=ws.repo,
+            declaration=ws.declaration(key=facts.key),
+            by="人工の実行者",
+            mode=mode,
+        ),
+        candidates=_Candidates(facts),
+        runner=runner,
+    )
+
+
+def _log_rows(ws: FinalWorkspace, snapshot_id: str) -> list[dict[str, Any]]:
+    path = ws.snapshots / snapshot_id / "access_log.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def _consumed(ws: FinalWorkspace, snapshot_id: str) -> frozenset[str]:
+    """origin と同じ作業木の消費の記録から導いた `CONSUMED` の partition（状態の導出）。"""
+    from odyssey_fx.app.sealed_intake import parse_consumption_bytes
+    from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+    from odyssey_fx.marketdata.domain.consumption_log import ParsedAccessLog
+
+    manifest = ParquetSnapshotStore(root=ws.snapshots).read_manifest(snapshot_id)
+    path = ws.snapshots / snapshot_id / "access_log.jsonl"
+    parsed = parse_consumption_bytes(path.read_bytes() if path.exists() else b"", manifest)
+    assert isinstance(parsed, ParsedAccessLog), parsed
+    return parsed.consumed()
+
+
+def test_ct23_conversion_reads_are_recorded_apart_and_leave_the_partitions_sealed(
+    tmp_path: Path,
+) -> None:
+    """CT-23: 換算用の読み取りの行が消費の行と同じ commit で書かれ、USDJPY は SEALED のまま。
+
+    控え・台帳に別の項目で一覧と数。同じ週を別の円以外の候補が換算に読め、USDJPY の候補が
+    消費できる。
+    """
+    ws, ids = _conversion_ws(tmp_path)
+    names = _candidates(ws, ["cand", "gbp", "jpy"])
+    eur = _non_yen(ws, started_line_digest=names["cand"][1])
+    outcome = _run_as(ws, eur, _converting_runner(ws))
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    _no_price(outcome)
+    weeks = _WEEKS * 2  # 両組
+    for variant_id in (ids["USDJPY_1m"].standard, ids["USDJPY_1m"].candidate):
+        rows = _log_rows(ws, variant_id)
+        assert len(rows) == _WEEKS
+        assert {row["kind"] for row in rows} == {"CONVERSION_READ"}
+        assert {(row["reason"], row["permit_id"]) for row in rows} == {
+            ("FINAL_EVALUATION", outcome.permit_id)
+        }
+        assert {row["candidate"]["experiment_id"] for row in rows} == {eur.key.experiment_id}
+        assert {row["purpose"] for row in rows} == {eur.final_holdout.purpose}  # type: ignore[union-attr]
+        assert _consumed(ws, variant_id) == frozenset()  # 状態は SEALED のまま
+    for variant_id in (ids["EURUSD"].standard, ids["EURUSD"].candidate):
+        assert {row["kind"] for row in _log_rows(ws, variant_id)} == {"CONSUMED"}
+        assert len(_consumed(ws, variant_id)) == _WEEKS * 2
+    # 消費の行と換算用の読み取りの行は 1 つの commit（段 4 の 1 回の publish）。
+    changed = ws.git("show", "--name-only", "--format=", outcome.commit or "HEAD").splitlines()
+    assert {line.split("/")[2] for line in changed} == {
+        ids["EURUSD"].standard,
+        ids["EURUSD"].candidate,
+        ids["USDJPY_1m"].standard,
+        ids["USDJPY_1m"].candidate,
+    }
+    permit = json.loads((ws.repo / "runs/experiments/exp_cand/v1/final/1/permit.json").read_text())
+    assert len(permit["targets"]) == weeks * 2
+    assert not any("USDJPY" in name for name in permit["targets"])
+    assert len(permit["conversion_reads"]) == permit["conversion_read_count"] == weeks
+    assert all("USDJPY_1m_bid" in name for name in permit["conversion_reads"])
+    record = json.loads(
+        (ws.repo / "runs/experiments/exp_cand/v1/final/1/final_evaluation.json").read_text()
+    )
+    assert record["conversion_reads"] == permit["conversion_reads"]
+    assert record["checks"]["P2F"] == "PASSED"
+    row = read_final_ledger(ws.repo).rows[0].payload
+    assert row["schema_version"] == 2
+    assert row["partition_count"] == weeks * 2 and row["conversion_read_count"] == weeks
+    import hashlib
+
+    from odyssey_fx.common.canonical import encode
+
+    assert (
+        row["conversion_reads_digest"]
+        == hashlib.sha256(encode(sorted(permit["conversion_reads"]))).hexdigest()
+    )
+    # 同じ週の USDJPY を別の円以外の候補（GBPUSD）が換算に読める。
+    gbp = _non_yen(
+        ws,
+        key=names["gbp"][0],
+        started_line_digest=names["gbp"][1],
+        symbols=frozenset({"GBPUSD"}),
+    )
+    second = _run_as(ws, gbp, _converting_runner(ws))
+    assert second.exit_code == EXIT_OK, second.detail
+    rows = _log_rows(ws, ids["USDJPY_1m"].standard)
+    assert {row["permit_id"] for row in rows} == {outcome.permit_id, second.permit_id}
+    assert _consumed(ws, ids["USDJPY_1m"].standard) == frozenset()
+    # USDJPY の候補はその週を消費できる（換算用の読み取りの後でも SEALED のまま）。
+    jpy = ws.facts(key=names["jpy"][0], started_line_digest=names["jpy"][1])
+    third = _run_as(ws, jpy, FakeRunner(research=ws.research))
+    assert third.exit_code == EXIT_OK, third.detail
+    assert len(_consumed(ws, ids["USDJPY_1m"].standard)) == _WEEKS
+    kinds = [row["kind"] for row in _log_rows(ws, ids["USDJPY_1m"].standard)]
+    assert kinds.count("CONVERSION_READ") == 2 * _WEEKS and kinds.count("CONSUMED") == _WEEKS
+    # 台帳の円の候補の行は版 1 の形のまま（換算用の読み取りの項目を持たない）。
+    assert [item.payload["schema_version"] for item in read_final_ledger(ws.repo).rows] == [2, 2, 1]
+
+
+def test_ct24_a_consumed_usdjpy_week_cuts_the_window_of_the_non_yen_candidate(
+    tmp_path: Path,
+) -> None:
+    """CT-24: 他の候補が USDJPY の週を消費していると、その週は円以外の候補の窓の抜け（換算にも
+    読まない）。古い読込の道具は換算用の読み取りの行を知らない種別として止める。"""
+    ws, ids = _conversion_ws(tmp_path)
+    first_week = PartitionId(
+        series=_series("USDJPY", "1m"),
+        access_class=AccessClass.HOLDOUT_SINCE_2024,
+        period_start=UtcTime.parse("2024-01-01T00:00:00Z"),
+    )
+    for snapshot_id in (ids["USDJPY_1m"].standard, ids["USDJPY_1m"].candidate):
+        line = {
+            "actor": "t",
+            "kind": "CONSUMED",
+            "partition": str(first_week),
+            "purpose": "",
+            "recorded_at": "2026-11-20T00:00:00Z",
+        }
+        (ws.snapshots / snapshot_id / "access_log.jsonl").write_text(json.dumps(line) + "\n")
+    ws.commit_and_push("another candidate consumed the first USDJPY week")
+    from datetime import timedelta
+
+    outcome = _run(ws, _converting_runner(ws, warmup=timedelta(0)), facts=_non_yen(ws))
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    permit = json.loads((_final(ws) / PERMIT_FILE).read_text())
+    assert permit["consumption"]["start"] == "2024-01-07T22:00:00Z"
+    assert len(permit["conversion_reads"]) == (_WEEKS - 1) * 2
+    assert not any("20240101T0000Z" in name for name in permit["conversion_reads"])
+    # EURUSD の最初の週は消費の対象に入らず SEALED のまま（窓の抜け）。
+    assert not any("20240101T0000Z" in name for name in permit["targets"])
+    # 古い読込の道具（C2 より前。版 1 の行の種別は CONSUMED だけ）は、この行の種別を知らない。
+    from odyssey_fx.app.sealed_intake import parse_consumption_bytes
+    from odyssey_fx.common.canonical import encode
+    from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
+    from odyssey_fx.marketdata.domain.consumption_log import AccessLogReadFailure
+
+    raw = (ws.snapshots / ids["USDJPY_1m"].standard / "access_log.jsonl").read_text().splitlines()
+    written = json.loads(raw[-1])
+    assert written["schema_version"] == "1" and written["kind"] == "CONVERSION_READ"
+    assert written["kind"] != "CONSUMED"  # C2 より前の読込が版 1 の行に許した唯一の種別
+    unknown = encode({**written, "kind": "SOME_FUTURE_KIND"}) + b"\n"
+    manifest = ParquetSnapshotStore(root=ws.snapshots).read_manifest(ids["USDJPY_1m"].standard)
+    failure = parse_consumption_bytes(unknown, manifest)
+    assert isinstance(failure, AccessLogReadFailure)  # 知らない種別は構造の誤りで止まる
+
+
+def test_ct24_a_missing_usdjpy_week_stops_before_consumption(tmp_path: Path) -> None:
+    """CT-24: USDJPY の partition が無い週が窓の中にあれば、何も書かずに止まる。"""
+    from tests.fixtures.final_validation import weeks
+
+    periods = weeks()
+    ws, _ = _conversion_ws(
+        tmp_path, usdjpy_periods=Paired(standard=periods, candidate=periods[:20] + periods[21:])
+    )
+    before = _snapshot(ws)
+    outcome = _run(ws, _converting_runner(ws), facts=_non_yen(ws))
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.WINDOW_HAS_MISSING_WEEK,
+    ), outcome.detail
+    assert _snapshot(ws) == before
+
+
+def _report(kind: Any, interval: Any, *, severity: Any = None) -> Any:
+    from odyssey_fx.marketdata.domain.integrity import CheckResult, IntegrityReport
+
+    return IntegrityReport(
+        results=(CheckResult.create(kind, _series("USDJPY", "1m"), interval, severity=severity),)
+    )
+
+
+@pytest.mark.parametrize("problem", ["shortfall", "error"])
+def test_ct25_a_shortfall_or_an_error_of_the_conversion_leg_stops_before_consumption(
+    tmp_path: Path, problem: str
+) -> None:
+    """CT-25: USDJPY の partition の取得不足・検査報告の ERROR も消費の前に止める（7）。"""
+    from odyssey_fx.common.time import Interval
+    from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport, Severity
+
+    span = Interval(
+        start=UtcTime.parse("2024-06-03T10:00:00Z"), end=UtcTime.parse("2024-06-03T12:00:00Z")
+    )
+    report = (
+        _report(CheckKind.ACQUISITION_SHORTFALL, span)
+        if problem == "shortfall"
+        else _report(CheckKind.OHLC_INCONSISTENT, span, severity=Severity.ERROR)
+    )
+    ws, _ = _conversion_ws(
+        tmp_path, usdjpy_reports=Paired(standard=report, candidate=IntegrityReport())
+    )
+    before = _snapshot(ws)
+    outcome = _run(ws, _converting_runner(ws), facts=_non_yen(ws))
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.DATA_CAPABILITY_NOT_MET,
+    ), outcome.detail
+    # 取得不足は換算用の対象の検査で、ERROR は承認済みの snapshot を開く関門（D03 §4 の 4）で
+    # 止まる。
+    expected = "acquisition shortfall" if problem == "shortfall" else "cannot be opened as approved"
+    assert expected in outcome.detail, outcome.detail
+    assert _snapshot(ws) == before
+
+
+def test_c1_15_long_unrecorded_spans_of_the_conversion_leg_are_counted_not_stopped(
+    tmp_path: Path,
+) -> None:
+    """仮置き C1-15: 15 分より長い無記録の区間の数を段 2 の画面に件数だけ出し、控えにも書く。"""
+    from odyssey_fx.common.time import Interval
+    from odyssey_fx.marketdata.domain.integrity import CheckKind, CheckResult, IntegrityReport
+
+    def span(start: str, minutes: int) -> Interval:
+        begin = UtcTime.parse(start)
+        from datetime import timedelta
+
+        return Interval(start=begin, end=begin + timedelta(minutes=minutes))
+
+    report = IntegrityReport(
+        results=tuple(
+            CheckResult.create(CheckKind.UNRECORDED_MINUTES, _series("USDJPY", "1m"), item)
+            for item in (
+                span("2024-03-04T01:00:00Z", 30),
+                span("2024-07-08T05:00:00Z", 16),
+                span("2024-09-09T05:00:00Z", 15),  # ちょうど 15 分は数えない
+            )
+        )
+    )
+    ws, _ = _conversion_ws(
+        tmp_path, usdjpy_reports=Paired(standard=report, candidate=IntegrityReport())
+    )
+    dry = _run(ws, _converting_runner(ws), facts=_non_yen(ws), mode=FinalMode.DRY_RUN)
+    assert dry.exit_code == EXIT_OK, dry.detail
+    assert any(
+        "15 分より長い無記録の区間" in line and "standard 2、candidate 0" in line
+        for line in dry.lines
+    )
+    assert not _final(ws).exists()
+    outcome = _run(ws, _converting_runner(ws), facts=_non_yen(ws))
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    permit = json.loads((_final(ws) / PERMIT_FILE).read_text())
+    assert permit["conversion_unrecorded_over_15m"] == {"standard": 2, "candidate": 0}
+
+
+@pytest.mark.parametrize("record", ["missing", "another"])
+def test_ct27_research_partitions_of_another_conversion_snapshot_fail_p2f_3(
+    tmp_path: Path, record: str
+) -> None:
+    """CT-27（人間の決定 (23) (a)）: 記録票に換算の snapshot が無い円以外の候補、記録票と違う換算の
+    snapshot を読もうとする並びは、検査 P2F の (3) で消費の前に止まる。"""
+    ws, _ = _conversion_ws(tmp_path)
+    facts = _non_yen(
+        ws,
+        conversion_snapshots=None
+        if record == "missing"
+        else Paired(standard="m" * 64, candidate="n" * 64),
+    )
+    before = _snapshot(ws)
+    outcome = _run(ws, _converting_runner(ws), facts=facts)
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.P2F_NOT_PASSED,
+    ), outcome.detail
+    assert "P2F (3)" in outcome.detail
+    assert _snapshot(ws) == before
+
+
+def test_ct28_a_resume_reads_the_usdjpy_week_another_candidate_consumed_meanwhile(
+    tmp_path: Path,
+) -> None:
+    """CT-28（人間の決定 (24) (a)）: 状態 C の間に USDJPY の候補が同じ週を消費しても、同じ許可の
+    `--resume` は控えと一致して続く。別の許可（新しい申請）はその週を読まず、窓の抜けになる。"""
+    ws, ids = _conversion_ws(tmp_path)
+    names = _candidates(ws, ["cand", "gbp"])
+    failed = _run_as(
+        ws,
+        _non_yen(ws, started_line_digest=names["cand"][1]),
+        _converting_runner(ws, fail_run=True),
+    )
+    assert (failed.exit_code, failed.reason) == (
+        EXIT_FAILED_AFTER_CONSUMPTION,
+        FinalReason.FINAL_RUN_FAILED,
+    ), failed.detail
+    # USDJPY の候補（別の許可）が最初の週を消費した（人工の版 1 の消費の行）。
+    from odyssey_fx.marketdata.domain.consumption_log import (
+        ConsumptionCandidate,
+        ConsumptionReason,
+        ConsumptionRow,
+    )
+
+    first_week = PartitionId(
+        series=_series("USDJPY", "1m"),
+        access_class=AccessClass.HOLDOUT_SINCE_2024,
+        period_start=UtcTime.parse("2024-01-01T00:00:00Z"),
+    )
+    log = GitHoldoutAccessLog(ws.repo, ws.snapshots)
+    for snapshot_id in (ids["USDJPY_1m"].standard, ids["USDJPY_1m"].candidate):
+        log.append_row(
+            snapshot_id,
+            ConsumptionRow(
+                row_id="9" * 32,
+                partition=str(first_week),
+                reason=ConsumptionReason.FINAL_EVALUATION,
+                permit_id="8" * 32,
+                candidate=ConsumptionCandidate(
+                    experiment_id="7" * 64,
+                    execution="1",
+                    experiment_name="exp_jpy",
+                    experiment_version="1",
+                ),
+                access_id="",
+                recorded_at=UtcTime.parse("2026-11-21T00:00:00Z"),
+                actor="t",
+                purpose="USDJPY の候補の最終検証（人工）",
+            ),
+        )
+    ws.commit_and_push("a USDJPY candidate consumed the first week meanwhile")
+    assert str(first_week) in _consumed(ws, ids["USDJPY_1m"].standard)
+    resumed = _run_as(
+        ws,
+        _non_yen(ws, started_line_digest=names["cand"][1]),
+        _converting_runner(ws),
+        mode=FinalMode.RESUME,
+    )
+    assert resumed.exit_code == EXIT_OK, resumed.detail
+    rows = _log_rows(ws, ids["USDJPY_1m"].standard)
+    reads = [row for row in rows if row["kind"] == "CONVERSION_READ"]
+    assert len(reads) == _WEEKS  # 増やさない
+    assert {row["permit_id"] for row in reads} == {resumed.permit_id}  # 同じ許可
+    permit = json.loads((ws.repo / "runs/experiments/exp_cand/v1/final/1/permit.json").read_text())
+    assert any("20240101T0000Z" in name for name in permit["conversion_reads"])
+    # 別の許可（新しい申請）はその週を読まない（GBPUSD の候補の窓は 2 週目から）。
+    from datetime import timedelta
+
+    gbp = _non_yen(
+        ws,
+        key=names["gbp"][0],
+        started_line_digest=names["gbp"][1],
+        symbols=frozenset({"GBPUSD"}),
+    )
+    other = _run_as(ws, gbp, _converting_runner(ws, warmup=timedelta(0)), mode=FinalMode.DRY_RUN)
+    assert other.exit_code == EXIT_OK, other.detail
+    assert any("消費する範囲: [2024-01-07T22:00:00Z" in line for line in other.lines), other.lines

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import shutil
 from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
@@ -41,7 +40,12 @@ from odyssey_fx.evaluation.domain.search import (
     TrialLedgerEntry,
     TrialLedgerLine,
 )
-from tests.fixtures.evaluation.adoption_review import REPO_ROOT, review_entry, review_lines
+from tests.fixtures.evaluation.adoption_review import (
+    REPO_ROOT,
+    install_version_1_rules,
+    review_entry,
+    review_lines,
+)
 from tests.fixtures.evaluation.trial_ledger import (
     chain,
     experiment_id,
@@ -112,9 +116,7 @@ def _repo(tmp_path: Path, lines: Sequence[TrialLedgerLine]) -> Path:
         f'  - {{id: research, version: 3, digest: "{_POLICY.digest.hex}", purpose: STANDARD}}\n',
         encoding="utf-8",
     )
-    shutil.copytree(
-        REPO_ROOT / "configs/policies/adoption_review", repo / "configs/policies/adoption_review"
-    )
+    install_version_1_rules(repo)
     (repo / ADOPTION_REVIEW_LEDGER_PATH).write_bytes(b"")
     return repo
 

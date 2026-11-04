@@ -60,7 +60,7 @@ def test_an_empty_list_of_sealed_reads_leaves_the_config_digest_unchanged() -> N
     before = {
         item.name: getattr(config, item.name)
         for item in fields(config)
-        if item.name != "sealed_reads"
+        if item.name not in ("sealed_reads", "conversion_snapshot_ref")
     }
     expected = ConfigDigest(
         digest=digest(

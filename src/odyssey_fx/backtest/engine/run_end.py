@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from decimal import localcontext
+from decimal import Decimal, localcontext
 
 from odyssey_fx.backtest.domain.account import AccountLedger
 from odyssey_fx.backtest.domain.fills import CostKind
@@ -51,6 +51,7 @@ def final_summaries(
     last_close: Price | None,
     cost_model: CostModel,
     cost_totals: Mapping[CostKind, Money],
+    rate: Decimal | None = None,
 ) -> FinalSummaries | None:
     """末尾の3集計（D06 §10.3、上位設計書 §4.7.13 E）。
 
@@ -60,6 +61,10 @@ def final_summaries(
 
     `hypothetical_closed` は**計算だけ**行い、注文・約定・完了取引数・balance・リスク枠を
     変更しない。
+
+    `rate` は run の末尾の決済通貨から口座通貨への率 `X_end`（D06 v1.20 案 §19.6 の (3)）。仮決済の
+    損益は価格の差に `X_end` を掛け、手数料は口座通貨のまま引く。明細の滑りの金額も `× X_end`。
+    `None` は恒等換算（今までと同じ式）。
     """
     positions = ledger.open_positions()
     if positions and last_close is None:
@@ -79,6 +84,9 @@ def final_summaries(
             gross = (price.value - position.entry_price.value) * position.quantity.units * direction
             commission = cost_model.commission_per_unit.amount * position.quantity.units
             slippage = abs(base.value - price.value) * position.quantity.units
+            if rate is not None:
+                gross = gross * rate
+                slippage = slippage * rate
         profit = Money(gross - commission, currency)
         hypothetical = hypothetical + profit
         # 明細は区間の終わりの決済の事実を辿るためだけのもの（方式 (ii)。実装 PR の仮置き 45）。

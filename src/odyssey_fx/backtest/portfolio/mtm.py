@@ -11,7 +11,7 @@ run 中の含み損益は、その判断時点の**直前に完了した執行�
 
 from __future__ import annotations
 
-from decimal import localcontext
+from decimal import Decimal, localcontext
 
 from odyssey_fx.backtest.domain.orders import OrderSide
 from odyssey_fx.backtest.domain.policies import SpreadModel
@@ -44,8 +44,14 @@ def unrealized(
     bid_close: Price,
     spread_model: SpreadModel,
     currency: CurrencyCode,
+    *,
+    rate: Decimal | None = None,
 ) -> Money:
-    """1建玉の含み損益（口座通貨。段階2は決済通貨＝口座通貨の恒等換算）。"""
+    """1建玉の含み損益（口座通貨）。
+
+    `d × (P_exit − P_entry) × Q × X_m`（D06 v1.20 案 §19.6 の (3)）。`rate` は処理点の決済通貨
+    から口座通貨への率 `X_m` で、`None` は恒等換算（率 1。今までと同じ式）。
+    """
     if not isinstance(position, Position):
         raise KernelValueError("unrealized requires a Position")
     if not isinstance(currency, CurrencyCode):
@@ -54,4 +60,6 @@ def unrealized(
     direction = decimal_from_int(1 if position.side is OrderSide.BUY else -1)
     with localcontext(kernel_context()):
         amount = (price.value - position.entry_price.value) * position.quantity.units * direction
+        if rate is not None:
+            amount = amount * rate
     return Money(amount, currency)

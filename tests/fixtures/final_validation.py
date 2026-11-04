@@ -47,6 +47,7 @@ from odyssey_fx.evaluation.domain.splits import FinalHoldoutSpec
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
 from odyssey_fx.marketdata.application.partition_digest import partition_digest_hex
+from odyssey_fx.marketdata.application.report_digest import integrity_report_digest_hex
 from odyssey_fx.marketdata.domain.access import (
     AccessClass,
     acquisition_start_after,
@@ -95,6 +96,8 @@ GENERATION_END: Final = UtcTime.parse("2025-02-09T22:00:00Z")
 SERIES: Final = market.series()
 #: 同じ銘柄の別の時間足（一緒に消費する。要決定 R2-2 (a)）。
 SERIES_D1: Final = market.series(timeframe_id="1d")
+#: USDJPY の 1 分足（円以外の決済通貨の候補の換算の脚。D06 v1.20 案 §19.14）。
+SERIES_M1: Final = market.series(timeframe_id="1m")
 #: 封印の snapshot の時刻の規則の表（承認済みの一覧の値。設定ファイルの値で、価格を含まない）。
 _SEALED_TABLE_ID: Final = "oanda_mt5_time_rules_sealed"
 _SEALED_TABLE_SHA: Final = "f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3"
@@ -188,12 +191,22 @@ def sealed_manifest(
     return replace(base, conversion=conversion)
 
 
-def write_snapshot(snapshots_root: Path, manifest: SnapshotManifest) -> str:
-    """manifest と空の検査報告を確定済みの snapshot のディレクトリに書き、識別子を返す。"""
+def write_snapshot(
+    snapshots_root: Path, manifest: SnapshotManifest, report: IntegrityReport | None = None
+) -> str:
+    """manifest と検査報告（既定は空）を確定済みの snapshot のディレクトリに書き、識別子を返す。
+
+    `report` を渡すと、manifest の検査報告のダイジェストをその報告のものに替える（読み取りの関門が
+    報告と manifest を突き合わせる。D03 §3.7.1）。
+    """
     store = ParquetSnapshotStore(root=snapshots_root)
+    chosen = IntegrityReport() if report is None else report
+    if report is not None:
+        digest = ContentDigest.sha256(integrity_report_digest_hex(chosen))
+        manifest = replace(manifest, integrity_report_ref=digest, provisional_report_ref=digest)
     snapshot_id = str(manifest.snapshot_id())
     (snapshots_root / snapshot_id).mkdir(parents=True, exist_ok=True)
-    store.write_integrity_report(snapshot_id, IntegrityReport())
+    store.write_integrity_report(snapshot_id, chosen)
     store.write_manifest(snapshot_id, manifest)
     return snapshot_id
 
@@ -213,16 +226,28 @@ class FakeRunner:
     run_suffix: str = ""
     #: run の成果物の置き場（`plan.run_directories`。やり直しの条件 R2-23・R2-24 の確かめに使う）。
     run_root: Path | None = None
+    #: 研究履歴の換算の脚の partition（USDJPY の 1 分足）を読む snapshot（組ごと。円以外の決済
+    #: 通貨の候補の人工の run。D06 v1.20 案 §19.14。`None` は換算の snapshot を読まない）。
+    conversion_research: Paired[str] | None = None
 
     def prepare(self, facts: CandidateFacts, experiment_dir: Path) -> FinalRunPreparation:
         self.calls.append("prepare")
         return FinalRunPreparation(final_trials=self.final_trials, warmup=self.warmup)
 
     def _research_partitions(self, variant: Variant) -> tuple[tuple[str, PartitionId], ...]:
-        return (
+        own = (
             (
                 self.research.of(variant),
                 PartitionId(series=SERIES, access_class=AccessClass.RESEARCH_HISTORY),
+            ),
+        )
+        if self.conversion_research is None:
+            return own
+        return (
+            *own,
+            (
+                self.conversion_research.of(variant),
+                PartitionId(series=SERIES_M1, access_class=AccessClass.RESEARCH_HISTORY),
             ),
         )
 

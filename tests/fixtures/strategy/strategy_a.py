@@ -93,16 +93,19 @@ EVALUATION_ORDER: Final[tuple[str, ...]] = (
 
 
 def _extreme_instance(
-    instance_id: str, mode: str, market_field: MarketDataField
+    instance_id: str,
+    mode: str,
+    market_field: MarketDataField,
+    signal_series: SeriesId = SIGNAL_SERIES,
 ) -> ComponentInstance:
     return ComponentInstance(
         instance_id=instance_id,
         contract_ref=contract_ref_for(extreme.CONTRACT),
         inputs={
-            "prices": InputBinding(sources=(MarketDataRef(SIGNAL_SERIES, market_field),)),
+            "prices": InputBinding(sources=(MarketDataRef(signal_series, market_field),)),
         },
         parameters={"lookback": IntValue(LOOKBACK), "mode": StrValue(mode)},
-        evaluation=EvaluationSchedule(triggers=(OnBarClose("h1", SIGNAL_SERIES),)),
+        evaluation=EvaluationSchedule(triggers=(OnBarClose("h1", signal_series),)),
     )
 
 
@@ -114,13 +117,15 @@ def strategy_a(
     max_active: int = 1,
     on_new_trigger: OnNewTrigger = OnNewTrigger.KEEP_EXISTING,
     on_order_accepted: OnOrderAccepted = OnOrderAccepted.KEEP_OTHERS,
+    signal_series: SeriesId = SIGNAL_SERIES,
 ) -> StrategyDefinition:
     """検証戦略 A の宣言を作る（D05 §9）。
 
     `stop_lookback` に別の本数を渡すと、T01 §6.1 が使う「ウォームアップの長さが違う宣言」
-    （損切り水準だけ履歴が足りない状態）を作れる。
+    （損切り水準だけ履歴が足りない状態）を作れる。`signal_series` を渡すと別の通貨ペアの
+    評価系列で同じ宣言を作れる（換算の受入テスト。D06 v1.20 案 §19.16）。
     """
-    breakout_level = _extreme_instance("breakout_level", "MAX", MarketDataField.HIGH)
+    breakout_level = _extreme_instance("breakout_level", "MAX", MarketDataField.HIGH, signal_series)
     if lookback != LOOKBACK:
         breakout_level = ComponentInstance(
             instance_id=breakout_level.instance_id,
@@ -129,7 +134,7 @@ def strategy_a(
             parameters={"lookback": IntValue(lookback), "mode": StrValue("MAX")},
             evaluation=breakout_level.evaluation,
         )
-    stop_level = _extreme_instance("stop_level", "MIN", MarketDataField.LOW)
+    stop_level = _extreme_instance("stop_level", "MIN", MarketDataField.LOW, signal_series)
     if stop_lookback is not None:
         stop_level = ComponentInstance(
             instance_id=stop_level.instance_id,
@@ -143,11 +148,11 @@ def strategy_a(
         instance_id="entry_trigger",
         contract_ref=contract_ref_for(breakout.CONTRACT),
         inputs={
-            "price": InputBinding(sources=(MarketDataRef(SIGNAL_SERIES, MarketDataField.CLOSE),)),
+            "price": InputBinding(sources=(MarketDataRef(signal_series, MarketDataField.CLOSE),)),
             "level": InputBinding(sources=(OutputRef("breakout_level", "level"),)),
         },
         parameters={"direction": StrValue("LONG")},
-        evaluation=EvaluationSchedule(triggers=(OnBarClose("h1", SIGNAL_SERIES),)),
+        evaluation=EvaluationSchedule(triggers=(OnBarClose("h1", signal_series),)),
     )
     entry_order = ComponentInstance(
         instance_id="entry_order",

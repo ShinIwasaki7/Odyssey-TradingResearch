@@ -192,12 +192,18 @@ class HistoryResetRow:
 
 
 class EvidenceKind(Enum):
-    """根拠記録の種別（D06 §9.2）。"""
+    """根拠記録の種別（D06 §9.2）。
+
+    `MARK_TO_MARKET` は時価評価の換算の経路（D06 v1.20 案 §19.6 の (3)・§19.7。仮置き C1-10）。
+    決済通貨が口座通貨と違う建玉を評価した台帳の snapshot ごとに 1 件で、恒等換算だけの処理点では
+    作らない。
+    """
 
     ORDER_REQUEST = "ORDER_REQUEST"
     ADMISSION = "ADMISSION"
     FILL = "FILL"
     PROTECTION_UPDATE = "PROTECTION_UPDATE"
+    MARK_TO_MARKET = "MARK_TO_MARKET"
 
 
 @dataclass(frozen=True, slots=True)

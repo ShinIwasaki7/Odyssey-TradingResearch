@@ -145,6 +145,7 @@ from odyssey_fx.marketdata.domain.access import OANDA_SEALED_CLASSES, HoldoutSta
 from odyssey_fx.marketdata.domain.consumption_log import (
     AccessLogEntryKind,
     AccessLogReadFailure,
+    ConsumptionKind,
     ConsumptionReason,
     ConsumptionRow,
     ParsedAccessLog,
@@ -301,6 +302,12 @@ class CandidateFacts:
     record_snapshots: Paired[str]
     manifest_sha256: str
     outcome_sha256: str
+    #: 記録票の換算の snapshot（組ごと。決済通貨が口座通貨と違う候補だけ。D07 §19.2 の
+    #: `conversion_snapshot_id`、人間の決定 (23) (a)）。円の候補は `None`。
+    conversion_snapshots: Paired[str] | None = None
+    #: 換算の脚の通貨ペアのうち執行の通貨ペアでないもの（記録票の換算の snapshot の許可 partition
+    #: の銘柄。円以外の決済通貨の候補の USDJPY。D06 v1.20 案 §19.14）。円の候補は空。
+    conversion_symbols: frozenset[str] = frozenset()
 
 
 class CandidateSource(Protocol):
@@ -357,6 +364,22 @@ class ExperimentCandidates:
         symbols = frozenset(
             key.split("/")[0].split("_")[0] for _, mapping in allowed.items() for key in mapping
         )
+        conversion_ids = manifest.conversion_snapshot_id
+        conversion_allowed = manifest.conversion_allowed_partitions
+        if conversion_ids is not None and (
+            not isinstance(conversion_ids, Paired) or not isinstance(conversion_allowed, Paired)
+        ):
+            raise ConfigError(f"{experiment_dir} の記録票は組ごとの換算の snapshot を持たない")
+        conversion_symbols = (
+            frozenset()
+            if not isinstance(conversion_allowed, Paired)
+            else frozenset(
+                key.split("/")[0].split("_")[0]
+                for _, mapping in conversion_allowed.items()
+                for key in mapping
+            )
+            - symbols
+        )
 
         def requirement(variant: Variant) -> FrequencyClass | None:
             if search is None:
@@ -398,6 +421,10 @@ class ExperimentCandidates:
             record_snapshots=Paired.build(lambda variant: str(snapshots.of(variant))),
             manifest_sha256=_sha256(directory / "experiment_manifest.json"),
             outcome_sha256=_sha256(directory / "experiment_outcome.json"),
+            conversion_snapshots=None
+            if not isinstance(conversion_ids, Paired)
+            else conversion_ids.map(lambda _, value: str(value)),
+            conversion_symbols=conversion_symbols,
         )
 
 
@@ -511,7 +538,24 @@ def _sealed_facts(
     `resume_permit` はやり直し（`--resume`）の許可の識別子。その許可の消費の行だけがある
     partition は窓に含める（`SEALED` と読む。D09 §9.10.3 の 1 の 4、仮置き R2-22）。ほかの許可・
     版 0 の消費の行がある partition は `CONSUMED` のまま。
+
+    換算用の読み取りの行（`CONVERSION_READ`）は状態に数えない（`SEALED` のまま。D06 v1.20 案
+    §19.14）。やり直しでは、その許可の換算用の読み取りの行がある partition（組と partition の
+    識別子で見る。重複して記録された他の snapshot の同じ partition も含む）は、ほかの許可で
+    `CONSUMED` になっていても `SEALED` と読む（人間の決定 (24) (a)。ADR-0038 第8項の 1 の
+    2026-11-03 の注記 (ii)）。
     """
+    resumed_reads: set[tuple[Variant, str]] = set()
+    if resume_permit is not None:
+        for item in snapshots.values():
+            mt5 = item.manifest.conversion.mt5
+            if mt5 is None or isinstance(item.log, AccessLogReadFailure):
+                continue
+            resumed_reads.update(
+                (Variant(mt5.time_rule_table.variant.value), row.partition)
+                for row in item.log.rows
+                if row.kind is ConsumptionKind.CONVERSION_READ and row.permit_id == resume_permit
+            )
     out: list[SealedPartitionFact] = []
     for snapshot_id in sorted(snapshots):
         item = snapshots[snapshot_id]
@@ -531,7 +575,11 @@ def _sealed_facts(
                 line.partition
                 for line in item.log.legacy
                 if line.kind is AccessLogEntryKind.CONSUMED
-            } | {row.partition for row in item.log.rows if row.permit_id != resume_permit}
+            } | {
+                row.partition
+                for row in item.log.rows
+                if row.consumes and row.permit_id != resume_permit
+            }
             consumed = {name for name in consumed if name in others}
         variant = Variant(mt5.time_rule_table.variant.value)
         for initial in manifest.sealed_initial_states:
@@ -543,6 +591,8 @@ def _sealed_facts(
                 if initial.state is HoldoutState.CONSUMED or str(initial.partition_id) in consumed
                 else HoldoutState.SEALED
             )
+            if (variant, str(initial.partition_id)) in resumed_reads:
+                state = HoldoutState.SEALED
             out.append(
                 SealedPartitionFact(
                     snapshot_id=snapshot_id,
@@ -557,9 +607,15 @@ def _sealed_facts(
 
 
 def _candidate_rows(
-    snapshots: Mapping[str, _OriginSnapshot], key: CandidateKey
+    snapshots: Mapping[str, _OriginSnapshot],
+    key: CandidateKey,
+    kind: ConsumptionKind = ConsumptionKind.CONSUMED,
 ) -> list[tuple[str, ConsumptionRow]]:
-    """この候補の最終検証の消費の行（origin の既定ブランチ上）。"""
+    """この候補の最終検証の消費の行（origin の既定ブランチ上）。
+
+    `kind` は行の種別（既定は消費の行。換算用の読み取りの行は `CONVERSION_READ` で別に読む。
+    D06 v1.20 案 §19.14）。
+    """
     rows: list[tuple[str, ConsumptionRow]] = []
     for snapshot_id in sorted(snapshots):
         parsed = snapshots[snapshot_id].log
@@ -568,7 +624,9 @@ def _candidate_rows(
         rows.extend(
             (snapshot_id, row)
             for row in parsed.rows
-            if row.reason is ConsumptionReason.FINAL_EVALUATION and key.matches(row.candidate)
+            if row.reason is ConsumptionReason.FINAL_EVALUATION
+            and row.kind is kind
+            and key.matches(row.candidate)
         )
     return rows
 
@@ -634,6 +692,14 @@ def _count_lines(window: FinalWindow) -> list[str]:
         f"snapshot: {len(window.snapshot_ids)}",
         "読む partition（組ごと）: "
         + "、".join(f"{variant.value} {len(window.reads.of(variant))}" for variant in VARIANTS),
+        *(
+            ()
+            if not window.conversion
+            else (
+                f"換算用の読み取りの対象の partition（消費しない）: {len(window.conversion)}"
+                f"（snapshot {len(window.conversion_snapshot_ids)}）",
+            )
+        ),
     ]
 
 
@@ -666,8 +732,20 @@ def _ledger_values(
     declaration_sha256: str = "",
     resume_count: int = 0,
     resume_failures: Sequence[str] = (),
+    conversion: Sequence[str] = (),
 ) -> dict[str, Any]:
+    # 換算用の読み取りの対象がある行だけ、消費の対象と別の項目で数と一覧のダイジェストを持つ（台帳の
+    # 書式の版 2。仮置き C1-17。円の候補の行は版 1 の形のまま）。
+    extra: dict[str, Any] = (
+        {}
+        if not conversion
+        else {
+            "conversion_read_count": len(conversion),
+            "conversion_reads_digest": _digest_of(conversion),
+        }
+    )
     return {
+        **extra,
         "result": result.value,
         "candidate": candidate_payload(candidate),
         "permit_id": permit_id,
@@ -1036,6 +1114,7 @@ def _backfill_completed(ctx: _Context) -> None:
             declaration_sha256=str(record["declaration_sha256"]),
             resume_count=int(record.get("resume_count", 0)),
             resume_failures=[str(item) for item in record.get("resume_failures", [])],
+            conversion=[str(item) for item in record.get("conversion_reads", [])],
         )
     except (KeyError, TypeError, ValueError, KernelValueError) as exc:
         raise _Stop(
@@ -1054,6 +1133,13 @@ def _close_failed(ctx: _Context) -> FinalValidationOutcome:
             EXIT_FAILED, None, f"the consumption rows of this candidate name {len(permits)} permits"
         )
     targets = sorted(f"{snapshot}:{row.partition}" for snapshot, row in rows)
+    conversion = sorted(
+        f"{snapshot}:{row.partition}"
+        for snapshot, row in _candidate_rows(
+            ctx.snapshots, ctx.key, ConsumptionKind.CONVERSION_READ
+        )
+        if row.permit_id == permits[0]
+    )
     periods = [
         record.partition_id.period
         for snapshot, row in rows
@@ -1106,6 +1192,7 @@ def _close_failed(ctx: _Context) -> FinalValidationOutcome:
             prior=len(_prior_validations((ctx.worktree, ctx.origin), ctx.key)),
             resume_count=max(started - 1, 0),
             resume_failures=failures,
+            conversion=conversion,
         )
     )
     ctx.lines.append(
@@ -1166,6 +1253,8 @@ def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
         copy = json.loads(path.read_text(encoding="utf-8"))
         permit_id = str(copy["permit_id"])
         copied_targets = sorted(str(item) for item in copy["targets"])
+        # 換算用の読み取りの対象（D06 v1.20 案 §19.14。円の候補の控えには項目が無い）
+        copied_conversion = sorted(str(item) for item in copy.get("conversion_reads", []))
         copied_scoring = str(copy["scoring_start"])
         copied_predicted = {
             variant.value: (
@@ -1185,6 +1274,15 @@ def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
     ) != copied_targets:
         raise _resume_refused(
             "the consumption rows on origin do not match the permit copy (仮置き R2-22)"
+        )
+    # 換算用の読み取りの行は消費の行と別に、控えの換算用の読み取りの対象と照合する（D06 §19.14）
+    conversion_rows = _candidate_rows(ctx.snapshots, ctx.key, ConsumptionKind.CONVERSION_READ)
+    if {row.permit_id for _, row in conversion_rows} - {permit_id} or sorted(
+        f"{snapshot}:{row.partition}" for snapshot, row in conversion_rows
+    ) != copied_conversion:
+        raise _resume_refused(
+            "the conversion-read rows on origin do not match the permit copy (仮置き R2-22、"
+            "D06 §19.14)"
         )
     # R2-23 の (1)・(4): 最終検証の記録と台帳の行が無い
     if (ctx.final_dir / FINAL_EVALUATION_FILE).exists() or (ctx.final_dir / REPORT_FILE).exists():
@@ -1227,6 +1325,7 @@ def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
     }
     if (
         sorted(_target_names(permit.window.targets)) != copied_targets
+        or sorted(_target_names(permit.window.conversion)) != copied_conversion
         or str(permit.window.scoring_start) != copied_scoring
         or predicted != copied_predicted
     ):
@@ -1501,6 +1600,7 @@ def _before_permit(
             excluded=excluded,
             length_days=fixation.length_days,
             warmup=warmup,
+            conversion_symbols=facts.conversion_symbols,
         )
         if isinstance(derived, WindowRefusal):
             raise _refuse(derived)
@@ -1525,12 +1625,12 @@ def _before_permit(
             f"final_holdout {holdout.interval} does not cover the window {window.consumption}"
             " (要決定 R2-5 (a))",
         )
-    # (a) origin の確かめ
+    # (a) origin の確かめ（換算用の読み取りの行を書く snapshot も。D06 v1.20 案 §19.14）
     prefix = ctx.log.snapshots_relative()
     try:
         ctx.log.require_clean_base(
-            [f"{prefix}/{snapshot}/{ACCESS_LOG_FILE}" for snapshot in window.snapshot_ids],
-            [f"{prefix}/{snapshot}/{MANIFEST_FILE}" for snapshot in window.snapshot_ids],
+            [f"{prefix}/{snapshot}/{ACCESS_LOG_FILE}" for snapshot in window.read_snapshot_ids],
+            [f"{prefix}/{snapshot}/{MANIFEST_FILE}" for snapshot in window.read_snapshot_ids],
         )
     except HoldoutAccessLogStop as stop:
         raise _reason(FinalReason.ORIGIN_NOT_CONFIRMED, stop.detail) from stop
@@ -1563,21 +1663,37 @@ def _before_permit(
     if isinstance(permit, WindowRefusal):
         raise _refuse(permit)
     # (h) P2F の (1)・(3)
-    refusal = final_partitions_match_permit(permit, plan.allowed, facts.record_snapshots)
+    refusal = final_partitions_match_permit(
+        permit, plan.allowed, facts.record_snapshots, facts.conversion_snapshots
+    )
     if refusal is not None:
         raise _refuse(refusal)
     return permit, plan
 
 
+#: 換算用の読み取りの対象の検査報告で数える無記録の区間の長さの下限（これより長いもの。D06 v1.20 案
+#: §19.14、仮置き C1-15。換算の古さの上限 15 分と同じ）。
+_LONG_UNRECORDED: Final = timedelta(minutes=15)
+
+
 def _capability(ctx: _Context, window: FinalWindow) -> None:
-    """段 2 (e): 承認・ERROR なし・時刻の規則の表の承認・取得不足の区間（戦略によらない部分）。"""
+    """段 2 (e): 承認・ERROR なし・時刻の規則の表の承認・取得不足の区間（戦略によらない部分）。
+
+    換算用の読み取りの対象を持つ snapshot にも manifest と検査報告だけで当てる（足は読まない。
+    D06 v1.20 案 §19.14）: 承認（検査報告に ERROR がある snapshot は承認済みとして開けない。
+    D03 §4 の 4）、MT5 の記録、時刻の規則の表の承認、その通貨ペアの取得不足の区間（消費する範囲と
+    重なるもの）。続けて、その検査報告の 15 分より長い無記録の区間の数を組ごとに数えて画面に件数
+    だけを出し、控えに写す値にする（止める条件にしない。仮置き C1-15）。
+    """
     from odyssey_fx.app.config.time_rules import load_approved_tables, require_approved
     from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 
     store = ParquetSnapshotStore(root=Path(ctx.request.snapshots_root))
     approved = load_approved_tables(ctx.request.repo_root / SEALED_APPROVED_TABLES)
     symbols = {str(partition.series.symbol) for _, partition in window.targets}
-    for snapshot_id in window.snapshot_ids:
+    converting = {str(partition.series.symbol) for _, partition in window.conversion}
+    long_unrecorded = {variant.value: 0 for variant in VARIANTS}
+    for snapshot_id in window.read_snapshot_ids:
         try:
             readable = store.open_readable(snapshot_id)
         except Exception as exc:  # noqa: BLE001 - どの失敗も「能力検査の不合格」に倒す
@@ -1602,7 +1718,7 @@ def _capability(ctx: _Context, window: FinalWindow) -> None:
             result
             for result in readable.report.results
             if result.kind is CheckKind.ACQUISITION_SHORTFALL
-            and str(result.series.symbol) in symbols
+            and str(result.series.symbol) in symbols | converting
             and result.interval is not None
             and result.interval.overlaps(window.consumption)
         ]
@@ -1611,6 +1727,24 @@ def _capability(ctx: _Context, window: FinalWindow) -> None:
                 FinalReason.DATA_CAPABILITY_NOT_MET,
                 f"{len(shortfalls)} acquisition shortfall(s) in {snapshot_id} overlap the window",
             )
+        if snapshot_id not in window.conversion_snapshot_ids:
+            continue
+        long_unrecorded[table.variant.value] += sum(
+            1
+            for result in readable.report.results
+            if result.kind is CheckKind.UNRECORDED_MINUTES
+            and str(result.series.symbol) in converting
+            and result.interval is not None
+            and result.interval.overlaps(window.consumption)
+            and result.interval.end - result.interval.start > _LONG_UNRECORDED
+        )
+    if window.conversion:
+        ctx.extras["conversion_unrecorded_over_15m"] = long_unrecorded
+        ctx.lines.append(
+            "換算用の読み取りの対象の 15 分より長い無記録の区間（止める条件にしない。"
+            "仮置き C1-15）: "
+            + "、".join(f"{name} {count}" for name, count in long_unrecorded.items())
+        )
 
 
 def _consume(ctx: _Context, permit: FinalEvaluationPermit, lock: Path) -> str:
@@ -1620,10 +1754,22 @@ def _consume(ctx: _Context, permit: FinalEvaluationPermit, lock: Path) -> str:
     recorded_at = ctx.now()
     prefix = ctx.log.snapshots_relative()
     paths = sorted(
-        {f"{prefix}/{snapshot}/{ACCESS_LOG_FILE}" for snapshot, _ in permit.window.targets}
+        {f"{prefix}/{snapshot}/{ACCESS_LOG_FILE}" for snapshot in permit.window.read_snapshot_ids}
     )
+    # 消費の行と、換算用の読み取りの行（同じ許可・候補・目的。消費に数えない。D06 v1.20 案
+    # §19.14、仮置き C1-16 (a)）を同じ 1 つの commit にする。
+    rows = [
+        *(
+            (snapshot, partition, ConsumptionKind.CONSUMED)
+            for snapshot, partition in permit.window.targets
+        ),
+        *(
+            (snapshot, partition, ConsumptionKind.CONVERSION_READ)
+            for snapshot, partition in permit.window.conversion
+        ),
+    ]
     try:
-        for snapshot, partition_id in permit.window.targets:
+        for snapshot, partition_id, kind in rows:
             ctx.log.append_row(
                 snapshot,
                 ConsumptionRow(
@@ -1636,6 +1782,7 @@ def _consume(ctx: _Context, permit: FinalEvaluationPermit, lock: Path) -> str:
                     recorded_at=recorded_at,
                     actor=ctx.request.by,
                     purpose=holdout.purpose,
+                    kind=kind,
                 ),
             )
     except HoldoutAccessLogStop as stop:
@@ -1653,8 +1800,14 @@ def _consume(ctx: _Context, permit: FinalEvaluationPermit, lock: Path) -> str:
         f"許可の識別子: {permit.permit_id}\n"
         f"消費する範囲: [{permit.window.consumption.start}, {permit.window.consumption.end})\n"
         f"消費した partition: {len(permit.window.targets)}（snapshot"
-        f" {len(permit.window.snapshot_ids)}）\n\n"
-        "odyssey-fx experiment final-validate が書いた（D09 §9.10.2 の段 4）。\n"
+        f" {len(permit.window.snapshot_ids)}）\n"
+        + (
+            ""
+            if not permit.window.conversion
+            else f"換算用の読み取りの partition（消費しない）: {len(permit.window.conversion)}"
+            f"（snapshot {len(permit.window.conversion_snapshot_ids)}。D06 §19.14）\n"
+        )
+        + "\nodyssey-fx experiment final-validate が書いた（D09 §9.10.2 の段 4）。\n"
     )
     try:
         commit = ctx.log.publish(paths, message, restore_on_reject=True, confirm_unknown=True)
@@ -1731,7 +1884,21 @@ def _permit_payload(
         "outcome_sha256": ctx.facts.outcome_sha256,
         "declaration_sha256": declaration_sha,
         "prior_final_validations": list(prior),
+        **_conversion_payload(window),
         **ctx.extras,
+    }
+
+
+def _conversion_payload(window: FinalWindow) -> dict[str, Any]:
+    """控えと最終検証の記録の換算用の読み取りの対象（消費の対象と別の項目。仮置き C1-17）。
+
+    円の候補（換算用の読み取りの対象が無い）は項目を書かない（控えと記録の形を変えない）。
+    """
+    if not window.conversion:
+        return {}
+    return {
+        "conversion_reads": _target_names(window.conversion),
+        "conversion_read_count": len(window.conversion),
     }
 
 
@@ -1772,14 +1939,21 @@ def _publish_and_evaluate(
         ctx.refresh()
         snapshots = ctx.snapshots
         rows: dict[tuple[str, str], set[str]] = {}
+        reads: dict[tuple[str, str], set[str]] = {}
         for snapshot_id, item in snapshots.items():
             if isinstance(item.log, AccessLogReadFailure):
                 continue
             for row in item.log.rows:
-                rows.setdefault((snapshot_id, row.partition), set()).add(row.permit_id)
+                (rows if row.consumes else reads).setdefault(
+                    (snapshot_id, row.partition), set()
+                ).add(row.permit_id)
         refusal = consumption_rows_present(
-            permit, {key: frozenset(value) for key, value in rows.items()}
-        ) or final_partitions_match_permit(permit, plan.allowed, facts.record_snapshots)
+            permit,
+            {key: frozenset(value) for key, value in rows.items()},
+            {key: frozenset(value) for key, value in reads.items()},
+        ) or final_partitions_match_permit(
+            permit, plan.allowed, facts.record_snapshots, facts.conversion_snapshots
+        )
         if refusal is not None:
             raise _refuse(refusal)
         outputs = Paired.build(lambda variant: runner.run(facts, plan, permit, variant))
@@ -1863,6 +2037,7 @@ def _publish_and_evaluate(
                 declaration_sha256=declaration_sha,
                 resume_count=attempt - 1,
                 resume_failures=earlier_failures,
+                conversion=_target_names(permit.window.conversion),
             ),
         )
     except FinalLedgerError as exc:
@@ -1951,6 +2126,7 @@ def _record_payload(
         "manifest_sha256": facts.manifest_sha256,
         "outcome_sha256": facts.outcome_sha256,
         "prior_final_validations": list(prior),
+        **_conversion_payload(window),
         "variants": {variant.value: variant_block(variant) for variant in VARIANTS},
         "combined_verdict": {
             "verdict": combined.verdict.value,

@@ -105,11 +105,20 @@ rows:
 """
 
 
-def write_rule_files(root: Path, *, revoked: str | None = None) -> TimeRuleTable:
-    """人工の表と承認済みの一覧を `root` の下（本番と同じ相対パス）に書き、本番の読込で読む。"""
+def write_rule_files(
+    root: Path, *, revoked: str | None = None, pairs: Sequence[str] | None = None
+) -> TimeRuleTable:
+    """人工の表と承認済みの一覧を `root` の下（本番と同じ相対パス）に書き、本番の読込で読む。
+
+    `pairs` を渡すと表の対象の通貨ペアをそれに替える（換算の受入テストの複数の通貨ペア。既定の
+    `None` は USDJPY だけで、既存の固定値テストの表の本文を変えない）。
+    """
     table_path = root / TABLE_FILE
     table_path.parent.mkdir(parents=True, exist_ok=True)
-    table_path.write_text(_TABLE_TEXT, encoding="utf-8")
+    text = _TABLE_TEXT
+    if pairs is not None:
+        text = text.replace("pairs: [USDJPY]", f"pairs: [{', '.join(pairs)}]")
+    table_path.write_text(text, encoding="utf-8")
     sha = hashlib.sha256(table_path.read_bytes()).hexdigest()
     revoked_text = "null" if revoked is None else f'"{revoked}"'
     (root / APPROVED_LIST).write_text(
@@ -208,14 +217,18 @@ def build_pending(
     *,
     variant: TimeRuleVariant = TimeRuleVariant.STANDARD,
     boundaries: AccessBoundaries | None = None,
+    symbol: Symbol = USDJPY,
 ) -> PendingSnapshot:
-    """人工の取得記録と行から MT5 経路の暫定 snapshot を作る（本番の受入れの関数を呼ぶ）。"""
+    """人工の取得記録と行から MT5 経路の暫定 snapshot を作る（本番の受入れの関数を呼ぶ）。
+
+    `symbol` で通貨ペアを替えられる（既定は USDJPY。換算の受入テストの複数の通貨ペア）。
+    """
     boundaries = BOUNDARIES if boundaries is None else boundaries
     entries: list[Mt5FetchEntry] = []
     files: dict[str, Mt5ReadFile] = {}
     for spec in months:
         lo, hi = _month_bounds(spec.year, spec.month)
-        rid = f"F-USDJPY-{spec.year}-{spec.month:02d}"
+        rid = f"F-{symbol}-{spec.year}-{spec.month:02d}"
         rows = tuple(row for row in spec.rows if lo <= row.api_time < hi)
         payload = "\n".join(
             f"{row.api_time},{row.open},{row.high},{row.low},{row.close}" for row in rows
@@ -224,8 +237,8 @@ def build_pending(
         sha_gz = hashlib.sha256(b"gz" + payload).hexdigest()
         entry = Mt5FetchEntry(
             rid=rid,
-            symbol=USDJPY,
-            file=f"USDJPY/USDJPY_{spec.year}-{spec.month:02d}_m1.csv.gz",
+            symbol=symbol,
+            file=f"{symbol}/{symbol}_{spec.year}-{spec.month:02d}_m1.csv.gz",
             status=spec.status,
             requested_from_api=lo,
             requested_to_api=hi,
@@ -242,7 +255,7 @@ def build_pending(
             )
     built = build_mt5_pending(
         created_at=UtcTime.parse("2026-10-17T00:00:00Z"),
-        symbol=USDJPY,
+        symbol=symbol,
         entries=entries,
         files=files,
         source_paths={entry.rid: f"data/raw/oanda_mt5/synthetic/{entry.file}" for entry in entries},

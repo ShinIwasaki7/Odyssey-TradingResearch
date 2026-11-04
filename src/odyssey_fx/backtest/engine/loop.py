@@ -111,9 +111,15 @@ from odyssey_fx.backtest.execution.protection_hits import (
     touches,
 )
 from odyssey_fx.backtest.portfolio.conversion import (
+    ConversionFailure,
+    ConversionQuotes,
     ConversionUnavailable,
+    RouteHop,
+    identity_path,
+    observe_path,
     rate_of,
-    resolve_path,
+    require_usable,
+    resolve_route,
 )
 from odyssey_fx.backtest.portfolio.ledger import (
     LedgerSnapshot,
@@ -229,6 +235,9 @@ _TINY = timedelta(microseconds=1)
 
 #: 直前の週の終わりを探す窓（診断に載せる `session_close` を求めるためだけに使う）。
 _ONE_WEEK = timedelta(days=7)
+
+#: 換算の脚（1 分足）の長さ。
+_ONE_MINUTE = timedelta(minutes=1)
 
 
 # --- ポート（構造） ----------------------------------------------------------
@@ -485,9 +494,20 @@ class BacktestEngine:
         strategy_priority: int = 0,
         phases: PhaseSet = BACKTEST_PHASES,
         minutes: MinuteObservation | None = None,
+        conversion_quotes: ConversionQuotes | None = None,
     ) -> None:
         self._config = config
         self._minutes = minutes
+        # 換算の経路（D06 v1.20 案 §19.3）。決済通貨が口座通貨と同じなら恒等（空のタプル）で、
+        # 脚の供給（`conversion_quotes`）を読まない。組めなければ `None`（能力検査で止まる）。
+        self._quotes = conversion_quotes
+        self._settlement = config.execution_series.symbol.quote
+        self._route: tuple[RouteHop, ...] | None = resolve_route(
+            self._settlement,
+            config.account.currency,
+            frozenset() if conversion_quotes is None else conversion_quotes.symbols,
+            conversion_policy,
+        )
         # 執行足の途中の分で開いた建玉の、約定の分（D06 §18.5。その足では約定の分から判定する）。
         self._entry_minute: dict[PositionId, UtcTime] = {}
         #: 執行足の途中の再開の分の判断時点で、ギャップまで処理し終えた分（建玉ごと。D12-115）。
@@ -536,6 +556,9 @@ class BacktestEngine:
         # 行を足さずに置き換える（D06 §9.2、Q26 決定）。
         self._attempt_rows: dict[tuple[OpportunityId, BarKey], int] = {}
         self._warnings: list[str] = []
+        #: 直前の台帳 snapshot の時価評価に使った換算の経路（建玉が無ければ `None`）。run の末尾の
+        #: 3 集計が同じ率 `X_end` を使う（D06 v1.20 案 §19.6 の (3)）。
+        self._end_path: ConversionPath | None = None
 
     # --- 読み出し -----------------------------------------------------------
 
@@ -778,7 +801,9 @@ class BacktestEngine:
         # 取消で予約が解放された状態を最後の台帳 snapshot に残す（D06 §8.1）。残さないと、
         # 予約の表は `RELEASED` なのに最後の snapshot はその額を消費済みとして数えたままに
         # なり、失敗した run の記録が口座の状態について食い違う。
-        self._record_snapshot(clock.next(failure.phase))
+        # 失敗の原因が時価評価の換算不可なら、同じ処理点では換算できないので、資産は直前に
+        # 評価できた値のまま残す（建玉を架空の率で評価しない。D06 v1.20 案 §19.9。仮置き）。
+        self._record_snapshot(clock.next(failure.phase), fallback_equity=True)
 
     # --- 1つの判断時点 -------------------------------------------------------
 
@@ -1116,21 +1141,43 @@ class BacktestEngine:
         at = clock.next(PHASE_LEDGER_UPDATE)
         self._record_snapshot(at)
 
-    def _record_snapshot(self, at: ProcessingPoint) -> None:
-        equity = self._equity(at.phase.name)
+    def _record_snapshot(self, at: ProcessingPoint, *, fallback_equity: bool = False) -> None:
+        path: ConversionPath | None = None
+        try:
+            equity, path = self._equity(at)
+        except _RunFailure:
+            if not fallback_equity:
+                raise
+            equity = self._context.equity
         self._context.equity = equity
         snapshot: LedgerSnapshot = snapshot_of(self._context.ledger, at, equity)
         self._emit(TraceTable.LEDGER_SNAPSHOTS, snapshot)
         # 根拠記録が「どの時点の口座 snapshot を見たか」を指せるようにする。
         self._last_snapshot_at = at
+        if path is not None and not path.is_identity:
+            # 時価評価の換算の経路を根拠記録に残す（D06 v1.20 案 §19.6 の (3)、規則8。恒等換算
+            # だけの処理点では行を作らない。仮置き C1-10）。
+            self._evidence(
+                at,
+                EvidenceKind.MARK_TO_MARKET,
+                conversion_paths=(path,),
+                market_refs=self._leg_market_refs(path),
+                policy_refs=(self._config.conversion_policy_ref,),
+            )
+        self._end_path = path
 
-    def _equity(self, phase: str) -> Money:
-        """含み損益込みの資産（D06 §8.1、Q13 決定）。"""
+    def _equity(self, at: ProcessingPoint) -> tuple[Money, ConversionPath | None]:
+        """含み損益込みの資産と、評価に使った換算の経路（D06 §8.1・Q13 決定、v1.20 案 §19.6 (3)）。
+
+        建玉が無ければ換算しない（経路は `None`。D06 §19.5）。含み損益は決済通貨の価格の差に
+        処理点の率 `X_m` を掛けて口座通貨にする。換算できなければ run の失敗。
+        """
+        phase = at.phase.name
         ledger = self._context.ledger
         equity = ledger.balance
         positions = ledger.open_positions()
         if not positions:
-            return equity
+            return equity, None
         if self._last_complete is None:
             raise _RunFailure(
                 Reason(
@@ -1146,14 +1193,16 @@ class BacktestEngine:
                 ),
                 phase,
             )
+        path = self._path_or_fail(at.time, phase)
         for position in positions:
             equity = equity + unrealized(
                 position,
                 self._last_complete.close,
                 self._cost_model.spread_model,
                 ledger.currency,
+                rate=None if path.is_identity else path.rate,
             )
-        return equity
+        return equity, path
 
     # --- rank 2: 期限 --------------------------------------------------------
 
@@ -1399,9 +1448,21 @@ class BacktestEngine:
         run_end = self._config.run_interval.end if is_run_end else None
         accepted_at = clock.next(phase)
 
+        path: ConversionPath | None = None
         if isinstance(payload, EntryRequest):
             quote, decision_bid = self._reference_quote(payload.side)
-            conversion = self._conversion(decision_time)
+            conversion: ConversionRate | None
+            conversion_failure: Reason | None = None
+            try:
+                path = self._path_at(decision_time)
+            except ConversionUnavailable as error:
+                # 受付で換算できない: 受付前拒否（DATA_ERROR）。経路まで組めていれば根拠記録に残す
+                # （D06 v1.20 案 §19.6 の (1)、仮置き C1-8）。
+                path = error.path
+                conversion = None
+                conversion_failure = self._conversion_reason(error)
+            else:
+                conversion = rate_of(path, self._settlement, self._config.account.currency)
             outcome = decide_entry(
                 request,
                 ledger=self._context.ledger,
@@ -1423,6 +1484,7 @@ class BacktestEngine:
                 evidence_ref=evidence_ref,
                 run_end=run_end,
                 carry_not_allowed=carry,
+                conversion_failure=conversion_failure,
             )
         else:
             outcome = decide_close(
@@ -1438,21 +1500,37 @@ class BacktestEngine:
                 run_end=run_end,
                 carry_not_allowed=carry,
             )
-        self._record_outcome(outcome, clock, phase)
+        self._record_outcome(outcome, clock, phase, path=path)
         return outcome
 
-    def _record_outcome(self, outcome: AdmissionOutcome, clock: PhaseClock, phase: str) -> None:
+    def _record_outcome(
+        self,
+        outcome: AdmissionOutcome,
+        clock: PhaseClock,
+        phase: str,
+        *,
+        path: ConversionPath | None = None,
+    ) -> None:
         self._emit(TraceTable.ATTEMPT_DECISIONS, _decision_row(outcome.decision))
         if outcome.assessment is not None:
             self._emit(TraceTable.RISK_ASSESSMENTS, outcome.assessment)
+            # 受付の換算の経路（D06 v1.20 案 §19.6 の (1)）。恒等換算の run は今までどおり恒等の
+            # 経路を 1 件入れる。円以外で経路まで組めなかった（観測が無い）なら空。
+            if self._route == ():
+                paths: tuple[ConversionPath, ...] = (identity_path(clock.decision_time),)
+            else:
+                paths = () if path is None else (path,)
             self._evidence(
                 clock.peek(phase),
                 EvidenceKind.ADMISSION,
                 attempt_id=outcome.assessment.attempt_id,
                 evidence_id=outcome.assessment.assessment_id,
-                conversion_paths=(self._identity_path(clock.decision_time),),
+                conversion_paths=paths,
                 policy_refs=(self._config.risk_policy_ref, self._config.execution_policy_ref),
-                market_refs=self._reference_market_refs(),
+                market_refs=(
+                    *self._reference_market_refs(),
+                    *(self._leg_market_refs(path) if path is not None else ()),
+                ),
             )
         if not outcome.accepted or outcome.order is None or outcome.acceptance_event is None:
             return
@@ -1563,34 +1641,78 @@ class BacktestEngine:
             bid,
         )
 
-    def _identity_path(self, at: UtcTime) -> ConversionPath:
-        return resolve_path(
-            self._config.account.currency,
-            self._config.account.currency,
-            at,
-            self._conversion_policy,
+    def _path_at(self, at: UtcTime) -> ConversionPath:
+        """処理点の時刻 `at` の換算の経路（D06 v1.20 案 §19.3〜§19.5）。
+
+        決済通貨が口座通貨と同じなら恒等換算。違えば各脚を 1 分足から引き、ずれと古さ（休場を
+        除いて測る）の上限を確かめる。換算できなければ `ConversionUnavailable`。
+        """
+        route = self._route
+        if route is None:
+            raise ConversionUnavailable(
+                ConversionFailure.NO_ROUTE,
+                f"no conversion path from {self._settlement} to {self._config.account.currency}"
+                " in the series the run reads (D06 §19.3)",
+            )
+        path = observe_path(route, at, self._quotes)
+        require_usable(path, at, self._conversion_policy, self._calendar)
+        return path
+
+    def _path_or_fail(self, at: UtcTime, phase: str) -> ConversionPath:
+        """費用の計上・決済の確定損益・時価評価の換算の経路。換算できなければ run の失敗。"""
+        try:
+            return self._path_at(at)
+        except ConversionUnavailable as error:
+            raise _RunFailure(self._conversion_reason(error), phase) from error
+
+    def _conversion_reason(self, error: ConversionUnavailable) -> Reason:
+        """換算不可の理由（系列・観測時刻・長さだけ。価格を書かない。仮置き C1-20）。"""
+        series = error.series if error.series is not None else self._config.execution_series
+        return Reason(
+            ReasonCode.DATA_ERROR,
+            DataErrorDetail(
+                symbol=series.symbol,
+                timeframe=series.timeframe,
+                field="close",
+                expected_interval=None,
+                observed_interval=None,
+                cause=f"conversion {error.failure.value}: {error}",
+            ),
         )
 
-    def _conversion(
-        self, at: UtcTime, evidence: EvidenceRef | None = None, phase: str = PHASE_ADMISSION
-    ) -> ConversionRate:
-        """**決済通貨**から口座通貨への換算率（D06 §8.5）。
+    def _fill_rates(
+        self, path: ConversionPath, at: UtcTime, evidence: EvidenceRef
+    ) -> tuple[ConversionRate, ConversionRate | None]:
+        """約定の費用の率（滑り・スプレッドの `X_f`）と、手数料の恒等の率（仮置き C1-9）。
 
-        決済通貨は銘柄の決済側の通貨（`USDJPY` なら `JPY`）である。口座通貨をそのまま
-        出どころにすると、口座通貨と決済通貨が違う設定でも率1が返り、予約額・含み損益・
-        実現損益・費用が**換算されないまま口座通貨の額として記録される**。段階2 は恒等換算
-        だけを通すので、違えば経路が組めず run の失敗になる（実行前のデータ能力検査でも
-        同じ組み合わせを弾く）。
-
-        `evidence` を渡すと、率からその根拠記録へ辿れるようになる（上位設計書 §4.7.9 C）。
+        決済通貨が口座通貨と同じなら手数料も同じ率を使う（今までと同じ記録。`None`）。
         """
-        settlement = self._config.execution_series.symbol.quote
         account = self._config.account.currency
-        try:
-            path = resolve_path(settlement, account, at, self._conversion_policy)
-        except ConversionUnavailable as error:
-            raise _RunFailure(Reason(ReasonCode.DATA_ERROR), phase) from error
-        return rate_of(path, settlement, account, evidence)
+        rate = rate_of(path, self._settlement, account, evidence)
+        if self._settlement == account:
+            return rate, None
+        return rate, rate_of(identity_path(at), account, account, evidence)
+
+    def _fill_path(self, path: ConversionPath, at: UtcTime) -> ConversionPath:
+        """約定の根拠記録に入れる経路。恒等換算は約定の処理点の時刻の恒等の経路（今までと同じ）。"""
+        return identity_path(at) if path.is_identity else path
+
+    def _leg_market_refs(self, path: ConversionPath) -> tuple[MarketObservationRef, ...]:
+        """換算の脚の観測の参照（D06 v1.20 案 §19.7。脚の 1 分足の終値）。"""
+        if self._quotes is None or not path.legs:
+            return ()
+        quotes = self._quotes
+        return tuple(
+            MarketObservationRef(
+                snapshot_ref=quotes.snapshot_of(leg.series.symbol),
+                series=leg.series,
+                interval=Interval(
+                    start=leg.bar_key.bar_start, end=leg.bar_key.bar_start + _ONE_MINUTE
+                ),
+                field=MarketDataField.CLOSE,
+            )
+            for leg in path.legs
+        )
 
     # --- rank 11: 始値処理 ---------------------------------------------------
 
@@ -1739,8 +1861,9 @@ class BacktestEngine:
         # 約定の根拠記録の識別子を先に採番し、費用の換算率からその記録へ辿れるようにする
         # （上位設計書 §4.7.9 C）。
         fill_evidence_id = self._allocator.next(EvidenceId)
-        conversion = self._conversion(
-            clock.decision_time, EvidenceRef(evidence_id=fill_evidence_id)
+        path = self._path_or_fail(clock.decision_time, PHASE_EXECUTION_OPEN)
+        conversion, commission_rate = self._fill_rates(
+            path, clock.decision_time, EvidenceRef(evidence_id=fill_evidence_id)
         )
         costs = cost_entries(
             self._cost_model,
@@ -1749,6 +1872,7 @@ class BacktestEngine:
             quantity=order.quantity,
             currency=self._config.account.currency,
             conversion=conversion,
+            commission_conversion=commission_rate,
         )
         fill = FillRecord(
             run_id=order.run_id,
@@ -1766,9 +1890,12 @@ class BacktestEngine:
                 EvidenceKind.FILL,
                 evidence_id=fill_evidence_id,
                 position_id=position_id,
-                conversion_paths=(self._identity_path(at.time),),
+                conversion_paths=(self._fill_path(path, at.time),),
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
-                market_refs=self._open_market_refs(bar_key, open_time),
+                market_refs=(
+                    *self._open_market_refs(bar_key, open_time),
+                    *self._leg_market_refs(path),
+                ),
             ),
             resumed_after_unrecorded_minutes=None if gap is None else gap[1],
             gap_kind=None if gap is None else gap[0],
@@ -1815,7 +1942,9 @@ class BacktestEngine:
             allocation=allocation,
             balance=balance,
         )
-        self._measurements[position_id] = self._risk_measurement(position, allocation, at)
+        self._measurements[position_id] = self._risk_measurement(
+            position, allocation, at, rate=path.rate
+        )
         self._emit(TraceTable.FILLS, fill)
         self._emit(TraceTable.ORDER_EVENTS, event)
         if gap is not None:
@@ -1864,15 +1993,22 @@ class BacktestEngine:
         return self._entry_opportunities.get(order.attempt_id)
 
     def _risk_measurement(
-        self, position: Position, allocation: PositionRiskAllocation, at: ProcessingPoint
+        self,
+        position: Position,
+        allocation: PositionRiskAllocation,
+        at: ProcessingPoint,
+        *,
+        rate: Decimal,
     ) -> RiskMeasurement:
+        """入場約定の実リスク（D06 §8.1）。価格の差の項に入場の費用と同じ率 `X_e` を掛ける
+        （D06 v1.20 案 §19.6 の「入場約定の実リスクの記録」）。"""
         with localcontext(kernel_context()):
             span = (
                 position.entry_price.value - position.protection.stop_loss.value
                 if position.side is OrderSide.BUY
                 else position.protection.stop_loss.value - position.entry_price.value
             )
-            measured = Money(span * position.quantity.units, self._config.account.currency)
+            measured = Money(span * position.quantity.units * rate, self._config.account.currency)
         return RiskMeasurement(
             position_id=position.position_id,
             at=at,
@@ -2108,7 +2244,11 @@ class BacktestEngine:
         # 約定の根拠記録の識別子を先に採番し、費用の換算率からその記録へ辿れるようにする
         # （上位設計書 §4.7.9 C）。
         fill_evidence_id = self._allocator.next(EvidenceId)
-        conversion = self._conversion(at.time, EvidenceRef(evidence_id=fill_evidence_id))
+        # 決済の費用と確定損益は同じ確定単位・同じ率 `X_c` で換算する（D06 v1.20 案 §19.6 (2)(4)）。
+        path = self._path_or_fail(at.time, at.phase.name)
+        conversion, commission_rate = self._fill_rates(
+            path, at.time, EvidenceRef(evidence_id=fill_evidence_id)
+        )
         costs = cost_entries(
             self._cost_model,
             purpose=FillPurpose.CLOSE,
@@ -2117,6 +2257,7 @@ class BacktestEngine:
             currency=self._config.account.currency,
             conversion=conversion,
             spread_applied=spread_applied,
+            commission_conversion=commission_rate,
         )
         fill = FillRecord(
             run_id=order.run_id,
@@ -2134,9 +2275,12 @@ class BacktestEngine:
                 EvidenceKind.FILL,
                 evidence_id=fill_evidence_id,
                 position_id=position.position_id,
-                conversion_paths=(self._identity_path(at.time),),
+                conversion_paths=(self._fill_path(path, at.time),),
                 policy_refs=(self._config.execution_policy_ref, self._config.cost_model_ref),
-                market_refs=self._execution_market_refs(execution_time, scanned),
+                market_refs=(
+                    *self._execution_market_refs(execution_time, scanned),
+                    *self._leg_market_refs(path),
+                ),
             ),
             resumed_after_unrecorded_minutes=None if gap is None else gap[1],
             gap_kind=None if gap is None else gap[0],
@@ -2146,7 +2290,10 @@ class BacktestEngine:
         with localcontext(kernel_context()):
             direction = decimal_from_int(1 if position.side is OrderSide.BUY else -1)
             gross = Money(
-                (price.value - position.entry_price.value) * position.quantity.units * direction,
+                (price.value - position.entry_price.value)
+                * position.quantity.units
+                * direction
+                * path.rate,
                 self._config.account.currency,
             )
         balance = self._apply_costs(self._context.ledger.balance + gross, costs)
@@ -2623,6 +2770,10 @@ class BacktestEngine:
             last_close=None if self._last_complete is None else self._last_complete.close,
             cost_model=self._cost_model,
             cost_totals=self._cost_totals,
+            # 末尾の時価評価と仮決済は run の末尾の率 `X_end`（D06 v1.20 案 §19.6 の (3)）。
+            rate=None
+            if self._end_path is None or self._end_path.is_identity
+            else self._end_path.rate,
         )
         if summaries is None:
             self._status = RunStatus.FAILED_DATA_ERROR

@@ -68,8 +68,10 @@ REPORT_FILE: Final = "report.md"
 ATTEMPTS_FILE: Final = "attempts.jsonl"
 #: やり直しで退けた前の試みの途中の成果物の置き場（仮置き R2-24。`attempts/<n>/`）。
 ATTEMPTS_DIRECTORY: Final = "attempts"
-#: 台帳の行の書式の版。
-LEDGER_SCHEMA_VERSION: Final = 1
+#: 台帳の行の書式の版（最新）。版 1 は換算用の読み取りの項目を持たない行（円の候補と、C2 より前の
+#: 行）、版 2 は換算用の読み取りの対象の数と一覧のダイジェストを消費の対象と別の項目で持つ行
+#: （円以外の決済通貨の候補。D06 v1.20 案 §19.14、仮置き C1-17）。どちらの版の行も読む。
+LEDGER_SCHEMA_VERSION: Final = 2
 
 _ROW_KEYS: Final = frozenset(
     {
@@ -95,6 +97,10 @@ _ROW_KEYS: Final = frozenset(
         "prev",
     }
 )
+#: 版 2 の行が足す項目（換算用の読み取りの対象の数と一覧のダイジェスト。仮置き C1-17）。
+_CONVERSION_KEYS: Final = frozenset({"conversion_read_count", "conversion_reads_digest"})
+#: 版ごとの行の項目。
+_KEYS_OF_VERSION: Final = {1: _ROW_KEYS, 2: _ROW_KEYS | _CONVERSION_KEYS}
 
 
 class FinalLedgerError(Exception):
@@ -169,10 +175,18 @@ def parse_final_ledger(data: bytes) -> FinalLedger:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise FinalLedgerError(f"not JSON ({type(exc).__name__})", number) from exc
-        if not isinstance(payload, dict) or set(payload) != _ROW_KEYS:
+        if not isinstance(payload, dict):
             raise FinalLedgerError("the keys of the row differ from the schema", number)
-        if payload["schema_version"] != LEDGER_SCHEMA_VERSION:
-            raise FinalLedgerError(f"unknown schema_version {payload['schema_version']!r}", number)
+        version = payload.get("schema_version")
+        keys = (
+            None
+            if isinstance(version, bool) or not isinstance(version, int)
+            else _KEYS_OF_VERSION.get(version)
+        )
+        if keys is None:
+            raise FinalLedgerError(f"unknown schema_version {version!r}", number)
+        if set(payload) != keys:
+            raise FinalLedgerError("the keys of the row differ from the schema", number)
         if encode(payload) != raw:
             raise FinalLedgerError("the line is not in the canonical encoding (D02 §9.3)", number)
         if payload["prev"] != previous:
@@ -235,7 +249,9 @@ def create_lock(path: Path) -> None:
 def append_ledger_row(repo_root: Path, values: Mapping[str, Any]) -> LedgerRow:
     """台帳に 1 行追記する（ロックの下で読み直し、鎖をつなぎ、追記して読み直す）。
 
-    `values` は `prev` を除く行の値。失敗は `FinalLedgerError`（書きかけは残さない）。
+    `values` は `prev` と `schema_version` を除く行の値。換算用の読み取りの項目
+    （`conversion_read_count`・`conversion_reads_digest`）を持つ行は版 2、持たない行は版 1 で書く
+    （円の候補の行の形を変えない。仮置き C1-17）。失敗は `FinalLedgerError`（書きかけは残さない）。
     """
     root = Path(repo_root)
     lock = root / FINAL_LEDGER_LOCK_PATH
@@ -250,11 +266,11 @@ def append_ledger_row(repo_root: Path, values: Mapping[str, Any]) -> LedgerRow:
         raise FinalLedgerError(f"{FINAL_LEDGER_LOCK_PATH} cannot be created: {exc}") from exc
     try:
         ledger = read_final_ledger(root)
-        payload = {**values, "schema_version": LEDGER_SCHEMA_VERSION, "prev": ledger.last_digest}
-        if set(payload) != _ROW_KEYS:
-            raise FinalLedgerError(
-                f"the row lacks or adds items: {sorted(set(payload) ^ _ROW_KEYS)}"
-            )
+        version = 2 if _CONVERSION_KEYS & set(values) else 1
+        payload = {**values, "schema_version": version, "prev": ledger.last_digest}
+        keys = _KEYS_OF_VERSION[version]
+        if set(payload) != keys:
+            raise FinalLedgerError(f"the row lacks or adds items: {sorted(set(payload) ^ keys)}")
         line = encode(payload) + b"\n"
         path = root / FINAL_LEDGER_PATH
         size = path.stat().st_size

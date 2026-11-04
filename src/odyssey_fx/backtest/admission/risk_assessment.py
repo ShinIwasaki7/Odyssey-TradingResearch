@@ -58,6 +58,9 @@ __all__ = [
 #: 段階2の同時保持上限（建玉＋未終端のエントリー注文、D06 §8.2）。
 POSITION_SLOT_LIMIT = decimal_from_int(1)
 
+#: 往復の回数（エントリーと決済で2回の手数料が要る。D06 §7.6）。
+_ROUND_TRIP = decimal_from_int(2)
+
 
 @dataclass(frozen=True, slots=True)
 class RiskCheckResult:
@@ -222,7 +225,8 @@ def assess_entry(
     reference_quote: ReferenceQuote,
     decision_bid: Price,
     adverse_fill_limit: PriceOffset,
-    conversion: ConversionRate,
+    conversion: ConversionRate | None,
+    conversion_failure: Reason | None = None,
 ) -> tuple[RiskAssessment, Reason | None]:
     """エントリー要求を審査する（D06 §6.4 の手順1〜8）。
 
@@ -230,6 +234,13 @@ def assess_entry(
     `reference_quote` は買いなら ask、売りなら bid で（上位設計書 §4.7.9 C）、`decision_bid`
     は同じ足の bid そのものである。保護水準の検査（手順4）はここから売却側・購入側の価格を
     作る。
+
+    `conversion` は決済通貨から口座通貨への受付の時点の率 `X_a`（D06 v1.20 案 §19.6 の (1)）。
+    換算できなかった（`None`）ときは、手順5 で損切りを丸めた後に `conversion_failure`
+    （`DATA_ERROR`）で受付前拒否し、審査記録は手順5 まで到達した記録として残す（換算以降の
+    項目は `None`。仮置き C1-8）。1 単位の予約額は
+    `r = (d × (P_limit − S) + s_close) × X_a + 2 × c`（手数料は口座通貨のまま。D17-11 (a)）。
+    `X_a = 1` なら今までの式と項ごとに一致する。
     """
     currency = ledger.currency
     balance = ledger.balance
@@ -311,8 +322,29 @@ def assess_entry(
             )
         )
         return record(5), _rejection(checks[-1])
+    if conversion is None:
+        # 受付で換算できない（観測が無い・ずれ・古さの超過）。受付前拒否（DATA_ERROR）とし、
+        # 手順5 まで到達した審査記録を残す（仮置き C1-8）。
+        if conversion_failure is None:  # pragma: no cover - 呼び出し側が理由を渡す
+            raise KernelValueError("a missing conversion rate requires its failure reason")
+        assessment = RiskAssessment(
+            assessment_id=assessment_id,
+            attempt_id=attempt_id,
+            policy_ref=policy_ref,
+            reached_step=5,
+            budget=budget,
+            reference_quote=reference_quote,
+            stop_before_rounding=stop,
+            stop_after_rounding=rounded_stop,
+            adverse_fill_limit=price_limit,
+            checks=tuple(checks),
+        )
+        return assessment, conversion_failure
+    rate = conversion.rate
     with localcontext(kernel_context()):
-        per_unit = risk_per_unit + cost_model.budget_per_unit()
+        per_unit = (
+            risk_per_unit + cost_model.close_slippage.value
+        ) * rate + cost_model.commission_per_unit.amount * _ROUND_TRIP
 
     # 手順6: 予算に収まる最大の数量（切り下げ）。
     with localcontext(kernel_context()):
@@ -350,7 +382,7 @@ def assess_entry(
     # 手順7: 丸め後の数量での再検査。
     with localcontext(kernel_context()):
         reservation_amount = Money(per_unit * quantity.units, currency)
-    costs = cost_model.budget_for(quantity, currency)
+    costs = cost_model.budget_for(quantity, currency, rate)
     budget_check = RiskCheckResult(
         check="admission_budget",
         passed=reservation_amount <= admission_budget,

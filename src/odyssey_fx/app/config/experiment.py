@@ -139,9 +139,14 @@ class RunBodyModel(StrictModel):
     `snapshot` は書式 v1 と単一実行の書式 v2 で必須、探索の書式 v2 では書けば拒否し、代わりに
     両組の `snapshots` を書く（2026-10-21 改訂。D07 §18.2、改訂 PR の仮置き 38 (a)）。省略の
     可否は書式ごとの読込が確かめる。
+
+    `conversion_snapshot` は換算の snapshot（D07 §18.2 の v2.17 案、D06 v1.20 案 §19.2。仮置き
+    C1-2・C1-3）。決済通貨が口座通貨と違う単一実行の実験で必須、同じ実験で書けば拒否する。探索の
+    実験では書けば拒否し、代わりに両組の `conversion_snapshots` を書く。
     """
 
     snapshot: str | None = None
+    conversion_snapshot: str | None = None
     execution_series: str
     resolution_hierarchy: list[str]
     account: _AccountModel
@@ -204,6 +209,8 @@ class ExperimentConfig:
     seed: int
     policy_refs: Mapping[str, PolicyRef]
     delay_scenario: DelayScenario | None = None
+    #: 換算の snapshot（決済通貨が口座通貨と違う実験だけ。D06 v1.20 案 §19.2）。
+    conversion_snapshot_ref: SnapshotRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "policy_refs", MappingProxyType(dict(self.policy_refs)))
@@ -242,6 +249,8 @@ class RunBody:
     seed: int
     policy_refs: Mapping[str, PolicyRef]
     delay_scenario: DelayScenario | None = None
+    #: 換算の snapshot（決済通貨が口座通貨と違う実験だけ。探索の実験では組ごとに差し替える）。
+    conversion_snapshot_ref: SnapshotRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "policy_refs", MappingProxyType(dict(self.policy_refs)))
@@ -255,9 +264,14 @@ class RunBody:
             raise ConfigError(f"ポリシーの版参照 {kind!r} が実験設定から作られていない")
         return ref
 
-    def with_snapshot(self, snapshot_ref: SnapshotRef) -> RunBody:
-        """snapshot だけを差し替えた実行の本体（探索の実験の組ごとの本体。D09 §6.2 の改訂）。"""
-        return replace(self, snapshot_ref=snapshot_ref)
+    def with_snapshot(
+        self, snapshot_ref: SnapshotRef, conversion_snapshot_ref: SnapshotRef | None = None
+    ) -> RunBody:
+        """snapshot（と換算の snapshot）を差し替えた実行の本体（探索の実験の組ごとの本体。
+        D09 §6.2 の改訂、D06 v1.20 案 §19.2 の組ごとの換算の snapshot）。"""
+        return replace(
+            self, snapshot_ref=snapshot_ref, conversion_snapshot_ref=conversion_snapshot_ref
+        )
 
     def with_run_interval(self, run_interval: Interval) -> ExperimentConfig:
         """単一実行の実験設定にする（書いた run 区間を足す）。"""
@@ -276,6 +290,7 @@ class RunBody:
             seed=self.seed,
             policy_refs=self.policy_refs,
             delay_scenario=self.delay_scenario,
+            conversion_snapshot_ref=self.conversion_snapshot_ref,
         )
 
 
@@ -435,6 +450,7 @@ def resolve_run_body(
     delay_scenario: DelayScenario | None,
     delay_ref: PolicyRef,
     snapshot: str | None = None,
+    conversion_snapshot: str | None = None,
 ) -> RunBody:
     """書式 v1・v2 に共通する「実行の本体」を解決済みの値へ変換する（D06 §3、D07 §18.2）。
 
@@ -446,6 +462,10 @@ def resolve_run_body(
 
     `snapshot` は snapshot の識別子の文字列（省くとモデルの `snapshot`）。探索の書式 v2 は両組の
     `snapshots` から標準の組の値を渡し、組ごとの値は `RunBody.with_snapshot` で差し替える。
+
+    `conversion_snapshot` は換算の snapshot の識別子の文字列（省くとモデルの `conversion_snapshot`。
+    探索の書式 v2 は `conversion_snapshots` の標準の組の値を渡す）。決済通貨（執行系列の銘柄の
+    後ろ側の通貨）が口座通貨と違えば必須、同じなら書けば拒否する（D06 §19.2、仮置き C1-3）。
     """
     snapshot_text = model.snapshot if snapshot is None else snapshot
     if snapshot_text is None:
@@ -472,6 +492,12 @@ def resolve_run_body(
         raise ConfigError(
             f"{path}: `snapshot` は承認済み snapshot の識別子（16進64文字）を書くこと: {exc}"
         ) from exc
+    conversion_text = (
+        model.conversion_snapshot if conversion_snapshot is None else conversion_snapshot
+    )
+    conversion_snapshot_ref = _conversion_snapshot_ref(
+        conversion_text, execution_series, account, path
+    )
 
     return RunBody(
         experiment_id=experiment_id,
@@ -485,6 +511,7 @@ def resolve_run_body(
         conversion_policy=conversion_policy,
         strategy=strategy,
         seed=model.seed,
+        conversion_snapshot_ref=conversion_snapshot_ref,
         policy_refs={
             "risk": policy_ref_of("risk", payload["risk_policy"]),
             "execution": policy_ref_of(
@@ -500,6 +527,37 @@ def resolve_run_body(
         },
         delay_scenario=delay_scenario,
     )
+
+
+def _conversion_snapshot_ref(
+    text: str | None, execution_series: SeriesId, account: AccountSpec, path: Path
+) -> SnapshotRef | None:
+    """換算の snapshot の要否の規則（D06 v1.20 案 §19.2、仮置き C1-3）と識別子の読込。
+
+    決済通貨が口座通貨と違う実験では必須、同じ実験で書けば拒否する（意味の無い参照で識別子だけが
+    変わるのを防ぐ）。
+    """
+    settlement = execution_series.symbol.quote
+    if settlement == account.currency:
+        if text is not None:
+            raise ConfigError(
+                f"{path}: 決済通貨（{settlement}）が口座通貨と同じ実験には換算の snapshot"
+                "（`conversion_snapshot`／`conversion_snapshots`）を書けない（D06 §19.2。"
+                "仮置き C1-3）"
+            )
+        return None
+    if text is None:
+        raise ConfigError(
+            f"{path}: 決済通貨（{settlement}）が口座通貨（{account.currency}）と違う実験には"
+            "換算の snapshot（単一実行は `conversion_snapshot`、探索は `conversion_snapshots`）を"
+            "書くこと（D06 §19.2。仮置き C1-3）"
+        )
+    try:
+        return SnapshotRef(snapshot_id=SnapshotId(ContentDigest.sha256(text)))
+    except KernelValueError as exc:
+        raise ConfigError(
+            f"{path}: 換算の snapshot は承認済み snapshot の識別子（16進64文字）を書くこと: {exc}"
+        ) from exc
 
 
 def load_experiment(

@@ -413,3 +413,411 @@ def test_1_the_production_run_validates_with_the_sealed_reads(env: _Env, tmp_pat
         raw = json.loads((final_out / "runs" / block["run_id"] / "manifest.json").read_text())
         assert "sealed_reads" in json.loads(raw["config"])
     assert [row.result.value for row in read_final_ledger(env.workspace.repo).rows] == ["COMPLETED"]
+
+
+# --- CT-22・CT-23・CT-25・CT-27: 円以外の決済通貨の候補の本番の run（D06 §19.14） ---------------
+#
+# EURUSD（決済通貨は米ドル）の探索の実験を、研究期間の OANDA MT5 の経路の人工の snapshot（EURUSD
+# と、換算の snapshot の USDJPY。両組）で 1 回走らせ、封印の人工の snapshot（EURUSD と USDJPY の
+# 1 分足。両組）を置く（`tests/fixtures/final_conversion.py`。**人工データ**）。作業場は 1 回だけ
+# 作り、各テストは写しで動かす（写しの origin を指し直す）。
+
+_CONV_COPIED = (
+    "configs/calendars/fx_ny17_v1.yaml",
+    "configs/calendars/timeframes_v2.yaml",
+    "configs/symbols/EURUSD.yaml",
+    "configs/symbols/USDJPY.yaml",
+    "configs/policies/research/research_policy_v1.yaml",
+)
+_CONV_EXPERIMENT = "configs/experiments/final_conversion.yaml"
+#: 換算の snapshot（USDJPY）の研究履歴の足の始まり（EURUSD の 1 時間足の始まりより 9 日前。
+#: CT-27 のカレンダーの食い違いを換算の snapshot の期間にだけ置く）。
+_CONV_RESEARCH_START = UtcTime.parse("2014-09-21T00:00:00Z")
+
+
+@dataclass(frozen=True, slots=True)
+class _ConvEnv:
+    base: Path
+    facts: CandidateFacts
+    research: dict[str, Paired[str]]
+    sealed: dict[str, Paired[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class _ConvCopy:
+    root: Path
+    facts: CandidateFacts
+
+    @property
+    def repo(self) -> Path:
+        return self.root / "repo"
+
+    @property
+    def home(self) -> Path:
+        return self.root / "githome"
+
+    @property
+    def snapshots(self) -> Path:
+        return self.repo / "data" / "snapshots"
+
+    @property
+    def directory(self) -> Path:
+        return self.root / "out/runs/experiments/final_conv/v1"
+
+    def git(self, *args: str) -> str:
+        from tests.fixtures.git_origin import git
+
+        return git(self.repo, *args, home=self.home)
+
+    def commit_and_push(self, message: str) -> None:
+        self.git("add", "-A")
+        self.git("commit", "--quiet", "-m", message)
+        self.git("push", "--quiet", "origin", "main")
+
+    def origin_head(self) -> str:
+        return self.git("ls-remote", "origin", "refs/heads/main").split()[0]
+
+
+def _sealed_set(
+    snapshots: Path, *, calendar_version: int = 1, fetch: Paired[str] | None = None
+) -> dict[str, Paired[str]]:
+    from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant as _Variant
+    from tests.fixtures import final_conversion as fc
+
+    calendar = market.calendar()
+    eur = fc.eurusd_bars(fc.SEALED, fc.SEALED)
+    jpy = {"1m": fc.quarter_minutes(fc.USDJPY, fc.SEALED, fc.RATE, calendar)}
+    variants = Paired(standard=_Variant.STANDARD, candidate=_Variant.CANDIDATE)
+    return {
+        "EURUSD": variants.map(
+            lambda _, variant: fc.sealed_snapshot(
+                snapshots,
+                eur,
+                variant,
+                fc.EURUSD,
+                acquisition_start=ACQUISITION_START,
+                calendar_version=calendar_version,
+            )
+        ),
+        "USDJPY": variants.map(
+            lambda name, variant: fc.sealed_snapshot(
+                snapshots,
+                jpy,
+                variant,
+                fc.USDJPY,
+                acquisition_start=ACQUISITION_START,
+                calendar_version=calendar_version,
+                fetch_sha=fc.FETCH_SHA if fetch is None else fetch.of(name),
+            )
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
+def conv_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_ConvEnv]:
+    from odyssey_fx.app.cli.main import main
+    from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant as _Variant
+    from tests.fixtures import final_conversion as fc
+    from tests.fixtures.evaluation.research_policies import TEST_COMPARISON_BASIS
+    from tests.fixtures.evaluation.search_experiments import BASE_EXPERIMENT, search_experiment_text
+
+    base = tmp_path_factory.mktemp("final-conv")
+    home = base / "githome"
+    repo = base / "repo"
+    with pytest.MonkeyPatch.context() as patch:
+        isolate_git(patch, home)
+        for name in _CONV_COPIED:
+            target = repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((_ROOT / name).read_bytes())
+        (repo / "uv.lock").write_text("# synthetic uv.lock (conversion final run)\n")
+        shutil.copytree(_ROOT / "docs/design/time_rules", repo / "docs/design/time_rules")
+        append_registry_entry(repo, "research_policy", 1)
+        strategy = repo / "configs/strategies/strategy_b_eurusd.yaml"
+        strategy.parent.mkdir(parents=True, exist_ok=True)
+        strategy.write_text(
+            (_ROOT / "configs/strategies/strategy_b_v1.yaml")
+            .read_text(encoding="utf-8")
+            .replace("USDJPY/", "EURUSD/"),
+            encoding="utf-8",
+        )
+        snapshots = repo / "data" / "snapshots"
+        calendar = market.calendar()
+        eur = fc.eurusd_bars(
+            t02_market.GENERATION_INTERVAL,
+            Interval(start=UtcTime.parse("2014-12-28T22:00:00Z"), end=t02_market.RUN_INTERVAL.end),
+            minutes=Interval(
+                start=UtcTime.parse("2014-12-28T22:00:00Z"), end=t02_market.RUN_INTERVAL.end
+            ),
+        )
+        jpy = {
+            "1m": fc.quarter_minutes(
+                fc.USDJPY,
+                Interval(start=_CONV_RESEARCH_START, end=t02_market.RUN_INTERVAL.end),
+                fc.RATE,
+                calendar,
+            )
+        }
+        variants = Paired(standard=_Variant.STANDARD, candidate=_Variant.CANDIDATE)
+        research = {
+            "EURUSD": variants.map(
+                lambda _, variant: fc.research_snapshot(snapshots, eur, variant, fc.EURUSD)
+            ),
+            "USDJPY": variants.map(
+                lambda _, variant: fc.research_snapshot(snapshots, jpy, variant, fc.USDJPY)
+            ),
+        }
+        basis = (
+            TEST_BASIS.replace("1" * 64, research["EURUSD"].standard)
+            .replace("2" * 64, research["EURUSD"].candidate)
+            .replace("USDJPY/", "EURUSD/")
+        )
+        text = policy_v3_text(
+            version=3,
+            replace={
+                "split": _SPLIT,
+                "purpose": "  purpose: STANDARD",
+                "basis": basis,
+                "sufficiency": _SUFFICIENCY,
+                "comparison_basis": TEST_COMPARISON_BASIS.replace("USDJPY", "EURUSD"),
+            },
+        )
+        write_policy(repo, "research_policy", 3, text)
+        append_registry_entry(repo, "research_policy", 3)
+        (repo / "research").mkdir(exist_ok=True)
+        for name in ("trial_ledger.jsonl", "final_validations.jsonl", "quality_access_log.jsonl"):
+            (repo / "research" / name).write_bytes(b"")
+        single = (
+            (_ROOT / BASE_EXPERIMENT)
+            .read_text(encoding="utf-8")
+            .replace("0" * 64, research["EURUSD"].standard)
+            .replace('execution_series: "USDJPY/15m/bid"', 'execution_series: "EURUSD/15m/bid"')
+            .replace('  - "USDJPY/15m/bid"', '  - "EURUSD/15m/bid"')
+            .replace('    USDJPY: "0.05"', '    EURUSD: "0.05"')
+            .replace(
+                "configs/strategies/strategy_b_v1.yaml", "configs/strategies/strategy_b_eurusd.yaml"
+            )
+            .replace("configs/calendars/timeframes_v1.yaml", "configs/calendars/timeframes_v2.yaml")
+        )
+        searched = search_experiment_text(
+            single,
+            experiment_id="final_conv",
+            axes=_AXES,
+            final_holdout=(
+                '{interval: {start: "2024-01-01T00:00:00Z", end: "2030-01-01T00:00:00Z"},'
+                ' purpose: "人工の円以外の候補を封印期間で 1 回だけ確かめる"}'
+            ),
+            candidate_snapshot=research["EURUSD"].candidate,
+        )
+        marker = f'  candidate: "{research["EURUSD"].candidate}"\n'
+        assert searched.count(marker) == 1
+        searched = searched.replace(
+            marker,
+            marker
+            + "conversion_snapshots:\n"
+            + f'  standard: "{research["USDJPY"].standard}"\n'
+            + f'  candidate: "{research["USDJPY"].candidate}"\n',
+        )
+        experiment = repo / _CONV_EXPERIMENT
+        experiment.parent.mkdir(parents=True, exist_ok=True)
+        experiment.write_text(searched, encoding="utf-8")
+        out = base / "out"
+        code = main(
+            [
+                "experiment",
+                "run",
+                "--experiment",
+                str(experiment),
+                "--snapshots",
+                str(snapshots),
+                "--out",
+                str(out),
+                "--repo-root",
+                str(repo),
+            ]
+        )
+        assert code == 0
+        directory = out / "runs/experiments/final_conv/v1"
+        recorded = ExperimentCandidates(repo).read(directory, 1)
+        assert recorded.conversion_snapshots == research["USDJPY"]
+        assert recorded.conversion_symbols == frozenset({"USDJPY"})
+        facts = replace(
+            recorded,
+            completed=True,
+            verdicts=Paired(
+                standard=SearchVerdict.MEETS_STANDARD, candidate=SearchVerdict.MEETS_STANDARD
+            ),
+            combined=SearchVerdict.MEETS_STANDARD,
+        )
+        trials = Paired.build(lambda variant: _int(recorded.final_trials.of(variant)))
+        sealed = _sealed_set(snapshots)
+        window_config(repo)
+        write_review(repo, [facts.key], trials=trials)
+        write_fixation(repo, facts.key, trials=trials)
+        declaration = repo / "research" / "declarations" / "final_conv.yaml"
+        declaration.parent.mkdir(parents=True, exist_ok=True)
+        declaration.write_text(
+            "schema_version: 1\n"
+            f"experiment_id: {facts.key.experiment_id}\n"
+            "execution: 1\n"
+            "used_outside_viewing: false\n"
+            "period:\n"
+            f'  start: "{ACQUISITION_START}"\n'
+            f'  end: "{T_FIX}"\n'
+            'question: "研究の外で見た相場を候補の選定・調整に使ったか"\n'
+            'answer: "使っていない"\n'
+            'recorded_by: "人工の記録者"\n',
+            encoding="utf-8",
+        )
+        publish_repo(repo, base / "origin.git", home=home)
+    yield _ConvEnv(base=base, facts=facts, research=research, sealed=sealed)
+
+
+def _conv_copy(env: _ConvEnv, tmp_path: Path) -> _ConvCopy:
+    """作業場を写し、写しの作業木が写しの origin を指すようにする。"""
+    root = tmp_path / "copy"
+    shutil.copytree(env.base, root, symlinks=True)
+    copy = _ConvCopy(root=root, facts=env.facts)
+    copy.git("remote", "set-url", "origin", str(root / "origin.git"))
+    return copy
+
+
+def _conv_validate(copy: _ConvCopy, out_root: Path) -> FinalValidationOutcome:
+    with pytest.MonkeyPatch.context() as patch:
+        isolate_git(patch, copy.home)
+        return final_validate(
+            FinalValidationRequest(
+                experiment_dir=copy.directory,
+                execution=1,
+                repo_root=copy.repo,
+                snapshots_root=copy.snapshots,
+                out_root=out_root,
+                declaration=copy.repo / "research" / "declarations" / "final_conv.yaml",
+                by="人工の実行者",
+            ),
+            candidates=_Candidates(copy.facts),
+            runner=RecordedFinalRunner(
+                repo_root=copy.repo, snapshots_root=copy.snapshots, out_root=out_root
+            ),
+        )
+
+
+def test_ct22_ct23_the_sealed_reads_carry_the_usdjpy_leg_and_the_prediction_matches(
+    conv_env: _ConvEnv, tmp_path: Path
+) -> None:
+    """CT-22: その組の `RunConfig` の並びに EURUSD と USDJPY の partition が入り、換算の snapshot は
+    記録票のその組の研究期間の USDJPY。予測 `RunId` が実際の run と一致する（P4F）。CT-23 の本番の
+    run の側: 換算用の読み取りの行・控え・台帳の別の項目、状態は SEALED のまま。"""
+    from odyssey_fx.app.sealed_intake import parse_consumption_bytes
+    from odyssey_fx.marketdata.domain.consumption_log import ParsedAccessLog
+
+    copy = _conv_copy(conv_env, tmp_path)
+    final_out = tmp_path / "final_out"
+    outcome = _conv_validate(copy, final_out)
+    assert outcome.exit_code == EXIT_OK, (outcome.detail, outcome.lines)
+    final = final_directory(copy.directory, 1)
+    record = json.loads((final / "final_evaluation.json").read_text())
+    permit = json.loads((final / "permit.json").read_text())
+    repository = FileSystemResultRepository(root=final_out)
+    for variant in VARIANTS:
+        block = record["variants"][variant.value]
+        assert block["run_id"] == permit["predicted"][variant.value]["run_id"]
+        manifest = repository.read_manifest(RunId(ContentDigest.sha256(block["run_id"])))
+        assert isinstance(manifest, RunManifest), manifest
+        config = manifest.config
+        assert config.conversion_snapshot_ref is not None
+        assert str(config.conversion_snapshot_ref.snapshot_id) == conv_env.research["USDJPY"].of(
+            variant
+        )
+        legs = [
+            item for item in config.sealed_reads if str(item.partition_id.series.symbol) == "USDJPY"
+        ]
+        assert legs and {str(item.partition_id.series) for item in legs} == {"USDJPY/1m/bid"}
+        assert {item.snapshot_id for item in legs} == {conv_env.sealed["USDJPY"].of(variant)}
+        executed = [item for item in config.sealed_reads if item not in legs]
+        assert {str(item.partition_id.series.symbol) for item in executed} == {"EURUSD"}
+        assert {f"{item.snapshot_id}:{item.partition_id}" for item in config.sealed_reads} == set(
+            permit["reads"][variant.value]
+        )
+    assert not any("USDJPY" in name for name in permit["targets"])
+    assert len(permit["conversion_reads"]) == permit["conversion_read_count"] > 0
+    store = ParquetSnapshotStore(root=copy.snapshots)
+    for _, name in conv_env.sealed["USDJPY"].items():
+        data = (copy.snapshots / name / "access_log.jsonl").read_bytes()
+        parsed = parse_consumption_bytes(data, store.read_manifest(name))
+        assert isinstance(parsed, ParsedAccessLog)
+        assert parsed.consumed() == frozenset()  # SEALED のまま
+        assert {row.kind.value for row in parsed.rows} == {"CONVERSION_READ"}
+    (row,) = read_final_ledger(copy.repo).rows
+    assert row.payload["schema_version"] == 2
+    assert row.payload["conversion_read_count"] == len(permit["conversion_reads"])
+
+
+def test_ct25_a_usdjpy_partition_of_another_acquisition_round_stops_before_consumption(
+    conv_env: _ConvEnv, tmp_path: Path
+) -> None:
+    """CT-25（仮置き C1-14）: 同じ週の USDJPY の partition の取得の回が執行の通貨ペアの partition と
+    違えば、何も書かずに消費の前に止まる（終了コード 7）。"""
+    from tests.fixtures import final_conversion as fc
+
+    copy = _conv_copy(conv_env, tmp_path)
+    for _, name in conv_env.sealed["USDJPY"].items():
+        shutil.rmtree(copy.snapshots / name)
+    calendar = market.calendar()
+    jpy = {"1m": fc.quarter_minutes(fc.USDJPY, fc.SEALED, fc.RATE, calendar)}
+    from odyssey_fx.marketdata.domain.time_rule import TimeRuleVariant as _Variant
+
+    for variant in (_Variant.STANDARD, _Variant.CANDIDATE):
+        fc.sealed_snapshot(
+            copy.snapshots,
+            jpy,
+            variant,
+            fc.USDJPY,
+            acquisition_start=ACQUISITION_START,
+            fetch_sha="b" * 64,
+        )
+    copy.commit_and_push("the USDJPY sealed snapshots of another acquisition round")
+    head = copy.origin_head()
+    outcome = _conv_validate(copy, tmp_path / "final_out")
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.CONVERSION_PARTITION_MISMATCH,
+    ), outcome.detail
+    assert "acquisition round" in outcome.detail
+    assert not final_directory(copy.directory, 1).exists()
+    assert copy.origin_head() == head
+
+
+def test_ct27_the_research_calendar_check_reaches_the_conversion_snapshot(
+    conv_env: _ConvEnv, tmp_path: Path
+) -> None:
+    """CT-27（人間の決定 (22) (a)）: run のカレンダー（版 2）の研究履歴の期間の取引セッションが、
+    換算の snapshot の期間でだけ記録票のカレンダー（版 1）と違えば、段 2 (g) で何も書かずに止まる
+    （終了コード 7）。同じなら合格する（CT-22 の run）。"""
+    copy = _conv_copy(conv_env, tmp_path)
+    for paired in conv_env.sealed.values():
+        for _, name in paired.items():
+            shutil.rmtree(copy.snapshots / name)
+    text = (copy.repo / "configs/calendars/fx_ny17_v1.yaml").read_text(encoding="utf-8")
+    assert "\nversion: 1\n" in text and "closures: []\n" in text
+    (copy.repo / "configs/calendars/fx_ny17_v2.yaml").write_text(
+        text.replace("\nversion: 1\n", "\nversion: 2\n", 1).replace(
+            "closures: []\n",
+            "closures:\n"
+            '  - local_date: "2014-09-24"\n'
+            "    covers_trading_day: true\n"
+            '    note: "人工の休場（換算の snapshot の研究履歴の期間だけにある食い違い）"\n',
+        ),
+        encoding="utf-8",
+    )
+    _sealed_set(copy.snapshots, calendar_version=2)
+    copy.commit_and_push("sealed snapshots on an artificial calendar v2")
+    head = copy.origin_head()
+    outcome = _conv_validate(copy, tmp_path / "final_out")
+    assert (outcome.exit_code, outcome.reason) == (
+        EXIT_REFUSED,
+        FinalReason.DATA_CAPABILITY_NOT_MET,
+    ), outcome.detail
+    assert "conversion snapshot of the record" in outcome.detail, outcome.detail
+    assert not final_directory(copy.directory, 1).exists()
+    assert copy.origin_head() == head

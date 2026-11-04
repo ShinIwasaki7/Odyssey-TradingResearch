@@ -49,10 +49,11 @@ from odyssey_fx.marketdata.domain.access import (
 )
 from odyssey_fx.marketdata.domain.consumption_log import ConsumptionCandidate
 from odyssey_fx.marketdata.domain.final_grant import FinalReadGrant, GrantedRead
-from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import PartitionId
 
 __all__ = [
+    "CONVERSION_TIMEFRAME",
     "WINDOW_START",
     "ApplicationState",
     "CandidateKey",
@@ -73,6 +74,10 @@ __all__ = [
 
 #: 最終検証の窓の始まり（D15-16 (a)、ADR-0038 第5項の 1。研究履歴の境界と同じ）。
 WINDOW_START: Final = SEALED_RESEARCH_UNTIL
+
+#: 換算の脚の時間足（D06 v1.20 案 §19.4、決定 (18) (a): 1 分足）。換算用の読み取りの対象は、
+#: 換算の脚の通貨ペアのこの時間足の bid の系列の封印の partition（D06 §19.14）。
+CONVERSION_TIMEFRAME: Final = "1m"
 
 
 class FinalReason(Enum):
@@ -101,6 +106,10 @@ class FinalReason(Enum):
     NO_USABLE_WINDOW = "NO_USABLE_WINDOW"
     FINAL_HOLDOUT_NOT_COVERING = "FINAL_HOLDOUT_NOT_COVERING"
     DATA_CAPABILITY_NOT_MET = "DATA_CAPABILITY_NOT_MET"
+    #: 換算用の読み取りの対象（USDJPY）と同じ週の執行の通貨ペアの partition の snapshot が、
+    #: 組・時刻の規則の表・取得の回・カレンダー・集約規則の版・承認のどれかで食い違う（D06 v1.20 案
+    #: §19.14、仮置き C1-14）。
+    CONVERSION_PARTITION_MISMATCH = "CONVERSION_PARTITION_MISMATCH"
     RECOMPUTATION_MISMATCH = "RECOMPUTATION_MISMATCH"
     P2F_NOT_PASSED = "P2F_NOT_PASSED"
     OUTPUT_NOT_EMPTY = "OUTPUT_NOT_EMPTY"
@@ -267,6 +276,10 @@ class FinalWindow:
     - `reads`: 組ごとの「snapshot と partition の並び」（要決定 R2-3 (a)。重複は最初に承認された
       snapshot だけ。仮置き R2-9）。
     - `weeks`: 使える窓の取引週（partition の期間）の数。
+    - `conversion`: 換算用の読み取りの対象（`(snapshot_id, partition)`。円以外の決済通貨の候補が
+      換算の脚としてだけ読む、執行の通貨ペアでない通貨ペアの 1 分足の封印の partition。両組。
+      D06 v1.20 案 §19.14）。**消費の対象（`targets`）に入れない**（決定 (21) (b)）。並び
+      （`reads`）には入る。円の候補は空。
     """
 
     consumption: Interval
@@ -274,6 +287,7 @@ class FinalWindow:
     targets: tuple[tuple[str, PartitionId], ...]
     reads: Paired[tuple[GrantedRead, ...]]
     weeks: int
+    conversion: tuple[tuple[str, PartitionId], ...] = ()
 
     @property
     def scoring(self) -> Interval:
@@ -281,7 +295,18 @@ class FinalWindow:
 
     @property
     def snapshot_ids(self) -> tuple[str, ...]:
+        """消費の対象を持つ snapshot（消費の行を書く snapshot）。"""
         return tuple(sorted({snapshot for snapshot, _ in self.targets}))
+
+    @property
+    def conversion_snapshot_ids(self) -> tuple[str, ...]:
+        """換算用の読み取りの対象を持つ snapshot（換算用の読み取りの行を書く snapshot）。"""
+        return tuple(sorted({snapshot for snapshot, _ in self.conversion}))
+
+    @property
+    def read_snapshot_ids(self) -> tuple[str, ...]:
+        """記録の行を書く snapshot のすべて（消費の対象と換算用の読み取りの対象の和）。"""
+        return tuple(sorted({*self.snapshot_ids, *self.conversion_snapshot_ids}))
 
 
 def _slots(t_fix: UtcTime) -> list[Interval]:
@@ -304,6 +329,7 @@ def derive_final_window(
     excluded: Sequence[Interval],
     length_days: int,
     warmup: timedelta,
+    conversion_symbols: frozenset[str] = frozenset(),
 ) -> FinalWindow | WindowRefusal:
     """窓・消費の対象・読む並び・採点の始まりを導き、長さ `L` を確かめる（D09 §9.10.3 の 1〜7）。
 
@@ -315,16 +341,47 @@ def derive_final_window(
     重なる週）で区切った連続した部分のうち最も新しいもの（仮置き R2-9、要決定 R2-9 (a)）。その
     中に partition の無い週（組・系列のどれかに partition が無い週）があれば止める。同じ組・系列・
     週の partition の状態が snapshot の間で食い違えば構造の誤り、ダイジェストが違えば止める。
+
+    `conversion_symbols` は換算の脚の通貨ペアのうち候補の執行の通貨ペアでないもの（円以外の決済
+    通貨の候補の USDJPY。D06 v1.20 案 §19.14）。その 1 分足（`CONVERSION_TIMEFRAME`）の bid の系列
+    の封印の partition を**換算用の読み取りの対象**にする: 消費の対象に入れず（決定 (21) (b)）、
+    並びには入れ、同じ週の換算用の読み取りの対象が `CONSUMED` の週は理由の分かる抜けとして窓を
+    区切り、使える窓の中で組ごとに partition が無い週があれば止める（`WINDOW_HAS_MISSING_WEEK`）。
+    重複は消費の対象と同じく最初に承認された snapshot だけを読む（ダイジェストが違えば止める）。
     """
     if isinstance(length_days, bool) or not isinstance(length_days, int) or length_days < 1:
         raise KernelValueError("derive_final_window.length_days must be a positive int")
     if not isinstance(warmup, timedelta) or warmup < timedelta(0):
         raise KernelValueError("derive_final_window.warmup must be a non-negative timedelta")
+    if conversion_symbols & symbols:
+        raise KernelValueError(
+            "derive_final_window.conversion_symbols excludes the symbols the run executes"
+            " (D06 §19.14: the executed pair's partitions are consumed)"
+        )
     chosen = [
         fact
         for fact in facts
         if str(fact.partition_id.series.symbol) in symbols and fact.period.end <= t_fix
     ]
+    converting = [
+        fact
+        for fact in facts
+        if str(fact.partition_id.series.symbol) in conversion_symbols
+        and fact.partition_id.series.timeframe.id == CONVERSION_TIMEFRAME
+        and fact.partition_id.series.basis is PriceBasis.BID
+        and fact.period.end <= t_fix
+    ]
+    conversion_series = sorted({fact.partition_id.series for fact in converting}, key=str)
+    lacking_conversion = sorted(
+        conversion_symbols - {str(item.symbol) for item in conversion_series}
+    )
+    if lacking_conversion:
+        return WindowRefusal(
+            FinalReason.WINDOW_HAS_MISSING_WEEK,
+            f"no approved sealed {CONVERSION_TIMEFRAME} partition of the conversion legs"
+            f" {lacking_conversion} ends by T_fix {t_fix}; the window cannot be converted"
+            " (D06 §19.14)",
+        )
     series = sorted({fact.partition_id.series for fact in chosen}, key=str)
     lacking = sorted(symbols - {str(item.symbol) for item in series})
     if series and lacking:
@@ -341,7 +398,7 @@ def derive_final_window(
             f"no approved sealed partition of {sorted(symbols)} ends by T_fix {t_fix}",
         )
     by_key: dict[tuple[Variant, SeriesId, UtcTime], list[SealedPartitionFact]] = {}
-    for fact in chosen:
+    for fact in [*chosen, *converting]:
         by_key.setdefault((fact.variant, fact.partition_id.series, fact.period.start), []).append(
             fact
         )
@@ -355,7 +412,8 @@ def derive_final_window(
     slots = _slots(t_fix)
     blocked: list[bool] = []
     for slot in slots:
-        in_slot = [fact for fact in chosen if fact.period == slot]
+        # 換算用の読み取りの対象が `CONSUMED` の週も抜け（換算にも読まない。D06 §19.14）。
+        in_slot = [fact for fact in [*chosen, *converting] if fact.period == slot]
         consumed = any(fact.state is HoldoutState.CONSUMED for fact in in_slot)
         forward = any(slot.overlaps(item) for item in excluded)
         blocked.append(consumed or forward)
@@ -377,7 +435,7 @@ def derive_final_window(
     missing: list[str] = []
     for slot in window_slots:
         for variant in VARIANTS:
-            for item in series:
+            for item in [*series, *conversion_series]:
                 if not by_key.get((variant, item, slot.start)):
                     missing.append(f"{variant.value} {item} {slot.start}")
     if missing:
@@ -388,9 +446,10 @@ def derive_final_window(
         )
     reads: dict[Variant, list[GrantedRead]] = {variant: [] for variant in VARIANTS}
     targets: list[tuple[str, PartitionId]] = []
+    conversion: list[tuple[str, PartitionId]] = []
     for slot in window_slots:
         for variant in VARIANTS:
-            for item in series:
+            for item in [*series, *conversion_series]:
                 group = by_key[(variant, item, slot.start)]
                 if len({fact.digest for fact in group}) > 1:
                     return WindowRefusal(
@@ -402,7 +461,11 @@ def derive_final_window(
                 reads[variant].append(
                     GrantedRead(snapshot_id=first.snapshot_id, partition_id=first.partition_id)
                 )
-                targets.extend((fact.snapshot_id, fact.partition_id) for fact in group)
+                if item in conversion_series:
+                    # 換算用の読み取りの対象は読む partition だけ（消費しないので重複は読まない）。
+                    conversion.append((first.snapshot_id, first.partition_id))
+                else:
+                    targets.extend((fact.snapshot_id, fact.partition_id) for fact in group)
     consumption = Interval(start=window_slots[0].start, end=window_slots[-1].end)
     scoring_start = (
         consumption.start if consumption.start == WINDOW_START else consumption.start + warmup
@@ -442,6 +505,7 @@ def derive_final_window(
             candidate=ordered(reads[Variant.CANDIDATE]),
         ),
         weeks=len(window_slots),
+        conversion=tuple(sorted(set(conversion), key=lambda pair: (pair[0], str(pair[1])))),
     )
 
 
@@ -500,7 +564,12 @@ class FinalEvaluationPermit:
         return FinalReadGrant(permit_id=self.permit_id, reads=self.window.reads.of(variant))
 
     def allowed_set(self, variant: Variant) -> frozenset[tuple[str, PartitionId]]:
-        """組の run の許可 partition 集合（研究履歴の partition と並びの partition の和）。"""
+        """組の run の許可 partition 集合（研究履歴の partition と並びの partition の和）。
+
+        並びは、消費の対象のうちその組の run が読む部分と、換算用の読み取りの対象のうちその組の
+        run が読む部分を持つ（D06 v1.20 案 §19.14 の P2F の (1)）。研究履歴の partition は記録票の
+        取引する通貨ペアの snapshot と換算の snapshot のもの（決定 (23) (a)）。
+        """
         reads = {(item.snapshot_id, item.partition_id) for item in self.window.reads.of(variant)}
         return frozenset(reads | set(self.research_partitions.of(variant)))
 

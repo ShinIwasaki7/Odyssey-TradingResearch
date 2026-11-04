@@ -47,9 +47,14 @@ from odyssey_fx.app.config.research_policy import (
     load_research_policy_registry,
     research_policy_registry_path,
 )
+from odyssey_fx.app.conversion import (
+    ConversionSource,
+    conversion_supply,
+    require_conversion_pairing,
+)
 from odyssey_fx.app.final_pending import pending_final_validation
 from odyssey_fx.app.mt5_run import DEFAULT_APPROVED_LIST, build_mt5_run_parts, publication_rows
-from odyssey_fx.backtest.application.run_backtest import RunBacktest
+from odyssey_fx.backtest.application.run_backtest import ConversionSupply, RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig, RunEndMode
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
 from odyssey_fx.backtest.trace.manifest import config_digest_of
@@ -977,6 +982,8 @@ class _RunPlan:
     repo_root: Path = Path(".")
     #: 読み取りの面を外から渡す口（`None` なら `inputs` から組み立てる。`ReadSurfaces`）。
     surfaces: ReadSurfaces | None = None
+    #: 換算の snapshot の入力一式（決済通貨が口座通貨と違う run だけ。D06 v1.20 案 §19.2）。
+    conversion_inputs: SnapshotInputs | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -996,6 +1003,8 @@ class ReadSurfaces:
     observation: Mt5Observation | None
     integrity: IntegrityReport
     approved_list: Path = DEFAULT_APPROVED_LIST
+    #: 換算の脚の供給（決済通貨が口座通貨と違う最終検証の run だけ。D06 v1.20 案 §19.14）。
+    conversion: ConversionSupply | None = None
 
 
 def _plan_run(
@@ -1027,6 +1036,17 @@ def _plan_run(
             f"the snapshot does not carry the execution series {experiment.execution_series}"
             " (D03 §6.3)"
         )
+    conversion_inputs = (
+        None
+        if experiment.conversion_snapshot_ref is None
+        else open_conversion_inputs(
+            snapshots_root=snapshots_root,
+            conversion_ref=experiment.conversion_snapshot_ref,
+            execution=inputs,
+            calendar=calendar,
+            timeframe_defs=timeframe_defs,
+        )
+    )
 
     # 遅延シナリオを市場データへ当てる（D07 §18.3、D03 §3.6）。公開フィードと as-of ビューへ
     # 渡す前に、実現した公開時刻（`available_at`）を計算しておく。遅延なし（書式 v1、または
@@ -1050,6 +1070,7 @@ def _plan_run(
         delay_scenario_ref=experiment.policy_ref("delay"),
         execution_series=experiment.execution_series,
         seed=experiment.seed,
+        conversion_snapshot_ref=experiment.conversion_snapshot_ref,
     )
     config_digest = config_digest_of(
         config,
@@ -1080,6 +1101,66 @@ def _plan_run(
         git_dirty=dirty,
         publication_log=publication_log,
         repo_root=repo_root,
+        conversion_inputs=conversion_inputs,
+    )
+
+
+def open_conversion_inputs(
+    *,
+    snapshots_root: Path,
+    conversion_ref: SnapshotRef,
+    execution: SnapshotInputs,
+    calendar: TradingCalendar,
+    timeframe_defs: Mapping[str, TimeframeDefinition],
+) -> SnapshotInputs:
+    """換算の snapshot を照合してから開く（D06 v1.20 案 §19.2。仮置き C1-4）。
+
+    run の保存先を作る前、足を読む前に、2 つの snapshot の manifest（価格を含まない）を照合する。
+    食い違えば `ConversionSnapshotMismatch` で何も書かずに止まる。照合に通れば、執行の snapshot と
+    同じく研究履歴の partition だけを読める入力一式にする（封印・隔離の partition は読まない）。
+    """
+    conversion_id = str(conversion_ref.snapshot_id)
+    readable = snapshot_store(snapshots_root).open_readable(conversion_id)
+    require_conversion_pairing(
+        execution.snapshot.manifest,
+        readable.manifest,
+        calendar_id=calendar.id,
+        calendar_version=calendar.version,
+        execution_id=str(execution.snapshot.manifest.snapshot_id()),
+        conversion_id=conversion_id,
+    )
+    return open_snapshot_inputs(
+        snapshots_root=snapshots_root,
+        snapshot_id=conversion_id,
+        calendar=calendar,
+        timeframe_defs=timeframe_defs,
+    )
+
+
+def _conversion_supply(plan: _RunPlan, verified: VerifiedPartitionBars) -> ConversionSupply | None:
+    """run の換算の脚の供給（D06 v1.20 案 §19.3・§19.4）。換算の snapshot が無ければ `None`。"""
+    if plan.surfaces is not None:
+        return plan.surfaces.conversion
+    conversion = plan.conversion_inputs
+    if conversion is None:
+        return None
+    inputs = plan.inputs
+    minute = next(
+        (ref for ref in plan.timeframe_refs if ref.id == "1m"),
+        plan.experiment.execution_series.timeframe,
+    )
+    return conversion_supply(
+        execution=ConversionSource(
+            snapshot=inputs.snapshot,
+            allowed_partitions=inputs.allowed_partitions,
+            partition_bars=verified,
+        ),
+        conversion=ConversionSource(
+            snapshot=conversion.snapshot,
+            allowed_partitions=conversion.allowed_partitions,
+            partition_bars=conversion.verified_bars("ConversionQuotes"),
+        ),
+        fallback_timeframe=minute,
     )
 
 
@@ -1212,6 +1293,7 @@ def _run_use_case(plan: _RunPlan, artifacts_root: Path, *, replace: bool) -> Run
         mt5_capability=None if mt5_parts is None else mt5_parts.capability,
         publication_rows=published,
         history_resets=() if mt5_parts is None else mt5_parts.history_resets,
+        conversion=_conversion_supply(plan, verified),
     )
 
 
@@ -1429,12 +1511,18 @@ def build_experiment_manifest(
     catalog = _SnapshotManifestCatalog(plan.inputs.snapshot.manifest)
     access = catalog.access_classes(experiment.snapshot_ref, plan.inputs.allowed_partitions)
     allowed = {str(partition): access_class for partition, access_class in access.items()}
+    conversion_allowed = (
+        None
+        if plan.conversion_inputs is None or experiment.conversion_snapshot_ref is None
+        else _allowed_of(plan.conversion_inputs, experiment.conversion_snapshot_ref)
+    )
     profiles, unmeasured, causes = complexity_profiles(plan.compiled, registry)
     measures = measure_complexity(profiles, unmeasured_outputs=unmeasured)
     limits = loaded.policy.limits
     pre_run_checks = (
         check_hypothesis(loaded.hypothesis),
-        check_research_history_only(allowed),
+        # 換算の snapshot の許可 partition も研究履歴だけであることを確かめる（D06 §19.2）。
+        check_research_history_only({**allowed, **(conversion_allowed or {})}),
         check_complexity(measures, limits, unmeasured_causes=causes),
     )
     policy = loaded.policy
@@ -1467,8 +1555,19 @@ def build_experiment_manifest(
         env_digest=plan.environment,
         git_commit=plan.git_commit,
         git_dirty=plan.git_dirty,
+        conversion_snapshot_id=None
+        if experiment.conversion_snapshot_ref is None
+        else experiment.conversion_snapshot_ref.snapshot_id,
+        conversion_allowed_partitions=conversion_allowed,
     )
     return replace(draft, experiment_id=experiment_id_of(draft, loaded.values))
+
+
+def _allowed_of(inputs: SnapshotInputs, ref: SnapshotRef) -> dict[str, AccessClass]:
+    """snapshot の許可 partition の文字列からアクセス分類への対応（記録票の項目）。"""
+    catalog = _SnapshotManifestCatalog(inputs.snapshot.manifest)
+    access = catalog.access_classes(ref, inputs.allowed_partitions)
+    return {str(partition): access_class for partition, access_class in access.items()}
 
 
 def run_experiment(
@@ -1596,6 +1695,7 @@ def _unit_run_config(
         execution_series=experiment.execution_series,
         seed=experiment.seed,
         run_end=RunEndMode.MARK_TO_MARKET,
+        conversion_snapshot_ref=experiment.conversion_snapshot_ref,
     )
 
 
@@ -1611,6 +1711,7 @@ def build_search_manifest(
     measures: Sequence[ComplexityMeasures],
     unmeasured_causes: Sequence[str],
     environment: tuple[CodeDigest, LockDigest, EnvDigest, str, bool],
+    conversion_inputs: Paired[SnapshotInputs] | None = None,
 ) -> ExperimentManifest:
     """探索の実験の記録票を組み立てる（D09 §10.2）。事前検査 P1・P2・P6・P7 もここで行う。
 
@@ -1642,6 +1743,14 @@ def build_search_manifest(
 
     allowed = Paired.build(allowed_of)
     union = {**allowed.standard, **allowed.candidate}
+    conversion_refs = search.conversion_snapshots
+    conversion_allowed: Paired[dict[str, AccessClass]] | None = None
+    if conversion_refs is not None and conversion_inputs is not None:
+        conversion_allowed = Paired.build(
+            lambda variant: _allowed_of(conversion_inputs.of(variant), conversion_refs.of(variant))
+        )
+        # 換算の snapshot の許可 partition も研究履歴だけであることを確かめる（D06 §19.2）。
+        union = {**union, **conversion_allowed.standard, **conversion_allowed.candidate}
     complexity = search_complexity(measures)
     causes = list(unmeasured_causes)
     if not measures:
@@ -1685,6 +1794,10 @@ def build_search_manifest(
         evaluation_standard=search.standard,
         final_holdout=search.final_holdout,
         trials=tuple(trial.plan for trial in trials),
+        conversion_snapshot_id=None
+        if conversion_refs is None
+        else conversion_refs.map(lambda _, ref: ref.snapshot_id),
+        conversion_allowed_partitions=conversion_allowed,
     )
     return replace(draft, experiment_id=experiment_id_of(draft, loaded.values))
 
@@ -1758,6 +1871,8 @@ class _SearchParts:
     inputs: Paired[SnapshotInputs]
     spec: SymbolSpec
     refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]]
+    #: 組ごとの換算の snapshot の入力一式（決済通貨が口座通貨と違う実験だけ。D06 §19.2）。
+    conversion_inputs: Paired[SnapshotInputs] | None = None
 
 
 def prepare_search(
@@ -1808,6 +1923,20 @@ def _prepare_search(
         return opened
 
     inputs = Paired.build(open_inputs)
+    conversion_refs = search.conversion_snapshots
+    conversion_inputs = (
+        None
+        if conversion_refs is None
+        else Paired.build(
+            lambda variant: open_conversion_inputs(
+                snapshots_root=snapshots_root,
+                conversion_ref=conversion_refs.of(variant),
+                execution=inputs.of(variant),
+                calendar=environment.calendar,
+                timeframe_defs=environment.timeframe_defs,
+            )
+        )
+    )
     symbol = experiment.execution_series.symbol
     spec = environment.symbol_specs.get(symbol)
     if spec is None:
@@ -1844,7 +1973,13 @@ def _prepare_search(
             measures.append(measure_complexity(profiles, unmeasured_outputs=unmeasured))
             causes.extend(trial_causes)
     manifest = build_search_manifest(
-        loaded, inputs, trials, measures, causes, (code, lock, env, commit, dirty)
+        loaded,
+        inputs,
+        trials,
+        measures,
+        causes,
+        (code, lock, env, commit, dirty),
+        conversion_inputs=conversion_inputs,
     )
     prepared = PreparedSearch(
         manifest=manifest,
@@ -1856,7 +1991,13 @@ def _prepare_search(
         git_commit=commit,
         git_dirty=dirty,
     )
-    return _SearchParts(prepared=prepared, inputs=inputs, spec=spec, refs=refs)
+    return _SearchParts(
+        prepared=prepared,
+        inputs=inputs,
+        spec=spec,
+        refs=refs,
+        conversion_inputs=conversion_inputs,
+    )
 
 
 def comparison_basis(
@@ -1979,6 +2120,9 @@ class _SearchRunner:
             git_commit=prepared.git_commit,
             git_dirty=prepared.git_dirty,
             publication_log=self.publication_logs.of(variant),
+            conversion_inputs=None
+            if self.parts.conversion_inputs is None
+            else self.parts.conversion_inputs.of(variant),
         )
         return _run_use_case(plan, self.artifacts_root, replace=False).run(config, compiled)
 

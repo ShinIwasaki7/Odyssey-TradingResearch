@@ -236,6 +236,7 @@ class _ExperimentV2Model(RunBodyModel):
     version: int
     hypothesis: str
     snapshots: _SnapshotsModel | None = None
+    conversion_snapshots: _SnapshotsModel | None = None
     lineage: _LineageModel | None = None
     research_policy: _ResearchPolicyRefModel
     strategy: str
@@ -287,6 +288,8 @@ class SearchSetting:
     - `standard`: 研究ポリシーの評価基準の群（版 3 以上）。
     - `snapshots`: 両組の snapshot（2026-10-21 改訂。D13-15 (a)、仮置き 24）。
     - `lineage`: 系譜（書かなければ `None`）。
+    - `conversion_snapshots`: 両組の換算の snapshot（決済通貨が口座通貨と違う実験だけ。D06 v1.20 案
+      §19.2、仮置き C1-2）。`snapshots` の同じ名前の組と対にする。
     """
 
     plan: SearchPlan
@@ -295,6 +298,7 @@ class SearchSetting:
     standard: EvaluationStandard
     snapshots: Paired[SnapshotRef]
     lineage: LineageSetting | None
+    conversion_snapshots: Paired[SnapshotRef] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,7 +385,11 @@ class ExperimentV2:
         """探索の実験の組ごとの実行の本体（snapshot だけが組で違う。D09 §6.2 の改訂）。"""
         if self.search is None:
             raise ConfigError("組ごとの実行の本体は探索の実験だけが持つ（D13-15 (a)）")
-        return self.body.with_snapshot(self.search.snapshots.of(variant))
+        conversion = self.search.conversion_snapshots
+        return self.body.with_snapshot(
+            self.search.snapshots.of(variant),
+            None if conversion is None else conversion.of(variant),
+        )
 
 
 # --- 読込 -------------------------------------------------------------------
@@ -764,7 +772,18 @@ def _check_search_keys(model: _ExperimentV2Model, payload: Mapping[str, Any], pa
                 f"{path}: 探索の実験には `snapshots: {{standard, candidate}}` を書くこと"
                 "（片方の組だけで走らせる経路は無い。D13-15 (a)）"
             )
+        if "conversion_snapshot" in payload:
+            raise ConfigError(
+                f"{path}: 探索の実験には単数の `conversion_snapshot` を書けない。両組を"
+                " `conversion_snapshots: {standard, candidate}` で書く（D07 §18.2 の v2.17 案。"
+                "D06 §19.2）"
+            )
     else:
+        if "conversion_snapshots" in payload:
+            raise ConfigError(
+                f"{path}: 単一実行の実験には `conversion_snapshots` を書けない。単数の"
+                " `conversion_snapshot` を書く（D07 §18.2 の v2.17 案。D06 §19.2）"
+            )
         if "snapshots" in payload:
             raise ConfigError(
                 f"{path}: 単一実行の実験には `snapshots` を書けない。単数の `snapshot` を書く"
@@ -1055,6 +1074,7 @@ def _search_setting_of(
             check_final_holdout(holdout, standard.split)
         except KernelValueError as exc:
             raise ConfigError(f"{path}: `final_holdout` を読めない: {exc}") from exc
+    conversion_pair = model.conversion_snapshots
     return SearchSetting(
         plan=plan,
         split=split,
@@ -1062,6 +1082,16 @@ def _search_setting_of(
         standard=standard,
         snapshots=snapshots,
         lineage=_lineage_of(model.lineage, path),
+        # 要否の規則（決済通貨が違えば必須、同じなら拒否）は `resolve_run_body` が標準の組の値で
+        # 確かめ済み（仮置き C1-3）。
+        conversion_snapshots=None
+        if conversion_pair is None
+        else Paired(
+            standard=_snapshot_ref(conversion_pair.standard, "conversion_snapshots.standard", path),
+            candidate=_snapshot_ref(
+                conversion_pair.candidate, "conversion_snapshots.candidate", path
+            ),
+        ),
     )
 
 
@@ -1137,6 +1167,9 @@ def _assemble(
         # 探索の実験は標準の組の snapshot で解決し、組ごとの本体は `ExperimentV2.body_of` で
         # snapshot だけを差し替える（2026-10-21 改訂。D09 §6.2 の改訂）。
         snapshot=None if model.snapshots is None else model.snapshots.standard,
+        conversion_snapshot=None
+        if model.conversion_snapshots is None
+        else model.conversion_snapshots.standard,
     )
     search: SearchSetting | None = None
     run_interval: Interval | None = None
