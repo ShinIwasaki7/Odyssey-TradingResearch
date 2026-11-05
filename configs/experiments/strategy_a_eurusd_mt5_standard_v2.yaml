@@ -1,0 +1,96 @@
+# 検証戦略 A の MT5 経路の単一実行・EURUSD・標準の組（standard）（書式 v2。D07 §18・§28、D12 §12.5）
+#
+# **版 2**（2026-11-05。順 7 の換算レーン C5。D06 v1.23 案 §19.5）: 版 1（`configs/experiments/strategy_a_eurusd_mt5_standard.yaml`）を
+# 複製し、`version`（1 → 2）と換算の古さの上限 `conversion_policy.max_observation_skew`（`PT15M` → `PT30M`）
+# だけを書き換えた。上限の変更は人間の決定 (32)「上限を 30 分に延ばす（推奨）」（2026-11-05。根拠は
+# 執行足（15 分）2 本分。原文は D06 §19.19 の追加の決定 7）による。止め方と測り方は変えていない。
+# 版 1 のファイルは変えない（機構確認 M1 の 1 回目・2 回目の記録票の事前登録の照合と再現が読む）。
+# M1 の 3 回目はこの版で走らせる。
+#
+# 順 7 の機構確認 M1（円以外の 1 通貨での検証戦略 A・B の単一実行と再現。D17 §2.5、終了条件 G4）の設定。
+# 順 3 の `configs/experiments/strategy_a_usdjpy_mt5_standard.yaml` を基にした。採否の判断はしない。
+#
+# - 研究ポリシーは第 1 版（D17 の仮置き 5。順 3 の決定 8 と同じ）。探索なし・期間分割なし。
+# - 戦略は検証戦略 A の系列だけを EURUSD に替えた宣言（`configs/strategies/strategy_a_eurusd_v1.yaml`。
+#   D17 の仮置き 6）。
+# - snapshot は A3b（PR #138）で承認した EURUSD の標準の組（`docs/data/step7_research_acceptance/README.md`）。
+#   実体は git 管理外の `data/snapshots/`。
+# - 換算の snapshot（`conversion_snapshot`。D06 §19.2）は、同じ組の承認済みの USDJPY の snapshot
+#   （順 2 の標準の組。`docs/data/usdjpy_step2_acceptance/README.md`。人間の決定 D17-3a (a)）。EURUSD の
+#   決済通貨（米ドル）を口座通貨（円）に直す率を、この snapshot の USDJPY の 1 分足から取る。
+# - 取引カレンダーと時間足の定義は、snapshot を受け入れ・確定したときと同じ版
+#   （`fx_ny17_oanda` 版 1、`timeframes_v2`）。
+# - 解像度階層は MT5 経路の形 `[EURUSD/15m/bid, EURUSD/1m/bid]`（D06 §18.2）。
+# - run 区間は snapshot の 15 分足の区間そのまま（manifest の記録 2017-01-01T22:00Z〜2023-12-29T22:00Z）。
+# - 口座は円・初期残高 1,000,000 円・1 取引の損失予算 2%・口座全体の上限 20%（D17-9 (a)）。
+# - 価格の単位の費用（スプレッド・入場と決済の滑り・許容する不利約定の幅）は、順 3 の USDJPY の値を
+#   pip の数で写した値（D06 §19.11、D17-11 (a)。スプレッド 2 pip、滑り各 1 pip、不利約定の幅 5 pip）。
+#   1 単位の手数料（円建て）は写さず、順 3 と同じ値。
+# - 順 3 の設定との違いは `id`・`hypothesis`・`strategy`・`snapshot`・`conversion_snapshot`・
+#   `execution_series`・`resolution_hierarchy`・費用の 4 つの値と不利約定の幅の銘柄だけ。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**数値は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: strategy_a_eurusd_mt5_standard
+version: 2
+
+hypothesis: "検証戦略 A の規則を MT5 経路の EURUSD 標準の組（standard）の snapshot の全区間で 1 回実行し、円への換算・準備のやり直し・記録・再現の機構を確かめる（採否の判断はしない）"
+
+research_policy: {id: "research_policy", version: 1}
+
+strategy: "configs/strategies/strategy_a_eurusd_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+snapshot: "4e6eb8d40df023685b6b0739bd202d132c97997de68e8d55f0b4114c89bb917b"
+
+conversion_snapshot: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+
+run_interval:
+  start: "2017-01-01T22:00:00Z"
+  end: "2023-12-29T22:00:00Z"
+
+execution_series: "EURUSD/15m/bid"
+
+resolution_hierarchy:
+  - "EURUSD/15m/bid"
+  - "EURUSD/1m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    EURUSD: "0.0005"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.0001"
+  close_slippage: "0.0001"
+  spread_offset: "0.0002"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT30M"
+
+evaluation: {metric_set_version: 2}
+
+search_plan: "NONE"
+split: "NONE"

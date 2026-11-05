@@ -19,6 +19,7 @@ import bisect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from typing import Final
 
 from odyssey_fx.app.mt5_run import publication_rows
 from odyssey_fx.backtest.application.run_backtest import ConversionSupply, RunBacktest
@@ -34,7 +35,7 @@ from odyssey_fx.backtest.engine.loop import EngineContext, MinuteObservation, Tr
 from odyssey_fx.backtest.portfolio.conversion import ConversionQuotes
 from odyssey_fx.backtest.trace.manifest import config_digest_of
 from odyssey_fx.common.ids import IdAllocator, SnapshotId
-from odyssey_fx.common.money import Price, PriceOffset, decimal_from_str
+from odyssey_fx.common.money import CurrencyCode, Price, PriceOffset, decimal_from_str
 from odyssey_fx.common.refs import SnapshotRef, run_id
 from odyssey_fx.common.symbol import Symbol, SymbolSpec, SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
@@ -51,7 +52,6 @@ from tests.fixtures.backtest.harness import (
     ACCOUNT,
     CALENDAR,
     CODE_DIGEST,
-    CONVERSION_POLICY,
     COST_MODEL,
     ENV_DIGEST,
     LOCK_DIGEST,
@@ -74,6 +74,7 @@ from tests.fixtures.synthetic.market import TF_15M
 
 __all__ = [
     "AUDJPY",
+    "CONVERSION_POLICY",
     "EURUSD",
     "MINUTE_REF",
     "USDCHF",
@@ -93,6 +94,12 @@ AUDJPY = Symbol("AUDJPY")
 #: 換算の脚の時間足（1 分足）の版参照。
 MINUTE_REF = TimeframeRef("1m", 1)
 _MINUTE = timedelta(minutes=1)
+
+#: 円以外の決済通貨の run の換算のポリシー（上限 30 分。人間の決定 (32)、D06 v1.23 案 §19.5）。
+#: `harness.CONVERSION_POLICY`（15 分）は恒等換算の run の固定値テストが使うので変えない。
+CONVERSION_POLICY: Final = ConversionPolicy(
+    pivot_currency=CurrencyCode("USD"), max_observation_skew=timedelta(minutes=30)
+)
 
 #: 換算の snapshot（人工の識別子）。
 CONVERSION_SNAPSHOT = SnapshotRef(snapshot_id=SnapshotId(_digest("conversion")))

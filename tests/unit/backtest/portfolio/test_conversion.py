@@ -41,7 +41,7 @@ from tests.fixtures.synthetic import market
 JPY = CurrencyCode("JPY")
 USD = CurrencyCode("USD")
 CHF = CurrencyCode("CHF")
-POLICY = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=15))
+POLICY = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=30))
 
 
 def _at(hour: int, minute: int = 0) -> UtcTime:
@@ -70,31 +70,31 @@ def test_ct13_the_route_is_identity_direct_reverse_then_pivot() -> None:
     assert resolve_route(USD, JPY, frozenset({EURUSD}), POLICY) is None
 
 
-# --- CT-8: 古さちょうど 15 分 ----------------------------------------------------
+# --- CT-8: 古さちょうど上限（30 分。決定 (32)） ---------------------------------------
 
 
-def test_ct8_staleness_of_exactly_15_minutes_is_allowed() -> None:
-    """CT-8: 境界は「超えたら」。15 分ちょうどは換算でき、15 分 1 秒相当（16 分）は拒否。"""
-    holes = (Interval(start=_at(8, 46), end=_at(9, 0)),)
+def test_ct8_staleness_of_exactly_30_minutes_is_allowed() -> None:
+    """CT-8: 境界は「超えたら」。上限 30 分ちょうどは換算でき、31 分は拒否（決定 (32)）。"""
+    holes = (Interval(start=_at(8, 31), end=_at(9, 0)),)
     quotes = FakeQuotes(
         symbols=frozenset({USDJPY}), bars={USDJPY: minute_rates(USDJPY, _SPAN, "150", holes=holes)}
     )
     path = observe_path((RouteHop(USDJPY),), _at(9, 0), quotes)
-    assert path.observed_at == _at(8, 45)
-    assert session_staleness(path, _at(9, 0), CALENDAR) == timedelta(minutes=15)
+    assert path.observed_at == _at(8, 30)
+    assert session_staleness(path, _at(9, 0), CALENDAR) == timedelta(minutes=30)
     require_usable(path, _at(9, 0), POLICY, CALENDAR)
     later = observe_path((RouteHop(USDJPY),), _at(9, 1), quotes)
     assert later.observed_at == _at(9, 0)
-    holes_16 = (Interval(start=_at(8, 45), end=_at(9, 0)),)
+    holes_31 = (Interval(start=_at(8, 30), end=_at(9, 0)),)
     stale_quotes = FakeQuotes(
         symbols=frozenset({USDJPY}),
-        bars={USDJPY: minute_rates(USDJPY, _SPAN, "150", holes=holes_16)},
+        bars={USDJPY: minute_rates(USDJPY, _SPAN, "150", holes=holes_31)},
     )
     stale = observe_path((RouteHop(USDJPY),), _at(9, 0), stale_quotes)
     with pytest.raises(ConversionUnavailable) as raised:
         require_usable(stale, _at(9, 0), POLICY, CALENDAR)
     assert raised.value.failure is ConversionFailure.STALENESS_EXCEEDED
-    assert raised.value.length == timedelta(minutes=16)
+    assert raised.value.length == timedelta(minutes=31)
 
 
 def test_the_checks_run_in_the_fixed_order_route_observation_skew_staleness() -> None:
@@ -104,8 +104,8 @@ def test_the_checks_run_in_the_fixed_order_route_observation_skew_staleness() ->
         observe_path((RouteHop(USDJPY),), _at(9, 0), empty)
     assert raised.value.failure is ConversionFailure.NO_OBSERVATION
     assert raised.value.series == minute_series(USDJPY)
-    # USDCHF は 30 分古く、USDJPY は新しい: ずれ（30 分）と古さ（30 分）の両方が超えるが、ずれが先。
-    holes = (Interval(start=_at(8, 30), end=_at(9, 0)),)
+    # USDCHF は 31 分古く、USDJPY は新しい: ずれ（31 分）と古さ（31 分）の両方が超えるが、ずれが先。
+    holes = (Interval(start=_at(8, 29), end=_at(9, 0)),)
     quotes = FakeQuotes(
         symbols=frozenset({USDCHF, USDJPY}),
         bars={
@@ -233,9 +233,9 @@ def test_session_skew_excludes_a_holiday_closure() -> None:
 
 
 def test_session_skew_beyond_the_limit_is_still_rejected_across_the_weekend() -> None:
-    """休場を除いても 15 分を超えるずれは SKEW_EXCEEDED。長さは休場を除いたずれ。"""
+    """休場を除いても上限（30 分）を超えるずれは SKEW_EXCEEDED。長さは休場を除いたずれ。"""
     holes = (
-        Interval(start=_FRIDAY_CLOSE - timedelta(minutes=10), end=_FRIDAY_CLOSE),
+        Interval(start=_FRIDAY_CLOSE - timedelta(minutes=25), end=_FRIDAY_CLOSE),
         Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=10)),
     )
     quotes = FakeQuotes(
@@ -246,11 +246,12 @@ def test_session_skew_beyond_the_limit_is_still_rejected_across_the_weekend() ->
         },
     )
     path = _pivot(quotes, _SUNDAY_OPEN + timedelta(minutes=10))
-    assert session_skew(path, CALENDAR) == timedelta(minutes=20)
+    # 金曜の 26 分（21:34〜22:00）と日曜の 9 分（USDJPY の最後の観測は 22:09）。
+    assert session_skew(path, CALENDAR) == timedelta(minutes=35)
     with pytest.raises(ConversionUnavailable) as raised:
         require_usable(path, _SUNDAY_OPEN + timedelta(minutes=10), POLICY, CALENDAR)
     assert raised.value.failure is ConversionFailure.SKEW_EXCEEDED
-    assert raised.value.length == timedelta(minutes=20)
+    assert raised.value.length == timedelta(minutes=35)
     assert raised.value.series == minute_series(USDCHF)
 
 
@@ -334,24 +335,24 @@ def test_ct31_a_traded_pair_recording_every_minute_gives_the_same_staleness() ->
 
 
 def test_ct32_staleness_counts_only_minutes_the_traded_pair_recorded() -> None:
-    """CT-32（規則の層）: USDJPY だけが無記録の分は今までどおり数える。15 分ちょうどは許す。
+    """CT-32（規則の層）: USDJPY だけが無記録の分は今までどおり数える。上限 30 分ちょうどは許す。
 
-    USDJPY の最後の観測は 8:43（8:44〜9:00 が無記録）。9:00 の休場を除いた古さは 17 分。
-    EURUSD が 8:50〜8:52 に無記録なら 15 分ちょうどで換算でき、8:51 だけ無記録なら 16 分で
+    USDJPY の最後の観測は 8:28（8:29〜9:00 が無記録）。9:00 の休場を除いた古さは 32 分。
+    EURUSD が 8:50〜8:52 に無記録なら 30 分ちょうどで換算でき、8:51 だけ無記録なら 31 分で
     STALENESS_EXCEEDED。理由の長さは取引の通貨ペアに記録のある分だけを数えた古さ（仮置き C4-5）。
     """
     path = observe_path(
-        (RouteHop(USDJPY),), _at(9, 0), _usdjpy((Interval(start=_at(8, 44), end=_at(9, 0)),))
+        (RouteHop(USDJPY),), _at(9, 0), _usdjpy((Interval(start=_at(8, 29), end=_at(9, 0)),))
     )
-    assert path.observed_at == _at(8, 43)
+    assert path.observed_at == _at(8, 28)
     two = _traded(EURUSD, holes=(Interval(start=_at(8, 50), end=_at(8, 52)),))
-    assert session_staleness(path, _at(9, 0), CALENDAR, two) == timedelta(minutes=15)
+    assert session_staleness(path, _at(9, 0), CALENDAR, two) == timedelta(minutes=30)
     require_usable(path, _at(9, 0), POLICY, CALENDAR, two)
     one = _traded(EURUSD, holes=(Interval(start=_at(8, 51), end=_at(8, 52)),))
     with pytest.raises(ConversionUnavailable) as raised:
         require_usable(path, _at(9, 0), POLICY, CALENDAR, one)
     assert raised.value.failure is ConversionFailure.STALENESS_EXCEEDED
-    assert raised.value.length == timedelta(minutes=16)
+    assert raised.value.length == timedelta(minutes=31)
     assert "traded pair recorded" in str(raised.value)
 
 
@@ -400,12 +401,12 @@ def test_ct32_the_same_counting_holds_across_a_closure() -> None:
 def test_ct33_the_skew_counts_only_minutes_the_traded_pair_recorded() -> None:
     """CT-33（規則の層。仮置き C4-6）: USDCHF が無記録で USDJPY だけが動く間のずれは数えない。
 
-    USDCHF（取引の通貨ペア・1 本目の脚）が 8:30〜9:00 に無記録のとき、9:00 のずれは休場だけを
-    除くと 30 分（SKEW_EXCEEDED）だが、USDCHF に記録のある分（観測の分 8:29）だけを数えると
-    1 分で換算できる。USDCHF に記録があり USDJPY が 16 分無記録なら、ずれは 16 分で
-    SKEW_EXCEEDED（検査の順でずれが先。長さは数えたずれ）。
+    USDCHF（取引の通貨ペア・1 本目の脚）が 8:20〜9:00 に無記録のとき、9:00 のずれは休場だけを
+    除くと 40 分（SKEW_EXCEEDED）だが、USDCHF に記録のある分（観測の分 8:19）だけを数えると
+    1 分で換算できる。USDCHF に記録があり USDJPY が 31 分無記録なら、ずれは 31 分で
+    SKEW_EXCEEDED（検査の順でずれが先。長さは数えたずれ）。上限は 30 分（決定 (32)）。
     """
-    hole = (Interval(start=_at(8, 30), end=_at(9, 0)),)
+    hole = (Interval(start=_at(8, 20), end=_at(9, 0)),)
     quotes = FakeQuotes(
         symbols=frozenset({USDCHF, USDJPY}),
         bars={
@@ -419,8 +420,8 @@ def test_ct33_the_skew_counts_only_minutes_the_traded_pair_recorded() -> None:
         bars=minute_rates(USDCHF, _SPAN, "0.8", holes=hole),
         unrecorded=hole,
     )
-    assert path.skew == timedelta(minutes=30)
-    assert session_skew(path, CALENDAR) == timedelta(minutes=30)
+    assert path.skew == timedelta(minutes=40)
+    assert session_skew(path, CALENDAR) == timedelta(minutes=40)
     assert session_skew(path, CALENDAR, traded) == timedelta(minutes=1)
     assert session_staleness(path, _at(9, 0), CALENDAR, traded) == timedelta(minutes=1)
     require_usable(path, _at(9, 0), POLICY, CALENDAR, traded)
@@ -428,7 +429,7 @@ def test_ct33_the_skew_counts_only_minutes_the_traded_pair_recorded() -> None:
         require_usable(path, _at(9, 0), POLICY, CALENDAR)
     assert plain.value.failure is ConversionFailure.SKEW_EXCEEDED
 
-    usdjpy_hole = (Interval(start=_at(8, 44), end=_at(9, 0)),)
+    usdjpy_hole = (Interval(start=_at(8, 29), end=_at(9, 0)),)
     moving = FakeQuotes(
         symbols=frozenset({USDCHF, USDJPY}),
         bars={
@@ -438,9 +439,9 @@ def test_ct33_the_skew_counts_only_minutes_the_traded_pair_recorded() -> None:
     )
     stale = _pivot(moving, _at(9, 0))
     full = FakeMinutes(minute_series=minute_series(USDCHF), bars=minute_rates(USDCHF, _SPAN, "0.8"))
-    assert session_skew(stale, CALENDAR, full) == timedelta(minutes=16)
+    assert session_skew(stale, CALENDAR, full) == timedelta(minutes=31)
     with pytest.raises(ConversionUnavailable) as raised:
         require_usable(stale, _at(9, 0), POLICY, CALENDAR, full)
     assert raised.value.failure is ConversionFailure.SKEW_EXCEEDED
-    assert raised.value.length == timedelta(minutes=16)
+    assert raised.value.length == timedelta(minutes=31)
     assert raised.value.series == minute_series(USDJPY)
