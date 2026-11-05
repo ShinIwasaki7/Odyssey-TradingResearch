@@ -1,0 +1,1351 @@
+{
+ "schema_version": 1,
+ "design": "D18 §4.2（決定 37）",
+ "limit_minutes": 30,
+ "reference_limit_minutes": 15,
+ "started_at": "2026-11-05T13:10:52Z",
+ "elapsed_seconds": 877.1,
+ "tool": {
+  "path": "tools/survey/conversion_staleness_scan.py",
+  "sha256": "d466afbacb90847d77f9720e2acf774c6bca86c868b71f8753a945e1b54dba19",
+  "git_commit": "739f17b090748a8ff56c28e364da4220ba7c1336",
+  "git_dirty": false
+ },
+ "calendar": {
+  "file": "configs/calendars/fx_ny17_oanda_v1.yaml",
+  "sha256": "a9da0d9ae6b3246b5bb67757a7b6cb4ac50e5a012c96a5c4a075bc1148a79b96"
+ },
+ "timeframes": {
+  "file": "configs/calendars/timeframes_v2.yaml",
+  "sha256": "86f6d16689f7642b6b845e33df662ee2a67c314d623817848c08f0f37a4685b1"
+ },
+ "set1_over_30_points": {
+  "EURUSD/standard": 0,
+  "EURUSD/candidate": 0,
+  "GBPUSD/standard": 0,
+  "GBPUSD/candidate": 0,
+  "AUDUSD/standard": 0,
+  "AUDUSD/candidate": 0,
+  "USDCHF/standard": 0,
+  "USDCHF/candidate": 0
+ },
+ "stop_condition_a": false,
+ "crosscheck_eurusd": {
+  "standard": {
+   "expected_dates": [
+    "2020-10-25",
+    "2021-07-18",
+    "2021-09-26"
+   ],
+   "expected_minutes": [
+    17,
+    19
+   ],
+   "set2_over_15_dates": [
+    "2020-10-25",
+    "2021-07-18",
+    "2021-09-26"
+   ],
+   "set2_over_15_max_minutes": [
+    19,
+    17,
+    17
+   ],
+   "over_30_points_both_sets": 0,
+   "outcome": "PASS"
+  },
+  "candidate": {
+   "expected_dates": [
+    "2020-10-25",
+    "2021-07-18",
+    "2021-09-26"
+   ],
+   "expected_minutes": [
+    17,
+    19
+   ],
+   "set2_over_15_dates": [
+    "2020-10-25",
+    "2021-07-18",
+    "2021-09-26"
+   ],
+   "set2_over_15_max_minutes": [
+    19,
+    17,
+    17
+   ],
+   "over_30_points_both_sets": 0,
+   "outcome": "PASS"
+  }
+ },
+ "results": [
+  {
+   "pair": "EURUSD",
+   "group": "standard",
+   "inputs": {
+    "execution_snapshot": "4e6eb8d40df023685b6b0739bd202d132c97997de68e8d55f0b4114c89bb917b",
+    "conversion_snapshot": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "EURUSD_15m_bid/RESEARCH_HISTORY": "7b21d7750a1e7dc4143a310d68c7c7eaed8f381bb9f7c010a76adbad3bd36151",
+     "EURUSD_1d_ny17_bid/RESEARCH_HISTORY": "7b3bd60e4d2e72a5aae35905fd73e19c47303757526ba098f5c73a6a0a6e5e91",
+     "EURUSD_1h_bid/RESEARCH_HISTORY": "ba23a5856bc5b385b65d06271261051ba75d0767db086868709d6c9bbb461d99",
+     "EURUSD_4h_ny17_bid/RESEARCH_HISTORY": "75472e4d47481d0f06e024617040bc4b4b7202e78f06b19454216d6b6bea6372",
+     "EURUSD_1m_bid/RESEARCH_HISTORY": "4380a6cf9577989aeb42cdc44079b4e409ba7c57ea6b0f107b58e94ab6aa4fef",
+     "ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY": "ae124da45151e2e12c5c97ae6e7eb61b93aa33670d73bb43f55f395cd606be46"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2599636,
+     "USDJPY": 2602023
+    }
+   },
+   "set1_decision_points": {
+    "points": 180164,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 19,
+     "distribution_minutes": {
+      "0": 5328,
+      "1": 174235,
+      "2": 362,
+      "3": 128,
+      "4": 58,
+      "5": 20,
+      "6": 13,
+      "7": 6,
+      "8": 5,
+      "9": 1,
+      "10": 2,
+      "13": 2,
+      "17": 2,
+      "19": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 3,
+      "runs": 3,
+      "max_minutes": 19,
+      "intervals": [
+       {
+        "start": "2020-10-25T22:00:00Z",
+        "end": "2020-10-25T22:00:00Z",
+        "points": 1,
+        "max_minutes": 19,
+        "span_minutes": 0
+       },
+       {
+        "start": "2021-07-18T21:38:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 1,
+        "max_minutes": 17,
+        "span_minutes": 0
+       },
+       {
+        "start": "2021-09-26T21:45:00Z",
+        "end": "2021-09-26T21:45:00Z",
+        "points": 1,
+        "max_minutes": 17,
+        "span_minutes": 0
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 19,
+     "distribution_minutes": {
+      "0": 8392,
+      "1": 2601304,
+      "2": 3728,
+      "3": 1089,
+      "4": 424,
+      "5": 211,
+      "6": 78,
+      "7": 45,
+      "8": 30,
+      "9": 18,
+      "10": 11,
+      "11": 7,
+      "12": 5,
+      "13": 7,
+      "14": 4,
+      "15": 4,
+      "16": 3,
+      "17": 5,
+      "18": 1,
+      "19": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 10,
+      "runs": 3,
+      "max_minutes": 19,
+      "intervals": [
+       {
+        "start": "2020-10-25T21:57:00Z",
+        "end": "2020-10-25T22:00:00Z",
+        "points": 4,
+        "max_minutes": 19,
+        "span_minutes": 3
+       },
+       {
+        "start": "2021-07-18T21:35:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 4,
+        "max_minutes": 17,
+        "span_minutes": 3
+       },
+       {
+        "start": "2021-09-26T21:44:00Z",
+        "end": "2021-09-26T21:45:00Z",
+        "points": 2,
+        "max_minutes": 17,
+        "span_minutes": 1
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set1_not_in_set2": [],
+   "seconds": 397.4
+  },
+  {
+   "pair": "EURUSD",
+   "group": "candidate",
+   "inputs": {
+    "execution_snapshot": "9c03bc1283e5c7474dc1602104d943fe7985b11c745dae3135813fc7ddee1b19",
+    "conversion_snapshot": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "EURUSD_15m_bid/RESEARCH_HISTORY": "6705f75920a819812879d90fc3b18808c83a0397d92da8cb163aa30aa22e844d",
+     "EURUSD_1d_ny17_bid/RESEARCH_HISTORY": "e46f55f5eb4ad34ab490cf4541469f46f43811c0cad348c9e406c744e00230a8",
+     "EURUSD_1h_bid/RESEARCH_HISTORY": "e36242db5343d59cb8ec9bf01f25434040256c5bf2ced18928fa068301df64d4",
+     "EURUSD_4h_ny17_bid/RESEARCH_HISTORY": "6e48136db5f083cb505b18c7372cf1eb221aa5bcd525cf8b27f9568fc3590f3d",
+     "EURUSD_1m_bid/RESEARCH_HISTORY": "869af50b769a1b8782aa369ad481f0dc7a8e689fb26e7ce469ad81507b5353b1",
+     "f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY": "0aff1e2f6d27f4ba5df0f10de364184798421775cacf0cdaae5e9d19a9e1231e"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2598959,
+     "USDJPY": 2601455
+    }
+   },
+   "set1_decision_points": {
+    "points": 180158,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 19,
+     "distribution_minutes": {
+      "0": 5339,
+      "1": 174218,
+      "2": 361,
+      "3": 128,
+      "4": 57,
+      "5": 19,
+      "6": 16,
+      "7": 6,
+      "8": 5,
+      "9": 1,
+      "10": 2,
+      "13": 2,
+      "17": 2,
+      "19": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 3,
+      "runs": 3,
+      "max_minutes": 19,
+      "intervals": [
+       {
+        "start": "2020-10-25T23:00:00Z",
+        "end": "2020-10-25T23:00:00Z",
+        "points": 1,
+        "max_minutes": 19,
+        "span_minutes": 0
+       },
+       {
+        "start": "2021-07-18T21:38:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 1,
+        "max_minutes": 17,
+        "span_minutes": 0
+       },
+       {
+        "start": "2021-09-26T21:45:00Z",
+        "end": "2021-09-26T21:45:00Z",
+        "points": 1,
+        "max_minutes": 17,
+        "span_minutes": 0
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 19,
+     "distribution_minutes": {
+      "0": 8516,
+      "1": 2601229,
+      "2": 3673,
+      "3": 1090,
+      "4": 425,
+      "5": 211,
+      "6": 82,
+      "7": 45,
+      "8": 30,
+      "9": 18,
+      "10": 11,
+      "11": 7,
+      "12": 5,
+      "13": 7,
+      "14": 4,
+      "15": 4,
+      "16": 3,
+      "17": 5,
+      "18": 1,
+      "19": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 10,
+      "runs": 3,
+      "max_minutes": 19,
+      "intervals": [
+       {
+        "start": "2020-10-25T22:57:00Z",
+        "end": "2020-10-25T23:00:00Z",
+        "points": 4,
+        "max_minutes": 19,
+        "span_minutes": 3
+       },
+       {
+        "start": "2021-07-18T21:35:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 4,
+        "max_minutes": 17,
+        "span_minutes": 3
+       },
+       {
+        "start": "2021-09-26T21:44:00Z",
+        "end": "2021-09-26T21:45:00Z",
+        "points": 2,
+        "max_minutes": 17,
+        "span_minutes": 1
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set1_not_in_set2": [],
+   "seconds": 396.8
+  },
+  {
+   "pair": "GBPUSD",
+   "group": "standard",
+   "inputs": {
+    "execution_snapshot": "b9ca3a2142bf7c498c5b0b1fb803c0c44df6938dad76a11bd6203e9667437f6e",
+    "conversion_snapshot": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "GBPUSD_15m_bid/RESEARCH_HISTORY": "e11796e0fde9a7f0a80a2662fb58279ff344289be28b8f6bc1066c868d2b7a3b",
+     "GBPUSD_1d_ny17_bid/RESEARCH_HISTORY": "9e84ee715328f41fa8743d6770396c7476d238ee6e983fe93ffb23ec97c3560e",
+     "GBPUSD_1h_bid/RESEARCH_HISTORY": "ede7a464fd1ab538ec6c3d6222c2de82378b6559f95461054d2d445ee82a05a7",
+     "GBPUSD_4h_ny17_bid/RESEARCH_HISTORY": "45c3f5391d13dd713ebce722dbf4da91b0969348b263fe01088b27383817716e",
+     "GBPUSD_1m_bid/RESEARCH_HISTORY": "a06902cc35148634f83b60031669cd52ae95a5ae169140747cf7cdd5d2228384",
+     "ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY": "ae124da45151e2e12c5c97ae6e7eb61b93aa33670d73bb43f55f395cd606be46"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2597096,
+     "USDJPY": 2602023
+    }
+   },
+   "set1_decision_points": {
+    "points": 181058,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 20,
+     "distribution_minutes": {
+      "0": 6345,
+      "1": 174124,
+      "2": 362,
+      "3": 121,
+      "4": 47,
+      "5": 21,
+      "6": 15,
+      "7": 8,
+      "8": 4,
+      "9": 2,
+      "10": 2,
+      "11": 1,
+      "15": 1,
+      "16": 1,
+      "18": 1,
+      "19": 1,
+      "20": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 4,
+      "runs": 2,
+      "max_minutes": 20,
+      "intervals": [
+       {
+        "start": "2020-10-25T22:00:00Z",
+        "end": "2020-10-25T22:00:00Z",
+        "points": 1,
+        "max_minutes": 18,
+        "span_minutes": 0
+       },
+       {
+        "start": "2021-07-18T21:30:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 3,
+        "max_minutes": 20,
+        "span_minutes": 8
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 20,
+     "distribution_minutes": {
+      "0": 10866,
+      "1": 2598978,
+      "2": 3707,
+      "3": 989,
+      "4": 393,
+      "5": 198,
+      "6": 95,
+      "7": 51,
+      "8": 32,
+      "9": 17,
+      "10": 9,
+      "11": 6,
+      "12": 5,
+      "13": 3,
+      "14": 3,
+      "15": 3,
+      "16": 2,
+      "17": 2,
+      "18": 2,
+      "19": 4,
+      "20": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 12,
+      "runs": 2,
+      "max_minutes": 20,
+      "intervals": [
+       {
+        "start": "2020-10-25T21:58:00Z",
+        "end": "2020-10-25T22:00:00Z",
+        "points": 3,
+        "max_minutes": 18,
+        "span_minutes": 2
+       },
+       {
+        "start": "2021-07-18T21:30:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 9,
+        "max_minutes": 20,
+        "span_minutes": 8
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set1_not_in_set2": [],
+   "seconds": 397.7
+  },
+  {
+   "pair": "GBPUSD",
+   "group": "candidate",
+   "inputs": {
+    "execution_snapshot": "35bcd732a0d696eb95766094e35e4aeab0cdb779e3abae1326691155c7f7732e",
+    "conversion_snapshot": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "GBPUSD_15m_bid/RESEARCH_HISTORY": "9061cd46bec3ac15a8a31ce19cb42ab1e44cd540076fd4fac0660449d01b5c4e",
+     "GBPUSD_1d_ny17_bid/RESEARCH_HISTORY": "bb057d823445026961128465fe50a7fcc357ddeec5c8fd360caf0ee87f504dee",
+     "GBPUSD_1h_bid/RESEARCH_HISTORY": "d6531d045246135af82a32b6f383c3b698af6deaba794f1c10d03d9fbde7a77b",
+     "GBPUSD_4h_ny17_bid/RESEARCH_HISTORY": "c2bf955ed136d9e8a7b251b0294408a63e355c7def1f5f963e87824f394f553d",
+     "GBPUSD_1m_bid/RESEARCH_HISTORY": "e4ee442b8e494cdccc266eec604ffaca9933e980d62fd0cb9b6796c01e290699",
+     "f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY": "0aff1e2f6d27f4ba5df0f10de364184798421775cacf0cdaae5e9d19a9e1231e"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2596420,
+     "USDJPY": 2601455
+    }
+   },
+   "set1_decision_points": {
+    "points": 181053,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 20,
+     "distribution_minutes": {
+      "0": 6356,
+      "1": 174095,
+      "2": 372,
+      "3": 121,
+      "4": 47,
+      "5": 21,
+      "6": 18,
+      "7": 8,
+      "8": 4,
+      "9": 2,
+      "10": 2,
+      "11": 1,
+      "15": 1,
+      "16": 1,
+      "18": 1,
+      "19": 1,
+      "20": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 4,
+      "runs": 2,
+      "max_minutes": 20,
+      "intervals": [
+       {
+        "start": "2020-10-25T23:00:00Z",
+        "end": "2020-10-25T23:00:00Z",
+        "points": 1,
+        "max_minutes": 18,
+        "span_minutes": 0
+       },
+       {
+        "start": "2021-07-18T21:30:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 3,
+        "max_minutes": 20,
+        "span_minutes": 8
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 20,
+     "distribution_minutes": {
+      "0": 10991,
+      "1": 2598719,
+      "2": 3830,
+      "3": 992,
+      "4": 395,
+      "5": 200,
+      "6": 99,
+      "7": 51,
+      "8": 32,
+      "9": 17,
+      "10": 9,
+      "11": 6,
+      "12": 5,
+      "13": 3,
+      "14": 3,
+      "15": 3,
+      "16": 2,
+      "17": 2,
+      "18": 2,
+      "19": 4,
+      "20": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 12,
+      "runs": 2,
+      "max_minutes": 20,
+      "intervals": [
+       {
+        "start": "2020-10-25T22:58:00Z",
+        "end": "2020-10-25T23:00:00Z",
+        "points": 3,
+        "max_minutes": 18,
+        "span_minutes": 2
+       },
+       {
+        "start": "2021-07-18T21:30:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 9,
+        "max_minutes": 20,
+        "span_minutes": 8
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set1_not_in_set2": [],
+   "seconds": 395.3
+  },
+  {
+   "pair": "AUDUSD",
+   "group": "standard",
+   "inputs": {
+    "execution_snapshot": "07362e2223e99b24030b61433c0cc6a78c1a34cbbe9708e1cc04adb744bfe75d",
+    "conversion_snapshot": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "AUDUSD_15m_bid/RESEARCH_HISTORY": "61e48d31d30bb10fe4a84ef6a0c8dc744097d6568234d9c657f00d75c8a074c4",
+     "AUDUSD_1d_ny17_bid/RESEARCH_HISTORY": "d034fad345ac54612d861cbcc9ca591ce5d70023fe9b756be2972395f2efedf7",
+     "AUDUSD_1h_bid/RESEARCH_HISTORY": "1d207e5b1bfa25588b8ec0f35c1d24099f43258ebcdd21c1e8c06b9b3852c174",
+     "AUDUSD_4h_ny17_bid/RESEARCH_HISTORY": "76571918614bd07ad077fe737c087c38b9bd2ed721b8b8776930de3126d4a08d",
+     "AUDUSD_1m_bid/RESEARCH_HISTORY": "8b22eafc0cd11b03597f86559ee87f08b93b043ea1112a3be503d91b48936642",
+     "ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY": "ae124da45151e2e12c5c97ae6e7eb61b93aa33670d73bb43f55f395cd606be46"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2597759,
+     "USDJPY": 2602023
+    }
+   },
+   "set1_decision_points": {
+    "points": 181068,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 15,
+     "distribution_minutes": {
+      "0": 6356,
+      "1": 174117,
+      "2": 353,
+      "3": 130,
+      "4": 52,
+      "5": 29,
+      "6": 13,
+      "7": 6,
+      "8": 3,
+      "9": 2,
+      "11": 1,
+      "13": 2,
+      "14": 2,
+      "15": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    },
+    "skew": null
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 19,
+     "distribution_minutes": {
+      "0": 10209,
+      "1": 2599566,
+      "2": 3640,
+      "3": 1125,
+      "4": 430,
+      "5": 205,
+      "6": 73,
+      "7": 37,
+      "8": 31,
+      "9": 16,
+      "10": 8,
+      "11": 8,
+      "12": 4,
+      "13": 5,
+      "14": 3,
+      "15": 2,
+      "16": 1,
+      "17": 1,
+      "18": 1,
+      "19": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 5,
+      "runs": 1,
+      "max_minutes": 19,
+      "intervals": [
+       {
+        "start": "2021-07-18T21:34:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 5,
+        "max_minutes": 19,
+        "span_minutes": 4
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set1_not_in_set2": [],
+   "seconds": 450.2
+  },
+  {
+   "pair": "AUDUSD",
+   "group": "candidate",
+   "inputs": {
+    "execution_snapshot": "b9d213ea6fd957a5d317b33c3472ef3c72a0292d0fed77a4b0003cbf65b074b1",
+    "conversion_snapshot": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "AUDUSD_15m_bid/RESEARCH_HISTORY": "c929049c1ccef18d087f53de3bea70334ef979470f98aa3c4105a3b7fb9741ee",
+     "AUDUSD_1d_ny17_bid/RESEARCH_HISTORY": "4e785f033c1a9c5512ea4fe32643f79bb5a5ea8179169396c4aa4173396bcdae",
+     "AUDUSD_1h_bid/RESEARCH_HISTORY": "8d9775eedf29813cc787d8efd29e607726f4ada7ef00644853f1a6d48816b0b6",
+     "AUDUSD_4h_ny17_bid/RESEARCH_HISTORY": "c80647fa1af1d5eba7f1c9333dd94305f56e96b04fb207903da2b94591f2d55f",
+     "AUDUSD_1m_bid/RESEARCH_HISTORY": "bc54f36aed82db9a2dde36723684bf21b6df856f6e76c180c90870e355feb533",
+     "f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY": "0aff1e2f6d27f4ba5df0f10de364184798421775cacf0cdaae5e9d19a9e1231e"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2597083,
+     "USDJPY": 2601455
+    }
+   },
+   "set1_decision_points": {
+    "points": 181062,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 15,
+     "distribution_minutes": {
+      "0": 6367,
+      "1": 174091,
+      "2": 360,
+      "3": 130,
+      "4": 52,
+      "5": 28,
+      "6": 16,
+      "7": 6,
+      "8": 3,
+      "9": 2,
+      "11": 1,
+      "13": 2,
+      "14": 2,
+      "15": 1
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    },
+    "skew": null
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 19,
+     "distribution_minutes": {
+      "0": 10333,
+      "1": 2599310,
+      "2": 3765,
+      "3": 1126,
+      "4": 432,
+      "5": 205,
+      "6": 77,
+      "7": 37,
+      "8": 31,
+      "9": 16,
+      "10": 8,
+      "11": 8,
+      "12": 4,
+      "13": 5,
+      "14": 3,
+      "15": 2,
+      "16": 1,
+      "17": 1,
+      "18": 1,
+      "19": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 5,
+      "runs": 1,
+      "max_minutes": 19,
+      "intervals": [
+       {
+        "start": "2021-07-18T21:34:00Z",
+        "end": "2021-07-18T21:38:00Z",
+        "points": 5,
+        "max_minutes": 19,
+        "span_minutes": 4
+       }
+      ]
+     }
+    },
+    "skew": null
+   },
+   "set1_not_in_set2": [],
+   "seconds": 445.5
+  },
+  {
+   "pair": "USDCHF",
+   "group": "standard",
+   "inputs": {
+    "execution_snapshot": "1139abd01c3d1f1d4c564e5f123e4a979b42b8ed8ae1fc8b15b0d27752472298",
+    "conversion_snapshot": "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "USDCHF_15m_bid/RESEARCH_HISTORY": "987e13607873e4089858b45d764c5cf4ad1e5111cd80581da5004311ce44370f",
+     "USDCHF_1d_ny17_bid/RESEARCH_HISTORY": "8a6a9a9e50c859569f4196e5cdf692cae2cb28b58dfa91e5c7b63154aec19868",
+     "USDCHF_1h_bid/RESEARCH_HISTORY": "1992e75c52a80608a3ce339358f7bf725f3beff2aca2c04a20ac219f02cb3612",
+     "USDCHF_4h_ny17_bid/RESEARCH_HISTORY": "c8056246ccd9c2fd273c2a26671ed106f549337927f17f24ee748c465fe6f79c",
+     "USDCHF_1m_bid/RESEARCH_HISTORY": "52a6005c9346a046907a36ee4ea6efc77d20da03bea01a56709792a1ad39b20a",
+     "ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY": "ae124da45151e2e12c5c97ae6e7eb61b93aa33670d73bb43f55f395cd606be46"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2591528,
+     "USDJPY": 2602023
+    }
+   },
+   "set1_decision_points": {
+    "points": 183449,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDCHF",
+      "inverted": true
+     },
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 15,
+     "distribution_minutes": {
+      "1": 182842,
+      "2": 358,
+      "3": 128,
+      "4": 52,
+      "5": 33,
+      "6": 18,
+      "7": 6,
+      "8": 2,
+      "9": 1,
+      "10": 1,
+      "11": 1,
+      "13": 3,
+      "14": 1,
+      "15": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    },
+    "skew": {
+     "max_minutes": 14,
+     "distribution_minutes": {
+      "0": 173712,
+      "1": 9488,
+      "2": 128,
+      "3": 52,
+      "4": 33,
+      "5": 18,
+      "6": 6,
+      "7": 2,
+      "8": 1,
+      "9": 1,
+      "10": 1,
+      "12": 3,
+      "13": 1,
+      "14": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    }
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDCHF",
+      "inverted": true
+     },
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 15,
+     "distribution_minutes": {
+      "1": 2610015,
+      "2": 3468,
+      "3": 1008,
+      "4": 432,
+      "5": 199,
+      "6": 113,
+      "7": 38,
+      "8": 27,
+      "9": 15,
+      "10": 14,
+      "11": 13,
+      "12": 6,
+      "13": 8,
+      "14": 3,
+      "15": 8
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    },
+    "skew": {
+     "max_minutes": 14,
+     "distribution_minutes": {
+      "0": 2593666,
+      "1": 19817,
+      "2": 1008,
+      "3": 432,
+      "4": 199,
+      "5": 113,
+      "6": 38,
+      "7": 27,
+      "8": 15,
+      "9": 14,
+      "10": 13,
+      "11": 6,
+      "12": 8,
+      "13": 3,
+      "14": 8
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    }
+   },
+   "set1_not_in_set2": [],
+   "seconds": 476.0
+  },
+  {
+   "pair": "USDCHF",
+   "group": "candidate",
+   "inputs": {
+    "execution_snapshot": "3d5e44b84807ddf1e46251e9b430a6bcf0c62323062ceb07dfda1df83fcc6c62",
+    "conversion_snapshot": "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca",
+    "run_interval": {
+     "start": "2017-01-01T22:00:00Z",
+     "end": "2023-12-29T22:00:00Z"
+    },
+    "partition_files_sha256": {
+     "USDCHF_15m_bid/RESEARCH_HISTORY": "496b5232e8271d8885ffa08f09c76111bb3da36bb85364d2358540ddf95654b2",
+     "USDCHF_1d_ny17_bid/RESEARCH_HISTORY": "e3c649141aaa93eae5fb57a3609d3491dbb3255dbf27ea5bceb8c5f4dc5e6452",
+     "USDCHF_1h_bid/RESEARCH_HISTORY": "3904d6e7a6a94a2679a1a0f30282886e943927c873b48b86472afeab934f8a06",
+     "USDCHF_4h_ny17_bid/RESEARCH_HISTORY": "4ccba428afc8cd4b679368de5d20f9952ffc43a16a70929ffb6242c5825c226e",
+     "USDCHF_1m_bid/RESEARCH_HISTORY": "bd9cf97da49a1b0dbec7721b586a59ef3a3fa95e03b3482032841a616ea601e1",
+     "f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY": "0aff1e2f6d27f4ba5df0f10de364184798421775cacf0cdaae5e9d19a9e1231e"
+    },
+    "recorded_minutes": {
+     "traded_pair": 2590854,
+     "USDJPY": 2601455
+    }
+   },
+   "set1_decision_points": {
+    "points": 183440,
+    "no_observation": 1,
+    "route": [
+     {
+      "symbol": "USDCHF",
+      "inverted": true
+     },
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 15,
+     "distribution_minutes": {
+      "1": 182830,
+      "2": 358,
+      "3": 128,
+      "4": 52,
+      "5": 33,
+      "6": 21,
+      "7": 6,
+      "8": 2,
+      "9": 1,
+      "10": 1,
+      "11": 1,
+      "13": 3,
+      "14": 1,
+      "15": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    },
+    "skew": {
+     "max_minutes": 14,
+     "distribution_minutes": {
+      "0": 173695,
+      "1": 9493,
+      "2": 128,
+      "3": 52,
+      "4": 33,
+      "5": 21,
+      "6": 6,
+      "7": 2,
+      "8": 1,
+      "9": 1,
+      "10": 1,
+      "12": 3,
+      "13": 1,
+      "14": 2
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    }
+   },
+   "set2_reference_points": {
+    "points": 2615369,
+    "no_observation": 2,
+    "route": [
+     {
+      "symbol": "USDCHF",
+      "inverted": true
+     },
+     {
+      "symbol": "USDJPY",
+      "inverted": false
+     }
+    ],
+    "staleness": {
+     "max_minutes": 15,
+     "distribution_minutes": {
+      "1": 2610060,
+      "2": 3413,
+      "3": 1010,
+      "4": 434,
+      "5": 201,
+      "6": 117,
+      "7": 38,
+      "8": 27,
+      "9": 15,
+      "10": 14,
+      "11": 13,
+      "12": 6,
+      "13": 8,
+      "14": 3,
+      "15": 8
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    },
+    "skew": {
+     "max_minutes": 14,
+     "distribution_minutes": {
+      "0": 2593594,
+      "1": 19879,
+      "2": 1010,
+      "3": 434,
+      "4": 201,
+      "5": 117,
+      "6": 38,
+      "7": 27,
+      "8": 15,
+      "9": 14,
+      "10": 13,
+      "11": 6,
+      "12": 8,
+      "13": 3,
+      "14": 8
+     },
+     "over_30": {
+      "limit_minutes": 30,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     },
+     "over_15": {
+      "limit_minutes": 15,
+      "points_over": 0,
+      "runs": 0,
+      "max_minutes": null,
+      "intervals": []
+     }
+    }
+   },
+   "set1_not_in_set2": [],
+   "seconds": 476.0
+  }
+ ]
+}
