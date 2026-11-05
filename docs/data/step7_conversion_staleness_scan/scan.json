@@ -3,12 +3,12 @@
  "design": "D18 §4.2（決定 37）",
  "limit_minutes": 30,
  "reference_limit_minutes": 15,
- "started_at": "2026-11-05T13:10:52Z",
- "elapsed_seconds": 877.1,
+ "started_at": "2026-11-05T14:12:17Z",
+ "elapsed_seconds": 677.2,
  "tool": {
   "path": "tools/survey/conversion_staleness_scan.py",
-  "sha256": "d466afbacb90847d77f9720e2acf774c6bca86c868b71f8753a945e1b54dba19",
-  "git_commit": "739f17b090748a8ff56c28e364da4220ba7c1336",
+  "sha256": "3ba6c4cab1ea6ca0b9ff3844f57468881fa1d845ebbb160120862c7801a663a0",
+  "git_commit": "1c4fef723aa7e2977bbd5e7d316053eb6dd6ad6e",
   "git_dirty": false
  },
  "calendar": {
@@ -241,7 +241,7 @@
     "skew": null
    },
    "set1_not_in_set2": [],
-   "seconds": 397.4
+   "seconds": 291.3
   },
   {
    "pair": "EURUSD",
@@ -405,7 +405,7 @@
     "skew": null
    },
    "set1_not_in_set2": [],
-   "seconds": 396.8
+   "seconds": 293.4
   },
   {
    "pair": "GBPUSD",
@@ -559,7 +559,7 @@
     "skew": null
    },
    "set1_not_in_set2": [],
-   "seconds": 397.7
+   "seconds": 295.7
   },
   {
    "pair": "GBPUSD",
@@ -713,7 +713,7 @@
     "skew": null
    },
    "set1_not_in_set2": [],
-   "seconds": 395.3
+   "seconds": 292.0
   },
   {
    "pair": "AUDUSD",
@@ -841,7 +841,7 @@
     "skew": null
    },
    "set1_not_in_set2": [],
-   "seconds": 450.2
+   "seconds": 350.4
   },
   {
    "pair": "AUDUSD",
@@ -969,7 +969,7 @@
     "skew": null
    },
    "set1_not_in_set2": [],
-   "seconds": 445.5
+   "seconds": 349.3
   },
   {
    "pair": "USDCHF",
@@ -1157,7 +1157,7 @@
     }
    },
    "set1_not_in_set2": [],
-   "seconds": 476.0
+   "seconds": 380.6
   },
   {
    "pair": "USDCHF",
@@ -1345,7 +1345,7 @@
     }
    },
    "set1_not_in_set2": [],
-   "seconds": 476.0
+   "seconds": 374.5
   }
  ]
 }

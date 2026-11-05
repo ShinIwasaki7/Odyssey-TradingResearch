@@ -15,9 +15,9 @@
 
 | 項目 | 内容 |
 |---|---|
-| 道具 | `tools/survey/conversion_staleness_scan.py`（SHA-256 `d466afbacb90847d77f9720e2acf774c6bca86c868b71f8753a945e1b54dba19`） |
-| 実行したコミット | `739f17b090748a8ff56c28e364da4220ba7c1336`（PR #147。`src`・`tools`・`configs` に未コミットの変更なし） |
-| 実行の時刻 | 2026-11-05T13:10:52Z 開始、877 秒（4 プロセス。1 通貨 × 1 組あたり 395〜476 秒。最大メモリ 約 1.3 GB） |
+| 道具 | `tools/survey/conversion_staleness_scan.py`（SHA-256 `3ba6c4cab1ea6ca0b9ff3844f57468881fa1d845ebbb160120862c7801a663a0`） |
+| 実行したコミット | `1c4fef723aa7e2977bbd5e7d316053eb6dd6ad6e`（PR #147。`src`・`tools`・`configs` に未コミットの変更なし）。その前のコミット `739f17b` の道具（出力先の上書きを止める直しの前）で取った 1 回目の記録と、処理時間を除いて同じ結果だった |
+| 実行の時刻 | 2026-11-05T14:12:17Z 開始、677 秒（4 プロセス。1 通貨 × 1 組あたり 291〜381 秒。最大メモリ 約 1.3 GB） |
 | 取引カレンダー | `configs/calendars/fx_ny17_oanda_v1.yaml`（`fx_ny17_oanda` 版 1） |
 | 時間足の定義 | `configs/calendars/timeframes_v2.yaml` |
 | 上限 | 30 分（上限ちょうどは許す）。参考に 15 分も数えた |
@@ -102,14 +102,14 @@
 
 | 通貨 | 組 | 執行の snapshot | 換算の snapshot | 読んだ partition の Parquet の SHA-256（先頭 12 桁） | 処理時間（秒） |
 |---|---|---|---|---|---|
-| EURUSD | standard | `4e6eb8d40df0…` | `ecaaf53fcded…` | `EURUSD_15m_bid/RESEARCH_HISTORY` `7b21d7750a1e…`<br>`EURUSD_1d_ny17_bid/RESEARCH_HISTORY` `7b3bd60e4d2e…`<br>`EURUSD_1h_bid/RESEARCH_HISTORY` `ba23a5856bc5…`<br>`EURUSD_4h_ny17_bid/RESEARCH_HISTORY` `75472e4d4748…`<br>`EURUSD_1m_bid/RESEARCH_HISTORY` `4380a6cf9577…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 397.4 |
-| EURUSD | candidate | `9c03bc1283e5…` | `f5214ed8b5e4…` | `EURUSD_15m_bid/RESEARCH_HISTORY` `6705f75920a8…`<br>`EURUSD_1d_ny17_bid/RESEARCH_HISTORY` `e46f55f5eb4a…`<br>`EURUSD_1h_bid/RESEARCH_HISTORY` `e36242db5343…`<br>`EURUSD_4h_ny17_bid/RESEARCH_HISTORY` `6e48136db5f0…`<br>`EURUSD_1m_bid/RESEARCH_HISTORY` `869af50b769a…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 396.8 |
-| GBPUSD | standard | `b9ca3a2142bf…` | `ecaaf53fcded…` | `GBPUSD_15m_bid/RESEARCH_HISTORY` `e11796e0fde9…`<br>`GBPUSD_1d_ny17_bid/RESEARCH_HISTORY` `9e84ee715328…`<br>`GBPUSD_1h_bid/RESEARCH_HISTORY` `ede7a464fd1a…`<br>`GBPUSD_4h_ny17_bid/RESEARCH_HISTORY` `45c3f5391d13…`<br>`GBPUSD_1m_bid/RESEARCH_HISTORY` `a06902cc3514…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 397.7 |
-| GBPUSD | candidate | `35bcd732a0d6…` | `f5214ed8b5e4…` | `GBPUSD_15m_bid/RESEARCH_HISTORY` `9061cd46bec3…`<br>`GBPUSD_1d_ny17_bid/RESEARCH_HISTORY` `bb057d823445…`<br>`GBPUSD_1h_bid/RESEARCH_HISTORY` `d6531d045246…`<br>`GBPUSD_4h_ny17_bid/RESEARCH_HISTORY` `c2bf955ed136…`<br>`GBPUSD_1m_bid/RESEARCH_HISTORY` `e4ee442b8e49…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 395.3 |
-| AUDUSD | standard | `07362e2223e9…` | `ecaaf53fcded…` | `AUDUSD_15m_bid/RESEARCH_HISTORY` `61e48d31d30b…`<br>`AUDUSD_1d_ny17_bid/RESEARCH_HISTORY` `d034fad345ac…`<br>`AUDUSD_1h_bid/RESEARCH_HISTORY` `1d207e5b1bfa…`<br>`AUDUSD_4h_ny17_bid/RESEARCH_HISTORY` `76571918614b…`<br>`AUDUSD_1m_bid/RESEARCH_HISTORY` `8b22eafc0cd1…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 450.2 |
-| AUDUSD | candidate | `b9d213ea6fd9…` | `f5214ed8b5e4…` | `AUDUSD_15m_bid/RESEARCH_HISTORY` `c929049c1cce…`<br>`AUDUSD_1d_ny17_bid/RESEARCH_HISTORY` `4e785f033c1a…`<br>`AUDUSD_1h_bid/RESEARCH_HISTORY` `8d9775eedf29…`<br>`AUDUSD_4h_ny17_bid/RESEARCH_HISTORY` `c80647fa1af1…`<br>`AUDUSD_1m_bid/RESEARCH_HISTORY` `bc54f36aed82…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 445.5 |
-| USDCHF | standard | `1139abd01c3d…` | `ecaaf53fcded…` | `USDCHF_15m_bid/RESEARCH_HISTORY` `987e13607873…`<br>`USDCHF_1d_ny17_bid/RESEARCH_HISTORY` `8a6a9a9e50c8…`<br>`USDCHF_1h_bid/RESEARCH_HISTORY` `1992e75c52a8…`<br>`USDCHF_4h_ny17_bid/RESEARCH_HISTORY` `c8056246ccd9…`<br>`USDCHF_1m_bid/RESEARCH_HISTORY` `52a6005c9346…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 476.0 |
-| USDCHF | candidate | `3d5e44b84807…` | `f5214ed8b5e4…` | `USDCHF_15m_bid/RESEARCH_HISTORY` `496b5232e827…`<br>`USDCHF_1d_ny17_bid/RESEARCH_HISTORY` `e3c649141aaa…`<br>`USDCHF_1h_bid/RESEARCH_HISTORY` `3904d6e7a6a9…`<br>`USDCHF_4h_ny17_bid/RESEARCH_HISTORY` `4ccba428afc8…`<br>`USDCHF_1m_bid/RESEARCH_HISTORY` `bd9cf97da49a…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 476.0 |
+| EURUSD | standard | `4e6eb8d40df0…` | `ecaaf53fcded…` | `EURUSD_15m_bid/RESEARCH_HISTORY` `7b21d7750a1e…`<br>`EURUSD_1d_ny17_bid/RESEARCH_HISTORY` `7b3bd60e4d2e…`<br>`EURUSD_1h_bid/RESEARCH_HISTORY` `ba23a5856bc5…`<br>`EURUSD_4h_ny17_bid/RESEARCH_HISTORY` `75472e4d4748…`<br>`EURUSD_1m_bid/RESEARCH_HISTORY` `4380a6cf9577…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 291.3 |
+| EURUSD | candidate | `9c03bc1283e5…` | `f5214ed8b5e4…` | `EURUSD_15m_bid/RESEARCH_HISTORY` `6705f75920a8…`<br>`EURUSD_1d_ny17_bid/RESEARCH_HISTORY` `e46f55f5eb4a…`<br>`EURUSD_1h_bid/RESEARCH_HISTORY` `e36242db5343…`<br>`EURUSD_4h_ny17_bid/RESEARCH_HISTORY` `6e48136db5f0…`<br>`EURUSD_1m_bid/RESEARCH_HISTORY` `869af50b769a…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 293.4 |
+| GBPUSD | standard | `b9ca3a2142bf…` | `ecaaf53fcded…` | `GBPUSD_15m_bid/RESEARCH_HISTORY` `e11796e0fde9…`<br>`GBPUSD_1d_ny17_bid/RESEARCH_HISTORY` `9e84ee715328…`<br>`GBPUSD_1h_bid/RESEARCH_HISTORY` `ede7a464fd1a…`<br>`GBPUSD_4h_ny17_bid/RESEARCH_HISTORY` `45c3f5391d13…`<br>`GBPUSD_1m_bid/RESEARCH_HISTORY` `a06902cc3514…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 295.7 |
+| GBPUSD | candidate | `35bcd732a0d6…` | `f5214ed8b5e4…` | `GBPUSD_15m_bid/RESEARCH_HISTORY` `9061cd46bec3…`<br>`GBPUSD_1d_ny17_bid/RESEARCH_HISTORY` `bb057d823445…`<br>`GBPUSD_1h_bid/RESEARCH_HISTORY` `d6531d045246…`<br>`GBPUSD_4h_ny17_bid/RESEARCH_HISTORY` `c2bf955ed136…`<br>`GBPUSD_1m_bid/RESEARCH_HISTORY` `e4ee442b8e49…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 292.0 |
+| AUDUSD | standard | `07362e2223e9…` | `ecaaf53fcded…` | `AUDUSD_15m_bid/RESEARCH_HISTORY` `61e48d31d30b…`<br>`AUDUSD_1d_ny17_bid/RESEARCH_HISTORY` `d034fad345ac…`<br>`AUDUSD_1h_bid/RESEARCH_HISTORY` `1d207e5b1bfa…`<br>`AUDUSD_4h_ny17_bid/RESEARCH_HISTORY` `76571918614b…`<br>`AUDUSD_1m_bid/RESEARCH_HISTORY` `8b22eafc0cd1…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 350.4 |
+| AUDUSD | candidate | `b9d213ea6fd9…` | `f5214ed8b5e4…` | `AUDUSD_15m_bid/RESEARCH_HISTORY` `c929049c1cce…`<br>`AUDUSD_1d_ny17_bid/RESEARCH_HISTORY` `4e785f033c1a…`<br>`AUDUSD_1h_bid/RESEARCH_HISTORY` `8d9775eedf29…`<br>`AUDUSD_4h_ny17_bid/RESEARCH_HISTORY` `c80647fa1af1…`<br>`AUDUSD_1m_bid/RESEARCH_HISTORY` `bc54f36aed82…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 349.3 |
+| USDCHF | standard | `1139abd01c3d…` | `ecaaf53fcded…` | `USDCHF_15m_bid/RESEARCH_HISTORY` `987e13607873…`<br>`USDCHF_1d_ny17_bid/RESEARCH_HISTORY` `8a6a9a9e50c8…`<br>`USDCHF_1h_bid/RESEARCH_HISTORY` `1992e75c52a8…`<br>`USDCHF_4h_ny17_bid/RESEARCH_HISTORY` `c8056246ccd9…`<br>`USDCHF_1m_bid/RESEARCH_HISTORY` `52a6005c9346…`<br>`ecaaf53f…/USDJPY_1m_bid/RESEARCH_HISTORY` `ae124da45151…` | 380.6 |
+| USDCHF | candidate | `3d5e44b84807…` | `f5214ed8b5e4…` | `USDCHF_15m_bid/RESEARCH_HISTORY` `496b5232e827…`<br>`USDCHF_1d_ny17_bid/RESEARCH_HISTORY` `e3c649141aaa…`<br>`USDCHF_1h_bid/RESEARCH_HISTORY` `3904d6e7a6a9…`<br>`USDCHF_4h_ny17_bid/RESEARCH_HISTORY` `4ccba428afc8…`<br>`USDCHF_1m_bid/RESEARCH_HISTORY` `bd9cf97da49a…`<br>`f5214ed8…/USDJPY_1m_bid/RESEARCH_HISTORY` `0aff1e2f6d27…` | 374.5 |
 
 - 8 個の執行の snapshot と 2 個の換算の snapshot は、研究ポリシー第 4 版の basis（`configs/policies/research/research_policy_v4.yaml`）の組。完全な識別子と Parquet の SHA-256 は `scan.json` の `results[].inputs`。
 - 読む前に、2 つの snapshot が同じ組であることを本番の照合（`app.conversion.require_conversion_pairing`。D06 §19.2）で確かめた。
@@ -122,4 +122,4 @@ uv run --frozen python -m tools.survey.conversion_staleness_scan \
   --out docs/data/step7_conversion_staleness_scan/scan.json --workers 4
 ```
 
-`scan.json` の SHA-256: `bec0da80aea121b4cadbbcb36b96aeff90459d931834fa8ea25b21a3890102fe`
+`scan.json` の SHA-256: `c8c969e47bee0c330e26b94ed3fdf2768c245ee0981ec2c62eac90c25aa9ad43`
