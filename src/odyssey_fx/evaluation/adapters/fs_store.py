@@ -147,8 +147,12 @@ from odyssey_fx.evaluation.domain.path import (
 )
 from odyssey_fx.evaluation.domain.policy_basis import (
     FixedComparisonBasis,
+    PerSymbolComparisonBasis,
+    PerSymbolPolicyBasis,
     PolicyBasis,
     PremiseFile,
+    SymbolCosts,
+    SymbolSnapshots,
 )
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
@@ -2731,8 +2735,8 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
                 ),
             ),
         ),
-        basis=_policy_basis_of(item["basis"]),
-        comparison_basis=_fixed_comparison_of(item["comparison_basis"]),
+        basis=_any_policy_basis_of(item["basis"]),
+        comparison_basis=_any_comparison_of(item["comparison_basis"]),
         sufficiency=SufficiencyRule(
             classes=tuple(
                 FrequencyClass(
@@ -2766,10 +2770,23 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
     )
 
 
-def _policy_basis_of(payload: object) -> PolicyBasis:
-    item = _keys(payload, ("snapshots", "target_series", "premises"), "basis")
+def _any_policy_basis_of(payload: object) -> PolicyBasis | PerSymbolPolicyBasis:
+    """前提の記録を読む。版 4 以上の形（`symbols` を持つ。D18 §3.1）と版 3 の形を鍵で分ける。"""
+    if isinstance(payload, Mapping) and "symbols" in payload:
+        return _per_symbol_basis_of(payload)
+    return _policy_basis_of(payload)
+
+
+def _any_comparison_of(payload: object) -> FixedComparisonBasis | PerSymbolComparisonBasis:
+    """比較の前提を読む。版 4 以上の形（`symbols` を持つ。D18 §3.2）と版 3 の形を鍵で分ける。"""
+    if isinstance(payload, Mapping) and "symbols" in payload:
+        return _per_symbol_comparison_of(payload)
+    return _fixed_comparison_of(payload)
+
+
+def _premises_of(payload: object) -> tuple[PremiseFile, ...]:
     premises: list[PremiseFile] = []
-    for raw in _list_of(item["premises"], "basis.premises"):
+    for raw in _list_of(payload, "basis.premises"):
         entry = _keys(raw, ("name", "version", "path", "sha256"), "basis.premises")
         version = entry["version"]
         premises.append(
@@ -2780,17 +2797,101 @@ def _policy_basis_of(payload: object) -> PolicyBasis:
                 sha256=_str_of(entry["sha256"], "premise.sha256"),
             )
         )
-    return PolicyBasis(
-        snapshots=_paired_of(
-            item["snapshots"],
-            lambda raw: SnapshotId(_hex_id(raw, "basis.snapshots")),
-            "basis.snapshots",
+    return tuple(premises)
+
+
+def _snapshot_pair_of(payload: object, label: str) -> Paired[SnapshotId]:
+    return _paired_of(payload, lambda raw: SnapshotId(_hex_id(raw, label)), label)
+
+
+def _per_symbol_basis_of(payload: object) -> PerSymbolPolicyBasis:
+    item = _keys(payload, ("symbols", "conversion_snapshots", "target_series", "premises"), "basis")
+    symbols = tuple(
+        SymbolSnapshots(
+            symbol=_str_of(entry["symbol"], "basis.symbols.symbol"),
+            snapshots=_snapshot_pair_of(entry["snapshots"], "basis.symbols.snapshots"),
+        )
+        for entry in (
+            _keys(raw, ("symbol", "snapshots"), "basis.symbols")
+            for raw in _list_of(item["symbols"], "basis.symbols")
+        )
+    )
+    return PerSymbolPolicyBasis(
+        symbols=symbols,
+        conversion_snapshots=_snapshot_pair_of(
+            item["conversion_snapshots"], "basis.conversion_snapshots"
         ),
         target_series=tuple(
             _str_of(text, "basis.target_series")
             for text in _list_of(item["target_series"], "basis.target_series")
         ),
-        premises=tuple(premises),
+        premises=_premises_of(item["premises"]),
+    )
+
+
+def _per_symbol_comparison_of(payload: object) -> PerSymbolComparisonBasis:
+    item = _keys(
+        payload,
+        (
+            "currency",
+            "initial_balance",
+            "trial_risk_rate",
+            "account_risk_cap",
+            "commission_per_unit",
+            "entry_delay_bars",
+            "pivot_currency",
+            "max_observation_skew_seconds",
+            "symbols",
+        ),
+        "comparison_basis",
+    )
+    symbols = tuple(
+        SymbolCosts(
+            symbol=_str_of(entry["symbol"], "comparison_basis.symbols.symbol"),
+            spread_offset=_decimal_of(entry["spread_offset"], "spread_offset"),
+            entry_slippage=_decimal_of(entry["entry_slippage"], "entry_slippage"),
+            close_slippage=_decimal_of(entry["close_slippage"], "close_slippage"),
+            adverse_fill_limit=_decimal_of(entry["adverse_fill_limit"], "adverse_fill_limit"),
+        )
+        for entry in (
+            _keys(
+                raw,
+                (
+                    "symbol",
+                    "spread_offset",
+                    "entry_slippage",
+                    "close_slippage",
+                    "adverse_fill_limit",
+                ),
+                "comparison_basis.symbols",
+            )
+            for raw in _list_of(item["symbols"], "comparison_basis.symbols")
+        )
+    )
+    return PerSymbolComparisonBasis(
+        currency=_str_of(item["currency"], "comparison_basis.currency"),
+        initial_balance=_decimal_of(item["initial_balance"], "initial_balance"),
+        trial_risk_rate=_decimal_of(item["trial_risk_rate"], "trial_risk_rate"),
+        account_risk_cap=_decimal_of(item["account_risk_cap"], "account_risk_cap"),
+        commission_per_unit=_decimal_of(item["commission_per_unit"], "commission_per_unit"),
+        entry_delay_bars=_int_of(item["entry_delay_bars"], "entry_delay_bars"),
+        pivot_currency=_str_of(item["pivot_currency"], "pivot_currency"),
+        max_observation_skew_seconds=_int_of(
+            item["max_observation_skew_seconds"], "max_observation_skew_seconds"
+        ),
+        symbols=symbols,
+    )
+
+
+def _policy_basis_of(payload: object) -> PolicyBasis:
+    item = _keys(payload, ("snapshots", "target_series", "premises"), "basis")
+    return PolicyBasis(
+        snapshots=_snapshot_pair_of(item["snapshots"], "basis.snapshots"),
+        target_series=tuple(
+            _str_of(text, "basis.target_series")
+            for text in _list_of(item["target_series"], "basis.target_series")
+        ),
+        premises=_premises_of(item["premises"]),
     )
 
 

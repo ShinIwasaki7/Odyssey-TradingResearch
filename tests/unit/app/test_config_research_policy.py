@@ -70,12 +70,14 @@ def test_the_repository_policies_match_the_repository_registry() -> None:
     """版 1 のダイジェストは変わらず、版 2 は試行数の上限 100 を持ち、どちらも登録簿と一致する。
 
     2026-10-21 改訂: 版 3（研究ポリシー第 3 版。用途 STANDARD）を登録した（D13 §8.4 の (4)）。
+    2026-11-05 改訂: 版 4（研究ポリシー第 4 版。用途 STANDARD）を登録した（D18 §1.2）。
     """
     entries = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
     assert [(item.policy_id, item.version, item.purpose) for item in entries] == [
         ("research_policy", 1, None),
         ("research_policy", 2, None),
         ("research_policy", 3, StandardPurpose.STANDARD),
+        ("research_policy", 4, StandardPurpose.STANDARD),
     ]
     v1 = load_research_policy(
         research_policy_path(REPO_ROOT, "research_policy", 1),
@@ -94,14 +96,22 @@ def test_the_repository_policies_match_the_repository_registry() -> None:
     registry = research_policy_registry_path(REPO_ROOT)
     assert verify_registered(v1, entries, registry_path=registry).version == 1
     assert verify_registered(v2, entries, registry_path=registry).version == 2
-    # 版 3（評価基準の値。D13 の決定）が現行の版（D09 §10.9・§10.11）。
+    # 版 3（評価基準の値。D13 の決定）は登録簿と一致する。版 4（D18 の決定）の登録で、現行の版
+    # （用途 STANDARD の最大の版。D09 §10.9・§10.11）は版 4 になった。
     v3 = load_research_policy(
         research_policy_path(REPO_ROOT, "research_policy", 3),
         policy_id="research_policy",
         version=3,
     )
     assert verify_registered(v3, entries, registry_path=registry).version == 3
-    assert current_standard_version(entries, "research_policy") == 3
+    v4 = load_research_policy(
+        research_policy_path(REPO_ROOT, "research_policy", 4),
+        policy_id="research_policy",
+        version=4,
+        repo_root=REPO_ROOT,
+    )
+    assert verify_registered(v4, entries, registry_path=registry).version == 4
+    assert current_standard_version(entries, "research_policy") == 4
 
 
 _V1 = (

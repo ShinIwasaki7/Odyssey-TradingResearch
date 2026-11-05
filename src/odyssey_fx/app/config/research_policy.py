@@ -10,7 +10,8 @@
 |---|---|
 | 1 | `schema_version` / `id` / `version` / `complexity_limits` |
 | 2 | 版 1 ＋ `search_limits: {trials}`（1実験の試行数の上限。Q7 決定） |
-| 3 以上 | 版 2 ＋ `evaluation_standard`（下の 7 群） |
+| 3 | 版 2 ＋ `evaluation_standard`（下の 7 群） |
+| 4 以上 | 版 3 と同じ群で、`basis` と `comparison_basis` を通貨ごとの形にしたもの（D18 §3.4） |
 
 `evaluation_standard` の群: `purpose` / `basis` / `comparison_basis` / `split` / `selection` /
 `validation` / `sufficiency`。
@@ -29,6 +30,23 @@
 値**（長さは秒数、閾値は `Decimal`、時刻は UTC の正規形）で入れるので、同じ値の書き方の揺れ
 （`"90m"` と `"5400s"`、`"1.50"` と `"1.5"`）ではダイジェストが変わらない。
 
+**版 4 以上の形**（研究ポリシー第 4 版。D18 §3.1・§3.2・§3.4、仮置き 4〜7。決定 34〜36）:
+
+- `basis`: `symbols`（通貨 → `{standard, candidate}`）・`conversion_snapshots`（換算の snapshot の
+  組）・`target_series`・`premises`（版 3 の 7 件・`verified_raw`・`symbol_<通貨>`）。
+- `comparison_basis`: `account`・`risk_policy`・`commission_per_unit`・`entry_delay_bars`・
+  `conversion_policy: {pivot_currency, max_observation_skew}`・`symbols`（通貨 →
+  `{spread_offset, entry_slippage, close_slippage, adverse_fill_limit}`）。
+- 版 3 以下の形・ファイル・ダイジェストは変えない（仮置き 7）。
+
+版 4 以上の読込の検査（D18 §3.4）: 前提の記録・比較の前提・対象系列の通貨の集合が同じこと、
+換算の snapshot の組が換算の率を取る通貨ペア（中継の通貨＋口座の通貨。USDJPY）の組と同じこと
+（ここまでは型が確かめる）。`repo_root` を渡したときは、さらに前提のファイルの SHA-256 が実ファイル
+と一致すること（RP4-8）と、通貨ごとの 4 つの値が銘柄の設定（前提の `symbol_<通貨>`）から D06 §19.11
+の規則（`app.config.pip_copy`）で USDJPY の値を写した値と一致すること（RP4-7）を確かめる。記録票の
+本文から組み立て直すとき（ファイルを読まない経路）は `repo_root` を渡さない（版の登録簿の照合と
+同じ扱い）。
+
 **研究ポリシーを読むときの検査**（違反は設定の誤り `ConfigError`、終了コード 2）: 期間分割の
 標準規則の検査（D09 §6.1 の 1〜3・5〜7）と評価基準の検査 E1〜E5（D09 §7.1・§7.8）。検査の規則
 そのものは `evaluation.domain.splits` / `evaluation.domain.search` の型が持ち、ここは値の読み取り
@@ -43,6 +61,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from decimal import Decimal
@@ -52,17 +71,26 @@ from typing import Any, Final
 
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.app.config.models import StrictModel, require_schema_version, validate
-from odyssey_fx.app.config.scalars import require_decimal
+from odyssey_fx.app.config.pip_copy import PriceUnitCosts, copy_costs_by_pips
+from odyssey_fx.app.config.scalars import parse_duration, require_decimal
+from odyssey_fx.app.config.symbols import load_symbol_spec
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import SnapshotId
 from odyssey_fx.common.refs import ContentDigest
+from odyssey_fx.common.symbol import SymbolSpec
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.metrics import MetricId
 from odyssey_fx.evaluation.domain.policy_basis import (
+    SYMBOL_PREMISE_PREFIX,
     FixedComparisonBasis,
+    PerSymbolComparisonBasis,
+    PerSymbolPolicyBasis,
     PolicyBasis,
     PremiseFile,
+    SymbolCosts,
+    SymbolSnapshots,
+    symbol_premise_name,
 )
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
@@ -104,6 +132,7 @@ __all__ = [
     "load_research_policy_registry",
     "research_policy_path",
     "research_policy_registry_path",
+    "verify_premises",
     "verify_registered",
 ]
 
@@ -124,6 +153,12 @@ _FIRST_VERSION_WITH_TRIAL_LIMIT: Final = 2
 
 #: 評価基準の群を持つ最初の版（D09 §10.9。v0.2）。
 _FIRST_VERSION_WITH_STANDARD: Final = 3
+
+#: 前提の記録と比較の前提を通貨ごとの形で持つ最初の版（D18 §3.4、仮置き 7）。
+_FIRST_VERSION_PER_SYMBOL: Final = 4
+
+#: 費用の値を pip の数で写す元の通貨ペア（D06 §19.11。D17-11 (a)）。
+_PIP_COPY_SOURCE: Final = "USDJPY"
 
 #: 研究ポリシーの `id` の字種（ファイル名に使うため、区切り文字や `..` を含めない）。
 _POLICY_ID: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
@@ -248,14 +283,50 @@ class _SufficiencyModel(StrictModel):
     classes: list[_FrequencyClassModel]
 
 
-class _EvaluationStandardModel(StrictModel):
+class _SymbolCostsModel(StrictModel):
+    spread_offset: str
+    entry_slippage: str
+    close_slippage: str
+    adverse_fill_limit: str
+
+
+class _ConversionPolicyModel(StrictModel):
+    pivot_currency: str
+    max_observation_skew: str
+
+
+class _BasisV4Model(StrictModel):
+    symbols: dict[str, _SnapshotsModel]
+    conversion_snapshots: _SnapshotsModel
+    target_series: list[str]
+    premises: list[_PremiseModel]
+
+
+class _ComparisonBasisV4Model(StrictModel):
+    account: _ComparisonAccountModel
+    risk_policy: _ComparisonRiskModel
+    commission_per_unit: str
+    entry_delay_bars: int
+    conversion_policy: _ConversionPolicyModel
+    symbols: dict[str, _SymbolCostsModel]
+
+
+class _EvaluationStandardCommonModel(StrictModel):
     purpose: str
-    basis: _BasisModel
-    comparison_basis: _ComparisonBasisModel
     split: _SplitModel
     selection: _SelectionModel
     validation: _ValidationModel
     sufficiency: _SufficiencyModel
+
+
+class _EvaluationStandardModel(_EvaluationStandardCommonModel):
+    basis: _BasisModel
+    comparison_basis: _ComparisonBasisModel
+
+
+class _EvaluationStandardV4Model(_EvaluationStandardCommonModel):
+    basis: _BasisV4Model
+    comparison_basis: _ComparisonBasisV4Model
 
 
 class _ResearchPolicyV1Model(StrictModel):
@@ -271,6 +342,10 @@ class _ResearchPolicyV2Model(_ResearchPolicyV1Model):
 
 class _ResearchPolicyV3Model(_ResearchPolicyV2Model):
     evaluation_standard: _EvaluationStandardModel
+
+
+class _ResearchPolicyV4Model(_ResearchPolicyV2Model):
+    evaluation_standard: _EvaluationStandardV4Model
 
 
 class _RegistryEntryModel(StrictModel):
@@ -398,24 +473,93 @@ def _path_rule_of(model: _PathModel, label: str) -> PathRule:
     )
 
 
-def _basis_of(model: _BasisModel, label: str) -> PolicyBasis:
+def _snapshot_pair(model: _SnapshotsModel, label: str) -> Paired[SnapshotId]:
     def snapshot(text: str, key: str) -> SnapshotId:
         try:
             return SnapshotId(ContentDigest(algorithm="sha256", hex=text))
         except KernelValueError as exc:
             raise ConfigError(
-                f"{label}.snapshots.{key} は承認済み snapshot の識別子（16 進 64 文字）: {exc}"
+                f"{label}.{key} は承認済み snapshot の識別子（16 進 64 文字）: {exc}"
             ) from exc
 
+    return Paired(
+        standard=snapshot(model.standard, "standard"),
+        candidate=snapshot(model.candidate, "candidate"),
+    )
+
+
+def _premises_of(models: list[_PremiseModel]) -> tuple[PremiseFile, ...]:
+    return tuple(
+        PremiseFile(name=item.name, version=item.version, path=item.path, sha256=item.sha256)
+        for item in models
+    )
+
+
+def _basis_of(model: _BasisModel, label: str) -> PolicyBasis:
     return PolicyBasis(
-        snapshots=Paired(
-            standard=snapshot(model.snapshots.standard, "standard"),
-            candidate=snapshot(model.snapshots.candidate, "candidate"),
+        snapshots=_snapshot_pair(model.snapshots, f"{label}.snapshots"),
+        target_series=tuple(model.target_series),
+        premises=_premises_of(model.premises),
+    )
+
+
+def _basis_v4_of(model: _BasisV4Model, label: str) -> PerSymbolPolicyBasis:
+    """版 4 以上の前提の記録（D18 §3.1。通貨の昇順に並べる）。"""
+    return PerSymbolPolicyBasis(
+        symbols=tuple(
+            SymbolSnapshots(
+                symbol=symbol, snapshots=_snapshot_pair(pair, f"{label}.symbols.{symbol}")
+            )
+            for symbol, pair in sorted(model.symbols.items())
+        ),
+        conversion_snapshots=_snapshot_pair(
+            model.conversion_snapshots, f"{label}.conversion_snapshots"
         ),
         target_series=tuple(model.target_series),
-        premises=tuple(
-            PremiseFile(name=item.name, version=item.version, path=item.path, sha256=item.sha256)
-            for item in model.premises
+        premises=_premises_of(model.premises),
+    )
+
+
+def _comparison_basis_v4_of(model: _ComparisonBasisV4Model, label: str) -> PerSymbolComparisonBasis:
+    """版 4 以上の比較の前提（D18 §3.2。通貨の昇順に並べる）。"""
+    skew = parse_duration(
+        model.conversion_policy.max_observation_skew,
+        f"{label}.conversion_policy.max_observation_skew",
+    )
+    return PerSymbolComparisonBasis(
+        currency=model.account.currency,
+        initial_balance=require_decimal(
+            model.account.initial_balance, f"{label}.account.initial_balance"
+        ),
+        trial_risk_rate=require_decimal(
+            model.risk_policy.trial_risk_rate, f"{label}.risk_policy.trial_risk_rate"
+        ),
+        account_risk_cap=require_decimal(
+            model.risk_policy.account_risk_cap, f"{label}.risk_policy.account_risk_cap"
+        ),
+        commission_per_unit=require_decimal(
+            model.commission_per_unit, f"{label}.commission_per_unit"
+        ),
+        entry_delay_bars=model.entry_delay_bars,
+        pivot_currency=model.conversion_policy.pivot_currency,
+        max_observation_skew_seconds=int(skew.total_seconds()),
+        symbols=tuple(
+            SymbolCosts(
+                symbol=symbol,
+                spread_offset=require_decimal(
+                    costs.spread_offset, f"{label}.symbols.{symbol}.spread_offset"
+                ),
+                entry_slippage=require_decimal(
+                    costs.entry_slippage, f"{label}.symbols.{symbol}.entry_slippage"
+                ),
+                close_slippage=require_decimal(
+                    costs.close_slippage, f"{label}.symbols.{symbol}.close_slippage"
+                ),
+                adverse_fill_limit=require_decimal(
+                    costs.adverse_fill_limit, f"{label}.symbols.{symbol}.adverse_fill_limit"
+                ),
+            )
+            for symbol, costs in sorted(model.symbols.items())
         ),
     )
 
@@ -463,7 +607,9 @@ def _frequency_class_of(model: _FrequencyClassModel, label: str) -> FrequencyCla
 
 
 def _standard_of(
-    model: _EvaluationStandardModel, path: Path, research_until: UtcTime
+    model: _EvaluationStandardModel | _EvaluationStandardV4Model,
+    path: Path,
+    research_until: UtcTime,
 ) -> EvaluationStandard:
     """評価基準の群を読み、検査（D09 §6.1 の 1〜3・5〜7、§7.1 の E1〜E5）を当てる。"""
     label = "evaluation_standard"
@@ -500,16 +646,24 @@ def _standard_of(
         # 検査6・7（と生成の後の不変条件2・3）。fold は記録票を作るときにもう一度同じ規則で
         # 生成する（同じ規則からは同じ fold が出る。D09 §6.1）。
         folds_for_policy(split, research_until=research_until)
+        basis: PolicyBasis | PerSymbolPolicyBasis
+        comparison: FixedComparisonBasis | PerSymbolComparisonBasis
+        if isinstance(model, _EvaluationStandardV4Model):
+            basis = _basis_v4_of(model.basis, f"{label}.basis")
+            comparison = _comparison_basis_v4_of(
+                model.comparison_basis, f"{label}.comparison_basis"
+            )
+        else:
+            basis = _basis_of(model.basis, f"{label}.basis")
+            comparison = _comparison_basis_of(model.comparison_basis, f"{label}.comparison_basis")
         return EvaluationStandard(
             purpose=purpose,
             split=split,
             selection=selection,
             validation=validation,
             sufficiency=sufficiency,
-            basis=_basis_of(model.basis, f"{label}.basis"),
-            comparison_basis=_comparison_basis_of(
-                model.comparison_basis, f"{label}.comparison_basis"
-            ),
+            basis=basis,
+            comparison_basis=comparison,
         )
     except ConfigError as exc:
         raise ConfigError(f"{path}: 研究ポリシーの評価基準の誤り: {exc}") from exc
@@ -527,6 +681,8 @@ def _model_for(payload: dict[str, Any]) -> type[_ResearchPolicyV1Model]:
     version = payload.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         return _ResearchPolicyV1Model
+    if version >= _FIRST_VERSION_PER_SYMBOL:
+        return _ResearchPolicyV4Model
     if version >= _FIRST_VERSION_WITH_STANDARD:
         return _ResearchPolicyV3Model
     if version >= _FIRST_VERSION_WITH_TRIAL_LIMIT:
@@ -541,12 +697,17 @@ def load_research_policy(
     version: int,
     text: str | None = None,
     research_until: UtcTime = INITIAL_ACCESS_BOUNDARIES.research_until,
+    repo_root: Path | None = None,
 ) -> ResearchPolicy:
     """研究ポリシーファイルを読む（D07 §20.2、D09 §10.9）。`text` は `load_yaml_mapping` と同じ。
 
     読んだファイルの `id` / `version` が、実験設定の版参照 `{policy_id, version}` と一致する
     ことを確かめる。`research_until` は研究履歴の期間境界（D03 §3.8）で、評価基準の評価範囲の
     検査（D09 §6.1 の検査6）に使う。
+
+    `repo_root`（リポジトリの根）を渡すと、版 4 以上の前提のファイルの SHA-256 と、通貨ごとの
+    費用の値の写し（D06 §19.11）を実ファイルで確かめる（D18 §3.4。RP4-7・RP4-8）。版 3 以下には
+    何もしない（版 3 の前提の SHA-256 はテストで確かめる。D13 の実装 PR の仮置き 51）。
     """
     payload = load_yaml_mapping(path, text=text)
     model = validate(_model_for(payload), payload, path)
@@ -575,9 +736,11 @@ def load_research_policy(
     if isinstance(model, _ResearchPolicyV2Model):
         trial_limit = model.search_limits.trials
         resolved["search_limits"] = {"trials": trial_limit}
-    if isinstance(model, _ResearchPolicyV3Model):
+    if isinstance(model, (_ResearchPolicyV3Model, _ResearchPolicyV4Model)):
         standard = _standard_of(model.evaluation_standard, path, research_until)
         resolved["evaluation_standard"] = standard
+        if repo_root is not None:
+            verify_premises(standard, repo_root=repo_root, path=path)
     try:
         return ResearchPolicy(
             policy_id=model.id,
@@ -594,6 +757,88 @@ def load_research_policy(
         )
     except KernelValueError as exc:
         raise ConfigError(f"{path}: 研究ポリシーとして成立しない: {exc}") from exc
+
+
+# --- 版 4 以上の前提のファイルの照合（D18 §3.4）---------------------------------------
+
+
+def verify_premises(standard: EvaluationStandard, *, repo_root: Path, path: Path) -> None:
+    """版 4 以上の前提の記録を実ファイルと照合する（D18 §3.4 の読込の検査。RP4-7・RP4-8）。
+
+    1. 前提のファイルの SHA-256 が `repo_root` の下の実ファイルの SHA-256 と一致すること。
+       ファイルが無い・読めないときも設定の誤り。
+    2. 通貨ごとの 4 つの値が、前提の `symbol_<通貨>` の銘柄の設定から D06 §19.11 の規則で
+       USDJPY の値を写した値と一致すること（写しの値を手で書き間違えたら止まる）。
+
+    価格も snapshot も読まない（銘柄の設定と前提の規則のファイルだけを読む）。版 3 の形の評価
+    基準には何もしない。違反は設定の誤り（`ConfigError`、終了コード 2）。
+    """
+    basis = standard.basis
+    fixed = standard.comparison_basis
+    if not isinstance(basis, PerSymbolPolicyBasis) or not isinstance(
+        fixed, PerSymbolComparisonBasis
+    ):
+        return
+    root = repo_root.resolve()
+    for premise in basis.premises:
+        file = root / premise.path
+        try:
+            data = file.read_bytes()
+        except OSError as exc:
+            raise ConfigError(
+                f"{path}: 前提のファイル {premise.name}（{premise.path}）を読めない: {exc}"
+                "（D18 §3.4）"
+            ) from exc
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != premise.sha256:
+            raise ConfigError(
+                f"{path}: 前提のファイル {premise.name}（{premise.path}）の SHA-256 が"
+                f" {actual} で、研究ポリシーに書いた {premise.sha256} と違う。前提が変わったので、"
+                "この版は使えない（直すときは新しい版にする。D18 §3.4、D09 §10.9）"
+            )
+    specs: dict[str, SymbolSpec] = {}
+    for item in basis.symbols:
+        premise = basis.premise(symbol_premise_name(item.symbol))
+        spec = load_symbol_spec(root / premise.path)
+        if str(spec.symbol) != item.symbol:
+            raise ConfigError(
+                f"{path}: 前提 {premise.name} のファイル {premise.path} の銘柄が {spec.symbol} で、"
+                f"{item.symbol} の銘柄の設定でない（`{SYMBOL_PREMISE_PREFIX}<通貨>` は"
+                "その通貨の銘柄の設定。D18 §3.1）"
+            )
+        specs[item.symbol] = spec
+    source = fixed.costs_of(_PIP_COPY_SOURCE)
+    if source is None or _PIP_COPY_SOURCE not in specs:
+        raise ConfigError(
+            f"{path}: 費用の値を pip の数で写す元の {_PIP_COPY_SOURCE} が比較の前提に無い"
+            "（D06 §19.11。D17-11 (a)）"
+        )
+    source_costs = _price_unit_costs(source)
+    for costs in fixed.symbols:
+        copied = copy_costs_by_pips(
+            source_costs, source_spec=specs[_PIP_COPY_SOURCE], target_spec=specs[costs.symbol]
+        )
+        written = _price_unit_costs(costs)
+        differing = [
+            f"{name}: 研究ポリシー {getattr(written, name)} / 写した値 {getattr(copied, name)}"
+            for name in ("spread_offset", "entry_slippage", "close_slippage", "adverse_fill_limit")
+            if getattr(written, name) != getattr(copied, name)
+        ]
+        if differing:
+            raise ConfigError(
+                f"{path}: 比較の前提 `comparison_basis.symbols.{costs.symbol}` の値が、銘柄の設定"
+                f"から {_PIP_COPY_SOURCE} の値を pip の数で写した値と違う（{'; '.join(differing)}。"
+                "D06 §19.11、D18 §3.4）"
+            )
+
+
+def _price_unit_costs(costs: SymbolCosts) -> PriceUnitCosts:
+    return PriceUnitCosts(
+        spread_offset=costs.spread_offset,
+        entry_slippage=costs.entry_slippage,
+        close_slippage=costs.close_slippage,
+        adverse_fill_limit=costs.adverse_fill_limit,
+    )
 
 
 # --- 版の登録簿（D09 §10.9）----------------------------------------------------

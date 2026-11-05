@@ -445,7 +445,9 @@ def _minimum_trades(
     """研究ポリシーの現行の版の検証の合計の最低件数（仮置き 4。組の頻度区分の値）。"""
     ref = accepted.research_policy_ref
     path = research_policy_path(repo_root, ref.policy_id, ref.version)
-    policy = load_research_policy(path, policy_id=ref.policy_id, version=ref.version)
+    policy = load_research_policy(
+        path, policy_id=ref.policy_id, version=ref.version, repo_root=repo_root
+    )
     verify_registered(
         policy,
         load_research_policy_registry(research_policy_registry_path(repo_root)),

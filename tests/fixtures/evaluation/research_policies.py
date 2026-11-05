@@ -5,13 +5,18 @@
 版を載せない（D09 §10.9）。
 
 - `policy_v3_text`: 試験用の版 3 以上の研究ポリシーの本文（評価基準の群を持つ形。値は人工
-  データ向けの仮の値で、研究ポリシーではない）。キーごとに差し替えられる。
+  データ向けの仮の値で、研究ポリシーではない）。キーごとに差し替えられる。版 4 以上は前提の記録と
+  比較の前提を通貨ごとの形（D18 §3.4、仮置き 7）で書く（`TEST_BASIS_V4`・
+  `TEST_COMPARISON_BASIS_V4`。USDJPY 1 通貨）。
+- `write_policy`: 作業場に研究ポリシーファイルを書く。版 4 以上では、試験用の前提のファイル
+  （`TEST_PREMISE_FILES`。読込が SHA-256 を実ファイルと照合する。D18 §3.4）も書く。
 - `append_registry_entry`: 作業場の登録簿に1行足す（無ければ作る）。ダイジェストは作業場の
   研究ポリシーファイルを読込と同じ関数で読んで計算する。
 """
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Final
 
@@ -25,8 +30,11 @@ from odyssey_fx.common.time import UtcTime
 __all__ = [
     "DEFAULT_STANDARD_LINES",
     "TEST_BASIS",
+    "TEST_BASIS_V4",
     "TEST_COMPARISON_BASIS",
+    "TEST_COMPARISON_BASIS_V4",
     "TEST_PATH",
+    "TEST_PREMISE_FILES",
     "append_registry_entry",
     "policy_v3_text",
     "write_policy",
@@ -55,6 +63,87 @@ TEST_BASIS: Final = (
             "timeframes",
         )
     )
+)
+
+#: 版 4 以上の試験用の前提のファイル（作業場の根からの相対パス → 本文）。版 3 の 7 件・
+#: `verified_raw`・`symbol_USDJPY`（USDJPY の銘柄の設定。ファイル名は銘柄名。D18 §3.1）。
+TEST_PREMISE_FILES: Final[dict[str, str]] = {
+    **{
+        f"configs/premises/{name}.yaml": f"# テスト用の前提 {name}（研究ポリシーではない）\n"
+        for name in (
+            "time_rule_table",
+            "approved_time_rule_tables",
+            "calendar",
+            "counting_rules",
+            "fetch_manifest",
+            "datasource",
+            "timeframes",
+            "verified_raw",
+        )
+    },
+    "configs/premises/symbols/USDJPY.yaml": (
+        "# テスト用の銘柄の設定（configs/symbols/USDJPY.yaml と同じ値）\n"
+        "schema_version: 1\n"
+        "symbol: USDJPY\n"
+        "version: 1\n"
+        'price_tick: "0.001"\n'
+        'pip_size: "0.01"\n'
+        'quantity_step: "1000"\n'
+        'min_quantity: "1000"\n'
+        'lot_size: "100000"\n'
+    ),
+}
+
+
+def _premise_line(name: str, path: str) -> str:
+    sha = hashlib.sha256(TEST_PREMISE_FILES[path].encode("utf-8")).hexdigest()
+    return f'      - {{name: {name}, version: 1, path: "{path}", sha256: "{sha}"}}'
+
+
+#: 版 4 以上の試験用の前提の記録（通貨ごとの形。USDJPY 1 通貨。値は形だけの仮の値）。
+TEST_BASIS_V4: Final = (
+    "  basis:\n"
+    "    symbols:\n"
+    "      USDJPY:\n"
+    f'        standard: "{"1" * 64}"\n'
+    f'        candidate: "{"2" * 64}"\n'
+    "    conversion_snapshots:\n"
+    f'      standard: "{"1" * 64}"\n'
+    f'      candidate: "{"2" * 64}"\n'
+    '    target_series: ["USDJPY/15m/bid", "USDJPY/1h/bid"]\n'
+    "    premises:\n"
+    + "\n".join(
+        _premise_line(
+            name,
+            "configs/premises/symbols/USDJPY.yaml"
+            if name == "symbol_USDJPY"
+            else f"configs/premises/{name}.yaml",
+        )
+        for name in (
+            "time_rule_table",
+            "approved_time_rule_tables",
+            "calendar",
+            "counting_rules",
+            "fetch_manifest",
+            "datasource",
+            "timeframes",
+            "verified_raw",
+            "symbol_USDJPY",
+        )
+    )
+)
+
+#: 版 4 以上の試験用の比較の前提（同梱の T02 の実験設定と同じ値。換算の上限も同じ 15 分）。
+TEST_COMPARISON_BASIS_V4: Final = (
+    "  comparison_basis:\n"
+    '    account: {currency: "JPY", initial_balance: "1000000"}\n'
+    '    risk_policy: {trial_risk_rate: "0.02", account_risk_cap: "0.20"}\n'
+    '    commission_per_unit: "0.001"\n'
+    "    entry_delay_bars: 0\n"
+    '    conversion_policy: {pivot_currency: "USD", max_observation_skew: "PT15M"}\n'
+    "    symbols:\n"
+    '      USDJPY: {spread_offset: "0.02", entry_slippage: "0.01", close_slippage: "0.01",'
+    ' adverse_fill_limit: "0.05"}'
 )
 
 #: 試験用の比較の前提の固定（今の同梱の実験設定と同じ値）。
@@ -124,8 +213,12 @@ def policy_v3_text(
 
     `replace` はキー名（`purpose` / `split` / `selection` / `validation` / `sufficiency`）から
     差し替える行への対応。`None` を渡すとそのキーを書かない（省略の拒否を確かめるため）。
+    版 4 以上の既定の `basis`・`comparison_basis` は通貨ごとの形（D18 §3.4）。
     """
     lines = dict(DEFAULT_STANDARD_LINES)
+    if version >= 4:
+        lines["basis"] = TEST_BASIS_V4
+        lines["comparison_basis"] = TEST_COMPARISON_BASIS_V4
     for key, value in (replace or {}).items():
         if value is None:
             lines.pop(key, None)
@@ -150,7 +243,16 @@ def policy_v3_text(
 
 
 def write_policy(repo: Path, policy_id: str, version: int, text: str) -> Path:
-    """作業場に研究ポリシーファイルを書く（置き場は `research_policy_path` と同じ規則）。"""
+    """作業場に研究ポリシーファイルを書く（置き場は `research_policy_path` と同じ規則）。
+
+    版 4 以上では、試験用の前提のファイル（`TEST_PREMISE_FILES`）も作業場に書く（読込が
+    SHA-256 を実ファイルと照合する。D18 §3.4）。
+    """
+    if version >= 4:
+        for relative, body in TEST_PREMISE_FILES.items():
+            target = repo / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
     path = research_policy_path(repo, policy_id, version)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

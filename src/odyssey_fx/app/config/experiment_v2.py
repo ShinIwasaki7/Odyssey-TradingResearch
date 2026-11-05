@@ -46,6 +46,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal
@@ -80,6 +81,12 @@ from odyssey_fx.common.refs import ContentDigest, PolicyRef, SnapshotRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.domain.metrics import metric_ids_of
+from odyssey_fx.evaluation.domain.policy_basis import (
+    FixedComparisonBasis,
+    PerSymbolComparisonBasis,
+    PerSymbolPolicyBasis,
+    PolicyBasis,
+)
 from odyssey_fx.evaluation.domain.research_policy import ResearchPolicy
 from odyssey_fx.evaluation.domain.search import (
     ChangeKind,
@@ -914,12 +921,10 @@ def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, p
         )
 
 
-def _require_basis_match(
-    standard: EvaluationStandard, snapshots: Paired[SnapshotRef], path: Path
-) -> None:
+def _require_basis_match(basis: PolicyBasis, snapshots: Paired[SnapshotRef], path: Path) -> None:
     """実験の両組の snapshot が研究ポリシーの前提の記録と役割ごとに一致すること（D13-16 (a)・
     仮置き 21。用途 STANDARD の版だけ）。"""
-    expected = standard.basis.snapshots
+    expected = basis.snapshots
     for variant, ref in snapshots.items():
         if ref.snapshot_id != expected.of(variant):
             raise ConfigError(
@@ -930,10 +935,9 @@ def _require_basis_match(
             )
 
 
-def _require_comparison_match(standard: EvaluationStandard, body: RunBody, path: Path) -> None:
+def _require_comparison_match(fixed: FixedComparisonBasis, body: RunBody, path: Path) -> None:
     """実験設定の口座・リスク・費用・執行の値が研究ポリシーの比較の前提と一致すること
     （D13-21 (a)・仮置き 12・18、D07 §18.6 の 8。用途 STANDARD の版だけ）。"""
-    fixed = standard.comparison_basis
     spread = getattr(body.cost_model.spread_model, "offset", None)
     observed: dict[str, object] = {
         "account.currency": str(body.account.currency),
@@ -974,6 +978,145 @@ def _require_comparison_match(standard: EvaluationStandard, body: RunBody, path:
             f"（{details}）。"
             "共通基準の判定に使う版を指す探索の実験は、比較の前提の値をそのまま書く"
             "（D13-21 (a)・仮置き 12・18、D07 §18.6 の 8）"
+        )
+
+
+def _require_per_symbol_match(
+    basis: PerSymbolPolicyBasis,
+    fixed: PerSymbolComparisonBasis,
+    snapshots: Paired[SnapshotRef],
+    conversion: Paired[SnapshotRef] | None,
+    body: RunBody,
+    path: Path,
+) -> None:
+    """版 4 以上（通貨ごとの形）の照合 C1〜C7（D18 §3.3。用途 STANDARD の版だけ）。
+
+    実験の執行系列の通貨で、研究ポリシーの通貨ごとの値を引いて照合する（仮置き 7）。
+
+    - C1: 執行系列の通貨が研究ポリシーの通貨にある。
+    - C2: `snapshots` がその通貨の basis の組と役割ごとに一致する（2 つが異なることは用途に
+      よらず確かめ済み）。
+    - C3: `conversion_snapshots` を書いた実験（円以外のペア）では、換算の snapshot の組と役割ごとに
+      一致する。書くかどうかの規則（決済通貨が口座通貨と違えば必須、同じなら拒否）は
+      `resolve_run_body` が確かめ済み（D06 §19.2 の C1-3）。
+    - C4: 口座・リスク・1 単位の手数料・入場の遅延が共通の項目と一致する。
+    - C5: スプレッド・入場の滑り・決済の滑りがその通貨の値と一致する。
+    - C6: `adverse_fill_limits` がその通貨 1 つだけを持ち、その通貨の値と一致する。
+    - C7: `conversion_policy` が共通の換算の決め事と一致する（8 通貨すべて。決定 36）。
+
+    違えば設定の誤り（`ConfigError`）。理由に照合の番号と項目名を書く。
+    """
+    symbol = str(body.execution_series.symbol)
+    pair = basis.snapshots_of(symbol)
+    costs = fixed.costs_of(symbol)
+    if pair is None or costs is None:
+        listed = [item.symbol for item in basis.symbols]
+        raise ConfigError(
+            f"{path}: 照合 C1: 執行系列 `execution_series` の通貨 {symbol} は、研究ポリシーの"
+            f" 前提の記録 `basis.symbols` の通貨 {listed} に無い（D18 §3.3）"
+        )
+    for variant, ref in snapshots.items():
+        if ref.snapshot_id != pair.of(variant):
+            raise ConfigError(
+                f"{path}: 照合 C2: `snapshots.{variant.value}` が {ref.snapshot_id} だが、研究"
+                f"ポリシーの前提の記録 `basis.symbols.{symbol}.{variant.value}` は"
+                f" {pair.of(variant)} である（D18 §3.3、D13-16 (a)）"
+            )
+    if conversion is not None:
+        for variant, ref in conversion.items():
+            expected_ref = basis.conversion_snapshots.of(variant)
+            if ref.snapshot_id != expected_ref:
+                raise ConfigError(
+                    f"{path}: 照合 C3: `conversion_snapshots.{variant.value}` が {ref.snapshot_id}"
+                    " だが、研究ポリシーの換算の snapshot の組"
+                    f" `basis.conversion_snapshots.{variant.value}` は {expected_ref} である"
+                    "（D18 §3.3、仮置き 4）"
+                )
+    spread = getattr(body.cost_model.spread_model, "offset", None)
+    checks: tuple[tuple[str, str, object, object], ...] = (
+        ("C4", "account.currency", str(body.account.currency), fixed.currency),
+        (
+            "C4",
+            "account.initial_balance",
+            body.account.initial_balance.amount,
+            fixed.initial_balance,
+        ),
+        (
+            "C4",
+            "risk_policy.trial_risk_rate",
+            body.risk_policy.trial_risk_rate,
+            fixed.trial_risk_rate,
+        ),
+        (
+            "C4",
+            "risk_policy.account_risk_cap",
+            body.risk_policy.account_risk_cap,
+            fixed.account_risk_cap,
+        ),
+        (
+            "C4",
+            "cost_model.commission_per_unit",
+            body.cost_model.commission_per_unit.amount,
+            fixed.commission_per_unit,
+        ),
+        (
+            "C4",
+            "execution_policy.entry_delay_bars",
+            body.execution_policy.entry_delay_bars,
+            fixed.entry_delay_bars,
+        ),
+        (
+            "C5",
+            "cost_model.spread_offset",
+            None if spread is None else spread.value,
+            costs.spread_offset,
+        ),
+        (
+            "C5",
+            "cost_model.entry_slippage",
+            body.cost_model.entry_slippage.value,
+            costs.entry_slippage,
+        ),
+        (
+            "C5",
+            "cost_model.close_slippage",
+            body.cost_model.close_slippage.value,
+            costs.close_slippage,
+        ),
+        (
+            "C6",
+            "execution_policy.adverse_fill_limits",
+            tuple(
+                sorted(
+                    (str(item), limit.value)
+                    for item, limit in body.execution_policy.adverse_fill_limits.items()
+                )
+            ),
+            ((symbol, costs.adverse_fill_limit),),
+        ),
+        (
+            "C7",
+            "conversion_policy.pivot_currency",
+            str(body.conversion_policy.pivot_currency),
+            fixed.pivot_currency,
+        ),
+        (
+            "C7",
+            "conversion_policy.max_observation_skew",
+            body.conversion_policy.max_observation_skew,
+            timedelta(seconds=fixed.max_observation_skew_seconds),
+        ),
+    )
+    differing = [
+        f"照合 {check} {key}: 実験設定 {observed} / 研究ポリシー {expected}"
+        for check, key, observed, expected in checks
+        if observed != expected
+    ]
+    if differing:
+        raise ConfigError(
+            f"{path}: 実験設定の値が研究ポリシーの比較の前提 `comparison_basis`（通貨 {symbol}）と"
+            f"違う（{'; '.join(differing)}）。共通基準の判定に使う版を指す探索の実験は、比較の"
+            "前提の値をそのまま書く（D18 §3.3、D13-21 (a)、D07 §18.6 の 8）"
         )
 
 
@@ -1055,9 +1198,27 @@ def _search_setting_of(
             "標準・候補の両組は別の snapshot を指す（用途によらない。実装 PR の仮置き 54）"
         )
     _require_metric_set(standard, model.evaluation.metric_set_version, path)
+    conversion_pair = model.conversion_snapshots
+    conversion = (
+        None
+        if conversion_pair is None
+        else Paired(
+            standard=_snapshot_ref(conversion_pair.standard, "conversion_snapshots.standard", path),
+            candidate=_snapshot_ref(
+                conversion_pair.candidate, "conversion_snapshots.candidate", path
+            ),
+        )
+    )
     if standard.purpose is StandardPurpose.STANDARD:
-        _require_basis_match(standard, snapshots, path)
-        _require_comparison_match(standard, body, path)
+        basis = standard.basis
+        fixed = standard.comparison_basis
+        if isinstance(basis, PerSymbolPolicyBasis) and isinstance(fixed, PerSymbolComparisonBasis):
+            _require_per_symbol_match(basis, fixed, snapshots, conversion, body, path)
+        elif isinstance(basis, PolicyBasis) and isinstance(fixed, FixedComparisonBasis):
+            _require_basis_match(basis, snapshots, path)
+            _require_comparison_match(fixed, body, path)
+        else:  # pragma: no cover - `EvaluationStandard` が組み合わせを強制している
+            raise ConfigError(f"{path}: 研究ポリシーの前提の記録と比較の前提の形が食い違う")
     plan = _search_plan_of(plan_model, strategy, registry, path)
     split = split_spec_of(standard.split)
     holdout: FinalHoldoutSpec | None = None
@@ -1074,7 +1235,6 @@ def _search_setting_of(
             check_final_holdout(holdout, standard.split)
         except KernelValueError as exc:
             raise ConfigError(f"{path}: `final_holdout` を読めない: {exc}") from exc
-    conversion_pair = model.conversion_snapshots
     return SearchSetting(
         plan=plan,
         split=split,
@@ -1084,14 +1244,7 @@ def _search_setting_of(
         lineage=_lineage_of(model.lineage, path),
         # 要否の規則（決済通貨が違えば必須、同じなら拒否）は `resolve_run_body` が標準の組の値で
         # 確かめ済み（仮置き C1-3）。
-        conversion_snapshots=None
-        if conversion_pair is None
-        else Paired(
-            standard=_snapshot_ref(conversion_pair.standard, "conversion_snapshots.standard", path),
-            candidate=_snapshot_ref(
-                conversion_pair.candidate, "conversion_snapshots.candidate", path
-            ),
-        ),
+        conversion_snapshots=conversion,
     )
 
 
@@ -1106,12 +1259,14 @@ def _assemble(
     paths: tuple[Path | None, Path | None, Path | None, Path | None],
     registry: ComponentRegistry,
     policy_registry_path: Path | None,
+    repo_root: Path | None,
 ) -> ExperimentV2:
     """読んだ本文から書式 v2 の読込結果を組み立てる。
 
     ファイルから読むときも、記録票の本文から読むときも同じ関数を通す。
     `policy_registry_path` を渡せば、研究ポリシーを読んだ直後に版の登録簿と照合する
-    （D09 §10.9）。記録票の本文から組み立て直すときは `None`（照合しない）。
+    （D09 §10.9）。`repo_root` を渡せば、版 4 以上の研究ポリシーの前提のファイルを実ファイルと
+    照合する（D18 §3.4）。記録票の本文から組み立て直すときはどちらも `None`（照合しない）。
     """
     calendar_path, timeframes_path, symbols_path, strategy_path = paths
     timeframe_defs = load_timeframes(labels[ROLE_TIMEFRAMES], text=texts[ROLE_TIMEFRAMES])
@@ -1139,6 +1294,7 @@ def _assemble(
         policy_id=model.research_policy.id,
         version=model.research_policy.version,
         text=texts[ROLE_RESEARCH_POLICY],
+        repo_root=repo_root,
     )
     if policy_registry_path is not None:
         verify_registered(
@@ -1279,6 +1435,7 @@ def load_experiment_v2(
         paths=(calendar_path, timeframes_path, symbols_path, strategy_path),
         registry=registry,
         policy_registry_path=research_policy_registry_path(repo_root.resolve()),
+        repo_root=repo_root.resolve(),
     )
 
 
@@ -1315,4 +1472,5 @@ def experiment_v2_from_texts(
         paths=(None, None, None, None),
         registry=registry,
         policy_registry_path=None,
+        repo_root=None,
     )

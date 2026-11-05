@@ -86,7 +86,12 @@ from odyssey_fx.evaluation.domain.metrics import (
     metric_ids_of,
 )
 from odyssey_fx.evaluation.domain.path import PATH_METRICS, PathEnd, PathSummary
-from odyssey_fx.evaluation.domain.policy_basis import FixedComparisonBasis, PolicyBasis
+from odyssey_fx.evaluation.domain.policy_basis import (
+    FixedComparisonBasis,
+    PerSymbolComparisonBasis,
+    PerSymbolPolicyBasis,
+    PolicyBasis,
+)
 from odyssey_fx.evaluation.domain.splits import FinalHoldoutSpec, Fold, SplitStandard
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
@@ -526,6 +531,30 @@ class SufficiencyRule:
             )
 
 
+def _require_same_symbols(basis: PerSymbolPolicyBasis, fixed: PerSymbolComparisonBasis) -> None:
+    """版 4 以上: 前提の記録と比較の前提の通貨がそろい、換算の snapshot の組が換算の率を取る
+    通貨ペアの組と同じであること（D18 §3.4 の読込の検査、RP4-4・RP4-5）。"""
+    in_basis = [item.symbol for item in basis.symbols]
+    in_costs = [item.symbol for item in fixed.symbols]
+    if in_basis != in_costs:
+        raise KernelValueError(
+            f"basis.symbols の通貨 {in_basis} と comparison_basis.symbols の通貨 {in_costs} が"
+            "違う（D18 §3.4 の読込の検査）"
+        )
+    source = fixed.conversion_symbol
+    pair = basis.snapshots_of(source)
+    if pair is None:
+        raise KernelValueError(
+            f"換算の率を取る通貨ペア {source}（中継の通貨 {fixed.pivot_currency}・口座の通貨"
+            f" {fixed.currency}）が basis.symbols に無い（D18 §3.1、D17-3a (a)）"
+        )
+    if basis.conversion_snapshots != pair:
+        raise KernelValueError(
+            f"basis.conversion_snapshots が {source} の snapshot の組と違う。換算の snapshot は"
+            f" 同じ組の {source} の承認済み snapshot（D18 §3.1・仮置き 4、D17-3a (a)）"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationStandard:
     """研究ポリシーの版 3 以上の評価基準の群（D09 §3・§7.6・§10.9。v0.2）。"""
@@ -535,18 +564,30 @@ class EvaluationStandard:
     selection: SelectionRule
     validation: ValidationRule
     sufficiency: SufficiencyRule
-    #: 前提の記録（2026-10-21 改訂。D13 §6.4。版 3 以上は必須。改訂 PR の仮置き 36）。
-    basis: PolicyBasis
-    #: 比較の前提の固定（2026-10-21 改訂。D13 §6.6。版 3 以上は必須）。
-    comparison_basis: FixedComparisonBasis
+    #: 前提の記録（2026-10-21 改訂。D13 §6.4。版 3 以上は必須。改訂 PR の仮置き 36）。版 3 は
+    #: `PolicyBasis`、版 4 以上は通貨ごとの `PerSymbolPolicyBasis`（D18 §3.1、仮置き 7）。
+    basis: PolicyBasis | PerSymbolPolicyBasis
+    #: 比較の前提の固定（2026-10-21 改訂。D13 §6.6。版 3 以上は必須）。版 3 は
+    #: `FixedComparisonBasis`、版 4 以上は `PerSymbolComparisonBasis`（D18 §3.2、仮置き 6・7）。
+    comparison_basis: FixedComparisonBasis | PerSymbolComparisonBasis
 
     def __post_init__(self) -> None:
-        if not isinstance(self.basis, PolicyBasis):
-            raise KernelValueError("EvaluationStandard.basis must be a PolicyBasis (D13 §6.4)")
-        if not isinstance(self.comparison_basis, FixedComparisonBasis):
+        per_symbol = isinstance(self.basis, PerSymbolPolicyBasis)
+        if not isinstance(self.basis, (PolicyBasis, PerSymbolPolicyBasis)):
             raise KernelValueError(
-                "EvaluationStandard.comparison_basis must be a FixedComparisonBasis (D13 §6.6)"
+                "EvaluationStandard.basis must be a PolicyBasis or a PerSymbolPolicyBasis"
+                " (D13 §6.4, D18 §3.1)"
             )
+        expected = PerSymbolComparisonBasis if per_symbol else FixedComparisonBasis
+        if not isinstance(self.comparison_basis, expected):
+            raise KernelValueError(
+                f"EvaluationStandard.comparison_basis must be a {expected.__name__} with a"
+                f" {type(self.basis).__name__} (D13 §6.6, D18 §3.2)"
+            )
+        if isinstance(self.basis, PerSymbolPolicyBasis) and isinstance(
+            self.comparison_basis, PerSymbolComparisonBasis
+        ):
+            _require_same_symbols(self.basis, self.comparison_basis)
         if not isinstance(self.purpose, StandardPurpose):
             raise KernelValueError("EvaluationStandard.purpose must be a StandardPurpose")
         if not isinstance(self.split, SplitStandard):
