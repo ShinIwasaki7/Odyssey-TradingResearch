@@ -610,6 +610,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=4, help="並べるプロセスの数")
     parser.add_argument("--pairs", nargs="*", default=list(PAIRS), help="対象の通貨ペア")
     args = parser.parse_args(argv)
+    out = Path(args.out)
+    if out.exists():
+        # 既存の記録を上書きしない（既定は「存在すれば失敗」。AGENTS.md）。集計の前に止める。
+        parser.error(f"{out} already exists; the scan does not overwrite a recorded result")
     repo_root = Path(args.repo_root).resolve()
     started_at = datetime.now(tz=UTC).replace(microsecond=0)
     started = time.perf_counter()
@@ -660,9 +664,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "crosscheck_eurusd": crosscheck(results),
         "results": results,
     }
-    out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    # 集計の間に別の書き手が作っていても上書きしない（排他的に新しく作る）。
+    with out.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, indent=1) + "\n")
     print(json.dumps({key: payload[key] for key in ("set1_over_30_points", "stop_condition_a")}))
     return 0
 

@@ -505,3 +505,13 @@ def test_rp4_17_time_reader_refuses_price_columns_before_opening(
     # ファイルは無い。開く前に止まるので FileNotFoundError ではなく列の拒否になる。
     with pytest.raises(MarketDataValueError, match="time columns"):
         store.read_partition_times("snapshot", partition, columns)
+
+
+def test_scan_refuses_an_existing_output_before_scanning(tmp_path: Path) -> None:
+    """既存の記録（`scan.json`）は上書きしない。集計（snapshot の読み取り）の前に止まる。"""
+    out = tmp_path / "scan.json"
+    out.write_text("recorded\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as stopped:
+        scan.main(["--snapshots", str(tmp_path / "missing"), "--out", str(out)])
+    assert stopped.value.code == 2
+    assert out.read_text(encoding="utf-8") == "recorded\n"
