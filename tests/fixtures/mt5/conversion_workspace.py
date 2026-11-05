@@ -287,7 +287,7 @@ cost_model:
 
 conversion_policy:
   pivot_currency: "USD"
-  max_observation_skew: "PT15M"
+  max_observation_skew: "PT30M"
 
 evaluation: {{metric_set_version: 2}}
 

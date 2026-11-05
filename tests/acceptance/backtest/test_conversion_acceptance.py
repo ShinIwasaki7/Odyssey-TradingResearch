@@ -14,6 +14,7 @@ from typing import Final
 import pytest
 
 from odyssey_fx.backtest.domain.fills import CostKind, FillRecord
+from odyssey_fx.backtest.domain.policies import ConversionPolicy
 from odyssey_fx.backtest.domain.positions import Position
 from odyssey_fx.backtest.portfolio.ledger import LedgerSnapshot
 from odyssey_fx.backtest.trace.recorder import (
@@ -30,6 +31,7 @@ from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.strategy.declarations.refs import MarketDataField
 from tests.fixtures.backtest.conversion import (
+    CONVERSION_POLICY,
     CONVERSION_SNAPSHOT,
     EURUSD,
     USDCHF,
@@ -94,6 +96,7 @@ def _run(
     signal: tuple[Bar, ...] | None = None,
     run_interval: Interval = RUN_INTERVAL,
     minutes: FakeMinutes | None = None,
+    policy: ConversionPolicy = CONVERSION_POLICY,
 ) -> RunOutput:
     return run_converted(
         symbol=symbol,
@@ -102,6 +105,7 @@ def _run(
         run_interval=run_interval,
         quotes=quotes,
         minutes=minutes,
+        conversion_policy=policy,
     )
 
 
@@ -448,7 +452,7 @@ def test_ct21_a_run_ending_inside_the_weekend_close_measures_staleness_to_the_cl
     last = _evidence(ok, EvidenceKind.MARK_TO_MARKET)[-1]
     # 記録の古さ（at − observed_at）は実際の差のまま残る（1 日以上）。
     assert last.at.time - last.conversion_paths[0].observed_at > timedelta(hours=12)
-    holes = {USDJPY: (Interval(start=_FRIDAY_CLOSE - timedelta(minutes=20), end=_FRIDAY_CLOSE),)}
+    holes = {USDJPY: (Interval(start=_FRIDAY_CLOSE - timedelta(minutes=35), end=_FRIDAY_CLOSE),)}
     stale = _run(
         EURUSD,
         quotes=_quotes({USDJPY: "150"}, span=_WEEKEND_QUOTES, holes=holes),
@@ -472,7 +476,7 @@ def test_ct29_a_monday_gap_close_of_a_carried_position_converts_across_the_weeke
     assert ok.result.status is RunStatus.COMPLETED, ok.manifest.reason
     closes = [fill for fill in _fills(ok) if fill.processed_at.time == _SUNDAY_OPEN]
     assert closes, "the carried position must be stopped out at the Sunday open"
-    holes = {USDJPY: (Interval(start=_FRIDAY_CLOSE - timedelta(minutes=20), end=_FRIDAY_CLOSE),)}
+    holes = {USDJPY: (Interval(start=_FRIDAY_CLOSE - timedelta(minutes=35), end=_FRIDAY_CLOSE),)}
     stale = _run(
         EURUSD,
         quotes=_quotes({USDJPY: "150"}, span=_WEEKEND_QUOTES, holes=holes),
@@ -485,7 +489,7 @@ def test_ct29_a_monday_gap_close_of_a_carried_position_converts_across_the_weeke
 
 def test_ct29_a_holiday_closure_is_excluded_from_staleness_too() -> None:
     """CT-29（祝日）: 平日の休場をまたぐ処理点でも、休場の時間を除いて古さを測る。"""
-    from odyssey_fx.backtest.domain.policies import ConversionPath, ConversionPolicy
+    from odyssey_fx.backtest.domain.policies import ConversionPath
     from odyssey_fx.backtest.portfolio.conversion import require_usable, session_staleness
     from tests.fixtures.synthetic import market
 
@@ -507,8 +511,7 @@ def test_ct29_a_holiday_closure_is_excluded_from_staleness_too() -> None:
     )
     path = ConversionPath(legs=(leg,), rate=Decimal("150"), observed_at=observed, skew=timedelta(0))
     assert session_staleness(path, at, holiday) == timedelta(minutes=6)
-    policy = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=15))
-    require_usable(path, at, policy, holiday)
+    require_usable(path, at, CONVERSION_POLICY, holiday)
 
 
 # --- CT-30: 週明け直後の 2 本の脚のずれ（決定 (28) (a)。v1.21 案 §19.5） ---------------------
@@ -519,10 +522,9 @@ def test_ct30_two_legs_across_the_weekend_count_their_skew_without_the_close() -
 
     日曜の開場から 10 分、USDCHF にまだ記録が無く（最後は金曜 21:59）、USDJPY は開場の後の分を
     持つ。記録のずれ（実際の差）は 48 時間を超えるが、休場を除いたずれは 10 分で換算できる。
-    15 分の境目の処理点（開場から 15 分）では、休場を除いた古さが 16 分になり、理由は古さの超過に
-    なる（ずれは 15 分ちょうどで上限内）。
+    USDCHF が開場から 30 分無記録なら、開場から 30 分の処理点では、休場を除いた古さが 31 分になり、
+    理由は古さの超過になる（ずれは上限 30 分ちょうどで上限内。決定 (32)）。
     """
-    from odyssey_fx.backtest.domain.policies import ConversionPolicy
     from odyssey_fx.backtest.portfolio.conversion import (
         ConversionFailure,
         ConversionUnavailable,
@@ -533,9 +535,9 @@ def test_ct30_two_legs_across_the_weekend_count_their_skew_without_the_close() -
     )
     from tests.fixtures.backtest.harness import CALENDAR
 
-    policy = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=15))
+    policy = CONVERSION_POLICY
     route = (RouteHop(USDCHF, True), RouteHop(USDJPY))
-    holes = {USDCHF: (Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=15)),)}
+    holes = {USDCHF: (Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=30)),)}
     quotes = _quotes(
         {USDCHF: "0.8", USDJPY: "150"}, symbols=(USDCHF, USDJPY), holes=holes, span=_WEEKEND_QUOTES
     )
@@ -545,13 +547,13 @@ def test_ct30_two_legs_across_the_weekend_count_their_skew_without_the_close() -
     assert path.skew > timedelta(hours=48)
     assert session_skew(path, CALENDAR) == timedelta(minutes=10)
     require_usable(path, at, policy, CALENDAR)
-    boundary = _SUNDAY_OPEN + timedelta(minutes=15)
+    boundary = _SUNDAY_OPEN + timedelta(minutes=30)
     late = observe_path(route, boundary, quotes)
-    assert session_skew(late, CALENDAR) == timedelta(minutes=15)
+    assert session_skew(late, CALENDAR) == timedelta(minutes=30)
     with pytest.raises(ConversionUnavailable) as raised:
         require_usable(late, boundary, policy, CALENDAR)
     assert raised.value.failure is ConversionFailure.STALENESS_EXCEEDED
-    assert raised.value.length == timedelta(minutes=16)
+    assert raised.value.length == timedelta(minutes=31)
 
 
 # --- CT-31〜CT-33: 取引の通貨ペアにも記録の無い時間（決定 (31) (a)。v1.22 案 §19.5） -----------
@@ -579,9 +581,10 @@ def _cause(output: RunOutput) -> str:
 def test_ct31_mark_to_market_converts_while_both_pairs_are_unrecorded() -> None:
     """CT-31: USDJPY と EURUSD の両方が 60 分無記録の間も、建玉の時価評価は換算されて run が続く。
 
-    9:30〜10:30 に両方が無記録。休場だけを除いた古さは 9:45 で 16 分（今までの測り方では run の
-    失敗）だが、EURUSD に記録のある分だけを数えると観測の分の 1 分。記録の `at − observed_at` は
-    実際の差のまま。EURUSD の 1 分足を持たない run（仮置き C4-2）は今までの測り方で失敗する。
+    9:30〜10:30 に両方が無記録。休場だけを除いた古さは 10:00 で 31 分（今までの測り方では上限
+    30 分を超えて run の失敗）だが、EURUSD に記録のある分だけを数えると観測の分の 1 分。
+    記録の `at − observed_at` は実際の差のまま。EURUSD の 1 分足を持たない run（仮置き C4-2）は
+    今までの測り方で失敗する。
     """
     hole = (Interval(start=_at(9, 30), end=_at(10, 30)),)
     quotes = _quotes({USDJPY: "150"}, holes={USDJPY: hole})
@@ -600,14 +603,14 @@ def test_ct31_mark_to_market_converts_while_both_pairs_are_unrecorded() -> None:
     )
     without = _run(EURUSD, quotes=quotes)
     assert without.result.status is RunStatus.FAILED_DATA_ERROR
-    assert "0:16:00 old in session time at" in _cause(without)
+    assert "0:31:00 old in session time at" in _cause(without)
 
 
 def test_ct31_a_traded_pair_recording_every_minute_keeps_the_previous_outcome() -> None:
     """CT-31: EURUSD がセッションの毎分に記録を持てば、結果は決定 (25) (a) の測り方と同じ。
 
-    USDJPY だけが 9:30〜10:30 に無記録なら、1 分足を持つ run も持たない run も 9:45 の時価評価で
-    同じ古さ（16 分）の超過で失敗する。
+    USDJPY だけが 9:30〜10:30 に無記録なら、1 分足を持つ run も持たない run も 10:00 の時価評価で
+    同じ古さ（31 分）の超過で失敗する（上限 30 分。決定 (32)）。
     """
     quotes = _quotes(
         {USDJPY: "150"}, holes={USDJPY: (Interval(start=_at(9, 30), end=_at(10, 30)),)}
@@ -616,19 +619,19 @@ def test_ct31_a_traded_pair_recording_every_minute_keeps_the_previous_outcome() 
     without = _run(EURUSD, quotes=quotes)
     assert with_minutes.result.status is RunStatus.FAILED_DATA_ERROR
     assert without.result.status is RunStatus.FAILED_DATA_ERROR
-    assert "0:16:00 old in session time counting only minutes" in _cause(with_minutes)
-    assert "0:16:00 old in session time at" in _cause(without)
+    assert "0:31:00 old in session time counting only minutes" in _cause(with_minutes)
+    assert "0:31:00 old in session time at" in _cause(without)
 
 
-def test_ct32_staleness_of_exactly_15_counted_minutes_converts_and_16_fails() -> None:
-    """CT-32: USDJPY が無記録の間に EURUSD が記録を持つ分だけを数え、15 分ちょうどは換算できる。
+def test_ct32_staleness_of_exactly_30_counted_minutes_converts_and_31_fails() -> None:
+    """CT-32: USDJPY が無記録の間に EURUSD が記録を持つ分だけを数え、上限 30 分ちょうどは換算する。
 
-    USDJPY の最後の観測は 9:44（9:45〜10:30 が無記録）。EURUSD が 9:59〜10:30 に無記録なら、
-    10:00〜10:30 の処理点の古さはどれも 15 分ちょうどで run が続く。EURUSD が 10:00 から無記録
-    なら 10:00 の古さは 16 分で FAILED_DATA_ERROR、理由の長さも 16 分（仮置き C4-5）。
+    USDJPY の最後の観測は 9:29（9:30〜10:30 が無記録）。EURUSD が 9:59〜10:30 に無記録なら、
+    10:00〜10:30 の処理点の古さはどれも 30 分ちょうどで run が続く。EURUSD が 10:00 から無記録
+    なら 10:00 の古さは 31 分で FAILED_DATA_ERROR、理由の長さも 31 分（仮置き C4-5、決定 (32)）。
     """
     quotes = _quotes(
-        {USDJPY: "150"}, holes={USDJPY: (Interval(start=_at(9, 45), end=_at(10, 30)),)}
+        {USDJPY: "150"}, holes={USDJPY: (Interval(start=_at(9, 30), end=_at(10, 30)),)}
     )
     exact = _run(
         EURUSD,
@@ -644,7 +647,7 @@ def test_ct32_staleness_of_exactly_15_counted_minutes_converts_and_16_fails() ->
     assert over.result.status is RunStatus.FAILED_DATA_ERROR
     cause = _cause(over)
     assert "STALENESS_EXCEEDED" in cause
-    assert "0:16:00 old in session time counting only minutes the traded pair recorded" in cause
+    assert "0:31:00 old in session time counting only minutes the traded pair recorded" in cause
 
 
 def test_ct32_admission_is_still_rejected_before_the_order_when_only_usdjpy_is_stale() -> None:
@@ -663,8 +666,8 @@ def test_ct33_two_legs_convert_while_the_traded_usdchf_is_unrecorded() -> None:
 
     9:30〜10:30 に USDCHF（取引の通貨ペア・1 本目の脚）が無記録。USDCHF の 1 分足を持つ run は
     ずれも古さも USDCHF に記録のある分だけを数えて上限内で、run が続く。持たない run は今までの
-    測り方で失敗する。USDCHF に記録があり USDJPY が 9:29 から無記録なら、9:45 のずれは 16 分で
-    換算不可（検査の順でずれが先）。
+    測り方で失敗する。USDCHF に記録があり USDJPY が 9:29 から無記録なら、10:00 のずれは 31 分で
+    換算不可（検査の順でずれが先。上限 30 分。決定 (32)）。
     """
     rates = {USDCHF: "0.8", USDJPY: "150"}
     hole = (Interval(start=_at(9, 30), end=_at(10, 30)),)
@@ -689,4 +692,72 @@ def test_ct33_two_legs_convert_while_the_traded_usdchf_is_unrecorded() -> None:
     assert skewed.result.status is RunStatus.FAILED_DATA_ERROR
     cause = _cause(skewed)
     assert "SKEW_EXCEEDED" in cause
-    assert "0:16:00 apart" in cause
+    assert "0:31:00 apart" in cause
+
+
+# --- CT-34: 上限 30 分の境界（人間の決定 (32)。v1.23 案 §19.5） ---------------------------
+
+
+def _sunday_carry(
+    holes: Sequence[Interval], policy: ConversionPolicy = CONVERSION_POLICY
+) -> RunOutput:
+    """金曜から持ち越した EURUSD の建玉を、日曜の開場から 45 分まで持つ run。
+
+    日曜の執行足は損切り・利確に届かない足（`QUIET_BAR`）を 3 本。`holes` は日曜の USDJPY の
+    無記録の区間。古さは休場の時間を除いて数える（金曜の最後の観測 21:59 の 1 分と日曜の分）。
+    """
+    from tests.fixtures.backtest.harness import EXECUTION_SERIES
+
+    sunday = bars(EXECUTION_SERIES, _SUNDAY_OPEN, timedelta(minutes=15), [QUIET_BAR] * 3)
+    return _run(
+        EURUSD,
+        quotes=_quotes({USDJPY: "150"}, span=_WEEKEND_QUOTES, holes={USDJPY: tuple(holes)}),
+        signal=_friday_signal(),
+        execution=_friday_execution() + tuple(sunday),
+        run_interval=Interval(start=_FRIDAY, end=_SUNDAY_OPEN + timedelta(minutes=45)),
+        policy=policy,
+    )
+
+
+def test_ct34_staleness_of_exactly_30_minutes_converts_and_31_fails_in_a_run() -> None:
+    """CT-34: 上限 30 分ちょうどの古さの時価評価は換算でき、31 分は FAILED_DATA_ERROR（決定 (32)）。
+
+    日曜の USDJPY は 22:00 の分だけ記録があり、22:01〜22:30 が無記録なら、22:30 の処理点の古さは
+    30 分ちょうど（観測は 22:00）で run が続く。22:00〜22:30 が無記録なら、最後の観測は金曜 21:59
+    で、休場を除いた古さは 31 分（金曜の 1 分と日曜の 30 分）になり、建玉の時価評価で止まる。
+    """
+    exact = _sunday_carry(
+        (
+            Interval(
+                start=_SUNDAY_OPEN + timedelta(minutes=1), end=_SUNDAY_OPEN + timedelta(minutes=30)
+            ),
+        )
+    )
+    assert exact.result.status is RunStatus.COMPLETED, exact.manifest.reason
+    boundary = [
+        row
+        for row in _evidence(exact, EvidenceKind.MARK_TO_MARKET)
+        if row.conversion_paths and row.at.time == _SUNDAY_OPEN + timedelta(minutes=30)
+    ]
+    assert boundary, "the carried position must be marked at 22:30 on Sunday"
+    assert boundary[0].conversion_paths[0].observed_at == _SUNDAY_OPEN
+    over = _sunday_carry((Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=30)),))
+    assert over.result.status is RunStatus.FAILED_DATA_ERROR
+    cause = _cause(over)
+    assert "STALENESS_EXCEEDED" in cause
+    assert "0:31:00 old in session time at" in cause
+
+
+def test_ct34_a_19_minute_gap_after_the_sunday_open_converts_under_30_but_not_under_15() -> None:
+    """CT-34: 日曜の週の始まりに USDJPY が 19 分無記録でも、上限 30 分なら建玉を持ったまま続く。
+
+    M1 の 2 回目で戦略 A が止まった形（第19.19節の追加の決定 7）を人工データで写す。22:00〜22:19
+    が無記録のとき、22:15 の処理点の古さは 16 分。上限 30 分の換算のポリシーでは `COMPLETED`、
+    上限 15 分（決定 (32) の前の値）では FAILED_DATA_ERROR。
+    """
+    gap = (Interval(start=_SUNDAY_OPEN, end=_SUNDAY_OPEN + timedelta(minutes=19)),)
+    assert _sunday_carry(gap).result.status is RunStatus.COMPLETED
+    previous = ConversionPolicy(pivot_currency=USD, max_observation_skew=timedelta(minutes=15))
+    stopped = _sunday_carry(gap, previous)
+    assert stopped.result.status is RunStatus.FAILED_DATA_ERROR
+    assert "0:16:00 old in session time at" in _cause(stopped)
