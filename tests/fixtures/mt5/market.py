@@ -106,18 +106,26 @@ rows:
 
 
 def write_rule_files(
-    root: Path, *, revoked: str | None = None, pairs: Sequence[str] | None = None
+    root: Path,
+    *,
+    revoked: str | None = None,
+    pairs: Sequence[str] | None = None,
+    coverage: tuple[str, str] | None = None,
 ) -> TimeRuleTable:
     """人工の表と承認済みの一覧を `root` の下（本番と同じ相対パス）に書き、本番の読込で読む。
 
     `pairs` を渡すと表の対象の通貨ペアをそれに替える（換算の受入テストの複数の通貨ペア。既定の
-    `None` は USDJPY だけで、既存の固定値テストの表の本文を変えない）。
+    `None` は USDJPY だけで、既存の固定値テストの表の本文を変えない）。`coverage` を渡すと表の
+    対象の期間（`from`・`to`。既定は 2025-11-30〜2026-03-01）をそれに替える（研究期間の人工データ。
+    古さとずれの集計の道具のテスト。D18 §6 の RP4-15）。
     """
     table_path = root / TABLE_FILE
     table_path.parent.mkdir(parents=True, exist_ok=True)
     text = _TABLE_TEXT
     if pairs is not None:
         text = text.replace("pairs: [USDJPY]", f"pairs: [{', '.join(pairs)}]")
+    if coverage is not None:
+        text = text.replace("2025-11-30", coverage[0]).replace("2026-03-01", coverage[1])
     table_path.write_text(text, encoding="utf-8")
     sha = hashlib.sha256(table_path.read_bytes()).hexdigest()
     revoked_text = "null" if revoked is None else f'"{revoked}"'

@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import bisect
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
@@ -27,7 +27,7 @@ from odyssey_fx.marketdata.domain.integrity import CheckKind, IntegrityReport
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef
 
-__all__ = ["Mt5MinuteView", "Mt5Observation", "Resumption"]
+__all__ = ["Mt5MinuteView", "Mt5Observation", "Resumption", "recorded_resumptions"]
 
 _MINUTE = timedelta(minutes=1)
 
@@ -176,6 +176,22 @@ class Mt5Observation:
         return tuple(item for item in self.shortfall.get(series, ()) if item[0].overlaps(interval))
 
 
+def recorded_resumptions(
+    observation: Mt5Observation,
+    series: SeriesId,
+    interval: Interval,
+    recorded: Container[UtcTime],
+) -> tuple[Resumption, ...]:
+    """区間の中の再開の分のうち、その分に 1 分足の記録があるもの（D06 §18.4）。
+
+    `recorded` は 1 分足の記録のある分の開始の集合（**時刻だけ**。D18 §4.2）。約定の側の
+    `Mt5MinuteView` と古さとずれの集計の道具が同じ関数を呼ぶ。
+    """
+    return tuple(
+        item for item in observation.resumptions_in(series, interval) if item.minute in recorded
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Mt5MinuteView:
     """執行系列の銘柄の 1 分足と無記録の分（約定の側のポート。D06 §18.3〜§18.5）。
@@ -221,11 +237,7 @@ class Mt5MinuteView:
 
     def resumptions_in(self, interval: Interval) -> tuple[Resumption, ...]:
         """区間の中の再開の分（1 分足がある分だけ）。"""
-        return tuple(
-            item
-            for item in self.observation.resumptions_in(self.minute_series, interval)
-            if item.minute in self._by_start
-        )
+        return recorded_resumptions(self.observation, self.minute_series, interval, self._by_start)
 
     def is_unrecorded(self, minute: UtcTime) -> bool:
         """分 `minute` が無記録か。"""
