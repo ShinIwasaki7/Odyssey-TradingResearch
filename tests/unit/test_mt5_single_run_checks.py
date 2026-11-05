@@ -6,6 +6,10 @@
 再現の判定・snapshot の manifest。エンジンで作った run ではない。決定 23）を一時ディレクトリに
 書き、判定 1〜4 の合格・不合格・確認不能・未判定の各分岐を確かめる。判断履歴の表には価格の列も
 置き、道具がそれを読まないこと（読み込みの列の指定から外していること）も確かめる。
+
+日足の系列と順 2 の集計の通貨ペアが run の執行系列の通貨ペアから決まること（USDJPY を固定で
+持たないこと。順 7 の機構確認 M1 のやり直し、D17 §2.5、人間の決定 (30)）も、EURUSD の人工の
+run で確かめる。
 """
 
 from __future__ import annotations
@@ -32,6 +36,10 @@ RESULT = "c" * 64
 SNAPSHOT = "d" * 64
 DAILY = "USDJPY/1d_ny17/bid"
 HOURLY = "USDJPY/1h/bid"
+EXECUTION = "USDJPY/15m/bid"
+EURUSD_DAILY = "EURUSD/1d_ny17/bid"
+EURUSD_HOURLY = "EURUSD/1h/bid"
+EURUSD_EXECUTION = "EURUSD/15m/bid"
 NEW_YORK = ZoneInfo("America/New_York")
 TABLE = {
     "sha256": "e" * 64,
@@ -208,6 +216,7 @@ def _write_run(
     snapshot_table: Mapping[str, Any] | None = TABLE,
     experiment_snapshot: str = SNAPSHOT,
     run_id: str = RUN_ID,
+    execution_series: object = EXECUTION,
 ) -> tuple[Path, Path, Path]:
     """成果物を書き、実験の版のディレクトリ・再現の出力の基点・snapshot の基点を返す。"""
     out = root / "out"
@@ -232,10 +241,12 @@ def _write_run(
                 }
             )
         )
-    config = {
+    config: dict[str, Any] = {
         "run_interval": {"start": RUN_START, "end": RUN_END},
         "snapshot_ref": {"snapshot_id": SNAPSHOT},
     }
+    if execution_series is not None:
+        config["execution_series"] = execution_series
     (run_dir / "manifest.json").write_text(
         json.dumps(
             {
@@ -947,7 +958,7 @@ def test_trading_day_label_matches_the_aggregation_for_every_csv_day() -> None:
     calendar = load_calendar(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml")
     timeframes = load_timeframes(ROOT / "configs/calendars/timeframes_v2.yaml")
     expected = checks.read_daily_differences(
-        ROOT / "docs/data/full_period_feasibility/candidate_differences.csv"
+        ROOT / "docs/data/full_period_feasibility/candidate_differences.csv", "USDJPY"
     )
     assert len(expected) == 41
     labels = {
@@ -1043,7 +1054,7 @@ def test_an_empty_aggregation_file_is_a_read_failure(tmp_path: Path) -> None:
     empty = tmp_path / "empty.csv"
     empty.write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="必須の列が無い"):
-        checks.read_daily_differences(empty)
+        checks.read_daily_differences(empty, "USDJPY")
     out = tmp_path / "checks.json"
     argv = [
         "--experiment",
@@ -1076,7 +1087,156 @@ def test_read_daily_differences_takes_the_recorded_minutes_rows(tmp_path: Path) 
         "USDJPY,bar_counts,15m,full_bars,1,2\n",
         encoding="utf-8",
     )
-    assert checks.read_daily_differences(path) == {"2017-03-13"}
+    assert checks.read_daily_differences(path, "USDJPY") == {"2017-03-13"}
+    assert checks.read_daily_differences(path, "EURUSD") == {"2017-03-14"}
+
+
+# --- 通貨ペア（run の執行系列。D17 §2.5、人間の決定 (30)） -------------------------------
+
+
+def _eurusd_tables() -> dict[str, list[dict[str, Any]]]:
+    """合格の run の表の系列を EURUSD に替えたもの（日足の準備のやり直しが 1 回）。"""
+    tables = _baseline_tables()
+    for row in tables["HISTORY_RESETS"]:
+        row["series"] = EURUSD_DAILY
+    for row in tables["PUBLICATIONS"]:
+        row["bar_key_series"] = EURUSD_DAILY
+    return tables
+
+
+def test_the_pair_comes_from_the_execution_series(tmp_path: Path) -> None:
+    run = _load(tmp_path, tables=_eurusd_tables(), execution_series=EURUSD_EXECUTION)
+    assert run.pair == "EURUSD"
+    assert checks.daily_series(run.pair) == EURUSD_DAILY
+    assert _load(tmp_path / "u").pair == "USDJPY"
+
+
+@pytest.mark.parametrize("series", [None, "eurusd/15m/bid", "EURUSD", "EURUSD/15m", 7])
+def test_an_unreadable_execution_series_fails_every_check(tmp_path: Path, series: object) -> None:
+    """通貨ペアの読めない run manifest は形式の誤り（USDJPY で埋めない）。"""
+    run = _load(tmp_path, execution_series=series)
+    assert "manifest" in run.errors
+    assert run.pair == ""
+    for check in (
+        checks.check_history_reset_scoring,
+        checks.check_skips_match_resets,
+        checks.check_integrity,
+    ):
+        assert check(run)["result"] == FAIL
+
+
+def test_check_1_takes_the_daily_rows_of_the_run_pair(tmp_path: Path) -> None:
+    """EURUSD の run は EURUSD の日足の行を選ぶ（USDJPY の日足が無くても他の系列に落ちない）。"""
+    tables = _eurusd_tables()
+    tables["HISTORY_RESETS"].append(
+        _reset(EURUSD_HOURLY, "2022-12-26T10:00:00Z", "2022-12-26T11:00:00Z", None)
+    )
+    result = checks.check_history_reset_scoring(
+        _load(tmp_path, tables=tables, execution_series=EURUSD_EXECUTION)
+    )
+    assert result["detail"]["target_series"] == [EURUSD_DAILY]
+    assert result["detail"]["periods"] == [[RESET_FROM, RESET_READY]]
+    assert result["parts"]["b_reset_rows"] == PASS
+
+
+def test_check_1_does_not_take_the_usdjpy_daily_rows_in_an_eurusd_run(tmp_path: Path) -> None:
+    tables = _baseline_tables()  # 日足の行は USDJPY のまま
+    tables["HISTORY_RESETS"].append(
+        _reset(EURUSD_HOURLY, "2022-12-26T10:00:00Z", "2022-12-26T11:00:00Z", None)
+    )
+    result = checks.check_history_reset_scoring(
+        _load(tmp_path, tables=tables, execution_series=EURUSD_EXECUTION)
+    )
+    # 執行の通貨ペアの日足の行が無いので、その日の全系列の行を使う（決定 1 の戦略 A の扱い）。
+    assert result["detail"]["target_series"] == sorted([DAILY, EURUSD_HOURLY])
+
+
+def _eurusd_daily_run(
+    tmp_path: Path, name: str, recorded: Mapping[str, int], series: str = EURUSD_DAILY
+) -> checks.RunArtifacts:
+    tables = _eurusd_tables()
+    tables["PUBLICATIONS"] = [
+        _publication(series, end, end, minutes) for end, minutes in recorded.items()
+    ]
+    return _load(tmp_path / name, tables=tables, execution_series=EURUSD_EXECUTION)
+
+
+def test_check_4_compares_the_daily_bars_of_the_run_pair(tmp_path: Path) -> None:
+    standard = _eurusd_daily_run(
+        tmp_path, "s", {"2017-03-13T21:00:00Z": 1374, "2017-03-14T21:00:00Z": 1440}
+    )
+    candidate = _eurusd_daily_run(
+        tmp_path, "c", {"2017-03-13T21:00:00Z": 1430, "2017-03-14T21:00:00Z": 1440}
+    )
+    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"}, NEW_YORK)
+    assert result["result"] == PASS
+    assert result["detail"]["pair"] == "EURUSD"
+    assert result["detail"]["daily_series"] == EURUSD_DAILY
+    assert result["detail"]["daily_bars_standard"] == 2
+
+
+def test_check_4_ignores_the_usdjpy_daily_bars_of_an_eurusd_run(tmp_path: Path) -> None:
+    standard = _eurusd_daily_run(tmp_path, "s", {"2017-03-13T21:00:00Z": 1374}, series=DAILY)
+    candidate = _eurusd_daily_run(tmp_path, "c", {"2017-03-13T21:00:00Z": 1430}, series=DAILY)
+    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"}, NEW_YORK)
+    assert result["result"] == FAIL
+    assert result["detail"]["invalid_fields"] == ["x.daily_bars", "x.daily_bars"]  # 2 本とも 0 本
+
+
+def test_check_4_fails_for_runs_of_different_pairs(tmp_path: Path) -> None:
+    standard = _eurusd_daily_run(tmp_path, "s", {"2017-03-13T21:00:00Z": 1374})
+    candidate = _daily_run(tmp_path, "c", {"2017-03-13T21:00:00Z": 1430})
+    result = checks.check_daily_differences(standard, candidate, {"2017-03-13"}, NEW_YORK)
+    assert result["result"] == FAIL
+    assert result["detail"] == {"invalid_fields": ["pair"], "pairs": ["EURUSD", "USDJPY"]}
+
+
+def test_main_reads_the_aggregation_rows_of_the_run_pair(tmp_path: Path) -> None:
+    """入口: 判定 4 は順 2 の集計のうち執行の通貨ペアの行だけを引く（USDJPY の行は使わない）。"""
+    tables_s = _eurusd_tables()
+    tables_s["PUBLICATIONS"] = [
+        _publication(EURUSD_DAILY, "2017-03-13T21:00:00Z", "2017-03-13T21:00:00Z", 1374)
+    ]
+    tables_c = _eurusd_tables()
+    tables_c["PUBLICATIONS"] = [
+        _publication(EURUSD_DAILY, "2017-03-13T21:00:00Z", "2017-03-13T21:00:00Z", 1430)
+    ]
+    exp_s, _, snapshots = _write_run(
+        tmp_path / "s", tables=tables_s, execution_series=EURUSD_EXECUTION
+    )
+    exp_c, _, _ = _write_run(tmp_path / "c", tables=tables_c, execution_series=EURUSD_EXECUTION)
+    differences = tmp_path / "diff.csv"
+    differences.write_text(
+        "pair,scope,key,field,standard_value,candidate_value\n"
+        "EURUSD,daily_bar,2017-03-13,recorded_minutes,1374,1430\n"
+        "USDJPY,daily_bar,2017-03-14,recorded_minutes,1,2\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "checks.json"
+    argv = [
+        "--experiment",
+        f"b_standard={exp_s}",
+        "--experiment",
+        f"b_candidate={exp_c}",
+        "--snapshots",
+        str(snapshots),
+        "--pair-b",
+        "b_standard",
+        "b_candidate",
+        "--differences",
+        str(differences),
+        "--calendar",
+        str(ROOT / "configs/calendars/fx_ny17_oanda_v1.yaml"),
+        "--out",
+        str(out),
+    ]
+    assert checks.main(argv) == 0
+    record = json.loads(out.read_text(encoding="utf-8"))
+    check_4 = record["check_4_daily_differences"]
+    assert check_4["result"] == PASS
+    assert check_4["detail"]["expected_days"] == 1
+    assert check_4["detail"]["pair"] == "EURUSD"
+    assert record["runs"]["b_standard"]["pair"] == "EURUSD"
 
 
 # --- 入口 -----------------------------------------------------------------------------
