@@ -14,13 +14,12 @@
 
 from __future__ import annotations
 
-import bisect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
 from types import MappingProxyType
 
 from odyssey_fx.backtest.application.run_backtest import ConversionSupply
+from odyssey_fx.backtest.portfolio.conversion import last_minute_index
 from odyssey_fx.common.refs import SnapshotRef
 from odyssey_fx.common.symbol import Symbol
 from odyssey_fx.common.time import Interval, UtcTime
@@ -41,7 +40,6 @@ __all__ = [
 
 #: 換算の脚の時間足（決定 (18) (a): 1 分足）。
 _MINUTE_TIMEFRAME = "1m"
-_MINUTE = timedelta(minutes=1)
 
 
 class ConversionSnapshotMismatch(MarketDataValueError):
@@ -142,7 +140,7 @@ class _MinuteBars:
 
     def last_ending_by(self, moment: UtcTime) -> Bar | None:
         """終わりが `moment` 以下の最後の記録のある 1 分足。"""
-        index = bisect.bisect_right(self._starts, moment - _MINUTE) - 1
+        index = last_minute_index(self._starts, moment)
         while index >= 0:
             bar = self.bars[index]
             if bar.bar_end <= moment:

@@ -32,6 +32,7 @@ from odyssey_fx.app.config.research_policy import (
 )
 from odyssey_fx.common.time import UtcTime
 from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS, MetricId
+from odyssey_fx.evaluation.domain.policy_basis import PolicyBasis
 from odyssey_fx.evaluation.domain.search import (
     Comparator,
     PathBoundary,
@@ -109,6 +110,7 @@ def test_the_v3_values_are_those_of_table_12b() -> None:
         only.min_validation_trades_per_fold,
         only.min_validation_trades_total,
     ) == ("ALL", Decimal("0"), 0, 8)
+    assert isinstance(standard.basis, PolicyBasis)
     snapshots = standard.basis.snapshots
     assert (str(snapshots.standard), str(snapshots.candidate)) == (
         STANDARD_SNAPSHOT,

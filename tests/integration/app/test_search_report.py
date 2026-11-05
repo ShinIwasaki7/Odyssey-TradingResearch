@@ -81,7 +81,7 @@ from tests.fixtures.acceptance.t02_workspace import (
     install_candidate,
 )
 from tests.fixtures.evaluation.research_policies import (
-    TEST_BASIS,
+    TEST_BASIS_V4,
     append_registry_entry,
     policy_v3_text,
     write_policy,
@@ -115,7 +115,7 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> T02Workspace:
     candidate = install_candidate(built, root / "candidate")
     install_policy_v3(built.repo)
     install_policy_v3(built.repo, version=4, trials=3)
-    basis = TEST_BASIS.replace("1" * 64, built.snapshot_id).replace("2" * 64, candidate)
+    basis = TEST_BASIS_V4.replace("1" * 64, built.snapshot_id).replace("2" * 64, candidate)
     text = policy_v3_text(
         version=6,
         replace={"split": TWO_FOLD_SPLIT, "purpose": "  purpose: STANDARD", "basis": basis},

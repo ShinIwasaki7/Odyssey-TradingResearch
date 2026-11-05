@@ -1,0 +1,199 @@
+# 研究ポリシー v4（研究ポリシー第 4 版。D18 §2〜§3、D09 §10.9・§17.8、D13 §6.1）
+#
+# 順 7 の第 4 版レーン（D17 §2.6）の設計 D18（v0.3、PR #146 で merge 済み）の決定 34〜36 と
+# 仮置き 1〜11（人間の決定「11 件このまま」。原文は D18 §0.5）の値を書いた版である。第 3 版の評価
+# 基準（判定の規則・閾値・証拠の要件）は変えず、対象系列・評価範囲・前提の記録（basis）・比較の
+# 前提（comparison basis）を 8 通貨（USDJPY・EURJPY・GBPJPY・AUDJPY・EURUSD・GBPUSD・AUDUSD・
+# USDCHF）へ広げた。値は戦略の成績を読まずに D09 §17.8 の段 1〜5 の規則から出した（D18 §2）。
+#
+# - 評価範囲は 8 通貨 × 2 組の 16 個の承認済み snapshot に段 3 の規則を当てた共通の区間
+#   2017-03-25T12:00Z〜2023-12-30T12:00Z（2,471 日。決定 34（D18-1 (a)）。第 3 版と同じ値）。
+# - 選定区間・検証区間・分割・選定・条件・証拠の要件・試行数の上限・複雑さの上限は第 3 版の値を
+#   そのまま写した（D18 §2.4・§2.5、仮置き 2）。fold は第 3 版と同じ 5 つ。
+#   **方針上の最低件数は「この件数より少ない結果は研究候補として扱わない」という研究の方針の
+#   条件であり、統計的な十分性の保証ではない**（D13 §5.2）。
+# - 対象系列は 8 通貨 × {15 分足, 1 時間足} の 16 系列（D18 §2.1、仮置き 3）。
+# - 前提の記録は通貨ごとの snapshot の組（8 組）と、換算の snapshot の組（USDJPY の 2 組。D17-3a (a)、
+#   仮置き 4）、前提の規則のファイル 16 個（第 3 版の 7 個・研究期間の確認済みハッシュの一覧・8 通貨の
+#   銘柄の設定。仮置き 5）。SHA-256 は読込が実ファイルと照合する（D18 §3.4）。
+# - 比較の前提は 8 通貨で共通の項目（円の口座・初期残高 1,000,000 円・1 取引の損失予算 2%・口座全体
+#   の上限 20%・1 単位の手数料 0.001 円・入場の遅延 0 本・換算の決め事 米ドル経由・上限 30 分）と、
+#   通貨ごとの 4 つの値（USDJPY の値を pip の数で写した値。決定 35（D18-2 (a)）・決定 36（D18-3 (a)）、
+#   仮置き 6）。通貨ごとの値は読込が銘柄の設定から写した値と照合する（D06 §19.11、D18 §3.4）。
+# - 用途 STANDARD のこの版を指す探索の実験は、執行系列の通貨で通貨ごとの値を引き、照合 C1〜C7
+#   （D18 §3.3）を読込で当てる。
+# - 運用の規則（決定 38（D18-5 (a)）。コードでは止めない）: この版の登録より後に作る探索の実験は、
+#   8 通貨のどれでも（USDJPY も）この版を指す。第 3 版は登録簿に残り、第 3 版を指す既存の実験と
+#   記録票はそのまま照合・再現できる（D18 §3.5、D09 §10.9）。
+#
+# 正式な合否条件は `fold_floors`・`path.floors`・`path.aggregate` と `sufficiency` だけ（第 3 版と同じ）。
+#
+# **版を上げずに中身を変えない**。この版のダイジェストは `registry.yaml` に登録してあり、中身を
+# 変えると読込で拒否される（Q8 決定）。
+
+schema_version: 1
+id: research_policy
+version: 4
+complexity_limits:
+  component_kinds: 30
+  instances: 36
+  parameters: 33
+  decision_outputs: 18
+search_limits:
+  trials: 100
+evaluation_standard:
+  purpose: STANDARD
+  basis:
+    symbols:
+      USDJPY:
+        standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+        candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+      EURJPY:
+        standard: "db6cf465bcfd40ff250bdd70c254fbde3dd3c1c42d538f4b731456f21fc0380d"
+        candidate: "50475022304808c7468b638bdc1536e2bef906e28b6a2618a03ed80bcd713545"
+      GBPJPY:
+        standard: "455d1d38f924f2711aea51eebea7d5d8d24708505e64c7085c7b099333fa5188"
+        candidate: "3141cedcd378652b1f66493b23b3e52be09efee0568d6929281704938ef6377b"
+      AUDJPY:
+        standard: "dc411b9ec1054b073d0c610d74bad27a6801d85c9b46f76ff0a0ac705dc36843"
+        candidate: "ce0aac848a58e2845b286bd839da421c213e918814a9911a52bbba6fa6825821"
+      EURUSD:
+        standard: "4e6eb8d40df023685b6b0739bd202d132c97997de68e8d55f0b4114c89bb917b"
+        candidate: "9c03bc1283e5c7474dc1602104d943fe7985b11c745dae3135813fc7ddee1b19"
+      GBPUSD:
+        standard: "b9ca3a2142bf7c498c5b0b1fb803c0c44df6938dad76a11bd6203e9667437f6e"
+        candidate: "35bcd732a0d696eb95766094e35e4aeab0cdb779e3abae1326691155c7f7732e"
+      AUDUSD:
+        standard: "07362e2223e99b24030b61433c0cc6a78c1a34cbbe9708e1cc04adb744bfe75d"
+        candidate: "b9d213ea6fd957a5d317b33c3472ef3c72a0292d0fed77a4b0003cbf65b074b1"
+      USDCHF:
+        standard: "1139abd01c3d1f1d4c564e5f123e4a979b42b8ed8ae1fc8b15b0d27752472298"
+        candidate: "3d5e44b84807ddf1e46251e9b430a6bcf0c62323062ceb07dfda1df83fcc6c62"
+    conversion_snapshots:
+      standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+      candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+    target_series:
+      - "USDJPY/15m/bid"
+      - "USDJPY/1h/bid"
+      - "EURJPY/15m/bid"
+      - "EURJPY/1h/bid"
+      - "GBPJPY/15m/bid"
+      - "GBPJPY/1h/bid"
+      - "AUDJPY/15m/bid"
+      - "AUDJPY/1h/bid"
+      - "EURUSD/15m/bid"
+      - "EURUSD/1h/bid"
+      - "GBPUSD/15m/bid"
+      - "GBPUSD/1h/bid"
+      - "AUDUSD/15m/bid"
+      - "AUDUSD/1h/bid"
+      - "USDCHF/15m/bid"
+      - "USDCHF/1h/bid"
+    premises:
+      - name: time_rule_table
+        version: 1
+        path: "docs/design/time_rules/time_rule_table_v1.yaml"
+        sha256: "70bb369bc606d8402b172672c07d75506951f86b1295c00344661a68247b3ec3"
+      - name: approved_time_rule_tables
+        version: null
+        path: "docs/design/time_rules/approved_time_rule_tables.yaml"
+        sha256: "2a4eee10144764ac228e102ef56965615463ff60d2abf54d6240d39e0bf0d90b"
+      - name: calendar
+        version: 1
+        path: "configs/calendars/fx_ny17_oanda_v1.yaml"
+        sha256: "a9da0d9ae6b3246b5bb67757a7b6cb4ac50e5a012c96a5c4a075bc1148a79b96"
+      - name: counting_rules
+        version: 1
+        path: "docs/design/counting_rules/counting_rules_v1.yaml"
+        sha256: "fa98eef8cec035a4564b849bc4098d1488aee968bc3a5c2d44efb3ba75ca6444"
+      - name: fetch_manifest
+        version: null
+        path: "docs/data/oanda_mt5_full_fetch_2026-10-16/manifest.json"
+        sha256: "e4664b011600337d619270986e243d11f467f2be425a841b70e5851807daca53"
+      - name: datasource
+        version: null
+        path: "configs/datasources/oanda_mt5_m1_v1.yaml"
+        sha256: "791b9917e073c8c04faa50ef6bed3906335b4d680bce51dbf96434516f895fb8"
+      - name: timeframes
+        version: 2
+        path: "configs/calendars/timeframes_v2.yaml"
+        sha256: "86f6d16689f7642b6b845e33df662ee2a67c314d623817848c08f0f37a4685b1"
+      - name: verified_raw
+        version: 1
+        path: "configs/datasources/oanda_mt5_m1_verified_raw_2026-10-16.yaml"
+        sha256: "2b548743e16e33da162427efff8d73df6b00c409d29b9f178a6aefcb2ceae64f"
+      - name: symbol_USDJPY
+        version: 1
+        path: "configs/symbols/USDJPY.yaml"
+        sha256: "9c26bf178552c852f8232a90f621375d9fe0704d5129467825572d11ad4a8566"
+      - name: symbol_EURJPY
+        version: 1
+        path: "configs/symbols/EURJPY.yaml"
+        sha256: "56b519c9f53d61157d968d86157f9db6382dbe40d399a87b01f474f138032037"
+      - name: symbol_GBPJPY
+        version: 1
+        path: "configs/symbols/GBPJPY.yaml"
+        sha256: "832170f54b93b7956c42831bb48792185e4018126feef53a92648405e59a12b6"
+      - name: symbol_AUDJPY
+        version: 1
+        path: "configs/symbols/AUDJPY.yaml"
+        sha256: "efb18254c1b234a61bda86a118baed00edbf007ab9950bde83ca22861166ca5f"
+      - name: symbol_EURUSD
+        version: 1
+        path: "configs/symbols/EURUSD.yaml"
+        sha256: "abe65382291053fa4fc7e63ba38d259683a415f6e0c43034f40b01804a4f4bf5"
+      - name: symbol_GBPUSD
+        version: 1
+        path: "configs/symbols/GBPUSD.yaml"
+        sha256: "28ed29da631fc6f496e7b435eea4af5c168d35e8240e7f7640a599231ccd61ae"
+      - name: symbol_AUDUSD
+        version: 1
+        path: "configs/symbols/AUDUSD.yaml"
+        sha256: "b688f6bc9564154f3ba607f94f39a76b6180307dd12864f0947be34b3ae6953a"
+      - name: symbol_USDCHF
+        version: 1
+        path: "configs/symbols/USDCHF.yaml"
+        sha256: "b0fc3aa054b5358a22e3a12d4bce88b2aeadf6d5a328b0eb6c6a60529cedd122"
+  comparison_basis:
+    account: {currency: "JPY", initial_balance: "1000000"}
+    risk_policy: {trial_risk_rate: "0.02", account_risk_cap: "0.20"}
+    commission_per_unit: "0.001"
+    entry_delay_bars: 0
+    conversion_policy: {pivot_currency: "USD", max_observation_skew: "PT30M"}
+    symbols:
+      USDJPY: {spread_offset: "0.02", entry_slippage: "0.01", close_slippage: "0.01", adverse_fill_limit: "0.05"}
+      EURJPY: {spread_offset: "0.02", entry_slippage: "0.01", close_slippage: "0.01", adverse_fill_limit: "0.05"}
+      GBPJPY: {spread_offset: "0.02", entry_slippage: "0.01", close_slippage: "0.01", adverse_fill_limit: "0.05"}
+      AUDJPY: {spread_offset: "0.02", entry_slippage: "0.01", close_slippage: "0.01", adverse_fill_limit: "0.05"}
+      EURUSD: {spread_offset: "0.0002", entry_slippage: "0.0001", close_slippage: "0.0001", adverse_fill_limit: "0.0005"}
+      GBPUSD: {spread_offset: "0.0002", entry_slippage: "0.0001", close_slippage: "0.0001", adverse_fill_limit: "0.0005"}
+      AUDUSD: {spread_offset: "0.0002", entry_slippage: "0.0001", close_slippage: "0.0001", adverse_fill_limit: "0.0005"}
+      USDCHF: {spread_offset: "0.0002", entry_slippage: "0.0001", close_slippage: "0.0001", adverse_fill_limit: "0.0005"}
+  split:
+    range: {start: "2017-03-25T12:00:00Z", end: "2023-12-30T12:00:00Z"}
+    train_length: "728d"
+    validation_length: "364d"
+    window: ROLLING
+    purge: "0s"
+    partial_fold: AT_START
+    min_folds: 5
+  selection:
+    metric: ANNUALIZED_SHARPE_RATIO
+    direction: MAXIMIZE
+    eligibility: []
+  validation:
+    fold_floors:
+      - {metric: MAX_DRAWDOWN_MTM_RATE_PEAK, comparator: LE, threshold: "0.30"}
+    aggregate: []
+    path:
+      boundary: CARRY_IF_SAME_TRIAL
+      floors:
+        - {metric: MAX_DRAWDOWN_MTM_RATE_PEAK, comparator: LE, threshold: "0.30"}
+      aggregate:
+        - {metric: NET_RETURN_RATE, comparator: GT, threshold: "0"}
+  sufficiency:
+    classes:
+      - name: ALL
+        min_train_trades_per_365d: "0"
+        min_validation_trades_per_fold: 0
+        min_validation_trades_total: 8

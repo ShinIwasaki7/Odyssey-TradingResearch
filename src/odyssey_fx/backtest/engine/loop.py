@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal, localcontext
@@ -223,6 +223,8 @@ __all__ = [
     "PublicationFeed",
     "PublicationEventView",
     "TraceOutputSink",
+    "decision_times",
+    "mid_bar_resumption_minutes",
 ]
 
 _ZERO = decimal_from_int(0)
@@ -641,11 +643,9 @@ class BacktestEngine:
             return
         run_end = self._config.run_interval.end
         self._seed_last_complete()
-        grouped = self._group_events()
-        self._add_mid_bar_resumptions(grouped)
-        for decision_time in sorted(grouped, key=lambda moment: moment.value):
-            if decision_time >= run_end:
-                break
+        grouped = self._grouped_decision_events()
+        # 末尾の判断時点（`run_end`）は最後に別に処理する（D06 §10.1）。
+        for decision_time in decision_times(grouped, self._config.run_interval)[:-1]:
             events = grouped[decision_time]
             if events == _DecisionEvents(resumption=decision_time) and not (
                 self._context.ledger.open_positions()
@@ -663,6 +663,21 @@ class BacktestEngine:
         except _RunFailure as failure:
             self._fail(run_end, failure)
         self._finalize_tables()
+
+    def decision_times(self) -> tuple[UtcTime, ...]:
+        """run 区間の判断時点の列挙（時刻順。末尾の判断時点 `run_end` を最後に含む）。
+
+        公開イベントの時刻と執行足の途中の再開の分（D06 §18.5）から作る。建玉の無いときに
+        執行足の途中の再開の分だけの判断時点を飛ばすこと（D12-115）は含めない（建玉の有無に
+        よらない列挙。古さとずれの集計（D18 §4.2）の処理点の集合 (1) と照合するため）。
+        """
+        return decision_times(self._grouped_decision_events(), self._config.run_interval)
+
+    def _grouped_decision_events(self) -> dict[UtcTime, _DecisionEvents]:
+        """判断時刻ごとのイベント（公開イベントと執行足の途中の再開の分）。"""
+        grouped = self._group_events()
+        self._add_mid_bar_resumptions(grouped)
+        return grouped
 
     def _seed_last_complete(self) -> None:
         """MT5 経路: run の開始の直前の執行足が全分無記録なら、
@@ -708,14 +723,17 @@ class BacktestEngine:
         if self._minutes is None:
             return
         run = self._config.run_interval
-        for resumption in self._minutes.resumptions_in(run):
-            minute = resumption.minute
-            if not (run.start <= minute < run.end):
-                continue
-            bar = self._execution_bar_containing(minute)
-            if bar is None or bar.first_observed_at == minute:
-                continue
+        for minute in mid_bar_resumption_minutes(
+            (resumption.minute for resumption in self._minutes.resumptions_in(run)),
+            self._first_observed_containing,
+            run,
+        ):
             grouped[minute] = replace(grouped.get(minute, _DecisionEvents()), resumption=minute)
+
+    def _first_observed_containing(self, minute: UtcTime) -> UtcTime | None:
+        """`minute` を含む作られた執行足の最初の観測の分（足が無ければ `None`）。"""
+        bar = self._execution_bar_containing(minute)
+        return None if bar is None else bar.first_observed_at
 
     def _execution_bar_containing(self, minute: UtcTime) -> Bar | None:
         """`minute` を含む作られた執行足（無ければ `None`）。"""
@@ -737,7 +755,7 @@ class BacktestEngine:
         execution_series = self._config.execution_series
         run_interval = self._config.run_interval
         for event in self._feed:
-            if event.at < run_interval.start or run_interval.end < event.at:
+            if not _event_in_run(event.at, run_interval):
                 # run 区間の外のイベントは処理しない。末尾の時刻ちょうどのイベントは
                 # 末尾の判断時点が使うので残す（D06 §10.1 の手順1・2）。
                 continue
@@ -3003,6 +3021,44 @@ def _decision_row(decision: AttemptDecision) -> CompositeRow:
     受け付けた行でも拒否理由の列が（`None` として）並ぶようにする。
     """
     return CompositeRow(primary=decision, variants=(AttemptAccepted, AttemptRejected))
+
+
+def _event_in_run(at: UtcTime, run: Interval) -> bool:
+    """公開イベントを判断時点に使うか（run 区間の中。末尾の時刻ちょうどを含む。D06 §10.1）。"""
+    return run.start <= at <= run.end
+
+
+def mid_bar_resumption_minutes(
+    minutes: Iterable[UtcTime],
+    first_observed_of: Callable[[UtcTime], UtcTime | None],
+    run: Interval,
+) -> tuple[UtcTime, ...]:
+    """執行足の途中の再開の分（D06 §18.5、D12-115）。**時刻だけを受け取る**（D18 §4.2）。
+
+    `minutes` は執行系列の通貨ペアの再開の分（無記録の後の最初の記録のある分）、
+    `first_observed_of(minute)` はその分を含む作られた執行足の最初の観測の分（足が無ければ
+    `None`）。run 区間の中（終端を含まない）で、執行足の最初の観測の分でない再開の分を返す
+    （最初の観測の分は始値の段で処理する）。エンジンと古さとずれの集計の道具が同じ関数を呼ぶ。
+    """
+    found: list[UtcTime] = []
+    for minute in minutes:
+        if not (run.start <= minute < run.end):
+            continue
+        first = first_observed_of(minute)
+        if first is None or first == minute:
+            continue
+        found.append(minute)
+    return tuple(found)
+
+
+def decision_times(times: Iterable[UtcTime], run: Interval) -> tuple[UtcTime, ...]:
+    """判断時点の列挙（D06 §4.2・§10.1）。**時刻だけを受け取る**（D18 §4.2）。
+
+    `times` は公開イベントの時刻と執行足の途中の再開の分。run 区間の中（`run_end` より前）の
+    時刻を重複なく時刻順に並べ、最後に末尾の判断時点 `run_end` を 1 つ置く。
+    """
+    inside = {moment for moment in times if _event_in_run(moment, run) and moment < run.end}
+    return (*sorted(inside, key=lambda moment: moment.value), run.end)
 
 
 def _minute_floor(moment: UtcTime) -> UtcTime:

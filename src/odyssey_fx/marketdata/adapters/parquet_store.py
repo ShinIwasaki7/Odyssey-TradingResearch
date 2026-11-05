@@ -100,6 +100,7 @@ from odyssey_fx.marketdata.domain.time_rule import TimeRuleTableRef, TimeRuleVar
 
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
+    "TIME_COLUMNS",
     "ParquetSnapshotStore",
     "manifest_from_bytes",
     "manifest_payload",
@@ -115,6 +116,12 @@ MANIFEST_SCHEMA_VERSION = 2
 
 #: partition の Parquet ファイル名。
 _PARTITION_FILE = "bars.parquet"
+
+#: 時刻だけの読み取り（`read_partition_times`）で読んでよい列。価格・出来高・スプレッドの列を
+#: 含めない（古さとずれの集計の道具が使う。D18 §4.2「価格の列は読まない」）。
+TIME_COLUMNS: frozenset[str] = frozenset(
+    {"bar_start", "bar_end", "first_observed_at", "last_observed_at"}
+)
 
 #: 完全性検査の報告のファイル名。
 _INTEGRITY_FILE = "integrity_report.json"
@@ -886,6 +893,53 @@ class ParquetSnapshotStore:
             )
         # DataFrame はここで捨てる（D01 §2.2 規則1）。
         return tuple(sorted(bars, key=lambda bar: bar.bar_start.value))
+
+    def read_partition_times(
+        self, snapshot_dir: str, partition_id: PartitionId, columns: Sequence[str]
+    ) -> dict[str, tuple[UtcTime, ...]]:
+        """partition の**時刻の列だけ**を読む（D18 §4.2。価格の列は読まない）。
+
+        `columns` は `TIME_COLUMNS` の部分集合でなければならない（それ以外はファイルを開く前に
+        拒否する）。読み取りの許可の検査は `read_partition` と同じ（封印の区分の partition は許可が
+        無ければ、旧データの 2024 年以降の partition はどの許可でも、ファイルを開く前に止める）。
+        値は行の順（書き込みは開始時刻の昇順）のまま返す。足は作らない。
+        """
+        unknown = sorted(set(columns) - TIME_COLUMNS)
+        if unknown or not columns:
+            raise MarketDataValueError(
+                f"read_partition_times reads only the time columns {sorted(TIME_COLUMNS)};"
+                f" got {list(columns)} (D18 §4.2)"
+            )
+        if partition_id.access_class in LEGACY_FROZEN_CLASSES:
+            try:
+                manifest = self.read_manifest(snapshot_dir)
+            except Exception as exc:  # noqa: BLE001 - 期間を確かめられなければ読まない
+                raise HoldoutAccessViolation(
+                    f"the period of {partition_id} cannot be confirmed from the manifest"
+                    f" ({type(exc).__name__}); it is not read (ADR-0038 第8項の 1)"
+                ) from exc
+            require_not_frozen_legacy(manifest, partition_id)
+        require_partition_read_allowed(partition_id, None, snapshot_dir)
+        path = self.partition_file(snapshot_dir, partition_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"partition file not found: {path}")
+        frame = pl.read_parquet(path, columns=list(columns))
+        cache: dict[str, UtcTime] = {}
+
+        def utc(text: str) -> UtcTime:
+            value = cache.get(text)
+            if value is None:
+                value = cache[text] = UtcTime.parse(text)
+            return value
+
+        return {
+            name: tuple(utc(str(text)) for text in frame.get_column(name).to_list())
+            for name in columns
+        }
+
+    def partition_file(self, snapshot_dir: str, partition_id: PartitionId) -> Path:
+        """partition の Parquet のパス（ファイルは開かない）。"""
+        return self._snapshot_path(snapshot_dir) / partition_id.directory / _PARTITION_FILE
 
     # --- manifest と検査報告 -------------------------------------------------
 

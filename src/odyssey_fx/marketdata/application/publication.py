@@ -60,8 +60,10 @@ __all__ = [
     "PublicationKind",
     "Publication",
     "ScheduledBoundary",
+    "bar_event_times",
     "build_feed",
     "build_publication_log",
+    "scheduled_boundary_intervals",
 ]
 
 
@@ -392,6 +394,55 @@ def _within_run(run_interval: Interval, moment: UtcTime) -> bool:
     return run_interval.start <= moment <= run_interval.end
 
 
+def scheduled_boundary_intervals(
+    schedule: SeriesSchedule, run_interval: Interval
+) -> tuple[Interval, ...]:
+    """予定境界（`ScheduledBoundary`）を出す足の区間（D03 §7.1）。**時刻だけを返す**（D18 §4.2）。
+
+    公開予定（時間足定義とカレンダー）が「存在すべき」とする足のうち、終わりが実行区間の中
+    （終端を含む）のもの。実在する足を見ない。公開フィードと古さとずれの集計の道具が同じ関数を
+    呼ぶ。
+    """
+    found: list[Interval] = []
+    for bar_start in schedule.calendar.expected_bar_starts(
+        schedule.timeframe_def, _boundary_search_window(schedule, run_interval)
+    ):
+        expected = schedule.timeframe_def.expected_interval(schedule.calendar, bar_start)
+        if expected is None:  # pragma: no cover - expected_bar_starts が除いている
+            continue
+        if not _within_run(run_interval, expected.end):
+            continue
+        found.append(expected)
+    return tuple(found)
+
+
+def bar_event_times(
+    *,
+    bar_end: UtcTime,
+    first_observed_at: UtcTime,
+    available_at: UtcTime,
+    run_interval: Interval,
+    is_execution: bool,
+) -> tuple[tuple[PublicationKind, UtcTime], ...]:
+    """実在する足 1 本が生む公開イベントの種別と時刻（D03 §7.1。時刻だけを受け取る。D18 §4.2）。
+
+    執行系列の足は、終わり（`ExecutionBarComplete`。終端を含む）と最初の観測の時刻
+    （`ExecutionOpen`。終端を含めない。D06 §10.1 の手順5、MT5 経路は D03 §15.5）を生む。どの足も
+    利用可能時刻（`Publication`。終端を含む）を生む。公開フィードと古さとずれの集計の道具が同じ
+    関数を呼ぶ。
+    """
+    events: list[tuple[PublicationKind, UtcTime]] = []
+    if is_execution and _within_run(run_interval, bar_end):
+        events.append((PublicationKind.EXECUTION_BAR_COMPLETE, bar_end))
+    if _within_run(run_interval, available_at):
+        events.append((PublicationKind.PUBLICATION, available_at))
+    # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。MT5 経路では最初の観測の
+    # 時刻に出す（D03 §15.5）。
+    if is_execution and run_interval.contains(first_observed_at):
+        events.append((PublicationKind.EXECUTION_OPEN, first_observed_at))
+    return tuple(events)
+
+
 def _no_record_intervals(
     snapshot: ReadableSnapshot, series: SeriesId, final_sources: FinalSources | None = None
 ) -> tuple[Interval, ...]:
@@ -561,17 +612,7 @@ def build_feed(
         scheduled_series = schedules.get(series)
         if scheduled_series is None:
             raise MarketDataValueError(f"no publication schedule was supplied for {series}")
-        for bar_start in scheduled_series.calendar.expected_bar_starts(
-            scheduled_series.timeframe_def,
-            _boundary_search_window(scheduled_series, run_interval),
-        ):
-            expected = scheduled_series.timeframe_def.expected_interval(
-                scheduled_series.calendar, bar_start
-            )
-            if expected is None:  # pragma: no cover - expected_bar_starts が除いている
-                continue
-            if not _within_run(run_interval, expected.end):
-                continue
+        for expected in scheduled_boundary_intervals(scheduled_series, run_interval):
             events.append(
                 ScheduledBoundary(
                     series=series,
@@ -591,17 +632,21 @@ def build_feed(
             recorded = recorded_at.get(bar.key)
             available = recorded if recorded is not None else schedule.scheduled_at(bar.bar_end)
 
-            if is_execution and _within_run(run_interval, bar.bar_end):
-                events.append(
-                    ExecutionBarComplete(series=series, bar_key=bar.key, bar_end=bar.bar_end)
-                )
-            if _within_run(run_interval, available):
-                events.append(Publication(series=series, bar_key=bar.key, available_at=available))
-            # 始値の処理だけは終端を含めない（D06 §10.1 の手順5）。MT5 経路では最初の観測の
-            # 時刻に出す（D03 §15.5）。
-            open_time = bar.first_observed_at
-            if is_execution and run_interval.contains(open_time):
-                events.append(ExecutionOpen(series=series, bar_key=bar.key, open_time=open_time))
+            for kind, moment in bar_event_times(
+                bar_end=bar.bar_end,
+                first_observed_at=bar.first_observed_at,
+                available_at=available,
+                run_interval=run_interval,
+                is_execution=is_execution,
+            ):
+                if kind is PublicationKind.EXECUTION_BAR_COMPLETE:
+                    events.append(
+                        ExecutionBarComplete(series=series, bar_key=bar.key, bar_end=moment)
+                    )
+                elif kind is PublicationKind.PUBLICATION:
+                    events.append(Publication(series=series, bar_key=bar.key, available_at=moment))
+                else:
+                    events.append(ExecutionOpen(series=series, bar_key=bar.key, open_time=moment))
 
     ordered = tuple(
         sorted(
