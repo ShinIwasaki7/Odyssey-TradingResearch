@@ -66,6 +66,17 @@ def _stored(
     return store, snapshot_id
 
 
+def _spoil(store: ParquetSnapshotStore, snapshot_id: str, partition_id: PartitionId) -> None:
+    """partition のファイルを Parquet でないバイト列にする（開こうとすれば別の例外で落ちる）。
+
+    Parquet を開く関数の記録（`opened`）は `polars.read_parquet` だけを見るので、読み方が変わっても
+    「開かない」を確かめられるよう、ファイルの側でも開けば失敗するようにしておく。
+    """
+    path = store.partition_file(snapshot_id, partition_id)
+    assert path.is_file()  # ファイルが無いから止まるのではない
+    path.write_bytes(b"not a parquet file")
+
+
 @pytest.fixture
 def opened(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """保存の部品が partition の Parquet を開いたら、そのパスを記録する。"""
@@ -101,7 +112,7 @@ def test_time_reader_stops_at_a_sealed_partition_without_opening_it(
     tmp_path: Path, opened: list[str], sealed: PartitionId
 ) -> None:
     store, snapshot_id = _stored(tmp_path, {sealed: _bars(SINCE_2024_WINDOW)})
-    assert store.partition_file(snapshot_id, sealed).is_file()  # ファイルが無いから止まるのではない
+    _spoil(store, snapshot_id, sealed)
     with pytest.raises(HoldoutAccessViolation, match="no permit was given"):
         store.read_partition_times(snapshot_id, sealed, TIME_COLUMNS)
     assert opened == []
@@ -115,7 +126,7 @@ def test_time_reader_stops_at_legacy_data_from_2024_without_opening_it(
     tmp_path: Path, opened: list[str], frozen: PartitionId
 ) -> None:
     store, snapshot_id = _stored(tmp_path, {frozen: _bars(SINCE_2024_WINDOW)})
-    assert store.partition_file(snapshot_id, frozen).is_file()
+    _spoil(store, snapshot_id, frozen)
     with pytest.raises(HoldoutAccessViolation, match="frozen"):
         store.read_partition_times(snapshot_id, frozen, TIME_COLUMNS)
     assert opened == []

@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -220,7 +220,7 @@ def test_fetch_log_has_counts_and_times_but_no_prices(tmp_path: Path) -> None:
     # （例: 「…:19.012345」は「9.0」を含む）。時刻として読めることを確かめてから、
     # それ以外の項目だけで価格の文字列が無いことを確かめる（順 7 の残課題 R2）。
     for rec in recs:
-        assert datetime.fromisoformat(rec["executed_at_utc"]).tzinfo is not None
+        assert datetime.fromisoformat(rec["executed_at_utc"]).utcoffset() == timedelta(0)
     text = "\n".join(
         json.dumps({k: v for k, v in rec.items() if k != "executed_at_utc"}) for rec in recs
     )
