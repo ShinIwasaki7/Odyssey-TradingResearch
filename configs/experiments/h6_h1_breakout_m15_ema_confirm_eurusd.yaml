@@ -1,0 +1,96 @@
+# 順 8 の元の実験（版 1）: 研究仮説 H6「1 時間足の高値更新を、15 分足の移動平均で確かめてから入る」
+# の EURUSD の探索の実験設定（書式 v2。D19 の手順 1「事前の記録」の成果物 (2)、D14 §2.2、D09 §5.6）
+#
+# 人間の決定 61（2026-11-06。研究仮説の選択 D19-11 = H6。原文は D19 §0.4.3）。通貨は EURUSD
+# （決定 45）、格子は 4 試行（D19 の仮置き 27。決定 48 で D14-2 (a) を引き継いだ）、買いだけ。
+# 事前の記録の注記は `docs/data/eurusd_step8_research_loop/README.md` の「事前の記録」節。
+#
+# - 研究ポリシーは第 4 版（決定 38。用途 STANDARD）。評価範囲・fold・選定・判定・証拠の要件はすべて
+#   研究ポリシーから入り、ここには書かない（D09 §5.6・§7.6）。
+# - 両組の snapshot は第 4 版の `basis.symbols.EURUSD` と役割ごとに同じ値（D18 §3.3 の照合 C2）。
+#   換算の snapshot の組は第 4 版の `basis.conversion_snapshots`（USDJPY の両組）と役割ごとに同じ値
+#   （照合 C3。EURUSD は決済通貨が米ドルなので換算が要る。D06 §19.2）。実体は git 管理外の `data/snapshots/`。
+# - 口座・リスク・手数料・入場の遅延は第 4 版の共通の項目（照合 C4）、スプレッド・滑り・許容する
+#   不利約定の幅は第 4 版の EURUSD の値（照合 C5・C6。決定 35）、換算の決め事は中継の通貨 USD・
+#   上限 `PT30M`（照合 C7。決定 36）。順 7 の機構確認の EURUSD の実験設定（版 2）と同じ値。
+# - 環境・執行系列・解像度の階層は機構確認の EURUSD の実験設定と同じ（MT5 経路の形）。
+# - 格子は 1 時間足の高値の窓 N {10, 20} × 利確の倍率 R {1.5, 3.0} = 4 試行（D19 §7.2 の H6 の列）。
+#   試行番号は軸を `(instance, parameter)` の文字列の昇順（`breakout_level.lookback` →
+#   `take_profit.reward_risk`）に並べ、後ろの軸ほど速く変わる順に振る（D09 §5.2）: 0 = (10, 1.5)、
+#   1 = (10, 3.0)、2 = (20, 1.5)、3 = (20, 3.0)。`max_trials` は列挙した試行の数と同じ値（D14 §4.2）。
+# - `run_interval` は書かない（fold が区間を持つ。D09 §5.5 の 6）。最終検証は順 8 の範囲の外なので
+#   `final_holdout: NONE`（D19 §1.4）。系譜（`lineage`）は元の実験なので書かない（D13 §7.1）。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**金額・率は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: h6_h1_breakout_m15_ema_confirm_eurusd
+version: 1
+
+hypothesis: "EURUSD の 1 時間足の終値が直近 N 本の 1 時間足の確定高値を上抜けたら、15 分足の終値が 15 分足の EMA（期間 20）を上回るのを最大 4 本待って成行で買い、直近 20 本の 1 時間足の確定安値に損切り、損切りの幅の R 倍に利確を置く規則は、費用を引いた後も、両組で共通基準を満たす"
+
+research_policy: {id: "research_policy", version: 4}
+
+strategy: "configs/strategies/h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+snapshots:
+  standard: "4e6eb8d40df023685b6b0739bd202d132c97997de68e8d55f0b4114c89bb917b"
+  candidate: "9c03bc1283e5c7474dc1602104d943fe7985b11c745dae3135813fc7ddee1b19"
+
+conversion_snapshots:
+  standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+  candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+
+execution_series: "EURUSD/15m/bid"
+
+resolution_hierarchy:
+  - "EURUSD/15m/bid"
+  - "EURUSD/1m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    EURUSD: "0.0005"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.0001"
+  close_slippage: "0.0001"
+  spread_offset: "0.0002"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT30M"
+
+evaluation: {metric_set_version: 3}
+
+search_plan:
+  kind: GRID
+  max_trials: 4
+  axes:
+    - {instance: breakout_level, parameter: lookback, values: [10, 20]}
+    - {instance: take_profit, parameter: reward_risk, values: [1.5, 3.0]}
+
+split: STANDARD
+
+final_holdout: NONE
