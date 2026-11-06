@@ -1,0 +1,158 @@
+# 順 8 の元の実験（版 1）の戦略宣言: 研究仮説 H6「1 時間足の高値更新を、15 分足の移動平均で確かめて
+# から入る」の EURUSD 版（D19 §7.2 の H6 の列。D19 の手順 1「事前の記録」の成果物 (1)）
+#
+# 人間の決定 61（2026-11-06。研究仮説の選択 D19-11 = H6。原文は D19 §0.4.3）。既存の部品だけで書いた
+# （新しい部品なし。D19 §7.1 の条件 2）。買いだけ（D19 §7.1 の条件 5）。
+#
+# - 取引機会は検証戦略 A と同じ形（`extreme_price` v1 の 1 時間足の高値 × `breakout_trigger` v1。
+#   `configs/strategies/strategy_a_eurusd_v1.yaml`）。
+# - 確認は検証戦略 B と同じ形（15 分足の `ema` v1・`price_compare` v1・`condition_filter` v1、
+#   `include_start_bar=True`、確認待ちの入場で 15 分足 4 本の期限。`configs/strategies/strategy_b_eurusd_v1.yaml`）。
+# - 出口は確認結果で起動する `market_order_intent` v2・`level_stop_loss` v2（B と同じ）と、損切りの
+#   水準 `extreme_price` v1（1 時間足の安値 20 本。A と同じ）、`fixed_rr_take_profit` v1（A と同じ）。
+# - 日足の局面は無い（市場状態の役割を持たない）ので、取引機会の有効性の束縛は空（D19 §7.2）。
+# - 軸でない値は既存の宣言の固定値を写した（D19 の仮置き 28）。軸のパラメータ（`breakout_level.lookback`・
+#   `take_profit.reward_risk`）の値は格子の先頭の試行（試行番号 0）の値で、探索ではどの試行でも格子の
+#   値に置き換わる（D09 §5.1）。パラメータは本数・倍率・向きだけで、価格の単位の値を持たない。
+#
+# 戦略の識別子は `h6_h1_breakout_m15_ema_confirm_eurusd`（新しい識別子。D19 §7.1 の条件 6）、版 1。
+#
+# `schema_version` は戦略宣言の保存形式の版（D04 §3）。
+
+schema_version: 1
+
+strategy_id: "h6_h1_breakout_m15_ema_confirm_eurusd"
+version: 1
+
+# 15分足4本（1時間）まで確認を待ち、成立しなければ取引機会を期限切れで終える（D05 §9.2。B と同じ）。
+entry_policy:
+  kind: "AWAIT_CONFIRMATION"
+  deadline: {kind: "BARS", bars: 4}
+  on_deadline: "EXPIRE"
+
+# 日足の局面が無いので、発注要求まで再検査する条件は無い（D19 §7.2 の H6 の列）。
+opportunity_validity:
+  bindings: []
+
+components:
+  - instance_id: "breakout_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:HIGH"
+    parameters:
+      lookback: {type: "INT", value: 10}
+      mode: {type: "STR", value: "MAX"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:LOW"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MIN"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 1
+    inputs:
+      price:
+        - "market:EURUSD/1h/bid:CLOSE"
+      level:
+        - "output:breakout_level.level"
+    parameters:
+      direction: {type: "STR", value: "LONG"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "m15_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/15m/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 20}
+      window_bars: {type: "INT", value: 60}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "EURUSD/15m/bid"}
+
+  - instance_id: "m15_above_ema"
+    component: "price_compare"
+    component_version: 1
+    inputs:
+      left:
+        - "market:EURUSD/15m/bid:CLOSE"
+      right:
+        - "output:m15_ema.value"
+    parameters:
+      operator: {type: "STR", value: "GT"}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "EURUSD/15m/bid"}
+
+  - instance_id: "entry_filter"
+    component: "condition_filter"
+    component_version: 1
+    inputs:
+      condition:
+        - "output:m15_above_ema.condition"
+      opportunity:
+        - "runtime:OPPORTUNITY"
+    parameters:
+      include_start_bar: {type: "BOOL", value: true}
+    triggers:
+      - {name: "m15", when: "bar_close", series: "EURUSD/15m/bid"}
+
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 2
+    inputs:
+      confirmation:
+        - "output:entry_filter.confirmation"
+      opportunity:
+        - "runtime:OPPORTUNITY"
+    triggers:
+      - {name: "conf", when: "input_event", input_name: "confirmation"}
+
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 2
+    inputs:
+      confirmation:
+        - "output:entry_filter.confirmation"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "conf", when: "input_event", input_name: "confirmation"}
+
+  - instance_id: "take_profit"
+    component: "fixed_rr_take_profit"
+    component_version: 1
+    inputs:
+      position:
+        - "runtime:POSITION"
+    parameters:
+      reward_risk: {type: "FLOAT", value: 1.5}
+    triggers:
+      - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+
+# どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。市場状態の役割は持たない（A と同じ）。
+roles:
+  trigger: "entry_trigger.opportunity"
+  execution_filter: "entry_filter.confirmation"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "take_profit.action"
+
+# 取引機会を同時にいくつ保持するか（ADR-0032。A・B・H2 と同じ）。
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
