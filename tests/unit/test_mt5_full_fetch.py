@@ -216,8 +216,34 @@ def test_fetch_log_has_counts_and_times_but_no_prices(tmp_path: Path) -> None:
         "executed_at_utc",
         "disk_free_bytes",
     }
-    text = "\n".join(lines)
+    # 実行の時刻（壁時計の ISO 8601。秒の小数を含む）は価格の文字列と偶然に重なりうる
+    # （例: 「…:19.012345」は「9.0」を含む）。時刻として読めることを確かめてから、
+    # それ以外の項目だけで価格の文字列が無いことを確かめる（順 7 の残課題 R2）。
+    for rec in recs:
+        assert datetime.fromisoformat(rec["executed_at_utc"]).tzinfo is not None
+    text = "\n".join(
+        json.dumps({k: v for k, v in rec.items() if k != "executed_at_utc"}) for rec in recs
+    )
     assert "100.00" not in text and "9.0" not in text
+
+
+def test_fetch_log_price_check_does_not_depend_on_the_wall_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """壁時計が「…:19.0…」のように価格の文字列を含む時刻でも、上の検査が同じ結論になる（R2）。"""
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+            return datetime(2026, 11, 6, 10, 22, 19, 12345, tzinfo=tz)
+
+    monkeypatch.setattr(probe, "datetime", _Clock)
+    test_fetch_log_has_counts_and_times_but_no_prices(tmp_path)
+    stamps = {
+        json.loads(x)["executed_at_utc"]
+        for x in (tmp_path / probe.FULL_FETCH_LOG).read_text(encoding="utf-8").splitlines()
+    }
+    assert stamps == {"2026-11-06T10:22:19.012345+00:00"}  # 価格の文字列「9.0」を含む時刻
 
 
 # --- 0 本の月・出し直し・上限 ---------------------------------------------------------------------
