@@ -43,7 +43,8 @@ from odyssey_fx.strategy.declarations.entry_policy import (
     BarsDeadline,
     DeadlineAction,
 )
-from odyssey_fx.strategy.declarations.specs import FloatValue, IntValue
+from odyssey_fx.strategy.declarations.opportunity import OnNewTrigger, OnOrderAccepted
+from odyssey_fx.strategy.declarations.specs import BoolValue, FloatValue, IntValue, StrValue
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 EXPERIMENT: Final = REPO_ROOT / "configs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd.yaml"
@@ -172,3 +173,22 @@ def test_the_declaration_uses_the_component_versions_of_d19(loaded: ExperimentV2
     assert isinstance(entry, AwaitConfirmation)
     assert isinstance(entry.deadline, BarsDeadline) and entry.deadline.bars == 4
     assert entry.on_deadline is DeadlineAction.EXPIRE
+
+
+def test_the_fixed_values_are_copied_from_the_existing_declarations(
+    loaded: ExperimentV2,
+) -> None:
+    """軸でない値は既存の宣言の固定値（D19 の仮置き 28）: 15 分足の EMA は期間 20・窓 60、
+    `include_start_bar=True`、損切りの窓は 1 時間足の安値 20 本、同時の保持は A・B と同じ。"""
+    strategy = loaded.body.strategy
+    parameters = {c.instance_id: dict(c.parameters) for c in strategy.components}
+    assert parameters["m15_ema"] == {"period": IntValue(20), "window_bars": IntValue(60)}
+    assert parameters["entry_filter"] == {"include_start_bar": BoolValue(True)}
+    assert parameters["stop_level"] == {"lookback": IntValue(20), "mode": StrValue("MIN")}
+    assert parameters["breakout_level"]["mode"] == StrValue("MAX")
+    assert parameters["m15_above_ema"] == {"operator": StrValue("GT")}
+    assert parameters["entry_trigger"] == {"direction": StrValue("LONG")}
+    concurrency = strategy.opportunity_concurrency
+    assert concurrency.max_active == 1
+    assert concurrency.on_new_trigger is OnNewTrigger.KEEP_EXISTING
+    assert concurrency.on_order_accepted is OnOrderAccepted.KEEP_OTHERS

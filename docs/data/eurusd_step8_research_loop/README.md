@@ -13,7 +13,7 @@
 |---|---|---|
 | 戦略宣言 | [`configs/strategies/h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml`](../../../configs/strategies/h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml) | 新しい戦略の識別子 `h6_h1_breakout_m15_ema_confirm_eurusd`（D19 §7.1 の条件 6）。既存の部品だけで書いた（新しい部品なし）。系列は EURUSD を直接書いた（D18 §4.1） |
 | 実験設定 | [`configs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd.yaml`](../../../configs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd.yaml) | 実験名 `h6_h1_breakout_m15_ema_confirm_eurusd`・`version: 1`・書式 v2。研究ポリシー第 4 版（決定 38）、EURUSD の両組の snapshot と換算の snapshot の組（第 4 版の `basis`）、格子 4 試行、`split: STANDARD`、`final_holdout: NONE`、指標集合 v3。口座・リスク・執行・費用・換算は第 4 版の比較の前提の値（D18 §3.2。順 7 の機構確認の EURUSD の実験設定 版 2 と同じ値） |
-| 読込とコンパイルの確認 | [`tests/unit/app/test_step8_h6_preregistration.py`](../../../tests/unit/app/test_step8_h6_preregistration.py) | 実験設定の読込（第 4 版の照合 C1〜C7 を含む）と全 4 試行の戦略のコンパイル、部品の版（D19 の仮置き 30。run はしない） |
+| 読込とコンパイルの確認 | [`tests/unit/app/test_step8_h6_preregistration.py`](../../../tests/unit/app/test_step8_h6_preregistration.py) | 実験設定の読込（第 4 版の照合 C1〜C7 を含む）と全 4 試行の戦略のコンパイル、部品の版（D19 の仮置き 30）、軸でない値（仮置き 28）。run はしない |
 
 実験は、この事前登録の PR が main に merge された後の main から走らせる（D14 仮置き 2。D19 §2.1）。
 
@@ -99,7 +99,7 @@
 
 | 確認 | コマンド | 結果 |
 |---|---|---|
-| 実験設定の読込（研究ポリシー第 4 版の登録簿・前提の記録・EURUSD の両組の snapshot・換算の snapshot の組・比較の前提の照合 C1〜C7 を含む）、格子 4 試行の順、全 4 試行の戦略のコンパイル、複雑性（事前検査 P6）と試行の数（事前検査 P7）、部品の版と空の有効性の束縛・確認待ちの入場の期限 | `uv run pytest tests/unit/app/test_step8_h6_preregistration.py` | 合格（4 件。CI でも走る） |
+| 実験設定の読込（研究ポリシー第 4 版の登録簿・前提の記録・EURUSD の両組の snapshot・換算の snapshot の組・比較の前提の照合 C1〜C7 を含む）、格子 4 試行の順、全 4 試行の戦略のコンパイル、複雑性（事前検査 P6）と試行の数（事前検査 P7）、部品の版と空の有効性の束縛・確認待ちの入場の期限、軸でない値と同時の保持の値（D19 の仮置き 28） | `uv run pytest tests/unit/app/test_step8_h6_preregistration.py` | 合格（5 件。CI でも走る） |
 | snapshot の実体が要る部分: EURUSD の両組と換算の両組の snapshot を開き、試行を列挙・コンパイルし、全単位の実行設定を組み立てて事前検査を当てる（`composition.prepare_search`。run はしない） | snapshot のある Mac でだけ実行（PR 本文に実行したコマンドを書く） | 合格（試行 4・コンパイルが通った試行 4・拒否 0・試行あたりの単位 20。事前検査 P1 仮説あり・P2 研究履歴だけ・P6 複雑性・P7 試行の数がすべて合格）。処理時間 約 201 秒、最大メモリ 約 7.0 GB |
 
 - **既存の宣言に無い部品の版の組み合わせ**（突破 v1 と確認待ちの入場、`market_order_intent` v2・`level_stop_loss` v2、空の有効性の束縛。D19 の仮置き 30）は、全 4 試行でコンパイルを通った。止める必要は無かった。
