@@ -148,7 +148,7 @@
 | 開始の行のダイジェスト | `3369db2f5fe77e0879a14f5d6f2f4626acbf1317b2a8c6487b91ccb3ab6f61da`（前の行 `3900e80297420a9b6e1ec463eb07b7355b242d0f8f791d5f46c4de22f7e976ed` を指す） |
 | 結末の行（末尾）のダイジェスト | `5cdfca03abec4e1fe59922806465ebd9a624792bbd854ed9ceb8df4d07bce66f`（開始の行を指す。鎖は連続） |
 | 追記の後のファイルの SHA-256 | `b193e5a4e426636e462fd8215fdb6fa5b8dcdd2dc312d25ec13bb7b888e7a580` |
-| コミット | 人間が行う（作業役は台帳のファイルを変えず、コミットもしない。決定 57） |
+| コミット | `f5c64d9`（人間 ShinIwasaki7。決定 57。作業役は台帳のファイルを変えず、コミットもしていない）。コミットされたファイルの SHA-256 は上の値と一致 |
 | 台帳の読込 | `uv run --frozen odyssey-fx experiment ledger --repo-root <作業ツリー> --out <リポジトリ>` が終了コード 0。研究ポリシー第 4 版（現行）の節に本実験が出る |
 
 ### 2.4 成果物の置き場（版管理の外。D14-7 (a)。決定 53）
@@ -171,6 +171,14 @@
 | 項目 | 値 |
 |---|---|
 | コマンド | `uv run --frozen odyssey-fx experiment reproduce --experiment-dir <リポジトリ>/runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1 --snapshots <リポジトリ>/data/snapshots --out <リポジトリ>/runs/reproduce/h6_h1_breakout_m15_ema_confirm_eurusd/v1 --repo-root <作業ツリー step8-run-h6>`（`caffeinate -i` と `/usr/bin/time -l` で包んだ。台帳には書かない） |
-| 開始（UTC） | 2026-11-07T02:17:53Z |
-| 状態 | 実行中（終わったら本節に終了・経過時間・最大メモリ・一致かどうか・照合の行の数・`reproduction.json` の SHA-256 を追記する） |
+| 実行の場所 | ローカルの Mac。作業ツリー `.claude/worktrees/step8-run-h6`（元の実行と同じコミット `592b852` に本 PR の記録のコミットを足したもの。コードと `uv.lock` は元の実行と同じ） |
+| 開始・終了（UTC） | 2026-11-07T02:17:53Z 〜 2026-11-07T15:37:38Z（終了は `time.log` の書き込み時刻） |
+| 経過時間 | 約 13 時間 20 分（`/usr/bin/time -l` の real 47,984.99 秒）。元の実行の約 0.99 倍 |
+| 最大メモリ | 約 7.64 GiB（`maximum resident set size` 8,208,302,080 バイト） |
+| 終了コード | 記録していない（実行の包みを使わずに起動したため。`reproduction.json` は書き終わっている） |
+| 判定（`reproduction.json` の `verdict`） | **REPRODUCED（一致）** |
+| 照合の行 | 68 行すべて一致: 単位（選定区間と検証区間の run）50 行（両組 25 行ずつ）、fold ごとの選定 10 行（両組 5 行ずつ）、連続口座の経路 8 行（標準の組は区間 2 と終端 1、候補の組は区間 4 と終端 1）。不一致 0 行 |
+| 報告 | `runs/reproduce/h6_h1_breakout_m15_ema_confirm_eurusd/v1/reproduction.json`（メインの checkout の根から。版管理の外）、SHA-256 `1006ba699ccbc0631c8da890b6c61a39af6934b7b258f54e128eb386398f542d` |
+| 台帳 | 再現は台帳に書かない。再現の後も台帳は 6 行のままで、ファイルの SHA-256 は第 2.3 節と同じ `b193e5a4…a580` |
+| 標準出力・最大メモリの記録 | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/reproduce_logs/`（`console.log`・`time.log`・`started_at_utc.txt`。版管理の外。`console.log` は読んでいない） |
 | ディスクの空き | 再現の前に、1 巡目の再現の出力（`runs/reproduce/` の下。約 18.8 GB）が消された。作業役が受け取ったのは司令塔の連絡（「人間の決定 63『1 巡目の再現の出力（約 18.8 GB）を消す（推奨）』を受け、司令塔が runs/reproduce/ を 22:10 に削除」）だけで、決定 63 の人間の原文は版管理にまだ無い（伝聞。PR #156 の仮置き 4）。順 5 の記録（`docs/data/usdjpy_step5_research_loop/README.md` §2.4）の `reproduction.json` の SHA-256 は記録として残るが、そのファイルは今は無い |
