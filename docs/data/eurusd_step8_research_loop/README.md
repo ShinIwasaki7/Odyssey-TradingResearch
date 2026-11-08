@@ -3,7 +3,7 @@
 順 8 の計画書 [D19](../../design/D19_step8_research_round2_plan.md)（v0.3 は PR #151 で承認。研究仮説の選択は人間の決定 61。原文は D19 v0.4 案の §0.4.3。v0.4 案は別の PR で人間の判断待ち）の一巡の、版管理に置く記録である。置き場と報告の形は、順 5 の決め事（D14-7 (a) の 2 層）を引き継いだ（決定 53。D19-7 の行 7-6）。
 
 - **書いてあるのは、仮説・想定・読む観点・識別子・ハッシュ・件数・時間だけ。戦略の成績（指標・損益・取引表・判定の値）と実価格は書かない**（D19 §6 の制約）。数値入りの比較表と分析メモは版管理の外（`runs/experiments/<名前>/v<版>/analysis/`）に置き、ここには置き場と SHA-256 だけを書く（D14 §7.1。決定 53）。
-- 節は一巡の手順（D14 §2。D19 §2.1）の順に足す。本書の版 1 は手順 1「事前の記録」だけを持つ（後続の PR で「元の実験の実行記録」「改善の事前の記録」などの節を足す）。
+- 節は一巡の手順（D14 §2。D19 §2.1）の順に足す。第 1 節は手順 1「事前の記録」（PR #155）、第 2 節は手順 2「元の実験の実行記録」（順 8 の PR-2）。後続で「改善の事前の記録」などの節を足す。
 
 ## 1. 事前の記録（元の実験・版 1。結果を見る前。D14 §2.2、D19 §2.1 の手順 1）
 
@@ -105,3 +105,80 @@
 
 - **既存の宣言に無い部品の版の組み合わせ**（突破 v1 と確認待ちの入場、`market_order_intent` v2・`level_stop_loss` v2、空の有効性の束縛。D19 の仮置き 30）は、全 4 試行でコンパイルを通った。止める必要は無かった。
 - 最大メモリの約 7.0 GB は準備（両組 × 執行と換算の snapshot を開く）だけの値で、D19 §2.4 の見込み（run 1 プロセスの最大 約 5.6 GB。順 7 の機構確認の単一実行の実測）より大きい。実験の run の最大メモリは手順 2 の実測で分かる。
+
+## 2. 元の実験の実行記録（版 1。D14 §2.3・§2.5 の (1)、D19 §2.1 の手順 2）
+
+**判定の値と成績の数値は書かない**（D14 §7.1 (a)。決定 53）。判定・2 軸・保留の印・組の判定は台帳の結末の行（人間がコミットする行。D14-11 (a)。決定 57）にあり、数値は `report.md` と分析メモ（どちらも版管理の外）にある。実行は人間の go（回答の原文「go（4 試行を今から順に実行。推奨）」。司令塔が受け取ったのは 2026-11-06 21:43 JST ごろ。司令塔の指示書の「21:55 JST」は誤記で、司令塔の連絡で訂正された）による。起動（21:47:12 JST）は go の後である。
+
+### 2.1 実行
+
+| 項目 | 値 |
+|---|---|
+| 実験名・版 | `h6_h1_breakout_m15_ema_confirm_eurusd`・版 1（[`configs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd.yaml`](../../../configs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd.yaml)） |
+| 記録票の識別子（`experiment_id`） | `9cc0dd26abf6e16e65ec267fa8d5ab1e03d3f71f0285f5ff6d11e4f7e697fb13` |
+| 実行番号（台帳の `execution`） | 1（台帳の行の `execution_nonce` は `063ddd658e37c746be52e4eb0fcf1ff8`） |
+| 実行コミット | `592b8527e772cd086d4a45c034af3a18ae436b72`（事前登録の PR #155 の merge の後の main。結末記録の `git_commit` はこの値、`git_dirty` は false） |
+| 実行の場所 | ローカルの Mac（決定 55）。作業ツリー `.claude/worktrees/step8-run-h6`（ブランチ `data/step8-run-h6-original`）。`--snapshots` と `--out` はメインの checkout の `data/snapshots/` と根。起動は実行の包み（`tools/ops/run_experiment.py`。D14 §2.3.1） |
+| 開始・終了（UTC） | 2026-11-06T12:47:12Z 〜 2026-11-07T02:16:13Z |
+| 処理時間 | 約 13 時間 29 分（`/usr/bin/time -l` の real 48,540.86 秒）。D19 §7.4 の見込み（約 14.1 時間）の約 0.96 倍で、「見積りの 2 倍を超えたら報告」（D14 §2.9）には当たらない |
+| 最大メモリ | 約 6.75 GiB（`maximum resident set size` 7,248,261,120 バイト）。D19 §2.4 の見込み（約 5.6 GB）より大きく、事前登録の確認の準備の値（約 7.0 GB。第 1.8 節）と同じ程度 |
+| 終了 | 終了コード 0。結末記録の状態は `COMPLETED`。作業ツリーの台帳に開始の行と結末の行がある（D14 §2.3 の終了条件）。事前登録の照合（`preregistration_unchanged`）は合格。事前検査 P1・P2・P6・P7 は合格（記録票の `pre_run_checks`） |
+| 規模 | 試行 4・fold 5、経路の区間は標準の組 2・候補の組 4（同じ試行が続く区間は 1 本にまとまる） |
+| 試行の進み方 | 4 試行は 1 回の `experiment run` の中で 1 本ずつ順に走った（並列なし。決定 55。順は組 → fold → 試行。D09 §5.4）。試行ごとの選定区間の単位（両組 × 5 fold = 10 件）の開始と完了の時刻・整合（予測 run_id と開始記録・run の置き場の一致）・完了記録の SHA-256 は第 2.2 節 |
+| 研究の画面 | 作り直しの終了コード 0（`runs/viewer/index.html`。版管理の外。作業者は開いていない） |
+| `uv.lock` の SHA-256 | `3c067dba15bcc17f5e5616f28001530598140a40a46b105085fd37347b79e3a2`（記録票・結末記録の `lock_digest` と同じ） |
+
+### 2.2 試行ごとの進行（成績を含まない）
+
+| 試行 | 軸の値（第 1.4 節） | 最初の単位の開始（UTC） | 最後の単位の完了（UTC） | 経過 | 整合 | 完了記録 10 件の SHA-256 の束 |
+|---|---|---|---|---|---|---|
+| 0 | N 10・R 1.5 | 2026-11-06T12:50:31Z | 2026-11-07T00:35:49Z | 42,318 秒 | 合格 | `ec16def59e50f888f81a492af9289557a75b0eadc588fe9b162a7b28b751db9e` |
+| 1 | N 10・R 3.0 | 2026-11-06T13:07:59Z | 2026-11-07T00:51:53Z | 42,233 秒 | 合格 | `da14e3a65e60f5d0c1e4d4d79b4c4ab1e2e571b773229c28eaec298ce0a405bf` |
+| 2 | N 20・R 1.5 | 2026-11-06T13:24:06Z | 2026-11-07T01:07:55Z | 42,229 秒 | 合格 | `a6fb99d1a154425bd968cf014612ae127dec75c384205a93cc3cda70a48c5e51` |
+| 3 | N 20・R 3.0 | 2026-11-06T13:39:36Z | 2026-11-07T01:23:55Z | 42,259 秒 | 合格 | `b3a55655b1c2366b7a6cfb99709f59eaceb5df5867b7861de0cb99c787c41fd6` |
+
+- fold をまたいで試行が交互に進むので、各試行の期間は重なる。検証区間の単位と経路の区間は選ばれた試行で走るので、この表には入れていない（どの試行が選ばれたかは書かない）。
+- 束は、`search/<組>/units/f<fold>_TRAIN_t<試行>.json` の 10 件を「`<組>/<ファイル名>:<SHA-256>`」の形で並べ替えて改行でつないだ文字列の SHA-256。完了記録の中身は読んでいない。
+
+### 2.3 試行台帳の行（D09 §10.10。コミット・push は人間。D14-11 (a)、決定 57）
+
+| 項目 | 値 |
+|---|---|
+| ファイル | [`research/trial_ledger.jsonl`](../../../research/trial_ledger.jsonl)（実行が作業ツリー `step8-run-h6` に 2 行を追記した。開始の行と結末の行。どちらも実行番号 1。追記の後は 6 行） |
+| 開始の行のダイジェスト | `3369db2f5fe77e0879a14f5d6f2f4626acbf1317b2a8c6487b91ccb3ab6f61da`（前の行 `3900e80297420a9b6e1ec463eb07b7355b242d0f8f791d5f46c4de22f7e976ed` を指す） |
+| 結末の行（末尾）のダイジェスト | `5cdfca03abec4e1fe59922806465ebd9a624792bbd854ed9ceb8df4d07bce66f`（開始の行を指す。鎖は連続） |
+| 追記の後のファイルの SHA-256 | `b193e5a4e426636e462fd8215fdb6fa5b8dcdd2dc312d25ec13bb7b888e7a580` |
+| コミット | `f5c64d9`（人間 ShinIwasaki7。決定 57。作業役は台帳のファイルを変えず、コミットもしていない）。コミットされたファイルの SHA-256 は上の値と一致 |
+| 台帳の読込 | `uv run --frozen odyssey-fx experiment ledger --repo-root <作業ツリー> --out <リポジトリ>` が終了コード 0。研究ポリシー第 4 版（現行）の節に本実験が出る |
+
+### 2.4 成果物の置き場（版管理の外。D14-7 (a)。決定 53）
+
+| もの | 置き場（メインの checkout の根から） | SHA-256 |
+|---|---|---|
+| 記録票 | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/experiment_manifest.json` | `ff42fb50eaf78ac7aae4f5a8acf184ae5dca393ffd988da843dc2a7cfd8351a4` |
+| 結末記録 | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/experiment_outcome.json` | `1516d2eb5b89122f96c7e2b49816e8db18dc7d3e08f12a886dc944450879a573` |
+| レポート | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/report.md` | `70c6efa94e8ed762fa51c7dc5d7587f095693bb530225205c51036ae19259806` |
+| 分析メモ（手順 3。人間が主・分析役が補助。決定 49） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/analysis/analysis_memo.md` | まだ無い（手順 3 で作る） |
+
+- **レポートの作り直し**（関門 N3 の前半）: `uv run --frozen odyssey-fx experiment report --experiment-dir <リポジトリ>/runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1 --repo-root <作業ツリー>` が終了コード 0 で「既存のレポートと内容が同じなので何もしていない」。`report.md` の SHA-256 は上の値のまま。
+- 作業者は `report.md`・結末記録の判定と数値・`console.log`・研究の画面を読んでいない。結末記録から読んだのは識別子・`git_commit`・`git_dirty`・状態・照合の合否・経路の区間の数だけ。
+- 第 1.6 節の (1)〜(3) は版 1 にそのまま当たる: 版 1 の判定は 1 巡目と同じ評価範囲での判定で、関連する戦略の成績の要約を見た人が選んだ仮説の判定であり、独立した確認ではない。台帳の累計には 1 巡目の 2 実験の実行が入る。
+
+### 2.5 再現（D14-10 (a)。決定 56）
+
+**判定の値と成績の数値は書かない**。書くのは再現の一致・不一致と、進行の事実・ハッシュだけである。
+
+| 項目 | 値 |
+|---|---|
+| コマンド | `uv run --frozen odyssey-fx experiment reproduce --experiment-dir <リポジトリ>/runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1 --snapshots <リポジトリ>/data/snapshots --out <リポジトリ>/runs/reproduce/h6_h1_breakout_m15_ema_confirm_eurusd/v1 --repo-root <作業ツリー step8-run-h6>`（`caffeinate -i` と `/usr/bin/time -l` で包んだ。台帳には書かない） |
+| 実行の場所 | ローカルの Mac。作業ツリー `.claude/worktrees/step8-run-h6`（元の実行と同じコミット `592b852` に本 PR の記録のコミットを足したもの。コードと `uv.lock` は元の実行と同じ） |
+| 開始・終了（UTC） | 2026-11-07T02:17:53Z 〜 2026-11-07T15:37:38Z（終了は `time.log` の書き込み時刻） |
+| 経過時間 | 約 13 時間 20 分（`/usr/bin/time -l` の real 47,984.99 秒）。元の実行の約 0.99 倍 |
+| 最大メモリ | 約 7.64 GiB（`maximum resident set size` 8,208,302,080 バイト） |
+| 終了コード | 記録していない（実行の包みを使わずに起動したため。`reproduction.json` は書き終わっている） |
+| 判定（`reproduction.json` の `verdict`） | **REPRODUCED（一致）** |
+| 照合の行 | 68 行すべて一致: 単位（選定区間と検証区間の run）50 行（両組 25 行ずつ）、fold ごとの選定 10 行（両組 5 行ずつ）、連続口座の経路 8 行（標準の組は区間 2 と終端 1、候補の組は区間 4 と終端 1）。不一致 0 行 |
+| 報告 | `runs/reproduce/h6_h1_breakout_m15_ema_confirm_eurusd/v1/reproduction.json`（メインの checkout の根から。版管理の外）、SHA-256 `1006ba699ccbc0631c8da890b6c61a39af6934b7b258f54e128eb386398f542d` |
+| 台帳 | 再現は台帳に書かない。再現の後も台帳は 6 行のままで、ファイルの SHA-256 は第 2.3 節と同じ `b193e5a4…a580` |
+| 標準出力・最大メモリの記録 | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/reproduce_logs/`（`console.log`・`time.log`・`started_at_utc.txt`。版管理の外。`console.log` は読んでいない） |
+| ディスクの空き | 再現の前に、1 巡目の再現の出力（`runs/reproduce/` の下。約 18.8 GB）が消された。作業役が受け取ったのは司令塔の連絡（「人間の決定 63『1 巡目の再現の出力（約 18.8 GB）を消す（推奨）』を受け、司令塔が runs/reproduce/ を 22:10 に削除」）だけで、決定 63 の人間の原文は版管理にまだ無い（伝聞。PR #156 の仮置き 4）。順 5 の記録（`docs/data/usdjpy_step5_research_loop/README.md` §2.4）の `reproduction.json` の SHA-256 は記録として残るが、そのファイルは今は無い |
