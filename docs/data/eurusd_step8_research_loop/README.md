@@ -158,7 +158,7 @@
 | 記録票 | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/experiment_manifest.json` | `ff42fb50eaf78ac7aae4f5a8acf184ae5dca393ffd988da843dc2a7cfd8351a4` |
 | 結末記録 | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/experiment_outcome.json` | `1516d2eb5b89122f96c7e2b49816e8db18dc7d3e08f12a886dc944450879a573` |
 | レポート | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/report.md` | `70c6efa94e8ed762fa51c7dc5d7587f095693bb530225205c51036ae19259806` |
-| 分析メモ（手順 3。人間が主・分析役が補助。決定 49） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/analysis/analysis_memo.md` | `8366c0360e15555d07c69693af3b6c55aae1ba7a5d2dd2a186f37462e919b94b`（手順 3 で作られた。第 2 節を足した PR #156 の時点では無かった。値は人間の決定 66 の 3 行目。第 3.1 節） |
+| 分析メモ（手順 3。人間が主・分析役が補助。決定 49） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/analysis/analysis_memo.md` | まだ無い（手順 3 で作る） |
 
 - **レポートの作り直し**（関門 N3 の前半）: `uv run --frozen odyssey-fx experiment report --experiment-dir <リポジトリ>/runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1 --repo-root <作業ツリー>` が終了コード 0 で「既存のレポートと内容が同じなので何もしていない」。`report.md` の SHA-256 は上の値のまま。
 - 作業者は `report.md`・結末記録の判定と数値・`console.log`・研究の画面を読んでいない。結末記録から読んだのは識別子・`git_commit`・`git_dirty`・状態・照合の合否・経路の区間の数だけ。
@@ -188,7 +188,7 @@
 **成績の数値・判定の値・実価格は書かない**（D19 §6、決定 53）。原因の根拠と予想の中身は分析メモ（版管理の外）にあり、ここには置き場と SHA-256 だけを書く。
 
 - 事前登録の時刻: 2026-11-09T03:18Z（12:18 JST）ごろに版 2 の実験設定と本節を書き、本節を足した PR のコミットで版管理に置いた。改善後の実験（版 2）は、その PR が main に merge された後の main から、人間の go の後に走らせる（D14 仮置き 2・6、D14 §2.6）。本節を書いた時点で版 2 は走っていない。
-- 事前登録の版 1（第 1 節の戦略宣言・実験設定・確認のテスト）は変えていない。試行台帳（`research/trial_ledger.jsonl`）も変えていない（行は実行が足し、人間がコミットする。決定 57）。
+- 事前登録の版 1（第 1 節の戦略宣言・実験設定・確認のテスト）と第 2 節（版 1 の実行記録。第 2.4 節の分析メモの行の「まだ無い」は PR #156 の時点の記録として残し、SHA-256 は第 3.1 節に書く）は変えていない。試行台帳（`research/trial_ledger.jsonl`）も変えていない（行は実行が足し、人間がコミットする。決定 57）。
 
 ### 3.1 人間の決定（原文が正本）
 
