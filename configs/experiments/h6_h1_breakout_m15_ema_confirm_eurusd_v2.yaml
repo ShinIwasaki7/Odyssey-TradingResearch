@@ -1,0 +1,105 @@
+# 順 8 の改善後の実験（版 2）: 研究仮説 H6「1 時間足の高値更新を、15 分足の移動平均で確かめてから入る」
+# の EURUSD の探索の実験設定（書式 v2。D19 §2.1 の手順 4「変更の記録」、D14 §2.5 の (2)・(3)、D09 §5.6）
+#
+# 版 1（`configs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd.yaml`）を複製し、D09 §5.6 の「次の実験の
+# 始め方」のとおり `version` と `search_plan` だけを書き換え、系譜（`lineage`）を足したもの。
+# 版 1 のファイルは変えない（版 1 の記録票の事前登録の照合と再現が読む）。
+#
+# 人間の決定 66（2026-11-09。原文は `docs/data/eurusd_step8_research_loop/README.md` §3.1）: 変更の種類は
+# 格子の値の変更（`PARAMETERS`）の 1 種類（D14-5 (a) を決定 48〜57 で引き継いだ）で、利確の倍率 R の軸を
+# 下へ動かし、保有を短くする。新しい R の値の組は {1.0, 1.5}（決定 67。同 README §3.1）。
+#
+# - 変えたもの: `version`（1 → 2。同じ実験名の次の版。D14 仮置き 8 に倣う）、`search_plan` の R の軸の値
+#   （{1.5, 3.0} → {1.0, 1.5}）、`lineage`（系譜。D13 §7.1、D14 §2.5 の (3)）。
+# - 変えないもの: 仮説の文・研究ポリシー（第 4 版）・戦略宣言（`h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml`。
+#   STRATEGY_CODE の変更ではないため。部品・部品の版・損切り・軸でない値も同じ）・両組の snapshot と
+#   換算の snapshot の組・環境・口座・リスク・執行・費用・換算・指標集合・1 時間足の高値の窓 N の軸
+#   {10, 20}・`max_trials`（4）・`split`・`final_holdout`。
+# - 試行番号は D09 §5.2 の列挙の順（`breakout_level.lookback` が遅く、`take_profit.reward_risk` が速く
+#   変わる）: 0 = (10, 1.0)、1 = (10, 1.5)、2 = (20, 1.0)、3 = (20, 1.5)。R 1.5 の 2 試行（版 2 の
+#   試行 1・3）は、版 1 の試行 0・2 と同じ設定である。
+# - 系譜の理由の文（`lineage.note`）には成績の数値と判定の値を書かない。理由の根拠は分析メモ
+#   （版管理の外）にあり、ここには置き場と SHA-256 を書く（D14 仮置き 7 に倣う）。台帳の開始の行には
+#   理由の文のダイジェストだけが入る。`derived_from` の実行が台帳にあることは `experiment run` の
+#   開始時に確かめられる（実装 PR #98 の仮置き 56・65）。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**金額・率は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: h6_h1_breakout_m15_ema_confirm_eurusd
+version: 2
+
+lineage:
+  derived_from:
+    experiment_id: "9cc0dd26abf6e16e65ec267fa8d5ab1e03d3f71f0285f5ff6d11e4f7e697fb13"
+    execution: 1
+  change_kinds: [PARAMETERS]
+  note: "順 8 の手順 3 の原因分析で、分析メモ（runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/analysis/analysis_memo.md、SHA-256 8366c0360e15555d07c69693af3b6c55aae1ba7a5d2dd2a186f37462e919b94b）の「3. 変更の候補」の 1 位（事前の記録の読む観点「保有期間・日替わりをまたいだ回数」「リスクリワード・勝率」から導ける変更「保有を短くする出口」「利確の倍率の軸」）を、人間が 2026-11-09 に選んだ（決定 66）。利確の倍率 R の軸の値を {1.5, 3.0} から {1.0, 1.5} へ下げ（決定 67）、利確を近くして保有を短くする。他の軸・値・部品・戦略宣言は変えない。"
+
+hypothesis: "EURUSD の 1 時間足の終値が直近 N 本の 1 時間足の確定高値を上抜けたら、15 分足の終値が 15 分足の EMA（期間 20）を上回るのを最大 4 本待って成行で買い、直近 20 本の 1 時間足の確定安値に損切り、損切りの幅の R 倍に利確を置く規則は、費用を引いた後も、両組で共通基準を満たす"
+
+research_policy: {id: "research_policy", version: 4}
+
+strategy: "configs/strategies/h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+snapshots:
+  standard: "4e6eb8d40df023685b6b0739bd202d132c97997de68e8d55f0b4114c89bb917b"
+  candidate: "9c03bc1283e5c7474dc1602104d943fe7985b11c745dae3135813fc7ddee1b19"
+
+conversion_snapshots:
+  standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+  candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+
+execution_series: "EURUSD/15m/bid"
+
+resolution_hierarchy:
+  - "EURUSD/15m/bid"
+  - "EURUSD/1m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    EURUSD: "0.0005"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.0001"
+  close_slippage: "0.0001"
+  spread_offset: "0.0002"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT30M"
+
+evaluation: {metric_set_version: 3}
+
+search_plan:
+  kind: GRID
+  max_trials: 4
+  axes:
+    - {instance: breakout_level, parameter: lookback, values: [10, 20]}
+    - {instance: take_profit, parameter: reward_risk, values: [1.0, 1.5]}
+
+split: STANDARD
+
+final_holdout: NONE
