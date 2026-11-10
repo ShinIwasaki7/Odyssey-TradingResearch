@@ -1,0 +1,414 @@
+{
+  "approval": {
+    "approved_at": "2026-11-10T11:56:50.682433Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 2,
+    "code_version": "fe8dcb15743e387c20b79a7c3978e3f7d4b50b1dabc4e1db056be2a584f1a6da",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2026-11-08T22:00:00Z",
+              "start": "2026-11-01T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2026-11-08T22:00:00Z",
+            "start": "2026-11-01T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "EURJPY"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "bc7f779d3f75789ea1f05132e1666f2becb02c11141cf82933eb4ed5eed4e4f4",
+      "months": [
+        "2026-11"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3",
+        "table_id": "oanda_mt5_time_rules_sealed",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 1,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-10T11:23:26.183158Z",
+  "declaration_record": {
+    "declared_at": "2026-11-10T11:56:50.682433Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "5f2597cf7e20663cb98fad4096977bb3554e1ab2051b150d240168401b7b794e"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 480,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "88bbfab3b1cb3815e8db5950f235f034dc3d73fc603dbe3f7833e16a3ac518ee"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 5,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "e5f1fec66cde926eaafb3acb942672fc81a2a37b118fddf689572acf55140846"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 120,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "f79cfe9c4378df577e838d3dde0f88517630455b31e62563fb6794b82b13373e"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 7187,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "144f48da87843d589a2f7703c83966967234577baace8c49d5886717d3f41bd1"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:08:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 30,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "95c3a4debcd671a99a5903d82c14324666ceb79ad9e38ceffde89f23a156befe"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "5f2597cf7e20663cb98fad4096977bb3554e1ab2051b150d240168401b7b794e"
+  },
+  "quality_read": {
+    "access_id": "1aed015c20e392dfa6a6ac25278a326b",
+    "permit_required": true
+  },
+  "resolved_classifications": [],
+  "schema_version": 2,
+  "sealed_initial_states": [
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "15m@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1d_ny17@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1h@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "1m@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "EURJPY",
+          "timeframe": "4h_ny17@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    }
+  ],
+  "series": [
+    {
+      "bar_count": 480,
+      "coverage_counts": {
+        "built_bars": 480,
+        "no_record_bars": 0,
+        "partial_bars": 2,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 13
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 5,
+      "coverage_counts": {
+        "built_bars": 5,
+        "no_record_bars": 0,
+        "partial_bars": 2,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 13
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 120,
+      "coverage_counts": {
+        "built_bars": 120,
+        "no_record_bars": 0,
+        "partial_bars": 2,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 13
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 7187,
+      "coverage_counts": {
+        "built_bars": 7187,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 13
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:08:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 30,
+      "coverage_counts": {
+        "built_bars": 30,
+        "no_record_bars": 0,
+        "partial_bars": 2,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 13
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "EURJPY",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "EURJPY",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "a7b52d3892d7f087585896a3ad37826062faad0242e411902c72afb5a9519093",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5_sealed/2026-11-10/EURJPY/EURJPY_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 7187,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 7187,
+      "sha256": "e45f77a8d9239b1e62cf12351e95f3a79282b3b17befc7f471ae0cd14e76f7d3",
+      "symbol": "EURJPY",
+      "timeframe": "1m@v1"
+    }
+  ]
+}

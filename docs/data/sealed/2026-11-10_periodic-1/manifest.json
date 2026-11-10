@@ -1,0 +1,397 @@
+{
+ "kind": "oanda_mt5_sealed_fetch",
+ "schema": 1,
+ "stage": "periodic",
+ "decision": "ADR-0037",
+ "time_basis": "API の生の時刻（秒）。変換しない（D12-47）。要求の区間は時刻の規則の表の標準の組で UTC から直した",
+ "price_basis": "bid の足（chart_mode 0）",
+ "columns": [
+  "time",
+  "open",
+  "high",
+  "low",
+  "close",
+  "tick_volume",
+  "spread",
+  "real_volume"
+ ],
+ "window_config_sha256": "0f61ba5e10c7c917a143e54a63511492ce52ca970f707e0def68228ffd82153b",
+ "time_rule_table": {
+  "id": "oanda_mt5_time_rules_sealed",
+  "version": 1,
+  "sha256": "f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3",
+  "variant": "standard"
+ },
+ "window": {
+  "utc_from": "2026-11-01T22:00:00Z",
+  "utc_to": "2026-11-08T22:00:00Z"
+ },
+ "plan_sha256": "f4a19efd5b6ea0f1e1632b6ce0c98744c714471ee156cc4d070df8243eda9232",
+ "planned_requests": 8,
+ "planned": {
+  "USDJPY": [
+   "P-USDJPY-20261101T2200Z"
+  ],
+  "EURJPY": [
+   "P-EURJPY-20261101T2200Z"
+  ],
+  "EURUSD": [
+   "P-EURUSD-20261101T2200Z"
+  ],
+  "GBPJPY": [
+   "P-GBPJPY-20261101T2200Z"
+  ],
+  "USDCHF": [
+   "P-USDCHF-20261101T2200Z"
+  ],
+  "AUDJPY": [
+   "P-AUDJPY-20261101T2200Z"
+  ],
+  "GBPUSD": [
+   "P-GBPUSD-20261101T2200Z"
+  ],
+  "AUDUSD": [
+   "P-AUDUSD-20261101T2200Z"
+  ]
+ },
+ "max_requests": 9,
+ "requests_sent": 8,
+ "storage_terms": "制約の改定文 ADR-0037 の下で取得した 2024 年以降の封印のデータ。誰も開かない。読む経路は関所の下の受入れと最終検証のコマンドだけ（ADR-0037 第1項の 3 の 3）。再配布しない。",
+ "symbols": {
+  "USDJPY": {
+   "symbol": "USDJPY.cl",
+   "chart_mode": 0,
+   "point": 0.001,
+   "digits": 3
+  },
+  "USDCHF": {
+   "symbol": "USDCHF.cl",
+   "chart_mode": 0,
+   "point": 1e-05,
+   "digits": 5
+  },
+  "AUDJPY": {
+   "symbol": "AUDJPY.cl",
+   "chart_mode": 0,
+   "point": 0.001,
+   "digits": 3
+  },
+  "EURUSD": {
+   "symbol": "EURUSD.cl",
+   "chart_mode": 0,
+   "point": 1e-05,
+   "digits": 5
+  },
+  "EURJPY": {
+   "symbol": "EURJPY.cl",
+   "chart_mode": 0,
+   "point": 0.001,
+   "digits": 3
+  },
+  "GBPJPY": {
+   "symbol": "GBPJPY.cl",
+   "chart_mode": 0,
+   "point": 0.001,
+   "digits": 3
+  },
+  "GBPUSD": {
+   "symbol": "GBPUSD.cl",
+   "chart_mode": 0,
+   "point": 1e-05,
+   "digits": 5
+  },
+  "AUDUSD": {
+   "symbol": "AUDUSD.cl",
+   "chart_mode": 0,
+   "point": 1e-05,
+   "digits": 5
+  }
+ },
+ "files": {
+  "P-USDJPY-20261101T2200Z": {
+   "rid": "P-USDJPY-20261101T2200Z",
+   "pair": "USDJPY",
+   "symbol": "USDJPY.cl",
+   "stage": "periodic",
+   "file": "USDJPY/USDJPY_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7179,
+   "first_bar_time": 1793577660,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 1,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:07:31.356042+00:00",
+   "sha256_gz": "e84efa9e6de17e1b34fe716c847037ffa108488d7d4deb38678a31a436eb0aff",
+   "sha256_csv": "8ffe7773b834ae6c1a8d5bfccb44e2670bfa93abc5e6fe26d3b2435c015d821d"
+  },
+  "P-USDCHF-20261101T2200Z": {
+   "rid": "P-USDCHF-20261101T2200Z",
+   "pair": "USDCHF",
+   "symbol": "USDCHF.cl",
+   "stage": "periodic",
+   "file": "USDCHF/USDCHF_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7155,
+   "first_bar_time": 1793578500,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 0,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:09:17.775799+00:00",
+   "sha256_gz": "f304c2727257d8aacfd4c71dc97ef676a68508e0d49c1a4e5e1462e60d42314e",
+   "sha256_csv": "250fdd292d26aecad7f8c1d69139ebf37fd8450b55847cf6653bb69ccd594833"
+  },
+  "P-AUDJPY-20261101T2200Z": {
+   "rid": "P-AUDJPY-20261101T2200Z",
+   "pair": "AUDJPY",
+   "symbol": "AUDJPY.cl",
+   "stage": "periodic",
+   "file": "AUDJPY/AUDJPY_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7198,
+   "first_bar_time": 1793577600,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 1,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:10:08.343810+00:00",
+   "sha256_gz": "ee00b187663dfdaf173c9931fbf1c025b3eeaf8076a14b618c6d89ee21f6748d",
+   "sha256_csv": "af0acc74c349dbb651f76d678b5a736743b348d139c24a8087a24f3f6a61b637"
+  },
+  "P-EURUSD-20261101T2200Z": {
+   "rid": "P-EURUSD-20261101T2200Z",
+   "pair": "EURUSD",
+   "symbol": "EURUSD.cl",
+   "stage": "periodic",
+   "file": "EURUSD/EURUSD_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7194,
+   "first_bar_time": 1793577600,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 1,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:10:58.559899+00:00",
+   "sha256_gz": "0a6e015bd5e7693bade89ae76637cb99a026aed6d49e2c57775c398196f4aa5c",
+   "sha256_csv": "ce1b17d6205800b53c1524b9cefb1e685e754f973af6fce7dcb98adc227bdfec"
+  },
+  "P-EURJPY-20261101T2200Z": {
+   "rid": "P-EURJPY-20261101T2200Z",
+   "pair": "EURJPY",
+   "symbol": "EURJPY.cl",
+   "stage": "periodic",
+   "file": "EURJPY/EURJPY_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7187,
+   "first_bar_time": 1793578080,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 0,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:11:48.203195+00:00",
+   "sha256_gz": "e45f77a8d9239b1e62cf12351e95f3a79282b3b17befc7f471ae0cd14e76f7d3",
+   "sha256_csv": "21dbe90c085bf89e45a90c8050a2e4152c4f636ee7a06a1e3f346d53cebbf613"
+  },
+  "P-GBPJPY-20261101T2200Z": {
+   "rid": "P-GBPJPY-20261101T2200Z",
+   "pair": "GBPJPY",
+   "symbol": "GBPJPY.cl",
+   "stage": "periodic",
+   "file": "GBPJPY/GBPJPY_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7197,
+   "first_bar_time": 1793577600,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 1,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:12:39.352856+00:00",
+   "sha256_gz": "ddc1e7688b790108d87b81428973e661608a075c1ee8cf1e25d94d0b4523194a",
+   "sha256_csv": "43b7d50b4345219c46801873cd313e9ea4718725138fc277adaf07e7b8aef488"
+  },
+  "P-GBPUSD-20261101T2200Z": {
+   "rid": "P-GBPUSD-20261101T2200Z",
+   "pair": "GBPUSD",
+   "symbol": "GBPUSD.cl",
+   "stage": "periodic",
+   "file": "GBPUSD/GBPUSD_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7188,
+   "first_bar_time": 1793577600,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 1,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:13:32.245271+00:00",
+   "sha256_gz": "bbf9f582aabb348ebf3a2e99d6a9ea02db37b12fc8e29aeaee80e61dc1177570",
+   "sha256_csv": "4787508645472c246cbc25172d7667de0b3d35d28465f139a3a1c6f55f4891bb"
+  },
+  "P-AUDUSD-20261101T2200Z": {
+   "rid": "P-AUDUSD-20261101T2200Z",
+   "pair": "AUDUSD",
+   "symbol": "AUDUSD.cl",
+   "stage": "periodic",
+   "file": "AUDUSD/AUDUSD_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+   "status": "ok",
+   "requested_from_api_time": "2026-11-02T00:00:00+00:00",
+   "requested_to_api_time": "2026-11-09T00:00:00+00:00",
+   "requested_from_utc": "2026-11-01T22:00:00+00:00",
+   "requested_to_utc": "2026-11-08T22:00:00+00:00",
+   "rows": 7195,
+   "first_bar_time": 1793577600,
+   "last_bar_time": 1794009540,
+   "out_of_window_count": 1,
+   "retries": 0,
+   "attempts": 1,
+   "last_error": "(1, 'Success')",
+   "executed_at_utc": "2026-11-10T11:14:23.986673+00:00",
+   "sha256_gz": "86a572c2ce124debd22cec1c8e638ca4441cae849a833136d2e4d6b4563cb34c",
+   "sha256_csv": "73a91e8c1784128bbf3e1f0a309d0a5b9937ddb844de83f622a49f521db52d0f"
+  }
+ },
+ "runs": [
+  {
+   "pair": "USDJPY",
+   "finished_at_utc": "2026-11-10T11:07:31.606228+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 1
+  },
+  {
+   "pair": "USDCHF",
+   "finished_at_utc": "2026-11-10T11:09:18.010840+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 2
+  },
+  {
+   "pair": "AUDJPY",
+   "finished_at_utc": "2026-11-10T11:10:08.564208+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 3
+  },
+  {
+   "pair": "EURUSD",
+   "finished_at_utc": "2026-11-10T11:10:58.779510+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 4
+  },
+  {
+   "pair": "EURJPY",
+   "finished_at_utc": "2026-11-10T11:11:48.422823+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 5
+  },
+  {
+   "pair": "GBPJPY",
+   "finished_at_utc": "2026-11-10T11:12:39.572279+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 6
+  },
+  {
+   "pair": "GBPUSD",
+   "finished_at_utc": "2026-11-10T11:13:32.465039+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 7
+  },
+  {
+   "pair": "AUDUSD",
+   "finished_at_utc": "2026-11-10T11:14:24.205994+00:00",
+   "stage": "periodic",
+   "redo_empty": false,
+   "sent_this_run": 1,
+   "ok": 1,
+   "empty": 0,
+   "skipped_done": 0,
+   "stop": null,
+   "requests_sent_total": 8
+  }
+ ],
+ "tool_sha256": "3b3654816c1987c613b854129aa250986f585b69ecbd9e1b238408c493c03abf",
+ "terminal": {
+  "version": "(500, 6314, '9 Nov 2026')",
+  "terminal": {
+   "build": 6314,
+   "name": "OANDA MetaTrader 5",
+   "company": "OANDA Corporation",
+   "maxbars": 100000000,
+   "connected": true
+  }
+ }
+}

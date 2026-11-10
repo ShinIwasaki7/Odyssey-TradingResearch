@@ -1,0 +1,414 @@
+{
+  "approval": {
+    "approved_at": "2026-11-10T11:59:13.193918Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 2,
+    "code_version": "fe8dcb15743e387c20b79a7c3978e3f7d4b50b1dabc4e1db056be2a584f1a6da",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2026-11-08T22:00:00Z",
+              "start": "2026-11-01T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2026-11-08T22:00:00Z",
+            "start": "2026-11-01T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "GBPUSD"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "bc7f779d3f75789ea1f05132e1666f2becb02c11141cf82933eb4ed5eed4e4f4",
+      "months": [
+        "2026-11"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3",
+        "table_id": "oanda_mt5_time_rules_sealed",
+        "variant": "candidate",
+        "version": 1
+      },
+      "weeks_checked": 1,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-10T11:26:40.088884Z",
+  "declaration_record": {
+    "declared_at": "2026-11-10T11:59:13.193918Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "8c8a7a9b957d398b3c3e8efd3e996ce872004d7fecb4142d19dbd3a3b9dd60ee"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 480,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "3dab55ab0721211e9185e3d0256d814600a9c41bad7f2d8234322b658476f5b1"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 5,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "fa691a004c41bad8d20490adc3de53f31eca3cbbf6907aa7e9f7eab18a14ee3e"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 120,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "22e92a5b327933b8f63a16f6aa314df958f0e49d5d741414ec84e36b11498d71"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 7188,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "62c5e61d31e53a40a19709ae3307d7a906d16f65edad0a890c56124346e3ea54"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 30,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "b0c4d9c2cbf656f4450224c402212c24a0886080c4faa7ce6c31b70d04f05faa"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "8c8a7a9b957d398b3c3e8efd3e996ce872004d7fecb4142d19dbd3a3b9dd60ee"
+  },
+  "quality_read": {
+    "access_id": "146b0a7cbd1bfe82857db9666cbe01c5",
+    "permit_required": true
+  },
+  "resolved_classifications": [],
+  "schema_version": 2,
+  "sealed_initial_states": [
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "15m@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1d_ny17@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1h@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "1m@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "GBPUSD",
+          "timeframe": "4h_ny17@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    }
+  ],
+  "series": [
+    {
+      "bar_count": 480,
+      "coverage_counts": {
+        "built_bars": 480,
+        "no_record_bars": 0,
+        "partial_bars": 5,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 5,
+      "coverage_counts": {
+        "built_bars": 5,
+        "no_record_bars": 0,
+        "partial_bars": 4,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 120,
+      "coverage_counts": {
+        "built_bars": 120,
+        "no_record_bars": 0,
+        "partial_bars": 5,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 7188,
+      "coverage_counts": {
+        "built_bars": 7188,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 30,
+      "coverage_counts": {
+        "built_bars": 30,
+        "no_record_bars": 0,
+        "partial_bars": 4,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 12
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "GBPUSD",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "GBPUSD",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "068d5813d2ba99f6d276ac60e404c786416bd32d3c08826f7064e061d0d716ef",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5_sealed/2026-11-10/GBPUSD/GBPUSD_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 7188,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 7188,
+      "sha256": "bbf9f582aabb348ebf3a2e99d6a9ea02db37b12fc8e29aeaee80e61dc1177570",
+      "symbol": "GBPUSD",
+      "timeframe": "1m@v1"
+    }
+  ]
+}
