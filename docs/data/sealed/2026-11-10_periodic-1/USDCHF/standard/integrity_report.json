@@ -1,0 +1,389 @@
+{
+  "results": [
+    {
+      "detail": [
+        {
+          "key": "expected_minutes",
+          "value": "15"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-01T22:15:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "kind": "NO_RECORD_BAR",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "15m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "bars_below_0_50",
+          "value": "2"
+        },
+        {
+          "key": "bars_below_0_90",
+          "value": "3"
+        },
+        {
+          "key": "bars_below_0_99",
+          "value": "1"
+        },
+        {
+          "key": "bars_below_1",
+          "value": "0"
+        },
+        {
+          "key": "min_coverage",
+          "value": "7/15"
+        },
+        {
+          "key": "partial_bars",
+          "value": "6"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-05T22:15:00Z",
+        "start": "2026-11-01T22:15:00Z"
+      },
+      "kind": "PARTIAL_COVERAGE_BAR",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "15m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "bars_below_0_50",
+          "value": "0"
+        },
+        {
+          "key": "bars_below_0_90",
+          "value": "0"
+        },
+        {
+          "key": "bars_below_0_99",
+          "value": "1"
+        },
+        {
+          "key": "bars_below_1",
+          "value": "4"
+        },
+        {
+          "key": "min_coverage",
+          "value": "709/720"
+        },
+        {
+          "key": "partial_bars",
+          "value": "5"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "kind": "PARTIAL_COVERAGE_BAR",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1d_ny17@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "bars_below_0_50",
+          "value": "0"
+        },
+        {
+          "key": "bars_below_0_90",
+          "value": "3"
+        },
+        {
+          "key": "bars_below_0_99",
+          "value": "2"
+        },
+        {
+          "key": "bars_below_1",
+          "value": "0"
+        },
+        {
+          "key": "min_coverage",
+          "value": "19/30"
+        },
+        {
+          "key": "partial_bars",
+          "value": "5"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-05T23:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "kind": "PARTIAL_COVERAGE_BAR",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1h@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "15"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-01T22:15:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "6"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-01T22:22:00Z",
+        "start": "2026-11-01T22:16:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "1"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-01T22:52:00Z",
+        "start": "2026-11-01T22:51:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "5"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-02T22:06:00Z",
+        "start": "2026-11-02T22:01:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "1"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-02T22:12:00Z",
+        "start": "2026-11-02T22:11:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "2"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-02T22:15:00Z",
+        "start": "2026-11-02T22:13:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "5"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-03T22:06:00Z",
+        "start": "2026-11-03T22:01:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "3"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-03T22:14:00Z",
+        "start": "2026-11-03T22:11:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "2"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-04T22:03:00Z",
+        "start": "2026-11-04T22:01:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "1"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-04T22:05:00Z",
+        "start": "2026-11-04T22:04:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "minutes",
+          "value": "4"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-05T22:05:00Z",
+        "start": "2026-11-05T22:01:00Z"
+      },
+      "kind": "UNRECORDED_MINUTES",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      },
+      "severity": "INFO"
+    },
+    {
+      "detail": [
+        {
+          "key": "bars_below_0_50",
+          "value": "0"
+        },
+        {
+          "key": "bars_below_0_90",
+          "value": "0"
+        },
+        {
+          "key": "bars_below_0_99",
+          "value": "5"
+        },
+        {
+          "key": "bars_below_1",
+          "value": "0"
+        },
+        {
+          "key": "min_coverage",
+          "value": "109/120"
+        },
+        {
+          "key": "partial_bars",
+          "value": "5"
+        }
+      ],
+      "interval": {
+        "end": "2026-11-06T02:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "kind": "PARTIAL_COVERAGE_BAR",
+      "series": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "4h_ny17@v1"
+      },
+      "severity": "INFO"
+    }
+  ],
+  "schema_version": 1
+}

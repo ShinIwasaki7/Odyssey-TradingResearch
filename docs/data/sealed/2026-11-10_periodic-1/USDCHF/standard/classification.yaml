@@ -1,0 +1,18 @@
+# 分類ファイル（形式版 2。D03 §4 の 9・§16.3.5）: 取得日 2026-11-10 の定期取得の初回（封印。前向きの封印 FORWARD_HOLDOUT）の USDCHF 標準の組（standard）。
+#
+# 状態: **実行済み**。2026-11-10 の人間の承認「8 通貨すべて承認（推奨）」の後に、この分類で確定した（記入した分類 0 件）。
+#
+# 対象: `uv run odyssey-fx data accept-mt5 --sealed --fetch-date 2026-11-10 --symbol USDCHF --variant standard --manifest-copy docs/data/sealed/2026-11-10_periodic-1/manifest.json --out data/snapshots`
+# の暫定 snapshot（provisional_id 02161c6f9f48832846b654c56bf98a78d76db07069bde3c5f5a7525765f52bbd）。
+# 分類対象の警告（存在すべき足の欠落・休場帯の足 UNEXPECTED_BAR）は 0 件なので、分類は空（確定だけを行う）。
+#
+# カレンダーは変えず、再実行も要らないので `calendar` は書かない（一括取得 S5a と同じ形）。価格は含まない。
+#
+# 実行（承認の後。リポジトリの根で）:
+#   uv run odyssey-fx data classify --pending 02161c6f9f48832846b654c56bf98a78d76db07069bde3c5f5a7525765f52bbd \
+#     --decisions docs/data/sealed/2026-11-10_periodic-1/USDCHF/standard/classification.yaml \
+#     --timeframes configs/calendars/timeframes_v2.yaml --out data/snapshots
+
+schema_version: 2
+
+decisions: []

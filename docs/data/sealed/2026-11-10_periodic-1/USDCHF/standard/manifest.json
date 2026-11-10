@@ -1,0 +1,414 @@
+{
+  "approval": {
+    "approved_at": "2026-11-10T11:54:02.041269Z",
+    "approved_by": "ShinIwasaki7",
+    "comment": ""
+  },
+  "basis_declaration": {
+    "value": "bid",
+    "verified": false
+  },
+  "closure_decisions": [],
+  "conversion": {
+    "aggregation_rule_version": "m1_coverage_v1",
+    "calendar_id": "fx_ny17_oanda",
+    "calendar_version": 2,
+    "code_version": "fe8dcb15743e387c20b79a7c3978e3f7d4b50b1dabc4e1db056be2a584f1a6da",
+    "mt5": {
+      "acquisitions": [
+        {
+          "acquired": [
+            {
+              "end": "2026-11-08T22:00:00Z",
+              "start": "2026-11-01T22:00:00Z"
+            }
+          ],
+          "data_interval": {
+            "end": "2026-11-08T22:00:00Z",
+            "start": "2026-11-01T22:00:00Z"
+          },
+          "failed": [],
+          "symbol": "USDCHF"
+        }
+      ],
+      "column_mapping": "oanda_mt5_m1@v1",
+      "fetch_manifest_sha256": "bc7f779d3f75789ea1f05132e1666f2becb02c11141cf82933eb4ed5eed4e4f4",
+      "months": [
+        "2026-11"
+      ],
+      "route": "oanda_mt5_m1",
+      "time_rule_table": {
+        "sha256": "f4052b591b663042e0a20e205978a3d55171be6c90e1339f8e12de661daa03e3",
+        "table_id": "oanda_mt5_time_rules_sealed",
+        "variant": "standard",
+        "version": 1
+      },
+      "weeks_checked": 1,
+      "weeks_failed": 0
+    },
+    "time_convention": "api_time_via_time_rule_table"
+  },
+  "created_at": "2026-11-10T11:19:51.116117Z",
+  "declaration_record": {
+    "declared_at": "2026-11-10T11:54:02.041269Z",
+    "declared_by": "ShinIwasaki7"
+  },
+  "integrity_report_ref": {
+    "algorithm": "sha256",
+    "hex": "ef6158320be074f91962f4bea6d976116ce05684e7de2f25dc9ac573f5ad28a8"
+  },
+  "legacy_access": [],
+  "partitions": [
+    {
+      "bar_count": 479,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "62902e8207ed28142464aa45b937019fb03d5487ff7917607c309f2d0ec8b948"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:15:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "15m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 5,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "b2501f19ce3532d9026cfa30e4a0107321bbd3c1a5ac5f78cb16f430f54762ba"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1d_ny17@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 120,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "80f116b463163f3989959e2f321bb27011a90352b398b2e45ed446461cacf197"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1h@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 7155,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "4b284e6339a2806b4d9a7560319dc0cb8150571af06a8238c44b36343c7f3473"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:15:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1m@v1"
+        }
+      }
+    },
+    {
+      "bar_count": 30,
+      "digest": {
+        "algorithm": "sha256",
+        "hex": "715a9d00b93d2db64e1ae031e845b68ff7350037a9c11fbc4d4426941da30866"
+      },
+      "interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "4h_ny17@v1"
+        }
+      }
+    }
+  ],
+  "provisional_report_ref": {
+    "algorithm": "sha256",
+    "hex": "ef6158320be074f91962f4bea6d976116ce05684e7de2f25dc9ac573f5ad28a8"
+  },
+  "quality_read": {
+    "access_id": "5875d402220f4439e134b3f4db9e4a81",
+    "permit_required": true
+  },
+  "resolved_classifications": [],
+  "schema_version": 2,
+  "sealed_initial_states": [
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "15m@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1d_ny17@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1h@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "1m@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    },
+    {
+      "partition_id": {
+        "access_class": "FORWARD_HOLDOUT",
+        "period_start": "2026-11-01T22:00:00Z",
+        "series": {
+          "basis": "bid",
+          "symbol": "USDCHF",
+          "timeframe": "4h_ny17@v1"
+        }
+      },
+      "reasons": [],
+      "state": "SEALED"
+    }
+  ],
+  "series": [
+    {
+      "bar_count": 479,
+      "coverage_counts": {
+        "built_bars": 479,
+        "no_record_bars": 1,
+        "partial_bars": 6,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 45
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:15:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "15m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "15m@v1"
+      }
+    },
+    {
+      "bar_count": 5,
+      "coverage_counts": {
+        "built_bars": 5,
+        "no_record_bars": 0,
+        "partial_bars": 5,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 45
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "1d_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1d_ny17@v1"
+      }
+    },
+    {
+      "bar_count": 120,
+      "coverage_counts": {
+        "built_bars": 120,
+        "no_record_bars": 0,
+        "partial_bars": 5,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 45
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "1h@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1h@v1"
+      }
+    },
+    {
+      "bar_count": 7155,
+      "coverage_counts": {
+        "built_bars": 7155,
+        "no_record_bars": 0,
+        "partial_bars": 0,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 45
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:15:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "1m@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "1m@v1"
+      }
+    },
+    {
+      "bar_count": 30,
+      "coverage_counts": {
+        "built_bars": 30,
+        "no_record_bars": 0,
+        "partial_bars": 5,
+        "shortfall_bars": 0,
+        "shortfall_minutes": 0,
+        "unrecorded_minutes": 45
+      },
+      "covered_interval": {
+        "end": "2026-11-06T22:00:00Z",
+        "start": "2026-11-01T22:00:00Z"
+      },
+      "partitions": [
+        {
+          "access_class": "FORWARD_HOLDOUT",
+          "period_start": "2026-11-01T22:00:00Z",
+          "series": {
+            "basis": "bid",
+            "symbol": "USDCHF",
+            "timeframe": "4h_ny17@v1"
+          }
+        }
+      ],
+      "series_id": {
+        "basis": "bid",
+        "symbol": "USDCHF",
+        "timeframe": "4h_ny17@v1"
+      }
+    }
+  ],
+  "snapshot_id": "02161c6f9f48832846b654c56bf98a78d76db07069bde3c5f5a7525765f52bbd",
+  "sources": [
+    {
+      "declared_basis": "bid",
+      "path": "data/raw/oanda_mt5_sealed/2026-11-10/USDCHF/USDCHF_20261101T2200Z-20261108T2200Z_m1.csv.gz",
+      "provenance_counts": [
+        {
+          "count": 7155,
+          "source": "oanda_mt5"
+        }
+      ],
+      "rows": 7155,
+      "sha256": "f304c2727257d8aacfd4c71dc97ef676a68508e0d49c1a4e5e1462e60d42314e",
+      "symbol": "USDCHF",
+      "timeframe": "1m@v1"
+    }
+  ]
+}
