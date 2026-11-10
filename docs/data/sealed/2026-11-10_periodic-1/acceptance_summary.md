@@ -156,13 +156,13 @@ uv run odyssey-fx data approve --snapshot <最終の識別子> --by <承認者> 
 | `<通貨>/<組>/classification.yaml` | 分類ファイル（空の分類。承認の後に実行した） |
 | `<通貨>/<組>/classify_stdout.txt`・`approve_stdout.txt` | 確定と承認の記入の画面出力（出力のまま） |
 | `<通貨>/<組>/manifest.json`・`integrity_report.json` | 承認の後の確定 snapshot の manifest と検査報告の写し（`data/snapshots/<識別子>/` の同じファイルとバイト単位で同じ。価格は無い） |
-| `human_decision_2026-11-10_approval.md` | 承認の質問（案）と回答の原文（司令塔の伝言の逐語の写し） |
+| `human_decision_2026-11-10_approval.md` | 承認の質問と回答の原文（司令塔の原文の逐語の写し） |
 
 入れないもの: 原ファイル、snapshot の partition（価格を含む）、端末の履歴、価格を含む画面出力（D03 §16.3.6）。
 
 ## 8. 承認と確定の記録（2026-11-10）
 
-人間の決定（2026-11-10、質問ツール）: 「8 通貨すべて承認（推奨）」。回答の原文は `human_decision_2026-11-10_approval.md`（司令塔の伝言の逐語の写し。
+人間の決定（2026-11-10、質問ツール）: 「8 通貨すべて承認（推奨）」。質問と回答の原文は `human_decision_2026-11-10_approval.md`（司令塔の原文の逐語の写し。
 要約や言い換えをしていない）。分類は 8 通貨 × 2 組とも空で確定した（記入した分類 0 件）。
 
 | 通貨 | 組 | 確定 snapshot の識別子 | 承認の後の `manifest.json` の SHA-256 | `integrity_report.json` の SHA-256 | 承認の時刻（UTC） |
