@@ -160,7 +160,7 @@ def test_the_version_1_memo_hash_matches_decision_66() -> None:
 
 
 def test_the_gate_rows_are_all_present() -> None:
-    """N1〜N3・N5 は合格、N4 は人間が判定する（D19 §3、決定 54）。"""
+    """N1〜N3・N5 は合格、N4 は人間が判定して合格（D19 §3、決定 54）。終了は決定 70。"""
     rows = {
         line.split("|")[1].strip(): line
         for line in _section(5).splitlines()
@@ -170,7 +170,10 @@ def test_the_gate_rows_are_all_present() -> None:
     for key in ("N1", "N2", "N5"):
         assert rows[key].rstrip().endswith("| 合格 |"), rows[key]
     assert rows["N3"].rstrip().endswith("| 合格（再現は第 2.5 節の記録による） |"), rows["N3"]
-    assert rows["N4"].rstrip().endswith("| 人間 |"), rows["N4"]
+    assert rows["N4"].rstrip().endswith("| 合格（人間の判定「合格（結んでいる）」） |"), rows["N4"]
+    section = _section(5)
+    assert "「順 8 を終了とする（推奨）」" in section
+    assert "**2026-11-10 の決定 70 で順 8 は終了。関門 N1〜N5 すべて合格**" in section
 
 
 def test_section_5_carries_no_verdict_values() -> None:
