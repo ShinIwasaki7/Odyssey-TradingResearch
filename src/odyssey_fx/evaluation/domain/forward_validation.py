@@ -348,7 +348,7 @@ class LengthRule:
         if (
             not isinstance(probability, Decimal)
             or not probability.is_finite()
-            or not Decimal(0) < probability < Decimal(1)
+            or not 0 < probability < 1
         ):
             raise KernelValueError(
                 f"LengthRule.probability must be a Decimal in (0, 1), got {probability!r}"
