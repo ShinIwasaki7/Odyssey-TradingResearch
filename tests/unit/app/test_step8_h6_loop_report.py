@@ -193,6 +193,14 @@ def test_section_5_carries_no_verdict_values() -> None:
         assert label not in section, label
 
 
+def test_section_5_carries_no_price_like_decimals() -> None:
+    """第 5 節に小数点以下 3 桁以上の小数（実価格や指標の値の形）が無い（D19 §6）。
+
+    格子の値（R の 1.0・1.5 など）は小数点以下 1 桁なので当たらない。
+    """
+    assert re.search(r"(?<![0-9A-Za-z])[0-9]+\.[0-9]{3,}(?![0-9])", _section(5)) is None
+
+
 def _table_rows(text: str, heading: str) -> list[tuple[str, str]]:
     """`heading` の後の最初の表の、見出し行と区切り行を除いた各行の 1 列目と 2 列目。"""
     body = text[text.index(heading) :]

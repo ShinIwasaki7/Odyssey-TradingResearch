@@ -365,14 +365,14 @@
 ### 5.3 2 回目の改善（版 3）を行わない決定
 
 - **分析役の推奨（版 2 の分析メモ。人間が貼った原文から写した）**: 「ここで終える（版 3 をしない）」。
-- **人間の決定 69（2026-11-10。原文は第 5.8 節）**: 「ここで終える（推奨）」。順 8 の再評価は版 2 の 1 回で終える（決定 52 の上限 2 回の範囲。2 回目は義務ではない。D14 §6.2）。D14 §6.3 の 4. により、最後の版（版 2）の実行記録（第 4 節。PR #158）と一巡の報告（本節）で一巡を閉じる。
+- **人間の決定 69（2026-11-10。原文は第 5.8 節）**: 「ここで終える（推奨）」。順 8 の再評価は版 2 の 1 回で終える（決定 52 の上限 2 回の範囲。2 回目は義務ではない。D14 §6.2）。最後の版（版 2）の実行記録（第 4 節）は PR #158 に先に置き、一巡の報告（本節）は D19 §2.2 の PR の一覧の「最後の PR」に置いた。D14 §6.3 の 4. は両方を 1 本の最後の PR に置く形（順 5 の PR #105）で、順 8 は D19 §2.2 の一覧に従って 2 本に分けた。
 
 ### 5.4 比較表と分析メモの置き場（版管理の外。D14-7 (a)。決定 53）
 
 | もの | 置き場（メインの checkout の根から） | SHA-256 |
 |---|---|---|
 | 版 1 の分析メモ（手順 3） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v1/analysis/analysis_memo.md` | `8366c0360e15555d07c69693af3b6c55aae1ba7a5d2dd2a186f37462e919b94b` |
-| 版 2 の分析メモ（手順 5 の原因分析。成績の数値を含む） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis/analysis_memo.md` | `002f2d91552a1142d8c3b15cc32390d814bc043c118a929e24856947e649a900` |
+| 版 2 の分析メモ（版 2 の手順 3。D19 §2.1 の手順 5「再評価」の結果の原因分析。成績の数値を含む） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis/analysis_memo.md` | `002f2d91552a1142d8c3b15cc32390d814bc043c118a929e24856947e649a900` |
 | 比較表（D14 §7.1 の形。版 1 と版 2 を組ごとに並べる。成績の数値を含む） | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis/comparison.md` | `0c694374ed900d885fd2d2a20b98b8cdf4fcafeb1cf0459fc6de7595a758a9fc` |
 | 版 2 の分析メモのブラウザ表示用の写し | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis/analysis_memo.html` | `da51216781e5e13c4845004151f565b626b167886635a7eca641d1142ad26be3` |
 | 比較表のブラウザ表示用の写し | `runs/experiments/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis/comparison.html` | `dbea617b4106be87870985e872547bce4b1cba28fe458c0676e6b822c9db22ba` |
