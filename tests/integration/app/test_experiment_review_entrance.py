@@ -7,6 +7,11 @@
   理由の識別子 `ENTRY_VERDICT_NOT_MEETS_STANDARD`、審査台帳が変わらない、`--out` の下に何も
   作られない。
   **判定の値そのものは読まない・出さない**（仮置き 14）。確かめるのは終了コードと理由の識別子だけ。
+- **順 7 の残課題 R5**（人間の決定 40 の帰結。D17 §3.3、D15 §6 の E2 の注記）: H2 の版 1・版 2 は
+  研究ポリシー第 3 版を指し、第 4 版の登録で第 3 版は「現行の版」でなくなった。入口の検査は順 5
+  （判定）を順 6（現行の版）より先に当てるので、実際の拒否の理由は順 5 のまま変わらない。
+  順 6 でも止まることは、H2 の**実際の開始の行**に**人工の結末の行**（判定を
+  `MEETS_STANDARD` に置いたもの）をつないだ台帳で確かめる（実際の判定の値は読まない）。
 - 人工の試行台帳での入口の各検査の不合格（順 1〜8）と、読込の誤り（終了コード 2）。
 """
 
@@ -26,19 +31,34 @@ from odyssey_fx.app.config.adoption_review import (
     adoption_review_registry_path,
     load_adoption_review_registry,
 )
+from odyssey_fx.app.config.research_policy import (
+    load_research_policy_registry,
+    research_policy_registry_path,
+)
 from odyssey_fx.common.canonical import digest
-from odyssey_fx.common.refs import PolicyRef
+from odyssey_fx.common.ids import ExperimentId
+from odyssey_fx.common.refs import ContentDigest, PolicyRef
+from odyssey_fx.evaluation.adapters.fs_store import TRIAL_LEDGER_PATH, read_trial_ledger_file
 from odyssey_fx.evaluation.adapters.review_store import (
     ADOPTION_REVIEW_LEDGER_PATH,
     review_line_bytes,
 )
-from odyssey_fx.evaluation.domain.adoption_review import ReviewResult
+from odyssey_fx.evaluation.application.ports import TrialLedgerContents
+from odyssey_fx.evaluation.domain.adoption_review import (
+    EntranceAccepted,
+    EntranceRejected,
+    ReviewReason,
+    ReviewResult,
+    check_entrance,
+)
 from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
+from odyssey_fx.evaluation.domain.research_policy import RegistryEntry, current_standard_version
 from odyssey_fx.evaluation.domain.search import (
     SearchVerdict,
     StandardPurpose,
     TrialLedgerEntry,
     TrialLedgerLine,
+    started_line_of,
 )
 from tests.fixtures.evaluation.adoption_review import (
     REPO_ROOT,
@@ -101,6 +121,53 @@ def test_the_step5_h2_executions_do_not_proceed(experiment: str, tmp_path: Path)
     assert "理由の識別子: ENTRY_VERDICT_NOT_MEETS_STANDARD" in stdout
     assert _sha(ledger) == before
     assert _tree(out) == []
+
+
+# --- 順 7 の残課題 R5（決定 40 の帰結）---------------------------------------------------
+
+
+def _h2_started(experiment: str) -> TrialLedgerEntry:
+    """版管理の試行台帳から H2 の開始の行だけを取り出す（結末の行と判定の値は読まない）。"""
+    contents = read_trial_ledger_file(REPO_ROOT / TRIAL_LEDGER_PATH)
+    assert isinstance(contents, TrialLedgerContents)
+    line = started_line_of(contents.lines, ExperimentId(ContentDigest.sha256(experiment)), 1)
+    assert line is not None
+    return line.entry
+
+
+@pytest.mark.parametrize("experiment", H2_EXECUTIONS)
+def test_r5_the_step5_h2_executions_also_point_at_a_policy_version_that_is_not_current(
+    experiment: str,
+) -> None:
+    """R5: H2 は第 3 版を指し、版管理の登録簿の「現行の版」は第 4 版（決定 40）。
+
+    判定を `MEETS_STANDARD` に置いた人工の結末の行でも、入口の順 6 で
+    `ENTRY_POLICY_NOT_CURRENT` により止まる。第 4 版の要素を除いた登録簿では順 6 を通る
+    （止まる原因が第 4 版の登録であることの対照）。実際の拒否の理由（順 5）は
+    `test_the_step5_h2_executions_do_not_proceed` が確かめる。
+    """
+    opening = _h2_started(experiment)
+    refs = {basis.research_policy_ref for _, basis in opening.basis.items()}
+    assert {(ref.policy_id, ref.version) for ref in refs} == {("research_policy", 3)}
+    registry = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
+    assert current_standard_version(registry, "research_policy") == 4
+    lines = chain([opening, finished(opening, verdict=SearchVerdict.MEETS_STANDARD)])
+    rules = load_adoption_review_registry(adoption_review_registry_path(REPO_ROOT))
+    target = ExperimentId(ContentDigest.sha256(experiment))
+
+    def entrance(entries: Sequence[RegistryEntry]) -> EntranceAccepted | EntranceRejected:
+        return check_entrance(
+            trial_lines=lines,
+            policy_registry=entries,
+            review_lines=(),
+            rules_registry=tuple(rules)[:1],  # 版 2 は実台帳の行に結びつく（R1-10 (a)）
+            experiment_id=target,
+            execution=1,
+        )
+
+    assert entrance(registry) == EntranceRejected(ReviewReason.ENTRY_POLICY_NOT_CURRENT)
+    without_v4 = tuple(item for item in registry if item.version != 4)
+    assert isinstance(entrance(without_v4), EntranceAccepted)
 
 
 # --- 人工の試行台帳での入口（T2）-------------------------------------------------------
