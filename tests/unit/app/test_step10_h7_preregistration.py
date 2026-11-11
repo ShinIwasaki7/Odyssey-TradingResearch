@@ -44,8 +44,9 @@ from odyssey_fx.strategy.catalog.initial import INITIAL_CATALOG
 from odyssey_fx.strategy.compiler.compiled import CompileSucceeded
 from odyssey_fx.strategy.compiler.validate import compile_strategy
 from odyssey_fx.strategy.declarations.entry_policy import ImmediateEntry
+from odyssey_fx.strategy.declarations.evaluation import OnBarClose
 from odyssey_fx.strategy.declarations.opportunity import OnNewTrigger, OnOrderAccepted
-from odyssey_fx.strategy.declarations.refs import OutputRef
+from odyssey_fx.strategy.declarations.refs import MarketDataRef, OutputRef
 from odyssey_fx.strategy.declarations.specs import FloatValue, IntValue, StrValue
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[3]
@@ -197,6 +198,43 @@ def test_the_declaration_uses_the_components_of_d22(loaded: ExperimentV2) -> Non
     assert strategy.opportunity_validity.bindings == ()
     assert strategy.market_state is None
     assert isinstance(strategy.entry_policy, ImmediateEntry)
+
+
+def test_the_market_inputs_and_bar_close_triggers_are_the_h1_series(
+    loaded: ExperimentV2,
+) -> None:
+    """市場データの入力と足の確定の起動は、すべて EURUSD の 1 時間足（D22 §7.1.2 の H7 の列:
+    2 本の EMA は 1 時間足の終値、損切りの水準は 1 時間足の安値、どれも 1 時間足の確定で評価）。
+    15 分足の部品は無い。"""
+    strategy = loaded.body.strategy
+    market_inputs = {
+        c.instance_id: sorted(
+            str(source)
+            for binding in c.inputs.values()
+            for source in binding.sources
+            if isinstance(source, MarketDataRef)
+        )
+        for c in strategy.components
+    }
+    assert {k: v for k, v in market_inputs.items() if v} == {
+        "fast_ema": ["EURUSD/1h/bid:CLOSE"],
+        "slow_ema": ["EURUSD/1h/bid:CLOSE"],
+        "stop_level": ["EURUSD/1h/bid:LOW"],
+    }
+    bar_close_series = {
+        c.instance_id: [
+            str(trigger.series)
+            for trigger in c.evaluation.triggers
+            if isinstance(trigger, OnBarClose)
+        ]
+        for c in strategy.components
+    }
+    assert {k: v for k, v in bar_close_series.items() if v} == {
+        "fast_ema": ["EURUSD/1h/bid"],
+        "slow_ema": ["EURUSD/1h/bid"],
+        "stop_level": ["EURUSD/1h/bid"],
+        "entry_trigger": ["EURUSD/1h/bid"],
+    }
 
 
 def test_the_fixed_values_are_copied_from_the_existing_declarations(
