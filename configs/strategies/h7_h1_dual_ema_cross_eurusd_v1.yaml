@@ -1,0 +1,131 @@
+# 順 10 の元の実験（版 1）の戦略宣言: 研究仮説 H7「1 時間足の 2 本の移動平均の交差（短い EMA が長い
+# EMA を上抜け）」の EURUSD 版（D22 §7.1.2 の H7 の列。D22 §2.1 の手順 1「事前の記録」の成果物 (1)）
+#
+# 人間の決定 122（2026-11-11。研究仮説の選択 D22-10 = H7。原文は D22 §0.5.3）。既存の部品だけで書いた
+# （新しい部品なし。D22 §7.1.1 の条件 2）。買いだけ（同 条件 5）。
+#
+# - 局面なし。取引機会は `ema` v1 を 2 つ（短い側 `fast_ema`・長い側 `slow_ema`。どちらも 1 時間足の
+#   終値、1 時間足の確定で評価）と `breakout_trigger` v1（価格 = `fast_ema` の出力、水準 = `slow_ema` の
+#   出力、`LONG`、1 時間足の確定で評価）。`breakout_trigger` は「上回っていない」から「上回る」に変わった
+#   評価でだけ取引機会を 1 つ出す（`EDGE`。D05 §4.3 の (2)）。
+# - 出口は検証戦略 A と同じ形（`market_order_intent` v1・`extreme_price` v1（`MIN`、1 時間足の安値
+#   20 本）・`level_stop_loss` v1・`fixed_rr_take_profit` v1。`configs/strategies/strategy_a_eurusd_v1.yaml`）。
+#   即時の入場（`IMMEDIATE`）。
+# - 確認待ちが無いので、取引機会の有効性の束縛は空（A と同じ。D22 §7.1.2）。
+# - 軸でない値は既存の宣言・前例の値を写した（D22 の仮置き 25）: 短い EMA は期間 20・窓 60（検証戦略 B の
+#   EMA と同じ値）、長い EMA の窓は 300（格子の最大の S の 3 倍。`window_bars >= 2 * period` を満たす）、
+#   損切りの窓は 1 時間足 20 本（A と同じ）、同時の保持の値（A・B・H2・H6 と同じ）。
+# - 軸のパラメータ（`slow_ema.period`・`take_profit.reward_risk`）の値は格子の先頭の試行（試行番号 0）の
+#   値で、探索ではどの試行でも格子の値に置き換わる（D09 §5.1）。パラメータは本数・倍率・向きだけで、
+#   価格の単位の値を持たない。
+#
+# 戦略の識別子は `h7_h1_dual_ema_cross_eurusd`（新しい識別子。D22 §7.1.1 の条件 6）、版 1。
+#
+# `schema_version` は戦略宣言の保存形式の版（D04 §3）。
+
+schema_version: 1
+
+strategy_id: "h7_h1_dual_ema_cross_eurusd"
+version: 1
+
+entry_policy: {kind: "IMMEDIATE"}
+
+# 確認待ちも局面も無いので、発注要求まで再検査する条件は無い（D22 §7.1.2 の H7 の列。A と同じ）。
+opportunity_validity:
+  bindings: []
+
+components:
+  - instance_id: "fast_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 20}
+      window_bars: {type: "INT", value: 60}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "slow_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:CLOSE"
+    parameters:
+      period: {type: "INT", value: 50}
+      window_bars: {type: "INT", value: 300}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices:
+        - "market:EURUSD/1h/bid:LOW"
+    parameters:
+      lookback: {type: "INT", value: 20}
+      mode: {type: "STR", value: "MIN"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  # 突破の価格に部品の出力（短い EMA の値）をつなぐ。既存の宣言は市場データの終値だけで、この
+  # つなぎ方は既存の宣言に無い（D22 の仮置き 27。型はどちらも `price@v1`）。
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 1
+    inputs:
+      price:
+        - "output:fast_ema.value"
+      level:
+        - "output:slow_ema.value"
+    parameters:
+      direction: {type: "STR", value: "LONG"}
+    triggers:
+      - {name: "h1", when: "bar_close", series: "EURUSD/1h/bid"}
+
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 1
+    inputs:
+      opportunity:
+        - "output:entry_trigger.opportunity"
+    triggers:
+      - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 1
+    inputs:
+      opportunity:
+        - "output:entry_trigger.opportunity"
+      level:
+        - "output:stop_level.level"
+    triggers:
+      - {name: "opp", when: "input_event", input_name: "opportunity"}
+
+  - instance_id: "take_profit"
+    component: "fixed_rr_take_profit"
+    component_version: 1
+    inputs:
+      position:
+        - "runtime:POSITION"
+    parameters:
+      reward_risk: {type: "FLOAT", value: 1.5}
+    triggers:
+      - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+
+# どの出力がどの役割を担うか（D04 §3 の名前付きフィールド）。市場状態の役割は持たない（A と同じ）。
+roles:
+  trigger: "entry_trigger.opportunity"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "take_profit.action"
+
+# 取引機会を同時にいくつ保持するか（ADR-0032。A・B・H2・H6 と同じ）。
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
