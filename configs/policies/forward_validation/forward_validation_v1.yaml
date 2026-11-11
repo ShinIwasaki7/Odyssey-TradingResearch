@@ -1,0 +1,97 @@
+# 前向き検証の規則 版 1（D09 §9.11.12 の 1。順 6 の F2 で、研究候補が 0 件のうちに版管理に固定した）
+#
+# 値はすべて 2026-11-10 の人間の決定（D15 §0.5.14 の原文。要決定 F1-A〜F1-G は推奨どおり＝決定 71〜77、
+# 仮置き F1-1〜F1-19 は「このまま」）と、D09 §9.11 の本文の規則の値。F2 で新しく選んだ値は無い（仮置き F1-17。
+# キー名は F2 で確定した）。**版を上げずに中身を変えない**（登録簿のダイジェストと照合され、中身を変えると
+# 読込で止まる）。直すときは新しい版を登録簿に足す（新しい版は、その登録の後に固定した候補にだけ当たる。
+# 仮置き F1-14）。
+#
+# 検査の規則はコードに置き、ファイルは値だけを持つ（研究ポリシー・採用審査の規則と同じ。D07 §20.2）。
+# 列挙の値は、この実装が知る規則の名前で、それ以外の値は読込で止まる。
+# 本ファイルの読込・検証は app.config（Pydantic）が行う（ADR-0018）。成績・価格の値は持たない。
+
+schema_version: 1
+id: forward_validation
+version: 1
+
+# 取得の開始時点（D15-10a (a)、ADR-0037 第4項）。値は書かず、窓の設定ファイルのキーを参照する
+# （読込で参照先のファイルとキーがあり、値が空でないことを確かめる）。
+acquisition_start_ref:
+  path: configs/acquisition/oanda_mt5_m1_sealed_window.yaml
+  key: acquisition_start
+
+# 固定時点 T_fix（D15-10b (a)、仮置き F1-3）: main の first-parent の履歴で、その固定の記録のファイルを
+# 初めて含んだコミットの committer の時刻。
+fix_time: FIRST_PARENT_FIRST_INCLUSION_COMMITTER_TIME
+
+# 開始 S（D15-10b (a)、ADR-0038 第2項、仮置き F1-4）: 固定時点より後の、最初のニューヨークの日曜 17:00
+# （America/New_York の時刻の規則で UTC に直す。休場の宣言は見ない）。固定時点がちょうど週の境目なら
+# 次の境目。
+start:
+  basis: FIX_TIME
+  week_boundary: {zone: America/New_York, weekday: SUNDAY, time: "17:00"}
+  on_boundary: NEXT_BOUNDARY
+
+# 最終検証の期間（D15-16 (a)、ADR-0038 第2項の 2・第5項）: [2024-01-01T00:00Z, 固定時点)。固定時点を含む
+# 週の partition は除く（その週と [T_fix, S) はどの検証にも使わない。D09 §9.11.4 の 2）。
+final_window:
+  start: "2024-01-01T00:00:00Z"
+  end: FIX_TIME
+  fix_week: EXCLUDED
+
+# 長さ L（D15-11 (a)、決定 72（F1-B (a)）、仮置き F1-5。D09 §9.11.5）: L = max(下限の日数, 平均 r × d ÷ 365 の
+# ポアソン分布で N 件以上になる確率が probability 以上になる最小の整数の日数 d)。N は固定の記録が指す研究
+# ポリシーの版の sufficiency.min_validation_trades_total。r は採用審査の、組ごとに固定した試行を研究履歴の
+# 全 fold の検証区間で走らせた完了取引の件数 ÷ 検証区間の日数の合計 × 365。組ごとの L の大きい方。
+# 10 進 50 桁で計算する。
+length:
+  method: POISSON
+  probability: "0.95"
+  min_days: 364
+  min_trades_source: RESEARCH_POLICY_MIN_VALIDATION_TRADES_TOTAL
+  frequency_source: ADOPTION_REVIEW_FIXED_TRIAL_VALIDATION_FOLDS
+  pair_combination: MAX
+  precision_digits: 50
+
+# ウォームアップと採点区間（決定 73（F1-C (a)）・決定 76（F1-F (b)）、仮置き F1-6・F1-19。D09 §9.11.6）:
+# 前向きの期間 P = [S, E) の先頭の W をウォームアップに使い、採点の始まりを S' = S + W にずらす（ずらした分も
+# 消費）。W は固定の記録に書かず、S が決まった後に、固定した試行の compiled_ref と、S の週を含む前向きの
+# 期間の承認済みの snapshot の取引カレンダーから、最終検証と同じ求め方（D09 §9.10.3 の 7）で導く。
+# E は S + L 以後の最初の取引週の境目（W によらず固定の時点で決まる）。採点区間は [S', E)。
+scoring:
+  warmup: LEADING_PART_OF_PERIOD
+  warmup_length: FINAL_VALIDATION_METHOD_ON_FORWARD_SNAPSHOT_CALENDAR
+  period_end: FIRST_WEEK_BOUNDARY_AT_OR_AFTER_START_PLUS_LENGTH
+
+# 長さが足りないときの固定の延期（D15-15 (a)、要決定 R2-9 (a)。D09 §9.11.10 の項目 6）: 確かめの時点の
+# 使える窓（最も新しい連続した部分。D09 §9.10.3 の 5 の定義）の採点区間が L 以上でなければ固定しない。
+# 使える窓からは、審査の順で先の候補が消費する予定の窓と、他の候補の予約した前向きの期間を除く。
+fix_deferral:
+  usable_window: LATEST_CONTIGUOUS
+  exclude: [EARLIER_CANDIDATES_PLANNED_FINAL_WINDOWS, OTHER_CANDIDATES_RESERVED_FORWARD_PERIODS]
+
+# 判定の規則（決定 71（F1-A (a)）、仮置き F1-8。D09 §9.11.7）: 最終検証と同じ当て方（組ごとに固定した 1 試行の
+# 1 本の連続口座の run を採点区間で走らせ、D13 §5.5 の 2 軸と 4 値の手順で当てる）。研究ポリシーは固定の
+# 記録が指す版。組の判定は D09 §7.12。
+judgment:
+  method: SAME_AS_FINAL_VALIDATION
+  research_policy: FIXED_RECORD_VERSION
+  pair_combination: D09_SECTION_7_12
+
+# 前向き検証の申請の前提（仮置き F1-7）: その候補の最終検証の組の判定が「共通基準を満たす（両組）」。
+prerequisite: FINAL_VALIDATION_MEETS_BOTH_PAIRS
+
+# 予約を解く条件（決定 74（F1-D (a)）。D09 §9.11.8）: 最終検証の台帳の行が「満たす（両組）」以外の結果
+# （満たさない・証拠不足・判定できない＝完了で両組を満たさない、消費の後の失敗、申告で使用済み、取り下げ）に
+# なった時点、または前向き検証の申請の前に取り下げた時点（置き換えられた固定の記録は取り下げと同じ。
+# 仮置き F1-12）。
+reservation_release:
+  - FINAL_COMPLETED_NOT_MEETS_BOTH_PAIRS
+  - FINAL_FAILED_AFTER_CONSUMPTION
+  - FINAL_DECLARED_USED
+  - FINAL_WITHDRAWN
+  - WITHDRAWN_BEFORE_FORWARD_APPLICATION
+
+# 前向きの期間が欠けたとき（仮置き F1-11）: 期間を延ばさず・ずらさず、何も書かずに止まる（待てば解ける欠けは
+# 待ち、解けない欠けは人間の取り下げで閉じる）。
+incomplete_period: STOP_WITHOUT_EXTENDING_OR_SHIFTING
