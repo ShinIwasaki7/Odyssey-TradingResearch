@@ -199,6 +199,15 @@ final_holdout:
 
 | 項目 | 値 |
 |---|---|
-| 状態 | **まだ実行していない**。再現の前に確かめたディスクの空きが約 21.6 GB（`df -k` で 21,103,316 KiB）で、決定 119 の下限 25 GB を下回ったので、再現を起動せずに止めた（D22 §2.5「実行の前のディスクの空きが 25 GB 未満 → 止めて要決定（消す対象を人間が決める）」） |
-| 使うコマンド（順 8 §2.5 と同じ形） | `uv run --frozen odyssey-fx experiment reproduce --experiment-dir <リポジトリ>/runs/experiments/h7_h1_dual_ema_cross_eurusd/v1 --snapshots <リポジトリ>/data/snapshots --out <リポジトリ>/runs/reproduce/h7_h1_dual_ema_cross_eurusd/v1 --repo-root <作業ツリー step10-run-h7-v1>`（`caffeinate -i` と `/usr/bin/time -l` で包む。台帳には書かない） |
-| 結果 | 人間の決定（消す対象）の後に実行し、この節に一致・不一致・照合の行の数・所要時間・最大メモリ・`reproduction.json` の SHA-256 を足す |
+| コマンド | `uv run --frozen odyssey-fx experiment reproduce --experiment-dir <リポジトリ>/runs/experiments/h7_h1_dual_ema_cross_eurusd/v1 --snapshots <リポジトリ>/data/snapshots --out <リポジトリ>/runs/reproduce/h7_h1_dual_ema_cross_eurusd/v1 --repo-root <作業ツリー step10-run-h7-v1>`（`caffeinate -i` と `/usr/bin/time -l` で包み、終了コードをファイルに残す小さな起動の手順書（`reproduce_logs/run_reproduce.sh`。版管理の外）から起動した。台帳には書かない） |
+| 実行の場所 | ローカルの Mac。作業ツリー `.claude/worktrees/step10-run-h7-v1`（元の実行と同じコミット `26dbb22` に本 PR の記録のコミットを足した `2351d37`。コードと `uv.lock` は元の実行と同じ） |
+| ディスクの空き | 最初に確かめたとき（2026-11-11T23:00Z ごろ）は約 21.6 GB（`df -k` で 21,103,316 KiB）で、決定 119 の下限 25 GB を下回ったので、再現を起動せずに止めた（D22 §2.5）。人間の決定 125（2026-11-12 10 時 20 分台 JST。原文「H2 の 2 版と runs/step3_repro を消す（推奨）」）を受けて司令塔が 10:31 JST に消した後、起動の前に確かめた空きは約 50.7 GB（`df -k` で 49,480,028 KiB。25 GB 以上）。決定 125 の原文は司令塔の連絡で受け取った（版管理にはまだ無い） |
+| 開始・終了（UTC） | 2026-11-12T01:32:20Z 〜 2026-11-12T14:48:26Z |
+| 経過時間 | 約 13 時間 16 分（`/usr/bin/time -l` の real 47,766.56 秒）。元の実行の約 1.03 倍 |
+| 最大メモリ | 約 7.58 GiB（`maximum resident set size` 8,139,173,888 バイト） |
+| 終了コード | 0 |
+| 判定（`reproduction.json` の `verdict`） | **REPRODUCED（一致）** |
+| 照合の行 | 68 行すべて一致: 単位（選定区間と検証区間の run）50 行（両組 25 行ずつ）、fold ごとの選定 10 行（両組 5 行ずつ）、連続口座の経路 8 行（両組とも区間 3 と終端 1）。不一致 0 行。`reproduction.json` から読んだのは全体と行ごとの判定・行の種類・組だけ |
+| 報告 | `runs/reproduce/h7_h1_dual_ema_cross_eurusd/v1/reproduction.json`（メインの checkout の根から。版管理の外）、SHA-256 `1be796a561d0ff979e3c705c6a766d493773963df3a38d2374acafa931ee431b` |
+| 台帳 | 再現は台帳に書かない。再現の後も作業ツリーの台帳は 10 行のままで、ファイルの SHA-256 は第 2.3 節と同じ `41e0b261…c5e309` |
+| 標準出力・最大メモリの記録 | `runs/experiments/h7_h1_dual_ema_cross_eurusd/v1/reproduce_logs/`（`console.log`・`time.log`・`started_at_utc.txt`・`finished_at_utc.txt`・`exit_code.txt`。版管理の外。`console.log` は読んでいない） |

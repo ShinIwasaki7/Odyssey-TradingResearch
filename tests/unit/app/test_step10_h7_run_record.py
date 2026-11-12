@@ -87,3 +87,17 @@ def test_section_2_hashes_of_the_trials_are_full_sha256() -> None:
     for row in rows:
         cell = row.rstrip(" |").rsplit("|", 1)[1].strip()
         assert re.fullmatch(r"`[0-9a-f]{64}`", cell), row
+
+
+def test_section_2_5_records_the_reproduction() -> None:
+    """第 2.5 節に再現の判定（一致）と `reproduction.json` の SHA-256 がある（決定 107）。
+
+    再現の起動の前に空きを確かめ、下限を満たした後に走らせた（D22 §2.5・決定 119）。
+    """
+    section = _section_2()
+    start = section.index("\n### 2.5 ")
+    reproduction = section[start:]
+    assert "| 判定（`reproduction.json` の `verdict`） | **REPRODUCED（一致）** |" in reproduction
+    rows = [line for line in reproduction.splitlines() if line.startswith("| 報告 |")]
+    assert len(rows) == 1
+    assert re.search(r"SHA-256 `[0-9a-f]{64}`", rows[0]), rows[0]
