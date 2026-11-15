@@ -154,6 +154,14 @@ from odyssey_fx.evaluation.domain.policy_basis import (
     SymbolCosts,
     SymbolSnapshots,
 )
+from odyssey_fx.evaluation.domain.regimes import (
+    RegimeDirectionRule,
+    RegimeLabelAt,
+    RegimeRole,
+    RegimeSpec,
+    RegimeTimeframe,
+    RegimeVolatilityRule,
+)
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
     ComplexityMeasures,
@@ -171,7 +179,10 @@ from odyssey_fx.evaluation.domain.search import (
     ConditionOutcome,
     ConditionResult,
     ConditionScope,
+    DeflatedDownsideRule,
+    DeflationMethod,
     EvaluationStandard,
+    EvaluationStandardV5,
     EvidenceAxis,
     FoldSelection,
     FoldStatistic,
@@ -181,11 +192,16 @@ from odyssey_fx.evaluation.domain.search import (
     LedgerResults,
     Lineage,
     LineageSource,
+    LossConcentrationRule,
     MetricCondition,
+    NeighborFloorRule,
+    Neighborhood,
+    NeighborInterval,
     ParameterAssignment,
     ParameterAxis,
     PathBoundary,
     PathRule,
+    PathRuleV5,
     ProfitabilityAxis,
     SearchOutcome,
     SearchPlan,
@@ -197,6 +213,7 @@ from odyssey_fx.evaluation.domain.search import (
     SufficiencyRule,
     SufficiencyShortfall,
     SufficiencyShortfallKind,
+    TrialCorrelation,
     TrialLedgerBinding,
     TrialLedgerDefect,
     TrialLedgerEntry,
@@ -209,6 +226,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialStatus,
     TrialUnitKey,
     ValidationRule,
+    ValidationRuleV5,
     VariantLedgerResult,
     VariantOutcome,
     last_digest,
@@ -2653,6 +2671,9 @@ def _metric_condition_of(payload: object) -> MetricCondition:
 
 
 def _evaluation_standard_of(payload: object) -> EvaluationStandard:
+    # 研究ポリシーの版 5 以上の評価基準（`regimes` を持つ。D24 §2.1）は版 5 の型へ戻す。版 4 以下の
+    # 記録票の形は変えない。
+    v5 = isinstance(payload, Mapping) and "regimes" in payload
     item = _keys(
         payload,
         (
@@ -2663,6 +2684,7 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
             "sufficiency",
             "basis",
             "comparison_basis",
+            *(("regimes",) if v5 else ()),
         ),
         "evaluation_standard",
     )
@@ -2683,11 +2705,19 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
         item["selection"], ("metric", "direction", "eligibility"), "evaluation_standard.selection"
     )
     validation = _keys(
-        item["validation"], ("fold_floors", "aggregate", "path"), "evaluation_standard.validation"
+        item["validation"],
+        ("fold_floors", "aggregate", "path", *(_V5_VALIDATION_KEYS if v5 else ())),
+        "evaluation_standard.validation",
     )
     path_rule = _keys(validation["path"], ("boundary", "floors", "aggregate"), "validation.path")
     sufficiency = _keys(item["sufficiency"], ("classes",), "evaluation_standard.sufficiency")
-    return EvaluationStandard(
+    standard_type: type[EvaluationStandard] = EvaluationStandardV5 if v5 else EvaluationStandard
+    validation_type: type[ValidationRule] = ValidationRuleV5 if v5 else ValidationRule
+    path_type: type[PathRule] = PathRuleV5 if v5 else PathRule
+    standard_extra: dict[str, Any] = {"regimes": _regimes_of(item["regimes"])} if v5 else {}
+    validation_extra: dict[str, Any] = _v5_validation_of(validation) if v5 else {}
+    return standard_type(
+        **standard_extra,
         purpose=StandardPurpose(item["purpose"]),
         split=SplitStandard(
             range=_interval_c(split["range"], "split.range"),
@@ -2706,7 +2736,8 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
                 for entry in _list_of(selection["eligibility"], "eligibility")
             ),
         ),
-        validation=ValidationRule(
+        validation=validation_type(
+            **validation_extra,
             fold_floors=tuple(
                 _metric_condition_of(entry)
                 for entry in _list_of(validation["fold_floors"], "fold_floors")
@@ -2723,7 +2754,7 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
                     for raw in _list_of(validation["aggregate"], "aggregate")
                 )
             ),
-            path=PathRule(
+            path=path_type(
                 boundary=PathBoundary(path_rule["boundary"]),
                 floors=tuple(
                     _metric_condition_of(entry)
@@ -2767,6 +2798,89 @@ def _evaluation_standard_of(payload: object) -> EvaluationStandard:
                 )
             )
         ),
+    )
+
+
+#: 版 5 以上の検証の条件が足す 3 群（D24 §2.1）。
+_V5_VALIDATION_KEYS = ("loss_concentration", "neighbor_floors", "deflated_downside_ratio")
+
+
+def _v5_validation_of(validation: Mapping[str, Any]) -> dict[str, Any]:
+    """版 5 以上の検証の条件の 3 群を型へ戻す（D24 §2.1・§3.4・§3.5・§4）。"""
+    concentration = _keys(
+        validation["loss_concentration"],
+        (
+            "worst_fold_metric",
+            "max_multiple_of_path_net",
+            "applies_when_path_net_return_at_least",
+        ),
+        "validation.loss_concentration",
+    )
+    neighbor = _keys(
+        validation["neighbor_floors"],
+        ("neighborhood", "interval", "floors"),
+        "validation.neighbor_floors",
+    )
+    deflated = _keys(
+        validation["deflated_downside_ratio"],
+        ("method", "downside_target", "correlation", "min_probability"),
+        "validation.deflated_downside_ratio",
+    )
+    return {
+        "loss_concentration": LossConcentrationRule(
+            worst_fold_metric=MetricId(concentration["worst_fold_metric"]),
+            max_multiple_of_path_net=_decimal_of(
+                concentration["max_multiple_of_path_net"], "loss_concentration.multiple"
+            ),
+            applies_when_path_net_return_at_least=_decimal_of(
+                concentration["applies_when_path_net_return_at_least"],
+                "loss_concentration.applies_when",
+            ),
+        ),
+        "neighbor_floors": NeighborFloorRule(
+            neighborhood=Neighborhood(neighbor["neighborhood"]),
+            interval=NeighborInterval(neighbor["interval"]),
+            floors=tuple(
+                _metric_condition_of(entry)
+                for entry in _list_of(neighbor["floors"], "neighbor_floors.floors")
+            ),
+        ),
+        "deflated_downside_ratio": DeflatedDownsideRule(
+            method=DeflationMethod(deflated["method"]),
+            downside_target=_decimal_of(deflated["downside_target"], "deflated.downside_target"),
+            correlation=TrialCorrelation(deflated["correlation"]),
+            min_probability=_decimal_of(deflated["min_probability"], "deflated.min_probability"),
+        ),
+    }
+
+
+def _regimes_of(payload: object) -> RegimeSpec:
+    """局面の値を型へ戻す（D24 §2.1）。"""
+    item = _keys(payload, ("role", "timeframe", "direction", "volatility", "label_at"), "regimes")
+    direction = _keys(
+        item["direction"],
+        ("ema_bars", "slope_bars", "atr_bars", "dead_band_atr_multiple"),
+        "regimes.direction",
+    )
+    volatility = _keys(item["volatility"], ("atr_bars", "median_window_bars"), "regimes.volatility")
+    return RegimeSpec(
+        role=RegimeRole(item["role"]),
+        timeframe=RegimeTimeframe(item["timeframe"]),
+        direction=RegimeDirectionRule(
+            ema_bars=_int_of(direction["ema_bars"], "regimes.direction.ema_bars"),
+            slope_bars=_int_of(direction["slope_bars"], "regimes.direction.slope_bars"),
+            atr_bars=_int_of(direction["atr_bars"], "regimes.direction.atr_bars"),
+            dead_band_atr_multiple=_decimal_of(
+                direction["dead_band_atr_multiple"], "regimes.direction.dead_band_atr_multiple"
+            ),
+        ),
+        volatility=RegimeVolatilityRule(
+            atr_bars=_int_of(volatility["atr_bars"], "regimes.volatility.atr_bars"),
+            median_window_bars=_int_of(
+                volatility["median_window_bars"], "regimes.volatility.median_window_bars"
+            ),
+        ),
+        label_at=RegimeLabelAt(item["label_at"]),
     )
 
 

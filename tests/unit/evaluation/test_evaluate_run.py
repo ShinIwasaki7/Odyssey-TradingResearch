@@ -115,7 +115,7 @@ def test_metric_set_v3_adds_the_rate_peak_drawdown_last() -> None:
     report = EvaluateRun(evaluation_code_digest=_CODE_DIGEST).evaluate(
         result, repository, 3, traces.CALENDAR
     )
-    assert [record.metric_id for record in report.metrics] == list(MetricId)
+    assert [record.metric_id for record in report.metrics] == list(metric_ids_of(3))
     peak = next(
         record.value
         for record in report.metrics

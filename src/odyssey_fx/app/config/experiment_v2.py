@@ -12,6 +12,7 @@
 | `evaluation` | 指標集合の版 `{metric_set_version}`（必須） |
 | `search_plan` / `split` | `NONE`（単一実行）か、`{kind: GRID, max_trials, axes}` と `STANDARD` |
 | `final_holdout` | 探索の実験では必須（`NONE` か `{interval, purpose}`）、単一実行では拒否 |
+| `favored_regimes` | 任意。得意な局面の宣言（局面の名前の列。版 5 以上を指す探索だけ。D24 E12） |
 
 `search_plan` / `split` / `final_holdout` の語彙と拒否の正本は D09 §5・§6.1・§5.5 である。
 
@@ -80,22 +81,25 @@ from odyssey_fx.common.ids import ExperimentId, SnapshotId
 from odyssey_fx.common.refs import ContentDigest, PolicyRef, SnapshotRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.evaluation.domain.metrics import metric_ids_of
+from odyssey_fx.evaluation.domain.metrics import METRIC_SET_V4_ADDED, metric_ids_of
 from odyssey_fx.evaluation.domain.policy_basis import (
     FixedComparisonBasis,
     PerSymbolComparisonBasis,
     PerSymbolPolicyBasis,
     PolicyBasis,
 )
+from odyssey_fx.evaluation.domain.regimes import RegimeLabel, favored_regimes_of
 from odyssey_fx.evaluation.domain.research_policy import ResearchPolicy
 from odyssey_fx.evaluation.domain.search import (
     ChangeKind,
     EvaluationStandard,
+    EvaluationStandardV5,
     LineageSource,
     ParameterAxis,
     SearchPlan,
     SearchPlanKind,
     StandardPurpose,
+    ValidationRuleV5,
 )
 from odyssey_fx.evaluation.domain.splits import (
     FinalHoldoutSpec,
@@ -254,6 +258,8 @@ class _ExperimentV2Model(RunBodyModel):
     run_interval: _IntervalModel | None = None
     final_holdout: str | _FinalHoldoutModel | None = None
     delay_scenario: _DelayScenarioModel | None = None
+    #: 得意な局面の宣言（任意。D24 §5.4・§8.1 の E12、仮置き 16）。
+    favored_regimes: list[str] | None = None
 
 
 # --- 読込結果（外へ出る型）---------------------------------------------------
@@ -297,6 +303,8 @@ class SearchSetting:
     - `lineage`: 系譜（書かなければ `None`）。
     - `conversion_snapshots`: 両組の換算の snapshot（決済通貨が口座通貨と違う実験だけ。D06 v1.20 案
       §19.2、仮置き C1-2）。`snapshots` の同じ名前の組と対にする。
+    - `favored_regimes`: 得意な局面の宣言（任意。書かなければ `None`。研究ポリシーの版 5 以上を
+      指す実験だけが持てる。判定に使わない。D24 §5.4・§8.1 の E12、決定 141）。
     """
 
     plan: SearchPlan
@@ -306,6 +314,7 @@ class SearchSetting:
     snapshots: Paired[SnapshotRef]
     lineage: LineageSetting | None
     conversion_snapshots: Paired[SnapshotRef] | None = None
+    favored_regimes: tuple[RegimeLabel, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,6 +812,11 @@ def _check_search_keys(model: _ExperimentV2Model, payload: Mapping[str, Any], pa
                 f"{path}: `lineage`（系譜）は試行台帳に書く探索の実験だけに書ける"
                 "（D13 §7.1。実装 PR の仮置き 65）"
             )
+        if "favored_regimes" in payload:
+            raise ConfigError(
+                f"{path}: `favored_regimes`（得意な局面の宣言）は局面を表示する探索の実験だけに"
+                "書ける（D24 §5.4・§8.1 の検査 E12）"
+            )
     if searching != (model.split != SPLIT_NONE):
         raise ConfigError(
             f"{path}: `search_plan` と `split` の片方だけが `NONE` である。探索だけ・分割だけの"
@@ -905,6 +919,15 @@ def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, p
     指標で選定・判定はできないので、読込で拒否する（設定の誤り）。
     """
     available = set(metric_ids_of(metric_set_version))
+    if isinstance(standard, EvaluationStandardV5):
+        # 検査 E11（D24 §8.1、仮置き 19）: 版 5 以上を指す探索の実験は指標集合 v4（#21〜#23 を
+        # 持つ版）を使う。損失の床・集中の指標と割り引いた比率の材料（#23）が無ければ拒否。
+        lacking = sorted(item.value for item in METRIC_SET_V4_ADDED if item not in available)
+        if lacking:
+            raise ConfigError(
+                f"{path}: 研究ポリシーの版 5 以上を指す探索の実験は指標集合 4 を使う"
+                f"（指標集合の版 {metric_set_version} には {lacking} が無い。D24 §8.1 の検査 E11）"
+            )
     used = [
         standard.selection.metric,
         *(item.metric for item in standard.selection.eligibility),
@@ -912,6 +935,10 @@ def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, p
         *(item.metric for item in standard.validation.aggregate),
         *(item.metric for item in standard.validation.path.conditions),
     ]
+    validation = standard.validation
+    if isinstance(validation, ValidationRuleV5):
+        used.append(validation.loss_concentration.worst_fold_metric)
+        used.extend(item.metric for item in validation.neighbor_floors.floors)
     missing = sorted({item.value for item in used if item not in available})
     if missing:
         raise ConfigError(
@@ -919,6 +946,28 @@ def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, p
             f" {metric_set_version} に無い。`evaluation.metric_set_version` を、その指標を持つ版"
             "（版 3 の研究ポリシーは指標集合 3）にすること（D07 §5.6。実装 PR の仮置き 53）"
         )
+
+
+def _favored_regimes_of(
+    model: _ExperimentV2Model, standard: EvaluationStandard, path: Path
+) -> tuple[RegimeLabel, ...] | None:
+    """得意な局面の宣言（任意。D24 §5.4・§8.1 の検査 E12、仮置き 16、決定 141）。
+
+    局面は研究ポリシーの版 5 以上の `regimes` で定義されるので、それより前の版を指す実験には
+    書けない。判定に使わない（記録票の識別の入力に入り、レポートの診断だけが読む）。
+    """
+    names = model.favored_regimes
+    if names is None:
+        return None
+    if not isinstance(standard, EvaluationStandardV5):
+        raise ConfigError(
+            f"{path}: `favored_regimes` は局面を定義する研究ポリシーの版 5 以上を指す探索の実験"
+            "だけが書ける（D24 §5.4・§8.1 の検査 E12）"
+        )
+    try:
+        return favored_regimes_of(names, "favored_regimes")
+    except KernelValueError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
 
 
 def _require_basis_match(basis: PolicyBasis, snapshots: Paired[SnapshotRef], path: Path) -> None:
@@ -1245,6 +1294,7 @@ def _search_setting_of(
         # 要否の規則（決済通貨が違えば必須、同じなら拒否）は `resolve_run_body` が標準の組の値で
         # 確かめ済み（仮置き C1-3）。
         conversion_snapshots=conversion,
+        favored_regimes=_favored_regimes_of(model, standard, path),
     )
 
 

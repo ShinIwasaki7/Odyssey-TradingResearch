@@ -18,6 +18,11 @@
 **演算の順序を式で固定し**、各演算をカーネル精度（28桁・`ROUND_HALF_EVEN`）で行って最終値を
 丸めない（D07 §5.5、人間の決定3）。平方根は同じコンテキストの `Decimal.sqrt()` を使い、
 `float` と非整数の指数のべき乗は使わない。
+
+**指標集合 v4**（研究ポリシー第 5 版の設計 D24 §6、ADR-0044 第2項。実装 PR 4-1）は v3 の 20 件に
+#21 区間末の評価を含む純収益率（採用指標）・#22 平均利益 ÷ 平均損失（参考値。決定 138）・
+#23 年率化下側偏差比率（採用指標。割り引いた指標の材料。決定 140・161）を足した 23 件である。
+v2・v3 の指標の定義は変えない。
 """
 
 from __future__ import annotations
@@ -56,6 +61,7 @@ __all__ = [
     "METRIC_INPUTS",
     "METRIC_KINDS",
     "METRIC_SET_V3_ADDED",
+    "METRIC_SET_V4_ADDED",
     "METRIC_SET_VERSIONS",
     "MISSING_INPUT_KEYS",
     "OPPORTUNITY_TERMINAL_KEYS",
@@ -77,13 +83,16 @@ __all__ = [
     "TradeOutcome",
     "TradeRecord",
     "Unavailable",
+    "annualized_downside_ratio",
     "annualized_return",
     "annualized_sharpe_ratio",
     "average_trade_profit",
+    "average_win_loss_ratio",
     "max_drawdown",
     "max_drawdown_rate_peak",
     "metric_ids_of",
     "metric_caveats",
+    "net_return_rate_closed_out",
     "profit_factor",
     "ratio_of",
     "trade_outcome",
@@ -93,9 +102,11 @@ __all__ = [
 
 
 class MetricId(Enum):
-    """指標集合 v2 の19件（D07 §5.2 の15件＋§5.5 の4件）と、v3 で足した #20（D07 §5.6）。
+    """指標集合 v2 の19件（D07 §5.2 の15件＋§5.5 の4件）と、v3 で足した #20（D07 §5.6）と、
+    v4 で足した #21〜#23（D24 §6）。
 
-    指標集合の版ごとに持つ指標は `metric_ids_of` が返す（v2 は #1〜#19、v3 は #1〜#20）。
+    指標集合の版ごとに持つ指標は `metric_ids_of` が返す（v2 は #1〜#19、v3 は #1〜#20、v4 は
+    #1〜#23）。
 
     **宣言順が `METRICS` 表の整列鍵である**（D07 §8.1）。番号は D07 §5.2・§5.5 の
     #1〜#19 にそのまま対応するので、並べ替えない。
@@ -142,6 +153,16 @@ class MetricId(Enum):
     #: #20 含み損益込みの「率で最大の下落」（指標集合 v3。D07 §5.6、2026-10-21 改訂。D13-6 (a)、
     #: 仮置き 5・33）。`max((これまでの最大 equity − 現在の equity) ÷ これまでの最大 equity)`。
     MAX_DRAWDOWN_MTM_RATE_PEAK = "MAX_DRAWDOWN_MTM_RATE_PEAK"
+    #: #21 区間末の評価を含む純収益率（指標集合 v4。D24 §3.2・§6、仮置き 2）。
+    #: `(最後の残高 + hypothetical_closed − 初期残高) ÷ 初期残高`。残った建玉を終わりの価格と
+    #: 費用のモデルで仮に閉じた損益（決済の費用を引いた後）を含む。採用指標。
+    NET_RETURN_RATE_CLOSED_OUT = "NET_RETURN_RATE_CLOSED_OUT"
+    #: #22 平均利益 ÷ 平均損失（指標集合 v4。D24 §6、決定 138）。**参考値**で、判定に使わない。
+    AVERAGE_WIN_LOSS_RATIO = "AVERAGE_WIN_LOSS_RATIO"
+    #: #23 年率化下側偏差比率（指標集合 v4。D24 §4.1・§6、決定 140・161）。日次の収益率の平均を
+    #: 目標値 0 の下側偏差で割り、`√260` を掛けた値。採用指標だが、研究ポリシーの条件と選定には
+    #: 書けない（割り引いた指標の材料。D24 §8.1 の検査 E9）。
+    ANNUALIZED_DOWNSIDE_RATIO = "ANNUALIZED_DOWNSIDE_RATIO"
 
 
 class MetricKind(Enum):
@@ -627,6 +648,9 @@ METRIC_KINDS: Final[dict[MetricId, MetricKind]] = {
     MetricId.PROFIT_FACTOR: MetricKind.RATIO,
     MetricId.AVERAGE_TRADE_PROFIT: MetricKind.AMOUNT,
     MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: MetricKind.RATIO,
+    MetricId.NET_RETURN_RATE_CLOSED_OUT: MetricKind.RATIO,
+    MetricId.AVERAGE_WIN_LOSS_RATIO: MetricKind.RATIO,
+    MetricId.ANNUALIZED_DOWNSIDE_RATIO: MetricKind.RATIO,
 }
 
 #: 指標ごとに読む判断履歴の表（D07 §5.2・§5.5 の「入力」欄）。末尾の集計から取る指標は空。
@@ -654,6 +678,10 @@ METRIC_INPUTS: Final[dict[MetricId, tuple[TraceTable, ...]]] = {
     MetricId.PROFIT_FACTOR: (TraceTable.FILLS, TraceTable.POSITIONS),
     MetricId.AVERAGE_TRADE_PROFIT: (TraceTable.FILLS, TraceTable.POSITIONS),
     MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: (TraceTable.LEDGER_SNAPSHOTS,),
+    # 最後の残高は台帳 snapshot から、仮に閉じた損益は末尾の集計から取る（#1・#14 と同じ）。
+    MetricId.NET_RETURN_RATE_CLOSED_OUT: (TraceTable.LEDGER_SNAPSHOTS,),
+    MetricId.AVERAGE_WIN_LOSS_RATIO: (TraceTable.FILLS, TraceTable.POSITIONS),
+    MetricId.ANNUALIZED_DOWNSIDE_RATIO: (TraceTable.LEDGER_SNAPSHOTS,),
 }
 
 #: 未解決の足内競合が**無くても**付く注記（D07 §7.2 の表、v2.0 の §5.5・§7.3）。
@@ -698,15 +726,35 @@ _BASE_CAVEATS: Final[dict[MetricId, tuple[MetricCaveat, ...]]] = {
     ),
     # 注記は #6 と同じ（D07 §5.6。改訂 PR の仮置き 33）。
     MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: (),
+    # 区間末の評価に未決済の建玉を含むので `OPEN_POSITION_EXCLUDED` は付けない（D24 §6）。
+    MetricId.NET_RETURN_RATE_CLOSED_OUT: (MetricCaveat.SWAP_NOT_MODELED,),
+    # #18 と同じ（D24 §6）。
+    MetricId.AVERAGE_WIN_LOSS_RATIO: (
+        MetricCaveat.SWAP_NOT_MODELED,
+        MetricCaveat.OPEN_POSITION_EXCLUDED,
+    ),
+    # #17 と同じ（D24 §6）。
+    MetricId.ANNUALIZED_DOWNSIDE_RATIO: (MetricCaveat.SWAP_NOT_MODELED,),
 }
 
 #: 指標集合の版（D07 §5.5・§5.6）と、その版が持つ指標。版 3 は版 2 の19件に #20 を足した 20 件
 #: （2026-10-21 改訂）。実装は版 2 と版 3 の両方を持つ（実装 PR の仮置き 53、2026-10-22 の人間の
-#: 決定。既存の単一実行の実験は版 2 のまま動く）。
+#: 決定。既存の単一実行の実験は版 2 のまま動く）。版 4 は版 3 の 20 件に #21〜#23 を足した 23 件
+#: （D24 §6、仮置き 19）。版 2・版 3 の中身は変えない。
 METRIC_SET_V3_ADDED: Final[tuple[MetricId, ...]] = (MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK,)
+METRIC_SET_V4_ADDED: Final[tuple[MetricId, ...]] = (
+    MetricId.NET_RETURN_RATE_CLOSED_OUT,
+    MetricId.AVERAGE_WIN_LOSS_RATIO,
+    MetricId.ANNUALIZED_DOWNSIDE_RATIO,
+)
 _METRIC_SETS: Final[dict[int, tuple[MetricId, ...]]] = {
-    2: tuple(item for item in MetricId if item not in METRIC_SET_V3_ADDED),
-    3: tuple(MetricId),
+    2: tuple(
+        item
+        for item in MetricId
+        if item not in METRIC_SET_V3_ADDED and item not in METRIC_SET_V4_ADDED
+    ),
+    3: tuple(item for item in MetricId if item not in METRIC_SET_V4_ADDED),
+    4: tuple(MetricId),
 }
 #: この実装が式を持つ指標集合の版。
 METRIC_SET_VERSIONS: Final[frozenset[int]] = frozenset(_METRIC_SETS)
@@ -733,6 +781,8 @@ _UNRESOLVED_INTRABAR_METRICS: Final[frozenset[MetricId]] = frozenset(
         MetricId.ANNUALIZED_RETURN,
         MetricId.PROFIT_FACTOR,
         MetricId.AVERAGE_TRADE_PROFIT,
+        # #22 は #18 と同じ注記（D24 §6）。
+        MetricId.AVERAGE_WIN_LOSS_RATIO,
     }
 )
 
@@ -989,3 +1039,109 @@ def average_trade_profit(profits: Sequence[Money]) -> Money | None:
         total = total + profit
     with localcontext(kernel_context()):
         return Money(total.amount / decimal_from_int(len(profits)), total.currency)
+
+
+# --- 指標集合 v4 の 3 件（D24 §3.2・§4.1・§6。実装 PR 4-1）-------------------------------------
+
+
+def net_return_rate_closed_out(
+    final_balance: Money, hypothetical_closed: Money, initial_balance: Money
+) -> Decimal | MetricUnavailableReason:
+    """#21 区間末の評価を含む純収益率（D24 §3.2・§6、仮置き 2）。
+
+    `R = (B_end + H − I) ÷ I`。`B_end` は台帳の最後の残高（#1 の式の残高）、`H` は
+    `hypothetical_closed`（残った建玉を終わりの価格と費用のモデルで仮に閉じた損益。決済の費用を
+    引いた後。D06 §10.3）、`I` は初期残高。加減算は厳密（`Decimal`）で、除算はカーネル精度の
+    1回だけ（#15 と同じ）。含み益も含み損も同じ式で入れる（利益の側だけを抜く規則を作らない）。
+    初期残高が 0 なら `UNDEFINED_DENOMINATOR`。建玉が 0 件の run は `H = 0` で値を持つ。
+    """
+    for label, value in (
+        ("final_balance", final_balance),
+        ("hypothetical_closed", hypothetical_closed),
+        ("initial_balance", initial_balance),
+    ):
+        if not isinstance(value, Money):
+            raise KernelValueError(f"net_return_rate_closed_out requires {label} as a Money")
+    if not final_balance.currency == hypothetical_closed.currency == initial_balance.currency:
+        raise KernelValueError("net_return_rate_closed_out: the three amounts differ in currency")
+    if initial_balance.amount == 0:
+        return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+    with localcontext(kernel_context()):
+        profit = final_balance.amount + hypothetical_closed.amount - initial_balance.amount
+    return ratio_of(profit, initial_balance.amount)
+
+
+def average_win_loss_ratio(profits: Sequence[Money]) -> Decimal | MetricUnavailableReason:
+    """#22 平均利益 ÷ 平均損失（D24 §6、決定 138。**参考値**）。
+
+    `(勝ち取引の trade_profit の平均) ÷ (負け取引の trade_profit の平均の絶対値)`。勝敗は
+    `trade_outcome` と同じ符号の規則で決める（#4・#18 と同じ。損益 0 の取引はどちらにも数えない）。
+    演算の順は「勝ちの合計 ÷ 勝ちの件数」→「負けの合計の絶対値 ÷ 負けの件数」→ 前者 ÷ 後者で、
+    各演算をカーネル精度で行い、最終値を丸めない（D07 §5.5）。0取引なら `NO_TRADES`、勝ちか
+    負けの取引が無ければ `UNDEFINED_DENOMINATOR`（無限大や 0 を値にしない）。
+    """
+    if not profits:
+        return MetricUnavailableReason.NO_TRADES
+    wins = decimal_from_int(0)
+    losses = decimal_from_int(0)
+    win_count = 0
+    loss_count = 0
+    with localcontext(kernel_context()):
+        for profit in profits:
+            outcome = trade_outcome(profit)
+            if outcome is TradeOutcome.WIN:
+                wins = wins + profit.amount
+                win_count += 1
+            elif outcome is TradeOutcome.LOSS:
+                losses = losses + profit.amount
+                loss_count += 1
+        if win_count == 0 or loss_count == 0:
+            return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+        average_win = wins / decimal_from_int(win_count)
+        average_loss = abs(losses) / decimal_from_int(loss_count)
+        return average_win / average_loss
+
+
+def annualized_downside_ratio(equities: Sequence[Decimal]) -> Decimal | MetricUnavailableReason:
+    """#23 年率化下側偏差比率（D24 §4.1・§6、決定 161（D24-4 (a)））。
+
+    `equities` は #17 と同じ `E_0, E_1, …, E_T`（`E_0` は初期残高、`E_k` は k 番目の取引日の終わり
+    以前で最後の資産。無ければ前日を持ち越す。D24 の仮置き 8）。式は次の順に計算し、各演算を
+    カーネル精度で行う（D07 §5.5）。目標値 `τ` は 0（無リスク金利 0。#17 と同じ既決）で、指標の
+    定義の一部として固定する。
+
+    1. `r_k = E_k ÷ E_{k−1} − 1`（k = 1〜T）
+    2. `m = (Σ r_k) ÷ T`
+    3. `D_k = min(r_k, 0)²`、`d = ((Σ D_k) ÷ T).sqrt()`（分母は全日数。負けた日だけがばらつきに
+       入り、建玉の無い日（収益率 0）は分母の日数に入る）
+    4. `(m ÷ d) × 260.sqrt()`
+
+    値が定まらないときは理由を返す: `T < 2` なら `NO_OBSERVATIONS`、`E_{k−1} = 0` または `d = 0`
+    （負けの日が無い）なら `UNDEFINED_DENOMINATOR`（無限大を値にしない）。
+    """
+    values = tuple(equities)
+    for value in values:
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise KernelValueError("annualized_downside_ratio requires finite Decimals")
+    days = len(values) - 1
+    if days < 2:
+        return MetricUnavailableReason.NO_OBSERVATIONS
+    zero = decimal_from_int(0)
+    with localcontext(kernel_context()):
+        returns: list[Decimal] = []
+        for previous, current in zip(values, values[1:], strict=False):
+            if previous == 0:
+                return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+            returns.append(current / previous - decimal_from_int(1))
+        total = zero
+        for value in returns:
+            total = total + value
+        mean = total / decimal_from_int(days)
+        squares = zero
+        for value in returns:
+            shortfall = value if value < zero else zero
+            squares = squares + shortfall * shortfall
+        downside = (squares / decimal_from_int(days)).sqrt()
+        if downside == 0:
+            return MetricUnavailableReason.UNDEFINED_DENOMINATOR
+        return (mean / downside) * decimal_from_int(TRADING_DAYS_PER_YEAR).sqrt()

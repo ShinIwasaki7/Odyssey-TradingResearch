@@ -98,13 +98,16 @@ from odyssey_fx.evaluation.domain.metrics import (
     TradeOutcome,
     TradeRecord,
     Unavailable,
+    annualized_downside_ratio,
     annualized_return,
     annualized_sharpe_ratio,
     average_trade_profit,
+    average_win_loss_ratio,
     max_drawdown,
     max_drawdown_rate_peak,
     metric_caveats,
     metric_ids_of,
+    net_return_rate_closed_out,
     profit_factor,
     ratio_of,
     trade_outcome,
@@ -2000,7 +2003,8 @@ def _build_metrics(
     calendar: TradingCalendar,
     metric_ids: Sequence[MetricId],
 ) -> tuple[MetricRecord, ...]:
-    """指標集合の指標（v2 は19件、v3 は #20 を足した 20 件。D07 §5.2・§5.5・§5.6）。
+    """指標集合の指標（v2 は19件、v3 は #20 を足した 20 件、v4 は #21〜#23 を足した 23 件。
+    D07 §5.2・§5.5・§5.6、D24 §6）。
 
     並びは `MetricId` の宣言順（D07 §8.1）。`metric_ids` は評価する指標集合の版が持つ指標。
     """
@@ -2201,6 +2205,34 @@ def _build_metrics(
             )
         )
 
+    # #21〜#23（指標集合 v4。D24 §6）。
+    if MetricId.NET_RETURN_RATE_CLOSED_OUT in metric_ids:
+        records.append(
+            make(
+                MetricId.NET_RETURN_RATE_CLOSED_OUT,
+                _closed_out_return(summaries, snapshots, initial),
+                0 if summaries is None else len(snapshots),
+            )
+        )
+    if MetricId.AVERAGE_WIN_LOSS_RATIO in metric_ids:
+        win_loss = average_win_loss_ratio(profits)
+        records.append(
+            make(
+                MetricId.AVERAGE_WIN_LOSS_RATIO,
+                Unavailable(MetricKind.RATIO, win_loss)
+                if isinstance(win_loss, MetricUnavailableReason)
+                else RatioValue(win_loss),
+                len(trades),
+            )
+        )
+    if MetricId.ANNUALIZED_DOWNSIDE_RATIO in metric_ids:
+        records.append(
+            make(
+                MetricId.ANNUALIZED_DOWNSIDE_RATIO,
+                *_annualized_downside(initial.amount, snapshots, day_ends),
+            )
+        )
+
     if {record.metric_id for record in records} != set(metric_ids):
         raise KernelValueError("the metrics built do not match the metric set (D07 §5.5・§5.6)")
     order = {metric_id: position for position, metric_id in enumerate(MetricId)}
@@ -2242,6 +2274,20 @@ def _annualized_sharpe(
     """
     if day_ends is None:
         return Unavailable(MetricKind.RATIO, MetricUnavailableReason.INPUT_NOT_AVAILABLE), 0
+    value = annualized_sharpe_ratio(_daily_equities(initial, snapshots, day_ends))
+    if isinstance(value, MetricUnavailableReason):
+        return Unavailable(MetricKind.RATIO, value), len(day_ends)
+    return RatioValue(value), len(day_ends)
+
+
+def _daily_equities(
+    initial: Decimal, snapshots: Sequence[_Snapshot], day_ends: tuple[UtcTime, ...]
+) -> list[Decimal]:
+    """日次の資産 `E_0, …, E_N`（#17・#23 の共通の作り方。D07 §5.5、D24 の仮置き 8）。
+
+    `E_0 = 初期残高`、`E_k` = k 番目の取引日の終わり**以前で最後**の台帳 snapshot の `equity`
+    （無ければ `E_{k−1}` を持ち越す）。同じ量を 2 通りに作らない。
+    """
     equities = [initial]
     position = 0
     current = initial
@@ -2250,10 +2296,41 @@ def _annualized_sharpe(
             current = snapshots[position].equity.amount
             position += 1
         equities.append(current)
-    value = annualized_sharpe_ratio(equities)
+    return equities
+
+
+def _annualized_downside(
+    initial: Decimal,
+    snapshots: Sequence[_Snapshot],
+    day_ends: tuple[UtcTime, ...] | None,
+) -> tuple[MetricValue, int]:
+    """#23 年率化下側偏差比率（D24 §4.1・§6）。日次の資産の作り方は #17 と同じ。"""
+    if day_ends is None:
+        return Unavailable(MetricKind.RATIO, MetricUnavailableReason.INPUT_NOT_AVAILABLE), 0
+    value = annualized_downside_ratio(_daily_equities(initial, snapshots, day_ends))
     if isinstance(value, MetricUnavailableReason):
         return Unavailable(MetricKind.RATIO, value), len(day_ends)
     return RatioValue(value), len(day_ends)
+
+
+def _closed_out_return(
+    summaries: FinalSummaries | None, snapshots: Sequence[_Snapshot], initial: Money
+) -> MetricValue:
+    """#21 区間末の評価を含む純収益率（D24 §3.2・§6、仮置き 2）。
+
+    末尾の集計が無ければ `INPUT_NOT_AVAILABLE`（判定できない側。D09 §7.3）。台帳 snapshot が
+    1件も無ければ #1・#15 と同じ `NO_OBSERVATIONS`。初期残高が 0 なら `UNDEFINED_DENOMINATOR`。
+    """
+    if summaries is None:
+        return Unavailable(MetricKind.RATIO, MetricUnavailableReason.INPUT_NOT_AVAILABLE)
+    if not snapshots:
+        return Unavailable(MetricKind.RATIO, MetricUnavailableReason.NO_OBSERVATIONS)
+    value = net_return_rate_closed_out(
+        snapshots[-1].balance, summaries.hypothetical_closed, initial
+    )
+    if isinstance(value, MetricUnavailableReason):
+        return Unavailable(MetricKind.RATIO, value)
+    return RatioValue(value)
 
 
 def _cost(
