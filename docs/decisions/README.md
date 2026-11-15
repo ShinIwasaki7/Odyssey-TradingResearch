@@ -40,7 +40,12 @@
 | [0034](0034-review-rules-in-agents-md.md) | レビュー観点は AGENTS.md を正本とし両レーンで共有する | PR レビュー方針 §5 |
 | [0035](0035-quality-check-access-vs-strategy-selection-access.md) | 2024 年以降のデータの閲覧は品質確認と戦略選定に分け、品質確認の閲覧は必ず記録する | D11 §6 の 6-7a、D15 §2.2 の S1 |
 | [0036](0036-quality-check-permit-in-holdout-gate.md) | 2024 年以降のデータの品質確認の読み取りは、読み取りの関所の品質確認専用の許可を通す | D11 §6 の 6-7c、D15 §2.2 の S1 |
-| [0037](0037-revised-constraint-on-data-from-2024.md) | 2024-01-01 以降のデータは OANDA MT5 の 1 分足の取得と関所の下での封印の取り込みだけを許し、閲覧は引き続き禁止する（制約の改定文） | D15 §2.2 の S2a（D15-2） |
+| [0037](0037-revised-constraint-on-data-from-2024.md) | 2024-01-01 以降のデータは OANDA MT5 の 1 分足の取得と関所の下での封印の取り込みだけを許し、閲覧は引き続き禁止する（制約の改定文。第3項の 3〜5 は ADR-0045 で撤回（提案）） | D15 §2.2 の S2a（D15-2） |
 | [0038](0038-sealed-classes-from-2024-replacing-adr-0014.md) | ADR-0014 を置き換える。新たに取得する OANDA MT5 の 1 分足の 2024-01-01 以降は封印の区分として取り込み、封印で始める | D15 §2.2 の S2a |
 | [0039](0039-mt5-route-replaces-d11-expansion-prerequisites.md) | OANDA MT5 の経路では、他の通貨へ広げる前提（D11 §9 の順 14）を、USDJPY と同じ最小の規則で置き換える（提案） | D17 §2.4 の A1（D17-2） |
 | [0040](0040-quality-check-permit-extended-to-research-raw-files.md) | 品質確認の許可の定義が覆ってよい範囲を、研究期間の原ファイルの確認の読み取りへ広げる（ADR-0036 第4項の追補。提案） | D17 §2.4 の A1（D17-12・D17-15） |
+| [0041](0041-workers-may-read-research-period-results.md) | 作業役が研究期間の成績を読むことを許し、仮説を選ぶ前に人間が見た成績の範囲の記録をやめる（絶対制約の第 1 項の改定文。提案。改定文は要決定） | D23 §4.4 の W2・W3（D23-14、決定 144） |
+| [0042](0042-two-human-gates-per-research-loop.md) | 研究の一巡の人間の関所を、審査の入口を通った候補（固定の記録の merge）と止まる条件の 2 つにする（提案） | D23 §4.1・§4.4 の W4・W6〜W10（D23-13・D23-14、決定 143・144） |
+| [0043](0043-ledger-and-routine-prs-merged-by-ci.md) | 台帳の行と、実行器が作る定型の PR は、CI の機械の検査で main に入れる（候補の固定の記録は除く。提案） | D23 §4.3・§4.4 の W1・W5（D23-14・D23-15、決定 144・145） |
+| [0044](0044-research-policy-v5-loss-side-judgement.md) | 研究ポリシー第 5 版で、過剰最適化を損失の側の判定で扱い、局面は表示・分析に使う（提案） | D23 §3（D23-1〜D23-12、決定 130〜142） |
+| [0045](0045-withdraw-outside-viewing-declaration.md) | 研究の外の相場の申告を無くす（ADR-0037 第3項の 3〜5 の改訂。提案） | D23 §4.4 の決定 150 による撤回（D23-20） |
