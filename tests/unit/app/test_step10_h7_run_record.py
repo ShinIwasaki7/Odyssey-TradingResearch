@@ -90,10 +90,7 @@ def test_section_2_hashes_of_the_trials_are_full_sha256() -> None:
 
 
 def test_section_2_5_records_the_reproduction() -> None:
-    """第 2.5 節に再現の判定（一致）と `reproduction.json` の SHA-256 がある（決定 107）。
-
-    再現の起動の前に空きを確かめ、下限を満たした後に走らせた（D22 §2.5・決定 119）。
-    """
+    """第 2.5 節に再現の判定（一致）と `reproduction.json` の SHA-256 がある（決定 107）。"""
     section = _section_2()
     start = section.index("\n### 2.5 ")
     reproduction = section[start:]
