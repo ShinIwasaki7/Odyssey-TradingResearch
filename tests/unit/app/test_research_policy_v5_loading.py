@@ -284,6 +284,20 @@ def test_rp5_2_a_v4_test_policy_still_reads_into_the_v4_types(tmp_path: Path) ->
             '        - {metric: NET_RETURN_RATE_CLOSED_OUT, comparator: LE, threshold: "-0.30"}',
             ("neighbor_floors.floors[1]", "`GE`"),
         ),
+        # E7: 近傍の床が空。
+        (
+            "      floors:\n"
+            '        - {metric: MAX_DRAWDOWN_MTM_RATE_PEAK, comparator: LE, threshold: "0.30"}\n'
+            '        - {metric: NET_RETURN_RATE_CLOSED_OUT, comparator: GE, threshold: "-0.30"}\n',
+            "      floors: []\n",
+            ("neighbor_floors.floors", "空"),
+        ),
+        # E7: 語彙の外の近傍の定義。
+        (
+            "      neighborhood: ONE_STEP_IN_WRITTEN_ORDER\n",
+            "      neighborhood: ALL_TRIALS\n",
+            ("neighbor_floors.neighborhood",),
+        ),
         # E7: 選定の区間でない区間。
         ("      interval: TRAIN\n", "      interval: VALIDATION\n", ("neighbor_floors.interval",)),
         # E7: fold の床のドローダウンを GE で書いた。
@@ -316,6 +330,24 @@ def test_rp5_2_a_v4_test_policy_still_reads_into_the_v4_types(tmp_path: Path) ->
             'min_probability: "1.0"',
             ("deflated_downside_ratio.min_probability",),
         ),
+        # E9: 確率 0。
+        (
+            'min_probability: "0.95"',
+            'min_probability: "0"',
+            ("deflated_downside_ratio.min_probability",),
+        ),
+        # E9: 目標値が数字でない。
+        (
+            'downside_target: "0"',
+            'downside_target: "zero"',
+            ("deflated_downside_ratio.downside_target",),
+        ),
+        # E9: 目標値が 0 でない（決定 161 の目標値 0。#23 の定義と揃える）。
+        (
+            'downside_target: "0"',
+            'downside_target: "0.001"',
+            ("deflated_downside_ratio.downside_target", "決定 161"),
+        ),
         # E9: 語彙の外の方式。
         (
             "method: DEFLATED_SHARPE_RATIO_FORM",
@@ -332,6 +364,17 @@ def test_rp5_2_a_v4_test_policy_still_reads_into_the_v4_types(tmp_path: Path) ->
         ("    role: DISPLAY_ONLY\n", "    role: JUDGEMENT\n", ("regimes.role",)),
         # E10: 本数 0。
         ("ema_bars: 50", "ema_bars: 0", ("regimes.direction.ema_bars",)),
+        # E10: 値動きの本数 0。
+        (
+            "volatility: {atr_bars: 20, median_window_bars: 250}",
+            "volatility: {atr_bars: 20, median_window_bars: 0}",
+            ("regimes.volatility.median_window_bars",),
+        ),
+        (
+            "volatility: {atr_bars: 20, median_window_bars: 250}",
+            "volatility: {atr_bars: 0, median_window_bars: 250}",
+            ("regimes.volatility.atr_bars",),
+        ),
         # E10: 不感帯が負。
         (
             'dead_band_atr_multiple: "0.5"',

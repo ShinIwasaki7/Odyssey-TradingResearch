@@ -652,7 +652,8 @@ class DeflatedDownsideRule:
     `min_probability` 以上であることを求める（判定の関数は実装 PR 4-2）。
 
     検査 E9（D24 §8.1）: `method` と `correlation` は語彙の 1 値、`min_probability` は 0 より大きく
-    1 より小さい、`downside_target` は十進数（日次の収益率の目標値）。
+    1 より小さい、`downside_target` は十進数（日次の収益率の目標値）で、当面は 0 だけ（決定 161 の
+    目標値 0。#23 の定義と揃える。0 以外を許すかは実装 PR 4-2 へ引き継ぐ）。
     """
 
     method: DeflationMethod
@@ -667,6 +668,14 @@ class DeflatedDownsideRule:
         if not isinstance(self.correlation, TrialCorrelation):
             raise KernelValueError(f"{label}.correlation must be a TrialCorrelation")
         _require_decimal(self.downside_target, f"{label}.downside_target")
+        if self.downside_target != 0:
+            # 決定 161（D24-4 (a)）は目標値 0。割り引きの材料の #23 も目標値 0 で定義している
+            # ので、0 以外を書くと判定の比率と材料の比率が食い違う（0 以外を許すかは実装 PR 4-2）。
+            raise KernelValueError(
+                f"{label}.downside_target は 0 だけを書ける（決定 161 の目標値 0。#23 年率化下側"
+                "偏差比率も目標値 0 で定義している。D24 §4.1・§8.1 の検査 E9）:"
+                f" {self.downside_target}"
+            )
         _require_decimal(self.min_probability, f"{label}.min_probability")
         if not 0 < self.min_probability < 1:
             raise KernelValueError(

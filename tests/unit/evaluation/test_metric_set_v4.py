@@ -16,9 +16,19 @@ from dataclasses import replace
 from decimal import Decimal, localcontext
 from typing import Final
 
+from odyssey_fx.backtest.trace.recorder import TraceTable
 from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_str, kernel_context
 from odyssey_fx.common.refs import CodeDigest, ContentDigest
-from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, EvaluationReport
+from odyssey_fx.evaluation.application.evaluate_run import (
+    COLUMN_SPECS,
+    EvaluateRun,
+    EvaluationReport,
+    _annualized_downside,
+    _closed_out_return,
+    _ordered_snapshots,
+    _Rows,
+    _Snapshot,
+)
 from odyssey_fx.evaluation.domain.metrics import (
     METRIC_SET_V4_ADDED,
     AmountValue,
@@ -249,3 +259,49 @@ def test_the_t01_downside_ratio_uses_the_same_daily_equities_as_the_sharpe_ratio
     assert _ratio(report, MetricId.ANNUALIZED_SHARPE_RATIO) == annualized_sharpe_ratio(daily)
     counts = {record.metric_id: record.observation_count for record in report.metrics}
     assert counts[MetricId.ANNUALIZED_DOWNSIDE_RATIO] == counts[MetricId.ANNUALIZED_SHARPE_RATIO]
+
+
+# --- 評価の経路の値なしの理由（D24 §3.2・§6）------------------------------------------------
+
+
+def test_the_closed_out_return_of_the_evaluation_path_keeps_its_unavailable_reasons() -> None:
+    """評価の経路の #21: 末尾の集計が無ければ「入力なし」、台帳の記録が無ければ「観測なし」。
+
+    完走した run は必ず末尾の集計を持つ（D06 §9.4）ので、`EvaluateRun` からは前者に届かない。
+    評価の経路の関数を直接呼んで確かめる。
+    """
+    initial = _yen("1000000")
+    snapshots = _t01_snapshots()
+    missing = _closed_out_return(None, snapshots, initial)
+    assert isinstance(missing, Unavailable)
+    assert missing.reason is MetricUnavailableReason.INPUT_NOT_AVAILABLE
+    result = traces.result_for(traces.repository_for().manifest)
+    assert result.summaries is not None
+    empty = _closed_out_return(result.summaries, (), initial)
+    assert isinstance(empty, Unavailable)
+    assert empty.reason is MetricUnavailableReason.NO_OBSERVATIONS
+    present = _closed_out_return(result.summaries, snapshots, initial)
+    assert present == RatioValue(decimal_from_str("0.051376"))
+
+
+def test_the_downside_ratio_without_trading_day_boundaries_is_input_not_available() -> None:
+    """評価の経路の #23: 取引日の境界が 1 つに決まらないカレンダー（`day_ends` が `None`）は
+    #16・#17 と同じ「入力なし」で、日数 0。"""
+    value, days = _annualized_downside(decimal_from_str("1000000"), _t01_snapshots(), None)
+    assert isinstance(value, Unavailable)
+    assert value.reason is MetricUnavailableReason.INPUT_NOT_AVAILABLE
+    assert days == 0
+
+
+def _t01_snapshots() -> tuple[_Snapshot, ...]:
+    """T01 の台帳 snapshot（評価と同じ並べ方）。"""
+    repository = traces.repository_for()
+    table = TraceTable.LEDGER_SNAPSHOTS
+    rows = _Rows(
+        repository.read_table(repository.manifest.run_id, table, COLUMN_SPECS[table]),
+        COLUMN_SPECS[table],
+    )
+    phases = {phase.name: phase for phase in repository.manifest.phases.ordered()}
+    snapshots = _ordered_snapshots({table: rows}, phases)
+    assert snapshots
+    return snapshots
