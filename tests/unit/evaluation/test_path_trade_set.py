@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from decimal import localcontext
 from typing import Final
 
 import pytest
@@ -181,3 +182,14 @@ def test_segments_must_be_in_ascending_order() -> None:
         path_trade_set(
             (second, first), initial_balance=_yen("1000000"), final_balance=_yen("1001470")
         )
+
+
+def test_the_totals_do_not_depend_on_the_callers_decimal_context() -> None:
+    """勝ち・負けの合計はカーネルの精度で求める（呼び出し側の精度で丸めない。D07 §5.5）。"""
+    result = path_trade_set(
+        _two_segments(), initial_balance=_yen("1000000"), final_balance=_yen("1001470")
+    )
+    with localcontext() as context:
+        context.prec = 2
+        wins, losses, net = result.wins, result.losses, result.net
+    assert (wins, losses, net) == (_yen("4990"), _yen("3520"), _yen("1470"))

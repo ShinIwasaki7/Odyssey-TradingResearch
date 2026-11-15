@@ -587,12 +587,14 @@ class PathTradeSet:
             raise KernelValueError("PathTradeSet: 取引の損益の通貨が経路の口座の通貨と違う")
 
     def _sum(self, *, sign: int) -> Money:
-        total = Money(decimal_from_int(0), self.currency)
-        for item in self.trades:
-            amount = item.profit.amount
-            if (sign > 0 and amount > 0) or (sign < 0 and amount < 0):
-                total = Money(total.amount + abs(amount), total.currency)
-        return total
+        # 絶対値と加算はカーネルのコンテキストで行う（呼び出し側の精度で丸めない。D07 §5.5）。
+        total = decimal_from_int(0)
+        with localcontext(kernel_context()):
+            for item in self.trades:
+                amount = item.profit.amount
+                if (sign > 0 and amount > 0) or (sign < 0 and amount < 0):
+                    total = total + abs(amount)
+        return Money(total, self.currency)
 
     @property
     def wins(self) -> Money:
