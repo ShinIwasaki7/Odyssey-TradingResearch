@@ -1,0 +1,111 @@
+# 順 10 の改善後の実験（版 2）: 研究仮説 H7「1 時間足の 2 本の移動平均の交差（短い EMA が長い EMA を上抜け）」
+# の EURUSD の探索の実験設定（書式 v2。D22 §2.1 の手順 4「変更の記録」、D14 §2.5 の (2)・(3)、D09 §5.6）
+#
+# 版 1（`configs/experiments/h7_h1_dual_ema_cross_eurusd.yaml`）を複製し、D09 §5.6 の「次の実験の
+# 始め方」のとおり `version` と `strategy`（戦略宣言の参照）だけを書き換え、系譜（`lineage`）を足したもの。
+# 版 1 のファイルは変えない（版 1 の記録票の事前登録の照合と再現が読む）。
+#
+# 人間の決定 127（2026-11-15。原文は `docs/data/eurusd_step10_research_loop/README.md` §3.1）: 変更の種類は
+# 既存部品の範囲での戦略の宣言の変更（`STRATEGY_CODE`）の 1 種類（D14-5 (a) を決定 102 で引き継いだ）で、
+# 日足の局面を足す。中身は戦略宣言の版 2（`configs/strategies/h7_h1_dual_ema_cross_eurusd_v2.yaml`）。
+#
+# - 変えたもの: `version`（1 → 2。同じ実験名の次の版。D14 仮置き 8 に倣う）、`strategy`（版 1 → 版 2 の
+#   戦略宣言）、`lineage`（系譜。D13 §7.1、D14 §2.5 の (3)）。
+# - 変えないもの: 仮説の文・研究ポリシー（第 4 版）・両組の snapshot と換算の snapshot の組・環境・執行系列・
+#   解像度の階層・口座・リスク・執行・費用・換算・指標集合・格子（長い EMA の期間 S {50, 100} × 利確の
+#   倍率 R {1.5, 3.0}、`max_trials` 4）・`split`・`final_holdout` の宣言（決定 114・115。版 1 と同じ値）。
+# - 試行番号は版 1 と同じ（D09 §5.2 の列挙の順）: 0 = (50, 1.5)、1 = (50, 3.0)、2 = (100, 1.5)、
+#   3 = (100, 3.0)。どの試行も版 1 の同じ番号の試行と軸の値が同じで、違うのは日足の局面の有無だけ。
+# - 仮説の文は版 1 のまま（取引機会の規則は変えない。分析メモ「5. 変えないこと」。変更は戦略の宣言の
+#   1 種類で、仮説の変更（`HYPOTHESIS`）ではない。D14 §6.1 の `STRATEGY_CODE` の例「日足の向きの条件を
+#   足す」。本 PR の仮置き）。
+# - 系譜の理由の文（`lineage.note`）には成績の数値と判定の値を書かない。理由の根拠は分析メモ
+#   （版管理の外）にあり、ここには置き場と SHA-256 を書く（D14 仮置き 7 に倣う）。台帳の開始の行には
+#   理由の文のダイジェストだけが入る。`derived_from` の実行が台帳にあることは `experiment run` の
+#   開始時に確かめられる（実装 PR #98 の仮置き 56・65）。
+# - `final_holdout` は版 1 と同じ宣言（D22 §1.4・§7.1.2「元の実験と改善後の実験で同じ」）。**探索の run は
+#   この値を読まない**（研究期間の snapshot だけを読む）。宣言は封印データの要求・取得・閲覧・取り込みの
+#   どれでもなく、最終検証を始めもしない（順 10 では採用審査・最終検証に進まない。決定 97）。
+#
+# **パスはリポジトリの根からの相対パス**で書く（D07 §18.2）。**金額・率は文字列で書く**（ADR-0012）。
+
+schema_version: 2
+
+id: h7_h1_dual_ema_cross_eurusd
+version: 2
+
+lineage:
+  derived_from:
+    experiment_id: "6a9a3c8a28076e881243ca76babc94470eaf8c92ae51c15eccb43a7a9cf9b78a"
+    execution: 1
+  change_kinds: [STRATEGY_CODE]
+  note: "順 10 の手順 3 の原因分析で、分析メモ（runs/experiments/h7_h1_dual_ema_cross_eurusd/v1/analysis/analysis_memo.md、SHA-256 fa64326f3af8e381aa49544468babaef3d554ad36428c9f5ec3cc85636ea28a8）の「3. 変更の候補」の 1 位（事前の記録の読む観点「fold ごと・年ごとの件数と純損益」から導ける変更「局面の条件（市場状態の部品）を足す」）を、人間が 2026-11-15 に選んだ（決定 127）。戦略の宣言に日足の局面（日足の終値が日足の EMA を上回るときだけ買いを許す。H2・検証戦略 B と同じ 4 段）を足し、戦略宣言を版 2 にする。取引機会・出口・格子・他の値は変えない。"
+
+hypothesis: "EURUSD の 1 時間足の EMA（期間 20）が 1 時間足の EMA（期間 S）を上抜けたら成行で買い、直近 20 本の 1 時間足の確定安値に損切り、損切りの幅の R 倍に利確を置く規則は、費用を引いた後も、両組で共通基準を満たす"
+
+research_policy: {id: "research_policy", version: 4}
+
+strategy: "configs/strategies/h7_h1_dual_ema_cross_eurusd_v2.yaml"
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+snapshots:
+  standard: "4e6eb8d40df023685b6b0739bd202d132c97997de68e8d55f0b4114c89bb917b"
+  candidate: "9c03bc1283e5c7474dc1602104d943fe7985b11c745dae3135813fc7ddee1b19"
+
+conversion_snapshots:
+  standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+  candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+
+execution_series: "EURUSD/15m/bid"
+
+resolution_hierarchy:
+  - "EURUSD/15m/bid"
+  - "EURUSD/1m/bid"
+
+seed: 0
+
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    EURUSD: "0.0005"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.0001"
+  close_slippage: "0.0001"
+  spread_offset: "0.0002"
+
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT30M"
+
+evaluation: {metric_set_version: 3}
+
+search_plan:
+  kind: GRID
+  max_trials: 4
+  axes:
+    - {instance: slow_ema, parameter: period, values: [50, 100]}
+    - {instance: take_profit, parameter: reward_risk, values: [1.5, 3.0]}
+
+split: STANDARD
+
+final_holdout:
+  interval: {start: "2024-01-01T00:00:00Z", end: "2100-01-01T00:00:00Z"}
+  purpose: "研究 3 巡目（順 10）の研究候補の最終検証（D09 §9.10）"
