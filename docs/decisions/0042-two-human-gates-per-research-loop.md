@@ -1,6 +1,6 @@
 # ADR-0042: 研究の一巡の人間の関所を、審査の入口を通った候補（固定の記録の merge）と止まる条件の 2 つにする
 
-- 状態: **提案**（2026-11-15。順 11 の文書 PR 2「決定記録と改訂」（[D23](../design/D23_step11_research_automation_plan.md) §8 の表の 2 行目）。中身は人間の決定 143・144・146・148・149・151 で決まっている。本 ADR の文面は本 PR の merge で承認になる）
+- 状態: **提案**（2026-11-15。順 11 の文書 PR 2「決定記録と改訂」（[D23](../design/D23_step11_research_automation_plan.md) §8 の表の 2 行目）。中身は人間の決定 143・144・146・148〜151 で決まっている。本 ADR の文面は本 PR の merge で承認になる）
 - 決定者: ユーザー
 - 関連: [D23](../design/D23_step11_research_automation_plan.md) §0.1（指示 B・C・F）・§0.5・§4.1・§4.2・§4.4（W4・W6〜W10）・§4.5・§4.7・§5.2、[D13](../design/D13_research_policy_v3.md) §7.4、[D14](../design/D14_step5_research_loop_plan.md) §2、[D22](../design/D22_step10_research_round3_plan.md) §0.5.1・§2.5・§4 の D22-1、[D09](../design/D09_multi_run_evaluation.md) §9.10.10・§9.11、[ADR-0041](0041-workers-may-read-research-period-results.md)・[ADR-0043](0043-ledger-and-routine-prs-merged-by-ci.md)・[ADR-0045](0045-withdraw-outside-viewing-declaration.md)
 
@@ -58,7 +58,7 @@
 ### 3. 当てる時点
 
 - 撤回が働くのは、順 11 の実行器（D23 §8 の PR 8）と仮説カードの待ち行列（PR 7）で回す一巡からである。実行器が無い間に人間の手で回す一巡には、従来の手順を当てる。
-- **順 10 は順 10 の手順（D22 の決定 99〜113）で最後まで行う**（D23 の仮置き 17）。
+- **順 10 は順 10 の手順（D22 の決定 99〜113）で最後まで行う**（D23 の仮置き 17）（ただし第 5 版の登録の後は、順 10 の実行は審査の入口で止まる。ADR-0044 第3項、決定 142）。
 
 ## 影響と後続
 
