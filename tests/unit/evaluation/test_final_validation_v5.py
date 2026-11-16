@@ -238,6 +238,31 @@ def test_fv5_t2_an_interval_at_exactly_the_floor_meets_it() -> None:
     assert outcome.verdict is SearchVerdict.MEETS_STANDARD
 
 
+@pytest.mark.parametrize(
+    ("end_equity", "observed", "floor", "verdict"),
+    [
+        ("850000", "-0.15", ConditionOutcome.MET, SearchVerdict.MEETS_STANDARD),  # ちょうど
+        ("849999", "-0.150001", ConditionOutcome.NOT_MET, SearchVerdict.BELOW_STANDARD),
+    ],
+)
+def test_fv5_t2_a_full_364_day_interval_at_and_just_below_the_floor(
+    end_equity: str, observed: str, floor: ConditionOutcome, verdict: SearchVerdict
+) -> None:
+    """通常の 364 日ちょうどの区間（端数でない区間 1）: ちょうど −0.15 は満たし（`GE`）、わずかに
+    下回れば満たさない。ほかの区間は床を割らず、全体は +10% の人工の系列。"""
+    b1, b2, b3 = (item.interval.start for item in final_intervals(SCORING)[1:])
+    material = _material([(b1, "1000000"), (b2, end_equity), (b3, "900000")], "1100000")
+    outcome = judge_final_variant(v5_standard(), Variant.STANDARD, _summary(material), REQUIREMENT)
+    target = outcome.interval_floors[1]
+    assert not target.interval.partial
+    assert target.interval.interval.end - target.interval.interval.start == _LENGTH
+    assert (target.start_equity, target.end_equity) == (_D("1000000"), _D(end_equity))
+    assert (target.observed, target.outcome) == (_D(observed), floor)
+    others = [item for item in outcome.interval_floors if item is not target]
+    assert all(item.outcome is ConditionOutcome.MET for item in others)
+    assert outcome.verdict is verdict
+
+
 # --- FV5-T3: 損失の集中を当てない（決定 213） ---------------------------------------------------
 
 
