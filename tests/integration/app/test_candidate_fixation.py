@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -272,12 +273,26 @@ def _reasons(outcome: FixOutcome) -> dict[int, tuple[str, ...]]:
     }
 
 
+#: 7 文字以上の 16 進の語（コミットの SHA・ダイジェスト）。試験用リポジトリのコミットの SHA は
+#: 実行ごとに違い、件数の印（例 `37`）をたまたま含むことがあるので、数字の確かめの前に除く。
+_HEX_WORD = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,}(?![0-9A-Za-z])")
+
+
+def _assert_no_numbers(text: str) -> None:
+    """`text` に取引の件数（人工の印）と `trade_total` が現れない（仮置き F1-5）。
+
+    16 進の語（SHA・ダイジェスト）を伏せた後の文字列で、部分一致で確かめる（件数がほかの文字と
+    くっついて出ても落ちる）。16 進の語の中の偶然の一致だけを数えない。
+    """
+    masked = _HEX_WORD.sub("<hex>", text)
+    for value in (str(_MANY_TRADES), str(_FEW_TRADES)):
+        assert value not in masked, f"件数の印 {value} が出力に現れた"
+    assert "trade_total" not in masked
+
+
 def _no_numbers(outcome: FixOutcome) -> None:
     """出力に `r` と取引の件数が現れない（仮置き F1-5）。"""
-    text = "\n".join(outcome.lines) + outcome.detail
-    for value in (str(_MANY_TRADES), str(_FEW_TRADES)):
-        assert value not in text
-    assert "trade_total" not in text
+    _assert_no_numbers("\n".join([*outcome.lines, outcome.detail]))
 
 
 def _merge(ws: FinalWorkspace, rel: str, when: str) -> str:
@@ -346,6 +361,53 @@ def test_f5_the_dry_run_and_the_check_write_nothing(tmp_path: Path) -> None:
     again = _fix(ws)
     assert again.exit_code == EXIT_REFUSED
     assert _reasons(again)[2] == (FixCheckReason.OTHER_VALID_FIX_EXISTS.value,)
+
+
+# --- 出力に件数が現れないことの確かめそのもの（空の確かめでないこと・SHA との偶然の一致） ---------
+
+
+#: 件数の印を含む 16 進の語（決め打ち）。12 文字は出力の「origin の既定ブランチ」の行の短い SHA、
+#: 40 文字はコミットの SHA、64 文字はダイジェストの長さ。数字だけの SHA も作る。
+_LUCKY_SHAS = (
+    f"{_FEW_TRADES}{_MANY_TRADES}a{_FEW_TRADES}b0c",
+    f"{_FEW_TRADES}{_MANY_TRADES}000{_FEW_TRADES}0",
+    f"ab{_FEW_TRADES}" + "0" * 31 + f"{_MANY_TRADES}c",
+    f"{_FEW_TRADES}{_MANY_TRADES}" * 10 + "abcd",
+)
+
+
+@pytest.mark.parametrize(
+    "leak",
+    [
+        f"件数: {_MANY_TRADES}",
+        f"取引 {_FEW_TRADES}件",
+        f"r={_FEW_TRADES}",
+        f"({_MANY_TRADES})",
+        f"origin の既定ブランチ: main（{_LUCKY_SHAS[0]}）、件数 {_FEW_TRADES}",
+        '{"trade_total": 1}',
+    ],
+)
+def test_the_no_numbers_check_fails_when_a_count_is_shown(tmp_path: Path, leak: str) -> None:
+    """件数が出力に出たら確かめは落ちる（SHA と同じ行に出ても）。実際の出力に足して確かめる。"""
+    ws, _ = _workspace(tmp_path)
+    outcome = _fix(ws)
+    _no_numbers(outcome)
+    with pytest.raises(AssertionError):
+        _no_numbers(replace(outcome, lines=[*outcome.lines, leak]))
+    with pytest.raises(AssertionError):
+        _no_numbers(replace(outcome, detail=leak))
+
+
+def test_a_sha_that_happens_to_contain_the_counts_does_not_fail_the_check(tmp_path: Path) -> None:
+    """SHA・ダイジェストが件数の印と偶然一致しても落ちない（不安定だった確かめの決め打ちの再現）。"""
+    ws, _ = _workspace(tmp_path)
+    outcome = _fix(ws)
+    first = outcome.lines[0]
+    assert first.startswith("origin の既定ブランチ: main（") and first.endswith("）")
+    for sha in _LUCKY_SHAS:
+        assert str(_FEW_TRADES) in sha and str(_MANY_TRADES) in sha
+        lines = [f"origin の既定ブランチ: main（{sha}）", *outcome.lines[1:], f"commit {sha}"]
+        _no_numbers(replace(outcome, lines=lines, detail=f"sha256:{sha}"))
 
 
 # --- F-4: 固定時点は main の first-parent の履歴から -------------------------------------------
