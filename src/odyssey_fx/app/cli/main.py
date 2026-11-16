@@ -484,7 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root",
         type=Path,
         default=Path("."),
-        help="試行台帳・登録簿・審査の規則のファイル・申告ファイル・審査台帳を読むリポジトリの根",
+        help="試行台帳・登録簿・審査の規則のファイル・審査台帳を読むリポジトリの根",
     )
     review_command.add_argument(
         "--experiment-dir",
@@ -572,12 +572,7 @@ def _add_final_validate_parser(
     final.add_argument(
         "--out", type=Path, default=Path("."), help="run の基点（この下に runs/<run_id>/ を作る）"
     )
-    final.add_argument(
-        "--declaration",
-        type=Path,
-        default=None,
-        help="申告のファイル（research/declarations/ の YAML。申請・乾式実行で必須。仮置き R2-6）",
-    )
+
     final.add_argument("--by", required=True, help="実行者")
     mode = final.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="段 1・段 2 だけを行い、何も書かない")
@@ -1932,7 +1927,6 @@ def _run_experiment_final_validate(args: argparse.Namespace, out: _Writer) -> in
             repo_root=repo_root,
             snapshots_root=snapshots,
             out_root=args.out,
-            declaration=args.declaration,
             by=args.by,
             mode=mode,
         )
@@ -2115,7 +2109,7 @@ def _review_lines(outcome: adoption_review.ReviewOutcome) -> list[str]:
         f"同じ戦略の実行 L5 = {tally.same_strategy_executions}（候補より前だけの L3 ="
         f" {tally.prior_overlapping_executions}、L4 = {tally.prior_overlapping_trials}）"
     )
-    lines.append(f"申告: {entry.declaration.status.value}")
+
     lines.append(
         f"審査の規則: {entry.review_rules_ref.rules_id} 版 {entry.review_rules_ref.version}"
     )

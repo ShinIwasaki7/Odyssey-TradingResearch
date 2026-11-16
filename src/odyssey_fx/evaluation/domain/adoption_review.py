@@ -128,11 +128,14 @@ class ReviewReason(Enum):
     COST_MODEL_NEEDS_CAPABILITY = "COST_MODEL_NEEDS_CAPABILITY"
     #: 適合の検査の `UNDETERMINED`（D16 §7.1・§9.1 の 2。理由の名前は R3 の仮置き）。
     COST_MODEL_UNDETERMINED = "COST_MODEL_UNDETERMINED"
+    #: 申告に由来する理由（D16 §8）。人間の決定 150「申告を無くす」（ADR-0045）で審査の道具は
+    #: 出さなくなった。決定 150 の前に書かれた審査台帳の行を読めるよう、読込のためだけに残す
+    #: （申告の撤去の PR 4b の仮置き。新しい行には現れない）。
     OUTSIDE_VIEWING_DECLARED = "OUTSIDE_VIEWING_DECLARED"
     DECLARATION_MISSING = "DECLARATION_MISSING"
 
 
-#: 理由を記録する順（入口の順 → 証拠 → 適合 → 申告。重複なし）。
+#: 理由を記録する順（入口の順 → 証拠 → 適合。重複なし）。
 _REASON_ORDER: Final = {reason: index for index, reason in enumerate(ReviewReason)}
 
 
@@ -198,11 +201,22 @@ class DsrBasis(Enum):
 
 
 class DeclarationStatus(Enum):
-    """申告の有無（D16 §8。R1-8 (a)）。"""
+    """審査台帳の行の項目 `declaration` の状態（D16 §8・§10.2）。
 
+    人間の決定 150「申告を無くす」（ADR-0045）の後、審査の道具は申告ファイルを読まず、新しい行には
+    いつも `NOT_ASKED`（申告を問わない。ダイジェストなし）を書く。行の形（項目 `declaration` と
+    その中の `status`・`file_digest`）は変えない（申告の撤去の PR 4b の仮置き）。`NOT_DECLARED`・
+    `DECLARED`・`MISSING` は決定 150 の前の行（R1-8 (a)）を読むためだけに残す。
+    """
+
+    NOT_ASKED = "NOT_ASKED"
     NOT_DECLARED = "NOT_DECLARED"
     DECLARED = "DECLARED"
     MISSING = "MISSING"
+
+
+#: 申告ファイルを読んだ状態（ダイジェストを持つ。決定 150 の前の行だけ）。
+_READ_DECLARATION: Final = frozenset({DeclarationStatus.NOT_DECLARED, DeclarationStatus.DECLARED})
 
 
 # --- 審査の規則（D16 §10.3）-------------------------------------------------------
@@ -423,7 +437,7 @@ class LedgerTally:
 
 @dataclass(frozen=True, slots=True)
 class DeclarationState:
-    """申告の有無と申告ファイルのダイジェスト（D16 §8・§10.2 の `declaration`）。"""
+    """審査台帳の行の項目 `declaration`（D16 §8・§10.2）。決定 150 の後は `NOT_ASKED` だけ。"""
 
     status: DeclarationStatus
     file_digest: ContentDigest | None
@@ -431,7 +445,7 @@ class DeclarationState:
     def __post_init__(self) -> None:
         if not isinstance(self.status, DeclarationStatus):
             raise KernelValueError("DeclarationState.status must be a DeclarationStatus")
-        if (self.status is DeclarationStatus.MISSING) != (self.file_digest is None):
+        if (self.status in _READ_DECLARATION) == (self.file_digest is None):
             raise KernelValueError("DeclarationState has a digest exactly when the file was read")
         if self.file_digest is not None and not isinstance(self.file_digest, ContentDigest):
             raise KernelValueError("DeclarationState.file_digest must be a ContentDigest")
@@ -1129,16 +1143,15 @@ def combine_result(
     *,
     floors: Paired[FloorOutcome],
     fits: Paired[tuple[CostFitRow, ...]],
-    declaration: DeclarationStatus,
 ) -> tuple[ReviewResult, tuple[ReviewReason, ...]]:
     """結果の合わせ方（D16 §9.1。R1-4 (a)）。当てはまる理由をすべて返す。
 
-    1. 証拠の最低線の不合格・適合の検査の `NEEDS_CAPABILITY`・申告ありのどれかで **進めない**。
-    2. 1 に当たらず、証拠の最低線の判定できない・適合の検査の `UNDETERMINED`・申告ファイルの欠けの
-       どれかで **保留**。
+    1. 証拠の最低線の不合格・適合の検査の `NEEDS_CAPABILITY` のどれかで **進めない**。
+    2. 1 に当たらず、証拠の最低線の判定できない・適合の検査の `UNDETERMINED` のどれかで **保留**。
     3. どれにも当たらなければ **進める**。
 
-    割り引いた指標と台帳の累計は使わない（表示だけ）。
+    申告（D16 §8）は人間の決定 150（ADR-0045）で無くしたので、合わせ方に使わない。割り引いた指標と
+    台帳の累計は使わない（表示だけ）。
     """
     reasons: set[ReviewReason] = set()
     blocking: set[ReviewReason] = set()
@@ -1153,10 +1166,6 @@ def combine_result(
                 blocking.add(ReviewReason.COST_MODEL_NEEDS_CAPABILITY)
             elif row.outcome is FitOutcome.UNDETERMINED:
                 reasons.add(ReviewReason.COST_MODEL_UNDETERMINED)
-    if declaration is DeclarationStatus.DECLARED:
-        blocking.add(ReviewReason.OUTSIDE_VIEWING_DECLARED)
-    elif declaration is DeclarationStatus.MISSING:
-        reasons.add(ReviewReason.DECLARATION_MISSING)
     everything = tuple(sorted(reasons | blocking, key=lambda item: _REASON_ORDER[item]))
     if blocking:
         return ReviewResult.DO_NOT_PROCEED, everything

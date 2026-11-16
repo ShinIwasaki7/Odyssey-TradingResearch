@@ -11,7 +11,8 @@
 4. 組ごとに: 固定した試行の run（研究履歴の検証区間すべて。D16 §4.2）→ 証拠の最低線 → 費用・約定
    モデルの適合（§7）→ 割り引いた指標（§5。表示だけ）。読めない・run が失敗した検査は
    「判定できない」にして続ける（§11.3 の S2）。
-5. 台帳の累計（§6）・申告（§8）→ 結果の合わせ方（§9.1）。
+5. 台帳の累計（§6）→ 結果の合わせ方（§9.1）。研究の外の相場の申告（§8）は人間の決定 150
+   （ADR-0045）で無くしたので、申告ファイルを読まない（行の項目 `declaration` は `NOT_ASKED`）。
 6. 数値の記録（版管理の外。§10.4）→ 審査台帳の行（版管理。§10.2）。完全な行が残らなければ
    `ReviewNotRecorded`（終了コード 1。審査は行われていない扱い）。
 
@@ -27,17 +28,15 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from odyssey_fx.app import composition
 from odyssey_fx.app.config import ConfigError
 from odyssey_fx.app.config.adoption_review import (
     adoption_review_registry_path,
     adoption_review_rules_path,
-    declaration_path,
     load_adoption_review_registry,
     load_adoption_review_rules,
-    load_declaration,
 )
 from odyssey_fx.app.config.research_policy import (
     load_research_policy,
@@ -82,6 +81,7 @@ from odyssey_fx.evaluation.domain.adoption_review import (
     CostFitResult,
     CostFitRow,
     DeclarationState,
+    DeclarationStatus,
     DsrSummary,
     EntranceAccepted,
     EntranceRejected,
@@ -127,6 +127,9 @@ __all__ = [
     "ReviewOutcome",
     "review_experiment",
 ]
+
+#: 数値の記録の `declaration.detail`（申告を問わない理由。人間の決定 150、ADR-0045）。
+_DECLARATION_DETAIL: Final = "not asked (decision 150, ADR-0045)"
 
 
 class ArtifactBindingMismatch(ConfigError):
@@ -619,7 +622,6 @@ def _numeric_record(
     reviews: Paired[_VariantReview],
     tally: LedgerTally,
     declaration: DeclarationState,
-    declaration_detail: str,
     result: ReviewResult,
     reasons: Sequence[ReviewReason],
 ) -> dict[str, Any]:
@@ -680,7 +682,7 @@ def _numeric_record(
         "declaration": {
             "status": declaration.status.value,
             "file_digest": None if declaration.file_digest is None else declaration.file_digest.hex,
-            "detail": declaration_detail,
+            "detail": _DECLARATION_DETAIL,
         },
     }
 
@@ -723,7 +725,7 @@ def _markdown(record: Mapping[str, Any]) -> str:
             "",
             "## 申告",
             "",
-            f"{record['declaration']}",
+            "研究の外の相場の申告は問わない（人間の決定 150、ADR-0045）",
             "",
         ]
     )
@@ -812,13 +814,12 @@ def review_experiment(
             trial_total=tally.overlapping_trials,
         )
     )
-    loaded = load_declaration(declaration_path(repo_root, target, execution), target, execution)
-    declaration = DeclarationState(status=loaded.status, file_digest=loaded.file_digest)
+    # 研究の外の相場の申告は問わない（人間の決定 150、ADR-0045。行の形は変えず `NOT_ASKED` を書く）
+    declaration = DeclarationState(status=DeclarationStatus.NOT_ASKED, file_digest=None)
     fits: Paired[tuple[CostFitRow, ...]] = reviews.map(lambda _, item: item.fit.rows)
     result, reasons = combine_result(
         floors=reviews.map(lambda _, item: item.floor),
         fits=fits,
-        declaration=declaration.status,
     )
     nonce = secrets.token_hex(16)
     record = _numeric_record(
@@ -828,7 +829,6 @@ def review_experiment(
         reviews=reviews,
         tally=tally,
         declaration=declaration,
-        declaration_detail=loaded.detail,
         result=result,
         reasons=reasons,
     )

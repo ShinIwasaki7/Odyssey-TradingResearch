@@ -91,13 +91,23 @@ def review_entry(
     result: ReviewResult = ReviewResult.DEFERRED,
     ref: ReviewRulesRef | None = None,
     nonce: str = "a" * 32,
+    declaration: DeclarationState | None = None,
+    reasons: tuple[ReviewReason, ...] | None = None,
 ) -> AdoptionReviewEntry:
-    """審査台帳の 1 行（人工の値。数値は持たない）。"""
-    reasons = {
-        ReviewResult.PROCEED: (),
-        ReviewResult.DO_NOT_PROCEED: (ReviewReason.EVIDENCE_FLOOR_NOT_MET,),
-        ReviewResult.DEFERRED: (ReviewReason.DECLARATION_MISSING,),
-    }[result]
+    """審査台帳の 1 行（人工の値。数値は持たない）。
+
+    項目 `declaration` の既定は、人間の決定 150（ADR-0045）の後に道具が書く `NOT_ASKED`。決定 150 の
+    前の行は `declaration` と `reasons` を渡して作る。
+    """
+    reasons = (
+        reasons
+        if reasons is not None
+        else {
+            ReviewResult.PROCEED: (),
+            ReviewResult.DO_NOT_PROCEED: (ReviewReason.EVIDENCE_FLOOR_NOT_MET,),
+            ReviewResult.DEFERRED: (ReviewReason.EVIDENCE_FLOOR_UNDETERMINED,),
+        }[result]
+    )
     rows = tuple(
         CostFitRow(row=row, outcome=FitOutcome.FITS, capabilities=()) for row in CostModelRow
     )
@@ -125,12 +135,8 @@ def review_entry(
         cost_model_fit=Paired(standard=rows, candidate=rows),
         deflated_sharpe=Paired(standard=summary, candidate=summary),
         ledger_tally=LedgerTally(1, 4, 1, 4, 1, 0, 0),
-        declaration=DeclarationState(
-            status=DeclarationStatus.MISSING
-            if result is ReviewResult.DEFERRED
-            else DeclarationStatus.NOT_DECLARED,
-            file_digest=None if result is ReviewResult.DEFERRED else digest("declaration"),
-        ),
+        declaration=declaration
+        or DeclarationState(status=DeclarationStatus.NOT_ASKED, file_digest=None),
         result=result,
         reasons=reasons,
         numeric_record_digest=digest("record"),

@@ -187,21 +187,6 @@ def _run(repo: Path, experiment: Path, out: Path) -> None:
     assert code == 0, stdout + stderr
 
 
-def _declare(repo: Path, experiment_id: ExperimentId, execution: int) -> None:
-    path = repo / "research/declarations" / f"{experiment_id}_{execution}.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "schema_version: 1\n"
-        f'experiment_id: "{experiment_id}"\n'
-        f"execution: {execution}\n"
-        'question: "この候補の選定・調整に、研究の外で見た相場を使ったか（テスト）"\n'
-        'answer: "使っていない"\n'
-        'recorded_by: "テスト"\n'
-        "used_outside_viewing: false\n",
-        encoding="utf-8",
-    )
-
-
 def _write_workspace(repo: Path) -> Path:
     """EURUSD の人工の探索の実験の作業場（CT-22 の作業場と同じ作り方）。実験設定のパスを返す。"""
     for name in _COPIED:
@@ -313,8 +298,6 @@ def restore(env: _Env) -> Iterator[None]:
     (repo / ADOPTION_REVIEW_LOCK_PATH).unlink(missing_ok=True)
     shutil.rmtree(repo / _RULES, ignore_errors=True)
     install_version_1_rules(repo)
-    shutil.rmtree(repo / "research/declarations", ignore_errors=True)
-    _declare(repo, env.experiment_id, 1)
     yield
     (repo / ADOPTION_REVIEW_LOCK_PATH).unlink(missing_ok=True)
 
@@ -415,7 +398,6 @@ def test_ct19_version_2_fits_a_usd_settled_candidate_started_after_it(
     assert code == 7, stdout + stderr  # 実行番号 1 は版 2 の登録より前に開始した
     _run(repo, env.experiment, out)  # 同じ版の再実行（実行番号 2）は登録より後に開始する
     _promote(repo, env.experiment_id, 2)
-    _declare(repo, env.experiment_id, 2)
     code, stdout, stderr = _review(env, execution=2, out=out)
     assert code == 7, stdout + stderr  # 行 5 と関係の無い人工データの性質で進めない（冒頭の注記）
     assert "CURRENCY_CONVERSION=FITS" in stdout

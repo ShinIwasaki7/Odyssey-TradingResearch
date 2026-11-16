@@ -1,4 +1,4 @@
-"""採用審査の規則のファイル・規則の登録簿・申告ファイルの読込（D16 §8・§10.3。仮置き 10）。
+"""採用審査の規則のファイル・規則の登録簿の読込（D16 §10.3。仮置き 10）。
 
 - **規則のファイル** `configs/policies/adoption_review/adoption_review_v<版>.yaml`: 費用・約定
   モデルの適合の印と閾値（R1-5〜R1-7 (a)）、割り引いた指標の「仮定に合わない」印の条件
@@ -15,17 +15,15 @@
 - **規則の登録簿** `configs/policies/adoption_review/registry.yaml`: 版・ダイジェスト・効き始めの
   行（`effective_after`。登録の時点の試行台帳の末尾の行のダイジェスト。版 1 は `null`＝最初から
   効く。R1-10 (a)）。要素は書き換えも削除もしない（研究ポリシーの登録簿と同じ規則。D09 §10.9）。
-- **申告ファイル** `research/declarations/<実験の識別子>_<実行番号>.yaml`（R1-8 (a)）: 審査の前に
-  司令塔が人間に問うた回答の原文。無い・形が違うときは「申告ファイルの欠け」（保留）として扱う。
+- **申告ファイル**（`research/declarations/`。D16 §8、R1-8 (a)）は、人間の決定 150「申告を無くす」
+  （ADR-0045）により読まない。既にあるファイルは記録として版管理に残す（申告の撤去の PR 4b）。
 
 どれも成績の数値を持たない（入口の検査は台帳と登録簿だけで行う。仮置き 13）。
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -34,12 +32,10 @@ from odyssey_fx.app.config.models import StrictModel, require_schema_version, va
 from odyssey_fx.app.config.scalars import parse_duration, require_decimal
 from odyssey_fx.common.canonical import digest
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import ExperimentId
 from odyssey_fx.common.money import CurrencyCode
 from odyssey_fx.common.refs import ContentDigest
 from odyssey_fx.evaluation.domain.adoption_review import (
     CostModelRow,
-    DeclarationStatus,
     DsrBasis,
     ReviewResult,
     ReviewRules,
@@ -51,14 +47,10 @@ from odyssey_fx.evaluation.domain.adoption_review import (
 __all__ = [
     "ADOPTION_REVIEW_DIRECTORY",
     "ADOPTION_REVIEW_ID",
-    "DECLARATION_DIRECTORY",
-    "LoadedDeclaration",
     "adoption_review_registry_path",
     "adoption_review_rules_path",
-    "declaration_path",
     "load_adoption_review_registry",
     "load_adoption_review_rules",
-    "load_declaration",
 ]
 
 #: 置き場（リポジトリの根からの相対パス。仮置き 10）。
@@ -66,12 +58,9 @@ ADOPTION_REVIEW_DIRECTORY: Final = Path("configs/policies/adoption_review")
 _REGISTRY_FILE: Final = "registry.yaml"
 #: 規則の識別（登録簿が載せてよい唯一の id。R3 の仮置き）。
 ADOPTION_REVIEW_ID: Final = "adoption_review"
-#: 申告ファイルの置き場（R1-8 (a)。D16 §8.1 の案）。
-DECLARATION_DIRECTORY: Final = Path("research/declarations")
 
 _SCHEMA_VERSION: Final = 1
 _REGISTRY_SCHEMA_VERSION: Final = 1
-_DECLARATION_SCHEMA_VERSION: Final = 1
 _HEX64: Final = re.compile(r"[0-9a-f]{64}")
 
 
@@ -139,16 +128,6 @@ class _RegistryModel(StrictModel):
     entries: list[_RegistryEntryModel]
 
 
-class _DeclarationModel(StrictModel):
-    schema_version: int
-    experiment_id: str
-    execution: int
-    question: str
-    answer: str
-    recorded_by: str
-    used_outside_viewing: bool
-
-
 def adoption_review_rules_path(repo_root: Path, version: int) -> Path:
     """規則のファイルの位置（`<根>/configs/policies/adoption_review/adoption_review_v<版>.yaml`）。"""
     return Path(repo_root) / ADOPTION_REVIEW_DIRECTORY / f"{ADOPTION_REVIEW_ID}_v{version}.yaml"
@@ -157,11 +136,6 @@ def adoption_review_rules_path(repo_root: Path, version: int) -> Path:
 def adoption_review_registry_path(repo_root: Path) -> Path:
     """規則の登録簿の位置。"""
     return Path(repo_root) / ADOPTION_REVIEW_DIRECTORY / _REGISTRY_FILE
-
-
-def declaration_path(repo_root: Path, experiment_id: ExperimentId, execution: int) -> Path:
-    """申告ファイルの位置（`<根>/research/declarations/<実験の識別子>_<実行番号>.yaml`）。"""
-    return Path(repo_root) / DECLARATION_DIRECTORY / f"{experiment_id}_{execution}.yaml"
 
 
 def _member[EnumT: (WindowAnchor, SwapRule, DsrBasis, ReviewResult, CostModelRow)](
@@ -328,43 +302,3 @@ def load_adoption_review_registry(path: Path) -> tuple[ReviewRulesEntry, ...]:
     if not any(entry.version == 1 for entry in entries):
         raise ConfigError(f"{path}: 版 1 の要素が無い（D16 §10.3）")
     return tuple(entries)
-
-
-@dataclass(frozen=True, slots=True)
-class LoadedDeclaration:
-    """申告ファイルの読込の結果（`MISSING` のとき `file_digest` は `None`、`detail` は理由）。"""
-
-    status: DeclarationStatus
-    file_digest: ContentDigest | None
-    detail: str
-
-
-def load_declaration(path: Path, experiment_id: ExperimentId, execution: int) -> LoadedDeclaration:
-    """申告ファイルを読む（R1-8 (a)。D16 §8.1）。
-
-    無い・読めない・形が違う（未宣言キー・型・実験の識別子と実行番号の食い違い）ときは
-    `MISSING`（保留の理由 `DECLARATION_MISSING`）。読めたらファイルのバイト列の SHA-256 を返す。
-    """
-    if path.is_symlink() or not path.is_file():
-        return LoadedDeclaration(DeclarationStatus.MISSING, None, f"{path} does not exist")
-    try:
-        data = path.read_bytes()
-        model = validate(_DeclarationModel, load_yaml_mapping(path), path)
-        require_schema_version(model.schema_version, _DECLARATION_SCHEMA_VERSION, path)
-    except (ConfigError, OSError) as exc:
-        return LoadedDeclaration(DeclarationStatus.MISSING, None, f"{type(exc).__name__}: {exc}")
-    if (model.experiment_id, model.execution) != (str(experiment_id), execution):
-        return LoadedDeclaration(
-            DeclarationStatus.MISSING,
-            None,
-            f"{path} declares ({model.experiment_id}, {model.execution}), not the reviewed"
-            " execution",
-        )
-    if not model.question.strip() or not model.answer.strip() or not model.recorded_by.strip():
-        return LoadedDeclaration(
-            DeclarationStatus.MISSING, None, f"{path} has an empty question / answer / recorder"
-        )
-    status = (
-        DeclarationStatus.DECLARED if model.used_outside_viewing else DeclarationStatus.NOT_DECLARED
-    )
-    return LoadedDeclaration(status, ContentDigest.sha256(hashlib.sha256(data).hexdigest()), "read")

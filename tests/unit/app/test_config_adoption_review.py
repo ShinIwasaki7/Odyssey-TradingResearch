@@ -1,4 +1,7 @@
-"""採用審査の規則のファイル・登録簿・申告ファイルの読込（D16 §8・§10.3。仮置き 10）。"""
+"""採用審査の規則のファイル・登録簿の読込（D16 §10.3。仮置き 10）。
+
+申告ファイルの読込は、人間の決定 150「申告を無くす」（ADR-0045）で無くした（申告の撤去の PR 4b）。
+"""
 
 from __future__ import annotations
 
@@ -11,17 +14,12 @@ from odyssey_fx.app.config import ConfigError
 from odyssey_fx.app.config.adoption_review import (
     adoption_review_registry_path,
     adoption_review_rules_path,
-    declaration_path,
     load_adoption_review_registry,
     load_adoption_review_rules,
-    load_declaration,
 )
-from odyssey_fx.common.canonical import digest
-from odyssey_fx.common.ids import ExperimentId
 from odyssey_fx.common.money import CurrencyCode
 from odyssey_fx.evaluation.adapters.fs_store import TRIAL_LEDGER_PATH, read_trial_ledger_file
 from odyssey_fx.evaluation.application.ports import TrialLedgerContents
-from odyssey_fx.evaluation.domain.adoption_review import DeclarationStatus
 from tests.fixtures.evaluation.adoption_review import REPO_ROOT
 
 _RULES = adoption_review_rules_path(REPO_ROOT, 1)
@@ -160,54 +158,3 @@ def test_malformed_registries_are_rejected(tmp_path: Path, body: str) -> None:
 def test_a_missing_registry_is_a_read_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         load_adoption_review_registry(adoption_review_registry_path(tmp_path))
-
-
-_ID = ExperimentId(digest("experiment"))
-
-
-def _declaration(tmp_path: Path, text: str) -> Path:
-    path = declaration_path(tmp_path, _ID, 1)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    return path
-
-
-def _text(used: str = "false", execution: int = 1) -> str:
-    return (
-        "schema_version: 1\n"
-        f'experiment_id: "{_ID}"\n'
-        f"execution: {execution}\n"
-        'question: "研究の外で見た相場を候補の選定・調整に使ったか"\n'
-        'answer: "使っていない"\n'
-        'recorded_by: "司令塔"\n'
-        f"used_outside_viewing: {used}\n"
-    )
-
-
-def test_a_declaration_records_the_answer_and_its_digest(tmp_path: Path) -> None:
-    path = _declaration(tmp_path, _text())
-    loaded = load_declaration(path, _ID, 1)
-    assert loaded.status is DeclarationStatus.NOT_DECLARED
-    assert loaded.file_digest is not None
-    declared = load_declaration(_declaration(tmp_path, _text("true")), _ID, 1)
-    assert declared.status is DeclarationStatus.DECLARED
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        _text(execution=2),
-        _text('"false"'),
-        _text().replace('recorded_by: "司令塔"\n', ""),
-        _text().replace('answer: "使っていない"', 'answer: " "'),
-    ],
-)
-def test_a_malformed_declaration_counts_as_missing(tmp_path: Path, text: str) -> None:
-    loaded = load_declaration(_declaration(tmp_path, text), _ID, 1)
-    assert loaded.status is DeclarationStatus.MISSING
-    assert loaded.file_digest is None
-
-
-def test_an_absent_declaration_counts_as_missing(tmp_path: Path) -> None:
-    loaded = load_declaration(declaration_path(tmp_path, _ID, 1), _ID, 1)
-    assert loaded.status is DeclarationStatus.MISSING

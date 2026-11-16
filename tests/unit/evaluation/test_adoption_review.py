@@ -27,6 +27,7 @@ from odyssey_fx.evaluation.domain.adoption_review import (
     CostFitResult,
     CostFitRow,
     CostModelRow,
+    DeclarationState,
     DeclarationStatus,
     EntranceAccepted,
     EntranceRejected,
@@ -541,12 +542,10 @@ def _rows(outcome: FitOutcome = FitOutcome.FITS) -> tuple[CostFitRow, ...]:
 def _combine(
     floor: FloorOutcome = FloorOutcome.MET,
     fit: FitOutcome = FitOutcome.FITS,
-    declaration: DeclarationStatus = DeclarationStatus.NOT_DECLARED,
 ) -> tuple[ReviewResult, tuple[ReviewReason, ...]]:
     return combine_result(
         floors=Paired(standard=FloorOutcome.MET, candidate=floor),
         fits=Paired(standard=_rows(), candidate=_rows(fit)),
-        declaration=declaration,
     )
 
 
@@ -562,26 +561,61 @@ def test_a_definite_failure_wins_over_an_undetermined_check() -> None:
     )
 
 
-def test_needs_capability_and_a_declaration_do_not_proceed() -> None:
+def test_needs_capability_does_not_proceed() -> None:
     assert _combine(fit=FitOutcome.NEEDS_CAPABILITY) == (
         ReviewResult.DO_NOT_PROCEED,
         (ReviewReason.COST_MODEL_NEEDS_CAPABILITY,),
     )
-    assert _combine(declaration=DeclarationStatus.DECLARED) == (
-        ReviewResult.DO_NOT_PROCEED,
-        (ReviewReason.OUTSIDE_VIEWING_DECLARED,),
-    )
 
 
 def test_undetermined_checks_defer() -> None:
-    assert _combine(declaration=DeclarationStatus.MISSING) == (
+    assert _combine(fit=FitOutcome.UNDETERMINED) == (
         ReviewResult.DEFERRED,
-        (ReviewReason.DECLARATION_MISSING,),
+        (ReviewReason.COST_MODEL_UNDETERMINED,),
     )
     assert _combine(FloorOutcome.UNDETERMINED) == (
         ReviewResult.DEFERRED,
         (ReviewReason.EVIDENCE_FLOOR_UNDETERMINED,),
     )
+
+
+def test_the_declaration_is_no_longer_part_of_the_result() -> None:
+    """決定 150「申告を無くす」（ADR-0045）: 合わせ方は申告を受け取らず、申告の理由を出さない。"""
+    with pytest.raises(TypeError):
+        combine_result(  # type: ignore[call-arg]
+            floors=Paired(standard=FloorOutcome.MET, candidate=FloorOutcome.MET),
+            fits=Paired(standard=_rows(), candidate=_rows()),
+            declaration=DeclarationStatus.DECLARED,
+        )
+    every = [
+        _combine(floor, fit)
+        for floor in FloorOutcome
+        for fit in (FitOutcome.FITS, FitOutcome.NEEDS_CAPABILITY, FitOutcome.UNDETERMINED)
+    ]
+    reasons = {reason for _, found in every for reason in found}
+    assert not reasons & {ReviewReason.OUTSIDE_VIEWING_DECLARED, ReviewReason.DECLARATION_MISSING}
+
+
+def test_the_declaration_item_keeps_its_shape_and_reads_rows_from_before_decision_150() -> None:
+    """行の項目 `declaration` は形を変えない（PR 4b の仮置き）。新しい行は `NOT_ASKED`（ダイジェスト
+    なし）、決定 150 の前の値（`NOT_DECLARED`・`DECLARED` はダイジェストあり、`MISSING` はなし）も
+    読める。"""
+    assert DeclarationState(status=DeclarationStatus.NOT_ASKED, file_digest=None)
+    with pytest.raises(KernelValueError):
+        DeclarationState(status=DeclarationStatus.NOT_ASKED, file_digest=digest("declaration"))
+    for status in (DeclarationStatus.NOT_DECLARED, DeclarationStatus.DECLARED):
+        assert DeclarationState(status=status, file_digest=digest("declaration"))
+        with pytest.raises(KernelValueError):
+            DeclarationState(status=status, file_digest=None)
+    assert DeclarationState(status=DeclarationStatus.MISSING, file_digest=None)
+    with pytest.raises(KernelValueError):
+        DeclarationState(status=DeclarationStatus.MISSING, file_digest=digest("declaration"))
+    legacy = review_entry(
+        experiment_id("a"),
+        declaration=DeclarationState(status=DeclarationStatus.MISSING, file_digest=None),
+        reasons=(ReviewReason.DECLARATION_MISSING,),
+    )
+    assert review_ledger_defect(review_lines([legacy])) is None
 
 
 # --- 審査台帳の行の列（D16 §10.2・仮置き 12）---------------------------------------------
