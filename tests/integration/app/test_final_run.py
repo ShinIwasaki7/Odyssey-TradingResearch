@@ -107,6 +107,9 @@ class _Env:
     out: Path
     home: Path
     clean: Path
+    #: 作業場の全部（作業木・origin・研究履歴の成果物）の手つかずの写し。最終検証を本番の run で
+    #: 通す試験を、ほかの試験の消費・台帳の行と混ぜずに動かすために使う（`_pristine_copy`）。
+    pristine: Path
 
 
 class _Candidates:
@@ -295,8 +298,16 @@ def env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Env]:
         publish_repo(repo, root / "origin.git", home=home, date=str(T_FIX))
         clean = root / "clean_out"
         shutil.copytree(out, clean)
+        pristine = tmp_path_factory.mktemp("final-run-pristine") / "root"
+        shutil.copytree(root, pristine, symlinks=True)
         yield _Env(
-            workspace=workspace, directory=directory, facts=facts, out=out, home=home, clean=clean
+            workspace=workspace,
+            directory=directory,
+            facts=facts,
+            out=out,
+            home=home,
+            clean=clean,
+            pristine=pristine,
         )
 
 
@@ -399,6 +410,99 @@ def test_1_the_production_run_validates_with_the_sealed_reads(env: _Env, tmp_pat
         raw = json.loads((final_out / "runs" / block["run_id"] / "manifest.json").read_text())
         assert "sealed_reads" in json.loads(raw["config"])
     assert [row.result.value for row in read_final_ledger(env.workspace.repo).rows] == ["COMPLETED"]
+
+
+# --- 研究ポリシー第 5 版を指す候補の本番の run（D09 §9.10.16。FV5-T4・FV5-T7）-----------------
+#
+# 研究履歴の成果物は版 3 の実験のまま、候補の事実の評価基準だけを人工の版 5（`v5_standard()`）に
+# 差し替えて、判定と記録の側を本番の run の成果物で通す（**人工データ**）。作業場の手つかずの
+# 写しで動かし、ほかの試験の消費・台帳の行と混ぜない。
+
+
+def _pristine_copy(env: _Env, tmp_path: Path, name: str) -> tuple[Path, Path]:
+    """作業場の写し（作業木と origin）を作り、写しの作業木が写しの origin を指すようにする。"""
+    from tests.fixtures.git_origin import git
+
+    root = tmp_path / name
+    shutil.copytree(env.pristine, root, symlinks=True)
+    git(
+        root / "repo",
+        "remote",
+        "set-url",
+        "origin",
+        str(root / "origin.git"),
+        home=root / "githome",
+    )
+    return root, root / "out/runs/experiments/final_case/v1"
+
+
+def _validate_copy(root: Path, directory: Path, facts: CandidateFacts) -> FinalValidationOutcome:
+    repo = root / "repo"
+    with pytest.MonkeyPatch.context() as patch:
+        isolate_git(patch, root / "githome")
+        return final_validate(
+            FinalValidationRequest(
+                experiment_dir=directory,
+                execution=1,
+                repo_root=repo,
+                snapshots_root=repo / "data" / "snapshots",
+                out_root=root / "final_out",
+                by="人工の実行者",
+            ),
+            candidates=_Candidates(facts),
+            runner=RecordedFinalRunner(
+                repo_root=repo,
+                snapshots_root=repo / "data" / "snapshots",
+                out_root=root / "final_out",
+            ),
+        )
+
+
+def test_fv5_t4_t7_a_v5_candidate_runs_as_a_v4_one_and_judges_the_run_trades(
+    env: _Env, tmp_path: Path
+) -> None:
+    """FV5-T7: 実行設定・予測 RunId・消費の対象・読む並びは版 4 以下の候補と同じ作り方（封印の
+    読みと run が増えない）。FV5-T4 の本番の側: PROFIT_FACTOR の取引の集合は run の完了取引と run の
+    終わりの仮決済で、和が run の純損益（費用を引いた後の終わりの資産 − 初期残高）と一致する
+    （一致しなければ構造エラーで止まり、終了コード 0 にならない）。"""
+    from tests.fixtures.evaluation.loss_side_units import v5_standard
+
+    rule = v5_standard()
+    v5_facts = replace(
+        env.facts,
+        standard=rule,
+        requirements=Paired.build(lambda variant: rule.sufficiency.classes[0]),
+    )
+    root4, directory4 = _pristine_copy(env, tmp_path, "v4")
+    root5, directory5 = _pristine_copy(env, tmp_path, "v5")
+    outcome4 = _validate_copy(root4, directory4, env.facts)
+    outcome5 = _validate_copy(root5, directory5, v5_facts)
+    assert outcome4.exit_code == EXIT_OK, (outcome4.detail, outcome4.lines)
+    assert outcome5.exit_code == EXIT_OK, (outcome5.detail, outcome5.lines)
+    permits = [
+        json.loads((final_directory(directory, 1) / "permit.json").read_text())
+        for directory in (directory4, directory5)
+    ]
+    for key in ("targets", "reads", "predicted", "consumption", "scoring_start"):
+        assert permits[0][key] == permits[1][key], key
+    records = [
+        json.loads((final_directory(directory, 1) / "final_evaluation.json").read_text())
+        for directory in (directory4, directory5)
+    ]
+    assert (records[0]["schema_version"], records[1]["schema_version"]) == (1, 2)
+    for variant in VARIANTS:
+        block4 = records[0]["variants"][variant.value]
+        block5 = records[1]["variants"][variant.value]
+        assert block4["run_id"] == block5["run_id"]  # 同じ run（同じ予測 RunId）
+        assert block4["result_digest"] == block5["result_digest"]
+        (factor,) = [item for item in block5["conditions"] if item["metric"] == "PROFIT_FACTOR"]
+        assert set(factor["profit_factor"]) >= {"closed_count", "settlement_count"}
+        assert block5["interval_floors"], "the scoring interval has at least one interval"
+        assert block5["interval_floors"][0]["start"] == records[1]["scoring_start"]
+        assert block5["interval_floors"][-1]["end"] == records[1]["consumption"]["end"]
+    rows4 = read_final_ledger(root4 / "repo").rows
+    rows5 = read_final_ledger(root5 / "repo").rows
+    assert [set(row.payload) for row in rows4] == [set(row.payload) for row in rows5]
 
 
 # --- CT-22・CT-23・CT-25・CT-27: 円以外の決済通貨の候補の本番の run（D06 §19.14） ---------------

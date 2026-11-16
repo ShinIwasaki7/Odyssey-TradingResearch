@@ -7,6 +7,8 @@
   作り方。局面の振り分けと同じ材料 `segment_trade_facts`）と、区間の終わりに仮に閉じた建玉（区間の
   終端の記録の明細と、その建玉の入場の手数料）から
   `domain.path.path_trade_set` で集合を組み、恒等式を確かめて要約にする（D24 §3.3、仮置き 4・14）。
+  版 5 を指す候補の最終検証の 1 本の run も同じ作り方を区間 1 つとして当てる（`run_trade_totals`。
+  D09 §9.10.16、決定 214）。
 - 日次の収益率（`run_daily_returns`・`path_daily_returns`）: #17 と同じ日次の作り方（取引日の終わり
   以前で最後の資産。無ければ前日を持ち越す。D24 の仮置き 8）。経路は区間の終わりの費用を引いた後の
   点を含む資産の系列に当てる。系列は保存しない（D24 の仮置き 10）。
@@ -68,6 +70,7 @@ __all__ = [
     "path_summary_v5",
     "path_trade_totals",
     "run_daily_returns",
+    "run_trade_totals",
 ]
 
 
@@ -127,6 +130,38 @@ def path_trade_totals(
     initial = summary.segments[0].initial_balance
     return PathTradeTotals.of(
         path_trade_set(segments, initial_balance=initial, final_balance=summary.final_balance)
+    )
+
+
+def run_trade_totals(
+    repository: ResultRepository,
+    run_id: RunId,
+    *,
+    initial_balance: Money,
+    settled_equity: Money,
+    settlement_lines: Sequence[HypotheticalCloseLine],
+) -> PathTradeTotals:
+    """1 本の run の完了取引と run の終わりの仮決済の集合を組み、恒等式を確かめて要約にする。
+
+    版 5 を指す候補の最終検証の組の run（D09 §9.10.16。決定 214「研究期間と同じ規則」）に、経路の
+    取引の集合（`path_trade_totals`）と同じ作り方を区間 1 つとして当てる: 完了取引は評価の取引表と
+    同じ組み立て、仮に閉じた建玉は「仮決済の損益（決済の費用を引いた後）− 入場の費用」。和が
+    `settled_equity − initial_balance` と一致しなければ構造エラー（D24 §3.3、仮置き 14）。
+    """
+    material = _material(repository, run_id, f"the final-validation run {run_id}")
+    commissions = {item.position_id: item.entry_commission for item in material.open_entries}
+    segment = SegmentTrades(
+        segment_index=0,
+        initial_balance=initial_balance,
+        settled_equity=settled_equity,
+        closed_trades=material.closed_trades,
+        settled=tuple(
+            SettledPosition(line=line, entry_commission=_commission(commissions, line))
+            for line in settlement_lines
+        ),
+    )
+    return PathTradeTotals.of(
+        path_trade_set((segment,), initial_balance=initial_balance, final_balance=settled_equity)
     )
 
 

@@ -10,6 +10,14 @@
   R2-12）: `derive_final_window`。
 - **最終評価の許可**（D09 §9.10.2 の段 3。要決定 R2-3 (a)）: `FinalEvaluationPermit`。
 - **判定**（D09 §9.10.11。要決定 R2-7 (a)）: `judge_final_variant`・`combine_final`。
+- **研究ポリシー第 5 版の条件の当て方**（D09 §9.10.16。決定 212〜219・220）: 版 5 を指す候補だけ、
+  採点区間を終わりから 364 日ずつに区切った区間の損失の床（`final_intervals`・
+  `interval_floor_results`。決定 212）と、run の完了取引と run の終わりの仮決済の集合に当てる
+  `PROFIT_FACTOR`（`search.profit_factor_result`。決定 214）を足す。損失の集中・近傍の損失の床・
+  試行数で割り引いた確率は当てず（決定 213・215・216）、結果を作らずに名前の一覧
+  （`RESEARCH_ONLY_CONDITIONS`）だけを判定に添える。局面は扱わない（決定 217）。版 4 以下の候補の
+  判定は変えない。前向き検証の判定（決定 218）はこの関数を使える形にしてあるが、前向き検証の側の
+  結線は前向き検証の申請のコマンドの実装 PR（D09 §9.11.13 の F-6）で行う。
 
 本モジュールを作るために読まなかったもの: 戦略の成績・取引表・価格・2024 年以降のデータ・
 旧データの CSV。数は件数・日数・時刻だけを扱う。
@@ -20,25 +28,38 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
+from decimal import Decimal, localcontext
 from enum import Enum
 from typing import Final
 
 from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.common.money import Money, kernel_context
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.evaluation.domain.metrics import MetricId, MetricValue
+from odyssey_fx.evaluation.domain.metrics import (
+    MetricId,
+    MetricUnavailableReason,
+    MetricValue,
+    ratio_of,
+)
+from odyssey_fx.evaluation.domain.path import PathTradeTotals
 from odyssey_fx.evaluation.domain.search import (
+    NET_RETURN_RATE_METRICS,
     CombinedVerdict,
+    Comparator,
     ConditionOutcome,
     ConditionResult,
     ConditionScope,
     EvaluationStandard,
     EvidenceAxis,
     FrequencyClass,
+    MetricCondition,
     ProfitabilityAxis,
     SearchVerdict,
     StandardPurpose,
+    ValidationRuleV5,
     hold_mark_of,
     path_condition_results,
+    path_condition_results_v5,
 )
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.access import (
@@ -54,21 +75,28 @@ from odyssey_fx.marketdata.domain.snapshot import PartitionId
 
 __all__ = [
     "CONVERSION_TIMEFRAME",
+    "FINAL_INTERVAL_DAYS",
+    "RESEARCH_ONLY_CONDITIONS",
     "WINDOW_START",
     "ApplicationState",
     "CandidateKey",
     "FinalEvaluationPermit",
+    "FinalInterval",
     "FinalLedgerResult",
+    "FinalLossSideMaterial",
     "FinalReason",
     "FinalRunSummary",
     "FinalVariantOutcome",
     "FinalWindow",
+    "IntervalFloorResult",
     "PredictedRun",
     "SealedPartitionFact",
     "WindowRefusal",
     "combine_final",
     "derive_application_state",
     "derive_final_window",
+    "final_intervals",
+    "interval_floor_results",
     "judge_final_variant",
 ]
 
@@ -581,15 +609,249 @@ class FinalEvaluationPermit:
 # --- 判定（D09 §9.10.11。要決定 R2-7 (a)）-------------------------------------------------
 
 
+#: 最終検証の採点区間を区切る区間の長さ（D09 §9.10.16.2 の FV5-1、決定 212「364 日ごとに区切って
+#: 当てる」。研究の fold の検証の区間の長さ。新しい値ではない）。
+FINAL_INTERVAL_DAYS: Final = 364
+
+#: 版 5 を指す候補の最終検証で当てない条件（研究期間だけの条件。D09 §9.10.16.2、決定 213・215・
+#: 216、§9.10.16.5 の FV5-5）。結果を作らず、名前の一覧だけを判定と記録に添える。並びは D24 §3.1 の
+#: 表の順（近傍の床 → 損失の集中 → 割り引いた確率）。
+RESEARCH_ONLY_CONDITIONS: Final[tuple[ConditionScope, ...]] = (
+    ConditionScope.NEIGHBOR_FLOOR,
+    ConditionScope.LOSS_CONCENTRATION,
+    ConditionScope.DEFLATED_DOWNSIDE_RATIO,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FinalLossSideMaterial:
+    """版 5 を指す候補の最終検証の、組の 1 本の run の損失の側の材料（D09 §9.10.16。決定 212）。
+
+    - `scoring`: 採点区間（run の区間。`run_interval` は採点の始まりから始まる。D09 §9.10.14）。
+    - `initial_balance`: run の開始の資産（初期残高）。最初の区間の始まりの資産（FV5-3 の (1)）。
+    - `equity_points`: run の資産の系列（台帳 snapshot の含み込みの `equity` と処理点の時刻。処理点
+      の昇順）。途中の境目の資産を採る（FV5-3 の (2)）。
+    - `settled_equity`: run の終わりの費用を引いた後の資産（残高 ＋ 仮に閉じた損益。仮置き
+      R4b-7）。最後の区間の終わりの資産（FV5-3 の (3)）。
+    - `trades`: run の完了取引と run の終わりに仮に閉じた建玉の集合の要約（D24 §3.3 と同じ作り方。
+      恒等式を確かめた後の値。`PROFIT_FACTOR` の入力。決定 214）。
+
+    近傍・他の試行・局面（日足）の入力は持たない（決定 213・215〜217、FV5-T5）。
+    """
+
+    scoring: Interval
+    initial_balance: Money
+    equity_points: tuple[tuple[UtcTime, Decimal], ...]
+    settled_equity: Money
+    trades: PathTradeTotals
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scoring, Interval):
+            raise KernelValueError("FinalLossSideMaterial.scoring must be an Interval")
+        if not isinstance(self.initial_balance, Money) or not isinstance(
+            self.settled_equity, Money
+        ):
+            raise KernelValueError("FinalLossSideMaterial balances must be Money")
+        if not isinstance(self.trades, PathTradeTotals):
+            raise KernelValueError("FinalLossSideMaterial.trades must be a PathTradeTotals")
+        currency = self.initial_balance.currency
+        if self.settled_equity.currency != currency or self.trades.wins.currency != currency:
+            raise KernelValueError("FinalLossSideMaterial: 残高と取引の集合の通貨が違う")
+        if not isinstance(self.equity_points, tuple):
+            raise KernelValueError("FinalLossSideMaterial.equity_points must be a tuple")
+        previous: UtcTime | None = None
+        for item in self.equity_points:
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[0], UtcTime)
+                or not isinstance(item[1], Decimal)
+                or not item[1].is_finite()
+            ):
+                raise KernelValueError(
+                    "FinalLossSideMaterial.equity_points holds (UtcTime, finite Decimal) pairs"
+                )
+            if previous is not None and item[0] < previous:
+                raise KernelValueError("FinalLossSideMaterial.equity_points は処理点の昇順")
+            previous = item[0]
+
+    def equity_at(self, boundary: UtcTime) -> Decimal:
+        """途中の境目 `boundary` の資産（FV5-3 の (2)）。
+
+        `boundary` 以前で最後の観測点の値（`boundary` ちょうどの点を含む。`boundary` より後の点は
+        使わない）。`boundary` 以前に観測点が無ければ run の開始の資産（FV5-3 の (1)）。
+        """
+        value = self.initial_balance.amount
+        for at, amount in self.equity_points:
+            if boundary < at:
+                break
+            value = amount
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class FinalInterval:
+    """採点区間を区切った区間 1 つ（FV5-2）。`partial` は最初の端数の区間の印。"""
+
+    interval_index: int
+    interval: Interval
+    partial: bool
+
+
+def final_intervals(scoring: Interval) -> tuple[FinalInterval, ...]:
+    """採点区間を終わりから `FINAL_INTERVAL_DAYS` 日ずつさかのぼって区切る（FV5-2。決定 220）。
+
+    研究の fold の検証区間の並べ方（`splits.generate_folds` の手順 1 と端数の fold）と同じく、
+    `j = 0, 1, …` の順に `[E − (j+1)·364 日, E − j·364 日)` を始まりが採点の始まり `S` 以上の間
+    採り、余り `[S, E − k·364 日)` が 0 より長ければ最初の端数の区間にする。古い順に並べ、番号を
+    0 から振る（端数の区間があれば 0）。
+    """
+    if not isinstance(scoring, Interval):
+        raise KernelValueError("final_intervals requires an Interval")
+    length = timedelta(days=FINAL_INTERVAL_DAYS)
+    full = (scoring.end - scoring.start) // length
+    taken = [
+        Interval(start=scoring.end - length * (step + 1), end=scoring.end - length * step)
+        for step in range(full)
+    ]
+    ordered: list[tuple[Interval, bool]] = []
+    oldest = scoring.end - length * full
+    if scoring.start < oldest:
+        ordered.append((Interval(start=scoring.start, end=oldest), True))
+    ordered.extend((item, False) for item in reversed(taken))
+    return tuple(
+        FinalInterval(interval_index=index, interval=item, partial=partial)
+        for index, (item, partial) in enumerate(ordered)
+    )
+
+
+_COMPARE: Final = {
+    Comparator.GE: lambda left, right: left >= right,
+    Comparator.GT: lambda left, right: left > right,
+    Comparator.LE: lambda left, right: left <= right,
+    Comparator.LT: lambda left, right: left < right,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class IntervalFloorResult:
+    """区間の損失の床 1 件の結果（D09 §9.10.16.2 の FV5-1。決定 212）。
+
+    `metric`・`comparator`・`threshold` は研究ポリシーの fold の純損失の床の行（`fold_floors` の
+    純収益率の指標の条件。版 5 は区間末の評価を含む純収益率 ≥ −0.15）。`start_equity`・
+    `end_equity` は区間の始まりと終わりの資産（FV5-3）、`observed` は
+    `(end_equity − start_equity) ÷ start_equity`。始まりの資産が 0 以下なら観測不足
+    （`UNCOMPUTABLE`・`UNDEFINED_DENOMINATOR`）。
+    """
+
+    interval: FinalInterval
+    metric: MetricId
+    comparator: Comparator
+    threshold: Decimal
+    start_equity: Decimal
+    end_equity: Decimal
+    observed: Decimal | None
+    outcome: ConditionOutcome
+    unavailable_reason: MetricUnavailableReason | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.interval, FinalInterval):
+            raise KernelValueError("IntervalFloorResult.interval must be a FinalInterval")
+        if self.outcome is ConditionOutcome.UNCOMPUTABLE:
+            if (
+                self.observed is not None
+                or self.unavailable_reason is not MetricUnavailableReason.UNDEFINED_DENOMINATOR
+            ):
+                raise KernelValueError(
+                    "an UNCOMPUTABLE interval floor has no observed value and is"
+                    " UNDEFINED_DENOMINATOR"
+                )
+            return
+        if self.outcome not in (ConditionOutcome.MET, ConditionOutcome.NOT_MET):
+            raise KernelValueError(f"an interval floor has no {self.outcome.value} outcome")
+        if self.observed is None or self.unavailable_reason is not None:
+            raise KernelValueError("a MET / NOT_MET interval floor has an observed value only")
+        met = _COMPARE[self.comparator](self.observed, self.threshold)
+        if met is not (self.outcome is ConditionOutcome.MET):
+            raise KernelValueError(
+                f"IntervalFloorResult.outcome {self.outcome.value} contradicts"
+                f" {self.observed} {self.comparator.value} {self.threshold}"
+            )
+
+
+def interval_floor_results(
+    floors: Sequence[MetricCondition], material: FinalLossSideMaterial
+) -> tuple[IntervalFloorResult, ...]:
+    """区間の損失の床（FV5-1 (a)・FV5-2・FV5-3。決定 212・220）。
+
+    `floors` は研究ポリシーの `fold_floors`。そのうち純収益率の指標の条件（fold の純損失の床）
+    だけを各区間に当てる（区間に当てるのは損失の床だけで、ドローダウンの床・利益の条件は区間に
+    置かない。決定 212・218 の注記）。結果は区間の古い順、区間の中は条件の書いた順。区間の損益は
+    資産の系列の境目の値で測り、途中の境目で建玉を仮に閉じない（FV5-3）。
+    """
+    if not isinstance(material, FinalLossSideMaterial):
+        raise KernelValueError("interval_floor_results requires a FinalLossSideMaterial")
+    applied = [item for item in floors if item.metric in NET_RETURN_RATE_METRICS]
+    intervals = final_intervals(material.scoring)
+    results: list[IntervalFloorResult] = []
+    for item in intervals:
+        start = (
+            material.initial_balance.amount
+            if item.interval_index == 0
+            else material.equity_at(item.interval.start)
+        )
+        end = (
+            material.settled_equity.amount
+            if item.interval_index == len(intervals) - 1
+            else material.equity_at(item.interval.end)
+        )
+        observed: Decimal | None = None
+        reason: MetricUnavailableReason | None = None
+        if start <= 0:
+            reason = MetricUnavailableReason.UNDEFINED_DENOMINATOR
+        else:
+            with localcontext(kernel_context()):
+                profit = end - start
+            observed = ratio_of(profit, start)
+        for condition in applied:
+            if observed is None:
+                outcome = ConditionOutcome.UNCOMPUTABLE
+            elif _COMPARE[condition.comparator](observed, condition.threshold):
+                outcome = ConditionOutcome.MET
+            else:
+                outcome = ConditionOutcome.NOT_MET
+            results.append(
+                IntervalFloorResult(
+                    interval=item,
+                    metric=condition.metric,
+                    comparator=condition.comparator,
+                    threshold=condition.threshold,
+                    start_equity=start,
+                    end_equity=end,
+                    observed=observed,
+                    outcome=outcome,
+                    unavailable_reason=reason,
+                )
+            )
+    return tuple(results)
+
+
 @dataclass(frozen=True, slots=True)
 class FinalRunSummary:
     """組の最終検証の run の要約（指標は経路の指標 `PATH_METRICS`、件数は run の取引件数）。
 
     指標の値は最終検証の記録とレポートにだけ出し、画面には出さない（D09 §9.10.7、D15 §9）。
+    `loss_side` は研究ポリシーの版 5 を指す候補の run だけが持つ損失の側の材料（D09 §9.10.16）。
+    版 4 以下の候補は `None`（要約の形も判定も今のまま。FV5-T1）。
     """
 
     metrics: tuple[tuple[MetricId, MetricValue], ...]
     trade_count: int
+    loss_side: FinalLossSideMaterial | None = None
+
+    def __post_init__(self) -> None:
+        if self.loss_side is not None and not isinstance(self.loss_side, FinalLossSideMaterial):
+            raise KernelValueError("FinalRunSummary.loss_side must be a FinalLossSideMaterial")
 
     def metric(self, metric: MetricId) -> MetricValue | None:
         for key, value in self.metrics:
@@ -600,7 +862,12 @@ class FinalRunSummary:
 
 @dataclass(frozen=True, slots=True)
 class FinalVariantOutcome:
-    """組の最終検証の判定（2 軸と 4 値。D13 §5.5 の手順から選定と fold を除いたもの）。"""
+    """組の最終検証の判定（2 軸と 4 値。D13 §5.5 の手順から選定と fold を除いたもの）。
+
+    版 5 を指す候補では、`interval_floors` に区間の損失の床の結果（決定 212）、`research_only` に
+    当てない条件の名前（`RESEARCH_ONLY_CONDITIONS`。FV5-5）を持ち、`conditions` の
+    `PROFIT_FACTOR` は取引の集合から当てた `ProfitFactorResult`（決定 214）。版 4 以下はどちらも空。
+    """
 
     variant: Variant
     verdict: SearchVerdict
@@ -611,6 +878,8 @@ class FinalVariantOutcome:
     hold: bool | None
     trade_count: int
     required_trades: int | None
+    interval_floors: tuple[IntervalFloorResult, ...] = ()
+    research_only: tuple[ConditionScope, ...] = ()
 
 
 def judge_final_variant(
@@ -619,7 +888,7 @@ def judge_final_variant(
     run: FinalRunSummary,
     requirement: FrequencyClass | None,
 ) -> FinalVariantOutcome:
-    """組の最終検証の判定（要決定 R2-7 (a)）。
+    """組の最終検証の判定（要決定 R2-7 (a)。版 5 は D09 §9.10.16）。
 
     組ごとに固定した 1 試行の 1 本の連続口座の run に、現行の版の正式条件（経路の条件:
     最低条件と全体の水準。検証の合計の最低取引件数）を D13 §5.5 の 2 軸と 4 値の手順で当てる:
@@ -630,21 +899,52 @@ def judge_final_variant(
     4. 全体の水準の条件が 1 つでも満たさない: 満たさない。すべて満たす: 満たす（用途が機構の確認
        なら「機構の確認で条件をすべて満たした」）。
 
+    研究ポリシーの版 5（`ValidationRuleV5`）を指す候補は、D24 §3.6 の写し方のまま、区間の損失の床
+    （`interval_floor_results`。決定 212）を手順 1・3 の最低条件に、取引の集合から当てる
+    `PROFIT_FACTOR`（決定 214）を手順 4 の全体の水準に足す。損失の集中・近傍の損失の床・試行数で
+    割り引いた確率は当てず、結果を作らない（決定 213・215・216。名前は `research_only` に置く）。
+    版 5 の要約は損失の側の材料（`run.loss_side`）を持つ。版 4 以下は今のまま（FV5-T1）。
+
     `requirement` はその候補の研究の判定で決まった頻度区分の証拠の要件（`None` は区分が決まら
     なかった候補。件数の要件を当てない）。
     """
     if not isinstance(standard, EvaluationStandard) or not isinstance(run, FinalRunSummary):
         raise KernelValueError("judge_final_variant requires an EvaluationStandard and a summary")
-    conditions = path_condition_results(standard.validation.path, run.metric)
+    rule = standard.validation
+    interval_floors: tuple[IntervalFloorResult, ...] = ()
+    research_only: tuple[ConditionScope, ...] = ()
+    if isinstance(rule, ValidationRuleV5):
+        material = run.loss_side
+        if material is None:
+            raise KernelValueError(
+                "a final-validation run of a v5 candidate needs its loss-side material"
+                " (D09 §9.10.16)"
+            )
+        conditions = path_condition_results_v5(rule.path, run.metric, material.trades)
+        interval_floors = interval_floor_results(rule.fold_floors, material)
+        research_only = RESEARCH_ONLY_CONDITIONS
+    else:
+        if run.loss_side is not None:
+            raise KernelValueError(
+                "the final-validation run of a candidate of policy version 4 or earlier has no"
+                " loss-side material (D09 §9.10.16.4)"
+            )
+        conditions = path_condition_results(rule.path, run.metric)
     total = run.trade_count
     required = None if requirement is None else requirement.min_validation_trades_total
     total_short = required is not None and total < required
     breaches = [
-        item
-        for item in conditions
-        if item.scope is ConditionScope.PATH_FLOOR and item.outcome is ConditionOutcome.NOT_MET
+        *(
+            item
+            for item in conditions
+            if item.scope is ConditionScope.PATH_FLOOR and item.outcome is ConditionOutcome.NOT_MET
+        ),
+        *(item for item in interval_floors if item.outcome is ConditionOutcome.NOT_MET),
     ]
-    uncomputable = [item for item in conditions if item.outcome is ConditionOutcome.UNCOMPUTABLE]
+    uncomputable = [
+        *(item for item in conditions if item.outcome is ConditionOutcome.UNCOMPUTABLE),
+        *(item for item in interval_floors if item.outcome is ConditionOutcome.UNCOMPUTABLE),
+    ]
     reasons: list[str] = []
     if total_short:
         reasons.append("TOTAL_TRADES_BELOW")
@@ -669,7 +969,7 @@ def judge_final_variant(
     profitability: ProfitabilityAxis
     if uncomputable:
         profitability = ProfitabilityAxis.NOT_JUDGED
-    elif any(item.outcome is ConditionOutcome.NOT_MET for item in conditions):
+    elif breaches or any(item.outcome is ConditionOutcome.NOT_MET for item in conditions):
         profitability = ProfitabilityAxis.NOT_MET
     else:
         profitability = ProfitabilityAxis.MET
@@ -684,6 +984,8 @@ def judge_final_variant(
         hold=hold,
         trade_count=total,
         required_trades=required,
+        interval_floors=interval_floors,
+        research_only=research_only,
     )
 
 

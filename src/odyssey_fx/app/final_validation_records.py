@@ -44,6 +44,8 @@ __all__ = [
     "FINAL_LOCK_FILE",
     "LEDGER_SCHEMA_VERSION",
     "PERMIT_FILE",
+    "RECORD_SCHEMA_VERSION_V4",
+    "RECORD_SCHEMA_VERSION_V5",
     "REPORT_FILE",
     "FinalLedger",
     "FinalLedgerError",
@@ -56,6 +58,7 @@ __all__ = [
     "parse_final_ledger",
     "read_attempts",
     "read_final_ledger",
+    "record_schema_version",
     "write_json_once",
 ]
 
@@ -72,6 +75,15 @@ ATTEMPTS_DIRECTORY: Final = "attempts"
 #: 行）、版 2 は換算用の読み取りの対象の数と一覧のダイジェストを消費の対象と別の項目で持つ行
 #: （円以外の決済通貨の候補。D06 v1.20 案 §19.14、仮置き C1-17）。どちらの版の行も読む。
 LEDGER_SCHEMA_VERSION: Final = 2
+
+#: 最終検証の記録 `final_evaluation.json` の書式の版（D09 §9.10.16.5 の FV5-6、決定 219・220）。
+#: 版 1 は研究ポリシーの版 4 以下を指す候補の記録（判定の値と識別子だけ。今までの形）、版 2 は
+#: 版 5 を指す候補の記録（組ごとに第 5 版の条件ごとの結果・区間の損失の床・研究期間だけの条件の
+#: 一覧を足す。D09 §9.10.16.2）。版の項目の無い記録は版 1 として読む。台帳の行の形は変えない
+#: （決定 219）。
+RECORD_SCHEMA_VERSION_V4: Final = 1
+RECORD_SCHEMA_VERSION_V5: Final = 2
+_RECORD_SCHEMA_VERSIONS: Final = frozenset({RECORD_SCHEMA_VERSION_V4, RECORD_SCHEMA_VERSION_V5})
 
 _ROW_KEYS: Final = frozenset(
     {
@@ -334,6 +346,14 @@ def append_attempt(final_dir: Path, payload: Mapping[str, Any]) -> None:
 def final_directory(experiment_dir: Path, execution: int) -> Path:
     """`<実験の版のディレクトリ>/final/<execution>/`（D09 §9.10.5）。"""
     return Path(experiment_dir) / FINAL_DIRECTORY / str(execution)
+
+
+def record_schema_version(record: Mapping[str, Any]) -> int:
+    """最終検証の記録の書式の版（FV5-6）。項目が無ければ版 1、知らない版は `ValueError`。"""
+    version = record.get("schema_version", RECORD_SCHEMA_VERSION_V4)
+    if isinstance(version, bool) or version not in _RECORD_SCHEMA_VERSIONS:
+        raise ValueError(f"unknown schema_version {version!r} of {FINAL_EVALUATION_FILE}")
+    return int(version)
 
 
 def write_json_once(path: Path, payload: Mapping[str, Any]) -> str:
