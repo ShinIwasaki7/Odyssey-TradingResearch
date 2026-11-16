@@ -1519,7 +1519,10 @@ class Runner:
         if code != 0:
             self._tool_failure(ctx, card, f"固定のコマンドの終了コード {code}")
             return
-        records = self.ports.git.exec_untracked(CANDIDATE_FIXES)
+        # この実行の置き場だけを見る（`<experiment_id>/<execution>/`。別のカードの固定の記録が同じ
+        # 作業木に並んでも取り違えない。Codex 6 巡目の指摘 2）。
+        eid = str(info.get("experiment_id"))
+        records = self.ports.git.exec_untracked(f"{CANDIDATE_FIXES}{eid}/{execution}/")
         if len(records) != 1:
             card.procs.pop("fix", None)
             self._stop_card(ctx, card, "FIXATION_CHECK_FAILED", "固定の記録が 1 つに決まらない")

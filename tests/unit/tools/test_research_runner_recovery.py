@@ -450,3 +450,44 @@ def test_a_binding_repaired_after_the_stop_is_read_again(rig: Rig) -> None:
     _until(rig, "C7")
     prs = _exec_prs(rig)
     assert prs and prs[-1].ci_ok, prs[-1].ci_messages
+
+
+# --- Codex 6 巡目 ----------------------------------------------------------------------------
+
+
+def test_a_review_recorded_before_its_exit_code_is_not_run_again(rig: Rig) -> None:
+    """審査が台帳に追記した後、終了コードを書く前に消えても、審査台帳の行（`entry` の中の識別子
+    と結果）から結果を読み、審査を起動し直さない（Codex 6 巡目の指摘 1）。"""
+    import json
+
+    ledger = review_ledger(1)
+    entry = json.loads(ledger.splitlines()[0])["entry"]
+    executions = {"2": {"experiment_id": entry["experiment_id"], "execution": entry["execution"]}}
+    _inject(rig, "C10", reservations=["review"], executions=executions)
+    rig.step()  # 審査を起動
+    review = rig.procs.by_kind("review")
+    (rig.world.exec_dir / REVIEW).write_bytes(ledger)
+    rig.procs.alive_pids.discard(int(review["pid"]))  # 終了コードを書く前に消えた
+    for _ in range(3):
+        rig.step()
+    assert len([key for key in rig.procs.spawned if key.startswith("review:")]) == 1
+    assert _reasons(rig) == {"REVIEW_DEFERRED"}  # 台帳の結果（人工の行は「延期」）に従う
+
+
+def test_fixation_records_of_two_cards_are_not_mixed_up(rig: Rig) -> None:
+    """別のカードの固定の記録が同じ実行用の作業木に並んでも、この実行の置き場の記録だけを
+    取り出して関所 1 の PR を作る（Codex 6 巡目の指摘 2）。"""
+    _inject(rig, "C11")
+    rig.step()
+    root = rig.world.exec_dir / "research/candidate_fixes"
+    mine = root / ("a" * 64) / "1" / "1.yaml"
+    other = root / ("b" * 64) / "1" / "1.yaml"
+    for record in (mine, other):
+        record.parent.mkdir(parents=True)
+        record.write_text("schema_version: 1\n", encoding="utf-8")
+    rig.procs.finish("fix", 0)
+    rig.step()
+    assert "FIXATION_CHECK_FAILED" not in _reasons(rig)
+    fix = [pr for pr in rig.world.prs.values() if pr.branch.startswith("candidate-fix/")]
+    assert len(fix) == 1
+    assert other.is_file() and not mine.exists()  # 別のカードの記録は残す

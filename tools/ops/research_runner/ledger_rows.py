@@ -2,6 +2,9 @@
 
 審査台帳・最終検証の台帳に、ある実行（記録票の識別子と実行番号）の行があるかだけを見る。行の
 判定の値・指標は読まない（審査の結果の語彙 `PROCEED`・`DO_NOT_PROCEED`・`DEFERRED` だけを返す）。
+
+行の形: 審査台帳は `{digest, entry, prev}`（識別子と結果は `entry` の中。`review_store` の
+`review_line_bytes`）、最終検証の台帳は最上位に `candidate`、消費の記録は最上位に `candidate`。
 """
 
 from __future__ import annotations
@@ -25,8 +28,14 @@ def _rows(data: bytes) -> Iterator[Mapping[str, Any]]:
             yield item
 
 
+def _body(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    """審査台帳の行なら `entry` の中、それ以外は行そのもの。"""
+    entry = row.get("entry")
+    return entry if isinstance(entry, Mapping) else row
+
+
 def _matches(row: Mapping[str, Any], experiment_id: str, execution: int) -> bool:
-    for holder in (row, row.get("candidate")):
+    for holder in (row, _body(row), row.get("candidate")):
         if isinstance(holder, Mapping) and str(holder.get("experiment_id")) == experiment_id:
             if str(holder.get("execution")) == str(execution):
                 return True
@@ -45,8 +54,9 @@ def review_result(data: bytes | None, experiment_id: str, execution: int) -> str
     if not data:
         return None
     for row in _rows(data):
-        if _matches(row, experiment_id, execution) and row.get("result") in REVIEW_RESULTS:
-            return str(row["result"])
+        body = _body(row)
+        if _matches(row, experiment_id, execution) and body.get("result") in REVIEW_RESULTS:
+            return str(body["result"])
     return None
 
 
