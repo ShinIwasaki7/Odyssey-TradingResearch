@@ -265,3 +265,14 @@ def test_a_non_change_decision_passes_without_generation() -> None:
         previous_changes={},
     )
     assert result.passed and result.prereg is None
+
+
+def test_a_non_finite_value_in_a_proposal_is_out_of_rules() -> None:
+    """生成物に書けない値（`.nan`）は規則の外（道具の失敗にしない。Codex 3 巡目の指摘）。"""
+    raw = dump_document(_proposal())
+    assert b"[60, 80]" in raw
+    with pytest.raises(ChangeRejected) as caught:
+        parse_change(
+            raw.replace(b"[60, 80]", b"[60, .nan]"), card_id=CARD_ID, expected_from_version=1
+        )
+    assert caught.value.reason == CHANGE_OUT_OF_RULES

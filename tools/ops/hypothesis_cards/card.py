@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
+from tools.ops.hypothesis_cards.frozen import freeze, plain_problems
 
 __all__ = [
     "CARD_ID_PATTERN",
@@ -385,6 +386,9 @@ def parse_card(
         located = re.search(r"line \d+", str(exc))
         where = f"（{located[0]}）" if located else ""
         raise CardFormatError([f"YAML として読めない{where}"]) from None
+    plain = plain_problems(data, "card")
+    if plain:
+        raise CardFormatError(plain)
     problems: list[str] = []
     missing = [key for key in _REQUIRED if key not in data]
     extra = [key for key in data if key not in _REQUIRED and key not in _OPTIONAL]
@@ -443,7 +447,7 @@ def parse_card(
         title=title,
         symbol=symbol,
         rule=rule,
-        strategy=strategy,
+        strategy=freeze(strategy),
         axes=axes,
         prediction=prediction,
         inspiration=inspiration,

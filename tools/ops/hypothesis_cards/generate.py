@@ -43,6 +43,7 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 from odyssey_fx.app.config.experiment_v2 import standard_metrics
@@ -539,7 +540,7 @@ def generate(
         strategy_version=state.strategy_version,
         strategy_path=strategy_file,
         experiment_path=experiment_path(parsed.experiment_id, version),
-        files=files,
+        files=MappingProxyType(files),
         card_sha256=hashlib.sha256(card).hexdigest(),
         change_sha256=None if current is None else hashlib.sha256(current.raw).hexdigest(),
         generator_digest=generator,

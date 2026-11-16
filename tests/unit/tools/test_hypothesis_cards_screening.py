@@ -238,3 +238,22 @@ def test_identifiers_with_a_trailing_newline_are_card_format() -> None:
     data["id"] += "\n"
     data["title"] += "\n"
     assert _screen(data)[0] == CARD_FORMAT
+
+
+def test_non_finite_numbers_and_dates_are_card_format_not_tool_failures() -> None:
+    """生成物に書けない値（`.nan`・`.inf`・日時）はカードの不合格（Codex 3 巡目の指摘）。"""
+    raw = card_bytes(card_data())
+    for old, new in ((b"[1.5, 3.0]", b"[1.5, .nan]"), (b"value: 300", b"value: 2026-11-20")):
+        assert old in raw
+        result = screen_card(VIEW, raw.replace(old, new, 1))
+        assert result.reason == CARD_FORMAT, result.problems
+
+
+def test_the_read_card_and_its_preregistration_cannot_be_mutated() -> None:
+    """凍結した結果の入れ子も書き換えられない（Codex 3 巡目の指摘）。"""
+    result = screen_card(VIEW, card_bytes(card_data()))
+    assert result.card is not None and result.prereg is not None
+    with pytest.raises(TypeError):
+        result.card.strategy["roles"]["trigger"] = "x.y"
+    with pytest.raises(TypeError):
+        result.prereg.files["x"] = b""  # type: ignore[index]

@@ -62,6 +62,7 @@ from tools.ops.hypothesis_cards.changes import (
     apply_change,
     parse_change,
 )
+from tools.ops.hypothesis_cards.frozen import thaw
 from tools.ops.hypothesis_cards.generate import (
     Preregistration,
     change_path,
@@ -431,7 +432,7 @@ def screen_card(
             verification,
         )
     duplicates = _duplicates(
-        card.strategy, view, card_id=card.card_id, experiment_id=card.experiment_id, own=False
+        thaw(card.strategy), view, card_id=card.card_id, experiment_id=card.experiment_id, own=False
     )
     if duplicates:
         return Screening(CARD_DUPLICATE_RULE, tuple(duplicates), card, prereg, verification)
@@ -506,7 +507,7 @@ def check_change(
     verification = verify_preregistration(view, prereg)
     problems = _history_problems(verification)
     problems += _duplicates(
-        after.strategy,
+        thaw(after.strategy),
         view,
         card_id=parsed_card.card_id,
         experiment_id=parsed_card.experiment_id,

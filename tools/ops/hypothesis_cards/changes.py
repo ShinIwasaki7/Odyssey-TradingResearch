@@ -43,6 +43,7 @@ from typing import Any, Final
 
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from tools.ops.hypothesis_cards.card import Axis, Card, has_digit
+from tools.ops.hypothesis_cards.frozen import freeze, plain_problems, thaw
 
 __all__ = [
     "CHANGE_OUT_OF_RULES",
@@ -135,9 +136,7 @@ class LoopState:
 
 def initial_state(card: Card) -> LoopState:
     """版 1 の材料（カードの戦略と格子をそのまま。決定 171）。"""
-    return LoopState(
-        strategy=copy.deepcopy(dict(card.strategy)), axes=card.axes, strategy_version=1
-    )
+    return LoopState(strategy=freeze(card.strategy), axes=card.axes, strategy_version=1)
 
 
 def _require(data: Mapping[str, Any], keys: Sequence[str], optional: Sequence[str]) -> list[str]:
@@ -162,6 +161,9 @@ def parse_change(raw: bytes, *, card_id: str, expected_from_version: int) -> Cha
         data = load_yaml_mapping(Path("change.yaml"), text=raw.decode("utf-8"))
     except (ConfigError, UnicodeDecodeError):
         raise ChangeRejected(CHANGE_OUT_OF_RULES, ["YAML として読めない"]) from None
+    plain = plain_problems(data, "change")
+    if plain:
+        raise ChangeRejected(CHANGE_OUT_OF_RULES, plain)
     decision = data.get("decision")
     base = ("schema_version", "card", "from_version", "decision", "memo_sha256")
     if decision == "CHANGE":
@@ -263,7 +265,7 @@ def parse_change(raw: bytes, *, card_id: str, expected_from_version: int) -> Cha
         from_version=from_version,
         decision=str(decision),
         change_kind=change_kind if isinstance(change_kind, str) else None,
-        operations=tuple(operations),
+        operations=tuple(freeze(operation) for operation in operations),
         reason=data.get("reason") if isinstance(data.get("reason"), str) else None,
         reason_id=reason_id if isinstance(reason_id, str) else None,
         prediction=data.get("prediction") if isinstance(data.get("prediction"), str) else None,
@@ -401,9 +403,10 @@ def apply_change(state: LoopState, change: Change) -> LoopState:
     """
     if change.decision != "CHANGE":
         raise ChangeRejected(CHANGE_OUT_OF_RULES, ["`CHANGE` でない提案は当てない"])
-    strategy = copy.deepcopy(dict(state.strategy))
+    strategy: dict[str, Any] = thaw(state.strategy)
     axes = list(state.axes)
-    for index, operation in enumerate(change.operations):
+    for index, frozen_operation in enumerate(change.operations):
+        operation = thaw(frozen_operation)
         where = f"`operations[{index}]`"
         if change.change_kind == "PARAMETERS":
             _apply_parameters(axes, operation, where)
@@ -412,4 +415,4 @@ def apply_change(state: LoopState, change: Change) -> LoopState:
     if not axes:
         raise ChangeRejected(CHANGE_OUT_OF_RULES, ["格子の軸が無くなる"])
     bumped = state.strategy_version + (1 if change.change_kind == "STRATEGY_CODE" else 0)
-    return LoopState(strategy=strategy, axes=tuple(axes), strategy_version=bumped)
+    return LoopState(strategy=freeze(strategy), axes=tuple(axes), strategy_version=bumped)
