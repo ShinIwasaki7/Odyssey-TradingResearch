@@ -255,6 +255,30 @@ def test_a_child_that_fails_at_once_is_noticed_before_the_second_launch(tmp_path
     assert "standard の組の子が例外で終わった" in failure
 
 
+def test_an_interrupt_right_after_a_launch_still_stops_that_child(tmp_path: Path) -> None:
+    """S1a + E6: 子を起こした直後（管理表に載せる前）に親が中断を受けても、その子を止めて待つ。"""
+    launched: list[SpawnProcess] = []
+
+    def starter(
+        context: SpawnContext, job: VariantJob, stop: Event, lock_fd: int | None
+    ) -> tuple[SpawnProcess, Connection]:
+        process, conn = start_child(context, job, stop, lock_fd)
+        launched.append(process)
+        os.kill(os.getpid(), signal.SIGINT)  # 起動の直後、登録の前に届く中断
+        return process, conn
+
+    with pytest.raises(KeyboardInterrupt):
+        run_variant_jobs(
+            _jobs(tmp_path, parallel_jobs.wait_for_stop, parallel_jobs.wait_for_stop),
+            lock=None,
+            notify=lambda text: None,
+            starter=starter,
+        )
+    (process,) = launched
+    assert process.exitcode is not None
+    assert not process.is_alive()
+
+
 # --- 親が合図を受ける・強制終了される（E6、子の表の F3）-------------------------------------
 
 

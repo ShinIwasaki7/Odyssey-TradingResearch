@@ -309,6 +309,9 @@ def _child_main(
 ) -> None:
     """子の入口（K0 から始まる）。`lock_fd` は引き継いだロックの記述子（持っているだけでよい）。"""
     del lock_fd  # 開いたまま持つ（プロセスが終わると OS が閉じ、ロックが外れる）
+    # 親は起動の間だけ中断の合図を保留する。子が保留を受け継いでいても、ここで外す（保留中に
+    # 届いた合図はここで効く）。
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, _INTERRUPTS)
     boundary = _Boundary(stop=stop, parent_pid=parent_pid)
     try:
         result = job.work(job.payload, boundary)
@@ -498,6 +501,10 @@ class _Parent:
         self._close_and_join()
 
 
+#: 人間の中断の合図（親の表の E6）。
+_INTERRUPTS: Final = frozenset({signal.SIGINT, signal.SIGTERM})
+
+
 def _raise_interrupted(signum: int, frame: FrameType | None) -> None:
     del frame
     raise _Interrupted(signum)
@@ -534,12 +541,18 @@ def run_variant_jobs(
                 parent.poll_started()
                 if parent.failures:
                     break
+                # 子の起動から管理表への登録までは中断の合図を保留する（起動した子を必ず止めて
+                # 待てるように。D26 §3.4 の S1a + E6）。保留した合図は登録の後に届く。
+                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _INTERRUPTS)
                 try:
-                    process, conn = starter(context, job, parent.stop, lock_fd)
-                except Exception as exc:  # noqa: BLE001 - 起動の失敗（E13）
-                    parent.fail(f"{variant.value} の組の子を起動できなかった: {exc}")
-                    break
-                parent.children[variant] = _Child(variant=variant, process=process, conn=conn)
+                    try:
+                        process, conn = starter(context, job, parent.stop, lock_fd)
+                    except Exception as exc:  # noqa: BLE001 - 起動の失敗（E13）
+                        parent.fail(f"{variant.value} の組の子を起動できなかった: {exc}")
+                        break
+                    parent.children[variant] = _Child(variant=variant, process=process, conn=conn)
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             parent.wait()
         except _Interrupted as stopped:
             parent.interrupt(stopped.signum)
