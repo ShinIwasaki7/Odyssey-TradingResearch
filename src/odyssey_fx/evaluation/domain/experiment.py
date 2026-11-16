@@ -66,7 +66,7 @@ from odyssey_fx.evaluation.domain.splits import (
     split_spec_of,
 )
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
-from odyssey_fx.evaluation.domain.variant import Paired
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
 
 __all__ = [
@@ -75,6 +75,7 @@ __all__ = [
     "ExperimentManifest",
     "ExperimentOutcome",
     "ExperimentStatus",
+    "RegimeDigest",
     "ResolvedFile",
     "experiment_id_of",
     "file_sha256",
@@ -582,6 +583,24 @@ def _partitions_payload(
 
 
 @dataclass(frozen=True, slots=True)
+class RegimeDigest:
+    """組 1 つの局面の成果物（`search/regimes_<組>.json`）のダイジェスト（D24 §9.3、仮置き 15）。
+
+    `digest` は局面の成果物の値（`regimes.RegimeReport`）の正規化エンコード（D02 §9.3）の sha256。
+    レポートは成果物を読み、このダイジェストと照合してから表示する（判定には使わない）。
+    """
+
+    variant: Variant
+    digest: ContentDigest
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.variant, Variant):
+            raise KernelValueError("RegimeDigest.variant must be a Variant")
+        if not isinstance(self.digest, ContentDigest):
+            raise KernelValueError("RegimeDigest.digest must be a ContentDigest")
+
+
+@dataclass(frozen=True, slots=True)
 class ExperimentOutcome:
     """実験の結末記録（D07 §19.3 の表の項目すべて）。
 
@@ -615,6 +634,10 @@ class ExperimentOutcome:
     outcome_checks: tuple[PolicyCheckResult, ...]
     failed_checks: tuple[PolicyCheck, ...]
     search: SearchOutcome | None = None
+    #: 組ごとの局面の成果物のダイジェスト（研究ポリシーの版 5 以上を指す探索の実験だけ。D24 §9.3 の
+    #: 表 3、仮置き 15）。局面の成果物の中身は結末記録に入れない。それ以外の結末記録では空（記録の
+    #: 形に項目を持たない）。
+    regimes: tuple[RegimeDigest, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.experiment_id, ExperimentId):
@@ -647,6 +670,17 @@ class ExperimentOutcome:
             raise KernelValueError("an evaluation needs a run (D07 §19.4)")
         if not isinstance(self.status, ExperimentStatus):  # pragma: no cover - 上で検査済み
             raise KernelValueError("ExperimentOutcome.status must be an ExperimentStatus")
+        if not isinstance(self.regimes, tuple) or not all(
+            isinstance(item, RegimeDigest) for item in self.regimes
+        ):
+            raise KernelValueError("ExperimentOutcome.regimes must be a tuple of RegimeDigest")
+        variants = [item.variant for item in self.regimes]
+        if variants and (
+            not self.is_search or variants != sorted(set(variants), key=VARIANTS.index)
+        ):
+            raise KernelValueError(
+                "ExperimentOutcome.regimes は探索の実験の組ごとに 1 つ、組の順に並べる（D24 §9.3）"
+            )
         if self.is_search:
             self._check_search()
         elif self.search is not None:

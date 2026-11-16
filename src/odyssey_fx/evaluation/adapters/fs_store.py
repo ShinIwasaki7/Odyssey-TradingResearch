@@ -117,6 +117,7 @@ from odyssey_fx.evaluation.domain.experiment import (
     ExperimentManifest,
     ExperimentOutcome,
     ExperimentStatus,
+    RegimeDigest,
     ResolvedFile,
     require_experiment_name,
 )
@@ -144,6 +145,7 @@ from odyssey_fx.evaluation.domain.path import (
     PathSegmentRow,
     PathSegmentStart,
     PathSummary,
+    PathTradeKind,
 )
 from odyssey_fx.evaluation.domain.policy_basis import (
     FixedComparisonBasis,
@@ -155,12 +157,21 @@ from odyssey_fx.evaluation.domain.policy_basis import (
     SymbolSnapshots,
 )
 from odyssey_fx.evaluation.domain.regimes import (
+    FavoredRegimeCheck,
+    RegimeDay,
+    RegimeDayRow,
     RegimeDirectionRule,
+    RegimeLabel,
     RegimeLabelAt,
+    RegimeReport,
+    RegimeReportStatus,
     RegimeRole,
     RegimeSpec,
+    RegimeTableRow,
     RegimeTimeframe,
+    RegimeTradeRow,
     RegimeVolatilityRule,
+    UnlabeledReason,
 )
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
@@ -272,6 +283,7 @@ __all__ = [
     "EXPERIMENT_MANIFEST_FILE",
     "EXPERIMENT_OUTCOME_FILE",
     "LEDGER_BINDING_FILE",
+    "REGIMES_FILE_PREFIX",
     "REPORT_FILE",
     "REPRODUCTION_FILE",
     "RETREAT_MARKER_FILE",
@@ -298,6 +310,8 @@ __all__ = [
     "keep_previous_records",
     "keep_previous_report",
     "keep_previous_search_records",
+    "read_regime_report",
+    "regimes_name",
     "ledger_entry_of",
     "ledger_line_bytes",
     "manifest_from_payload",
@@ -2133,6 +2147,11 @@ def experiment_outcome_payload(outcome: ExperimentOutcome) -> dict[str, Any]:
     }
     if outcome.is_search:
         payload["search"] = _canonical_json(outcome.search)
+    # 局面の成果物のダイジェストは、それを持つ結末記録だけ書く（D24 §9.3、仮置き 15）。
+    if outcome.regimes:
+        payload["regimes"] = [
+            {"variant": item.variant.value, "digest": item.digest.hex} for item in outcome.regimes
+        ]
     return payload
 
 
@@ -2169,6 +2188,15 @@ def experiment_outcome_from_payload(payload: Mapping[str, Any]) -> ExperimentOut
         outcome_checks=tuple(_policy_check_of(item) for item in payload["outcome_checks"]),
         failed_checks=tuple(PolicyCheck(name) for name in payload["failed_checks"]),
         search=None if search is None else _exact(search, _search_outcome_of, "search"),
+        regimes=tuple(
+            RegimeDigest(
+                variant=Variant(_str_of(entry["variant"], "regimes.variant")),
+                digest=_digest_of(entry["digest"], "regimes.digest"),
+            )
+            for entry in _list_of(payload["regimes"], "regimes")
+        )
+        if "regimes" in payload
+        else (),
     )
 
 
@@ -2384,6 +2412,17 @@ class FileSystemExperimentStore:
         )
         _write_new_json(path, _canonical_json(record), "a path segment end record")
 
+    def write_regimes(self, report: RegimeReport) -> None:
+        """組の局面の成果物 `search/regimes_<組>.json` を書く（D24 §9.3、仮置き 15。R4）。
+
+        正規化エンコードの JSON で書き、既にあれば何も書かずに失敗する。結末記録には
+        その値のダイジェストだけが入る（`read_regime_report` で読み戻して照合できる）。
+        """
+        if not isinstance(report, RegimeReport):
+            raise KernelValueError("write_regimes requires a RegimeReport")
+        path = self._search_path(regimes_name(report.variant))
+        _write_new_json(path, _canonical_json(report), "a regime report")
+
     def write_ledger_binding(self, binding: TrialLedgerBinding) -> None:
         """束縛の記録を書く（D09 §10.12.3 の2。W2: 一時名から排他的に作成する）。"""
         path = self._search_path(LEDGER_BINDING_FILE)
@@ -2480,6 +2519,8 @@ UNITS_DIRECTORY = "units"
 #: 連続口座の検証経路の区間の記録（`search/<組>/path/`。2026-10-21 改訂。実装 PR の仮置き 48）。
 PATH_DIRECTORY = "path"
 LEDGER_BINDING_FILE = "ledger_execution.json"
+#: 組の局面の成果物 `search/regimes_<組>.json` の名前の頭（D24 §5.4・§9.3、仮置き 15）。
+REGIMES_FILE_PREFIX = "regimes_"
 TRIAL_UNITS_TABLE = "trial_units.parquet"
 TRIAL_METRICS_TABLE = "trial_metrics.parquet"
 #: 「退避中」の印（D09 §11.3 の Q13。退避の途中にだけある）。
@@ -4639,3 +4680,212 @@ def write_reproduction(out_root: Path, payload: Mapping[str, Any]) -> Path:
             path, "Choose another --out, or move the earlier reproduction away"
         ) from None
     return path
+
+
+# --- 局面の成果物（研究ポリシー第 5 版の実装 PR 4-3。D24 §5.4・§9.3、仮置き 15）------------
+
+
+def regimes_name(variant: Variant) -> str:
+    """組の局面の成果物のファイル名 `regimes_<組>.json`（`search/` の直下。D24 の仮置き 15）。"""
+    return f"{REGIMES_FILE_PREFIX}{variant.value}.json"
+
+
+def read_regime_report(directory: Path, variant: Variant) -> RegimeReport | None:
+    """組の局面の成果物を読む。無ければ `None`、読めない・正規化形でなければ `KernelValueError`。
+
+    正規化形の往復（`_exact`）を確かめるので、読めた値の正規化エンコードのダイジェストは保存した
+    ファイルの内容のダイジェストに等しい（結末記録のダイジェストと照合できる）。
+    """
+    path = search_directory(directory) / regimes_name(variant)
+    if not (path.exists() or path.is_symlink()):
+        return None
+    raw = _read_json_value(path, "regime report")
+    try:
+        return _exact(raw, _regime_report_of, "the regime report")
+    except _READ_ERRORS as exc:
+        raise KernelValueError(
+            f"{path} is not a valid regime report: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _optional_time_c(value: object, label: str) -> UtcTime | None:
+    return None if value is None else UtcTime.parse(_str_of(value, label))
+
+
+def _regime_label_of(value: object, label: str) -> RegimeLabel:
+    return RegimeLabel(_str_of(value, label))
+
+
+def _unlabeled_reason_of(value: object, label: str) -> UnlabeledReason | None:
+    return None if value is None else UnlabeledReason(_str_of(value, label))
+
+
+def _regime_day_of(payload: object) -> RegimeDay:
+    item = _keys(payload, ("day", "label", "reason", "daily_bar_start"), "regime day")
+    day = _keys(item["day"], ("start", "end"), "regime day.day")
+    return RegimeDay(
+        day=Interval(
+            start=UtcTime.parse(_str_of(day["start"], "regime day.day.start")),
+            end=UtcTime.parse(_str_of(day["end"], "regime day.day.end")),
+        ),
+        label=_regime_label_of(item["label"], "regime day.label"),
+        reason=_unlabeled_reason_of(item["reason"], "regime day.reason"),
+        daily_bar_start=_optional_time_c(item["daily_bar_start"], "regime day.daily_bar_start"),
+    )
+
+
+def _regime_trade_of(payload: object) -> RegimeTradeRow:
+    item = _keys(
+        payload,
+        (
+            "segment_index",
+            "kind",
+            "position_id",
+            "entry_at",
+            "profit",
+            "label",
+            "reason",
+            "daily_bar_start",
+        ),
+        "regime trade",
+    )
+    return RegimeTradeRow(
+        segment_index=_int_of(item["segment_index"], "regime trade.segment_index"),
+        kind=PathTradeKind(_str_of(item["kind"], "regime trade.kind")),
+        position_id=PositionId.parse(_str_of(item["position_id"], "regime trade.position_id")),
+        entry_at=UtcTime.parse(_str_of(item["entry_at"], "regime trade.entry_at")),
+        profit=_money_c(item["profit"], "regime trade.profit"),
+        label=_regime_label_of(item["label"], "regime trade.label"),
+        reason=_unlabeled_reason_of(item["reason"], "regime trade.reason"),
+        daily_bar_start=_optional_time_c(item["daily_bar_start"], "regime trade.daily_bar_start"),
+    )
+
+
+def _regime_row_of(payload: object) -> RegimeTableRow:
+    item = _keys(
+        payload,
+        (
+            "label",
+            "closed_count",
+            "settled_count",
+            "win_count",
+            "loss_count",
+            "total",
+            "total_rate",
+            "average_win_loss",
+            "average_win_loss_unavailable",
+        ),
+        "regime table row",
+    )
+    ratio = item["average_win_loss"]
+    unavailable = item["average_win_loss_unavailable"]
+    return RegimeTableRow(
+        label=_regime_label_of(item["label"], "regime table row.label"),
+        closed_count=_int_of(item["closed_count"], "regime table row.closed_count"),
+        settled_count=_int_of(item["settled_count"], "regime table row.settled_count"),
+        win_count=_int_of(item["win_count"], "regime table row.win_count"),
+        loss_count=_int_of(item["loss_count"], "regime table row.loss_count"),
+        total=_money_c(item["total"], "regime table row.total"),
+        total_rate=_decimal_of(item["total_rate"], "regime table row.total_rate"),
+        average_win_loss=None
+        if ratio is None
+        else _decimal_of(ratio, "regime table row.average_win_loss"),
+        average_win_loss_unavailable=None
+        if unavailable is None
+        else MetricUnavailableReason(
+            _str_of(unavailable, "regime table row.average_win_loss_unavailable")
+        ),
+    )
+
+
+def _regime_day_row_of(payload: object) -> RegimeDayRow:
+    item = _keys(payload, ("label", "days", "share"), "regime day row")
+    share = item["share"]
+    return RegimeDayRow(
+        label=_regime_label_of(item["label"], "regime day row.label"),
+        days=_int_of(item["days"], "regime day row.days"),
+        share=None if share is None else _decimal_of(share, "regime day row.share"),
+    )
+
+
+def _regime_labels_of(value: object, label: str) -> tuple[RegimeLabel, ...]:
+    return tuple(
+        _regime_label_of(item, f"{label}[{index}]")
+        for index, item in enumerate(_list_of(value, label))
+    )
+
+
+def _favored_check_of(payload: object) -> FavoredRegimeCheck:
+    item = _keys(
+        payload,
+        (
+            "declared",
+            "favored_count",
+            "favored_total",
+            "other_count",
+            "other_total",
+            "favored_total_positive",
+        ),
+        "favored regime check",
+    )
+    positive = item["favored_total_positive"]
+    if not isinstance(positive, bool):
+        raise KernelValueError("favored regime check.favored_total_positive must be a bool")
+    return FavoredRegimeCheck(
+        declared=_regime_labels_of(item["declared"], "favored regime check.declared"),
+        favored_count=_int_of(item["favored_count"], "favored regime check.favored_count"),
+        favored_total=_money_c(item["favored_total"], "favored regime check.favored_total"),
+        other_count=_int_of(item["other_count"], "favored regime check.other_count"),
+        other_total=_money_c(item["other_total"], "favored regime check.other_total"),
+        favored_total_positive=positive,
+    )
+
+
+def _regime_report_of(payload: object) -> RegimeReport:
+    """局面の成果物の正規化形を型へ戻す（D24 §9.3、仮置き 15）。"""
+    item = _keys(
+        payload,
+        (
+            "schema_version",
+            "variant",
+            "spec",
+            "status",
+            "reason",
+            "daily_series",
+            "favored_regimes",
+            "initial_balance",
+            "path_net",
+            "regime_net",
+            "days",
+            "trades",
+            "table",
+            "day_table",
+            "favored",
+        ),
+        "regime report",
+    )
+    reason = item["reason"]
+    series = item["daily_series"]
+    favored_regimes = item["favored_regimes"]
+    favored = item["favored"]
+    return RegimeReport(
+        schema_version=_int_of(item["schema_version"], "regime report.schema_version"),
+        variant=Variant(_str_of(item["variant"], "regime report.variant")),
+        spec=_regimes_of(item["spec"]),
+        status=RegimeReportStatus(_str_of(item["status"], "regime report.status")),
+        reason=None if reason is None else _str_of(reason, "regime report.reason"),
+        daily_series=None if series is None else _str_of(series, "regime report.daily_series"),
+        favored_regimes=None
+        if favored_regimes is None
+        else _regime_labels_of(favored_regimes, "regime report.favored_regimes"),
+        initial_balance=_optional_money_c(item["initial_balance"], "regime report.initial_balance"),
+        path_net=_optional_money_c(item["path_net"], "regime report.path_net"),
+        regime_net=_optional_money_c(item["regime_net"], "regime report.regime_net"),
+        days=tuple(_regime_day_of(entry) for entry in _list_of(item["days"], "days")),
+        trades=tuple(_regime_trade_of(entry) for entry in _list_of(item["trades"], "trades")),
+        table=tuple(_regime_row_of(entry) for entry in _list_of(item["table"], "table")),
+        day_table=tuple(
+            _regime_day_row_of(entry) for entry in _list_of(item["day_table"], "day_table")
+        ),
+        favored=None if favored is None else _favored_check_of(favored),
+    )

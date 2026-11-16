@@ -145,6 +145,9 @@ __all__ = [
     "calendar_ref_text",
     "equity_points",
     "equity_series",
+    "OpenPositionEntry",
+    "SegmentTradeFacts",
+    "segment_trade_facts",
 ]
 
 _STRING = ColumnValueKind.STRING
@@ -2410,3 +2413,70 @@ def equity_points(
     except (KernelValueError, KeyError, ValueError, TypeError) as exc:
         return f"the ledger snapshots of {run_id} cannot be interpreted: {exc}"
     return tuple((snapshot.at.time, snapshot.equity.amount) for snapshot in snapshots)
+
+
+@dataclass(frozen=True, slots=True)
+class OpenPositionEntry:
+    """run の終わりに決済されていない建玉の入場（局面の振り分けの材料。D24 §5.3）。
+
+    `entry_commission` は入場約定の手数料（費用の記録が無ければ `None`。取引表と同じ扱い）。
+    """
+
+    position_id: PositionId
+    entry_at: UtcTime
+    entry_commission: Money | None
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentTradeFacts:
+    """run の完了取引（評価の取引表と同じ組み立て）と、決済されていない建玉の入場（D24 §5.3）。"""
+
+    closed_trades: tuple[TradeRecord, ...]
+    open_entries: tuple[OpenPositionEntry, ...]
+
+
+#: 局面の振り分けで読む判断履歴の表（完了取引の組み立てと同じ 4 表。D07 §4.2 の部分集合）。
+_TRADE_TABLES: Final[tuple[TraceTable, ...]] = (
+    TraceTable.ORDER_REQUESTS,
+    TraceTable.ORDERS,
+    TraceTable.FILLS,
+    TraceTable.POSITIONS,
+)
+
+
+def segment_trade_facts(repository: ResultRepository, run_id: RunId) -> SegmentTradeFacts | str:
+    """run の完了取引と決済されていない建玉の入場を読む（局面の振り分け。D24 §5.3、仮置き 14）。
+
+    完了取引は評価の取引表と同じ関数で組み立てる（同じ量を 2 通りに作らない）。決済されていない
+    建玉は、建玉の表の入場約定の処理点の時刻と入場約定の手数料を返す。run manifest か表が読めない・
+    解釈できないときは理由の文字列を返す（呼び出し側が局面の成果物に「出せない（理由）」を書く。
+    D24 §5.2）。
+    """
+    read = repository.read_manifest(run_id)
+    if not isinstance(read, RunManifest):
+        return f"the run manifest of {run_id} cannot be read"
+    reads: dict[TraceTable, _Rows] = {}
+    for table in _TRADE_TABLES:
+        rows = _Rows(repository.read_table(run_id, table, COLUMN_SPECS[table]), COLUMN_SPECS[table])
+        if not rows.usable:
+            return f"the {table.value} table of {run_id} cannot be read"
+        reads[table] = rows
+    phases = {phase.name: phase for phase in read.phases.ordered()}
+    try:
+        trades = _build_trades(reads, phases)
+        fills = _by_key(reads[TraceTable.FILLS].records, "fill_id")
+        entries: list[OpenPositionEntry] = []
+        for row in reads[TraceTable.POSITIONS].records:
+            if row.get("status") == _CLOSED:
+                continue
+            fill = fills[_text(row, "entry_fill_id")]
+            entries.append(
+                OpenPositionEntry(
+                    position_id=PositionId.parse(_text(row, "position_id")),
+                    entry_at=_point(fill, "processed_at", phases).time,
+                    entry_commission=_fill_costs(fill)[CostKind.COMMISSION],
+                )
+            )
+    except (KernelValueError, KeyError, ValueError, TypeError) as exc:
+        return f"the trades of {run_id} cannot be interpreted: {type(exc).__name__}: {exc}"
+    return SegmentTradeFacts(closed_trades=trades, open_entries=tuple(entries))

@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 import odyssey_fx
 from odyssey_fx.app.config import ConfigError, DataSourceConfig
@@ -107,6 +107,7 @@ from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, Evaluati
 from odyssey_fx.evaluation.application.manifest import METRIC_SET_VERSION
 from odyssey_fx.evaluation.application.ports import (
     BacktestRunner,
+    DailyBarsUnavailable,
     ResultReadFailure,
     SegmentRunPlan,
     TrialLedgerContents,
@@ -140,6 +141,7 @@ from odyssey_fx.evaluation.domain.experiment import (
     require_experiment_name,
 )
 from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS
+from odyssey_fx.evaluation.domain.regimes import RegimeTimeframe
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityMeasures,
     InstanceProfile,
@@ -153,6 +155,7 @@ from odyssey_fx.evaluation.domain.research_policy import (
 )
 from odyssey_fx.evaluation.domain.search import (
     ComparisonBasis,
+    EvaluationStandardV5,
     ParameterAssignment,
     TrialPhase,
     TrialPlan,
@@ -213,6 +216,7 @@ from odyssey_fx.marketdata.domain.access import (
 from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import (
+    HoldoutAccessViolation,
     MarketDataValueError,
     RefillStoreInconsistent,
     TimeLabelCorrectionFailed,
@@ -228,7 +232,7 @@ from odyssey_fx.marketdata.domain.refill import (
 )
 from odyssey_fx.marketdata.domain.refill_manifest import RefillFileRecord, RefillManifest
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
-from odyssey_fx.marketdata.domain.series import SeriesId
+from odyssey_fx.marketdata.domain.series import PriceBasis, SeriesId
 from odyssey_fx.marketdata.domain.snapshot import (
     ConversionRecord,
     PartitionId,
@@ -1990,6 +1994,7 @@ def _prepare_search(
         env_digest=env,
         git_commit=commit,
         git_dirty=dirty,
+        favored_regimes=search.favored_regimes,
     )
     return _SearchParts(
         prepared=prepared,
@@ -2172,6 +2177,79 @@ class _SegmentPlanner:
         )
 
 
+#: 局面を付ける日足の時間足（研究ポリシーの `regimes.timeframe` の語彙 → 時間足定義の `id`）。
+#: `1d`（ニューヨーク 17 時の日足）は時間足定義の `1d_ny17`（D03 §5.1。D24 §2.1。本 PR の仮置き）。
+_REGIME_TIMEFRAME_IDS: Final[Mapping[RegimeTimeframe, str]] = {RegimeTimeframe.DAILY: "1d_ny17"}
+
+
+@dataclass(slots=True)
+class _SearchDailyBars:
+    """局面の付与に使う日足の読み出し（`DailyBarSource`。D24 §5.2、決定 164）。
+
+    組の snapshot の、執行系列の通貨の日足（bid）を、組の単位の run と同じ読める partition
+    （研究履歴だけ。`open_snapshot_inputs`）と同じ公開記録（遅延シナリオ）から読む。各日足の
+    `available_at` は as-of ビューの公開時刻（`AsOfView.publication_time`）に置き換えて返す。
+
+    **読みの制限**（RP5-15）: 足を読む前に、`until` より前に始まる日足の系列の partition に、
+    許可集合の外（封印・隔離）のものが無いことを snapshot の manifest で確かめ、あれば
+    `HoldoutAccessViolation` で止める（足を 1 本も読まない）。
+    """
+
+    loaded: ExperimentV2
+    parts: _SearchParts
+    publication_logs: Paired[PublicationLog]
+    timeframe_id: str
+
+    def daily_bars(
+        self, variant: Variant, until: UtcTime
+    ) -> tuple[Bar, ...] | DailyBarsUnavailable:
+        inputs = self.parts.inputs.of(variant)
+        symbol = self.loaded.body_of(variant).execution_series.symbol
+        series = next(
+            (
+                item
+                for item in inputs.schedules
+                if item.symbol == symbol
+                and item.basis is PriceBasis.BID
+                and item.timeframe.id == self.timeframe_id
+            ),
+            None,
+        )
+        if series is None:
+            return DailyBarsUnavailable(
+                f"the snapshot has no {symbol}/{self.timeframe_id}/bid series (D24 §5.2)"
+            )
+        outside = sorted(
+            str(record.partition_id)
+            for record in inputs.snapshot.manifest.partitions
+            if record.partition_id.series == series
+            and record.partition_id not in inputs.allowed_partitions
+            and record.interval.start < until
+        )
+        if outside:
+            raise HoldoutAccessViolation(
+                f"the regime labels up to {until} would read the partitions {outside} outside the"
+                " research history; nothing was read (D24 §5.2, D03 §6.1)"
+            )
+        verified = inputs.verified_bars("DailyBarSource")
+        view = AsOfView(
+            snapshot=inputs.snapshot,
+            allowed_partitions=inputs.allowed_partitions,
+            schedules=inputs.schedules,
+            partition_bars=verified,
+            publication_log=self.publication_logs.of(variant),
+        )
+        bars = readable_surface(verified, inputs.allowed_partitions).bars_or_empty(series)
+        found = tuple(
+            replace(bar, available_at=view.publication_time(bar))
+            for bar in bars
+            if bar.bar_start < until
+        )
+        if not found:
+            return DailyBarsUnavailable(f"the snapshot has no {series} bar before {until}")
+        return found
+
+
 def _search_wiring(
     loaded: ExperimentV2, parts: _SearchParts, artifacts_root: Path
 ) -> tuple[_SearchRunner, _SegmentPlanner]:
@@ -2289,6 +2367,17 @@ def run_search_experiment(
         )
     lineage = _lineage_request(loaded, store)
     runner, planner = _search_wiring(loaded, parts, artifacts_root)
+    standard = manifest.evaluation_standard
+    daily_bars = (
+        _SearchDailyBars(
+            loaded=loaded,
+            parts=parts,
+            publication_logs=runner.publication_logs,
+            timeframe_id=_REGIME_TIMEFRAME_IDS[standard.regimes.timeframe],
+        )
+        if isinstance(standard, EvaluationStandardV5)
+        else None
+    )
     use_case = RunExperiment(
         store=store,
         runner=runner,
@@ -2303,6 +2392,7 @@ def run_search_experiment(
         running=store.directory.relative_to(artifacts_root).as_posix(),
         segments=planner,
         lineage=lineage,
+        daily_bars=daily_bars,
     )
     report: Path | None = None
     report_error: str | None = None
