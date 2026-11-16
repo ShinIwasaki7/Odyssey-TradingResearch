@@ -73,6 +73,8 @@ from tests.fixtures.evaluation.research_policies import (
 from tests.fixtures.evaluation.search_experiments import TWO_FOLD_SPLIT, write_search_experiment
 from tests.fixtures.final_validation import (
     ACQUISITION_START,
+    T_FIX,
+    forward_rules_config,
     window_config,
     write_fixation,
     write_review,
@@ -282,6 +284,7 @@ def env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Env]:
         for name in ("final_validations.jsonl", "quality_access_log.jsonl"):
             (repo / "research" / name).write_bytes(b"")
         window_config(repo)
+        forward_rules_config(repo)
         shutil.copytree(
             _ROOT / "docs/design/time_rules",
             repo / "docs/design/time_rules",
@@ -289,7 +292,7 @@ def env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Env]:
         )
         write_review(repo, [facts.key], trials=trials)
         write_fixation(repo, facts.key, trials=trials)
-        publish_repo(repo, root / "origin.git", home=home)
+        publish_repo(repo, root / "origin.git", home=home, date=str(T_FIX))
         clean = root / "clean_out"
         shutil.copytree(out, clean)
         yield _Env(
@@ -635,9 +638,10 @@ def conv_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_ConvEnv]:
         trials = Paired.build(lambda variant: _int(recorded.final_trials.of(variant)))
         sealed = _sealed_set(snapshots)
         window_config(repo)
+        forward_rules_config(repo)
         write_review(repo, [facts.key], trials=trials)
         write_fixation(repo, facts.key, trials=trials)
-        publish_repo(repo, base / "origin.git", home=home)
+        publish_repo(repo, base / "origin.git", home=home, date=str(T_FIX))
     yield _ConvEnv(base=base, facts=facts, research=research, sealed=sealed)
 
 

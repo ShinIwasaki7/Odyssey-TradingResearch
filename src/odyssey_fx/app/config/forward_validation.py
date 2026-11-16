@@ -16,7 +16,7 @@
   ないことを確かめる（D09 §9.11.12 の 1 の読込の検査。受入テスト F-1・F-2）。
 
 どの誤りも構造の誤り（`ConfigError`）で止まる。固定の記録（`research/candidate_fixes/`）の読込は
-要決定 F1-E（決定 75）で別の実装 PR に送った（ここでは置き場の位置だけを持つ）。
+`app.config.candidate_fix`（順 11 の PR 4c。ここでは置き場の位置だけを持つ）。
 成績・価格を読まない。
 """
 
@@ -85,7 +85,7 @@ __all__ = [
 #: 置き場（リポジトリの根からの相対パス。仮置き F1-2）。
 FORWARD_VALIDATION_DIRECTORY: Final = Path("configs/policies/forward_validation")
 _REGISTRY_FILE: Final = "registry.yaml"
-#: 固定の記録の置き場（仮置き F1-2。読込は要決定 F1-E で決めた別の実装 PR）。
+#: 固定の記録の置き場（仮置き F1-2。読込は `app.config.candidate_fix`）。
 CANDIDATE_FIXES_DIRECTORY: Final = Path("research/candidate_fixes")
 
 _SCHEMA_VERSION: Final = 1

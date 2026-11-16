@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -23,6 +24,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
+from odyssey_fx.app.config.candidate_fix import candidate_fix_relative_path, candidate_fix_text
 from odyssey_fx.app.final_validation import (
     CandidateFacts,
     FinalRunOutput,
@@ -30,9 +32,13 @@ from odyssey_fx.app.final_validation import (
     FinalRunPreparation,
 )
 from odyssey_fx.common.ids import ExperimentId
-from odyssey_fx.common.refs import ContentDigest
+from odyssey_fx.common.refs import CompiledStrategyRef, ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.evaluation.adapters.review_store import review_line_bytes
+from odyssey_fx.evaluation.adapters.review_store import (
+    ReviewLedgerReadFailure,
+    parse_review_ledger_bytes,
+    review_line_bytes,
+)
 from odyssey_fx.evaluation.domain.adoption_review import FixedTrial, ReviewResult
 from odyssey_fx.evaluation.domain.final_validation import (
     CandidateKey,
@@ -41,6 +47,14 @@ from odyssey_fx.evaluation.domain.final_validation import (
     FinalWindow,
     PredictedRun,
     WindowRefusal,
+)
+from odyssey_fx.evaluation.domain.forward_validation import (
+    CandidateFix,
+    CandidateFixId,
+    FixCandidate,
+    FixedTrialPin,
+    FrequencyMaterialRef,
+    VersionedRef,
 )
 from odyssey_fx.evaluation.domain.metrics import MetricId, RatioValue
 from odyssey_fx.evaluation.domain.search import SearchVerdict, StandardPurpose
@@ -81,6 +95,10 @@ __all__ = [
     "FakeRunner",
     "FinalWorkspace",
     "build_workspace",
+    "fixation_record",
+    "forward_rules_config",
+    "review_row_sha256",
+    "write_fixation",
 ]
 
 _ROOT: Final = Path(__file__).resolve().parents[2]
@@ -363,9 +381,19 @@ class FinalWorkspace:
     def git(self, *args: str) -> str:
         return git(self.repo, *args, home=self.home)
 
-    def commit_and_push(self, message: str = "change") -> None:
+    def commit_and_push(self, message: str = "change", *, date: UtcTime | None = None) -> None:
+        """作業木のすべてを commit して push する（`date` はコミットの時刻。固定時点に使う）。"""
         self.git("add", "-A")
-        self.git("commit", "--quiet", "--allow-empty", "-m", message)
+        git(
+            self.repo,
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            message,
+            home=self.home,
+            date=None if date is None else str(date),
+        )
         self.git("push", "--quiet", "origin", "main")
 
     def declaration(
@@ -399,6 +427,14 @@ class FinalWorkspace:
             encoding="utf-8",
         )
         return path
+
+
+def forward_rules_config(repo: Path) -> None:
+    """版管理の前向き検証の規則（版 1）と登録簿を人工の作業場に写す（固定の記録が指す版）。"""
+    source = _ROOT / "configs" / "policies" / "forward_validation"
+    shutil.copytree(
+        source, repo / "configs" / "policies" / "forward_validation", dirs_exist_ok=True
+    )
 
 
 def window_config(repo: Path) -> None:
@@ -453,34 +489,104 @@ def write_review(
     path.write_bytes(b"".join(review_line_bytes(line) for line in review_lines(entries)))
 
 
+#: 人工の固定の記録が指す前向き検証の規則の版 1（版管理の登録簿の値）。
+_FORWARD_RULES_DIGEST: Final = "ffa59802bc831f1b37cffb69d3f5c2de367a7bbb2b685c342f6241b0be4f8071"
+
+
+def review_row_sha256(repo: Path, key: CandidateKey) -> str:
+    """作業木の採用審査の台帳の、その候補の行の SHA-256（改行を除く。無ければ 0 の並び）。"""
+    path = repo / "research" / "adoption_reviews.jsonl"
+    contents = parse_review_ledger_bytes(path.read_bytes() if path.is_file() else b"")
+    assert not isinstance(contents, ReviewLedgerReadFailure)
+    for line in contents.lines:
+        if (line.entry.experiment_id.hex, line.entry.execution) == (
+            key.experiment_id,
+            key.execution,
+        ):
+            return hashlib.sha256(review_line_bytes(line).rstrip(b"\n")).hexdigest()
+    return "0" * 64
+
+
+def fixation_record(
+    repo: Path,
+    key: CandidateKey,
+    *,
+    length_days: int = 364,
+    trials: Paired[int] | None = None,
+    fix_no: int = 1,
+    supersedes: CandidateFixId | None = None,
+) -> CandidateFix:
+    """人工の候補の固定の記録（D09 §9.11.12 の 2 の形。審査の行は作業木の台帳から）。"""
+    chosen = trials or Paired(standard=2, candidate=2)
+    return CandidateFix(
+        candidate=FixCandidate(
+            experiment_id=ExperimentId(ContentDigest.sha256(key.experiment_id)),
+            execution=key.execution,
+        ),
+        fix_no=fix_no,
+        fixed_trials=chosen.map(
+            lambda _, index: FixedTrialPin(
+                trial_index=index,
+                assignment_digest=ContentDigest.sha256("d" * 64),
+                compiled_ref=CompiledStrategyRef(ContentDigest.sha256("c" * 64)),
+            )
+        ),
+        record_sheet_digest=ContentDigest.sha256("e" * 64),
+        research_policy=VersionedRef(
+            ref_id="research", version=3, digest=ContentDigest.sha256("f" * 64)
+        ),
+        forward_rules=VersionedRef(
+            ref_id="forward_validation",
+            version=1,
+            digest=ContentDigest.sha256(_FORWARD_RULES_DIGEST),
+        ),
+        adoption_review_row_digest=ContentDigest.sha256(review_row_sha256(repo, key)),
+        length_days=length_days,
+        frequency_source=FrequencyMaterialRef(
+            material_id="review/00/review_record.json", digest=ContentDigest.sha256("a" * 64)
+        ),
+        derived_from=None,
+        supersedes=supersedes,
+        fixed_by="人工の記録者",
+    )
+
+
 def write_fixation(
     repo: Path,
     key: CandidateKey,
     *,
-    t_fix: UtcTime = T_FIX,
     length_days: int = 364,
     trials: Paired[int] | None = None,
-) -> None:
-    chosen = trials or Paired(standard=2, candidate=2)
-    path = repo / "research" / "fixations" / f"{key.experiment_id}_{key.execution}.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "schema_version: 1\n"
-        f"experiment_id: {key.experiment_id}\n"
-        f"execution: {key.execution}\n"
-        f't_fix: "{t_fix}"\n'
-        f"length_days: {length_days}\n"
-        "fixed_trials:\n"
-        f"  standard: {chosen.standard}\n"
-        f"  candidate: {chosen.candidate}\n",
-        encoding="utf-8",
+    fix_no: int = 1,
+    supersedes: CandidateFixId | None = None,
+) -> Path:
+    """人工の固定の記録を `research/candidate_fixes/` に書く（審査の行を先に書いておくこと）。
+
+    固定時点は、この記録を初めて含むコミットの committer の時刻（`publish_repo` か
+    `FinalWorkspace.commit_and_push` の `date`。仮置き F1-3）。
+    """
+    record = fixation_record(
+        repo, key, length_days=length_days, trials=trials, fix_no=fix_no, supersedes=supersedes
     )
+    rel = candidate_fix_relative_path(record.candidate.experiment_id, key.execution, fix_no)
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(candidate_fix_text(record), encoding="utf-8")
+    return path
 
 
 def build_workspace(
-    tmp_path: Path, *, review: bool = True, fixation: bool = True
+    tmp_path: Path,
+    *,
+    review: bool = True,
+    fixation: bool = True,
+    earlier: Sequence[CandidateKey] = (),
 ) -> FinalWorkspace:
-    """人工の作業場を作り、origin へ push する。"""
+    """人工の作業場を作り、origin へ push する。
+
+    `earlier` は審査台帳でこの候補より先に「進める」になった人工の候補（審査台帳は追記だけなので、
+    固定の記録が指す行を後から書き換えないよう、最初から並べる）。固定の記録の固定時点は `T_FIX`。
+    """
     repo = tmp_path / "repo"
     home = tmp_path / "githome"
     repo.mkdir(parents=True)
@@ -489,6 +595,7 @@ def build_workspace(
     (repo / "research" / "final_validations.jsonl").write_bytes(b"")
     (repo / "research" / "quality_access_log.jsonl").write_bytes(b"")
     window_config(repo)
+    forward_rules_config(repo)
     shutil.copytree(
         _ROOT / "docs" / "design" / "time_rules", repo / "docs" / "design" / "time_rules"
     )
@@ -510,14 +617,14 @@ def build_workspace(
         experiment_version=1,
     )
     if review:
-        write_review(repo, [key])
+        write_review(repo, [*earlier, key])
     else:
         (repo / "research" / "adoption_reviews.jsonl").write_bytes(b"")
     if fixation:
         write_fixation(repo, key)
     experiment_dir = repo / "runs" / "experiments" / "exp_cand" / "v1"
     experiment_dir.mkdir(parents=True)
-    origin = publish_repo(repo, tmp_path / "origin.git", home=home)
+    origin = publish_repo(repo, tmp_path / "origin.git", home=home, date=str(T_FIX))
     workspace = FinalWorkspace(
         repo=repo,
         origin=origin,

@@ -514,7 +514,7 @@ def test_14_a_second_execution_only_gets_the_next_window(ws: FinalWorkspace) -> 
     assert _run(ws).exit_code == EXIT_OK
     second = replace(ws.key, execution=2)
     write_review(ws.repo, [ws.key, second])
-    write_fixation(ws.repo, second, t_fix=UtcTime.parse("2025-02-01T00:00:00Z"))
+    write_fixation(ws.repo, second)
     from tests.fixtures.evaluation import trial_ledger
 
     first = trial_ledger.started("cand", purpose=StandardPurpose.STANDARD)
@@ -530,7 +530,9 @@ def test_14_a_second_execution_only_gets_the_next_window(ws: FinalWorkspace) -> 
         ]
     )
     trial_ledger.write_ledger(ws.repo, lines)
-    ws.commit_and_push("second execution reviewed and fixed")
+    ws.commit_and_push(
+        "second execution reviewed and fixed", date=UtcTime.parse("2025-02-01T00:00:00Z")
+    )
     before = _logs(ws)
     outcome = _run(
         ws,
@@ -769,13 +771,13 @@ def test_11_rows_missing_on_origin_before_the_run_fail_after_consumption(
 
 
 def test_15_22_an_earlier_candidate_blocks_until_it_finishes_or_is_withdrawn(
-    ws: FinalWorkspace,
+    tmp_path: Path,
 ) -> None:
     earlier = CandidateKey(
         experiment_id="e" * 64, execution=1, experiment_name="earlier", experiment_version=1
     )
-    write_review(ws.repo, [earlier, ws.key])
-    ws.commit_and_push("an earlier candidate passed the review first")
+    # 先の候補が審査を先に通った（審査台帳は追記だけなので、最初から並べる）。
+    ws = build_workspace(tmp_path, earlier=[earlier])
     outcome = _run(ws, mode=FinalMode.DRY_RUN)
     assert (outcome.exit_code, outcome.reason) == (
         EXIT_REFUSED,
@@ -891,6 +893,23 @@ def test_the_cli_reads_the_arguments_and_reports_a_read_error_with_2(
             ]
         )
     assert removed.value.code == 2
+
+
+def test_a_merged_fix_record_with_a_length_below_the_minimum_is_not_fixed(
+    tmp_path: Path,
+) -> None:
+    """手書きの固定の記録の長さ L が規則の下限（364 日）より短ければ、最終検証は止まる。
+
+    D15-11 (a)。何も書かない。
+    """
+    ws = build_workspace(tmp_path, fixation=False)
+    write_fixation(ws.repo, ws.key, length_days=363)
+    ws.commit_and_push("a hand-written fix record with L = 363 days", date=T_FIX)
+    before = _snapshot(ws)
+    outcome = _run(ws)
+    assert (outcome.exit_code, outcome.reason) == (EXIT_REFUSED, FinalReason.NOT_FIXED)
+    assert "below the minimum 364 days" in outcome.detail
+    assert _snapshot(ws) == before
 
 
 def test_the_candidate_facts_of_another_execution_are_a_read_error(ws: FinalWorkspace) -> None:
@@ -1128,9 +1147,10 @@ def _candidates(ws: FinalWorkspace, names: list[str]) -> dict[str, tuple[Candida
             )
         )
         out[name] = (key, lines[2 * index].digest.hex)
-        write_fixation(ws.repo, key)
     write_review(ws.repo, [out[name][0] for name in names])
-    ws.commit_and_push("synthetic candidates reviewed and fixed")
+    for name in names:
+        write_fixation(ws.repo, out[name][0])
+    ws.commit_and_push("synthetic candidates reviewed and fixed", date=T_FIX)
     return out
 
 

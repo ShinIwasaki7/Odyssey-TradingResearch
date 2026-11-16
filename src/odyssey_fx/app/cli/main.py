@@ -31,6 +31,11 @@ CLI ライブラリは段階2まで標準の `argparse` を使う（ADR-0028）�
   判定した閲覧について、判定の行を品質確認の閲覧の記録に追記し、違反の範囲に重なる封印の区分の
   `SEALED` の partition に消費の記録を追記して、commit・origin の既定ブランチへ push する
   （ADR-0035 第3項。`--dry-run` は何も書かない）。
+- `odyssey-fx experiment fix` / `fix-check` / `fix-show`（順 11 の PR 4c）: 採用審査で「進める」に
+  なった候補の固定の前の確かめ（D09 §9.11.10 の 8 項目）を行い、通れば固定の記録
+  `research/candidate_fixes/<experiment_id>/<execution>/<fix_no>.yaml` を作業木に書く。終了コード
+  0 = 合格、8 = 固定の延期（窓の長さだけ）、7 = 固定しない、2 = 読込の誤り、1 = 書けなかった。
+  申告は求めない（決定 150）。
 - `odyssey-fx experiment review`（順 6 の R3）: 探索の実験の 1 つの実行を、事前に固定した規則で
   採用審査し、結果を審査台帳 `research/adoption_reviews.jsonl` に 1 行足す（D16 §11）。入口の検査は
   試行台帳と登録簿だけで行い、候補でない実行は何も書かずに「進めない」（終了コード 7）。標準出力には
@@ -537,6 +542,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="現在の環境の `uv.lock` を読むリポジトリの位置（設定ファイルは読まない）",
     )
     _add_final_validate_parser(experiment)
+    _add_fix_parsers(experiment)
     _add_gate_parsers(top)
     return parser
 
@@ -591,6 +597,75 @@ def _add_final_validate_parser(
     )
     mode.add_argument(
         "--withdraw", action="store_true", help="状態 A の候補を取り下げる（消費しない）"
+    )
+
+
+def _add_fix_parsers(
+    experiment: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """候補の固定の記録のコマンド（D09 §9.11.3・§9.11.10。順 11 の PR 4c）。"""
+    fix = experiment.add_parser(
+        "fix",
+        help=(
+            "採用審査で「進める」になった候補の固定の前の確かめ（8 項目）を行い、通れば固定の記録を"
+            "作業木に書く（commit・PR・merge はしない。D09 §9.11.10）"
+        ),
+    )
+    fix.set_defaults(command="experiment_fix")
+    check = experiment.add_parser(
+        "fix-check",
+        help="作業木の既存の固定の記録に固定の前の確かめ（8 項目）を当て直す（何も書かない）",
+    )
+    check.set_defaults(command="experiment_fix_check")
+    for parser in (fix, check):
+        parser.add_argument(
+            "--experiment-dir",
+            type=Path,
+            required=True,
+            help="実験の版のディレクトリ（runs/experiments/<名前>/v<版>/）",
+        )
+        parser.add_argument(
+            "--execution", type=int, required=True, help="実行番号（試行台帳の番号）"
+        )
+        parser.add_argument(
+            "--repo-root", type=Path, default=Path("."), help="リポジトリの根（git の作業木）"
+        )
+        parser.add_argument(
+            "--snapshots",
+            type=Path,
+            default=None,
+            help="snapshot の基点（既定は <repo-root>/data/snapshots。リポジトリの中に置く）",
+        )
+    fix.add_argument("--by", required=True, help="記録者（固定の記録の fixed_by）")
+    fix.add_argument(
+        "--supersede",
+        action="store_true",
+        help=(
+            "この実行の有効な固定の記録を、新しい番号の記録で置き換える（最終検証の申請の前の"
+            "書き誤りの直しだけ。仮置き F1-12）"
+        ),
+    )
+    fix.add_argument("--dry-run", action="store_true", help="確かめだけを行い、何も書かない")
+    check.add_argument(
+        "--record",
+        type=Path,
+        required=True,
+        help="確かめ直す固定の記録（research/candidate_fixes/…）",
+    )
+    show = experiment.add_parser(
+        "fix-show",
+        help=(
+            "origin の既定ブランチ上の有効な固定の記録と、固定時点・開始・前向きの期間を出す"
+            "（何も書かない）"
+        ),
+    )
+    show.set_defaults(command="experiment_fix_show")
+    show.add_argument(
+        "--experiment-id", required=True, help="実験の記録票の識別子（16 進 64 文字）"
+    )
+    show.add_argument("--execution", type=int, required=True, help="実行番号")
+    show.add_argument(
+        "--repo-root", type=Path, default=Path("."), help="リポジトリの根（git の作業木）"
     )
 
 
@@ -1946,6 +2021,56 @@ def _run_experiment_final_validate(args: argparse.Namespace, out: _Writer) -> in
     return outcome.exit_code
 
 
+# --- experiment fix / fix-check / fix-show（D09 §9.11.3・§9.11.10。順 11 の PR 4c）-------
+
+
+def _run_experiment_fix(args: argparse.Namespace, out: _Writer) -> int:
+    """固定の前の確かめと固定の記録の作成（出力は日数・件数・合否・理由の識別子だけ）。"""
+    from odyssey_fx.app import candidate_fixation as fixing
+
+    check = args.command == "experiment_fix_check"
+    repo_root = Path(args.repo_root)
+    snapshots = args.snapshots if args.snapshots is not None else repo_root / "data" / "snapshots"
+    mode = (
+        fixing.FixMode.CHECK
+        if check
+        else fixing.FixMode.DRY_RUN
+        if args.dry_run
+        else fixing.FixMode.CREATE
+    )
+    outcome = fixing.fix_candidate(
+        fixing.FixRequest(
+            experiment_dir=args.experiment_dir,
+            execution=args.execution,
+            repo_root=repo_root,
+            snapshots_root=snapshots,
+            by="fix-check" if check else args.by,
+            mode=mode,
+            supersede=False if check else args.supersede,
+            record=args.record if check else None,
+        )
+    )
+    out.lines(outcome.lines)
+    if outcome.exit_code != fixing.EXIT_OK and outcome.verdict is None:
+        out.line(f"詳細: {outcome.detail}（何も書いていない）")
+    out.line(f"終了コード: {outcome.exit_code}")
+    return outcome.exit_code
+
+
+def _run_experiment_fix_show(args: argparse.Namespace, out: _Writer) -> int:
+    """origin の既定ブランチ上の有効な固定の記録を読む（何も書かない）。"""
+    from odyssey_fx.app import candidate_fixation as fixing
+
+    outcome = fixing.show_fix(
+        experiment_id=args.experiment_id, execution=args.execution, repo_root=args.repo_root
+    )
+    out.lines(outcome.lines)
+    if outcome.exit_code == fixing.EXIT_READ_ERROR:
+        out.line(f"詳細: {outcome.detail}")
+    out.line(f"終了コード: {outcome.exit_code}")
+    return outcome.exit_code
+
+
 # --- gate judge-violation（ADR-0035 第3項）----------------------------------
 
 
@@ -2200,6 +2325,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "experiment_report": _run_experiment_report,
         "experiment_ledger": _run_experiment_ledger,
         "experiment_final_validate": _run_experiment_final_validate,
+        "experiment_fix": _run_experiment_fix,
+        "experiment_fix_check": _run_experiment_fix,
+        "experiment_fix_show": _run_experiment_fix_show,
         "gate_judge_violation": _run_gate_judge_violation,
         "experiment_review": _run_experiment_review,
     }

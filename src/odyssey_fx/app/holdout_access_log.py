@@ -176,6 +176,24 @@ class GitHoldoutAccessLog:
         out = self._git("base", "ls-tree", "-r", "--name-only", self._remote, "--", prefix)
         return tuple(line for line in out.splitlines() if line)
 
+    def first_parent_history_at_origin(self, rel: str) -> tuple[tuple[str, int], ...]:
+        """origin の既定ブランチの first-parent の履歴で `rel` を変えたコミット（古い順）。
+
+        要素は `(コミット, committer の時刻の UNIX 秒)`。候補の固定時点（D09 §9.11.3 の仮置き F1-3:
+        main の first-parent の履歴で固定の記録を初めて含んだコミットの committer の時刻）を導くのに
+        使う。2 つ以上あれば、`rel` は main に入った後に変わった（か消えて戻った）。
+        """
+        if self._remote is None:
+            raise HoldoutAccessLogStop("base", "fetch_origin was not called")
+        out = self._git("base", "log", "--first-parent", "--format=%H %ct", self._remote, "--", rel)
+        found: list[tuple[str, int]] = []
+        for line in out.splitlines():
+            commit, _, seconds = line.strip().partition(" ")
+            if not commit or not seconds.isdigit():
+                raise HoldoutAccessLogStop("base", f"git log printed an unexpected line for {rel}")
+            found.append((commit, int(seconds)))
+        return tuple(reversed(found))
+
     def has_commit_at_origin(self, commit: str) -> bool | None:
         """`commit` が origin の既定ブランチに含まれるか（尋ねられなければ `None`）。
 

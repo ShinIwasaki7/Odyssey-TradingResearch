@@ -48,18 +48,28 @@ def isolate_git(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def git(repo: Path, *args: str, home: Path | None = None) -> str:
+def git(repo: Path, *args: str, home: Path | None = None, date: str | None = None) -> str:
+    """`repo` で git を動かす。`date` を渡すと、作るコミットの committer と author の時刻にする。
+
+    候補の固定時点は、固定の記録を初めて含んだコミットの committer の時刻（仮置き F1-3）。
+    """
     env = None if home is None else git_env(home)
+    if date is not None:
+        env = dict(env if env is not None else os.environ)
+        env.update({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date})
     done = subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True, env=env
     )
     return done.stdout.strip()
 
 
-def publish_repo(repo: Path, origin: Path, *, home: Path | None = None) -> Path:
+def publish_repo(
+    repo: Path, origin: Path, *, home: Path | None = None, date: str | None = None
+) -> Path:
     """`repo` を git の作業木にし、bare の `origin` を作って main を push する。
 
-    `repo` が既に git の作業木（写したもの）なら、その `.git` を捨てて作り直す。
+    `repo` が既に git の作業木（写したもの）なら、その `.git` を捨てて作り直す。`date` は最初の
+    コミットの時刻（そのコミットに含まれる固定の記録の固定時点になる）。
     """
     if (repo / ".git").exists():
         shutil.rmtree(repo / ".git")
@@ -73,7 +83,7 @@ def publish_repo(repo: Path, origin: Path, *, home: Path | None = None) -> Path:
     git(repo, "config", "user.email", "test@example.invalid", home=home)
     git(repo, "config", "commit.gpgsign", "false", home=home)
     git(repo, "add", "-A", home=home)
-    git(repo, "commit", "--quiet", "--allow-empty", "-m", "base", home=home)
+    git(repo, "commit", "--quiet", "--allow-empty", "-m", "base", home=home, date=date)
     if origin.exists():
         shutil.rmtree(origin)
     subprocess.run(
