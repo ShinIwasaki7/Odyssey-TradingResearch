@@ -38,6 +38,8 @@ from odyssey_fx.app.final_validation_records import (
     FINAL_LOCK_FILE,
     PERMIT_FILE,
     REPORT_FILE,
+    append_ledger_row,
+    candidate_payload,
     final_directory,
     read_final_ledger,
 )
@@ -97,9 +99,7 @@ def _run(
     *,
     mode: FinalMode = FinalMode.APPLY,
     facts: CandidateFacts | None = None,
-    declaration: Path | None = None,
     log: GitHoldoutAccessLog | None = None,
-    no_declaration: bool = False,
 ) -> FinalValidationOutcome:
     chosen = facts or ws.facts()
     return final_validate(
@@ -109,7 +109,6 @@ def _run(
             repo_root=ws.repo,
             snapshots_root=ws.snapshots,
             out_root=ws.repo,
-            declaration=None if no_declaration else declaration or ws.declaration(key=chosen.key),
             by="人工の実行者",
             mode=mode,
         ),
@@ -314,40 +313,67 @@ def test_4_ledger_lines_that_are_only_in_the_working_tree_are_not_enough(
     assert (outcome.exit_code, outcome.reason) == (EXIT_REFUSED, FinalReason.LEDGER_NOT_ON_ORIGIN)
 
 
-def test_5_23_a_used_declaration_marks_the_candidate_used_and_stays_refused(
+def test_5_23_the_declaration_is_not_read_and_no_declared_used_row_is_written(
     ws: FinalWorkspace,
 ) -> None:
+    """人間の決定 150「申告を無くす」（ADR-0045）: 資格 6（申告）を外した。申告のファイルを読まず
+    （「使った」のファイルが置いてあっても）、申請は申告で止まらず、台帳に `DECLARED_USED` を
+    書かない。項目 `declaration_sha256` は形を変えずに空の文字列（PR 4b の仮置き）。"""
+    ws.declaration(used=True)  # 決定 150 の前の形のファイル（読まれない）
+    ws.commit_and_push("a declaration file from before decision 150")
+    outcome = _run(ws)
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    assert _ledger(ws) == ["COMPLETED"]
+    assert read_final_ledger(ws.repo).rows[0].payload["declaration_sha256"] == ""
+    permit = json.loads((_final(ws) / PERMIT_FILE).read_text())
+    record = json.loads((_final(ws) / FINAL_EVALUATION_FILE).read_text())
+    assert permit["declaration_sha256"] == record["declaration_sha256"] == ""
+
+
+def _declared_used_row_from_before_decision_150(ws: FinalWorkspace, key: CandidateKey) -> None:
+    """決定 150 の前に書かれた `DECLARED_USED` の行（人工。今の道具はこの行を書かない）。"""
+    append_ledger_row(
+        ws.repo,
+        {
+            "result": "DECLARED_USED",
+            "candidate": candidate_payload(key),
+            "permit_id": "",
+            "t_fix": "",
+            "consumption_start": "",
+            "consumption_end": "",
+            "partition_count": 0,
+            "partitions_digest": "",
+            "consumption_commit": "",
+            "combined_verdict": "",
+            "resume_count": 0,
+            "resume_failures": [],
+            "prior_final_validations": 0,
+            "reason": "OUTSIDE_VIEWING_DECLARED",
+            "final_evaluation_sha256": "",
+            "declaration_sha256": "0" * 64,
+            "recorded_at": "2026-11-01T00:00:00Z",
+            "actor": "人工の実行者",
+        },
+    )
+
+
+def test_5_23_a_declared_used_row_from_before_decision_150_is_still_read(
+    ws: FinalWorkspace,
+) -> None:
+    """PR 4b の仮置き: 決定 150 の前の `DECLARED_USED` の行は読込で壊れず、従来どおり状態 G として
+    拒否する（同じ `experiment_id` の別の実行にも当てる。仮置き R2-29 の (2)）。何も書かない。"""
+    _declared_used_row_from_before_decision_150(ws, ws.key)
     logs = _logs(ws)
-    outcome = _run(ws, declaration=ws.declaration(used=True))
+    outcome = _run(ws)
     assert (outcome.exit_code, outcome.reason) == (
         EXIT_REFUSED,
         FinalReason.OUTSIDE_VIEWING_DECLARED,
     )
-    assert _logs(ws) == logs  # partition の状態は変えない（ADR-0037 第3項の 5）
-    assert _ledger(ws) == ["DECLARED_USED"]
-    row = read_final_ledger(ws.repo).rows[0].payload
-    assert row["declaration_sha256"] and row["permit_id"] == "" and row["partition_count"] == 0
-    # 「使っていない」の申告で申請し直しても拒否され、何も書かない（状態 G）。
-    again = _run(ws, declaration=ws.declaration(used=False))
-    assert (again.exit_code, again.reason) == (EXIT_REFUSED, FinalReason.OUTSIDE_VIEWING_DECLARED)
-    assert _ledger(ws) == ["DECLARED_USED"]
-    # 同じ experiment_id の別の実行にも当てる（仮置き R2-29 の (2)）。
+    assert "申請の状態: G" in outcome.lines
+    assert _logs(ws) == logs and _ledger(ws) == ["DECLARED_USED"]
     second = replace(ws.key, execution=2)
     assert _run(ws, facts=ws.facts(key=second)).reason is FinalReason.OUTSIDE_VIEWING_DECLARED
-
-
-def test_a_declaration_that_does_not_cover_the_period_or_names_another_candidate(
-    ws: FinalWorkspace,
-) -> None:
-    outcome = _run(ws, declaration=ws.declaration(start="2024-07-01T00:00:00Z"))
-    assert (outcome.exit_code, outcome.reason) == (
-        EXIT_REFUSED,
-        FinalReason.DECLARATION_NOT_COVERING,
-    )
-    other = replace(ws.key, experiment_id="f" * 64)
-    assert _run(ws, declaration=ws.declaration(key=other)).exit_code == EXIT_READ_ERROR
-    assert _run(ws, no_declaration=True).exit_code == EXIT_READ_ERROR
-    assert _ledger(ws) == []
+    assert _ledger(ws) == ["DECLARED_USED"]
 
 
 # --- 6・7・21: origin ------------------------------------------------------------------------
@@ -509,7 +535,6 @@ def test_14_a_second_execution_only_gets_the_next_window(ws: FinalWorkspace) -> 
     outcome = _run(
         ws,
         facts=ws.facts(key=second, started_line_digest=lines[2].digest.hex),
-        declaration=ws.declaration(key=second, end="2025-02-01T00:00:00Z"),
     )
     assert (outcome.exit_code, outcome.reason) == (EXIT_REFUSED, FinalReason.WINDOW_SHORTER_THAN_L)
     assert _logs(ws) == before
@@ -559,7 +584,7 @@ def test_9_a_failure_after_consumption_waits_in_c_and_a_resume_validates(
 
 def test_9_a_failure_after_consumption_closes_as_failed(ws: FinalWorkspace) -> None:
     assert _run(ws, FakeRunner(research=ws.research, fail_run=True)).exit_code == 9
-    closed = _run(ws, mode=FinalMode.CLOSE_FAILED, no_declaration=True)
+    closed = _run(ws, mode=FinalMode.CLOSE_FAILED)
     assert closed.exit_code == EXIT_FAILED_AFTER_CONSUMPTION
     assert _ledger(ws) == ["FAILED_AFTER_CONSUMPTION"]
     row = read_final_ledger(ws.repo).rows[0].payload
@@ -576,7 +601,7 @@ def test_r4b_12_close_failed_without_the_permit_copy_takes_t_fix_from_the_fixati
 ) -> None:
     assert _run(ws, FakeRunner(research=ws.research, fail_run=True)).exit_code == 9
     (_final(ws) / PERMIT_FILE).unlink()  # 段 4 の直後に止まった（人工）
-    closed = _run(ws, mode=FinalMode.CLOSE_FAILED, no_declaration=True)
+    closed = _run(ws, mode=FinalMode.CLOSE_FAILED)
     assert closed.exit_code == EXIT_FAILED_AFTER_CONSUMPTION
     row = read_final_ledger(ws.repo).rows[0].payload
     assert row["t_fix"] == str(T_FIX) and row["consumption_commit"] == ""
@@ -762,7 +787,6 @@ def test_15_22_an_earlier_candidate_blocks_until_it_finishes_or_is_withdrawn(
         ws,
         mode=FinalMode.WITHDRAW,
         facts=ws.facts(key=earlier),
-        no_declaration=True,
     )
     assert withdrawn.exit_code == EXIT_OK
     assert _ledger(ws) == ["WITHDRAWN"] and _logs(ws) == logs
@@ -801,7 +825,6 @@ def test_the_production_runner_refuses_a_candidate_without_research_artifacts(
             repo_root=ws.repo,
             snapshots_root=ws.snapshots,
             out_root=ws.repo,
-            declaration=ws.declaration(),
             by="人工の実行者",
         ),
         candidates=_Candidates(ws.facts()),
@@ -826,8 +849,6 @@ def test_the_cli_reads_the_arguments_and_reports_a_read_error_with_2(
             "1",
             "--repo-root",
             str(ws.repo),
-            "--declaration",
-            str(ws.declaration()),
             "--by",
             "人工の実行者",
             "--dry-run",
@@ -852,6 +873,24 @@ def test_the_cli_reads_the_arguments_and_reports_a_read_error_with_2(
             ]
         )
     assert raised.value.code == 2
+    # 申告のファイルの引数は人間の決定 150（ADR-0045）で外した（渡すと引数の誤り）。
+    with pytest.raises(SystemExit) as removed:
+        main(
+            [
+                "experiment",
+                "final-validate",
+                "--experiment-dir",
+                str(ws.experiment_dir),
+                "--execution",
+                "1",
+                "--declaration",
+                str(ws.declaration()),
+                "--by",
+                "x",
+                "--dry-run",
+            ]
+        )
+    assert removed.value.code == 2
 
 
 def test_the_candidate_facts_of_another_execution_are_a_read_error(ws: FinalWorkspace) -> None:
@@ -1112,7 +1151,6 @@ def _run_as(
             repo_root=ws.repo,
             snapshots_root=ws.snapshots,
             out_root=ws.repo,
-            declaration=ws.declaration(key=facts.key),
             by="人工の実行者",
             mode=mode,
         ),

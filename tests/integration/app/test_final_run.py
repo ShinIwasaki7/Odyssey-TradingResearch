@@ -73,7 +73,6 @@ from tests.fixtures.evaluation.research_policies import (
 from tests.fixtures.evaluation.search_experiments import TWO_FOLD_SPLIT, write_search_experiment
 from tests.fixtures.final_validation import (
     ACQUISITION_START,
-    T_FIX,
     window_config,
     write_fixation,
     write_review,
@@ -290,21 +289,6 @@ def env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Env]:
         )
         write_review(repo, [facts.key], trials=trials)
         write_fixation(repo, facts.key, trials=trials)
-        declaration = repo / "research" / "declarations" / "final_case.yaml"
-        declaration.parent.mkdir(parents=True, exist_ok=True)
-        declaration.write_text(
-            "schema_version: 1\n"
-            f"experiment_id: {facts.key.experiment_id}\n"
-            "execution: 1\n"
-            "used_outside_viewing: false\n"
-            "period:\n"
-            f'  start: "{ACQUISITION_START}"\n'
-            f'  end: "{T_FIX}"\n'
-            'question: "研究の外で見た相場を候補の選定・調整に使ったか"\n'
-            'answer: "使っていない"\n'
-            'recorded_by: "人工の記録者"\n',
-            encoding="utf-8",
-        )
         publish_repo(repo, root / "origin.git", home=home)
         clean = root / "clean_out"
         shutil.copytree(out, clean)
@@ -330,7 +314,6 @@ def _validate(env: _Env, out_root: Path, directory: Path | None = None) -> Final
                 repo_root=repo,
                 snapshots_root=repo / "data" / "snapshots",
                 out_root=out_root,
-                declaration=repo / "research" / "declarations" / "final_case.yaml",
                 by="人工の実行者",
             ),
             candidates=_Candidates(env.facts),
@@ -654,21 +637,6 @@ def conv_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_ConvEnv]:
         window_config(repo)
         write_review(repo, [facts.key], trials=trials)
         write_fixation(repo, facts.key, trials=trials)
-        declaration = repo / "research" / "declarations" / "final_conv.yaml"
-        declaration.parent.mkdir(parents=True, exist_ok=True)
-        declaration.write_text(
-            "schema_version: 1\n"
-            f"experiment_id: {facts.key.experiment_id}\n"
-            "execution: 1\n"
-            "used_outside_viewing: false\n"
-            "period:\n"
-            f'  start: "{ACQUISITION_START}"\n'
-            f'  end: "{T_FIX}"\n'
-            'question: "研究の外で見た相場を候補の選定・調整に使ったか"\n'
-            'answer: "使っていない"\n'
-            'recorded_by: "人工の記録者"\n',
-            encoding="utf-8",
-        )
         publish_repo(repo, base / "origin.git", home=home)
     yield _ConvEnv(base=base, facts=facts, research=research, sealed=sealed)
 
@@ -692,7 +660,6 @@ def _conv_validate(copy: _ConvCopy, out_root: Path) -> FinalValidationOutcome:
                 repo_root=copy.repo,
                 snapshots_root=copy.snapshots,
                 out_root=out_root,
-                declaration=copy.repo / "research" / "declarations" / "final_conv.yaml",
                 by="人工の実行者",
             ),
             candidates=_Candidates(copy.facts),

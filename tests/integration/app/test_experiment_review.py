@@ -14,8 +14,10 @@ T02 の人工データを受け入れて承認した作業場（`tests/fixtures/
 
 - T1: 進める（終了コード 0）。審査台帳に 1 行、行に台帳の累計・割り引いた指標の状態・適合の結果・
   証拠の最低線の合否がある。数値の記録の SHA-256 が行の値と一致。標準出力に数値が無い。
-- T5: 申告あり → 進めない（`OUTSIDE_VIEWING_DECLARED`）。T6: 申告ファイルが無い・固定した試行の
-  run が失敗 → 保留（終了コード 8）。T7: 進めるの後の審査は `ENTRY_ALREADY_REVIEWED`。
+- T5・T6（人間の決定 150「申告を無くす」。ADR-0045）: 申告ファイルは読まない。「使った」の申告
+  ファイルが置いてあっても、申告ファイルが無くても進める（行の `declaration` は `NOT_ASKED`）。
+  T6: 固定した試行の run が失敗 → 保留（終了コード 8）。T7: 進めるの後の審査は
+  `ENTRY_ALREADY_REVIEWED`。
 - T7b: 保留の後のやり直しは最初の行の規則の版（版 1）が当たり、版 1 のファイルを書き換えると
   `ENTRY_RULES_VERSION_CHANGED`。T7c: 版 2 の登録より前に開始した実行には版 1、後の実行には版 2。
 - T10・T16: 追記を断られると終了コード 1・行なし、やり直しは新しい置き場に書き前の置き場を変えない。
@@ -56,6 +58,8 @@ from odyssey_fx.evaluation.adapters.review_store import (
 from odyssey_fx.evaluation.application.ports import TrialLedgerContents
 from odyssey_fx.evaluation.domain.adoption_review import (
     AdoptionReviewEntry,
+    DeclarationState,
+    DeclarationStatus,
     FloorOutcome,
     ReviewResult,
 )
@@ -205,6 +209,7 @@ def env(tmp_path_factory: pytest.TempPathFactory) -> _Env:
 
 
 def _declare(repo: Path, experiment_id: ExperimentId, execution: int, used: bool) -> Path:
+    """決定 150 の前の形の申告ファイルを置く（道具が読まないことを確かめるためだけ）。"""
     path = repo / "research/declarations" / f"{experiment_id}_{execution}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -224,7 +229,7 @@ def _declare(repo: Path, experiment_id: ExperimentId, execution: int, used: bool
 def restore(env: _Env) -> Iterator[None]:
     """各テストは同じ出発点から始める。
 
-    判定を書き換えた試行台帳・空の審査台帳・版 1 の規則・申告なし。
+    判定を書き換えた試行台帳・空の審査台帳・版 1 の規則・申告ファイルなし。
     """
     repo = env.workspace.repo
     (repo / TRIAL_LEDGER_PATH).write_bytes(env.ledger)
@@ -233,7 +238,6 @@ def restore(env: _Env) -> Iterator[None]:
     shutil.rmtree(repo / _RULES, ignore_errors=True)
     install_version_1_rules(repo)
     shutil.rmtree(repo / "research/declarations", ignore_errors=True)
-    _declare(repo, env.experiment_id, 1, used=False)
     yield
     (repo / ADOPTION_REVIEW_LOCK_PATH).unlink(missing_ok=True)
 
@@ -334,23 +338,29 @@ def test_t7_a_proceeded_execution_is_not_reviewed_again(env: _Env) -> None:
 # --- T5・T6 -------------------------------------------------------------------------
 
 
-def test_t5_a_declaration_does_not_proceed(env: _Env) -> None:
+def test_t5_a_used_declaration_file_is_not_read(env: _Env) -> None:
+    """決定 150: 「使った」の申告ファイルが置いてあっても読まず、進める（行の形は変えない）。"""
     _declare(env.workspace.repo, env.experiment_id, 1, used=True)
-    code, stdout, _ = _review(env)
-    assert code == 7
-    assert "OUTSIDE_VIEWING_DECLARED" in stdout
+    code, stdout, stderr = _review(env)
+    assert code == 0, stdout + stderr
+    assert "OUTSIDE_VIEWING_DECLARED" not in stdout + stderr
     (entry,) = _reviews(env)
-    assert entry.result is ReviewResult.DO_NOT_PROCEED
-    assert entry.declaration.file_digest is not None
+    assert entry.result is ReviewResult.PROCEED
+    assert entry.declaration == DeclarationState(
+        status=DeclarationStatus.NOT_ASKED, file_digest=None
+    )
+    line = (env.workspace.repo / ADOPTION_REVIEW_LEDGER_PATH).read_bytes().splitlines()[0]
+    assert json.loads(line)["entry"]["declaration"] == {"file_digest": None, "status": "NOT_ASKED"}
 
 
-def test_t6_a_missing_declaration_defers(env: _Env) -> None:
-    shutil.rmtree(env.workspace.repo / "research/declarations")
-    code, stdout, _ = _review(env)
-    assert code == 8
-    assert "理由の識別子: DECLARATION_MISSING" in stdout
+def test_t6_no_declaration_file_does_not_defer(env: _Env) -> None:
+    """決定 150: 申告ファイルが無くても保留にしない（`DECLARATION_MISSING` を出さない）。"""
+    assert not (env.workspace.repo / "research/declarations").exists()
+    code, stdout, stderr = _review(env)
+    assert code == 0, stdout + stderr
+    assert "DECLARATION_MISSING" not in stdout + stderr
     (entry,) = _reviews(env)
-    assert entry.result is ReviewResult.DEFERRED
+    assert entry.result is ReviewResult.PROCEED
 
 
 def test_t6_failed_fixed_trial_runs_defer(env: _Env, tmp_path: Path) -> None:
@@ -386,12 +396,12 @@ def _register_v2(env: _Env) -> None:
     )
 
 
-def test_t7b_a_deferred_review_is_retried_with_its_first_rules_version(env: _Env) -> None:
-    repo = env.workspace.repo
-    shutil.rmtree(repo / "research/declarations")
-    assert _review(env)[0] == 8
+def test_t7b_a_deferred_review_is_retried_with_its_first_rules_version(
+    env: _Env, tmp_path: Path
+) -> None:
+    # 保留は固定した試行の run の失敗で作る（申告ファイルの欠けは決定 150 で保留の理由でなくなった）
+    assert _review(env, snapshots=tmp_path / "no-snapshots", out=tmp_path / "out")[0] == 8
     _register_v2(env)
-    _declare(repo, env.experiment_id, 1, used=False)
     code, stdout, stderr = _review(env)
     assert code == 0, stdout + stderr
     first, second = _reviews(env)
@@ -399,10 +409,9 @@ def test_t7b_a_deferred_review_is_retried_with_its_first_rules_version(env: _Env
     assert second.review_rules_ref.version == 1
 
 
-def test_t7b_a_changed_rules_file_stops_the_retry(env: _Env) -> None:
+def test_t7b_a_changed_rules_file_stops_the_retry(env: _Env, tmp_path: Path) -> None:
     repo = env.workspace.repo
-    shutil.rmtree(repo / "research/declarations")
-    assert _review(env)[0] == 8
+    assert _review(env, snapshots=tmp_path / "no-snapshots", out=tmp_path / "out")[0] == 8
     rules = repo / _RULES / "adoption_review_v1.yaml"
     rules.write_text(
         rules.read_text(encoding="utf-8").replace('max_share: "0.25"', 'max_share: "0.9"'),
@@ -429,7 +438,6 @@ def test_t7c_a_new_rules_version_applies_only_to_executions_started_after_it(
     # 版 2 の登録より後に開始した実行（同じ版の再実行。実行番号 2）には版 2 が当たる。
     _run(env.workspace, env.experiment, out)
     _promote(repo, env.experiment_id, 2)
-    _declare(repo, env.experiment_id, 2, used=False)
     code, stdout, stderr = _review(env, execution=2, directory=directory, out=out)
     assert code == 0, stdout + stderr
     first, second = _reviews(env)

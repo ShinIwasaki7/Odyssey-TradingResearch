@@ -2,10 +2,14 @@
 
 関所の最終評価の許可（ADR-0036 第3項。品質確認の許可とは別の型・別の手順）の 5 段（D09 §9.10.2）を
 この順で fail-closed に行う。**段 1 と段 2 では何も書かない**（`.git` の中の取得を除く。例外は
-状態 D の台帳の書き足しと申告「使った」の台帳の行。D09 §9.10.6・§9.10.10 の 6）。
+状態 D の台帳の書き足し。D09 §9.10.6）。
 
 1. **申請の確かめ**: origin の既定ブランチの名前を尋ねて取得し、申請の状態（D09 §9.10.6）と申請の
-   資格（判定・試行台帳・審査・固定・申告・順番。D09 §9.10.10）を確かめる。
+   資格（判定・試行台帳・審査・固定・順番。D09 §9.10.10）を確かめる。資格 6（研究の外の相場の
+   申告）は人間の決定 150「申告を無くす」（ADR-0045）で外した（申告の撤去の PR 4b）。申告の
+   ファイルを読まず、台帳に `DECLARED_USED` の行を書かない。控え・記録・台帳の項目
+   `declaration_sha256` は形を変えずに空の文字列にする。決定 150 の前に書かれた `DECLARED_USED`
+   の行は、読むときに従来どおり扱う（状態 G と順番の「終わった」。PR 4b の仮置き）。
 2. **許可の前の確かめ**: 再計算とウォームアップ（`FinalRunner.prepare`。段 2 (f)）→ 窓と消費の
    対象の導出（(b)）→ origin の確かめ（(a)）→ 出力先（(c)）→ 実行前のデータ能力検査のうち戦略に
    よらない部分（(e)）→ run の予測（`FinalRunner.plan`。(g)）→ 検査 P2F の (1)・(3)（(h)）。
@@ -48,7 +52,6 @@ from odyssey_fx.app.config.final_validation import (
     FIXATIONS_DIRECTORY,
     Fixation,
     fixation_path,
-    load_declaration,
     load_fixation,
 )
 from odyssey_fx.app.config.loader import ConfigError
@@ -56,7 +59,6 @@ from odyssey_fx.app.config.research_policy import (
     load_research_policy_registry,
     research_policy_registry_path,
 )
-from odyssey_fx.app.config.sealed_window import SEALED_WINDOW_PATH, load_sealed_window
 from odyssey_fx.app.final_validation_records import (
     ATTEMPTS_DIRECTORY,
     ATTEMPTS_FILE,
@@ -186,6 +188,9 @@ EXIT_FAILED_AFTER_CONSUMPTION: Final = 9
 
 #: 採用審査の台帳（D16 v0.2 §10.1。R3 が読込を実装するまでの最小の読み方。仮置き R2-7）。
 ADOPTION_REVIEWS_PATH: Final = Path("research") / "adoption_reviews.jsonl"
+#: 控え・最終検証の記録・台帳の項目 `declaration_sha256` の値（申告を読まないので空。決定 150、
+#: ADR-0045。項目は消さずに行の形を保つ。申告の撤去の PR 4b の仮置き）。
+_NO_DECLARATION_SHA256: Final = ""
 #: 封印の snapshot の時刻の規則の表の承認済みの一覧（D03 §15.9 の 2・§16.2）。
 SEALED_APPROVED_TABLES: Final = Path("docs/design/time_rules/approved_time_rule_tables_sealed.yaml")
 
@@ -240,7 +245,6 @@ class FinalValidationRequest:
     repo_root: Path
     snapshots_root: Path
     out_root: Path
-    declaration: Path | None
     by: str
     mode: FinalMode = FinalMode.APPLY
 
@@ -932,7 +936,8 @@ def _final_validate(
     if outcome is not None:
         outcome.state = state
         return outcome
-    fixation, declaration_sha = _eligibility(ctx)
+    fixation = _eligibility(ctx)
+    declaration_sha = _NO_DECLARATION_SHA256
     # --- 段 2: 許可の前の確かめ ------------------------------------------------------------
     permit, plan = _before_permit(ctx, runner, fixation)
     lines.extend(_count_lines(permit.window))
@@ -1301,7 +1306,7 @@ def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
         raise _resume_refused(f"the attempts reached the limit of {MAX_RESUMES} resumes")
     # 段 1・段 2 を読み直す（R2-22: 消費の対象・採点の始まり・予測が控えと同じ）
     try:
-        fixation, _ = _eligibility(ctx)
+        fixation = _eligibility(ctx)
     except _Stop as stop:
         if stop.exit_code == EXIT_READ_ERROR:
             raise
@@ -1377,8 +1382,10 @@ def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
     )
 
 
-def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
-    """申請の資格（D09 §9.10.10 の 1〜8）。固定の記録と申告のファイルのダイジェストを返す。"""
+def _eligibility(ctx: _Context) -> Fixation:
+    """申請の資格（D09 §9.10.10 の 1〜5・7・8）。固定の記録を返す。
+
+    資格 6（申告）は人間の決定 150（ADR-0045）で外した。"""
     facts = ctx.facts
     key = ctx.key
     # 1. 判定
@@ -1498,48 +1505,7 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
             " cannot be read or differ (D09 §9.10.10 の 5)",
         )
     ctx.lines.append(f"候補の固定時点 T_fix: {fixation.t_fix}、長さ L: {fixation.length_days} 日")
-    # 6. 申告
-    path = ctx.request.declaration
-    if path is None:
-        raise _Stop(EXIT_READ_ERROR, None, "`--declaration` is required (仮置き R2-6)")
-    try:
-        declaration = load_declaration(path)
-        window = load_sealed_window(ctx.request.repo_root / SEALED_WINDOW_PATH)
-    except ConfigError as exc:
-        raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
-    if (declaration.experiment_id, declaration.execution) != (key.experiment_id, key.execution):
-        raise _Stop(EXIT_READ_ERROR, None, f"{path} is a declaration of another candidate")
-    start = window.acquisition_start
-    if start is None:
-        raise _Stop(EXIT_READ_ERROR, None, "the acquisition start is not set in the window config")
-    required = Interval(start=start, end=fixation.t_fix) if start < fixation.t_fix else None
-    if required is not None and not _covers(declaration.period, required):
-        raise _reason(
-            FinalReason.DECLARATION_NOT_COVERING,
-            f"the declaration answers {declaration.period}, not the whole of {required}"
-            " (D09 §9.10.10 の 6)",
-        )
-    declaration_sha = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    if declaration.used_outside_viewing:
-        if ctx.request.mode in (FinalMode.DRY_RUN, FinalMode.RESUME):
-            ctx.lines.append("申告が「使った」: 本番の起動なら台帳に DECLARED_USED の行を書く")
-        else:
-            ctx.append(
-                _ledger_values(
-                    result=FinalLedgerResult.DECLARED_USED,
-                    candidate=key,
-                    recorded_at=ctx.now(),
-                    actor=ctx.request.by,
-                    reason=FinalReason.OUTSIDE_VIEWING_DECLARED.value,
-                    declaration_sha256=declaration_sha,
-                )
-            )
-            ctx.lines.append("申告が「使った」: 台帳に DECLARED_USED の行を書いた")
-        raise _reason(
-            FinalReason.OUTSIDE_VIEWING_DECLARED,
-            "the declaration answers that market data seen outside the research was used;"
-            " the final validation of this candidate is treated as used (ADR-0037 第3項の 3〜5)",
-        )
+    # 6. 申告: 人間の決定 150「申告を無くす」（ADR-0045）で外した（申告の撤去の PR 4b）
     # 8. 順番（要決定 R2-6 (a)）
     for row in proceeds[:mine]:
         other = _review_key(row)
@@ -1552,12 +1518,13 @@ def _eligibility(ctx: _Context) -> tuple[Fixation, str]:
             experiment_version=1,
         )
         finished_results = set(ctx.rows_of(earlier))
+        # `declared_used` は決定 150 の前に書かれた `DECLARED_USED` の行だけを見る（PR 4b の仮置き）
         if not finished_results and not ctx.declared_used(other[0]):
             raise _reason(
                 FinalReason.EARLIER_CANDIDATE_PENDING,
                 f"the earlier candidate {other[0]} execution {other[1]} has not finished",
             )
-    return fixation, declaration_sha
+    return fixation
 
 
 def _before_permit(
