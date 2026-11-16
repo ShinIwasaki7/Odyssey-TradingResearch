@@ -7,7 +7,7 @@
   理由の文のダイジェストが版 2 の実験設定の理由の文と一致する（関門 X2。D09 §10.10）。
 - 台帳の鎖が連続し、累計（`ledger_tally`）の件数が README 第 5.7 節の (3) の件数と同じ。
 - 注記 `docs/data/eurusd_step10_research_loop/README.md` の第 5 節（一巡の報告）に、関門 X1〜X5 の
-  行（X4 は人間の判定待ちで空欄）、予想と実際の行（第 3.3 節の予想と同じ対象・同じ順。件数は
+  行（X4 は人間の判定。決定 199）、予想と実際の行（第 3.3 節の予想と同じ対象・同じ順。件数は
   決定 197 の原文と同じ）、SHA-256 の記載と決定 127・197 の原文との一致、人の手の注記 (1)〜(3)
   （関門 X5）がある。
 - 第 5 節に判定の値（4 値・2 軸・fold の判定）の識別子と表示の語が無く、価格の形の小数も無い
@@ -225,9 +225,9 @@ def test_decision_197_is_quoted_verbatim() -> None:
     assert "「記録して受け入れる（仮定付き合格。推奨）」" in section
 
 
-def test_the_gate_rows_are_present_and_x4_is_left_to_the_human() -> None:
-    """X1 は版 1 合格・版 2 仮定付き合格（決定 175）、X2・X3・X5 は合格、X4 は人間の判定待ち
-    で空欄。"""
+def test_the_gate_rows_are_present_and_x4_is_judged_by_the_human() -> None:
+    """X1 は版 1 合格・版 2 仮定付き合格（決定 175）、X2・X3・X5 は合格、X4 は人間が判定して
+    合格（決定 199）。終了は決定 200。"""
     rows = {
         line.split("|")[1].strip(): line
         for line in _section(5).splitlines()
@@ -244,11 +244,14 @@ def test_the_gate_rows_are_present_and_x4_is_left_to_the_human() -> None:
     ), rows["X1"]
     for key in ("X2", "X3", "X5"):
         assert rows[key].rstrip().endswith("| 合格 |"), rows[key]
-    assert rows["X4"].rstrip().endswith("|  |"), rows["X4"]
-    # 終了の判定と X4 の判定の欄は空のまま（人間が記入する）。
+    assert rows["X4"].rstrip().endswith("| 合格（人間の判定「合格（結んでいる）」。決定 199） |"), (
+        rows["X4"]
+    )
     section = _section(5)
-    assert "> **関門 X4 の判定**（本 PR のレビュー。人間が記入する）\n>\n> （空欄）" in section
-    assert "> **順 10 の終了の判定**（人間が記入する）\n>\n> （空欄）" in section
+    assert "「合格（結んでいる）」" in section
+    assert "「順 10 を終了とする（推奨）」" in section
+    assert "「6 件このまま。決定を写して merge（推奨）」" in section
+    assert "**2026-11-16 の決定 200 で順 10 は終了（本 PR の merge が終了の記録）。" in section
 
 
 def test_section_5_carries_no_verdict_values() -> None:
