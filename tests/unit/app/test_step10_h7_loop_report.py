@@ -320,3 +320,25 @@ def test_the_human_notes_are_in_the_preregistration_and_the_loop_report() -> Non
         "見た人が選んだ仮説である**" in report
     )
     assert "**(3) 台帳の累計に順 5・順 8 の 4 実行が入る**" in report
+
+
+def test_section_5_1_carries_the_ledger_identifiers() -> None:
+    """第 5.1 節の実行の識別子と系譜の省略形は、台帳の版 1・版 2 の識別子と同じ。"""
+    start = _text().index("### 5.1 ")
+    section = _text()[start : _text().index("### 5.2 ", start)]
+    assert f"版 1 `{V1_EXPERIMENT_ID}`（実行番号 1）" in section
+    assert f"版 2 `{V2_EXPERIMENT_ID}`（実行番号 1）" in section
+    assert f"`{V1_EXPERIMENT_ID[:8]}…{V1_EXPERIMENT_ID[-4:]}`" in section
+    assert _line_of(TrialLedgerEvent.STARTED, V1_EXPERIMENT_ID).entry.execution == 1
+    assert _line_of(TrialLedgerEvent.STARTED, V2_EXPERIMENT_ID).entry.execution == 1
+
+
+def test_decision_127_in_section_5_8_is_the_same_as_in_section_3_1() -> None:
+    """第 5.8 節に再掲した決定 127 の 3 行は、第 3.1 節の原文と一字一句同じ。"""
+
+    def quoted(section: str) -> list[str]:
+        return re.findall(r"^> [1-3]\. .+$", section, flags=re.MULTILINE)
+
+    original = quoted(_section(3))
+    assert len(original) == 3
+    assert quoted(_section(5)) == original
