@@ -233,16 +233,22 @@ def verify_preregistration(view: RepoView, prereg: Preregistration) -> Verificat
 # --- 個々の検査 ------------------------------------------------------------------------
 
 
+def _in_catalog(name: object, version: object) -> bool:
+    """部品の名前と版がカタログにあるか（鍵として成り立たない値は「無い」。例外にしない）。"""
+    if not isinstance(name, str) or isinstance(version, bool) or not isinstance(version, int):
+        return False
+    try:
+        return ContractKey(name, version) in INITIAL_CATALOG
+    except KernelValueError:
+        return False
+
+
 def _unknown_components(strategy: Mapping[str, Any]) -> list[str]:
     unknown: list[str] = []
     for item in strategy.get("components") or []:
-        name, version = item.get("component"), item.get("component_version")
-        if (
-            not isinstance(name, str)
-            or isinstance(version, bool)
-            or not isinstance(version, int)
-            or ContractKey(name, version) not in INITIAL_CATALOG
-        ):
+        name = item.get("component") if isinstance(item, Mapping) else None
+        version = item.get("component_version") if isinstance(item, Mapping) else None
+        if not _in_catalog(name, version):
             unknown.append(f"部品 {name!r} の版 {version!r} がカタログに無い")
     return unknown
 

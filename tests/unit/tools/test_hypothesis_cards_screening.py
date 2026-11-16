@@ -56,9 +56,14 @@ def test_a_format_error_is_reported_first() -> None:
     assert _screen(data)[0] == CARD_FORMAT
 
 
-def test_an_unknown_component_or_version() -> None:
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("component_version", 99), ("component_version", 0), ("component", "unknown component")],
+)
+def test_an_unknown_component_or_version(key: str, value: object) -> None:
+    """鍵として成り立たない名前・版も例外にせず不合格にする（Codex 延長の巡の指摘）。"""
     data = card_data()
-    data["strategy"]["components"][0]["component_version"] = 99
+    data["strategy"]["components"][0][key] = value
     assert _screen(data)[0] == CARD_COMPONENT_UNKNOWN
 
 

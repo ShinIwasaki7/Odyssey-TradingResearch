@@ -276,3 +276,29 @@ def test_a_non_finite_value_in_a_proposal_is_out_of_rules() -> None:
             raw.replace(b"[60, 80]", b"[60, .nan]"), card_id=CARD_ID, expected_from_version=1
         )
     assert caught.value.reason == CHANGE_OUT_OF_RULES
+
+
+def test_adding_a_component_with_an_impossible_key_is_out_of_rules() -> None:
+    """変更の提案で足す部品の名前・版が鍵として成り立たなくても例外にしない。"""
+    change = dump_document(
+        _proposal(
+            change_kind="STRATEGY_CODE",
+            operations=[
+                {
+                    "op": "add_component",
+                    "component": {
+                        "instance_id": "extra",
+                        "component": "unknown component",
+                        "component_version": 0,
+                        "triggers": [
+                            {"name": "h1", "when": "bar_close", "series": "GBPUSD/1h/bid"}
+                        ],
+                    },
+                }
+            ],
+        )
+    )
+    result = check_change(
+        DirView(REPO_ROOT), card=card_bytes(card_data()), change=change, from_version=1
+    )
+    assert result.reason == CHANGE_OUT_OF_RULES
