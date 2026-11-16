@@ -261,3 +261,19 @@ def test_reads_and_history_resets_match_the_record_made_before_the_memo(tmp_path
     # 覚えた答えを引く経路は、同じ run の中の隣り合う判断時刻どうしで通る（窓がほぼ重なる）。
     answers = _snapshot_answers(tmp_path)
     assert (len(answers), _digest(answers)) == (EXPECTED_SNAPSHOT_COUNT, EXPECTED_SNAPSHOT_DIGEST)
+
+
+def test_a_wrongly_typed_base_raises_the_same_error_as_before() -> None:
+    """型の誤りの基準時刻（ハッシュできない値を含む）は、覚え書きを通らず、変更の前と同じ例外を
+    送出する（変更の前の木で同じ型と文言を確かめた）。"""
+    schedule = SeriesSchedule(
+        series=market.series(timeframe_id="1h"),
+        timeframe_def=market.TF_1H,
+        calendar=market.calendar(),
+    )
+    bases: tuple[object, ...] = ([], "2026-03-04T00:00:00Z", _utc("2026-03-04T00:00:00Z").value)
+    windows: tuple[HistoryWindowLike, ...] = (BarsWindow(3), DurationWindow(timedelta(hours=3)))
+    for base in bases:
+        for window in windows:
+            answer = _answer(partial(window_starts, schedule, window, base, 0))  # type: ignore[arg-type]
+            assert answer == ("raise", "MarketDataValueError", "boundaries() requires a UtcTime")

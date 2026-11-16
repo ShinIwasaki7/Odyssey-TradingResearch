@@ -732,13 +732,30 @@ def _remembered_walk(definition: TimeframeDefinition, calendar: TradingCalendar)
     return _ScheduleWalk(definition, calendar)
 
 
-def _walk_of(schedule: SeriesSchedule, base_start: UtcTime) -> _ScheduleWalk:
-    """`window_starts` の 1 回の呼び出しで使う覚え書き。
+class _DirectWalk:
+    """覚えずに毎回計算するたどり方（型の誤りの入力のための、変更の前と同じ計算）。
 
-    覚えた答えを共有するのは、基準の時刻・時間足定義・カレンダーがどれも本来の型のときだけである。
-    それ以外（型の誤り）は、この呼び出しの中だけの覚え書きを使い、従来と同じ順に同じ計算をして同じ
-    例外を送出する（1 回の呼び出しの中で同じ時刻を 2 度たどるのは、成功した計算の答えを引くとき
-    だけである）。
+    時刻を辞書の鍵にしないので、ハッシュできない値を渡されても、変更の前と同じ所で同じ例外になる。
+    """
+
+    __slots__ = ("_calendar", "_definition")
+
+    def __init__(self, definition: TimeframeDefinition, calendar: TradingCalendar) -> None:
+        self._definition = definition
+        self._calendar = calendar
+
+    def expected_interval(self, probe: UtcTime) -> Interval | None:
+        return self._definition.expected_interval(self._calendar, probe)
+
+    def previous_start(self, probe: UtcTime) -> UtcTime:
+        return self._definition.boundaries(probe - timedelta(microseconds=1)).start
+
+
+def _walk_of(schedule: SeriesSchedule, base_start: UtcTime) -> _ScheduleWalk | _DirectWalk:
+    """`window_starts` の 1 回の呼び出しで使うたどり方。
+
+    覚えた答えを使うのは、基準の時刻・時間足定義・カレンダーがどれも本来の型のときだけである。
+    それ以外（型の誤り）は覚えずに毎回計算し、変更の前と同じ順に同じ計算をして同じ例外を送出する。
     """
     definition = schedule.timeframe_def
     calendar = schedule.calendar
@@ -748,7 +765,7 @@ def _walk_of(schedule: SeriesSchedule, base_start: UtcTime) -> _ScheduleWalk:
         and isinstance(calendar, TradingCalendar)
     ):
         return _remembered_walk(definition, calendar)
-    return _ScheduleWalk(definition, calendar)
+    return _DirectWalk(definition, calendar)
 
 
 def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:
@@ -763,7 +780,7 @@ def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:
 
 
 def _expected_starts_backwards(
-    walk: _ScheduleWalk, latest_start: UtcTime, count: int
+    walk: _ScheduleWalk | _DirectWalk, latest_start: UtcTime, count: int
 ) -> tuple[UtcTime, ...] | None:
     """期待される足の開始時刻を、新しい順に `count` 本ぶん返す。
 
@@ -784,7 +801,7 @@ def _expected_starts_backwards(
 
 
 def _duration_selection(
-    walk: _ScheduleWalk,
+    walk: _ScheduleWalk | _DirectWalk,
     expected_starts: tuple[UtcTime, ...],
     window: DurationWindowLike,
 ) -> tuple[UtcTime, ...] | None:
