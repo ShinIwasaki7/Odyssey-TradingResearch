@@ -39,6 +39,23 @@
   `{spread_offset, entry_slippage, close_slippage, adverse_fill_limit}`）。
 - 版 3 以下の形・ファイル・ダイジェストは変えない（仮置き 7）。
 
+**版 5 以上の形**（研究ポリシー第 5 版。D24 §2.1・§8.1、決定 133・136〜142・158〜166。実装 PR 4-1）:
+版 4 の形に、次の 4 群を**必須**で足す（既定値を置かない。省略は読込で拒否。版 4 以下に書けば
+未宣言キーとして拒否する。検査 E6）。
+
+- `validation.loss_concentration: {worst_fold_metric, max_multiple_of_path_net,
+  applies_when_path_net_return_at_least}`（損失の集中。E8）
+- `validation.neighbor_floors: {neighborhood, interval, floors}`（近傍の床。E7）
+- `validation.deflated_downside_ratio: {method, downside_target, correlation, min_probability}`
+  （試行数で割り引いた下側偏差の比率。E9）
+- `regimes: {role, timeframe, direction: {ema_bars, slope_bars, atr_bars, dead_band_atr_multiple},
+  volatility: {atr_bars, median_window_bars}, label_at}`（局面の値。表示・分析用だけ。E10）
+
+版 5 の `validation.fold_floors` には E7 を当て、`validation.path.aggregate` には経路の取引の集合
+から当てる `PROFIT_FACTOR`（`GE`）を書ける（`PathRuleV5`）。#23 `ANNUALIZED_DOWNSIDE_RATIO` は
+どの版の選定・条件にも書けない（E9）。検査の規則は `evaluation.domain.search`・
+`evaluation.domain.regimes` の型が持つ。版 4 以下の形・ファイル・ダイジェストは変えない。
+
 版 4 以上の読込の検査（D18 §3.4）: 前提の記録・比較の前提・対象系列の通貨の集合が同じこと、
 換算の snapshot の組が換算の率を取る通貨ペア（中継の通貨＋口座の通貨。USDJPY）の組と同じこと
 （ここまでは型が確かめる）。`repo_root` を渡したときは、さらに前提のファイルの SHA-256 が実ファイル
@@ -92,6 +109,14 @@ from odyssey_fx.evaluation.domain.policy_basis import (
     SymbolSnapshots,
     symbol_premise_name,
 )
+from odyssey_fx.evaluation.domain.regimes import (
+    RegimeDirectionRule,
+    RegimeLabelAt,
+    RegimeRole,
+    RegimeSpec,
+    RegimeTimeframe,
+    RegimeVolatilityRule,
+)
 from odyssey_fx.evaluation.domain.research_policy import (
     ComplexityLimits,
     RegistryEntry,
@@ -100,17 +125,27 @@ from odyssey_fx.evaluation.domain.research_policy import (
 from odyssey_fx.evaluation.domain.search import (
     AggregateCondition,
     Comparator,
+    DeflatedDownsideRule,
+    DeflationMethod,
     EvaluationStandard,
+    EvaluationStandardV5,
     FoldStatistic,
     FrequencyClass,
+    LossConcentrationRule,
     MetricCondition,
+    NeighborFloorRule,
+    Neighborhood,
+    NeighborInterval,
     PathBoundary,
     PathRule,
+    PathRuleV5,
     SelectionDirection,
     SelectionRule,
     StandardPurpose,
     SufficiencyRule,
+    TrialCorrelation,
     ValidationRule,
+    ValidationRuleV5,
 )
 from odyssey_fx.evaluation.domain.splits import (
     PartialFold,
@@ -156,6 +191,10 @@ _FIRST_VERSION_WITH_STANDARD: Final = 3
 
 #: 前提の記録と比較の前提を通貨ごとの形で持つ最初の版（D18 §3.4、仮置き 7）。
 _FIRST_VERSION_PER_SYMBOL: Final = 4
+
+#: 損失の側の判定の 4 群（損失の集中・近傍の床・割り引いた比率・局面）を持つ最初の版（D24 §2.1・
+#: §8.1 の検査 E6）。
+_FIRST_VERSION_WITH_LOSS_SIDE: Final = 5
 
 #: 費用の値を pip の数で写す元の通貨ペア（D06 §19.11。D17-11 (a)）。
 _PIP_COPY_SOURCE: Final = "USDJPY"
@@ -223,6 +262,51 @@ class _ValidationModel(StrictModel):
     fold_floors: list[_ConditionModel]
     aggregate: list[_AggregateModel]
     path: _PathModel
+
+
+class _LossConcentrationModel(StrictModel):
+    worst_fold_metric: str
+    max_multiple_of_path_net: str
+    applies_when_path_net_return_at_least: str
+
+
+class _NeighborFloorsModel(StrictModel):
+    neighborhood: str
+    interval: str
+    floors: list[_ConditionModel]
+
+
+class _DeflatedDownsideModel(StrictModel):
+    method: str
+    downside_target: str
+    correlation: str
+    min_probability: str
+
+
+class _ValidationV5Model(_ValidationModel):
+    loss_concentration: _LossConcentrationModel
+    neighbor_floors: _NeighborFloorsModel
+    deflated_downside_ratio: _DeflatedDownsideModel
+
+
+class _RegimeDirectionModel(StrictModel):
+    ema_bars: int
+    slope_bars: int
+    atr_bars: int
+    dead_band_atr_multiple: str
+
+
+class _RegimeVolatilityModel(StrictModel):
+    atr_bars: int
+    median_window_bars: int
+
+
+class _RegimesModel(StrictModel):
+    role: str
+    timeframe: str
+    direction: _RegimeDirectionModel
+    volatility: _RegimeVolatilityModel
+    label_at: str
 
 
 class _SnapshotsModel(StrictModel):
@@ -329,6 +413,11 @@ class _EvaluationStandardV4Model(_EvaluationStandardCommonModel):
     comparison_basis: _ComparisonBasisV4Model
 
 
+class _EvaluationStandardV5Model(_EvaluationStandardV4Model):
+    validation: _ValidationV5Model
+    regimes: _RegimesModel
+
+
 class _ResearchPolicyV1Model(StrictModel):
     schema_version: int
     id: str
@@ -346,6 +435,10 @@ class _ResearchPolicyV3Model(_ResearchPolicyV2Model):
 
 class _ResearchPolicyV4Model(_ResearchPolicyV2Model):
     evaluation_standard: _EvaluationStandardV4Model
+
+
+class _ResearchPolicyV5Model(_ResearchPolicyV2Model):
+    evaluation_standard: _EvaluationStandardV5Model
 
 
 class _RegistryEntryModel(StrictModel):
@@ -443,11 +536,14 @@ def _split_of(model: _SplitModel, label: str) -> SplitStandard:
 
 
 def _condition_of(model: _ConditionModel, label: str) -> MetricCondition:
-    return MetricCondition(
-        metric=_member(MetricId, model.metric, f"{label}.metric"),
-        comparator=_member(Comparator, model.comparator, f"{label}.comparator"),
-        threshold=require_decimal(model.threshold, f"{label}.threshold"),
-    )
+    """条件 1 件。型の検査（E1・E9）の違反は、理由に項目名（`label`）を付けて返す。"""
+    metric = _member(MetricId, model.metric, f"{label}.metric")
+    comparator = _member(Comparator, model.comparator, f"{label}.comparator")
+    threshold = require_decimal(model.threshold, f"{label}.threshold")
+    try:
+        return MetricCondition(metric=metric, comparator=comparator, threshold=threshold)
+    except KernelValueError as exc:
+        raise ConfigError(f"{label}: {exc}") from exc
 
 
 def _aggregate_of(model: _AggregateModel, label: str) -> AggregateCondition:
@@ -459,8 +555,10 @@ def _aggregate_of(model: _AggregateModel, label: str) -> AggregateCondition:
     )
 
 
-def _path_rule_of(model: _PathModel, label: str) -> PathRule:
-    return PathRule(
+def _path_rule_of(model: _PathModel, label: str, *, loss_side: bool = False) -> PathRule:
+    """経路の条件。版 5 以上（`loss_side`）は `PathRuleV5`（経路の `PROFIT_FACTOR` を書ける）。"""
+    rule_type = PathRuleV5 if loss_side else PathRule
+    return rule_type(
         boundary=_member(PathBoundary, model.boundary, f"{label}.boundary"),
         floors=tuple(
             _condition_of(item, f"{label}.floors[{index}]")
@@ -594,6 +692,89 @@ def _comparison_basis_of(model: _ComparisonBasisModel, label: str) -> FixedCompa
     )
 
 
+def _loss_side_validation_of(model: _ValidationV5Model, label: str) -> ValidationRuleV5:
+    """版 5 以上の検証の条件（D24 §2.1。検査 E7〜E9 は型が当てる）。"""
+    concentration = model.loss_concentration
+    neighbor = model.neighbor_floors
+    deflated = model.deflated_downside_ratio
+    return ValidationRuleV5(
+        fold_floors=tuple(
+            _condition_of(item, f"{label}.fold_floors[{index}]")
+            for index, item in enumerate(model.fold_floors)
+        ),
+        aggregate=tuple(
+            _aggregate_of(item, f"{label}.aggregate[{index}]")
+            for index, item in enumerate(model.aggregate)
+        ),
+        path=_path_rule_of(model.path, f"{label}.path", loss_side=True),
+        loss_concentration=LossConcentrationRule(
+            worst_fold_metric=_member(
+                MetricId,
+                concentration.worst_fold_metric,
+                f"{label}.loss_concentration.worst_fold_metric",
+            ),
+            max_multiple_of_path_net=require_decimal(
+                concentration.max_multiple_of_path_net,
+                f"{label}.loss_concentration.max_multiple_of_path_net",
+            ),
+            applies_when_path_net_return_at_least=require_decimal(
+                concentration.applies_when_path_net_return_at_least,
+                f"{label}.loss_concentration.applies_when_path_net_return_at_least",
+            ),
+        ),
+        neighbor_floors=NeighborFloorRule(
+            neighborhood=_member(
+                Neighborhood, neighbor.neighborhood, f"{label}.neighbor_floors.neighborhood"
+            ),
+            interval=_member(
+                NeighborInterval, neighbor.interval, f"{label}.neighbor_floors.interval"
+            ),
+            floors=tuple(
+                _condition_of(item, f"{label}.neighbor_floors.floors[{index}]")
+                for index, item in enumerate(neighbor.floors)
+            ),
+        ),
+        deflated_downside_ratio=DeflatedDownsideRule(
+            method=_member(
+                DeflationMethod, deflated.method, f"{label}.deflated_downside_ratio.method"
+            ),
+            downside_target=require_decimal(
+                deflated.downside_target, f"{label}.deflated_downside_ratio.downside_target"
+            ),
+            correlation=_member(
+                TrialCorrelation,
+                deflated.correlation,
+                f"{label}.deflated_downside_ratio.correlation",
+            ),
+            min_probability=require_decimal(
+                deflated.min_probability, f"{label}.deflated_downside_ratio.min_probability"
+            ),
+        ),
+    )
+
+
+def _regimes_of(model: _RegimesModel, label: str) -> RegimeSpec:
+    """局面の値（D24 §2.1。検査 E10 は型が当てる）。"""
+    direction = model.direction
+    return RegimeSpec(
+        role=_member(RegimeRole, model.role, f"{label}.role"),
+        timeframe=_member(RegimeTimeframe, model.timeframe, f"{label}.timeframe"),
+        direction=RegimeDirectionRule(
+            ema_bars=direction.ema_bars,
+            slope_bars=direction.slope_bars,
+            atr_bars=direction.atr_bars,
+            dead_band_atr_multiple=require_decimal(
+                direction.dead_band_atr_multiple, f"{label}.direction.dead_band_atr_multiple"
+            ),
+        ),
+        volatility=RegimeVolatilityRule(
+            atr_bars=model.volatility.atr_bars,
+            median_window_bars=model.volatility.median_window_bars,
+        ),
+        label_at=_member(RegimeLabelAt, model.label_at, f"{label}.label_at"),
+    )
+
+
 def _frequency_class_of(model: _FrequencyClassModel, label: str) -> FrequencyClass:
     rate: Decimal = require_decimal(
         model.min_train_trades_per_365d, f"{label}.min_train_trades_per_365d"
@@ -611,7 +792,8 @@ def _standard_of(
     path: Path,
     research_until: UtcTime,
 ) -> EvaluationStandard:
-    """評価基準の群を読み、検査（D09 §6.1 の 1〜3・5〜7、§7.1 の E1〜E5）を当てる。"""
+    """評価基準の群を読み、検査（D09 §6.1 の 1〜3・5〜7、§7.1 の E1〜E5、版 5 以上は D24 §8.1 の
+    E6〜E10）を当てる。"""
     label = "evaluation_standard"
     try:
         purpose = _member(StandardPurpose, model.purpose, f"{label}.purpose")
@@ -626,17 +808,21 @@ def _standard_of(
                 for index, item in enumerate(model.selection.eligibility)
             ),
         )
-        validation = ValidationRule(
-            fold_floors=tuple(
-                _condition_of(item, f"{label}.validation.fold_floors[{index}]")
-                for index, item in enumerate(model.validation.fold_floors)
-            ),
-            aggregate=tuple(
-                _aggregate_of(item, f"{label}.validation.aggregate[{index}]")
-                for index, item in enumerate(model.validation.aggregate)
-            ),
-            path=_path_rule_of(model.validation.path, f"{label}.validation.path"),
-        )
+        validation: ValidationRule
+        if isinstance(model, _EvaluationStandardV5Model):
+            validation = _loss_side_validation_of(model.validation, f"{label}.validation")
+        else:
+            validation = ValidationRule(
+                fold_floors=tuple(
+                    _condition_of(item, f"{label}.validation.fold_floors[{index}]")
+                    for index, item in enumerate(model.validation.fold_floors)
+                ),
+                aggregate=tuple(
+                    _aggregate_of(item, f"{label}.validation.aggregate[{index}]")
+                    for index, item in enumerate(model.validation.aggregate)
+                ),
+                path=_path_rule_of(model.validation.path, f"{label}.validation.path"),
+            )
         sufficiency = SufficiencyRule(
             classes=tuple(
                 _frequency_class_of(item, f"{label}.sufficiency.classes[{index}]")
@@ -656,6 +842,17 @@ def _standard_of(
         else:
             basis = _basis_of(model.basis, f"{label}.basis")
             comparison = _comparison_basis_of(model.comparison_basis, f"{label}.comparison_basis")
+        if isinstance(model, _EvaluationStandardV5Model):
+            return EvaluationStandardV5(
+                purpose=purpose,
+                split=split,
+                selection=selection,
+                validation=validation,
+                sufficiency=sufficiency,
+                basis=basis,
+                comparison_basis=comparison,
+                regimes=_regimes_of(model.regimes, f"{label}.regimes"),
+            )
         return EvaluationStandard(
             purpose=purpose,
             split=split,
@@ -681,6 +878,8 @@ def _model_for(payload: dict[str, Any]) -> type[_ResearchPolicyV1Model]:
     version = payload.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         return _ResearchPolicyV1Model
+    if version >= _FIRST_VERSION_WITH_LOSS_SIDE:
+        return _ResearchPolicyV5Model
     if version >= _FIRST_VERSION_PER_SYMBOL:
         return _ResearchPolicyV4Model
     if version >= _FIRST_VERSION_WITH_STANDARD:
@@ -736,7 +935,7 @@ def load_research_policy(
     if isinstance(model, _ResearchPolicyV2Model):
         trial_limit = model.search_limits.trials
         resolved["search_limits"] = {"trials": trial_limit}
-    if isinstance(model, (_ResearchPolicyV3Model, _ResearchPolicyV4Model)):
+    if isinstance(model, (_ResearchPolicyV3Model, _ResearchPolicyV4Model, _ResearchPolicyV5Model)):
         standard = _standard_of(model.evaluation_standard, path, research_until)
         resolved["evaluation_standard"] = standard
         if repo_root is not None:

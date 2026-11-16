@@ -75,7 +75,8 @@ __all__ = [
     "write_report_text",
 ]
 
-#: 参考値の指標（D07 §5.2 の表で「参考値」とした5件。§5.3・§5.4）。残りは採用指標。
+#: 参考値の指標（D07 §5.2 の表で「参考値」とした5件。§5.3・§5.4。指標集合 v4 の #22 も参考値。
+#: D24 §6・決定 138）。残りは採用指標。
 _REFERENCE_METRICS: Final = frozenset(
     {
         MetricId.MAX_DRAWDOWN_BALANCE.value,
@@ -83,6 +84,7 @@ _REFERENCE_METRICS: Final = frozenset(
         MetricId.COST_PRICE_EMBEDDED_TOTAL.value,
         MetricId.END_EQUITY_MTM.value,
         MetricId.HYPOTHETICAL_CLOSED_PROFIT.value,
+        MetricId.AVERAGE_WIN_LOSS_RATIO.value,
     }
 )
 
@@ -107,6 +109,10 @@ _METRIC_LABELS: Final[Mapping[str, str]] = {
     "ANNUALIZED_SHARPE_RATIO": "年率化シャープレシオ",
     "PROFIT_FACTOR": "プロフィットファクター",
     "AVERAGE_TRADE_PROFIT": "平均取引損益",
+    # 指標集合 v4（D24 §6）。
+    "NET_RETURN_RATE_CLOSED_OUT": "区間末の評価を含む純収益率",
+    "AVERAGE_WIN_LOSS_RATIO": "平均利益 ÷ 平均損失",
+    "ANNUALIZED_DOWNSIDE_RATIO": "年率化下側偏差比率",
 }
 
 #: 比率の表示の桁（小数第6位。D07 §22.1）。

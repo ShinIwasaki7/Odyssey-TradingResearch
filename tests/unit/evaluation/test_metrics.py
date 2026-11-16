@@ -74,8 +74,15 @@ def test_the_metric_set_has_exactly_the_nineteen_of_the_design() -> None:
         MetricId.AVERAGE_TRADE_PROFIT,
     ]
     assert list(metric_ids_of(3)) == [*v2, MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK]
-    assert list(MetricId) == list(metric_ids_of(3))
-    assert METRIC_SET_VERSIONS == frozenset({2, 3})
+    # 2026-11-16（D24 §6、仮置き 19）: 版 4 は版 3 の 20 件に #21〜#23 を足した 23 件。
+    assert list(metric_ids_of(4)) == [
+        *metric_ids_of(3),
+        MetricId.NET_RETURN_RATE_CLOSED_OUT,
+        MetricId.AVERAGE_WIN_LOSS_RATIO,
+        MetricId.ANNUALIZED_DOWNSIDE_RATIO,
+    ]
+    assert list(MetricId) == list(metric_ids_of(4))
+    assert METRIC_SET_VERSIONS == frozenset({2, 3, 4})
     with pytest.raises(KernelValueError):
         metric_ids_of(1)
     assert set(METRIC_KINDS) == set(MetricId)

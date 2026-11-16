@@ -15,6 +15,13 @@
   経路を `CAPITAL_LOST` で終える。
 - **経路の指標**（D07 §5.6）: 全体の純収益率（最後の残高 ÷ 最初の残高 − 1）と、全体の最大
   ドローダウン率（区間の資産の系列をつなぎ、最高値を持ち越して #20 の式を当てる）。
+- **経路の取引の集合と恒等式**（研究ポリシー第 5 版の設計 D24 §3.3、仮置き 4・14。実装 PR 4-1）:
+  各区間の run の完了取引（取引損益。入場の費用込み）と、各区間の終わりに仮に閉じた建玉（仮決済
+  の損益（決済の費用を引いた後）− その建玉の入場の費用）を 1 つの集合にする（`path_trade_set`）。
+  1 件の損益の和は、区間ごとに「区間の終わりの費用を引いた後の資産 − 区間の初期残高」に、経路の
+  全体で「経路の最後の残高 − 初期残高」に等しい。破れたら構造エラー（`KernelValueError`）で止める
+  （スワップは未計上で、残高を変えるのは取引と費用だけなので、十進数の加減算で厳密に一致する）。
+  この集合は経路の `PROFIT_FACTOR`（乗算の形。判定は実装 PR 4-2）の入力である。
 
 ここは純粋関数と記録の型だけを持つ。区間の run の実行・評価・記録の保存は
 `evaluation.application.run_experiment` が行う。
@@ -31,8 +38,8 @@ from typing import TYPE_CHECKING, Final
 from odyssey_fx.backtest.domain.policies import RunEndMode
 from odyssey_fx.backtest.trace.result import HypotheticalCloseLine, RunStatus
 from odyssey_fx.common.errors import KernelValueError
-from odyssey_fx.common.ids import ExperimentId, RunId
-from odyssey_fx.common.money import Money, decimal_from_int, kernel_context
+from odyssey_fx.common.ids import ExperimentId, PositionId, RunId
+from odyssey_fx.common.money import CurrencyCode, Money, decimal_from_int, kernel_context
 from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest, ContentDigest
 from odyssey_fx.common.time import Interval
 from odyssey_fx.evaluation.domain.metrics import (
@@ -41,9 +48,11 @@ from odyssey_fx.evaluation.domain.metrics import (
     MetricUnavailableReason,
     MetricValue,
     RatioValue,
+    TradeRecord,
     Unavailable,
     max_drawdown_rate_peak,
     ratio_of,
+    trade_profit,
 )
 from odyssey_fx.evaluation.domain.splits import Fold
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
@@ -60,8 +69,14 @@ __all__ = [
     "PathSegmentRow",
     "PathSegmentStart",
     "PathSummary",
+    "PathTrade",
+    "PathTradeKind",
+    "PathTradeSet",
     "PlannedSegment",
+    "SegmentTrades",
+    "SettledPosition",
     "path_metrics",
+    "path_trade_set",
     "plan_segments",
 ]
 
@@ -453,3 +468,234 @@ def path_metrics(
     )
     values = {MetricId.NET_RETURN_RATE: net, MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK: drawdown}
     return tuple((metric, values[metric]) for metric in MetricId if metric in values)
+
+
+# --- 経路の取引の集合と恒等式（D24 §3.3、仮置き 4・14。実装 PR 4-1）-------------------------------
+
+
+class PathTradeKind(Enum):
+    """経路の取引の集合の 1 件の出どころ（D24 §3.3）。"""
+
+    #: 区間の run の完了取引（評価の取引表の 1 行）。
+    CLOSED_TRADE = "CLOSED_TRADE"
+    #: 区間の終わりに仮に閉じた建玉（`hypothetical_close_lines` の 1 行。方式 (ii)）。
+    SEGMENT_END_SETTLEMENT = "SEGMENT_END_SETTLEMENT"
+
+
+@dataclass(frozen=True, slots=True)
+class SettledPosition:
+    """区間の終わりに仮に閉じた建玉 1 つと、その建玉の入場の費用（D24 §3.3）。
+
+    `entry_commission` は入場約定の手数料（取引表の `entry_commission` と同じ値。記録が無ければ
+    `None` で、`trade_profit` と同じく 0 として引く）。
+    """
+
+    line: HypotheticalCloseLine
+    entry_commission: Money | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.line, HypotheticalCloseLine):
+            raise KernelValueError("SettledPosition.line must be a HypotheticalCloseLine")
+        if self.entry_commission is not None and not isinstance(self.entry_commission, Money):
+            raise KernelValueError("SettledPosition.entry_commission must be a Money or None")
+
+    @property
+    def profit(self) -> Money:
+        """完了取引と同じ単位の損益: 仮決済の損益（決済の費用を引いた後）− 入場の費用。"""
+        return trade_profit(self.line.profit, self.entry_commission)
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentTrades:
+    """経路の区間 1 つの取引の材料（D24 §3.3）。run を持つ区間だけが作る。
+
+    - `initial_balance`: 区間の初期残高（前の区間から渡された残高）。
+    - `settled_equity`: 区間の終わりの**費用を引いた後の資産**（`PathSegmentEnd.settled_equity`）。
+    - `closed_trades`: 区間の run の完了取引（評価の取引表。取引損益は入場の費用込み）。
+    - `settled`: 区間の終わりに仮に閉じた建玉（`PathSegmentEnd.settlement_lines` と入場の費用）。
+    """
+
+    segment_index: int
+    initial_balance: Money
+    settled_equity: Money
+    closed_trades: tuple[TradeRecord, ...]
+    settled: tuple[SettledPosition, ...]
+
+    def __post_init__(self) -> None:
+        _require_index(self.segment_index, "SegmentTrades.segment_index")
+        if not isinstance(self.initial_balance, Money) or not isinstance(
+            self.settled_equity, Money
+        ):
+            raise KernelValueError("SegmentTrades.initial_balance / settled_equity must be Money")
+        if not isinstance(self.closed_trades, tuple) or not all(
+            isinstance(item, TradeRecord) for item in self.closed_trades
+        ):
+            raise KernelValueError("SegmentTrades.closed_trades must be a tuple of TradeRecord")
+        if not isinstance(self.settled, tuple) or not all(
+            isinstance(item, SettledPosition) for item in self.settled
+        ):
+            raise KernelValueError("SegmentTrades.settled must be a tuple of SettledPosition")
+        positions = [item.position_id for item in self.closed_trades] + [
+            item.line.position_id for item in self.settled
+        ]
+        if len(set(positions)) != len(positions):
+            raise KernelValueError(
+                f"経路の区間 {self.segment_index} の取引の集合に同じ建玉が 2 回ある（完了取引と"
+                "区間の終わりの仮決済は別の建玉。D24 §3.3）"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PathTrade:
+    """経路の取引の集合の 1 件（D24 §3.3）。`profit` は完了取引と同じ単位（入場の費用込み）。"""
+
+    segment_index: int
+    kind: PathTradeKind
+    position_id: PositionId
+    profit: Money
+
+    def __post_init__(self) -> None:
+        _require_index(self.segment_index, "PathTrade.segment_index")
+        if not isinstance(self.kind, PathTradeKind):
+            raise KernelValueError("PathTrade.kind must be a PathTradeKind")
+        if not isinstance(self.position_id, PositionId):
+            raise KernelValueError("PathTrade.position_id must be a PositionId")
+        if not isinstance(self.profit, Money):
+            raise KernelValueError("PathTrade.profit must be a Money")
+
+
+@dataclass(frozen=True, slots=True)
+class PathTradeSet:
+    """経路の取引の集合（D24 §3.3）。恒等式を確かめた後の値だけが作られる（`path_trade_set`）。
+
+    並びは区間の番号の順、区間の中は完了取引（取引表の順）→ 区間の終わりの仮決済（明細の順）。
+    `wins` は勝ちの合計 `W = Σ max(0, 損益)`、`losses` は負けの合計の絶対値
+    `L = Σ max(0, −損益)`（勝敗の符号の規則は #4・#18 と同じ。損益 0 はどちらにも入らない）。
+    """
+
+    trades: tuple[PathTrade, ...]
+    currency: CurrencyCode
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.trades, tuple) or not all(
+            isinstance(item, PathTrade) for item in self.trades
+        ):
+            raise KernelValueError("PathTradeSet.trades must be a tuple of PathTrade")
+        if not isinstance(self.currency, CurrencyCode):
+            raise KernelValueError("PathTradeSet.currency must be a CurrencyCode")
+        if any(item.profit.currency != self.currency for item in self.trades):
+            raise KernelValueError("PathTradeSet: 取引の損益の通貨が経路の口座の通貨と違う")
+
+    def _sum(self, *, sign: int) -> Money:
+        # 絶対値と加算はカーネルのコンテキストで行う（呼び出し側の精度で丸めない。D07 §5.5）。
+        total = decimal_from_int(0)
+        with localcontext(kernel_context()):
+            for item in self.trades:
+                amount = item.profit.amount
+                if (sign > 0 and amount > 0) or (sign < 0 and amount < 0):
+                    total = total + abs(amount)
+        return Money(total, self.currency)
+
+    @property
+    def wins(self) -> Money:
+        """勝ちの合計 `W`（D24 §3.3）。"""
+        return self._sum(sign=1)
+
+    @property
+    def losses(self) -> Money:
+        """負けの合計の絶対値 `L`（D24 §3.3）。"""
+        return self._sum(sign=-1)
+
+    @property
+    def win_count(self) -> int:
+        """勝ちの件数（損益 > 0）。"""
+        return sum(1 for item in self.trades if item.profit.amount > 0)
+
+    @property
+    def loss_count(self) -> int:
+        """負けの件数（損益 < 0）。"""
+        return sum(1 for item in self.trades if item.profit.amount < 0)
+
+    @property
+    def net(self) -> Money:
+        """1 件の損益の和（恒等式で経路の純損益に等しい）。"""
+        total = Money(decimal_from_int(0), self.currency)
+        for item in self.trades:
+            total = total + item.profit
+        return total
+
+
+def path_trade_set(
+    segments: Sequence[SegmentTrades], *, initial_balance: Money, final_balance: Money
+) -> PathTradeSet:
+    """経路の取引の集合を組み、恒等式を確かめる（D24 §3.3、仮置き 4・14）。
+
+    `segments` は run を持つ区間の材料を区間の番号の昇順に並べたもの（候補なしの区間は残高を
+    現金で保つので取引を持たず、材料を作らない）。`initial_balance` は経路の初期残高、
+    `final_balance` は経路の最後の残高（最後の区間の終わりの費用を引いた後の資産）。
+
+    恒等式（破れたら構造エラー `KernelValueError`。判定の入力の誤りは例外。D01 §2.2 の 5）:
+
+    1. 区間ごとに、1 件の損益の和 = 区間の終わりの費用を引いた後の資産 − 区間の初期残高。
+    2. 経路の全体で、1 件の損益の和 = 経路の最後の残高 − 経路の初期残高。
+
+    加減算は `Decimal` で厳密に行う（丸めない）。値なしは作らない（取引も仮決済も 0 件の経路は
+    空の集合で、`PROFIT_FACTOR` の値なしの扱いは判定の側が決める。D24 §3.3）。
+    """
+    if not isinstance(initial_balance, Money) or not isinstance(final_balance, Money):
+        raise KernelValueError("path_trade_set requires Money balances")
+    if initial_balance.currency != final_balance.currency:
+        raise KernelValueError("path_trade_set: 経路の初期残高と最後の残高の通貨が違う")
+    items = tuple(segments)
+    if not all(isinstance(item, SegmentTrades) for item in items):
+        raise KernelValueError("path_trade_set requires SegmentTrades values")
+    indices = [item.segment_index for item in items]
+    if indices != sorted(set(indices)):
+        raise KernelValueError("path_trade_set: 区間の材料は区間の番号の昇順で、重複しない")
+    currency = initial_balance.currency
+    trades: list[PathTrade] = []
+    for segment in items:
+        if (
+            segment.initial_balance.currency != currency
+            or segment.settled_equity.currency != currency
+        ):
+            raise KernelValueError(
+                f"path_trade_set: 区間 {segment.segment_index} の残高の通貨が経路と違う"
+            )
+        found: list[PathTrade] = [
+            PathTrade(
+                segment_index=segment.segment_index,
+                kind=PathTradeKind.CLOSED_TRADE,
+                position_id=trade.position_id,
+                profit=trade.trade_profit,
+            )
+            for trade in segment.closed_trades
+        ]
+        found.extend(
+            PathTrade(
+                segment_index=segment.segment_index,
+                kind=PathTradeKind.SEGMENT_END_SETTLEMENT,
+                position_id=item.line.position_id,
+                profit=item.profit,
+            )
+            for item in segment.settled
+        )
+        total = Money(decimal_from_int(0), currency)
+        for item in found:
+            total = total + item.profit
+        expected = segment.settled_equity - segment.initial_balance
+        if total != expected:
+            raise KernelValueError(
+                f"経路の区間 {segment.segment_index} の取引の損益の和 {total.amount} が、区間の"
+                f"終わりの費用を引いた後の資産 − 区間の初期残高 {expected.amount} と一致しない"
+                "（経路の取引の恒等式。D24 §3.3、仮置き 14）"
+            )
+        trades.extend(found)
+    result = PathTradeSet(trades=tuple(trades), currency=currency)
+    expected_net = final_balance - initial_balance
+    if result.net != expected_net:
+        raise KernelValueError(
+            f"経路の取引の損益の和 {result.net.amount} が、経路の最後の残高 − 初期残高"
+            f" {expected_net.amount} と一致しない（経路の取引の恒等式。D24 §3.3、仮置き 14）"
+        )
+    return result

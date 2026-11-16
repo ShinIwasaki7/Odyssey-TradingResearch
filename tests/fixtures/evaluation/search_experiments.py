@@ -129,12 +129,19 @@ def write_search_experiment(
     max_trials: int = 4,
     final_holdout: str = "NONE",
     candidate_snapshot: str | None = None,
+    metric_set_version: int | None = None,
 ) -> Path:
     """作業場に探索の実験設定を書き、その位置を返す（元は作業場の `BASE_EXPERIMENT`）。
 
     `candidate_snapshot` を省くと、作業場の `candidate_snapshot.txt`（`t02_workspace.
     install_candidate` が書く）があればその識別子を、無ければ `CANDIDATE_PLACEHOLDER` を使う。
+
+    `metric_set_version` を省くと元の実験設定の指標集合の版（2）のまま。ただし研究ポリシーの版 5
+    以上を指す実験は指標集合 4 を使う（D24 §8.1 の検査 E11）ので、`policy_version` が 5 以上なら
+    4 にする（試験用の版 5 以上は第 5 版の形。`research_policies.policy_v3_text`）。
     """
+    if metric_set_version is None and policy_version >= 5:
+        metric_set_version = 4
     if candidate_snapshot is None:
         marker = repo / "candidate_snapshot.txt"
         candidate_snapshot = (
@@ -154,5 +161,9 @@ def write_search_experiment(
         final_holdout=final_holdout,
         candidate_snapshot=candidate_snapshot,
     )
+    if metric_set_version is not None:
+        written = "evaluation: {metric_set_version: 2}"
+        assert text.count(written) == 1, "元の実験設定の指標集合の版の行が無い"
+        text = text.replace(written, f"evaluation: {{metric_set_version: {metric_set_version}}}")
     path.write_text(text, encoding="utf-8")
     return path

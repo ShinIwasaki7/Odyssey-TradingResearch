@@ -68,6 +68,8 @@ def test_only_adopted_ratio_and_amount_metrics_are_selectable() -> None:
         MetricId.COST_PRICE_EMBEDDED_TOTAL,
         MetricId.END_EQUITY_MTM,
         MetricId.HYPOTHETICAL_CLOSED_PROFIT,
+        # 指標集合 v4 の #22 は参考値（D24 §6、決定 138）。
+        MetricId.AVERAGE_WIN_LOSS_RATIO,
     }
 
 

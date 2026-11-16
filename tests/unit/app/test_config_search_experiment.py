@@ -322,9 +322,9 @@ def test_the_delay_rule_check_uses_the_unit_intervals_not_the_range(tmp_path: Pa
     端数の fold が範囲の始まりから選定区間を持つので起きない）。
     """
     root = _workspace(tmp_path)
-    install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
+    install_policy_v3(root, version=4, split=_SHORT_TRAIN_SPLIT)
     path = _with_delay(
-        write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "24h"
+        write_search_experiment(root, policy_version=4), "2015-01-01T22:00:00Z", "24h"
     )
     message = _refused(path, root)
     assert "見え方が変わらない" in message
@@ -338,9 +338,9 @@ def test_a_delay_rule_reaching_one_unit_interval_is_accepted(tmp_path: Path) -> 
     48 時間遅らせると端数の fold の選定区間の始まり（01-04T22:00Z）ちょうどに届く。
     """
     root = _workspace(tmp_path)
-    install_policy_v3(root, version=5, split=_SHORT_TRAIN_SPLIT)
+    install_policy_v3(root, version=4, split=_SHORT_TRAIN_SPLIT)
     path = _with_delay(
-        write_search_experiment(root, policy_version=5), "2015-01-01T22:00:00Z", "48h"
+        write_search_experiment(root, policy_version=4), "2015-01-01T22:00:00Z", "48h"
     )
     loaded = _load(path, root)
     assert loaded.search is not None

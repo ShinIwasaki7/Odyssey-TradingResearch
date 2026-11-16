@@ -8,6 +8,9 @@
   データ向けの仮の値で、研究ポリシーではない）。キーごとに差し替えられる。版 4 以上は前提の記録と
   比較の前提を通貨ごとの形（D18 §3.4、仮置き 7）で書く（`TEST_BASIS_V4`・
   `TEST_COMPARISON_BASIS_V4`。USDJPY 1 通貨）。
+  版 5 以上は、さらに損失の側の判定の 3 群（`validation.loss_concentration`・
+  `validation.neighbor_floors`・`validation.deflated_downside_ratio`）と局面の値（`regimes`）を書く
+  （研究ポリシー第 5 版の形。D24 §2.1・§8.1 の検査 E6。`TEST_VALIDATION_V5`・`TEST_REGIMES`）。
 - `write_policy`: 作業場に研究ポリシーファイルを書く。版 4 以上では、試験用の前提のファイル
   （`TEST_PREMISE_FILES`。読込が SHA-256 を実ファイルと照合する。D18 §3.4）も書く。
 - `append_registry_entry`: 作業場の登録簿に1行足す（無ければ作る）。ダイジェストは作業場の
@@ -35,6 +38,9 @@ __all__ = [
     "TEST_COMPARISON_BASIS_V4",
     "TEST_PATH",
     "TEST_PREMISE_FILES",
+    "TEST_REGIMES",
+    "TEST_VALIDATION_V5",
+    "TEST_VALIDATION_V5_GROUPS",
     "append_registry_entry",
     "policy_v3_text",
     "write_policy",
@@ -202,6 +208,52 @@ DEFAULT_STANDARD_LINES: Final[dict[str, str]] = {
 }
 
 
+#: 版 5 以上の試験用の損失の側の判定の 3 群（`validation:` の下。字下げ込み。値は D24 §7.1 の表の
+#: 方針の値を写した仮の値で、研究ポリシーではない）。
+TEST_VALIDATION_V5_GROUPS: Final = (
+    "    loss_concentration:\n"
+    "      worst_fold_metric: NET_RETURN_RATE_CLOSED_OUT\n"
+    '      max_multiple_of_path_net: "1.0"\n'
+    '      applies_when_path_net_return_at_least: "0.10"\n'
+    "    neighbor_floors:\n"
+    "      neighborhood: ONE_STEP_IN_WRITTEN_ORDER\n"
+    "      interval: TRAIN\n"
+    "      floors:\n"
+    '        - {metric: MAX_DRAWDOWN_MTM_RATE_PEAK, comparator: LE, threshold: "0.30"}\n'
+    '        - {metric: NET_RETURN_RATE_CLOSED_OUT, comparator: GE, threshold: "-0.30"}\n'
+    "    deflated_downside_ratio:\n"
+    "      method: DEFLATED_SHARPE_RATIO_FORM\n"
+    '      downside_target: "0"\n'
+    "      correlation: MEAN_PAIRWISE_PEARSON\n"
+    '      min_probability: "0.95"'
+)
+
+#: 版 5 以上の試験用の検証の条件（既定の版 3 の行に、区間末の評価を含む純収益率の fold の床と
+#: 3 群を足したもの）。
+TEST_VALIDATION_V5: Final = (
+    "  validation:\n"
+    "    fold_floors:\n"
+    '      - {metric: MAX_DRAWDOWN_MTM_RATE, comparator: LE, threshold: "0.2"}\n'
+    '      - {metric: NET_RETURN_RATE_CLOSED_OUT, comparator: GE, threshold: "-0.15"}\n'
+    "    aggregate:\n"
+    '      - {metric: NET_RETURN_RATE, statistic: MEDIAN, comparator: GE, threshold: "0"}\n'
+    + TEST_PATH
+    + "\n"
+    + TEST_VALIDATION_V5_GROUPS
+)
+
+#: 版 5 以上の試験用の局面の値（D23 §3.3 の値を写した仮の値。表示・分析用だけ）。
+TEST_REGIMES: Final = (
+    "  regimes:\n"
+    "    role: DISPLAY_ONLY\n"
+    '    timeframe: "1d"\n'
+    "    direction: {ema_bars: 50, slope_bars: 20, atr_bars: 20,"
+    ' dead_band_atr_multiple: "0.5"}\n'
+    "    volatility: {atr_bars: 20, median_window_bars: 250}\n"
+    "    label_at: LATEST_AVAILABLE_DAILY_BAR_AT_ENTRY"
+)
+
+
 def policy_v3_text(
     *,
     policy_id: str = "research_policy",
@@ -211,14 +263,18 @@ def policy_v3_text(
 ) -> str:
     """試験用の版 3 以上の研究ポリシーの本文。
 
-    `replace` はキー名（`purpose` / `split` / `selection` / `validation` / `sufficiency`）から
-    差し替える行への対応。`None` を渡すとそのキーを書かない（省略の拒否を確かめるため）。
-    版 4 以上の既定の `basis`・`comparison_basis` は通貨ごとの形（D18 §3.4）。
+    `replace` はキー名（`purpose` / `split` / `selection` / `validation` / `sufficiency`、版 5
+    以上は `regimes` も）から差し替える行への対応。`None` を渡すとそのキーを書かない（省略の拒否を
+    確かめるため）。版 4 以上の既定の `basis`・`comparison_basis` は通貨ごとの形（D18 §3.4）。
+    版 5 以上の既定の `validation` は損失の側の判定の 3 群を持ち、`regimes` を足す（D24 §2.1）。
     """
     lines = dict(DEFAULT_STANDARD_LINES)
     if version >= 4:
         lines["basis"] = TEST_BASIS_V4
         lines["comparison_basis"] = TEST_COMPARISON_BASIS_V4
+    if version >= 5:
+        lines["validation"] = TEST_VALIDATION_V5
+        lines["regimes"] = TEST_REGIMES
     for key, value in (replace or {}).items():
         if value is None:
             lines.pop(key, None)
