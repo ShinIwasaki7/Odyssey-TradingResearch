@@ -250,6 +250,31 @@ def test_the_main_checkout_must_be_clean_and_on_main(rig: Rig) -> None:
     assert not rig.procs.spawned and not _reasons(rig)
     rig.step(minutes=25 * 60)  # 1 日待っても直らない（仮置き 32）
     assert _reasons(rig) == {"MAIN_CHECKOUT_NOT_READY"}
+    # 人間が主の作業木を直して「確かめ直す」: 予約を戻して最終検証を起動する。
+    rig.world.main_clean = True
+    rig.world.answer(rig.world.issue_for("MAIN_CHECKOUT_NOT_READY").number, "2")
+    rig.step()
+    assert _reasons(rig) == set()
+    assert _phase(rig) == "C12"
+    assert rig.procs.by_kind("final-validate")
+
+
+def test_a_review_ledger_check_failure_is_redone_as_a_review_record(rig: Rig) -> None:
+    """審査の行のコミットで台帳の確かめが落ちても、「確かめからやり直す」は審査の行の要求を
+    出し直し、入った後に審査の結果（進める → 関所 1）に従う。"""
+    _inject(rig, "C10", reservations=["review"])
+    rig.step()
+    rig.world.exec_dir.joinpath(REVIEW).write_bytes(review_ledger(1))
+    rig.evaluation.ledger_code = 1
+    rig.procs.finish("review", 0)
+    rig.step()
+    assert "LEDGER_CHECK_FAILED" in _reasons(rig)
+    rig.evaluation.ledger_code = 0
+    rig.world.answer(rig.world.issue_for("LEDGER_CHECK_FAILED").number, "2")
+    for _ in range(3):
+        rig.step()
+    assert "LEDGER_CHECK_FAILED" not in _reasons(rig)
+    assert _phase(rig) == "C11"
 
 
 def test_final_validation_state_a_retries_once_and_state_b_stops(rig: Rig) -> None:

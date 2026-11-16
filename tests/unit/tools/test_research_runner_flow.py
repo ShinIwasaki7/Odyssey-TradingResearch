@@ -326,6 +326,23 @@ def test_ending_a_paused_run_terminates_the_group_and_moves_the_card(rig: Rig) -
     assert done and done[0].ci_ok, done[0].ci_messages
 
 
+def test_ending_a_paused_run_sends_its_leftover_ledger_line(rig: Rig) -> None:
+    """一時停止の後に「終える」を選んでも、残った開始の行を実行記録の PR で送る（残すと後の
+    カードが起動できない。仮置き 11）。"""
+    _launch(rig)
+    rig.wrapper.append_lines(1)  # 開始の行（未コミット）
+    rig.step(minutes=int(rig.card(CARD_ID)["run"]["limit_seconds"]) / 60 + 1)
+    issue = rig.world.issue_for("RUN_OVER_ESTIMATE")
+    rig.world.answer(issue.number, "2")
+    for _ in range(3):
+        rig.step()
+    assert _phase(rig) == "C14"
+    exec_prs = [pr for pr in rig.world.routine() if pr.branch == "runner/exec"]
+    assert exec_prs and exec_prs[0].ci_ok, exec_prs[0].ci_messages
+    assert exec_prs[0].state.name == "MERGED"
+    assert rig.state()["exec_queue"] == [] and rig.state()["exec_pr"] is None
+
+
 def test_a_failed_run_is_rerun_as_a_new_attempt_after_the_answer(rig: Rig) -> None:
     _launch(rig)
     rig.wrapper.finish(0, 1)

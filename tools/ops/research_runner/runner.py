@@ -550,8 +550,13 @@ class Runner:
             self._release_card(ctx, card, identifier)
             return True
         if action is Action.LEDGER_REDO:
-            self._release_card(ctx, card, identifier, to=CardPhase.C6.name)
-            self._request_exec(ctx, card, "run")
+            # 落ちた要求の種類（実行記録・審査の行・途中で止まった run の行）と版を保ち、
+            # 止まる前の段へ戻す（審査の行なら C10 に戻り、入った後に審査の結果に従う）。
+            failed = card.checks.pop("failed_exec", None) or {}
+            purpose = str(failed.get("purpose") or "run")
+            version = int(failed.get("version") or card.version)
+            self._release_card(ctx, card, identifier)
+            self._request_exec(ctx, card, purpose, version=version)
             return True
         if action is Action.REWRITE_REPORT:
             card.verifier_failures = 0
@@ -569,6 +574,15 @@ class Runner:
         if action is Action.RECHECK:
             card.procs.pop("fix", None)
             card.main_wait_since = None
+            if (
+                identifier == "MAIN_CHECKOUT_NOT_READY"
+                and not card.checks.get("final_merged")
+                and card.procs.get("final") is None
+                and "final" not in card.reservations
+                and not self._final_consumed_on_origin(ctx, card)
+            ):
+                # 最終検証の起動の前に止まった（予約は外してある）: 予約を戻して確かめ直す。
+                card.reservations.append("final")
             self._release_card(ctx, card, identifier)
             return True
         if action is Action.FINAL_RECOVERED:
@@ -1374,17 +1388,23 @@ class Runner:
     def _c12_final(self, ctx: _Context, card: CardState) -> None:
         if card.pr is not None and card.pr.get("kind") == "final":
             status = self._poll_pr(ctx, card)
-            if status is not None and status.state is PrState.MERGED:
-                card.pr = None
-                git = self.ports.git
-                if git.main_file_matches(FINAL_LEDGER, ctx.origin):
-                    git.main_restore(FINAL_LEDGER)
-                    checkout = git.main_checkout()
-                    if checkout.clean and git.is_ancestor(checkout.head, ctx.origin):
-                        git.main_fast_forward(ctx.origin)
-                    self._finish(ctx, card, "FINAL_VALIDATED")
-                else:
-                    self._stop_card(ctx, card, "MAIN_CHECKOUT_NOT_READY", "最終検証の台帳の戻し")
+            if status is None or status.state is not PrState.MERGED:
+                return
+            card.pr = None
+            # merge を覚えておく（主の作業木の戻しで止まっても、確かめ直しの答えの後に
+            # 戻しからやり直す）。
+            card.checks["final_merged"] = True
+        if card.checks.get("final_merged"):
+            git = self.ports.git
+            if git.main_file_matches(FINAL_LEDGER, ctx.origin):
+                git.main_restore(FINAL_LEDGER)
+                checkout = git.main_checkout()
+                if checkout.clean and git.is_ancestor(checkout.head, ctx.origin):
+                    git.main_fast_forward(ctx.origin)
+                card.checks.pop("final_merged", None)
+                self._finish(ctx, card, "FINAL_VALIDATED")
+            else:
+                self._stop_card(ctx, card, "MAIN_CHECKOUT_NOT_READY", "最終検証の台帳の戻し")
             return
         self._poll_done_pr(ctx, card)
         info = card.executions.get(str(card.version), {})
@@ -1490,7 +1510,12 @@ class Runner:
         card.ending = None
         card.procs = {}
         if card.run is not None:
+            interrupted = bool(card.run.get("launched_at")) and not card.run.get("finished")
             card.run["finished"] = True
+            if interrupted:
+                # 終えた run（一時停止の後の「終える」など）の台帳の行（開始の行など）も
+                # 実行記録の PR でコミットする（仮置き 11。残すと他のカードも起動できない）。
+                self._request_exec(ctx, card, "ledger")
         view = self._view(ctx)
         source = next(
             (place for place in ("taken", "queue") if view.read(card_path(place, card.card_id))),
@@ -1627,9 +1652,15 @@ class Runner:
 
     # --- 実行記録の定型 PR（枝 runner/exec。D25 §6.1） ---------------------------------------
 
-    def _request_exec(self, ctx: _Context, card: CardState, purpose: str) -> None:
+    def _request_exec(
+        self, ctx: _Context, card: CardState, purpose: str, *, version: int | None = None
+    ) -> None:
         queue = ctx.state.exec_queue
-        entry = {"card": card.card_id, "version": card.version, "purpose": purpose}
+        entry = {
+            "card": card.card_id,
+            "version": card.version if version is None else version,
+            "purpose": purpose,
+        }
         if entry not in queue:
             queue.append(entry)
         card.checks.pop("ledger_committed", None)
@@ -1709,6 +1740,11 @@ class Runner:
             if state_queue and state_queue[0] == request:
                 state_queue.pop(0)
             self._count_failure(ctx, FAIL_LEDGER)
+            # 答え「確かめからやり直す」が同じ要求を出し直せるように残す。
+            card.checks["failed_exec"] = {
+                "purpose": request["purpose"],
+                "version": int(request["version"]),
+            }
             self._stop_card(ctx, card, "LEDGER_CHECK_FAILED", f"台帳の確かめの終了コード {code}")
             return None
         version = int(request["version"])
