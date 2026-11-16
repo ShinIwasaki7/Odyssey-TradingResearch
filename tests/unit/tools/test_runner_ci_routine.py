@@ -568,3 +568,42 @@ def test_place_readmes_and_keep_files_are_not_records(base: dict[str, bytes], pa
 def test_a_readme_inside_a_card_folder_is_still_checked(base: dict[str, bytes]) -> None:
     head = dict(base, **{f"{LOOPS}README.md": b"# memo\n"})
     assert 5 in _failed(run_checks(make_input(base, head, branch="docs/places")))
+
+
+@pytest.mark.parametrize(
+    ("name", "allowed"),
+    [(f"{EXPERIMENT}_v2.yaml", True), (f"{EXPERIMENT}.yaml", False)],
+)
+def test_an_improved_version_writes_its_own_experiment_file(
+    base: dict[str, bytes], name: str, allowed: bool
+) -> None:
+    """改善の版 n の実験設定は `<実験>_v<n>.yaml`（PR 7 の `experiment_path`。PR 8a で合わせた）。
+
+    版 2 の事前登録の PR で版 1 の置き場を変えると落ちる。
+    """
+    from tools.ops.runner_ci.routine import check_paths, parse_routine
+
+    raw = card_bytes()
+    before = dict(base, **{TAKEN: raw})
+    head = dict(
+        before,
+        **{
+            f"configs/experiments/{name}": b"id: x\n",
+            f"{LOOPS}prereg_v2.yaml": b"x: 1\n",
+            f"{LOOPS}change_v2.yaml": b"x: 1\n",
+        },
+    )
+    given = make_input(
+        before,
+        head,
+        branch=f"runner/prereg-{CARD_ID}-v2",
+        title=f"[runner] 事前登録 {CARD_ID} v2",
+        kind="事前登録",
+        version=2,
+        experiment=EXPERIMENT,
+        auto_merge=True,
+    )
+    assert given.pull_request is not None
+    routine = parse_routine(given.pull_request)
+    result = check_paths(given, routine)
+    assert (result.status is Status.PASS) is allowed, result.messages
