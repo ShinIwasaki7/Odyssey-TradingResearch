@@ -1,0 +1,88 @@
+name: Ledger and routine PR
+
+# 台帳と定型 PR の CI の段（D25 §6.3 の 8 項目。ADR-0043 第2項の 2・4。順 11 の PR 6）。
+# 中身は tools/ops/runner_ci/。既存の CI（ci.yml）と別のワークフローにするのは、PR の題・本文の
+# 編集と自動 merge の指定・外しの出来事でもこの段だけを走らせ直す（検査 7・8）ためである
+# （ci.yml の取り消しの組に入れると、編集のたびに走っている試験が取り消される）。
+#
+# 検査の道具は PR の中身ではなく、基点（PR の基点と先頭の合流の基点。push では main 自身）の
+# tools/ops/runner_ci/ と src/ を別のディレクトリ trusted/ に取り出して走らせる。PR の中身（pr/）は
+# 入力として git で読むだけにする（PR が検査の道具を書き換えて自分を通すことを防ぐ）。
+# 基点にまだ道具が無いのは、この段を足す PR だけである（その PR に限り PR の道具を使う）。
+# 限界: `pull_request` の出来事は PR の側のこのワークフローのファイルを使うので、このファイル自身の
+# 書き換えはここでは防げない（定型 PR では検査 3 が .github/ と tools/ops/runner_ci/ を落とす。
+# 定型でない PR は人間が merge する）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - auto_merge_enabled
+      - auto_merge_disabled
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ledger-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    name: ledger / routine PR checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the commit under check (input only)
+        uses: actions/checkout@v7
+        with:
+          # 基点（PR の基点、push の before）の台帳をバイト単位で比べるため、履歴を取る。
+          fetch-depth: 0
+          path: pr
+
+      - name: Check out the trusted checks from the base
+        id: trusted
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$(git -C pr merge-base "$BASE_SHA" HEAD)"
+          else
+            base="$(git -C pr rev-parse HEAD)"
+          fi
+          git -C pr worktree add --detach "$GITHUB_WORKSPACE/trusted" "$base"
+          if [ -f trusted/tools/ops/runner_ci/__main__.py ]; then
+            echo "dir=trusted" >> "$GITHUB_OUTPUT"
+            echo "検査の道具: 基点 $base のもの"
+          else
+            echo "dir=pr" >> "$GITHUB_OUTPUT"
+            echo "::notice::基点 $base に検査の道具が無い（この段を足す PR だけ）。PR の道具を使う"
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12.13
+        run: uv python install 3.12.13
+
+      - name: Sync dependencies (trusted copy)
+        working-directory: ${{ steps.trusted.outputs.dir }}
+        run: uv sync --frozen
+
+      - name: ledger and routine PR checks (D25 §6.3)
+        working-directory: ${{ steps.trusted.outputs.dir }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: >-
+          uv run python -m tools.ops.runner_ci
+          --repo "$GITHUB_WORKSPACE/pr"
+          --event-name "$EVENT_NAME"
+          --event-path "$GITHUB_EVENT_PATH"
