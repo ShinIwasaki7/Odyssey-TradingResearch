@@ -8,14 +8,13 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.fixtures.hypothesis_cards import REPO_ROOT, card_bytes, card_data
 from tools.ops.hypothesis_cards.normalize import NormalizationError, rule_digest
-from tools.ops.hypothesis_cards.repo import DirView, OverlayView, ToolFailure
+from tools.ops.hypothesis_cards.repo import DirView, OverlayView
 from tools.ops.hypothesis_cards.screening import (
     CARD_COMPONENT_UNKNOWN,
     CARD_DUPLICATE_RULE,
@@ -184,9 +183,10 @@ def test_cycles_and_dangling_references_do_not_normalize() -> None:
 
 def test_every_existing_declaration_normalizes_and_currencies_stay_distinct() -> None:
     known = known_rule_digests(VIEW)
-    paths = [path for listed in known.values() for path in listed]
+    assert known.skipped == ()
+    paths = [path for listed in known.digests.values() for path in listed]
     assert len(paths) == len(list((REPO_ROOT / "configs/strategies").glob("*.yaml")))
-    by_path = {path: digest for digest, listed in known.items() for path in listed}
+    by_path = {path: digest for digest, listed in known.digests.items() for path in listed}
     strategies = "configs/strategies/"
     assert (
         by_path[strategies + "strategy_a_v1.yaml"]
@@ -194,10 +194,72 @@ def test_every_existing_declaration_normalizes_and_currencies_stay_distinct() ->
     )
 
 
-def test_an_unreadable_existing_declaration_is_a_tool_failure(tmp_path: Path) -> None:
-    view = OverlayView(VIEW, {"configs/strategies/broken.yaml": b"schema_version: 1\n"})
-    with pytest.raises(ToolFailure):
-        known_rule_digests(view)
+def test_unreadable_or_broken_existing_rules_are_skipped_with_a_reason() -> None:
+    """書式で棄却されて `done/` に入ったカードなどは照合から外し、道具の失敗にしない
+    （設計適合レビューの重大 1。`TOOL_FAILURE` は道具と環境の失敗だけ。D25 §3.5）。"""
+    broken = card_data(title="broken")
+    broken["strategy"]["roles"]["trigger"] = "nowhere"
+    view = OverlayView(
+        VIEW,
+        {
+            "configs/strategies/broken.yaml": b"schema_version: 1\n",
+            "research/hypotheses/done/h-20261120-unreadable.yaml": b"x: [\n",
+            "research/hypotheses/done/h-20261120-broken.yaml": card_bytes(broken),
+        },
+    )
+    known = known_rule_digests(view)
+    assert len(known.skipped) == 3
+    result = screen_card(view, card_bytes(card_data()))
+    assert result.passed, result.problems
+    assert len(result.notes) == 3
+
+
+@pytest.mark.parametrize(
+    ("component", "key", "value"),
+    [
+        (4, "inputs", {"opportunity": ["output:missing.opportunity"]}),
+        (0, "inputs", {"prices": ["output:entry_trigger.opportunity"]}),
+    ],
+)
+def test_a_card_with_broken_wiring_is_rejected_at_check_seven(
+    component: int, key: str, value: object
+) -> None:
+    """配線が壊れたカード（未定義の使用箇所・接続の輪）は重なりでなく 7 で落ちる
+    （設計適合レビューの重大 1）。"""
+    data = card_data()
+    data["strategy"]["components"][component][key] = value
+    assert _screen(data)[0] == CARD_PREREG_REJECTED
+
+
+def test_a_role_without_a_port_is_rejected_at_check_seven() -> None:
+    data = card_data()
+    data["strategy"]["roles"]["trigger"] = "entry_trigger"
+    assert _screen(data)[0] == CARD_PREREG_REJECTED
+
+
+def test_series_of_another_currency_are_card_format() -> None:
+    data = card_data()
+    data["strategy"]["components"][0]["inputs"]["prices"] = ["market:EURUSD/1h/bid:CLOSE"]
+    reason, problems = _screen(data)
+    assert reason == CARD_FORMAT and any("EURUSD" in item for item in problems)
+
+
+@pytest.mark.parametrize("rule", ["Ⅳ 本の足で上抜けたら買う規則", "期間 ٢٠ の規則"])
+def test_unreadable_digits_in_the_rule_are_card_format(rule: str) -> None:
+    data = card_data()
+    data["rule"] = rule
+    reason, problems = _screen(data)
+    assert reason == CARD_FORMAT and any("読めない数字" in item for item in problems)
+
+
+@pytest.mark.parametrize("escape", ["\\x85", "\\u2028", "\\x07", "\\N"])
+def test_control_characters_are_card_format_not_tool_failures(escape: str) -> None:
+    """YAML の二重引用符の中の escape で入る制御文字・区切りの文字は、生成物に書く前に書式で落とす
+    （道具の失敗にしない。設計適合レビューの軽微 3）。"""
+    raw = card_bytes(card_data()).replace(
+        "二本の移動平均".encode(), ("二本の" + escape + "移動平均").encode()
+    )
+    assert screen_card(VIEW, raw).reason == CARD_FORMAT
 
 
 def test_sharing_a_single_instance_differs_from_two_same_shaped_instances() -> None:

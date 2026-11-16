@@ -55,7 +55,7 @@ CARD_ID_PATTERN: Final = re.compile(
 )
 _TITLE_PATTERN: Final = re.compile(r"^[a-z0-9-]{3,24}$")
 _UTC_TIME: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-_NUMBER: Final = re.compile(r"\d+(?:\.\d+)?")
+_NUMBER: Final = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 #: 承認済みの研究用 snapshot がある 8 通貨（D23 の仮置き 15）。
 SYMBOLS: Final = frozenset(
     {"AUDJPY", "AUDUSD", "EURJPY", "EURUSD", "GBPJPY", "GBPUSD", "USDCHF", "USDJPY"}
@@ -196,6 +196,37 @@ def _axis_values(grid: object) -> set[Decimal]:
         if isinstance(axis, Mapping)
         for number in strategy_values(axis.get("values"))
     }
+
+
+def unreadable_digits(text: str) -> list[str]:
+    """数字の分類 N の文字のうち、NFKC で半角の数字（`[0-9]`）にならないもの（ローマ数字・分数・
+    他の文字体系の数字など。PR 6 の検査 6 と同じ扱い）。丸数字・全角数字は半角になるので読める。"""
+    return [
+        character
+        for character in text
+        if unicodedata.category(character).startswith("N")
+        and _NUMBER.fullmatch(unicodedata.normalize("NFKC", character)) is None
+    ]
+
+
+def series_symbols(strategy: object) -> set[str]:
+    """戦略の宣言が読む市場データと起動の系列の通貨（`market:<通貨>/…`・`series: <通貨>/…`）。"""
+    found: set[str] = set()
+    components = strategy.get("components") if isinstance(strategy, Mapping) else None
+    for component in components if isinstance(components, list) else []:
+        if not isinstance(component, Mapping):
+            continue
+        inputs = component.get("inputs")
+        for sources in inputs.values() if isinstance(inputs, Mapping) else []:
+            for source in sources if isinstance(sources, list) else [sources]:
+                if isinstance(source, str) and source.startswith("market:"):
+                    found.add(source[len("market:") :].split("/", 1)[0])
+        triggers = component.get("triggers")
+        for trigger in triggers if isinstance(triggers, list) else []:
+            series = trigger.get("series") if isinstance(trigger, Mapping) else None
+            if isinstance(series, str):
+                found.add(series.split("/", 1)[0])
+    return found
 
 
 def rule_numbers_outside(rule: str, strategy: object, grid: object) -> set[Decimal]:
@@ -424,8 +455,19 @@ def parse_card(
     for key, value in (("prediction", prediction), ("inspiration", inspiration)):
         if has_digit(value):
             problems.append(f"自由文 `{key}` に数字がある（仮置き 6）")
-    if rule and rule_numbers_outside(rule, data.get("strategy"), data.get("grid")):
+    if rule and unreadable_digits(rule):
+        problems.append(
+            "`rule` に、半角・全角の数字として読めない数字（ローマ数字・丸数字の一部など）がある"
+            "（仮置き 6）"
+        )
+    elif rule and rule_numbers_outside(rule, data.get("strategy"), data.get("grid")):
         problems.append("`rule` の数に、戦略のパラメータにも格子の値にも無いものがある（仮置き 6）")
+    others = series_symbols(data.get("strategy")) - {symbol} if symbol else set()
+    if others:
+        problems.append(
+            f"戦略が `symbol` と違う通貨の系列を読む（{', '.join(sorted(others))}。"
+            "実験の執行系列は `symbol` の通貨だけ）"
+        )
     estimate = data.get("evidence_estimate")
     band = floor = ""
     if not isinstance(estimate, dict) or set(estimate) != {"frequency_band", "reaches_floor"}:

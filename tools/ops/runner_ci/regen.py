@@ -3,10 +3,12 @@
 事前登録の定型 PR で足された・変わった生成物（戦略の宣言・実験設定）を、カード（と変更の提案）から
 生成の道具で作り直し、バイト単位で一致することを確かめる。
 
-**生成の道具を呼ぶ部分は PR 7 の後に有効にする**（D25 §8 の PR 6 の行）。PR 7 が生成の道具を
-入れるまでは `REGENERATOR` が `None` で、生成物を含む事前登録の定型 PR はこの検査で落ちる
-（未有効の間は通さない側に倒す。本 PR の仮置き）。生成の道具が無くても確かめられる部分（注記に
-書いたカード・変更の提案・生成物の SHA-256 と、生成物の先頭の生成の印）は今から当てる。
+**生成の道具は順 11 の PR 7（#189）の `tools.ops.hypothesis_cards.generate.regenerate`**で、
+`REGENERATOR` に差し込んで有効にした（D25 §8 の PR 6 の行の「PR 7 の後に有効にする」。PR 6 の
+仮置き 11 の「未有効の間は通さない」を解いた）。`REGENERATOR` が `None` の間（試験で渡さない
+とき）は、生成物を含む事前登録の定型 PR を通さない側に倒すのは変わらない。生成の道具が無くても
+確かめられる部分（注記に書いたカード・変更の提案・生成物の SHA-256 と、生成物の先頭の生成の印）も
+当てる。
 
 生成の道具は PR の時点の main の道具を使う（D25 §3.4 の 3）。定型 PR は `tools/`・`src/` を
 変えられない（検査 3）ので、CI が取り出した merge のコミットの道具は main の道具と同じである。
@@ -17,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final, Protocol
 
+from tools.ops.hypothesis_cards.generate import regenerate
 from tools.ops.runner_ci.model import (
     ChangeStatus,
     CheckInput,
@@ -31,7 +34,7 @@ from tools.ops.runner_ci.routine import Form, Routine
 
 NAME: Final = "作り直しの一致（カードから生成物を作り直してバイト単位で一致）"
 GENERATED_PREFIXES: Final = ("configs/strategies/", "configs/experiments/")
-NOT_ENABLED: Final = "生成の道具を呼ぶ部分は未有効（PR 7 で生成の道具が入った後に有効にする）"
+NOT_ENABLED: Final = "生成の道具が渡されていない（未有効。生成物を含む事前登録の PR は通さない）"
 
 
 class Regenerator(Protocol):
@@ -44,8 +47,8 @@ class Regenerator(Protocol):
         ...
 
 
-#: PR 7 で生成の道具をここに差し込む（それまでは未有効）。
-REGENERATOR: Final[Regenerator | None] = None
+#: 生成の道具（順 11 の PR 7。仮説カードから事前登録を作り直す）。
+REGENERATOR: Final[Regenerator | None] = regenerate
 
 
 def header_line(card: str, card_sha256: str, generator: str) -> str:
@@ -60,9 +63,7 @@ def check_regeneration(
     given: CheckInput, routine: Routine | list[str] | None, regenerator: Regenerator | None
 ) -> CheckResult:
     if not isinstance(routine, Routine) or routine.form is not Form.PREREG:
-        return CheckResult(
-            4, NAME, Status.NOT_APPLICABLE, ("事前登録の定型 PR だけに当てる", NOT_ENABLED)
-        )
+        return CheckResult(4, NAME, Status.NOT_APPLICABLE, ("事前登録の定型 PR だけに当てる",))
     card, version = routine.card, routine.version
     assert card is not None and version is not None  # noqa: S101 - 事前登録の枝は両方を持つ
     generated = {
@@ -79,7 +80,6 @@ def check_regeneration(
             4,
             NAME,
             ["事前登録の注記かカード（taken/）が読めないので確かめられない"],
-            (NOT_ENABLED,),
         )
     problems: list[str] = []
     card_sha = sha256_hex(card_bytes)

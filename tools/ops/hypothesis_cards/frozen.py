@@ -4,14 +4,16 @@
 書き換えられないようにする（AGENTS.md の「凍結 dataclass に可変の入れ物を公開しない」）。mapping は
 `MappingProxyType`、並びは `tuple` にする。操作を当てるときは `thaw` で dict・list の写しに戻す。
 
-あわせて、カード・変更の提案に書ける値の型を確かめる（`plain_problems`）: 文字列・整数・有限の
-浮動小数・真偽・null と、それらの mapping（キーは文字列）・並びだけ。YAML の安全な読込が返しうる
+あわせて、カード・変更の提案に書ける値の型を確かめる（`plain_problems`）: 文字列（改行・タブの
+ほかの制御文字と、行・段落の区切りの文字を含まない）・整数・有限の浮動小数・真偽・null と、
+それらの mapping（キーは文字列）・並びだけ。YAML の安全な読込が返しうる
 日時や、非有限の浮動小数（`.nan`・`.inf`）は、生成物に書けないので入力の誤りとして扱う。
 """
 
 from __future__ import annotations
 
 import math
+import unicodedata
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
@@ -39,8 +41,16 @@ def thaw(value: Any) -> Any:
 
 def plain_problems(value: object, where: str) -> list[str]:
     """書ける値の型でない箇所の一覧（空なら合格）。"""
-    if value is None or isinstance(value, bool | int | str):
+    if value is None or isinstance(value, bool | int):
         return []
+    if isinstance(value, str):
+        bad = [
+            character
+            for character in value
+            if (unicodedata.category(character) == "Cc" and character not in "\n\t")
+            or unicodedata.category(character) in {"Zl", "Zp", "Cs"}
+        ]
+        return [f"{where}: 制御文字・改行の区切りの文字を含む"] if bad else []
     if isinstance(value, float):
         return [] if math.isfinite(value) else [f"{where}: 有限でない数"]
     if isinstance(value, Mapping):

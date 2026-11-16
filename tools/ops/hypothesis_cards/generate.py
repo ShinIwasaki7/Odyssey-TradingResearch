@@ -68,6 +68,7 @@ from tools.ops.hypothesis_cards.changes import (
     parse_change,
 )
 from tools.ops.hypothesis_cards.emit import dump_document
+from tools.ops.hypothesis_cards.frozen import freeze
 from tools.ops.hypothesis_cards.repo import (
     EXPERIMENTS_DIR,
     LOOPS_DIR,
@@ -235,12 +236,12 @@ def load_template(view: RepoView, symbol: str) -> Template:
         raise ToolFailure(f"{path}: 型板の形でない（D25 の仮置き 9）")
     return Template(
         symbol=symbol,
-        environment=dict(environment),
+        environment=freeze(environment),
         execution_series=data["execution_series"],
         resolution_hierarchy=tuple(hierarchy),
         seed=0,
         account_id=data["account_id"],
-        execution_policy=dict(execution),
+        execution_policy=freeze(execution),
     )
 
 
@@ -289,7 +290,7 @@ def select_policy(view: RepoView) -> PolicyChoice:
         raw = load_yaml_mapping(Path(path), text=text)
     except (ConfigError, UnicodeDecodeError) as exc:
         raise ToolFailure(f"{path} を読めない: {exc}") from exc
-    return PolicyChoice(version=version, path=path, raw=raw, policy=policy)
+    return PolicyChoice(version=version, path=path, raw=freeze(raw), policy=policy)
 
 
 def _metric_set_version(policy: ResearchPolicy) -> int:

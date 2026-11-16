@@ -92,6 +92,7 @@ __all__ = [
     "CARD_HISTORY_TOO_LONG",
     "CARD_PREREG_REJECTED",
     "GRID_TRIALS",
+    "KnownRules",
     "ChangeScreening",
     "Screening",
     "Verification",
@@ -283,28 +284,39 @@ def _grid_problems(state: LoopState, view: RepoView) -> list[str]:
     return problems
 
 
-def _strategy_body(data: Mapping[str, Any], path: str) -> Mapping[str, Any]:
-    if not isinstance(data.get("components"), list):
-        raise ToolFailure(f"{path}: 戦略の宣言の形でない")
-    return data
+@dataclass(frozen=True, slots=True)
+class KnownRules:
+    """既出の規則のダイジェスト → 出どころのパスの並びと、照合から外した出どころ（理由つき）。"""
+
+    digests: Mapping[str, tuple[str, ...]]
+    skipped: tuple[str, ...]
 
 
 def known_rule_digests(
     view: RepoView, *, exclude_card: str | None = None, exclude_experiment: str | None = None
-) -> dict[str, list[str]]:
-    """既出の規則のダイジェスト → 出どころのパスの並び（第3.5節の 6）。
+) -> KnownRules:
+    """既出の規則（第3.5節の 6）。
 
     `configs/strategies/` の全宣言と、`taken/`・`done/` の全カードの戦略。`exclude_card` の
     カードと、`exclude_experiment` の実験の戦略の宣言（`<識別子>_v<版>.yaml`）は除く（改善の版の
-    検査で、同じカードの前の版に当てないため）。読めない宣言は道具の失敗。
+    検査で、同じカードの前の版に当てないため）。
+
+    読めない・正規化できない出どころ（書式で棄却されて `done/` に入ったカードなど）は照合から外し、
+    `skipped` に理由を残す。道具の失敗にしない（D25 §3.5 の `TOOL_FAILURE` は道具と環境の失敗だけ。
+    外した出どころは、そもそも走る宣言にならないので重なりの相手にならない）。
     """
     found: dict[str, list[str]] = {}
+    skipped: list[str] = []
 
-    def add(body: Mapping[str, Any], path: str) -> None:
+    def add(body: object, path: str) -> None:
+        if not isinstance(body, Mapping):
+            skipped.append(f"{path}: 戦略の宣言が読めない")
+            return
         try:
             digest = rule_digest(body)
         except NormalizationError as exc:
-            raise ToolFailure(f"{path}: 正規化できない: {exc}") from exc
+            skipped.append(f"{path}: 正規化できない（{exc}）")
+            return
         found.setdefault(digest, []).append(path)
 
     for path in view.list(f"{STRATEGIES_DIR}/"):
@@ -312,43 +324,59 @@ def known_rule_digests(
             continue
         if exclude_experiment is not None and Path(path).name.startswith(f"{exclude_experiment}_v"):
             continue
-        add(_strategy_body(_load(view, path), path), path)
+        add(_load(view, path, skipped), path)
     for place in ("taken", "done"):
         for path in view.list(f"{HYPOTHESES_DIR}/{place}/"):
             if not path.endswith(".yaml") or path.endswith(".outcome.yaml"):
                 continue
             if exclude_card is not None and Path(path).name == f"{exclude_card}.yaml":
                 continue
-            strategy = _load(view, path).get("strategy")
-            if not isinstance(strategy, Mapping):
-                raise ToolFailure(f"{path}: カードの `strategy` が読めない")
-            add(strategy, path)
-    return found
+            card = _load(view, path, skipped)
+            if card is not None:
+                add(card.get("strategy"), path)
+    return KnownRules(
+        digests={digest: tuple(paths) for digest, paths in found.items()},
+        skipped=tuple(skipped),
+    )
 
 
-def _load(view: RepoView, path: str) -> dict[str, Any]:
+def _load(view: RepoView, path: str, skipped: list[str]) -> dict[str, Any] | None:
     raw = view.read(path)
     if raw is None:  # pragma: no cover - 一覧に出たパス
         raise ToolFailure(f"{path} が無い")
     try:
         return load_yaml_mapping(Path(path), text=raw.decode("utf-8"))
-    except (ConfigError, UnicodeDecodeError) as exc:
-        raise ToolFailure(f"{path} を読めない: {exc}") from exc
+    except (ConfigError, UnicodeDecodeError):
+        skipped.append(f"{path}: YAML として読めない")
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Overlap:
+    problems: tuple[str, ...]
+    own_failure: str | None
+    skipped: tuple[str, ...]
 
 
 def _duplicates(
     body: Mapping[str, Any], view: RepoView, *, card_id: str, experiment_id: str, own: bool
-) -> list[str]:
+) -> _Overlap:
+    """重なりの照合。自分の戦略が正規化できない（配線が壊れている）なら `own_failure` に理由を
+    書いて照合しない（検査 7 の読込・コンパイルの不合格として扱う）。"""
     try:
         digest = rule_digest(body)
     except NormalizationError as exc:
-        return [f"戦略を正規化できない: {exc}"]
+        return _Overlap((), f"戦略の接続が成り立たない（{exc}）", ())
     known = known_rule_digests(
         view,
         exclude_card=card_id if own else None,
         exclude_experiment=experiment_id if own else None,
     )
-    return [f"既出の規則と同じ（{path}）" for path in known.get(digest, [])]
+    return _Overlap(
+        tuple(f"既出の規則と同じ（{path}）" for path in known.digests.get(digest, ())),
+        None,
+        known.skipped,
+    )
 
 
 def _identifier_collisions(card: Card, view: RepoView, path: str | None) -> list[str]:
@@ -381,6 +409,8 @@ class Screening:
     card: Card | None = None
     prereg: Preregistration | None = None
     verification: Verification | None = None
+    #: 重なりの照合から外した出どころと理由（読めない・正規化できない既出の宣言やカード）。
+    notes: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -431,14 +461,18 @@ def screen_card(
             prereg,
             verification,
         )
-    duplicates = _duplicates(
+    overlap = _duplicates(
         thaw(card.strategy), view, card_id=card.card_id, experiment_id=card.experiment_id, own=False
     )
-    if duplicates:
-        return Screening(CARD_DUPLICATE_RULE, tuple(duplicates), card, prereg, verification)
-    if not verification.passed:
-        return Screening(CARD_PREREG_REJECTED, verification.problems, card, prereg, verification)
-    return Screening(None, (), card, prereg, verification)
+    notes = overlap.skipped
+    if overlap.problems:
+        return Screening(CARD_DUPLICATE_RULE, overlap.problems, card, prereg, verification, notes)
+    rejected = verification.problems + (
+        (overlap.own_failure,) if overlap.own_failure is not None else ()
+    )
+    if rejected:
+        return Screening(CARD_PREREG_REJECTED, rejected, card, prereg, verification, notes)
+    return Screening(None, (), card, prereg, verification, notes)
 
 
 # --- 変更の提案の検査 ---------------------------------------------------------------------
@@ -457,6 +491,8 @@ class ChangeScreening:
     change: Change | None = None
     prereg: Preregistration | None = None
     verification: Verification | None = None
+    #: 重なりの照合から外した出どころと理由（読めない・正規化できない既出の宣言やカード）。
+    notes: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -506,17 +542,24 @@ def check_change(
     prereg = generate(view, card=card, version=parsed.to_version, changes=materials)
     verification = verify_preregistration(view, prereg)
     problems = _history_problems(verification)
-    problems += _duplicates(
+    overlap = _duplicates(
         thaw(after.strategy),
         view,
         card_id=parsed_card.card_id,
         experiment_id=parsed_card.experiment_id,
         own=True,
     )
+    problems += overlap.problems
+    notes = overlap.skipped
     if problems:
-        return ChangeScreening(CHANGE_OUT_OF_RULES, tuple(problems), parsed, prereg, verification)
-    if not verification.passed:
         return ChangeScreening(
-            CHANGE_PREREG_REJECTED, verification.problems, parsed, prereg, verification
+            CHANGE_OUT_OF_RULES, tuple(problems), parsed, prereg, verification, notes
         )
-    return ChangeScreening(None, (), parsed, prereg, verification)
+    rejected = verification.problems + (
+        (overlap.own_failure,) if overlap.own_failure is not None else ()
+    )
+    if rejected:
+        return ChangeScreening(
+            CHANGE_PREREG_REJECTED, rejected, parsed, prereg, verification, notes
+        )
+    return ChangeScreening(None, (), parsed, prereg, verification, notes)
