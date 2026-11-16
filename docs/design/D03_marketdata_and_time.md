@@ -481,6 +481,7 @@ manifest は `data/snapshots/<snapshot_id>/manifest.json`（git 管理）。検�
 | `previous_available(series, before_bar_start, at, *, max_lookback) -> Bar \| MissingInput`（v1.6） | `before_bar_start` の**1本手前から古い側へ**たどり、`available_at <= at` で有効な足を**最初に1本**返す。`max_lookback` は**本数か経過時間のどちらかを読み出せる窓**（第6.2節の末尾の構造的な要求。`history` が受ける窓と同じ形）で、本数なら予定上の足でその本数まで、経過時間なら `at` からその時間だけさかのぼった範囲までたどる。**経過時間を本数へ直すのはビューの側**である（カレンダーと時間足定義を持つのは市場データ層だけだから）。範囲に有効な足が無ければ `INPUT_MISSING_OR_INVALID`、範囲がデータ開始前に及べば `WARMUP_INSUFFICIENT`。上限は呼び出し側が必ず渡し、既定値を持たない |
 | `expected_latest_key(series, at) -> BarKey` | 判断時刻に対し存在すべき最新足の鍵 |
 | `freshness(series, bar) -> UtcTime` | 鮮度基準時刻（確定足は `bar_end`） |
+| `publication_time(bar) -> UtcTime`（v1.30、2026-11-16。研究ポリシー第 5 版の実装 PR 4-3） | 読める足の公開時刻（遅延シナリオを当てた実現の `available_at`。第3.5節・第3.6節）。**価格を返さず**、足の値も変えない。読める partition の外の足は `HoldoutAccessViolation`。評価の側が経路の後で参照時点ごとに公開済みの日足を自分で選ぶ（局面の付与。[D24](D24_research_policy_v5.md) §5.1・§5.2）ために使い、`at` で足を選ぶ他の操作の規則は変えない |
 
 - `max_age` の追加検査（`at - bar_end <= max_age`、UTC で休場含む）は `InputReadSpec` を解釈する戦略ランタイムが行い、ビューは鮮度基準時刻を返す（上位設計書 §4.3.10）。
 - `DurationWindow`: `bar_end` が `(at' - duration, at']` に入る足（`at'` は末尾足の `bar_end`）。範囲内の期待足がすべて必要。範囲がデータ開始前に及べば `WARMUP_INSUFFICIENT`。全期間休場で空なら `INPUT_MISSING_OR_INVALID`（空履歴からの計算は許さない）。
