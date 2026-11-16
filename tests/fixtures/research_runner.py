@@ -393,6 +393,13 @@ class FakeGitHub:
         self.world.issues[number] = FakeIssue(number, title, body, label)
         return number
 
+    def open_issues(self, title: str) -> tuple[int, ...]:
+        return tuple(
+            issue.number
+            for issue in self.world.issues.values()
+            if issue.title == title and not issue.closed
+        )
+
     def comment(self, number: int, body: str) -> None:
         self.world.issues[number].comments.append(
             Comment(f"r{next(self.world.counter)}", body, "2026-11-24T00:00:00Z")
@@ -489,7 +496,15 @@ class FakeWrapper:
             return WrapperContract(False, ("包みが D26 の PR-B の前（試験）",))
         return WrapperContract(True, (), self.locked_code)
 
-    def launch(self, *, experiment: str, worktree: Path, repo: Path, mode: str) -> int:
+    def launch(
+        self,
+        *,
+        experiment: str,
+        worktree: Path,
+        repo: Path,
+        mode: str,
+        snapshots: Path | None = None,
+    ) -> int:
         if self.refuse:
             return 2
         name = Path(experiment).stem
@@ -515,6 +530,7 @@ class FakeWrapper:
             {
                 "experiment": experiment,
                 "mode": mode,
+                "snapshots": snapshots,
                 "dir": version_dir,
                 "pids": (run_pid, launcher),
             }

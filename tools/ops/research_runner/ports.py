@@ -105,6 +105,10 @@ class GitHub(Protocol):
 
     def create_issue(self, *, title: str, body: str, label: str) -> int: ...
 
+    def open_issues(self, title: str) -> tuple[int, ...]:
+        """題が `title` と同じ開いた issue の番号（作った直後に止まった issue を見つける）。"""
+        ...
+
     def comment(self, number: int, body: str) -> None: ...
 
     def comments(self, number: int) -> tuple[Comment, ...]:
@@ -232,8 +236,11 @@ class WrapperContract:
 class Wrapper(Protocol):
     def contract(self) -> WrapperContract: ...
 
-    def launch(self, *, experiment: str, worktree: Path, repo: Path, mode: str) -> int:
-        """`run_experiment` で 1 本を切り離して起動する（包みの終了コードを返す。0 = 起動した）。"""
+    def launch(
+        self, *, experiment: str, worktree: Path, repo: Path, snapshots: Path, mode: str
+    ) -> int:
+        """`run_experiment` で 1 本を切り離して起動する（包みの終了コードを返す。0 = 起動した）。
+        `snapshots` は審査・再現・最終検証と同じ snapshot の基点（包みの `--snapshots`）。"""
         ...
 
 

@@ -159,6 +159,10 @@ class CardState:
     #: コミットを作った後、push と PR の作成がまだ終わっていない PR（`commit`・`branch`・`title`・
     #: `body`・`auto`・`record`）。次の 1 歩は同じコミットを送り直す（作り直さない）。
     sending: dict[str, Any] | None = None
+    #: このカードの実行記録の要求（`version`・`purpose`）。段の移りと同じ保存で残し、実行記録の
+    #: PR が入る（または足すものが無い）まで消さない。全体の待ち（`exec_queue`）はこの写し
+    #: （毎回の 1 歩で照らし合わせる。D25 §2.4 の照合）。
+    exec_requests: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def phase_enum(self) -> CardPhase:
@@ -194,10 +198,15 @@ class GlobalState:
     reject_streak: int = 0
     #: 取り出した順のカードの識別子（状態のファイルを持つカード）。
     cards: list[str] = field(default_factory=list)
-    #: 実行記録の定型 PR（枝 `runner/exec`。同時に 1 つ）。
+    #: 実行記録の定型 PR（枝 `runner/exec`。同時に 1 つ。`card`・`version`・`purpose`・
+    #: `number`・`commit`・`paths`。閉じられた PR を同じコミットで送り直すために `commit` と
+    #: `paths` も持つ）。
     exec_pr: dict[str, Any] | None = None
-    #: 実行記録の PR を待つ要求（`card`・`version`・`purpose`）。
+    #: 実行記録の PR を待つ要求（`card`・`version`・`purpose`）。正本はカードの `exec_requests`
+    #: で、これはその並び（毎回の 1 歩の初めに照らし合わせる）。
     exec_queue: list[dict[str, Any]] = field(default_factory=list)
+    #: 台帳のロックを、書いているはずの処理が居ないのに見つけた時刻（残ったロックの見張り）。
+    ledger_lock_since: str | None = None
     #: 実行用の作業木でコミットする直前から、push と PR の作成が終わるまでの実行記録
     #: （`card`・`version`・`purpose`・`paths`・`parent`（コミットの前の先頭）・`commit`（コミット。
     #: 書く前に止まったなら `None`））。次の 1 歩は push から続ける。

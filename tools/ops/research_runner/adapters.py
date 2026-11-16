@@ -334,6 +334,23 @@ class GhGitHub:
             raise ToolFailure("gh issue create の出力から issue の番号を読めない")
         return int(matched.group(1))
 
+    def open_issues(self, title: str) -> tuple[int, ...]:
+        data = json.loads(
+            self._gh(
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--search",
+                f'"{title}" in:title',
+                "--limit",
+                "100",
+                "--json",
+                "number,title",
+            )
+        )
+        return tuple(int(item["number"]) for item in data if item.get("title") == title)
+
     def comment(self, number: int, body: str) -> None:
         self._gh("issue", "comment", str(number), "--body-file", "-", stdin=body.encode("utf-8"))
 

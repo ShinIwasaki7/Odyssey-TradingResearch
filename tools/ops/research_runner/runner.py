@@ -186,6 +186,12 @@ class Paths:
         return self.runner_dir / "log" / "events.jsonl"
 
     @property
+    def asking_path(self) -> Path:
+        """issue を作る直前に題を書き残す控え（作った後、状態を保存する前に止まった issue を
+        次の 1 歩が見つけて閉じる）。"""
+        return self.state_dir / "asking.json"
+
+    @property
     def deleted_dir(self) -> Path:
         return self.runner_dir / "deleted"
 
@@ -280,6 +286,7 @@ class Runner:
         )
         if restarted:
             ctx.notes.append("起動し直した（G2 → 各カードに e17 を当てる）")
+        self._close_orphan_issues(ctx)
         self._preconditions(ctx)
         self._pause_request(ctx)
         self._answers(ctx)
@@ -287,6 +294,7 @@ class Runner:
         for card in self._active(ctx):
             self._advance(ctx, card)
         for stage in (
+            self._watch_ledger_lock,
             self._exec_flow,
             self._cards_pr,
             self._schedule,
@@ -306,7 +314,50 @@ class Runner:
         for card in ctx.cards.values():
             self.store.save_card(card)
         self.store.save_global(state)
+        # 作った issue の番号はすべて状態に入った: 控えを消す。
+        self.paths.asking_path.unlink(missing_ok=True)
         return StepOutcome(True, tuple(ctx.notes))
+
+    def _tracked_issues(self, ctx: _Context) -> set[int]:
+        found = {item.issue for item in ctx.state.reasons if item.issue is not None}
+        for card in ctx.cards.values():
+            found |= {item.issue for item in card.reasons if item.issue is not None}
+        if ctx.state.weekly_issue is not None:
+            found.add(ctx.state.weekly_issue)
+        return found
+
+    def _close_orphan_issues(self, ctx: _Context) -> None:
+        """前の 1 歩が issue を作った後、番号を状態に保存する前に止まった: 状態に無いその issue
+        を閉じる（同じ止まりは、その段がもう一度当たって新しい issue で問う。問いを二重に
+        残さない）。"""
+        path = self.paths.asking_path
+        if not path.is_file():
+            return
+        try:
+            titles = [str(title) for title in json.loads(path.read_text(encoding="utf-8"))]
+        except (OSError, ValueError, TypeError):
+            titles = []
+        tracked = self._tracked_issues(ctx)
+        for title in dict.fromkeys(titles):
+            for number in self.ports.github.open_issues(title):
+                if number not in tracked:
+                    self.ports.github.close_issue(number)
+                    ctx.notes.append(f"状態に無い issue #{number} を閉じた（作った後に止まった）")
+        path.unlink(missing_ok=True)
+
+    def _create_issue(self, *, title: str, body: str, label: str) -> int:
+        """issue を作る。作る前に題を控えに書き足す（`_close_orphan_issues`）。"""
+        path = self.paths.asking_path
+        try:
+            titles = list(json.loads(path.read_text(encoding="utf-8"))) if path.is_file() else []
+        except (OSError, ValueError, TypeError):
+            titles = []
+        titles.append(title)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(titles, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+        return self.ports.github.create_issue(title=title, body=body, label=label)
 
     def _active(self, ctx: _Context) -> list[CardState]:
         return [
@@ -364,7 +415,7 @@ class Runner:
             options=options_for(identifier, version=card.version if card is not None else None),
         )
         self.events.add(ctx.now, "stop_new", reason=identifier)
-        return self.ports.github.create_issue(
+        return self._create_issue(
             title=question_title(identifier, card.card_id if card is not None else None),
             body=body,
             label=STOP_LABEL,
@@ -552,6 +603,7 @@ class Runner:
             return self._rerun_same_version(ctx, card, identifier)
         if action is Action.REDO_STAGE:
             card.retries.pop(identifier, None)
+            card.retries.pop("reproduce_lost", None)
             card.procs.pop("worker", None)
             card.checks.pop("pending_change", None)
             self._release_card(ctx, card, identifier)
@@ -628,24 +680,22 @@ class Runner:
                 card.find_reason("LEDGER_CHECK_FAILED") is not None for card in ctx.cards.values()
             )
             dirty = [p for p in self.ports.git.exec_dirty_paths() if p in _LEDGER_FILES]
-            if not pending and not dirty and state.exec_pr is None and state.exec_sending is None:
+            if (
+                not pending
+                and not dirty
+                and state.exec_pr is None
+                and state.exec_sending is None
+                and self._ledger_quiet()
+            ):
                 self._release_global(ctx, "LEDGER_CHECK_FAILED")
         for card in ctx.cards.values():
             ids = card.reason_ids()
-            if "CI_FAILED" in ids and card.pr is not None:
-                status = self._pr_status(ctx, int(card.pr["number"]))
-                if status.state is PrState.MERGED:
-                    self._release_card(ctx, card, "CI_FAILED")
-            if "CI_FAILED" in ids and card.pr is None and ctx.state.exec_pr is not None:
-                if ctx.state.exec_pr.get("card") == card.card_id:
-                    status = self._pr_status(ctx, int(ctx.state.exec_pr["number"]))
-                    if status.state is PrState.MERGED:
-                        self._release_card(ctx, card, "CI_FAILED")
-            fix_pr = card.checks.get("fix_pr")
-            if "CI_FAILED" in card.reason_ids() and isinstance(fix_pr, int):
-                # 関所 1 の固定の記録の PR（`card.pr` とは別に持つ）が直されて merge された:
-                # 外して C11 に戻し、同じ 1 歩の段で最終検証の予約へ進める。
-                if self._pr_status(ctx, fix_pr).state is PrState.MERGED:
+            causes = [int(item) for item in card.checks.get("ci_failed_prs", [])]
+            if "CI_FAILED" in ids and causes:
+                # 止まる原因になった PR（定型 PR・実行記録の PR・固定の記録の PR のどれでも）が、
+                # すべて（直されて・開き直されて）merge された: 外して止まる前の段へ戻す（T39）。
+                if all(self._pr_status(ctx, number).state is PrState.MERGED for number in causes):
+                    card.checks.pop("ci_failed_prs", None)
                     self._release_card(ctx, card, "CI_FAILED")
             if "FIXATION_TOOL_MISSING" in ids and self.ports.evaluation.fix_available():
                 self._release_card(ctx, card, "FIXATION_TOOL_MISSING", to=CardPhase.C11.name)
@@ -710,6 +760,7 @@ class Runner:
                 self._finish_end(ctx, card)
                 self._flush(ctx, card)
                 return
+            self._reconcile(ctx, card)
             for _ in range(6):
                 before = card.phase
                 handler = handlers.get(_phase(card))
@@ -725,6 +776,46 @@ class Runner:
         finally:
             # 外に作った PR・プロセスを状態に残す（次の 1 歩で同じものを作り直さない）。
             self.store.save_card(card)
+
+    def _reconcile(self, ctx: _Context, card: CardState) -> None:
+        """空きを待つ予約を、カードの状態から照らし合わせて戻す（D25 §2.4 の照合）。
+
+        予約は起動の直前・止まる前に外すので、止まった後に外れた（答え・自動の確かめで戻った）
+        段では、予約も処理も無いまま待ち続けうる（Codex 3 巡目の指摘 3 と同じ型）。予約が要る
+        状態は次のとおりで、処理も予約も途中の記録も無ければ予約を戻す:
+
+        - 審査（C10）: 審査の結果がまだ無い。
+        - 最終検証（C12）: 消費の前（記録の PR・送信待ち・merge の印・主の作業木と origin の
+          台帳の行のどれも無い）。消費の後に起動し直すと二重の消費になるので、どれか 1 つでも
+          あれば戻さない。
+        - 元の実験の再現: 版 1 の実行記録が入り（`repro_wanted`）、結果がまだ無い。
+        """
+        phase = _phase(card)
+        if phase in {CardPhase.C13, CardPhase.C14}:
+            return
+        reserved = card.reservations
+        if (
+            phase is CardPhase.C10
+            and card.review is None
+            and "review" not in card.procs
+            and "review" not in reserved
+        ):
+            reserved.append("review")
+        if (
+            phase is CardPhase.C12
+            and "final" not in card.procs
+            and "final" not in reserved
+            and not self._final_in_flight(ctx, card)
+            and not self._final_consumed_on_origin(ctx, card)
+        ):
+            reserved.append("final")
+        if (
+            card.checks.get("repro_wanted")
+            and card.repro is None
+            and "reproduce" not in card.procs
+            and "reproduce" not in reserved
+        ):
+            reserved.append("reproduce")
 
     # C1 検査中（T1〜T4）
 
@@ -824,12 +915,32 @@ class Runner:
         number = int(card.pr["number"])
         status = self._pr_status(ctx, number)
         if status.state is PrState.OPEN and status.checks is Checks.FAIL:
-            if self._retry_or_stop(ctx, card, "CI_FAILED", key=f"CI_FAILED:{number}"):
-                self.ports.github.rerun_checks(number)
-        elif status.state is PrState.CLOSED and card.pr.get("kind") != "fix":
+            self._ci_failed(ctx, card, number)
+        elif status.state is PrState.CLOSED:
             # 定型 PR が merge されずに閉じられた（人間か外の操作）。原因の特定は判断。
-            self._stop_card(ctx, card, "CI_FAILED", "定型 PR が merge されずに閉じられた")
+            self._ci_failed(ctx, card, number, closed=True, detail="定型 PR が閉じられた")
         return status
+
+    def _ci_failed(
+        self,
+        ctx: _Context,
+        card: CardState,
+        number: int,
+        *,
+        closed: bool = False,
+        detail: str = "",
+    ) -> None:
+        """PR の CI の落ち（1 回だけ走らせ直し、2 回目で停止。T6）か、merge されずに閉じられた
+        （すぐに停止。仮置き 13）。止まる原因の PR を覚え、それが merge されたら自動で外す。"""
+        key = f"CI_FAILED:{number}"
+        if not closed and card.retries.get(key, 0) == 0:
+            card.retries[key] = 1
+            self.ports.github.rerun_checks(number)
+            return
+        causes = [int(item) for item in card.checks.get("ci_failed_prs", [])]
+        if number not in causes:
+            card.checks["ci_failed_prs"] = [*causes, number]
+        self._stop_card(ctx, card, "CI_FAILED", detail)
 
     # C3 起動待ち → C4（T7）は `_schedule` が行う。
 
@@ -1286,6 +1397,10 @@ class Runner:
                 self._stop_card(ctx, card, "REVIEW_NEEDS_DECLARATION")
             return
         if proc.get("result") is not None:
+            pending = {"version": card.version, "purpose": "review"} in card.exec_requests
+            if not pending:
+                # 審査の行の実行記録の PR は停止中（C13）に入った: 外れて戻った今、結果に従う。
+                self._review_recorded(ctx, card)
             return  # 審査台帳の行の実行記録の PR を待つ（`_exec_flow`）
         code = self._proc_exit(ctx, proc)
         info = card.executions.get(str(card.version), {})
@@ -1352,8 +1467,7 @@ class Runner:
                 card.checks.pop("fix_pr")
                 self._finish(ctx, card, "HUMAN_DECLINED")
             elif status.checks is Checks.FAIL:
-                if self._retry_or_stop(ctx, card, "CI_FAILED", key=f"CI_FAILED:{fix_pr}"):
-                    self.ports.github.rerun_checks(fix_pr)
+                self._ci_failed(ctx, card, fix_pr)
             return
         if not self.ports.evaluation.fix_available():
             self._stop_card(ctx, card, "FIXATION_TOOL_MISSING")
@@ -1535,9 +1649,31 @@ class Runner:
 
     # 「このカードを終える」（T41・T12）
 
-    def _begin_end(self, ctx: _Context, card: CardState, identifier: str) -> bool:
+    def _final_in_flight(self, ctx: _Context, card: CardState) -> bool:
+        """最終検証が走っているか、消費した後で、その台帳の行が main に入って主の作業木を
+        戻し終えるまでの間か（この間にカードを終えると、消費の記録が main に入らない）。"""
         if card.procs.get("final") is not None:
-            return False  # 最終検証が走っている間は選べない（消費の後に止めると扱いが増える）
+            return True
+        if card.checks.get("final_merged") or card.checks.get("final_recovered"):
+            return True
+        if card.pr is not None and card.pr.get("kind") == "final":
+            return True
+        sending = card.sending or {}
+        if (sending.get("record") or {}).get("kind") == "final":
+            return True
+        info = card.executions.get(str(card.version))
+        if info is None:
+            return False
+        eid, execution = str(info.get("experiment_id")), int(info.get("execution", 0))
+        return has_candidate_row(
+            self._main_final_ledger(), eid, execution
+        ) and not self._final_consumed_on_origin(ctx, card)
+
+    def _begin_end(self, ctx: _Context, card: CardState, identifier: str) -> bool:
+        if self._final_in_flight(ctx, card):
+            # 最終検証が走っている間と、消費の後に記録が main に入るまでは選べない（消費の記録を
+            # 失わない。答えは読んだものとし、issue は開いたまま）。
+            return False
         for item in list(card.reasons):
             card.reasons.remove(item)
             if item.issue is not None:
@@ -1574,6 +1710,7 @@ class Runner:
         if any(self.ports.procs.alive(group) for group in self._groups(card)):
             return  # 終わったことを確かめられるまで C13 のまま
         outcome = card.ending or "HUMAN_ENDED"
+        self._resend_failed_exec(ctx, card)
         card.procs = {}
         if card.run is not None:
             interrupted = bool(card.run.get("launched_at")) and not card.run.get("finished")
@@ -1643,7 +1780,13 @@ class Runner:
         if code is None:
             if self._proc_alive(ctx, proc):
                 return
-            code = -1
+            # 終了コードを書かずに消えた（再起動など）: 不一致とは数えず、1 回だけ予約に戻して
+            # 起動し直す。2 回目は道具の失敗で問う（「やり直す」の後は `_reconcile` が予約を戻す）。
+            card.procs.pop("reproduce", None)
+            if self._retry_or_stop(ctx, card, "TOOL_FAILURE", key="reproduce_lost"):
+                if "reproduce" not in card.reservations:
+                    card.reservations.append("reproduce")
+            return
         card.procs.pop("reproduce", None)
         locked = self.ports.wrapper.contract().locked_exit_code
         if locked is not None and code == locked:
@@ -1793,15 +1936,85 @@ class Runner:
     def _request_exec(
         self, ctx: _Context, card: CardState, purpose: str, *, version: int | None = None
     ) -> None:
-        queue = ctx.state.exec_queue
-        entry = {
-            "card": card.card_id,
-            "version": card.version if version is None else version,
-            "purpose": purpose,
-        }
-        if entry not in queue:
-            queue.append(entry)
+        """実行記録の要求を足す。正本はカードの `exec_requests`（段の移りと同じカードの保存で
+        残る。全体の状態の保存の前に止まっても失われない。Codex 4 巡目の指摘 2）。"""
+        wanted = {"version": card.version if version is None else version, "purpose": purpose}
+        if wanted not in card.exec_requests:
+            card.exec_requests.append(wanted)
+        entry = {"card": card.card_id, **wanted}
+        if entry not in ctx.state.exec_queue:
+            ctx.state.exec_queue.append(entry)
         card.checks.pop("ledger_committed", None)
+
+    def _drop_request(self, card: CardState, request: Mapping[str, Any]) -> None:
+        wanted = {"version": int(request["version"]), "purpose": str(request["purpose"])}
+        if wanted in card.exec_requests:
+            card.exec_requests.remove(wanted)
+
+    @staticmethod
+    def _request_of(holder: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if holder is None:
+            return None
+        return {
+            "card": str(holder["card"]),
+            "version": int(holder["version"]),
+            "purpose": str(holder["purpose"]),
+        }
+
+    def _sync_exec_queue(self, ctx: _Context) -> None:
+        """全体の待ちをカードの要求に合わせる（D25 §2.4 の起動し直したときの照合）: カードに無い
+        要求は外し、待ちに無いカードの要求は取り出した順に足す。送信中・PR 待ちの要求は除く。"""
+        state = ctx.state
+        inflight = [
+            item
+            for item in (self._request_of(state.exec_pr), self._request_of(state.exec_sending))
+            if item is not None
+        ]
+        wanted: list[dict[str, Any]] = []
+        for card_id in state.cards:
+            card = ctx.cards.get(card_id)
+            if card is None:
+                continue
+            for item in card.exec_requests:
+                entry = {
+                    "card": card_id,
+                    "version": int(item["version"]),
+                    "purpose": str(item["purpose"]),
+                }
+                if entry not in inflight and entry not in wanted:
+                    wanted.append(entry)
+        queue = [entry for entry in state.exec_queue if entry in wanted]
+        queue += [entry for entry in wanted if entry not in queue]
+        state.exec_queue = queue
+
+    def _resend_failed_exec(self, ctx: _Context, card: CardState) -> None:
+        """カードを終えるとき、そのカードの実行記録の PR が止まる原因（CI に 2 回落ちた・merge
+        されずに閉じられた）なら、開いていれば閉じ、台帳の行は同じコミットのまま新しい PR で
+        送り直す（台帳の行は消さない。消すと実行用の作業木の先頭が main に入らず、後の起動も
+        実行記録もすべて止まる。Codex 4 巡目の指摘 1）。"""
+        state = ctx.state
+        pull = state.exec_pr
+        if pull is None or str(pull.get("card")) != card.card_id:
+            return
+        number = int(pull["number"])
+        if number not in [int(item) for item in card.checks.get("ci_failed_prs", [])]:
+            return
+        status = self._pr_status(ctx, number)
+        if status.state is PrState.MERGED:
+            return
+        if status.state is PrState.OPEN:
+            self.ports.github.close_pr(number)
+        request = self._request_of(pull) or {}
+        state.exec_sending = {
+            **request,
+            "paths": list(pull.get("paths") or []),
+            "parent": None,
+            "commit": str(pull.get("commit") or self.ports.git.exec_head()),
+        }
+        state.exec_pr = None
+        card.checks.pop("ci_failed_prs", None)
+        # 送り直しの印を先に残す（カードの保存の後に止まっても、閉じた PR を待ち続けない）。
+        self.store.save_global(state)
 
     def _exec_file(self, path: str) -> bytes | None:
         target = self.paths.exec_worktree / path
@@ -1818,8 +2031,39 @@ class Runner:
                 return False
         return True
 
+    def _writer_alive(self, ctx: _Context) -> bool:
+        """台帳に書きうる処理（探索の run・切り離した処理）が 1 つでも生きているか。"""
+        for card in ctx.cards.values():
+            run = card.run or {}
+            if run.get("version_dir") and run.get("launched_at") and not run.get("finished"):
+                files = read_run(Path(run["version_dir"]))
+                pids = [pid for pid in (files.run_pid, files.launcher_pid) if pid is not None]
+                if any(self.ports.procs.alive(pid) for pid in pids):
+                    return True
+            procs = [proc for proc in card.procs.values() if "state_dir" in proc]
+            if any(self._proc_alive(ctx, proc) for proc in procs):
+                return True
+        return False
+
+    def _watch_ledger_lock(self, ctx: _Context) -> None:
+        """台帳のロックが、書いているはずの処理が居ないのに単位 1 つ分（15 分）より長く残る:
+        全体の停止 `LEDGER_CHECK_FAILED` で問う（台帳のロックは自動で外さない。D09 §10.12.1。
+        待つだけでは実行記録も起動も黙って止まり続ける）。ロックが消えれば自動の確かめで外れる。"""
+        state = ctx.state
+        locked = [lock for lock in LEDGER_LOCKS if (self.paths.exec_worktree / lock).exists()]
+        if not locked or self._writer_alive(ctx):
+            state.ledger_lock_since = None
+            return
+        since = state.ledger_lock_since or format_time(ctx.now)
+        state.ledger_lock_since = since
+        if ctx.now - parse_time(since) >= LOCKED_WAIT:
+            self._stop_global(
+                ctx, "LEDGER_CHECK_FAILED", f"台帳のロックが残っている（{'、'.join(locked)}）"
+            )
+
     def _exec_flow(self, ctx: _Context) -> None:
         state = ctx.state
+        self._sync_exec_queue(ctx)
         if state.exec_pr is not None:
             number = int(state.exec_pr["number"])
             status = self._pr_status(ctx, number)
@@ -1831,9 +2075,15 @@ class Runner:
                 if card is not None:
                     self._exec_merged(ctx, card, done)
                     self._advance(ctx, card)
-            elif status.checks is Checks.FAIL and card is not None:
-                if self._retry_or_stop(ctx, card, "CI_FAILED", key=f"CI_FAILED:{number}"):
-                    self.ports.github.rerun_checks(number)
+            elif card is None:
+                raise ToolFailure(f"実行記録の PR #{number} のカードの状態が無い")
+            elif status.state is PrState.CLOSED:
+                # merge されずに閉じられた（人間か外の操作）: 止まって問う。開き直されて merge
+                # されれば自動で外れ、「このカードを終える」なら同じコミットを新しい PR で送り
+                # 直す（`_resend_failed_exec`。Codex 4 巡目の指摘 1）。
+                self._ci_failed(ctx, card, number, closed=True, detail="実行記録の PR が閉じられた")
+            elif status.checks is Checks.FAIL:
+                self._ci_failed(ctx, card, number)
             return
         if state.exec_sending is not None and state.exec_sending.get("commit") is None:
             # コミットの直前に印を書いた後に止まった: コミットが出来ていれば（先頭が印の前の先頭の
@@ -1880,6 +2130,33 @@ class Runner:
             # 直ちに入ったものとする。
             self._exec_merged(ctx, card, request)
             self._advance(ctx, card)
+        self._retry_left_ledger(ctx)
+
+    def _retry_left_ledger(self, ctx: _Context) -> None:
+        """全体の `LEDGER_CHECK_FAILED` だけが残った（カードを終えた。D25 §4.7 の表の 3）: 毎回
+        の 1 歩で台帳の確かめをやり直し、通れば残った台帳の行を実行記録の PR で送る（行は
+        消さない）。"""
+        state = ctx.state
+        item = state.find_reason("LEDGER_CHECK_FAILED")
+        if (
+            item is None
+            or state.exec_queue
+            or state.exec_pr is not None
+            or state.exec_sending is not None
+            or any(card.find_reason("LEDGER_CHECK_FAILED") for card in ctx.cards.values())
+            or not self._ledger_quiet()
+        ):
+            return
+        card = ctx.cards.get(str(item.card)) if item.card is not None else None
+        dirty = [path for path in self.ports.git.exec_dirty_paths() if path in _LEDGER_FILES]
+        if card is None or not dirty:
+            return
+        if self.ports.evaluation.ledger_check(self.paths.exec_worktree, self.paths.repo) != 0:
+            return  # まだ通らない: 全体の停止のまま、次の 1 歩で確かめ直す
+        self._request_exec(ctx, card, "ledger")
+        request = ctx.state.exec_queue[0]
+        if self._commit_exec(ctx, card, request):
+            state.exec_queue.remove(request)
 
     def _commit_exec(
         self, ctx: _Context, card: CardState, request: Mapping[str, Any]
@@ -1890,23 +2167,17 @@ class Runner:
         root = self.paths.exec_worktree
         code = self.ports.evaluation.ledger_check(root, self.paths.repo)
         if code != 0:
-            state_queue = ctx.state.exec_queue
-            if state_queue and state_queue[0] == request:
-                state_queue.pop(0)
             self._count_failure(ctx, FAIL_LEDGER)
-            # 答え「確かめからやり直す」が同じ要求を出し直せるように残す。
-            card.checks["failed_exec"] = {
-                "purpose": request["purpose"],
-                "version": int(request["version"]),
-            }
-            self._stop_card(ctx, card, "LEDGER_CHECK_FAILED", f"台帳の確かめの終了コード {code}")
+            self._exec_failed(ctx, card, request, f"台帳の確かめの終了コード {code}")
             return None
         version = int(request["version"])
         paths = [path for path in git.exec_dirty_paths() if path in _LEDGER_FILES]
         if request["purpose"] == "run":
             record = self._run_record(card, version)
             if record is None:
-                self._stop_card(ctx, card, "LEDGER_CHECK_FAILED", "実行記録を作れない")
+                # 要求を待ちに残すと、後ろの要求（他のカードの実行記録）がすべて止まる: 外して
+                # 問う（答え「確かめからやり直す」が同じ要求を出し直す）。
+                self._exec_failed(ctx, card, request, "実行記録を作れない")
                 return None
             target = root / run_record_path(card.card_id, version)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1938,6 +2209,21 @@ class Runner:
         self.store.save_global(ctx.state)
         return self._send_exec(ctx, card)
 
+    def _exec_failed(
+        self, ctx: _Context, card: CardState, request: Mapping[str, Any], detail: str
+    ) -> None:
+        """要求を待ちとカードから外し、答え「確かめからやり直す」が同じ要求（種類と版）を
+        出し直せるように残して止まる（T13）。"""
+        state_queue = ctx.state.exec_queue
+        if request in state_queue:
+            state_queue.remove(dict(request))
+        self._drop_request(card, request)
+        card.checks["failed_exec"] = {
+            "purpose": request["purpose"],
+            "version": int(request["version"]),
+        }
+        self._stop_card(ctx, card, "LEDGER_CHECK_FAILED", detail)
+
     def _send_exec(self, ctx: _Context, card: CardState) -> bool:
         """コミット済みの実行記録を push し、実行記録の定型 PR を作る（同じ枝の開いた PR が
         あればそれを使う）。本文の SHA-256 と行数は、作業木ではなくコミットの中身から作る
@@ -1948,6 +2234,8 @@ class Runner:
         paths = [str(path) for path in sending.get("paths", [])]
         version = int(sending["version"])
         committed = git.snapshot(str(sending["commit"]))
+        if git.exec_head() != str(sending["commit"]):
+            raise ToolFailure("実行用の作業木の先頭が送信待ちの実行記録のコミットと違う")
         git.exec_push()
         files = {path: committed.read(path) or b"" for path in paths}
         view = self._view(ctx)
@@ -1967,7 +2255,12 @@ class Runner:
         number = self.ports.github.create_pr(branch=text.branch, title=text.title, body=text.body)
         self.ports.github.enable_auto_merge(number)
         request = {key: sending[key] for key in ("card", "version", "purpose")}
-        ctx.state.exec_pr = {**request, "number": number}
+        ctx.state.exec_pr = {
+            **request,
+            "number": number,
+            "commit": str(sending["commit"]),
+            "paths": paths,
+        }
         ctx.state.exec_sending = None
         card.checks["ledger_committed"] = True
         return True
@@ -2025,7 +2318,14 @@ class Runner:
         )
 
     def _exec_merged(self, ctx: _Context, card: CardState, request: Mapping[str, Any]) -> None:
+        """実行記録の PR が入った（または足すものが無かった）: カードの要求を外して次の段へ。
+        停止中（C13）に入った審査の行は、外れて C10 に戻った後に `_c10_review` が結果に従う
+        （要求が無いことで入ったと分かる）。"""
+        self._drop_request(card, request)
         purpose = request.get("purpose")
+        if purpose == "run" and card.version == 1 and card.repro is None:
+            # 元の実験の再現を待つ印（予約が外れても `_reconcile` が戻す）。
+            card.checks["repro_wanted"] = True
         if purpose == "run" and _phase(card) is CardPhase.C6:
             if card.version == 1 and "reproduce" not in card.reservations and card.repro is None:
                 card.reservations.append("reproduce")
@@ -2180,6 +2480,7 @@ class Runner:
             experiment=experiment_path(card.experiment, card.version),
             worktree=self.paths.exec_worktree,
             repo=self.paths.repo,
+            snapshots=self.paths.snapshots,
             mode=mode,
         )
         if code != 0:
@@ -2271,7 +2572,8 @@ class Runner:
 
     def _launch_reproduce(self, ctx: _Context, card: CardState, slots: int, mode: str) -> None:
         """元の実験の再現。探索の run と同じく、空きが 2 つなら並列、1 つなら順番を要求する
-        （D25 §4.4、D26-3 (a)。引数は PR #194 の `experiment reproduce --variant-mode`）。"""
+        （D25 §4.4、D26-3 (a)。引数は `experiment reproduce --variant-mode`。コマンドの既定は順番
+        なので毎回渡す。main 4c947a8 で確認済み）。"""
         retry_after = card.checks.get("repro_retry_after")
         if retry_after and ctx.now < parse_time(str(retry_after)):
             return
@@ -2554,21 +2856,25 @@ class Runner:
         if state.weekly_last_week == key:
             return
         if state.weekly_issue is None:
-            state.weekly_issue = self.ports.github.create_issue(
+            state.weekly_issue = self._create_issue(
                 title=WEEKLY_TITLE,
                 body="実行器の週の要約（D25 §7）。毎週月曜 09:00 JST の後に 1 つのコメントを書く。"
                 "成績の数値・判定の値は書かない。止めたいときは「止めて」だけのコメントを書く。\n",
                 label=WEEKLY_LABEL,
             )
         counts = self._weekly_counts(ctx, previous.astimezone(UTC), monday.astimezone(UTC))
-        self.ports.github.comment(
-            state.weekly_issue,
-            weekly_body(
-                start=previous.strftime("%Y-%m-%d"),
-                end=(monday - timedelta(days=1)).strftime("%Y-%m-%d"),
-                counts=counts,
-            ),
+        body = weekly_body(
+            start=previous.strftime("%Y-%m-%d"),
+            end=(monday - timedelta(days=1)).strftime("%Y-%m-%d"),
+            counts=counts,
         )
+        header = body.splitlines()[0]
+        # 前の 1 歩が書いた後、週を保存する前に止まった: 同じ週を二度書かない。
+        if not any(
+            comment.body.splitlines()[:1] == [header]
+            for comment in self.ports.github.comments(state.weekly_issue)
+        ):
+            self.ports.github.comment(state.weekly_issue, body)
         state.weekly_last_week = key
 
     def _four_weeks(self, ctx: _Context) -> bool:

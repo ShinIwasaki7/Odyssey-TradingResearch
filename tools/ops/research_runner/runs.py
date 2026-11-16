@@ -2,10 +2,13 @@
 
 - **包みとの約束**（D26 の PR-B。仮置き 35・36）: 実行器は包みを変えずに呼ぶ。ただし起動の前に、
   包みが PR-B の後の形かを確かめ、前なら何も起動せずに全体の停止にする（D25 §8。理由の文に
-  「包みが D26 の PR-B の前」）。PR #194 の head 9b1daf0 に合わせた（170bb91 から包みは同じ。
-  本 PR の仮置き 1。merge の時点で再確認する）:
-  1. 方式の引数 `--variant-mode`（包みの `VARIANT_MODES` に `parallel`・`serial`）。PR-B の後かは
-     この属性で見分ける。
+  「包みが D26 の PR-B の前」）。main 4c947a8（PR #194 の merge）の実物で確認済み（本 PR の
+  仮置き 1）:
+  1. 方式の引数 `--variant-mode`（包みの `VARIANT_MODES` に `parallel`・`serial`。包みの既定は
+     `parallel`、`experiment run`・`experiment reproduce` の既定は `serial` なので、実行器は
+     毎回の方式を必ず渡す）。PR-B の後かはこの属性で見分ける（PR-B は main に入ったが、D25 §8 の
+     「包みが PR-B の前なら何も起動しない」の守りとして残す）。snapshot の基点は `--snapshots`
+     で審査・再現・最終検証と同じものを渡す。
   2. `caffeinate` を新しいプロセスグループの先頭として起動する（`launch.json` の `run_pid` が
      グループの番号）。PR-B の包みには印の属性が無いので 1 と同じ PR で入ることを前提にし、
      グループへ合図を送る前に毎回 `run_pid` がグループの先頭かを確かめる。
@@ -89,7 +92,9 @@ class WrapperProcess:
     def contract(self) -> WrapperContract:
         return probe_contract()
 
-    def launch(self, *, experiment: str, worktree: Path, repo: Path, mode: str) -> int:
+    def launch(
+        self, *, experiment: str, worktree: Path, repo: Path, snapshots: Path, mode: str
+    ) -> int:
         completed = subprocess.run(  # noqa: S603 - 固定のモジュールと実行器が決めた引数
             [
                 self.python,
@@ -101,6 +106,8 @@ class WrapperProcess:
                 str(repo),
                 "--worktree",
                 str(worktree),
+                "--snapshots",
+                str(snapshots),
                 MODE_ARGUMENT,
                 mode,
             ],

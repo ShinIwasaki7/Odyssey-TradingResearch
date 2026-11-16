@@ -1,0 +1,397 @@
+"""実行器の回復の点検表（PR #193 本文）の穴の再発防止（Codex 4 巡目の指摘 2 件と同じ型）。
+
+外部のもの（PR・issue・コミット・切り離した処理・ロック・予約）ごとに、(b) 操作の直後・状態の
+保存の前に止まったら次の 1 歩で回復するか、(c) 外で閉じられた・消えた・失敗したら回復するか
+止まりの issue を出すか、を人工の世界で確かめる。成績の数値は扱わない（台帳の行・記録は人工）。
+
+「実行器が止まった」は、それ以後の状態の保存がすべて行われない形で真似る（`_kill`。停電・強制終了
+では `finally` の保存も走らないため）。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from tests.fixtures.hypothesis_cards import card_bytes, card_data
+from tests.fixtures.research_runner import (
+    FINAL,
+    REVIEW,
+    FakeGit,
+    FakeGitHub,
+    Rig,
+    make_rig,
+)
+from tests.fixtures.runner_ci import final_ledger, review_ledger
+from tools.ops.research_runner.ports import PrState
+from tools.ops.research_runner.state import CardState, GlobalState, StateStore, format_time
+
+CARD_ID = "h-20261120-dual-ema"
+EXPERIMENT = "c_h20261120_dual_ema_gbpusd"
+QUEUE = f"research/hypotheses/queue/{CARD_ID}.yaml"
+RAW = card_bytes(card_data())
+
+
+class _Crash(BaseException):
+    """実行器のプロセスが途中で止まった（`ToolFailure` ではない）。"""
+
+
+@pytest.fixture
+def rig(tmp_path: Path) -> Rig:
+    made = make_rig(tmp_path)
+    made.world.put_on_main({QUEUE: RAW})
+    return made
+
+
+@contextmanager
+def _kill(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[], None]]:
+    """呼ぶと「実行器が止まった」になる関数を渡す。止まった後の状態の保存はすべて捨てる。"""
+    killed = {"on": False}
+    save_card, save_global = StateStore.save_card, StateStore.save_global
+
+    def card(self: StateStore, value: CardState) -> None:
+        if not killed["on"]:
+            save_card(self, value)
+
+    def whole(self: StateStore, value: GlobalState) -> None:
+        if not killed["on"]:
+            save_global(self, value)
+
+    def kill() -> None:
+        killed["on"] = True
+        raise _Crash
+
+    monkeypatch.setattr(StateStore, "save_card", card)
+    monkeypatch.setattr(StateStore, "save_global", whole)
+    yield kill
+    monkeypatch.undo()
+
+
+def _phase(rig: Rig) -> str:
+    return str(rig.card(CARD_ID)["phase"])
+
+
+def _reasons(rig: Rig) -> set[str]:
+    return {item["reason"] for item in rig.card(CARD_ID)["reasons"]}
+
+
+def _global_reasons(rig: Rig) -> set[str]:
+    return {item["reason"] for item in rig.state()["reasons"]}
+
+
+def _launch(rig: Rig) -> None:
+    rig.step()
+    rig.step()
+    assert _phase(rig) == "C4"
+
+
+def _exec_prs(rig: Rig) -> list[Any]:
+    return [pr for pr in rig.world.routine() if pr.branch == "runner/exec"]
+
+
+def _until(rig: Rig, phase: str, *, limit: int = 6) -> None:
+    for _ in range(limit):
+        if _phase(rig) == phase:
+            return
+        rig.step()
+    assert _phase(rig) == phase
+
+
+def _inject(rig: Rig, phase: str, **fields: Any) -> None:
+    """カードを done/ に置いた main と、`phase` の状態のファイルを作る（版 2・再現は一致）。"""
+    rig.world.put_on_main({f"research/hypotheses/done/{CARD_ID}.yaml": RAW, QUEUE: None})
+    store = StateStore(rig.paths.state_dir)
+    card = CardState(
+        card_id=CARD_ID,
+        mouth="human",
+        phase=phase,
+        taken_at=format_time(rig.clock.now()),
+        symbol="GBPUSD",
+        experiment=EXPERIMENT,
+        version=2,
+        executions={"2": {"experiment_id": "a" * 64, "execution": 1}},
+        repro="MATCH",
+    )
+    for key, value in fields.items():
+        setattr(card, key, value)
+    store.save_card(card)
+    store.save_global(GlobalState(boot_id="boot-1", cards=[CARD_ID], weekly_last_week="2026-11-16"))
+
+
+# --- 実行記録の PR（Codex 4 巡目の指摘 1・2） ----------------------------------------------
+
+
+def test_a_run_record_request_survives_a_stop_before_the_global_state_is_saved(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run の終わりでカードを C6 として保存した後、全体の状態を保存する前に実行器が止まっても、
+    次の 1 歩はカードに残った要求から実行記録の PR を作る（Codex 4 巡目の指摘 2）。"""
+    _launch(rig)
+    with _kill(monkeypatch) as kill:
+
+        def stop_before_global(self: StateStore, value: GlobalState) -> None:
+            kill()
+
+        monkeypatch.setattr(StateStore, "save_global", stop_before_global)
+        rig.wrapper.finish(0, 0, lines=2)
+        with pytest.raises(_Crash):
+            rig.step()
+    assert _phase(rig) == "C6"
+    assert rig.state()["exec_queue"] == []  # 全体の状態には要求が残らなかった
+    _until(rig, "C7")
+    prs = _exec_prs(rig)
+    assert len(prs) == 1 and prs[0].ci_ok, prs[0].ci_messages
+    assert prs[0].state is PrState.MERGED
+
+
+def _closed_exec_pr(rig: Rig) -> Any:
+    _launch(rig)
+    rig.wrapper.finish(0, 0, lines=2)
+    rig.step()  # 実行記録の PR を作る（同じ 1 歩の中では CI の途中）
+    (pull,) = _exec_prs(rig)
+    rig.github.close_pr(pull.number)  # merge されずに閉じられた
+    rig.step()
+    return pull
+
+
+def test_a_closed_run_record_pr_stops_and_resumes_when_reopened_and_merged(rig: Rig) -> None:
+    """実行記録の PR が merge されずに閉じられたら、止まりの issue で問う。開き直されて merge
+    されれば自動で外れて続ける（Codex 4 巡目の指摘 1）。"""
+    pull = _closed_exec_pr(rig)
+    assert _phase(rig) == "C13" and _reasons(rig) == {"CI_FAILED"}
+    issue = rig.world.issue_for("CI_FAILED")
+    pull.state = PrState.OPEN  # 人間が開き直して merge した
+    rig.world.merge(pull.number)
+    rig.step()
+    assert issue.closed
+    assert _phase(rig) == "C7"
+    assert rig.state()["exec_pr"] is None
+
+
+def test_ending_a_card_after_its_run_record_pr_was_closed_sends_the_rows_again(
+    rig: Rig,
+) -> None:
+    """閉じられた実行記録の PR に「このカードを終える」と答えると、カードは終わり、台帳の行は
+    同じコミットのまま新しい PR で送り直す（行を消さず、後の起動と実行記録を止めない）。"""
+    pull = _closed_exec_pr(rig)
+    rig.world.answer(rig.world.issue_for("CI_FAILED").number, "2")
+    for _ in range(3):
+        rig.step()
+    assert _phase(rig) == "C14"
+    prs = _exec_prs(rig)
+    assert len(prs) == 2 and prs[1].commit == pull.commit
+    assert prs[1].state is PrState.MERGED and prs[1].ci_ok, prs[1].ci_messages
+    assert rig.state()["exec_pr"] is None and rig.state()["exec_sending"] is None
+    assert FakeGit(rig.world).is_ancestor(rig.world.exec_head, rig.world.main)
+
+
+def test_a_run_record_that_cannot_be_made_does_not_block_the_queue(rig: Rig) -> None:
+    """実行記録を作れない（包みのファイルが欠けた）ときは、要求を待ちから外して問う。答え
+    「確かめからやり直す」で同じ要求を出し直す（後ろの要求を止めない）。"""
+    _launch(rig)
+    rig.wrapper.finish(0, 0, lines=2)
+    finished = rig.world.repo / "runs/experiments" / EXPERIMENT / "v1" / "finished_at_utc.txt"
+    saved = finished.read_bytes()
+    finished.unlink()
+    rig.step()
+    assert "LEDGER_CHECK_FAILED" in _reasons(rig)
+    assert rig.state()["exec_queue"] == []
+    assert rig.card(CARD_ID)["checks"]["failed_exec"] == {"purpose": "run", "version": 1}
+    finished.write_bytes(saved)
+    rig.world.answer(rig.world.issue_for("LEDGER_CHECK_FAILED").number, "2")
+    _until(rig, "C7")
+
+
+def test_a_review_record_merged_while_the_card_was_stopped_is_followed_after_resuming(
+    rig: Rig,
+) -> None:
+    """審査の行の実行記録の PR が停止中（C13）に入っても、外れて C10 に戻った後に審査の結果に
+    従う（入ったことはカードの要求が無いことで分かる）。"""
+    rig.world.branches["runner/report-x"] = rig.world.main
+    report = rig.world.open_pr("runner/report-x", "[runner] 報告", "本文")
+    _inject(
+        rig,
+        "C10",
+        reservations=["review"],
+        pr={"kind": "report", "version": 2, "number": report},
+    )
+    rig.step()  # 審査を起動
+    (rig.world.exec_dir / REVIEW).write_bytes(review_ledger(1))
+    rig.procs.finish("review", 0)
+    rig.step()  # 審査の結果 → 審査の行の実行記録の PR
+    rig.github.close_pr(report)  # 一巡の報告の PR が閉じられた → 停止
+    rig.step()  # 停止中に審査の行の PR が入る
+    assert _phase(rig) == "C13"
+    assert rig.state()["exec_pr"] is None
+    rig.world.prs[report].state = PrState.OPEN  # 開き直されて merge された
+    rig.world.merge(report)
+    rig.step()
+    assert _phase(rig) == "C11"
+
+
+# --- 予約（空きを待つ処理） -----------------------------------------------------------------
+
+
+def test_the_final_reservation_comes_back_after_the_declaration_stop_in_c12(rig: Rig) -> None:
+    """最終検証の起動の前に申告の撤去の前と分かって止まり、撤去が入って自動で外れたら、外した
+    最終検証の予約を戻して起動する（C12 で待ち続けない）。"""
+    rig.evaluation.declaration = True
+    _inject(rig, "C12", reservations=["final"])
+    rig.step()
+    assert _reasons(rig) == {"REVIEW_NEEDS_DECLARATION"}
+    assert not rig.procs.spawned
+    rig.evaluation.declaration = False
+    rig.step()
+    assert _phase(rig) == "C12"
+    assert rig.procs.by_kind("final-validate")
+
+
+def test_a_vanished_reproduction_is_relaunched_not_counted_as_a_mismatch(rig: Rig) -> None:
+    """再現の処理が終了コードを書かずに消えた（再起動など）: 不一致とは数えず起動し直す。"""
+    from tests.unit.tools.test_research_runner_flow import FIRST, _analysis
+
+    rig.workers.add("analyst_change", _analysis(FIRST))
+    _launch(rig)
+    rig.wrapper.finish(0, 0, lines=2)
+    for _ in range(4):
+        rig.step()
+        if [key for key in rig.procs.spawned if key.startswith("reproduce:")]:
+            break
+    first = rig.procs.by_kind("reproduce")
+    rig.procs.alive_pids.discard(int(first["pid"]))
+    rig.step(minutes=15)
+    rig.step()
+    assert not [issue for issue in rig.world.open_issues() if "REPRO_MISMATCH" in issue.title]
+    assert rig.card(CARD_ID)["repro"] is None
+    assert len([key for key in rig.procs.spawned if key.startswith("reproduce:")]) == 2
+
+
+# --- 最終検証の消費の後 -----------------------------------------------------------------------
+
+
+def test_ending_a_card_is_refused_after_the_final_validation_consumed(rig: Rig) -> None:
+    """最終検証が消費した後、記録の PR が閉じられても「このカードを終える」は受けない（消費の
+    記録を失わない）。開き直されて merge されれば自動で外れて終わる。"""
+    _inject(rig, "C12", reservations=["final"])
+    rig.step()
+    (rig.world.repo / FINAL).write_bytes(final_ledger(rig.world.repo / "tmp", 1))
+    rig.procs.finish("final-validate", 0)
+    rig.step()  # 記録の PR を作る
+    pull = next(pr for pr in rig.world.prs.values() if pr.branch.startswith("runner/final-"))
+    rig.github.close_pr(pull.number)
+    rig.step()
+    assert _reasons(rig) == {"CI_FAILED"}
+    issue = rig.world.issue_for("CI_FAILED")
+    rig.world.answer(issue.number, "2")  # このカードを終える
+    rig.step()
+    assert _phase(rig) == "C13" and not issue.closed
+    pull.state = PrState.OPEN
+    rig.world.merge(pull.number)
+    for _ in range(2):
+        rig.step()
+    assert _phase(rig) == "C14"
+    assert rig.card(CARD_ID)["outcome"] == "FINAL_VALIDATED"
+
+
+# --- issue（止まりの問い・週の要約） --------------------------------------------------------
+
+
+def test_a_stop_issue_created_just_before_the_runner_stopped_is_not_left_twice(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """止まりの issue を作った直後（番号を状態に保存する前）に実行器が止まっても、次の 1 歩の後に
+    開いた問いは 1 つだけ（状態に無い issue は閉じる）。"""
+    _launch(rig)
+    rig.wrapper.finish(0, 1)
+    create = FakeGitHub.create_issue
+    with _kill(monkeypatch) as kill:
+
+        def create_then_stop(self: FakeGitHub, **kw: Any) -> int:
+            number = create(self, **kw)
+            if "RUN_FAILED" in kw["title"]:
+                kill()
+            return number
+
+        monkeypatch.setattr(FakeGitHub, "create_issue", create_then_stop)
+        with pytest.raises(_Crash):
+            rig.step()
+    rig.step()
+    assert rig.world.issue_for("RUN_FAILED")  # 開いた問いは 1 つ
+    assert _reasons(rig) == {"RUN_FAILED"}
+
+
+def test_the_weekly_comment_is_not_written_twice_after_a_stop(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """週の要約を書いた直後（週を保存する前）に実行器が止まっても、同じ週を二度書かない。"""
+    rig.step()  # 1 週目の要約（issue も作る）
+    rig.clock.advance(days=7)
+    comment = FakeGitHub.comment
+    with _kill(monkeypatch) as kill:
+
+        def comment_then_stop(self: FakeGitHub, number: int, body: str) -> None:
+            comment(self, number, body)
+            if body.startswith("週: 2026-11-23"):
+                kill()
+
+        monkeypatch.setattr(FakeGitHub, "comment", comment_then_stop)
+        with pytest.raises(_Crash):
+            rig.step()
+    rig.step()
+    (weekly,) = [issue for issue in rig.world.issues.values() if issue.label == "runner-weekly"]
+    headers = [item.body.splitlines()[0] for item in weekly.comments]
+    assert headers.count("週: 2026-11-23〜2026-11-29") == 1
+
+
+# --- 台帳のロック・残った台帳の行 -----------------------------------------------------------
+
+
+def test_a_ledger_lock_left_without_a_writer_stops_everything_and_clears(tmp_path: Path) -> None:
+    """台帳のロックが、書いているはずの処理が居ないのに 15 分より長く残ったら全体の停止で問う
+    （黙って待ち続けない）。ロックが消えれば自動で外れる。"""
+    rig = make_rig(tmp_path)
+    lock = rig.world.exec_dir / "research/trial_ledger.lock"
+    lock.write_text("", encoding="utf-8")
+    rig.step()
+    assert "LEDGER_CHECK_FAILED" not in _global_reasons(rig)
+    rig.step(minutes=16)
+    assert "LEDGER_CHECK_FAILED" in _global_reasons(rig)
+    issue = rig.world.issue_for("LEDGER_CHECK_FAILED")
+    lock.unlink()
+    rig.step()
+    assert "LEDGER_CHECK_FAILED" not in _global_reasons(rig)
+    assert issue.closed
+
+
+def test_leftover_ledger_rows_are_sent_after_the_card_was_ended(rig: Rig) -> None:
+    """台帳の確かめに落ちたカードを「このカードを終える」で終えた後も、毎回の 1 歩で確かめ直し、
+    通れば残った台帳の行を実行記録の PR で送り、全体の理由を外す（D25 §4.7 の表の 3）。"""
+    _launch(rig)
+    rig.evaluation.ledger_code = 1
+    rig.wrapper.finish(0, 0, lines=2)
+    rig.step()
+    assert "LEDGER_CHECK_FAILED" in _reasons(rig)
+    rig.world.answer(rig.world.issue_for("LEDGER_CHECK_FAILED").number, "3")
+    rig.step()
+    assert _phase(rig) == "C14"
+    assert "LEDGER_CHECK_FAILED" in _global_reasons(rig)  # 確かめが通るまで残る
+    rig.evaluation.ledger_code = 0
+    for _ in range(3):
+        rig.step()
+    assert "LEDGER_CHECK_FAILED" not in _global_reasons(rig)
+    prs = _exec_prs(rig)
+    assert prs and prs[-1].state is PrState.MERGED and prs[-1].ci_ok, prs[-1].ci_messages
+
+
+# --- 包みとの約束（main 4c947a8 の実物） ----------------------------------------------------
+
+
+def test_the_wrapper_gets_the_same_snapshots_as_the_other_commands(rig: Rig) -> None:
+    """包みにも審査・再現・最終検証と同じ snapshot の基点を `--snapshots` で渡す（包みの既定の
+    `<repo>/data/snapshots` に頼らない）。"""
+    _launch(rig)
+    assert rig.wrapper.launched[0]["snapshots"] == rig.paths.snapshots
