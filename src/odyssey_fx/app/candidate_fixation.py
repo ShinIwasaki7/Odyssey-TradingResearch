@@ -20,6 +20,8 @@
 
 - 0 = 8 項目すべて合格（`fix` は記録を書いた）。
 - 8 = 項目 6（窓の長さ）だけが、待てば解けうる理由で外れた（固定の延期。何も書かない）。
+  外れた理由が「審査の順で先の候補の最終検証が終わっていない」だけ（項目 6 と、その候補の
+  予約による項目 7）のときも 8（人間の決定 210）。
 - 7 = それ以外の外れ（固定しない。何も書かない）。
 - 2 = 引数・記録・台帳・登録簿の読込の誤りと、origin に届かないこと（何も書かない）。
 - 1 = 記録を書けなかった。
@@ -163,7 +165,8 @@ EXIT_FAILED: Final = 1
 EXIT_READ_ERROR: Final = 2
 #: 固定しない（項目 1〜5・7・8 のどれか、または項目 6 の延期できない理由で外れた。D25 の T32）。
 EXIT_REFUSED: Final = 7
-#: 固定の延期（項目 6 の窓の長さだけが、待てば解けうる理由で外れた。D15-15 (a)、D25 §6.5 の 3）。
+#: 固定の延期（項目 6 の窓の長さだけが、待てば解けうる理由で外れた。D15-15 (a)、D25 §6.5 の 3。
+#: 項目 7 が先の候補の最終検証が終わっていないことだけで外れたときも。決定 210）。
 EXIT_DEFERRED: Final = 8
 
 _ADOPTION_REVIEWS_PATH: Final = Path("research") / "adoption_reviews.jsonl"
@@ -765,17 +768,17 @@ def _check_length(inputs: _Inputs, record: CandidateFix) -> FixCheckOutcome:
     return _outcome(FixCheckItem.LENGTH_MATCHES, [], f"L: {record.length_days} 日")
 
 
-def _earlier_pending(inputs: _Inputs) -> int:
-    """審査の順で先の候補のうち、最終検証が終わっていないものの数。
+def _earlier_pending(inputs: _Inputs) -> set[tuple[str, int]]:
+    """審査の順で先の候補のうち、最終検証が終わっていないもの（`(experiment_id, 実行)` の集合）。
 
     「終わった」は D09 §9.10.10 の 8 と同じ（最終検証の台帳の行から導く）。
     """
     proceeds = inputs.proceeds()
     own = inputs.own_proceed()
     if own is None:
-        return 0
+        return set()
     finished = {"COMPLETED", "FAILED_AFTER_CONSUMPTION", "WITHDRAWN", "DECLARED_USED"}
-    pending = 0
+    pending: set[tuple[str, int]] = set()
     for line in proceeds[: proceeds.index(own)]:
         experiment, execution = line.entry.experiment_id.hex, line.entry.execution
         if (experiment, execution) == (inputs.experiment_hex, inputs.execution):
@@ -787,7 +790,7 @@ def _earlier_pending(inputs: _Inputs) -> int:
             if row.execution == execution or str(row.payload["result"]) == "DECLARED_USED"
         ]
         if not finished.intersection(rows):
-            pending += 1
+            pending.add((experiment, execution))
     return pending
 
 
@@ -816,16 +819,18 @@ def _window_end(facts_now: Sequence[SealedPartitionFact], inputs: _Inputs) -> Ut
 
 
 def _check_window(
-    inputs: _Inputs, record: CandidateFix, reservations: Sequence[Reservation]
+    inputs: _Inputs,
+    record: CandidateFix,
+    reservations: Sequence[Reservation],
+    pending: set[tuple[str, int]],
 ) -> FixCheckOutcome:
     """項目 6: 確かめの時点の使える窓の採点区間の日数が `L` 以上（外れれば固定の延期）。"""
     item = FixCheckItem.WINDOW_LONG_ENOUGH
-    pending = _earlier_pending(inputs)
     if pending:
         return _outcome(
             item,
             [FixCheckReason.EARLIER_CANDIDATE_PENDING],
-            f"審査の順で先の候補のうち最終検証が終わっていないもの: {pending}",
+            f"審査の順で先の候補のうち最終検証が終わっていないもの: {len(pending)}",
         )
     facts_now = sealed_facts_at_origin(inputs.log)
     if isinstance(facts_now, WindowRefusal):
@@ -872,14 +877,33 @@ def _window_lines(window: FinalWindow, length_days: int) -> list[str]:
     ]
 
 
-def _check_reservations(reservations: Sequence[Reservation], now: UtcTime) -> FixCheckOutcome:
-    """項目 7: 他の候補の予約した前向きの期間の終わりが、確かめの時刻より後にない。"""
+def _check_reservations(
+    reservations: Sequence[Reservation], now: UtcTime, pending: set[tuple[str, int]]
+) -> FixCheckOutcome:
+    """項目 7: 他の候補の予約した前向きの期間の終わりが、確かめの時刻より後にない。
+
+    終わっていない予約のうち、審査の順で先の候補で最終検証が終わっていないもの（`pending`）の
+    予約は `EARLIER_CANDIDATE_PENDING`、それ以外は `RESERVATION_NOT_ENDED`（人間の決定 210。
+    前者だけなら固定の延期、後者が 1 つでもあれば固定しない）。
+    """
     active = [item for item in reservations if item.period.end > now]
+    earlier = [item for item in active if _reservation_key(item) in pending]
+    reasons: list[FixCheckReason] = []
+    if len(earlier) < len(active):
+        reasons.append(FixCheckReason.RESERVATION_NOT_ENDED)
+    if earlier:
+        reasons.append(FixCheckReason.EARLIER_CANDIDATE_PENDING)
     return _outcome(
         FixCheckItem.RESERVATIONS_ENDED,
-        [FixCheckReason.RESERVATION_NOT_ENDED] if active else [],
-        f"他の候補の予約: {len(reservations)}、終わっていないもの: {len(active)}",
+        reasons,
+        f"他の候補の予約: {len(reservations)}、終わっていないもの: {len(active)}"
+        f"（うち審査の順で先の候補で最終検証が終わっていないもの: {len(earlier)}）",
     )
+
+
+def _reservation_key(reservation: Reservation) -> tuple[str, int]:
+    candidate = reservation.fix.record.candidate
+    return (candidate.experiment_id.hex, candidate.execution)
 
 
 def _check_format(inputs: _Inputs, record: CandidateFix, rel: str, text: str) -> FixCheckOutcome:
@@ -946,14 +970,15 @@ def _check_all(
         )
     except ConfigError as exc:
         raise _Stop(EXIT_READ_ERROR, str(exc)) from exc
+    pending = _earlier_pending(inputs)
     return (
         _check_review(inputs, record),
         _check_other_fixes(inputs, record, rel),
         _check_forward_rules(inputs, record),
         _check_research_policy(inputs, record),
         _check_length(inputs, record),
-        _check_window(inputs, record, reservations),
-        _check_reservations(reservations, inputs.now),
+        _check_window(inputs, record, reservations, pending),
+        _check_reservations(reservations, inputs.now, pending),
         _check_format(inputs, record, rel, text),
     )
 
@@ -975,6 +1000,20 @@ def _item_line(outcome: FixCheckOutcome) -> str:
         else "不合格（" + "・".join(r.value for r in outcome.reasons) + "）"
     )
     return head + result + (f" — {outcome.detail}" if outcome.detail else "")
+
+
+def _not_passed_line(verdict: FixVerdict, outcomes: Sequence[FixCheckOutcome]) -> str:
+    if verdict is not FixVerdict.DEFERRED:
+        return "固定しない。何も書いていない"
+    if any(FixCheckReason.EARLIER_CANDIDATE_PENDING in item.reasons for item in outcomes):
+        return (
+            "固定を延期する（審査の順で先の候補の最終検証が終わっていない。決定 210。"
+            "その候補の最終検証が終わった後に確かめ直す）。何も書いていない"
+        )
+    return (
+        "固定を延期する（項目 6 の窓の長さだけが外れた。次の定期取得の承認の後に確かめ直す）。"
+        "何も書いていない"
+    )
 
 
 def _recorded_runner(request: FixRequest) -> FinalRunner:
@@ -1071,12 +1110,7 @@ def _fix(inputs: _Inputs) -> FixOutcome:
     lines.append(f"判定: {verdict.value}")
     outcome = FixOutcome(_VERDICT_EXIT[verdict], verdict, verdict.value, lines, outcomes, rel)
     if verdict is not FixVerdict.PASSED:
-        lines.append(
-            "固定を延期する（項目 6 の窓の長さだけが外れた。次の定期取得の承認の後に確かめ直す）。"
-            "何も書いていない"
-            if verdict is FixVerdict.DEFERRED
-            else "固定しない。何も書いていない"
-        )
+        lines.append(_not_passed_line(verdict, outcomes))
         return outcome
     if request.mode is FixMode.CREATE:
         target = Path(request.repo_root) / rel

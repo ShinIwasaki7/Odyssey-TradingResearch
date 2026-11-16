@@ -13,7 +13,9 @@
   `S + L` 以後の最初の取引週の境目。
 - **予約を解く条件**（決定 74＝要決定 F1-D (a)）: 最終検証の台帳の行から機械的に導く。
 - **固定の前の確かめ**（D09 §9.11.10 の 8 項目）の結果の型と、合否の合わせ方（項目 6 の窓の長さ
-  だけが外れたときは固定の延期。D15-15 (a)、D25 §6.5 の 3）。
+  だけが外れたときは固定の延期。D15-15 (a)、D25 §6.5 の 3）。外れた理由が「審査の順で先の候補の
+  最終検証が終わっていない」だけ（項目 6 と、その候補の予約による項目 7）のときも延期（人間の
+  決定 210）。
 
 どの値も成績・価格を含まない（日数・件数の下限・確率・時刻・理由の識別子だけ）。頻度 `r` と取引の
 件数は計算の入力にだけ使い、結果の型には持たない（仮置き F1-5）。
@@ -41,6 +43,7 @@ from odyssey_fx.marketdata.domain.access import (
 
 __all__ = [
     "DEFERRABLE_REASONS",
+    "DEFERRABLE_RESERVATION_REASONS",
     "FixCheckItem",
     "FixCheckOutcome",
     "FixCheckReason",
@@ -281,7 +284,8 @@ class FixCheckReason(Enum):
     EARLIER_CANDIDATE_PENDING = "EARLIER_CANDIDATE_PENDING"
     # 項目 6（延期できないもの）
     WINDOW_NOT_DERIVABLE = "WINDOW_NOT_DERIVABLE"
-    # 項目 7
+    # 項目 7（終わっていない予約が審査の順で先の候補のもので、その候補の最終検証が終わって
+    # いないときは、項目 6 と同じ `EARLIER_CANDIDATE_PENDING`。人間の決定 210）
     RESERVATION_NOT_ENDED = "RESERVATION_NOT_ENDED"
     # 項目 8
     RECORD_UNREADABLE = "RECORD_UNREADABLE"
@@ -298,6 +302,16 @@ DEFERRABLE_REASONS: Final = frozenset(
         FixCheckReason.EARLIER_CANDIDATE_PENDING,
     }
 )
+
+#: 項目 7 のうち、固定の延期にする理由（人間の決定 210）。審査の順で先の候補の最終検証が終わって
+#: いないだけなら、待てば解ける（機械で回復できる止まり方は関所を作らない。決定 188 と同じ考え）。
+DEFERRABLE_RESERVATION_REASONS: Final = frozenset({FixCheckReason.EARLIER_CANDIDATE_PENDING})
+
+#: 項目ごとの延期にする理由（ここに無い項目が外れたら固定しない）。
+_DEFERRABLE_BY_ITEM: Final[dict[FixCheckItem, frozenset[FixCheckReason]]] = {
+    FixCheckItem.WINDOW_LONG_ENOUGH: DEFERRABLE_REASONS,
+    FixCheckItem.RESERVATIONS_ENDED: DEFERRABLE_RESERVATION_REASONS,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,21 +348,26 @@ class FixVerdict(Enum):
     #: すべて合格（固定の記録を作ってよい）。
     PASSED = "PASSED"
     #: 項目 6 だけが、延期できる理由で外れた（固定を延期する。PR は作らない・merge しない）。
+    #: 項目 7 が「先の候補の最終検証が終わっていない」だけで外れたときも同じ（決定 210）。
     DEFERRED = "DEFERRED"
     #: それ以外の外れ（固定しない）。
     REFUSED = "REFUSED"
 
 
 def fix_verdict(outcomes: Sequence[FixCheckOutcome]) -> FixVerdict:
-    """8 項目の結果から合否を決める。8 項目がそろっていなければ構造の誤り。"""
+    """8 項目の結果から合否を決める。8 項目がそろっていなければ構造の誤り。
+
+    外れた項目のどれもが、その項目の延期にする理由だけで外れたときに延期（項目 6 は
+    `DEFERRABLE_REASONS`、項目 7 は `DEFERRABLE_RESERVATION_REASONS`。決定 210）。他の理由が
+    1 つでも混じれば固定しない。
+    """
     if sorted(item.item.value for item in outcomes) != [item.value for item in FixCheckItem]:
         raise KernelValueError("fix_verdict requires exactly one outcome for each of the 8 items")
     failed = [item for item in outcomes if not item.passed]
     if not failed:
         return FixVerdict.PASSED
     if all(
-        item.item is FixCheckItem.WINDOW_LONG_ENOUGH
-        and all(reason in DEFERRABLE_REASONS for reason in item.reasons)
+        all(reason in _DEFERRABLE_BY_ITEM.get(item.item, frozenset()) for reason in item.reasons)
         for item in failed
     ):
         return FixVerdict.DEFERRED
