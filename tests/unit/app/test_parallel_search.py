@@ -282,10 +282,17 @@ def test_an_interrupt_right_after_a_launch_still_stops_that_child(tmp_path: Path
 # --- 親が合図を受ける・強制終了される（E6、子の表の F3）-------------------------------------
 
 
-def _harness(tmp_path: Path, work: str) -> subprocess.Popen[bytes]:
+def _harness(tmp_path: Path, work: str, *extra: str) -> subprocess.Popen[bytes]:
     env = {**os.environ, "PYTHONPATH": str(REPO)}
     process = subprocess.Popen(
-        [sys.executable, "-m", "tests.fixtures.evaluation.parallel_harness", str(tmp_path), work],
+        [
+            sys.executable,
+            "-m",
+            "tests.fixtures.evaluation.parallel_harness",
+            str(tmp_path),
+            work,
+            *extra,
+        ],
         cwd=REPO,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -325,6 +332,34 @@ def test_a_human_interrupt_is_passed_to_both_children(tmp_path: Path, signum: in
         assert not _alive(pid)
     with execution_lock(tmp_path / "lock"):
         pass
+
+
+def test_an_interrupt_while_stopping_does_not_wait_for_the_boundary(tmp_path: Path) -> None:
+    """S3 + E6 → S6: 境目で止めている途中の人間の中断は、境目を待たずに子を止める。
+
+    標準の組の子は止める指示を見ずに 30 秒眠る（境目まで長い単位の代わり）。候補の組の子の
+    例外で親は S3 に入り、そこへ `SIGTERM` を送ると、親は 30 秒を待たずに終わる。
+    """
+    process = _harness(tmp_path, "ignore_stop_and_return", "raise_now", "30")
+    standard = _pid(tmp_path, Variant.STANDARD)
+    _wait_gone({Variant.CANDIDATE: _pid(tmp_path, Variant.CANDIDATE)})
+    time.sleep(0.5)  # 親が候補の組の子の失敗を受けて S3 に入るまで
+    started = time.monotonic()
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(60) == -signal.SIGTERM
+    assert time.monotonic() - started < 15
+    assert not _alive(standard)
+
+
+def test_a_second_interrupt_while_waiting_still_ends_the_children_first(tmp_path: Path) -> None:
+    """E6 の後、子の終わりを待つ間に重ねて届いた中断でも、親は子を残して終わらない。"""
+    process = _harness(tmp_path, "wait_for_stop")
+    pids = {variant: _pid(tmp_path, variant) for variant in Variant}
+    process.send_signal(signal.SIGTERM)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(60) == -signal.SIGTERM
+    for pid in pids.values():
+        assert not _alive(pid)
 
 
 def test_children_stop_at_a_boundary_when_the_parent_is_killed(tmp_path: Path) -> None:

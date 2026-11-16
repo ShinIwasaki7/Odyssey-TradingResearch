@@ -510,6 +510,25 @@ def _raise_interrupted(signum: int, frame: FrameType | None) -> None:
     raise _Interrupted(signum)
 
 
+def _end_on_interrupt(parent: _Parent, stopped: _Interrupted | KeyboardInterrupt) -> None:
+    """人間の中断（E6）: 子へ同じ合図を送って全員の終わりを待ち、`SIGTERM` なら親も終わる。
+
+    子の終わりを待つ間に重ねて届いた中断の合図は保留し、子が全員終わってから効かせる（親は
+    子を残して終わらない。D26 §3.4 の表の後の注記）。`SIGINT` は戻った後に呼び出し側が
+    `KeyboardInterrupt` を送出し直す。
+    """
+    signum = stopped.signum if isinstance(stopped, _Interrupted) else signal.SIGINT
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _INTERRUPTS)
+    try:
+        parent.interrupt(signum)
+        if signum == signal.SIGTERM:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    if signum == signal.SIGTERM:
+        signal.raise_signal(signal.SIGTERM)
+
+
 def run_variant_jobs(
     jobs: Paired[VariantJob],
     *,
@@ -554,18 +573,18 @@ def run_variant_jobs(
                 finally:
                     signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             parent.wait()
-        except _Interrupted as stopped:
-            parent.interrupt(stopped.signum)
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            signal.raise_signal(stopped.signum)
-            raise  # pragma: no cover - 上の合図で親は終わる
-        except KeyboardInterrupt:
-            parent.interrupt(signal.SIGINT)
+        except (_Interrupted, KeyboardInterrupt) as stopped:
+            _end_on_interrupt(parent, stopped)
             raise
         except BaseException:
             # 親の想定外の失敗（知らせが読めないなど）: 子を境目で止め、全員の終わりを待ってから
-            # 送出する（親は子を残して終わらない。D26 §3.4 の表の後の注記）。
-            parent.stop_all()
+            # 送出する（親は子を残して終わらない。D26 §3.4 の表の後の注記）。境目まで待つ間の
+            # 人間の中断は、すぐ止める（E6）に切り替える。
+            try:
+                parent.stop_all()
+            except (_Interrupted, KeyboardInterrupt) as stopped:
+                _end_on_interrupt(parent, stopped)
+                raise
             raise
     finally:
         signal.signal(signal.SIGTERM, previous)
