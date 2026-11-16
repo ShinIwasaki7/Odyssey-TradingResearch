@@ -53,6 +53,7 @@ from odyssey_fx.evaluation.application.evaluate_run import (
     EvaluationReport,
     equity_series,
 )
+from odyssey_fx.evaluation.application.loss_side import loss_side_evidence, path_summary_v5
 from odyssey_fx.evaluation.application.manifest import RunEvaluationId, run_evaluation_id
 from odyssey_fx.evaluation.application.ports import (
     BacktestRunner,
@@ -109,7 +110,9 @@ from odyssey_fx.evaluation.domain.search import (
     LedgerResults,
     Lineage,
     LineageSource,
+    LossSideEvidence,
     SearchOutcome,
+    SearchPlan,
     TrainUnitEvaluation,
     TrialLedgerBinding,
     TrialLedgerEntry,
@@ -121,6 +124,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialStartRecord,
     TrialStatus,
     TrialUnitKey,
+    ValidationRuleV5,
     ValidationUnitEvaluation,
     VariantLedgerResult,
     binding_mismatch,
@@ -698,9 +702,10 @@ class RunExperiment:
                 # D26 §3.8 の 4）。判定の関数には渡さない（決定 134。RP5-16）。
                 regimes.append(self._write_regimes(prepared, standard, variant, path, daily_bars))
 
+        judged = {variant: self._judged_path(prepared, runs[variant]) for variant in VARIANTS}
         outcomes = Paired.build(
             lambda variant: build_variant_outcome(
-                standard, variant, runs[variant].folds.evidence, runs[variant].path.summary
+                standard, variant, runs[variant].folds.evidence, *judged[variant]
             )
         )
         search = build_search_outcome(outcomes.standard, outcomes.candidate, binding.execution)
@@ -763,6 +768,40 @@ class RunExperiment:
         )
         self._store.write_regimes(report)
         return RegimeDigest(variant=variant, digest=digest(report))
+
+    def _judged_path(
+        self, prepared: PreparedSearch, run: _VariantRun
+    ) -> tuple[PathSummary, LossSideEvidence | None]:
+        """判定に渡す経路の要約と、版 5 以上の判定の追加の入力（D24 §3.3・§4。実装 PR 4-2）。
+
+        版 4 以下を指す実験は経路の要約をそのまま渡し、追加の入力を作らない（結末記録の形を
+        変えない）。版 5 以上は経路の取引の集合の要約を足し（`PathSummaryV5`）、近傍の表・日次の
+        収益率を保存済みの run の判断履歴から組み立てる（`application.loss_side`。局面は読まない）。
+        """
+        manifest = prepared.manifest
+        standard = manifest.evaluation_standard
+        plan = manifest.search_plan
+        if standard is None or not isinstance(standard.validation, ValidationRuleV5):
+            return run.path.summary, None
+        if not isinstance(plan, SearchPlan):  # pragma: no cover - 探索の記録票は計画を持つ
+            raise KernelValueError("a search manifest carries its search plan")
+        ends = {end.key.segment_index: end for end in run.path.ends}
+        summary = path_summary_v5(run.path.summary, self._repository, ends)
+        train_runs = {
+            (record.unit.fold_index, record.unit.trial_index): record.run_id
+            for record in run.folds.records
+            if record.unit.phase is TrialPhase.TRAIN
+        }
+        evidence = loss_side_evidence(
+            plan=plan,
+            folds=run.folds.evidence,
+            train_runs=train_runs,
+            summary=summary,
+            ends=ends,
+            repository=self._repository,
+            calendar=prepared.calendar,
+        )
+        return summary, evidence
 
     def _read_ledger(self, purpose: str) -> TrialLedgerContents:
         contents = self._store.read_trial_ledger()

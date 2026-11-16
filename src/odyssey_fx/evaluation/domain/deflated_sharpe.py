@@ -27,6 +27,8 @@ from typing import Final
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.money import decimal_from_int, decimal_from_str, kernel_context
 from odyssey_fx.common.time import UtcTime
+from odyssey_fx.evaluation.domain.normal_distribution import WORKING_PRECISION
+from odyssey_fx.evaluation.domain.normal_distribution import cdf_in_context as _cdf
 
 __all__ = [
     "AssumptionReason",
@@ -40,22 +42,17 @@ __all__ = [
     "normal_ppf",
 ]
 
-#: 計算の精度（桁）。級数の打ち切りと二分法の終わりもこの精度で決める。
-_PRECISION: Final = 60
+#: 計算の精度（桁）。級数の打ち切りと二分法の終わりもこの精度で決める（`Φ` の級数と連分数は
+#: 研究ポリシー第 5 版の判定と共有する `domain.normal_distribution` の式。同じ精度）。
+_PRECISION: Final = WORKING_PRECISION
 #: 記録する値の有効数字（桁）。
 _RECORD_DIGITS: Final = 16
-#: 円周率（60 桁。`Decimal` の定数を外から持ち込まないため十進リテラルで置く）。
-_PI: Final = decimal_from_str("3.14159265358979323846264338327950288419716939937510582097494")
 #: オイラーの定数 γ_E（60 桁）。
 _EULER_GAMMA: Final = decimal_from_str(
     "0.577215664901532860606512090082402431042159335939923598805767"
 )
 #: 年率化の係数の取引日の数（D07 §5.5 の #17 と同じ）。
 _TRADING_DAYS: Final = 260
-#: 級数と連分数の切り替えの境目（誤差関数の引数 `z = |x| ÷ √2`）。
-_SERIES_LIMIT: Final = 3
-#: 連分数の深さ。
-_FRACTION_DEPTH: Final = 400
 #: 二分法の回数（区間 [-40, 40] を 2^-260 まで縮める）。
 _BISECTION_STEPS: Final = 260
 _PPF_BOUND: Final = 40
@@ -69,47 +66,6 @@ def _record(value: Decimal) -> Decimal:
     """記録する値（有効数字 16 桁）。"""
     with localcontext(Context(prec=_RECORD_DIGITS)):
         return +value
-
-
-def _erf_series(z: Decimal) -> Decimal:
-    """`erf(z)` の級数（`|z|` が小さいとき）。呼び出し側のコンテキストで計算する。"""
-    one = decimal_from_int(1)
-    total = decimal_from_int(0)
-    power = z
-    factorial = one
-    n = 0
-    square = z * z
-    threshold = one.scaleb(-_PRECISION - 5)
-    while True:
-        term = power / (factorial * decimal_from_int(2 * n + 1))
-        total = total + (term if n % 2 == 0 else -term)
-        if abs(term) < threshold:
-            break
-        n += 1
-        power = power * square
-        factorial = factorial * decimal_from_int(n)
-    return (decimal_from_int(2) / _PI.sqrt()) * total
-
-
-def _erfc_fraction(z: Decimal) -> Decimal:
-    """`erfc(z)` の連分数（`z` が大きいとき。z > 0）。"""
-    half = decimal_from_str("0.5")
-    tail = z
-    for n in range(_FRACTION_DEPTH, 0, -1):
-        tail = z + (decimal_from_int(n) * half) / tail
-    return (-(z * z)).exp() / _PI.sqrt() / tail
-
-
-def _cdf(x: Decimal) -> Decimal:
-    """標準正規分布の分布関数（呼び出し側のコンテキストで計算する）。"""
-    half = decimal_from_str("0.5")
-    z = abs(x) / decimal_from_int(2).sqrt()
-    if z <= decimal_from_int(_SERIES_LIMIT):
-        erf = _erf_series(z)
-        upper = half * (decimal_from_int(1) + erf)
-    else:
-        upper = decimal_from_int(1) - half * _erfc_fraction(z)
-    return upper if x >= 0 else decimal_from_int(1) - upper
 
 
 def normal_cdf(x: Decimal) -> Decimal:

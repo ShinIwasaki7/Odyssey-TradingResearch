@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import polars as pl
 
@@ -112,6 +112,7 @@ from odyssey_fx.evaluation.application.ports import (
     TrialLedgerReadFailure,
     TrialLedgerRefusal,
 )
+from odyssey_fx.evaluation.domain.deflated_downside import DeflatedDownsideDetail
 from odyssey_fx.evaluation.domain.errors import ArtifactAlreadyExists
 from odyssey_fx.evaluation.domain.experiment import (
     ExperimentManifest,
@@ -145,7 +146,9 @@ from odyssey_fx.evaluation.domain.path import (
     PathSegmentRow,
     PathSegmentStart,
     PathSummary,
+    PathSummaryV5,
     PathTradeKind,
+    PathTradeTotals,
 )
 from odyssey_fx.evaluation.domain.policy_basis import (
     FixedComparisonBasis,
@@ -190,6 +193,7 @@ from odyssey_fx.evaluation.domain.search import (
     ConditionOutcome,
     ConditionResult,
     ConditionScope,
+    DeflatedDownsideResult,
     DeflatedDownsideRule,
     DeflationMethod,
     EvaluationStandard,
@@ -203,8 +207,11 @@ from odyssey_fx.evaluation.domain.search import (
     LedgerResults,
     Lineage,
     LineageSource,
+    LossConcentrationDetail,
+    LossConcentrationResult,
     LossConcentrationRule,
     MetricCondition,
+    NeighborConditionResult,
     NeighborFloorRule,
     Neighborhood,
     NeighborInterval,
@@ -214,6 +221,7 @@ from odyssey_fx.evaluation.domain.search import (
     PathRule,
     PathRuleV5,
     ProfitabilityAxis,
+    ProfitFactorResult,
     SearchOutcome,
     SearchPlan,
     SearchPlanKind,
@@ -3196,37 +3204,164 @@ def _fold_selection_of(payload: object) -> FoldSelection:
     )
 
 
-def _condition_result_of(payload: object) -> ConditionResult:
+_CONDITION_RESULT_KEYS: Final = (
+    "scope",
+    "fold_index",
+    "metric",
+    "statistic",
+    "comparator",
+    "threshold",
+    "observed",
+    "outcome",
+    "unavailable_reason",
+)
+
+#: 版 5 以上の条件の結果の型ごとの追加の項目（D24 §9.3。正規化形は型名を持たないので項目名で選ぶ）。
+_V5_RESULT_KEYS: Final = (
+    "neighbor_trial_index",
+    "profit_factor",
+    "loss_concentration",
+    "deflated_downside",
+)
+
+
+def _optional_decimal_c(value: object, label: str) -> Decimal | None:
+    return None if value is None else _decimal_of(value, label)
+
+
+def _path_trade_totals_of(payload: object) -> PathTradeTotals:
     item = _keys(
         payload,
         (
-            "scope",
-            "fold_index",
-            "metric",
-            "statistic",
-            "comparator",
-            "threshold",
-            "observed",
-            "outcome",
+            "wins",
+            "losses",
+            "closed_count",
+            "settlement_count",
+            "win_count",
+            "loss_count",
+        ),
+        "path trades",
+    )
+    return PathTradeTotals(
+        wins=_money_c(item["wins"], "path.trades.wins"),
+        losses=_money_c(item["losses"], "path.trades.losses"),
+        closed_count=_int_of(item["closed_count"], "path.trades.closed_count"),
+        settlement_count=_int_of(item["settlement_count"], "path.trades.settlement_count"),
+        win_count=_int_of(item["win_count"], "path.trades.win_count"),
+        loss_count=_int_of(item["loss_count"], "path.trades.loss_count"),
+    )
+
+
+def _loss_concentration_detail_of(payload: object) -> LossConcentrationDetail:
+    item = _keys(
+        payload,
+        (
+            "worst_fold_loss",
+            "worst_fold_index",
+            "path_net_return",
+            "applies_when_at_least",
+            "folds",
+        ),
+        "loss_concentration",
+    )
+    index = item["worst_fold_index"]
+    return LossConcentrationDetail(
+        worst_fold_loss=_optional_decimal_c(item["worst_fold_loss"], "worst_fold_loss"),
+        worst_fold_index=None if index is None else _int_of(index, "worst_fold_index"),
+        path_net_return=_optional_decimal_c(item["path_net_return"], "path_net_return"),
+        applies_when_at_least=_decimal_of(item["applies_when_at_least"], "applies_when_at_least"),
+        folds=_int_of(item["folds"], "loss_concentration.folds"),
+    )
+
+
+def _deflated_downside_detail_of(payload: object) -> DeflatedDownsideDetail:
+    item = _keys(
+        payload,
+        (
+            "trial_count",
+            "observations",
+            "ratio",
+            "sigma",
+            "mean_correlation",
+            "correlation_pairs",
+            "excluded_pairs",
+            "effective_trials",
+            "variance",
+            "variance_folds",
+            "benchmark",
+            "probability",
             "unavailable_reason",
         ),
-        "condition_result",
+        "deflated_downside",
     )
+    observations = item["observations"]
+    reason = item["unavailable_reason"]
+    return DeflatedDownsideDetail(
+        trial_count=_int_of(item["trial_count"], "deflated_downside.trial_count"),
+        observations=None
+        if observations is None
+        else _int_of(observations, "deflated_downside.observations"),
+        ratio=_optional_decimal_c(item["ratio"], "deflated_downside.ratio"),
+        sigma=_optional_decimal_c(item["sigma"], "deflated_downside.sigma"),
+        mean_correlation=_optional_decimal_c(item["mean_correlation"], "mean_correlation"),
+        correlation_pairs=_int_of(item["correlation_pairs"], "correlation_pairs"),
+        excluded_pairs=_int_of(item["excluded_pairs"], "excluded_pairs"),
+        effective_trials=_optional_decimal_c(item["effective_trials"], "effective_trials"),
+        variance=_optional_decimal_c(item["variance"], "deflated_downside.variance"),
+        variance_folds=_int_of(item["variance_folds"], "variance_folds"),
+        benchmark=_optional_decimal_c(item["benchmark"], "deflated_downside.benchmark"),
+        probability=_optional_decimal_c(item["probability"], "deflated_downside.probability"),
+        unavailable_reason=None if reason is None else MetricUnavailableReason(reason),
+    )
+
+
+def _condition_result_of(payload: object) -> ConditionResult:
+    """条件 1 件の結果（版 4 以下の形と、版 5 以上の 4 つの型。D24 §9.3）。"""
+    if not isinstance(payload, Mapping):
+        raise KernelValueError("condition_result must be a JSON object")
+    extra = [key for key in _V5_RESULT_KEYS if key in payload]
+    if len(extra) > 1:
+        raise KernelValueError(f"condition_result has more than one v5 item: {extra}")
+    item = _keys(payload, (*_CONDITION_RESULT_KEYS, *extra), "condition_result")
     fold = item["fold_index"]
     statistic = item["statistic"]
     observed = item["observed"]
     reason = item["unavailable_reason"]
-    return ConditionResult(
-        scope=ConditionScope(item["scope"]),
-        fold_index=None if fold is None else _int_of(fold, "condition_result.fold_index"),
-        metric=MetricId(item["metric"]),
-        statistic=None if statistic is None else FoldStatistic(statistic),
-        comparator=Comparator(item["comparator"]),
-        threshold=_decimal_of(item["threshold"], "condition_result.threshold"),
-        observed=None if observed is None else _decimal_of(observed, "condition_result.observed"),
-        outcome=ConditionOutcome(item["outcome"]),
-        unavailable_reason=None if reason is None else MetricUnavailableReason(reason),
-    )
+    fields: dict[str, Any] = {
+        "scope": ConditionScope(item["scope"]),
+        "fold_index": None if fold is None else _int_of(fold, "condition_result.fold_index"),
+        "metric": MetricId(item["metric"]),
+        "statistic": None if statistic is None else FoldStatistic(statistic),
+        "comparator": Comparator(item["comparator"]),
+        "threshold": _decimal_of(item["threshold"], "condition_result.threshold"),
+        "observed": None
+        if observed is None
+        else _decimal_of(observed, "condition_result.observed"),
+        "outcome": ConditionOutcome(item["outcome"]),
+        "unavailable_reason": None if reason is None else MetricUnavailableReason(reason),
+    }
+    if "neighbor_trial_index" in item:
+        neighbor = item["neighbor_trial_index"]
+        return NeighborConditionResult(
+            **fields,
+            neighbor_trial_index=None
+            if neighbor is None
+            else _int_of(neighbor, "condition_result.neighbor_trial_index"),
+        )
+    if "profit_factor" in item:
+        return ProfitFactorResult(
+            **fields, profit_factor=_path_trade_totals_of(item["profit_factor"])
+        )
+    if "loss_concentration" in item:
+        return LossConcentrationResult(
+            **fields,
+            loss_concentration=_loss_concentration_detail_of(item["loss_concentration"]),
+        )
+    if "deflated_downside" in item:
+        return DeflatedDownsideResult(
+            **fields, deflated_downside=_deflated_downside_detail_of(item["deflated_downside"])
+        )
+    return ConditionResult(**fields)
 
 
 def _shortfall_of(payload: object) -> SufficiencyShortfall:
@@ -3323,19 +3458,18 @@ def _path_row_of(payload: object) -> PathSegmentRow:
 
 
 def _path_summary_of(payload: object) -> PathSummary:
-    item = _keys(
-        payload,
-        (
-            "segments",
-            "end",
-            "end_segment",
-            "end_reason",
-            "metrics",
-            "trade_count",
-            "final_balance",
-        ),
-        "path",
+    """経路の要約（版 4 以下の形と、取引の集合の要約 `trades` を持つ版 5 以上の形。D24 §9.3）。"""
+    names = (
+        "segments",
+        "end",
+        "end_segment",
+        "end_reason",
+        "metrics",
+        "trade_count",
+        "final_balance",
     )
+    v5 = isinstance(payload, Mapping) and "trades" in payload
+    item = _keys(payload, (*names, "trades") if v5 else names, "path")
     metrics: list[tuple[MetricId, MetricValue]] = []
     for raw in _list_of(item["metrics"], "path.metrics"):
         pair = _list_of(raw, "path.metrics")
@@ -3345,15 +3479,21 @@ def _path_summary_of(payload: object) -> PathSummary:
     end_segment = item["end_segment"]
     reason = item["end_reason"]
     trades = item["trade_count"]
-    return PathSummary(
-        segments=tuple(_path_row_of(raw) for raw in _list_of(item["segments"], "path.segments")),
-        end=PathEnd(item["end"]),
-        end_segment=None if end_segment is None else _int_of(end_segment, "path.end_segment"),
-        end_reason=None if reason is None else _str_of(reason, "path.end_reason"),
-        metrics=tuple(metrics),
-        trade_count=None if trades is None else _int_of(trades, "path.trade_count"),
-        final_balance=_optional_money_c(item["final_balance"], "path.final_balance"),
-    )
+    fields: dict[str, Any] = {
+        "segments": tuple(_path_row_of(raw) for raw in _list_of(item["segments"], "path.segments")),
+        "end": PathEnd(item["end"]),
+        "end_segment": None if end_segment is None else _int_of(end_segment, "path.end_segment"),
+        "end_reason": None if reason is None else _str_of(reason, "path.end_reason"),
+        "metrics": tuple(metrics),
+        "trade_count": None if trades is None else _int_of(trades, "path.trade_count"),
+        "final_balance": _optional_money_c(item["final_balance"], "path.final_balance"),
+    }
+    if v5:
+        totals = item["trades"]
+        return PathSummaryV5(
+            **fields, trades=None if totals is None else _path_trade_totals_of(totals)
+        )
+    return PathSummary(**fields)
 
 
 def _variant_outcome_of(payload: object) -> VariantOutcome:

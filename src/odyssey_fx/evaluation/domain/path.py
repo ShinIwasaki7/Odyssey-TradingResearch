@@ -69,9 +69,11 @@ __all__ = [
     "PathSegmentRow",
     "PathSegmentStart",
     "PathSummary",
+    "PathSummaryV5",
     "PathTrade",
     "PathTradeKind",
     "PathTradeSet",
+    "PathTradeTotals",
     "PlannedSegment",
     "SegmentTrades",
     "SettledPosition",
@@ -699,3 +701,85 @@ def path_trade_set(
             f" {expected_net.amount} と一致しない（経路の取引の恒等式。D24 §3.3、仮置き 14）"
         )
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class PathTradeTotals:
+    """経路の取引の集合の要約（結末記録の経路の要約に残す値。D24 §3.3・§9.3。実装 PR 4-2）。
+
+    `wins`（`W`）・`losses`（`L`。負けの合計の絶対値）と、件数（完了取引・区間の終わりの仮決済・
+    勝ち・負け）。`PathTradeSet` から作る（`of`）。経路の `PROFIT_FACTOR` の条件の入力である。
+    """
+
+    wins: Money
+    losses: Money
+    closed_count: int
+    settlement_count: int
+    win_count: int
+    loss_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.wins, Money) or not isinstance(self.losses, Money):
+            raise KernelValueError("PathTradeTotals.wins / losses must be Money")
+        if self.wins.currency != self.losses.currency:
+            raise KernelValueError("PathTradeTotals: 勝ちと負けの合計の通貨が違う")
+        if self.wins.amount < 0 or self.losses.amount < 0:
+            raise KernelValueError("PathTradeTotals: 勝ちと負けの合計は 0 以上")
+        for label in ("closed_count", "settlement_count", "win_count", "loss_count"):
+            _require_index(getattr(self, label), f"PathTradeTotals.{label}")
+        if self.win_count + self.loss_count > self.trade_count:
+            raise KernelValueError("PathTradeTotals: 勝ちと負けの件数が取引の件数を超える")
+        if (self.win_count == 0) != (self.wins.amount == 0) or (self.loss_count == 0) != (
+            self.losses.amount == 0
+        ):
+            raise KernelValueError("PathTradeTotals: 件数と合計の有無が食い違う")
+
+    @property
+    def trade_count(self) -> int:
+        """集合の件数（完了取引 ＋ 区間の終わりの仮決済）。"""
+        return self.closed_count + self.settlement_count
+
+    @classmethod
+    def of(cls, trades: PathTradeSet) -> PathTradeTotals:
+        """経路の取引の集合から要約を作る。"""
+        if not isinstance(trades, PathTradeSet):
+            raise KernelValueError("PathTradeTotals.of requires a PathTradeSet")
+        return cls(
+            wins=trades.wins,
+            losses=trades.losses,
+            closed_count=sum(
+                1 for item in trades.trades if item.kind is PathTradeKind.CLOSED_TRADE
+            ),
+            settlement_count=sum(
+                1 for item in trades.trades if item.kind is PathTradeKind.SEGMENT_END_SETTLEMENT
+            ),
+            win_count=trades.win_count,
+            loss_count=trades.loss_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PathSummaryV5(PathSummary):
+    """研究ポリシーの版 5 以上を指す探索の経路の要約（D24 §3.3・§9.3。実装 PR 4-2）。
+
+    版 4 以下の `PathSummary` に、経路の取引の集合の要約 `trades` を足す。判定できないで終えた経路は
+    `None`、それ以外は値を持つ（経路の `PROFIT_FACTOR` の条件の入力）。版 4 以下を指す実験の経路は
+    `PathSummary` のまま（結末記録の形を変えない）。
+    """
+
+    trades: PathTradeTotals | None
+
+    def __post_init__(self) -> None:
+        PathSummary.__post_init__(self)
+        if self.end is PathEnd.INCOMPLETE:
+            if self.trades is not None:
+                raise KernelValueError("判定できないで終えた経路は取引の集合の要約を持たない")
+        elif not isinstance(self.trades, PathTradeTotals):
+            raise KernelValueError(
+                "版 5 の経路の要約は、判定できないで終えた経路のほかは取引の集合の要約を持つ"
+                "（D24 §3.3）"
+            )
+        elif self.final_balance is not None and (
+            self.trades.wins.currency != self.final_balance.currency
+        ):
+            raise KernelValueError("PathSummaryV5: 取引の合計の通貨が経路の口座の通貨と違う")

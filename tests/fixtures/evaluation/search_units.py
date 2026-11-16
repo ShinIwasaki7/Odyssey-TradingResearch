@@ -55,6 +55,7 @@ from odyssey_fx.evaluation.domain.search import (
     FoldEvidence,
     FoldStatistic,
     FrequencyClass,
+    LossSideEvidence,
     MetricCondition,
     PathBoundary,
     PathRule,
@@ -297,10 +298,14 @@ def judge(
     path: PathSummary | None = None,
     *,
     variant: Variant = Variant.STANDARD,
+    loss_side: LossSideEvidence | None = None,
 ) -> VariantOutcome:
-    """組 1 つの判定（経路を渡さなければ全区間を走り終えた人工の経路で判定する）。"""
+    """組 1 つの判定（経路を渡さなければ全区間を走り終えた人工の経路で判定する）。
+
+    `loss_side` は研究ポリシーの版 5 以上の判定の追加の入力（版 4 以下は `None`。D24 §3・§4）。
+    """
     return build_variant_outcome(
-        rule, variant, folds, path if path is not None else path_summary(len(folds))
+        rule, variant, folds, path if path is not None else path_summary(len(folds)), loss_side
     )
 
 
