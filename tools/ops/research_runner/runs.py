@@ -1,12 +1,16 @@
 """探索の run の包み `tools/ops/run_experiment.py` との境目（D25-13 (a)。決定 185「呼ぶだけ」）。
 
 - **包みとの約束**（D26 の PR-B。仮置き 35・36）: 実行器は包みを変えずに呼ぶ。ただし起動の前に、
-  包みが次の 3 つを持つことを確かめ、無ければ何も起動せずに全体の停止にする（D25 §8。理由の文に
-  「包みが D26 の PR-B の前」）。名前は本 PR の仮置きで、PR-B の実装に合わせて直す:
-  1. 方式の引数 `--execution-mode`（`EXECUTION_MODES` に `parallel`・`sequential`）。
-  2. `caffeinate` を新しいプロセスグループの先頭として起動する印 `RUN_PID_LEADS_GROUP = True`
-     （`launch.json` の `run_pid` がグループの番号になる）。
-  3. 同じ版の実行中の印のロックが取れない拒否の専用の終了コード `EXIT_RUN_LOCKED`。
+  包みが PR-B の後の形かを確かめ、前なら何も起動せずに全体の停止にする（D25 §8。理由の文に
+  「包みが D26 の PR-B の前」）。PR #194 の head 18adb2d に合わせた（本 PR の仮置き 1。merge の
+  時点で再確認する）:
+  1. 方式の引数 `--variant-mode`（包みの `VARIANT_MODES` に `parallel`・`serial`）。PR-B の後かは
+     この属性で見分ける。
+  2. `caffeinate` を新しいプロセスグループの先頭として起動する（`launch.json` の `run_pid` が
+     グループの番号）。PR-B の包みには印の属性が無いので 1 と同じ PR で入ることを前提にし、
+     グループへ合図を送る前に毎回 `run_pid` がグループの先頭かを確かめる。
+  3. 同じ版の実行中の印のロックが取れない拒否の専用の終了コード 10（`experiment run`・
+     `experiment reproduce` の終了コード。D07 の終了コードの表の PR-B の改訂、D26 の仮置き 3）。
 - **終わりの知り方**: 包みが書く `exit_code.txt`・`launch.json` の `run_pid`・
   `launcher_pid` の生死。
   `console.log` は読まない（判定が出るため。D14 §2.3.1）。
@@ -28,7 +32,10 @@ from typing import Final
 from tools.ops.research_runner.ports import WrapperContract
 
 __all__ = [
+    "EXIT_RUN_LOCKED",
     "MODE_ARGUMENT",
+    "PARALLEL",
+    "SERIAL",
     "RunFiles",
     "WRAPPER_FILES",
     "WrapperProcess",
@@ -37,7 +44,13 @@ __all__ = [
     "read_run",
 ]
 
-MODE_ARGUMENT: Final = "--execution-mode"
+MODE_ARGUMENT: Final = "--variant-mode"
+#: 方式の値（包みの `VARIANT_MODES`。`experiment reproduce --variant-mode` も同じ値）。
+PARALLEL: Final = "parallel"
+SERIAL: Final = "serial"
+#: ロックが取れない拒否の専用の終了コード（D26 の仮置き 3。run の終了コードとして
+#: `exit_code.txt` に書かれる。`experiment reproduce` も同じ値）。
+EXIT_RUN_LOCKED: Final = 10
 #: 包みが版のディレクトリに書くファイル（D25 §4.7 の 2）。
 WRAPPER_FILES: Final = (
     "launch.json",
@@ -57,17 +70,13 @@ def probe_contract(module: ModuleType | None = None) -> WrapperContract:
     if module is None:
         module = importlib.import_module("tools.ops.run_experiment")
     problems: list[str] = []
-    modes = getattr(module, "EXECUTION_MODES", None)
-    if not isinstance(modes, tuple) or not {"parallel", "sequential"} <= set(modes):
-        problems.append("包みが D26 の PR-B の前（方式の引数 --execution-mode が無い）")
-    if getattr(module, "RUN_PID_LEADS_GROUP", None) is not True:
+    modes = getattr(module, "VARIANT_MODES", None)
+    if not isinstance(modes, tuple) or not {PARALLEL, SERIAL} <= set(modes):
         problems.append(
-            "包みが D26 の PR-B の前（run_pid がプロセスグループの先頭でない。一時停止できない）"
+            "包みが D26 の PR-B の前（方式の引数 --variant-mode と、run_pid を先頭とする"
+            "プロセスグループの分離が無い）"
         )
-    locked = getattr(module, "EXIT_RUN_LOCKED", None)
-    if isinstance(locked, bool) or not isinstance(locked, int):
-        problems.append("包みが D26 の PR-B の前（ロックの拒否の専用の終了コードが無い）")
-        locked = None
+    locked = None if problems else EXIT_RUN_LOCKED
     return WrapperContract(ready=not problems, problems=tuple(problems), locked_exit_code=locked)
 
 

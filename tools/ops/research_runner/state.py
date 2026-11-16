@@ -195,6 +195,9 @@ class GlobalState:
     exec_pr: dict[str, Any] | None = None
     #: 実行記録の PR を待つ要求（`card`・`version`・`purpose`）。
     exec_queue: list[dict[str, Any]] = field(default_factory=list)
+    #: 実行用の作業木でコミットした後、push と PR の作成がまだ終わっていない実行記録
+    #: （`card`・`version`・`purpose`・`paths`）。次の 1 歩は push から続ける。
+    exec_sending: dict[str, Any] | None = None
     #: 発想役（`running`・`attempt`・`after_done`（done/ に移った後の起動の予約の数）・
     #: `queue_empty_used`（空のときの 1 回を使ったか）・`extra`（人間の答えの 1 回））。
     ideator: dict[str, Any] = field(default_factory=dict)

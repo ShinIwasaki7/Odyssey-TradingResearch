@@ -215,6 +215,56 @@ def test_the_wrapper_before_pr_b_stops_everything_without_launching(rig: Rig) ->
     assert _phase(rig) == "C2"
 
 
+def test_resuming_a_global_stop_keeps_it_until_the_preconditions_hold(rig: Rig) -> None:
+    """前提がそろわない間は、「再開」の答えでも全体の停止を外さない（安全側の確かめを飛ばさない）。"""
+    rig.wrapper.ready = False
+    rig.step()
+    issue = rig.world.issue_for("TOOL_FAILURE")
+    rig.world.answer(issue.number, "2")  # 再開
+    rig.step()
+    assert [item["reason"] for item in rig.state()["reasons"]] == ["TOOL_FAILURE_GLOBAL"]
+    assert not issue.closed
+    assert not rig.wrapper.launched and not rig.world.prs
+    assert not (rig.paths.state_dir / "cards" / f"{CARD_ID}.json").exists()  # 取り出さない
+    rig.wrapper.ready = True
+    rig.step()
+    assert rig.state()["reasons"] == [] and issue.closed
+
+
+def test_a_committed_run_record_is_sent_after_a_failed_push(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """実行記録をコミットした後に push が失敗しても、次の 1 歩はコミットし直さずに push と
+    PR の作成から続ける（未送信のコミットを merge 済みと取り違えない）。"""
+    from tests.fixtures.research_runner import FakeGit
+    from tools.ops.hypothesis_cards.repo import ToolFailure
+
+    _launch(rig)
+    original = FakeGit.exec_push
+    calls = {"push": 0}
+
+    def flaky(self: FakeGit) -> None:
+        calls["push"] += 1
+        if calls["push"] == 1:
+            raise ToolFailure("push が一時的に失敗した（試験）")
+        original(self)
+
+    monkeypatch.setattr(FakeGit, "exec_push", flaky)
+    rig.wrapper.finish(0, 0, lines=2)
+    notes = rig.step()
+    assert any("push が一時的に失敗した" in note for note in notes)
+    assert rig.state()["exec_sending"] is not None and rig.state()["exec_pr"] is None
+    committed = rig.world.exec_head
+    rig.step()
+    assert rig.world.exec_head == committed  # コミットし直さない
+    assert rig.state()["exec_sending"] is None
+    assert rig.state()["exec_queue"] == []
+    exec_prs = [pr for pr in rig.world.routine() if pr.branch == "runner/exec"]
+    assert len(exec_prs) == 1 and exec_prs[0].commit == committed
+    _assert_ci_passed(rig)
+    _until(rig, "C7")  # merge → 分析へ
+
+
 def test_a_rejected_card_is_moved_to_done_and_three_in_a_row_stop(tmp_path: Path) -> None:
     rig = make_rig(tmp_path)
     for index, title in enumerate(("bad-one", "bad-two", "bad-three")):
@@ -378,8 +428,24 @@ def test_a_second_run_waits_for_the_first_start_line_to_be_merged(tmp_path: Path
     _assert_ci_passed(rig)
     assert len(rig.wrapper.launched) == 1
     _until(rig, "C4", card=second)  # merge → 早送り → 2 本目を順番（枠 1 つ）で起動
-    assert rig.wrapper.launched[1]["mode"] == "sequential"
+    assert rig.wrapper.launched[1]["mode"] == "serial"
     assert rig.card(second)["run"]["slots"] == 1
+
+
+def test_a_reproduction_refused_by_the_lock_waits_and_is_relaunched(rig: Rig) -> None:
+    """再現がロックの拒否（終了コード 10）で終わっても不一致に数えず、待って起動し直す。"""
+    rig.workers.add("analyst_change", _analysis(FIRST))
+    _launch(rig)
+    _run_version(rig, 1)
+    _until(rig, "C2")
+    first = rig.procs.by_kind("reproduce")
+    rig.procs.finish("reproduce", rig.wrapper.locked_code)
+    rig.step()
+    assert not [issue for issue in rig.world.open_issues() if "REPRO_MISMATCH" in issue.title]
+    assert rig.card(CARD_ID)["repro"] is None
+    assert rig.procs.by_kind("reproduce") is first  # 15 分は待つ
+    assert "reproduce" in rig.card(CARD_ID)["reservations"]  # 予約に戻す（起動し直す）
+    assert rig.card(CARD_ID)["checks"]["repro_retry_after"]
 
 
 def test_a_reproduction_mismatch_during_a_run_stops_after_the_run(rig: Rig) -> None:
@@ -387,6 +453,15 @@ def test_a_reproduction_mismatch_during_a_run_stops_after_the_run(rig: Rig) -> N
     _launch(rig)
     _run_version(rig, 1)
     _until(rig, "C2")  # 分析 → 版 2 の登録 PR、再現を起動
+    # 重い処理が 0 なので、再現は並列（枠 2 つ）を要求する（D25 §4.4、PR #194 の引数）。
+    assert rig.procs.by_kind("reproduce")["command"][-2:] == ["--variant-mode", "parallel"]
+    _until(rig, "C3")
+    rig.step()
+    assert len(rig.wrapper.launched) == 1  # 再現が枠を 2 つ使うので、版 2 は待つ
+    # 再現を順番（枠 1 つ）の処理として扱うため、状態を直す。
+    state_path = rig.paths.state_dir / "cards" / f"{CARD_ID}.json"
+    text = state_path.read_text(encoding="utf-8").replace('"slots": 2', '"slots": 1')
+    state_path.write_text(text, encoding="utf-8")
     _until(rig, "C4")  # 版 2 の起動（再現と並んで枠 1 つずつ）
     rig.procs.finish("reproduce", 6)
     rig.step()  # T16: run は続け、理由の集合に足す

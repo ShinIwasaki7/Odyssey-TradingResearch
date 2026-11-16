@@ -91,10 +91,11 @@ from tools.ops.research_runner.reasons import Action, Scope, options_for, reason
 from tools.ops.research_runner.resources import (
     DISK_FLOOR_BYTES,
     MAX_SLOTS,
+    SERIAL,
     estimate_seconds,
     plan_slots,
 )
-from tools.ops.research_runner.runs import move_attempt, read_run
+from tools.ops.research_runner.runs import MODE_ARGUMENT, move_attempt, read_run
 from tools.ops.research_runner.state import (
     CardPhase,
     CardState,
@@ -493,9 +494,14 @@ class Runner:
             ctx.state.ideator["extra"] = 1
         elif action is Action.END_CARD_AND_RESUME and item.card in ctx.cards:
             self._begin_end(ctx, ctx.cards[item.card], item.reason)
-        elif action is Action.RESUME and item.reason == "TOOL_FAILURE_GLOBAL":
-            # 前提を確かめ直す（そろっていなければ、この 1 歩の前提の確かめで既に足されている）。
-            pass
+        elif (
+            action is Action.RESUME
+            and item.reason == "TOOL_FAILURE_GLOBAL"
+            and not self._preconditions_ok(ctx)
+        ):
+            # 前提（包みが PR-B の後・研究ポリシーの現行が第 5 版）がそろうまでは外さない
+            # （答えで安全側の確かめを飛ばさない。そろえば自動の確かめでも外れる）。
+            return False
         self._release_global(ctx, item.reason)
         return True
 
@@ -601,7 +607,7 @@ class Runner:
                 card.find_reason("LEDGER_CHECK_FAILED") is not None for card in ctx.cards.values()
             )
             dirty = [p for p in self.ports.git.exec_dirty_paths() if p in _LEDGER_FILES]
-            if not pending and not dirty and state.exec_pr is None:
+            if not pending and not dirty and state.exec_pr is None and state.exec_sending is None:
                 self._release_global(ctx, "LEDGER_CHECK_FAILED")
         for card in ctx.cards.values():
             ids = card.reason_ids()
@@ -614,6 +620,12 @@ class Runner:
                     status = self._pr_status(ctx, int(ctx.state.exec_pr["number"]))
                     if status.state is PrState.MERGED:
                         self._release_card(ctx, card, "CI_FAILED")
+            fix_pr = card.checks.get("fix_pr")
+            if "CI_FAILED" in card.reason_ids() and isinstance(fix_pr, int):
+                # 関所 1 の固定の記録の PR（`card.pr` とは別に持つ）が直されて merge された:
+                # 外して C11 に戻し、同じ 1 歩の段で最終検証の予約へ進める。
+                if self._pr_status(ctx, fix_pr).state is PrState.MERGED:
+                    self._release_card(ctx, card, "CI_FAILED")
             if "FIXATION_TOOL_MISSING" in ids and self.ports.evaluation.fix_available():
                 self._release_card(ctx, card, "FIXATION_TOOL_MISSING", to=CardPhase.C11.name)
             if (
@@ -1539,6 +1551,14 @@ class Runner:
                 return
             code = -1
         card.procs.pop("reproduce", None)
+        locked = self.ports.wrapper.contract().locked_exit_code
+        if locked is not None and code == locked:
+            # 元の版の実行中の印のロックが取れない拒否: 不一致に数えず、待って起動し直す
+            # （探索の run の仮置き 36 と同じ扱い）。
+            card.checks["repro_retry_after"] = format_time(ctx.now + LOCKED_WAIT)
+            if "reproduce" not in card.reservations:
+                card.reservations.append("reproduce")
+            return
         if code == 0:
             card.repro = "MATCH"
         else:
@@ -1646,6 +1666,17 @@ class Runner:
                 if self._retry_or_stop(ctx, card, "CI_FAILED", key=f"CI_FAILED:{number}"):
                     self.ports.github.rerun_checks(number)
             return
+        if state.exec_sending is not None:
+            # 前の 1 歩がコミットした後に push か PR の作成で止まった: コミットし直さずに続ける。
+            sending = state.exec_sending
+            card = ctx.cards.get(str(sending["card"]))
+            if card is None:
+                raise ToolFailure(f"未送信の実行記録のカード {sending['card']} の状態が無い")
+            request = {key: sending[key] for key in ("card", "version", "purpose")}
+            self._send_exec(ctx, card)
+            if request in state.exec_queue:
+                state.exec_queue.remove(request)
+            return
         while state.exec_queue:
             request = state.exec_queue[0]
             card = ctx.cards.get(str(request["card"]))
@@ -1700,6 +1731,19 @@ class Runner:
             if path in _LEDGER_FILES and data and not data.endswith(b"\n"):
                 git.exec_undo_commit()
                 return None
+        # コミットした後の送信の段を先に書き残す（push・PR の作成が止まっても、次の 1 歩が
+        # コミットし直さずに push から続ける）。
+        ctx.state.exec_sending = {**dict(request), "paths": list(paths)}
+        self.store.save_global(ctx.state)
+        return self._send_exec(ctx, card)
+
+    def _send_exec(self, ctx: _Context, card: CardState) -> bool:
+        """コミット済みの実行記録を push し、実行記録の定型 PR を作る（同じ枝の開いた PR が
+        あればそれを使う）。"""
+        git = self.ports.git
+        sending = ctx.state.exec_sending or {}
+        paths = [str(path) for path in sending.get("paths", [])]
+        version = int(sending["version"])
         git.exec_push()
         files = {path: self._exec_file(path) or b"" for path in paths}
         view = self._view(ctx)
@@ -1718,7 +1762,9 @@ class Runner:
         )
         number = self.ports.github.create_pr(branch=text.branch, title=text.title, body=text.body)
         self.ports.github.enable_auto_merge(number)
-        ctx.state.exec_pr = {**dict(request), "number": number}
+        request = {key: sending[key] for key in ("card", "version", "purpose")}
+        ctx.state.exec_pr = {**request, "number": number}
+        ctx.state.exec_sending = None
         card.checks["ledger_committed"] = True
         return True
 
@@ -1826,20 +1872,20 @@ class Runner:
                 used=used,
                 heavy_running=heavy,
                 free_memory=self.ports.system.free_memory_bytes() if heavy else 0,
-                run=kind in {"run"},
+                run=kind in {"run", "reproduce"},
             )
             if not plan.allowed:
                 return
             if not self._disk_ok(ctx):
                 return
             if kind == "run":
-                self._launch_run(ctx, card, plan.slots, plan.mode or "sequential")
+                self._launch_run(ctx, card, plan.slots, plan.mode or SERIAL)
             elif kind == "review":
                 self._launch_review(ctx, card)
             elif kind == "final":
                 self._launch_final(ctx, card)
             else:
-                self._launch_reproduce(ctx, card)
+                self._launch_reproduce(ctx, card, plan.slots, plan.mode or SERIAL)
 
     def _exec_ready(self, ctx: _Context) -> bool:
         """起動の前の確かめの 2・3（未コミットの台帳の行・ロック・早送り）。"""
@@ -1856,7 +1902,12 @@ class Runner:
         if dirty:
             # 1 本目の開始の行をコミットし、開始の行だけの実行記録の PR を出す
             # （D25 §4.4 の (ii)〜(iv)）。
-            if running and ctx.state.exec_pr is None and not ctx.state.exec_queue:
+            if (
+                running
+                and ctx.state.exec_pr is None
+                and ctx.state.exec_sending is None
+                and not ctx.state.exec_queue
+            ):
                 self._request_exec(ctx, running[0], "ledger")
             return False
         head = git.exec_head()
@@ -1999,7 +2050,12 @@ class Runner:
         card.reservations.remove("final")
         self._spawn(ctx, card, "final", command, slots=1, cwd=self.paths.repo)
 
-    def _launch_reproduce(self, ctx: _Context, card: CardState) -> None:
+    def _launch_reproduce(self, ctx: _Context, card: CardState, slots: int, mode: str) -> None:
+        """元の実験の再現。探索の run と同じく、空きが 2 つなら並列、1 つなら順番を要求する
+        （D25 §4.4、D26-3 (a)。引数は PR #194 の `experiment reproduce --variant-mode`）。"""
+        retry_after = card.checks.get("repro_retry_after")
+        if retry_after and ctx.now < parse_time(str(retry_after)):
+            return
         if not self._exec_ready(ctx):
             return
         out = self.paths.repro_out(card.experiment, 1)
@@ -2016,9 +2072,12 @@ class Runner:
             str(out),
             "--repo-root",
             str(self.paths.exec_worktree),
+            MODE_ARGUMENT,
+            mode,
         ]
         card.reservations.remove("reproduce")
-        self._spawn(ctx, card, "reproduce", command, slots=1, cwd=self.paths.exec_worktree)
+        card.checks.pop("repro_retry_after", None)
+        self._spawn(ctx, card, "reproduce", command, slots=slots, cwd=self.paths.exec_worktree)
 
     # --- 自動の削除（決定 147、仮置き 19） ----------------------------------------------------
 

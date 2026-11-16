@@ -124,7 +124,7 @@ def test_the_estimate_and_the_slots() -> None:
     low = plan_slots(used=1, heavy_running=1, free_memory=MEMORY_FLOOR_BYTES - 1, run=True)
     assert not low.allowed
     one = plan_slots(used=1, heavy_running=1, free_memory=MEMORY_FLOOR_BYTES, run=True)
-    assert (one.allowed, one.slots, one.mode) == (True, 1, "sequential")
+    assert (one.allowed, one.slots, one.mode) == (True, 1, "serial")
     assert not plan_slots(used=2, heavy_running=1, free_memory=10**12, run=False).allowed
 
 
@@ -143,13 +143,22 @@ def test_free_memory_from_vm_stat() -> None:
 def test_the_wrapper_contract_needs_pr_b() -> None:
     from tools.ops import run_experiment
 
-    assert not probe_contract(run_experiment).ready  # 今の包みは PR-B の前
-    after = types.ModuleType("after")
-    after.EXECUTION_MODES = ("parallel", "sequential")  # type: ignore[attr-defined]
-    after.RUN_PID_LEADS_GROUP = True  # type: ignore[attr-defined]
-    after.EXIT_RUN_LOCKED = 75  # type: ignore[attr-defined]
+    # 本物の包み: PR-B（#194）の前なら止まり、後なら通る（merge の前後のどちらでも落ちない）。
+    real = probe_contract(run_experiment)
+    assert real.ready is hasattr(run_experiment, "VARIANT_MODES")
+    before = types.ModuleType("before")
+    before.EXIT_REFUSED = 2  # type: ignore[attr-defined]
+    stopped = probe_contract(before)
+    assert not stopped.ready and stopped.locked_exit_code is None
+    assert "--variant-mode" in stopped.problems[0]
+    serial_only = types.ModuleType("serial_only")
+    serial_only.VARIANT_MODES = ("serial",)  # type: ignore[attr-defined]
+    assert not probe_contract(serial_only).ready
+    after = types.ModuleType("after")  # PR #194 の head 18adb2d の包みの形
+    after.VARIANT_MODES = ("parallel", "serial")  # type: ignore[attr-defined]
+    after.DEFAULT_VARIANT_MODE = "parallel"  # type: ignore[attr-defined]
     contract = probe_contract(after)
-    assert contract.ready and contract.locked_exit_code == 75
+    assert contract.ready and contract.locked_exit_code == 10
 
 
 def test_moving_an_attempt_keeps_the_files(tmp_path: Path) -> None:

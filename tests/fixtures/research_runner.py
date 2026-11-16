@@ -477,7 +477,7 @@ class FakeWrapper:
     world: World
     procs: FakeProcs
     ready: bool = True
-    locked_code: int = 75
+    locked_code: int = 10
     launched: list[dict[str, Any]] = field(default_factory=list)
     refuse: bool = False
 

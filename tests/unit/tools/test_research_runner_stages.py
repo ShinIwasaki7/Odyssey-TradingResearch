@@ -218,6 +218,28 @@ def test_a_closed_fixation_pr_ends_the_card(rig: Rig) -> None:
     assert rig.state()["last_human_answer_at"]
 
 
+def test_a_fixation_pr_that_failed_ci_resolves_when_it_is_merged(rig: Rig) -> None:
+    """固定の記録の PR の CI が 2 回落ちて止まっても、直されて merge されれば自動で解け、
+    最終検証の予約へ進む（`card.pr` ではなく `fix_pr` で持つ PR）。"""
+    _inject(rig, "C11")
+    rig.step()
+    record = rig.world.exec_dir / "research/candidate_fixes" / ("a" * 64) / "1" / "1.yaml"
+    record.parent.mkdir(parents=True)
+    record.write_text("schema_version: 1\n", encoding="utf-8")
+    rig.procs.finish("fix", 0)
+    rig.step()
+    fix = next(pr for pr in rig.world.prs.values() if pr.branch.startswith("candidate-fix/"))
+    fix.forced_fail = 2
+    rig.step()  # 1 回目: 走らせ直す
+    rig.step()  # 2 回目: 停止
+    assert _phase(rig) == "C13" and _reasons(rig) == {"CI_FAILED"}
+    rig.world.merge(fix.number)  # 人間が直して merge した
+    rig.step()
+    assert _reasons(rig) == set()
+    assert _phase(rig) == "C12"
+    assert "fix_pr" not in rig.card(CARD_ID)["checks"]
+
+
 # --- C12 最終検証中 -------------------------------------------------------------------
 
 

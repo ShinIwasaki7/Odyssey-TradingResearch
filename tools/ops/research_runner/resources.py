@@ -2,8 +2,10 @@
 
 - **空き**: 計算の重い処理は同時に 2 つまで（決定 146）。並列を要求して起動した探索の run は 2 つと
   数え、順番を要求したものと再現・審査・最終検証は 1 つと数える（D26 の決定「① (a)、」）。
-- **並列の条件**（仮置き 37）: 並列の実験は、走っている重い処理が 0 のときだけ起動する。1 つ走って
-  いれば順番（1 つ）で、空きメモリ 8 GiB 以上のときだけ起動する。
+- **並列の条件**（仮置き 37）: 並列の実験（探索の run と再現）は、走っている重い処理が 0 のときだけ
+  起動する。1 つ走っていれば順番（1 つ）で、空きメモリ 8 GiB 以上のときだけ起動する。並列を要求した
+  run の中の空きメモリの確かめ（PR #194 の 10.0 GiB。足りなければ run が順番に切り替える）は run の
+  側が行い、実行器は要求した方式で枠を数える（D26 の仮置き 6）。実行器は並列のメモリの値を持たない。
 - **空きメモリ**（仮置き 18）: `vm_stat` の free・inactive・speculative のページの合計。
 - **ディスク**（決定 147）: 重い処理の起動の前に 25 GB 以上。
 - **見積り**（仮置き 17）: 模擬する日数 2 組 ×（5 × N × 728 + 1,743 + 1,743）日 × 約 1.40 秒/日。
@@ -21,7 +23,7 @@ __all__ = [
     "MAX_SLOTS",
     "MEMORY_FLOOR_BYTES",
     "PARALLEL",
-    "SEQUENTIAL",
+    "SERIAL",
     "SlotPlan",
     "estimate_seconds",
     "free_memory_from_vm_stat",
@@ -31,8 +33,9 @@ __all__ = [
 MAX_SLOTS: Final = 2
 MEMORY_FLOOR_BYTES: Final = 8 * 1024**3
 DISK_FLOOR_BYTES: Final = 25 * 1000**3
+#: 方式の値（包みの `--variant-mode`。PR #194）。
 PARALLEL: Final = "parallel"
-SEQUENTIAL: Final = "sequential"
+SERIAL: Final = "serial"
 #: 仮置き 17 の式の値（D22 §2.4）。
 _DAYS_PER_TRIAL: Final = 5 * 728
 _FIXED_DAYS: Final = 1743 + 1743
@@ -59,14 +62,14 @@ class SlotPlan:
 
 
 def plan_slots(*, used: int, heavy_running: int, free_memory: int, run: bool) -> SlotPlan:
-    """起動の前の確かめの 1（D25 §4.4）。`run` は探索の run か（並列を要求できるもの）。"""
+    """起動の前の確かめの 1（D25 §4.4）。`run` は並列を要求できるもの（探索の run と再現）か。"""
     if used >= MAX_SLOTS:
         return SlotPlan(False, 0, None, "空きが無い")
     if run and heavy_running == 0 and used == 0:
         return SlotPlan(True, 2, PARALLEL)
     if heavy_running >= 1 and free_memory < MEMORY_FLOOR_BYTES:
         return SlotPlan(False, 0, None, "空きメモリが 8 GiB 未満")
-    return SlotPlan(True, 1, SEQUENTIAL if run else None)
+    return SlotPlan(True, 1, SERIAL if run else None)
 
 
 _PAGE_SIZE: Final = re.compile(r"page size of ([0-9]+) bytes")
