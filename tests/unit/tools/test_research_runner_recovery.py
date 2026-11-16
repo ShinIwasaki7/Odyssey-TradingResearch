@@ -491,3 +491,158 @@ def test_fixation_records_of_two_cards_are_not_mixed_up(rig: Rig) -> None:
     fix = [pr for pr in rig.world.prs.values() if pr.branch.startswith("candidate-fix/")]
     assert len(fix) == 1
     assert other.is_file() and not mine.exists()  # 別のカードの記録は残す
+
+
+# --- Codex 7 巡目 ----------------------------------------------------------------------------
+
+
+def _deferred_then(result: Any) -> tuple[bytes, bytes, dict[str, Any]]:
+    """同じ実行の「保留」の 1 行だけの台帳と、その後にやり直しの審査の行を足した台帳。"""
+    from odyssey_fx.evaluation.adapters.review_store import review_line_bytes
+    from odyssey_fx.evaluation.domain.adoption_review import ReviewResult
+    from tests.fixtures.evaluation.adoption_review import review_entry, review_lines
+    from tests.fixtures.evaluation.trial_ledger import experiment_id
+
+    eid = experiment_id("again")
+    first = review_entry(eid, 1, result=ReviewResult.DEFERRED, nonce="1" * 32)
+    later = review_entry(eid, 1, result=result, nonce="2" * 32)
+    before = b"".join(review_line_bytes(line) for line in review_lines([first]))
+    after = b"".join(review_line_bytes(line) for line in review_lines([first, later]))
+    assert after.startswith(before)
+    return before, after, {"2": {"experiment_id": str(eid), "execution": 1}}
+
+
+def test_the_latest_review_row_is_read_after_a_deferral() -> None:
+    """同じ実行に「保留」の行があり、やり直しの審査が「進める」を足したら、最新の行を読む
+    （Codex 7 巡目の指摘 1。直す前は先頭の「保留」を返した）。"""
+    from odyssey_fx.evaluation.domain.adoption_review import ReviewResult
+    from tools.ops.research_runner.ledger_rows import review_result, review_row_count
+
+    before, after, executions = _deferred_then(ReviewResult.PROCEED)
+    eid = executions["2"]["experiment_id"]
+    assert review_result(after, eid, 1) == "PROCEED"
+    assert review_row_count(before, eid, 1) == 1
+    assert review_result(after, eid, 1, after=1) == "PROCEED"
+    assert review_result(before, eid, 1, after=1) is None  # 起動の後に何も書かれていない
+
+
+def _re_review(rig: Rig, before: bytes, executions: dict[str, Any]) -> dict[str, Any]:
+    """「保留」の行が台帳にある C10 のカードで、やり直しの審査を起動する。"""
+    _inject(rig, "C10", reservations=["review"], executions=executions, review="DEFERRED")
+    rig.world.put_on_main({REVIEW: before})  # 前の審査の「保留」の行は main に入っている
+    rig.step()  # 実行用の作業木を早送りし、やり直しの審査を起動
+    review = rig.procs.by_kind("review")
+    assert rig.card(CARD_ID)["procs"]["review"]["prior_rows"] == 1
+    return review
+
+
+def test_a_re_review_that_proceeded_before_its_exit_code_follows_the_latest_row(
+    rig: Rig,
+) -> None:
+    """「保留」の後のやり直しの審査が「進める」を書き、終了コードを書く前に消えても、古い
+    「保留」で止まらず、最新の「進める」に従って関所 1 へ進む（Codex 7 巡目の指摘 1）。"""
+    from odyssey_fx.evaluation.domain.adoption_review import ReviewResult
+
+    before, after, executions = _deferred_then(ReviewResult.PROCEED)
+    review = _re_review(rig, before, executions)
+    (rig.world.exec_dir / REVIEW).write_bytes(after)
+    rig.procs.alive_pids.discard(int(review["pid"]))  # 終了コードを書く前に消えた
+    _until(rig, "C11")
+    assert "REVIEW_DEFERRED" not in _reasons(rig)
+    assert len([key for key in rig.procs.spawned if key.startswith("review:")]) == 1
+
+
+def test_a_re_review_that_vanished_without_writing_is_run_again(rig: Rig) -> None:
+    """やり直しの審査が何も書かずに消えたら、古い「保留」の行を結果と読まず、審査を 1 回だけ
+    起動し直す（同じ型の点検で見つけた穴。直す前は古い「保留」で止まった）。"""
+    from odyssey_fx.evaluation.domain.adoption_review import ReviewResult
+
+    before, _, executions = _deferred_then(ReviewResult.PROCEED)
+    review = _re_review(rig, before, executions)
+    rig.procs.alive_pids.discard(int(review["pid"]))
+    rig.step()
+    rig.step()
+    assert "REVIEW_DEFERRED" not in _reasons(rig)
+    assert len([key for key in rig.procs.spawned if key.startswith("review:")]) == 2
+
+
+@pytest.mark.parametrize("trigger", ["queue_empty", "after_done", "extra"])
+def test_an_ideator_stopped_by_the_usage_limit_is_launched_again_after_recovery(
+    tmp_path: Path, trigger: str
+) -> None:
+    """発想役が利用上限で終わったら、起動のきっかけを戻す。停止に「回復を待って続ける」と答えた
+    後に発想役をもう一度起動し、それでも書けなければ待ち行列が空の停止で問う（Codex 7 巡目の
+    指摘 2。直す前はきっかけを使い切ったまま外し、何も進まなかった）。"""
+    from tools.ops.research_runner.ports import IdeatorOutput, WorkerStatus
+
+    rig = make_rig(tmp_path)  # 待ち行列は空
+    if trigger != "queue_empty":
+        store = StateStore(rig.paths.state_dir)
+        store.save_global(
+            GlobalState(
+                boot_id="boot-1",
+                weekly_last_week="2026-11-16",
+                ideator={trigger: 1, "queue_empty_used": True},
+            )
+        )
+    rig.workers.add("ideator", status=WorkerStatus.USAGE_LIMIT)
+    rig.step()  # 発想役を起動
+    rig.step()  # 利用上限で終わる → 全体の停止
+    issue = rig.world.issue_for("USAGE_LIMIT")
+    assert rig.state()["ideator"].get("running") is None
+    rig.workers.add("ideator", IdeatorOutput((), ()))
+    rig.world.answer(issue.number, "1")  # 回復を待って続ける
+    for _ in range(3):
+        rig.step()
+    assert [request.role for request in rig.workers.launched] == ["ideator", "ideator"]
+    if trigger != "after_done":  # `done/` の後の 1 回は、書けなくても問わない（D25 §3.7）
+        assert rig.world.issue_for("QUEUE_EMPTY")
+
+
+def test_an_ideator_that_could_not_be_launched_keeps_its_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じ型の点検: 発想役を起動できなかった（定義が無いなど）ときも、待ち行列が空のときの
+    1 回を使い切らず、次の 1 歩でもう一度起動する。"""
+    from tests.fixtures.research_runner import FakeWorkers
+    from tools.ops.research_runner.ports import IdeatorOutput, WorkerRequest, WorkerUnavailable
+
+    rig = make_rig(tmp_path)
+    original = FakeWorkers.launch
+    calls = {"launch": 0}
+
+    def unavailable_once(self: FakeWorkers, request: WorkerRequest) -> None:
+        calls["launch"] += 1
+        if calls["launch"] == 1:
+            raise WorkerUnavailable("試験")
+        original(self, request)
+
+    monkeypatch.setattr(FakeWorkers, "launch", unavailable_once)
+    rig.step()
+    assert "queue_empty_used" not in rig.state()["ideator"]
+    rig.workers.add("ideator", IdeatorOutput((), ()))
+    rig.step()
+    rig.step()
+    assert calls["launch"] == 2
+    assert rig.world.issue_for("QUEUE_EMPTY")
+
+
+@pytest.mark.parametrize("stage", ["C8", "C9"])
+def test_card_workers_stopped_by_the_usage_limit_are_launched_again(rig: Rig, stage: str) -> None:
+    """同じ型の点検: カードの作業役（報告を書く分析役・確かめ役）は、利用上限の停止の答えの後に
+    段がもう一度当たって起動し直す（きっかけを失わない）。"""
+    from tools.ops.research_runner.ports import WorkerStatus
+
+    role = {"C8": "analyst_report", "C9": "verifier"}[stage]
+    checks = {"gate": [[item, True] for item in range(1, 6)]} if stage == "C9" else {}
+    _inject(rig, stage, checks=checks)
+    rig.workers.add(role, status=WorkerStatus.USAGE_LIMIT)
+    rig.step()
+    rig.step()
+    issue = rig.world.issue_for("USAGE_LIMIT")
+    rig.workers.hold.add(role)
+    rig.world.answer(issue.number, "1")
+    rig.step()
+    roles = [request.role for request in rig.workers.launched if request.role == role]
+    assert roles == [role, role]
+    assert _phase(rig) == stage

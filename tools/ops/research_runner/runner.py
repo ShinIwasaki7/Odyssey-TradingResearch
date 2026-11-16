@@ -69,6 +69,7 @@ from tools.ops.research_runner.ledger_rows import (
     has_candidate_row,
     has_consumption_row,
     review_result,
+    review_row_count,
 )
 from tools.ops.research_runner.ports import (
     ChangeOutput,
@@ -1132,6 +1133,7 @@ class Runner:
                     self._tool_failure(ctx, card, f"作業役を起動できない: {exc}")
                 else:
                     ctx.state.ideator.pop("running", None)
+                    self._ideator_keep_trigger(ctx.state.ideator)
                     ctx.notes.append(f"発想役を起動できない: {exc}")
                 return None
             return None
@@ -1150,6 +1152,10 @@ class Runner:
         else:
             ctx.state.ideator.pop("running", None)
         if poll.status is WorkerStatus.USAGE_LIMIT:
+            # カードの作業役は、段がもう一度当たれば起動し直す。発想役は起動のきっかけを使い
+            # 切っているので戻す（止まりの issue を作る前に。Codex 7 巡目の指摘 2）。
+            if card is None:
+                self._ideator_keep_trigger(ctx.state.ideator)
             self._stop_global(ctx, "USAGE_LIMIT")
             return None
         return poll
@@ -1413,7 +1419,10 @@ class Runner:
         if code is None:
             if self._proc_alive(ctx, proc):
                 return
-            recorded = review_result(ledger, eid, execution)
+            # この起動の前からあった行（「保留」の後のやり直しなら古い「保留」）は読まず、起動の
+            # 後に書かれた最新の行だけを見る（Codex 7 巡目の指摘 1）。
+            prior = int(proc.get("prior_rows", 0) or 0)
+            recorded = review_result(ledger, eid, execution, after=prior)
             if recorded is None:
                 card.procs.pop("review", None)
                 if self._retry_or_stop(ctx, card, "REVIEW_FAILED"):
@@ -1848,7 +1857,9 @@ class Runner:
         *,
         slots: int,
         cwd: Path,
+        marks: Mapping[str, Any] | None = None,
     ) -> None:
+        """`marks` は起動の印に一緒に書く照合の材料（起動の前に保存する）。"""
         attempt = int(card.retries.get(f"spawn:{name}", 0)) + 1
         card.retries[f"spawn:{name}"] = attempt
         state_dir = self.paths.proc_dir(card.card_id, name, attempt)
@@ -1862,6 +1873,7 @@ class Runner:
             "slots": slots,
             "state_dir": str(state_dir),
             "pid": None,
+            **dict(marks or {}),
         }
         card.procs[name] = proc
         self.store.save_card(card)
@@ -2579,7 +2591,18 @@ class Runner:
             str(self.paths.repo),
         ]
         card.reservations.remove("review")
-        self._spawn(ctx, card, "review", command, slots=1, cwd=self.paths.exec_worktree)
+        # 起動の前に、この実行の審査台帳の結果の行の数を起動の印に残す（照合は、これより後に
+        # 書かれた行だけを見る。`_c10_review`）。
+        prior = review_row_count(self._exec_file(REVIEW_LEDGER), eid, execution)
+        self._spawn(
+            ctx,
+            card,
+            "review",
+            command,
+            slots=1,
+            cwd=self.paths.exec_worktree,
+            marks={"prior_rows": prior},
+        )
 
     def _launch_final(self, ctx: _Context, card: CardState) -> None:
         git = self.ports.git
@@ -2825,6 +2848,21 @@ class Runner:
             self._flush_cards(ctx)
         elif trigger in {"queue_empty", "extra"} and not self._has_takeable(ctx):
             self._stop_global(ctx, "QUEUE_EMPTY")
+
+    @staticmethod
+    def _ideator_keep_trigger(ideator: dict[str, Any]) -> None:
+        """発想役が書く前に終わった（利用上限・起動できない）: 使った起動のきっかけを戻す。
+
+        きっかけ（`done/` に移った後の 1 回・待ち行列が空のときの 1 回・人間の答えの 1 回）は
+        起動のときに使い切るので、戻さないと、利用上限の停止に「回復を待って続ける」と答えた後も
+        発想役が起動し直さず、待ち行列が空の停止も出ない（D25 §4.7 の `USAGE_LIMIT` の 1
+        「次の作業役の起動がまた上限の応答で終われば、新しい止まり」。Codex 7 巡目の指摘 2）。
+        """
+        trigger = ideator.pop("trigger", None)
+        if trigger == "queue_empty":
+            ideator.pop("queue_empty_used", None)
+        elif trigger in {"after_done", "extra"}:
+            ideator[trigger] = 1
 
     def _has_takeable(self, ctx: _Context) -> bool:
         return any(card_id not in ctx.state.cards for card_id in queued_cards(self._view(ctx)))

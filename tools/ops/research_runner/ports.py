@@ -360,6 +360,13 @@ class WorkerPoll:
 
 
 class Workers(Protocol):
+    """作業役の起動の口（中身は PR 8b）。
+
+    利用上限で終わった作業役は、回復の答えの後に**同じ** `request`（役・カード・版・試みの番号）で
+    もう一度 `launch` されることがある。`launch` はその前の出力・結果を捨てて新しく起動し、`poll`
+    が前の起動の利用上限の結果を返さないようにする（本 PR の仮置き）。
+    """
+
     def launch(self, request: WorkerRequest) -> None: ...
 
     def poll(self, request: WorkerRequest) -> WorkerPoll: ...

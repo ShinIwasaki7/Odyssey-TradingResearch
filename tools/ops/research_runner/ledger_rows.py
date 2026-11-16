@@ -13,7 +13,13 @@ import json
 from collections.abc import Iterator, Mapping
 from typing import Any, Final
 
-__all__ = ["REVIEW_RESULTS", "has_candidate_row", "has_consumption_row", "review_result"]
+__all__ = [
+    "REVIEW_RESULTS",
+    "has_candidate_row",
+    "has_consumption_row",
+    "review_result",
+    "review_row_count",
+]
 
 REVIEW_RESULTS: Final = frozenset({"PROCEED", "DO_NOT_PROCEED", "DEFERRED"})
 
@@ -49,15 +55,34 @@ def has_candidate_row(data: bytes | None, experiment_id: str, execution: int) ->
     return any(_matches(row, experiment_id, execution) for row in _rows(data))
 
 
-def review_result(data: bytes | None, experiment_id: str, execution: int) -> str | None:
-    """審査台帳のこの実行の行の結果の語彙（無ければ `None`）。"""
+def _review_results(data: bytes | None, experiment_id: str, execution: int) -> list[str]:
+    """審査台帳のこの実行の行の結果の語彙を、台帳の順（古い順）に並べたもの。"""
     if not data:
-        return None
-    for row in _rows(data):
-        body = _body(row)
-        if _matches(row, experiment_id, execution) and body.get("result") in REVIEW_RESULTS:
-            return str(body["result"])
-    return None
+        return []
+    return [
+        str(_body(row)["result"])
+        for row in _rows(data)
+        if _matches(row, experiment_id, execution) and _body(row).get("result") in REVIEW_RESULTS
+    ]
+
+
+def review_row_count(data: bytes | None, experiment_id: str, execution: int) -> int:
+    """審査台帳のこの実行の結果の行の数（審査を起動する前に数えて、起動の印に残す）。"""
+    return len(_review_results(data, experiment_id, execution))
+
+
+def review_result(
+    data: bytes | None, experiment_id: str, execution: int, *, after: int = 0
+) -> str | None:
+    """審査台帳のこの実行の行のうち、先頭から `after` 行より後に書かれた**最新の**行の結果の語彙
+    （無ければ `None`）。
+
+    「保留」の後の審査のやり直し（D16 §9.3）では、同じ実行に古い「保留」の行が残る。照合は
+    起動の前に数えた行の数（`after`）より後の行だけを見て、その最新を採る（古い「保留」を読んで
+    止まらない。やり直しの審査が何も書かずに消えたなら `None`。Codex 7 巡目の指摘 1）。
+    """
+    results = _review_results(data, experiment_id, execution)[after:]
+    return results[-1] if results else None
 
 
 def has_consumption_row(data: bytes | None, experiment_id: str, execution: int) -> bool:
