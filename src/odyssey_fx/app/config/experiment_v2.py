@@ -81,7 +81,7 @@ from odyssey_fx.common.ids import ExperimentId, SnapshotId
 from odyssey_fx.common.refs import ContentDigest, PolicyRef, SnapshotRef
 from odyssey_fx.common.symbol import Symbol, SymbolSpec
 from odyssey_fx.common.time import Interval, UtcTime
-from odyssey_fx.evaluation.domain.metrics import METRIC_SET_V4_ADDED, metric_ids_of
+from odyssey_fx.evaluation.domain.metrics import METRIC_SET_V4_ADDED, MetricId, metric_ids_of
 from odyssey_fx.evaluation.domain.policy_basis import (
     FixedComparisonBasis,
     PerSymbolComparisonBasis,
@@ -140,6 +140,7 @@ __all__ = [
     "experiment_schema_version",
     "experiment_v2_from_texts",
     "load_experiment_v2",
+    "standard_metrics",
 ]
 
 #: この実装が読む実験設定の形式版（D07 §18.5。v1 の読込は残す、Q12 決定）。
@@ -912,6 +913,26 @@ def _snapshot_ref(text: str, label: str, path: Path) -> SnapshotRef:
         ) from exc
 
 
+def standard_metrics(standard: EvaluationStandard) -> tuple[MetricId, ...]:
+    """研究ポリシーの評価基準が選定・条件に使う指標（重複を含みうる。書いた順）。
+
+    実験の指標集合にこれらが無ければ読込で拒否する（`_require_metric_set`）。順 11 の仮説カードの
+    生成の道具が、実験設定の `evaluation.metric_set_version` を選ぶのにも使う（D25 §3.8）。
+    """
+    used = [
+        standard.selection.metric,
+        *(item.metric for item in standard.selection.eligibility),
+        *(item.metric for item in standard.validation.fold_floors),
+        *(item.metric for item in standard.validation.aggregate),
+        *(item.metric for item in standard.validation.path.conditions),
+    ]
+    validation = standard.validation
+    if isinstance(validation, ValidationRuleV5):
+        used.append(validation.loss_concentration.worst_fold_metric)
+        used.extend(item.metric for item in validation.neighbor_floors.floors)
+    return tuple(used)
+
+
 def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, path: Path) -> None:
     """研究ポリシーの選定・条件の指標が実験の指標集合にあること（実装 PR の仮置き 53）。
 
@@ -928,18 +949,7 @@ def _require_metric_set(standard: EvaluationStandard, metric_set_version: int, p
                 f"{path}: 研究ポリシーの版 5 以上を指す探索の実験は指標集合 4 を使う"
                 f"（指標集合の版 {metric_set_version} には {lacking} が無い。D24 §8.1 の検査 E11）"
             )
-    used = [
-        standard.selection.metric,
-        *(item.metric for item in standard.selection.eligibility),
-        *(item.metric for item in standard.validation.fold_floors),
-        *(item.metric for item in standard.validation.aggregate),
-        *(item.metric for item in standard.validation.path.conditions),
-    ]
-    validation = standard.validation
-    if isinstance(validation, ValidationRuleV5):
-        used.append(validation.loss_concentration.worst_fold_metric)
-        used.extend(item.metric for item in validation.neighbor_floors.floors)
-    missing = sorted({item.value for item in used if item not in available})
+    missing = sorted({item.value for item in standard_metrics(standard) if item not in available})
     if missing:
         raise ConfigError(
             f"{path}: 研究ポリシーの評価基準が使う指標 {missing} は指標集合の版"

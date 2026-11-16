@@ -1,0 +1,31 @@
+# 仮説カードから事前登録を作るときの、AUDUSD の実験設定の型板（D25 §3.8・仮置き 9。順 11 の PR 7）
+#
+# 研究ポリシーの前提の記録と比較の前提に無い値（環境・執行系列・解像度の階層・乱数の種・口座の
+# 識別子・注文の有効時間・参照の気配の出どころ）だけを持つ。snapshot・口座通貨と残高・リスク・
+# 費用・換算・不利な約定の上限は、生成の時点の現行の研究ポリシーから写す（照合 C1〜C7）。
+#
+# 写した元: EURUSD・USDJPY の実験設定と同じ形（この通貨の実験設定はまだ無い。PR 7 の仮置き）。執行系列は 15 分足、解像度の階層は 15 分足 → 1 分足。
+# 人間が PR の merge で承認する（定型 PR では変えない。D25 §6.2）。
+
+schema_version: 1
+symbol: AUDUSD
+
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+
+execution_series: "AUDUSD/15m/bid"
+
+resolution_hierarchy:
+  - "AUDUSD/15m/bid"
+  - "AUDUSD/1m/bid"
+
+seed: 0
+
+account_id: "ACC1"
+
+execution_policy:
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
