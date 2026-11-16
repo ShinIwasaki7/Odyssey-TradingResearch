@@ -69,22 +69,22 @@ _KIND_OF: Final = {
     Form.FINAL: Kind.EXEC,
     Form.REPORT: Kind.REPORT,
 }
-_STAMP: Final = r"\d{8}T\d{6}Z"
+_STAMP: Final = r"[0-9]{8}T[0-9]{6}Z"
 _BRANCHES: Final = (
-    (Form.PREREG, re.compile(rf"^runner/prereg-(?P<card>{CARD_ID})-v(?P<version>[1-9]\d*)$")),
+    (Form.PREREG, re.compile(rf"^runner/prereg-(?P<card>{CARD_ID})-v(?P<version>[1-9][0-9]*)$")),
     (Form.CARDS, re.compile(rf"^runner/cards-(?P<stamp>{_STAMP})$")),
     (Form.EXEC, re.compile(r"^runner/exec$")),
     (
         Form.FINAL,
         re.compile(
-            r"^runner/final-(?P<experiment>[A-Za-z0-9_][A-Za-z0-9_-]*)-(?P<execution>[1-9]\d*)$"
+            r"^runner/final-(?P<experiment>[A-Za-z0-9_][A-Za-z0-9_-]*)-(?P<execution>[1-9][0-9]*)$"
         ),
     ),
     (Form.REPORT, re.compile(rf"^runner/report-(?P<card>{CARD_ID})$")),
 )
 _TITLE: Final = re.compile(
     r"^\[runner\] (?P<kind>事前登録|実行記録|一巡の報告) "
-    rf"(?P<card>{CARD_ID}) v(?P<version>0|[1-9]\d*)$"
+    rf"(?P<card>{CARD_ID}) v(?P<version>0|[1-9][0-9]*)$"
 )
 _CARDS_TITLE: Final = re.compile(rf"^\[runner\] 事前登録 cards-(?P<stamp>{_STAMP})$")
 
@@ -108,7 +108,7 @@ def parse_routine(pr: PullRequest) -> Routine | list[str] | None:
         (
             (form, matched)
             for form, pattern in _BRANCHES
-            if (matched := pattern.match(pr.branch)) is not None
+            if (matched := pattern.fullmatch(pr.branch)) is not None
         ),
         None,
     )
@@ -116,11 +116,11 @@ def parse_routine(pr: PullRequest) -> Routine | list[str] | None:
         return [f"枝 {pr.branch} は `runner/` で始まるが、定型 PR の枝の形（D25 §6.2）でない"]
     form, branch = found
     if form is Form.CARDS:
-        title = _CARDS_TITLE.match(pr.title)
+        title = _CARDS_TITLE.fullmatch(pr.title)
         if title is None or title["stamp"] != branch["stamp"]:
             return [f"題が `[runner] 事前登録 cards-{branch['stamp']}` でない"]
         return Routine(form, Kind.PREREG, None, None)
-    matched = _TITLE.match(pr.title)
+    matched = _TITLE.fullmatch(pr.title)
     if matched is None:
         return ["題が `[runner] <種類> <カードの識別子> v<版>` の形でない（D25 §6.2）"]
     kind, card, version = Kind(matched["kind"]), matched["card"], int(matched["version"])
@@ -268,9 +268,11 @@ def _routine_paths(given: CheckInput, routine: Routine) -> list[str]:
         if experiment is not None:
             allowed.add(f"configs/experiments/{experiment}.yaml")
             strategies = re.compile(
-                rf"^configs/strategies/{re.escape(experiment)}_v[1-9]\d*\.yaml$"
+                rf"^configs/strategies/{re.escape(experiment)}_v[1-9][0-9]*\.yaml$"
             )
-            allowed |= {change.path for change in given.changes if strategies.match(change.path)}
+            allowed |= {
+                change.path for change in given.changes if strategies.fullmatch(change.path)
+            }
     if routine.form in {Form.EXEC, Form.FINAL} and card is not None:
         allowed |= set(LEDGER_PATHS)
         allowed.add(f"research/loops/{card}/run_v{routine.version}.yaml")
@@ -311,8 +313,8 @@ def check_paths(given: CheckInput, routine: Routine | list[str] | None) -> Check
 
 BODY_NAME: Final = "定型 PR の題と本文の型（決まった項目のほかの文が無い）"
 _SHA_LINE: Final = re.compile(r"^- (?P<path>\S+): (?P<sha>[0-9a-f]{64})$")
-_COUNT_ITEM: Final = re.compile(r"^(?:試行|行|カード) (?:0|[1-9]\d*)$")
-_UTC: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_COUNT_ITEM: Final = re.compile(r"^(?:試行|行|カード) (?:0|[1-9][0-9]*)$")
+_UTC: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _EXPERIMENT: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 
 
@@ -336,7 +338,7 @@ def check_body(
             key, value = "定型の文", line
         elif line == "SHA-256:":
             key, value, in_hashes = "SHA-256", "", True
-        elif in_hashes and (sha := _SHA_LINE.match(line)) is not None:
+        elif in_hashes and (sha := _SHA_LINE.fullmatch(line)) is not None:
             hashes[sha["path"]] = sha["sha"]
             continue
         elif ": " in line and line.split(": ", 1)[0] in {
@@ -385,11 +387,11 @@ def _body_values(
         problems.append("本文の「カード」が題と違う")
     if "版" in seen and seen["版"] != str(routine.version):
         problems.append("本文の「版」が題と違う")
-    if "時刻" in seen and _UTC.match(seen["時刻"]) is None:
+    if "時刻" in seen and _UTC.fullmatch(seen["時刻"]) is None:
         problems.append("本文の「時刻」が UTC の時刻の形でない")
     if "実験" in seen:
         problems += _experiment_value(given, routine, seen["実験"])
-    if "件数" in seen and not all(_COUNT_ITEM.match(item) for item in seen["件数"].split("、")):
+    if "件数" in seen and not all(_COUNT_ITEM.fullmatch(item) for item in seen["件数"].split("、")):
         problems.append("本文の「件数」が `試行 <数>、行 <数>` の形でない")
     expected = {
         change.path: given.head.read(change.path)
@@ -406,7 +408,7 @@ def _body_values(
 
 
 def _experiment_value(given: CheckInput, routine: Routine, value: str) -> list[str]:
-    if _EXPERIMENT.match(value) is None:
+    if _EXPERIMENT.fullmatch(value) is None:
         return ["本文の「実験」が実験の識別子の形でない"]
     if routine.form is Form.FINAL and value != routine.final_experiment:
         return ["本文の「実験」が枝の実験と違う"]

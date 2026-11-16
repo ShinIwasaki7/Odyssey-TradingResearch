@@ -405,3 +405,47 @@ def test_push_runs_only_the_ledger_check(base: dict[str, bytes]) -> None:
     results = run_checks(make_input(base, base))
     assert results[0].status is Status.PASS
     assert {check.status for check in results[1:]} == {Status.NOT_APPLICABLE}
+
+
+# --- 検証の正規表現は文字列の全体に当てる（Codex 1 巡目）----------------------------------
+
+
+def test_a_hash_with_a_trailing_newline_fails_the_format_check(base: dict[str, bytes]) -> None:
+    bad = run_record().replace(b"sha256: " + b"c" * 64, b'sha256: "' + b"c" * 64 + b'\\n"')
+    assert bad != run_record()
+    clean = _exec_pr(base)
+    head = dict(clean.head.files, **{f"{LOOPS}run_v1.yaml": bad})  # type: ignore[attr-defined]
+    given = make_input(
+        dict(clean.base.files),  # type: ignore[union-attr]
+        head,
+        branch="runner/exec",
+        title=f"[runner] 実行記録 {CARD_ID} v1",
+        kind="実行記録",
+        experiment=EXPERIMENT,
+        auto_merge=True,
+    )
+    results = _by_number(run_checks(given))
+    assert results[5].status is Status.FAIL
+    assert results[8].status is Status.FAIL
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"created_at": "2026-11-20T03:00:00Z\n"},
+        {"created_at": "２０２６-11-20T03:00:00Z"},
+        {"title": "ema-pullback\n"},
+    ],
+)
+def test_trailing_newlines_and_non_ascii_digits_fail(
+    base: dict[str, bytes], override: dict[str, str]
+) -> None:
+    head = dict(
+        base, **{f"research/hypotheses/queue/{HUMAN_CARD_ID}.yaml": card_bytes("human", **override)}
+    )
+    assert 5 in _failed(run_checks(make_input(base, head, branch="docs/card")))
+
+
+def test_a_title_with_a_trailing_newline_is_not_a_routine_title(base: dict[str, bytes]) -> None:
+    results = _by_number(run_checks(_exec_pr(base, title=f"[runner] 実行記録 {CARD_ID} v1\n")))
+    assert results[2].status is Status.FAIL

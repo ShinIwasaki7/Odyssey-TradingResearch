@@ -10,6 +10,9 @@
   変更の提案 `change_v<版>.yaml`（D25 §3.9）、実行記録 `run_v<版>.yaml`、一巡の報告 `report.yaml`:
   D25 §2.3 の中身の説明から本 PR が置いた形（本 PR の仮置き。書き手は PR 7・PR 8a）。
 
+検証の正規表現は `fullmatch` で当て、数字は ASCII の `[0-9]` だけにする（`$` は末尾の改行の前にも
+一致し、`\\d` は全角などの数字にも一致するため）。
+
 YAML は設定ファイルと同じ安全な読込（重複キー・anchor・alias を拒む。`app.config.loader`）で読む。
 """
 
@@ -33,8 +36,8 @@ LOOPS: Final = "research/loops/"
 CARD_DIRECTORIES: Final = ("queue", "taken", "done")
 
 #: カードの識別子（D25 §3.2、仮置き 4）: `<口の 1 文字>-<YYYYMMDD>-<短い名前>`。
-CARD_ID: Final = r"[ha]-\d{8}-[a-z0-9-]{3,24}"
-_CARD_ID_RE: Final = re.compile(r"^(?P<mouth>[ha])-(?P<date>\d{8})-(?P<title>[a-z0-9-]{3,24})$")
+CARD_ID: Final = r"[ha]-[0-9]{8}-[a-z0-9-]{3,24}"
+_CARD_ID_RE: Final = re.compile(r"^(?P<mouth>[ha])-(?P<date>[0-9]{8})-(?P<title>[a-z0-9-]{3,24})$")
 _CARD_PATH_RE: Final = re.compile(
     rf"^research/hypotheses/(?P<place>queue|taken|done)/(?P<card>{CARD_ID})\.yaml$"
 )
@@ -43,7 +46,7 @@ _OUTCOME_PATH_RE: Final = re.compile(
 )
 _LOOP_PATH_RE: Final = re.compile(
     rf"^research/loops/(?P<card>{CARD_ID})/"
-    r"(?:(?P<kind>prereg|change|run)_v(?P<version>[1-9]\d*)|(?P<report>report))\.yaml$"
+    r"(?:(?P<kind>prereg|change|run)_v(?P<version>[1-9][0-9]*)|(?P<report>report))\.yaml$"
 )
 
 #: 承認済みの研究用 snapshot がある 8 通貨（D23 の仮置き 15）。
@@ -63,7 +66,7 @@ _OPERATIONS: Final = {
     "rewire_input": "STRATEGY_CODE",
     "set_role": "STRATEGY_CODE",
 }
-_UTC_TIME_RE: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_UTC_TIME_RE: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _HEX64_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENT_RE: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _EXPERIMENT_ID_RE: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
@@ -72,7 +75,7 @@ _NUMBER_RE: Final = re.compile(r"\d+(?:\.\d+)?")
 
 def experiment_id_of(card: str, symbol: str) -> str:
     """カードから実験と戦略の識別子を作る（D25 §3.2）: `c_<口><日付>_<名前の - を _ に>_<通貨>`。"""
-    matched = _CARD_ID_RE.match(card)
+    matched = _CARD_ID_RE.fullmatch(card)
     if matched is None:
         raise ValueError(f"not a card id: {card!r}")
     title = matched["title"].replace("-", "_")
@@ -100,11 +103,11 @@ class RecordPath:
 
 def record_path(path: str) -> RecordPath | None:
     """記録の置き場のパスを読む（決まった名前でなければ `None`）。"""
-    if (card := _CARD_PATH_RE.match(path)) is not None:
+    if (card := _CARD_PATH_RE.fullmatch(path)) is not None:
         return RecordPath(RecordKind.CARD, card["card"], None, card["place"])
-    if (outcome := _OUTCOME_PATH_RE.match(path)) is not None:
+    if (outcome := _OUTCOME_PATH_RE.fullmatch(path)) is not None:
         return RecordPath(RecordKind.OUTCOME, outcome["card"], None, "done")
-    if (loop := _LOOP_PATH_RE.match(path)) is not None:
+    if (loop := _LOOP_PATH_RE.fullmatch(path)) is not None:
         if loop["report"]:
             return RecordPath(RecordKind.REPORT, loop["card"], None, None)
         kinds = {"prereg": RecordKind.PREREG, "change": RecordKind.CHANGE, "run": RecordKind.RUN}
@@ -166,7 +169,7 @@ def one_of(*values: str) -> Check:
 
 def pattern(regex: re.Pattern[str], label: str) -> Check:
     def check(value: object, where: str) -> list[str]:
-        if not isinstance(value, str) or regex.match(value) is None:
+        if not isinstance(value, str) or regex.fullmatch(value) is None:
             return [f"{where}: {label}の形でない"]
         return []
 
@@ -174,7 +177,7 @@ def pattern(regex: re.Pattern[str], label: str) -> Check:
 
 
 def utc_time(value: object, where: str) -> list[str]:
-    if not isinstance(value, str) or _UTC_TIME_RE.match(value) is None:
+    if not isinstance(value, str) or _UTC_TIME_RE.fullmatch(value) is None:
         return [f"{where}: UTC の時刻（YYYY-MM-DDTHH:MM:SSZ。引用符付きの文字列）でない"]
     try:
         datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
@@ -402,7 +405,7 @@ def load(path: str, raw: bytes) -> Record:
         data = load_yaml_mapping(Path(path), text=decoded)
     except ConfigError as exc:
         # 理由の文は値を含みうるので、行の位置だけを残す。
-        located = re.search(r"line \d+", str(exc))
+        located = re.search(r"line [0-9]+", str(exc))
         return Record(
             path, where, raw, None, "YAML として読めない" + (f"（{located[0]}）" if located else "")
         )
