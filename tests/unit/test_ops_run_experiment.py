@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -262,3 +263,73 @@ def test_run_command_matches_the_recorded_form(dirs: tuple[Path, Path]) -> None:
     assert command[6:12] == ["uv", "run", "--frozen", "odyssey-fx", "experiment", "run"]
     assert command[command.index("--snapshots") + 1] == str(repo.resolve() / "data" / "snapshots")
     assert re_mod.build_viewer_command(plan)[-1] == "--open"
+
+
+# --- 組の走らせ方とプロセスグループ（D26 §3.8 の 1・2、§7 の D14 §2.3.1 の行。PR-B）-----------
+
+
+def test_variant_mode_defaults_to_parallel_and_is_recorded_in_launch_json(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """包みの既定は並列（D26 §3.8 の 1）。要求した方式を `launch.json` に書く（D26 仮置き 6）。"""
+    repo, worktree = dirs
+    monkeypatch.setattr(re_mod, "spawn_child", lambda plan: 4321)
+
+    assert re_mod.main(_args(repo, worktree)) == 0
+
+    launch = json.loads((_version_dir(repo) / "launch.json").read_text())
+    assert launch["variant_mode"] == "parallel"
+    assert launch["command"][-2:] == ["--variant-mode", "parallel"]
+
+
+def test_serial_variant_mode_is_passed_to_the_run_and_the_child(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, worktree = dirs
+    spawned: list[re_mod.Plan] = []
+
+    def fake_spawn(plan: re_mod.Plan) -> int:
+        spawned.append(plan)
+        return 4321
+
+    monkeypatch.setattr(re_mod, "spawn_child", fake_spawn)
+
+    assert re_mod.main(_args(repo, worktree, "--variant-mode", "serial")) == 0
+
+    launch = json.loads((_version_dir(repo) / "launch.json").read_text())
+    assert launch["variant_mode"] == "serial"
+    (plan,) = spawned
+    assert re_mod.build_run_command(plan)[-2:] == ["--variant-mode", "serial"]
+    child = re_mod.child_command(plan)
+    assert child[child.index("--variant-mode") + 1] == "serial"
+
+
+def test_unknown_variant_mode_is_an_argument_error(dirs: tuple[Path, Path]) -> None:
+    repo, worktree = dirs
+    with pytest.raises(SystemExit) as raised:
+        re_mod.main(_args(repo, worktree, "--variant-mode", "fold"))
+    assert raised.value.code == 2
+    assert not _version_dir(repo).exists()
+
+
+def test_the_run_leads_its_own_process_group_outside_the_launcher(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`run_pid` は新しいプロセスグループの先頭で、包みはそのグループに居ない（D26 §3.8 の 2）。"""
+    repo, worktree = dirs
+    _fake(monkeypatch, tmp_path, run_exit=0, viewer_exit=0)
+    seen = tmp_path / "group.txt"
+    monkeypatch.setattr(
+        re_mod,
+        "build_run_command",
+        lambda plan: _py(
+            f"import os; open({str(seen)!r}, 'w').write(f'{{os.getpid()}} {{os.getpgrp()}}')"
+        ),
+    )
+
+    assert re_mod.main(_args(repo, worktree, "--foreground")) == 0
+
+    pid, group = (int(value) for value in seen.read_text().split())
+    launch = json.loads((_version_dir(repo) / "launch.json").read_text())
+    assert launch["run_pid"] == pid == group
+    assert group != os.getpgrp()

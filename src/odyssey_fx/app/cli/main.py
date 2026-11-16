@@ -160,6 +160,23 @@ _EXIT_NOT_REPRODUCED = 6
 #: 1 = 審査台帳に完全な行を残せなかった（審査は行われていない扱い）。
 _EXIT_REVIEW_DO_NOT_PROCEED = 7
 _EXIT_REVIEW_DEFERRED = 8
+#: 同じ版の実行中の印のロックが取れない拒否（D26 仮置き 11・§3.8 の 3。何も書かない）。既存の
+#: 0〜9 と重ならない専用の値。実行器はこの値を run の失敗に数えず、待ってから走らせ直す（D25 の
+#: 仮置き 36）。
+_EXIT_EXECUTION_LOCKED = 10
+
+
+def _add_variant_mode(command: argparse.ArgumentParser) -> None:
+    """探索の実験の組の走らせ方の引数（D26-2 (a)。既定は今の順番）。"""
+    command.add_argument(
+        "--variant-mode",
+        choices=[mode.value for mode in composition.VariantMode],
+        default=composition.VariantMode.SERIAL.value,
+        help=(
+            "探索の実験の標準と候補の組の走らせ方。serial = 今の順番（既定）、parallel = 2 つの"
+            "子プロセスで同時に走らせる（空きメモリが足りなければ順番に切り替える。D26 §3）"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -431,6 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("."),
         help="実験設定のパスを解決し、`uv.lock` と作業ツリーの状態を読むリポジトリの位置",
     )
+    _add_variant_mode(experiment_run)
     report_command = experiment.add_parser(
         "report",
         help="保存済みの成果物だけから実験のレポート（report.md）を作り直す（D07 §22）",
@@ -541,6 +559,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("."),
         help="現在の環境の `uv.lock` を読むリポジトリの位置（設定ファイルは読まない）",
     )
+    _add_variant_mode(reproduce)
     _add_final_validate_parser(experiment)
     _add_fix_parsers(experiment)
     _add_gate_parsers(top)
@@ -1831,6 +1850,12 @@ def _check_lines(checks: Sequence[PolicyCheckResult]) -> list[str]:
     return lines
 
 
+def _notice(text: str) -> None:
+    """実行の途中の知らせ（組の走らせ方・子の失敗。D26 §3.3・§3.4）を標準エラーへ1行出す。"""
+    sys.stderr.write(text + "\n")
+    sys.stderr.flush()
+
+
 def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
     """書式 v2 の実験設定から1つの実験を進める（D07 §19.4、§21.3 の `experiment run`）。"""
     if experiment_schema_version(args.experiment) != 2:
@@ -1849,6 +1874,8 @@ def _run_experiment_run(args: argparse.Namespace, out: _Writer) -> int:
         snapshots_root=args.snapshots,
         artifacts_root=args.out,
         repo_root=args.repo_root,
+        variant_mode=composition.VariantMode(args.variant_mode),
+        notify=_notice,
     )
     manifest = outcome.manifest
     out.line(f"実験: {manifest.experiment_name} v{manifest.experiment_version}")
@@ -1955,6 +1982,8 @@ def _run_experiment_reproduce(args: argparse.Namespace, out: _Writer) -> int:
         snapshots_root=args.snapshots,
         out_root=args.out,
         repo_root=args.repo_root,
+        variant_mode=composition.VariantMode(args.variant_mode),
+        notify=_notice,
     )
     report = outcome.report
     out.line(f"記録票の識別子（experiment_id）: {report.experiment_id}")
@@ -2336,6 +2365,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     except composition.TrialLedgerStop as exc:
         # 試行台帳が読めない・追記が断られた・照合が合わない（表に無い失敗。終了コード 1。
         # D09 §10.12・§11.4、D07 §21.3 の v2.10 の段落）。
+        sys.stderr.write(f"失敗: {exc}\n")
+        return _EXIT_FAILED
+    except composition.ExecutionLocked as exc:
+        # 同じ版の実行（かその組の子）がまだ動いている。何も書かずに拒否する（D26 仮置き 11）。
+        sys.stderr.write(f"拒否: {exc}\n")
+        return _EXIT_EXECUTION_LOCKED
+    except composition.ParallelVariantsFailed as exc:
+        # 並列の実行で組の子が失敗・停止した（D26 §3.4 の S6。表に無い失敗。終了コード 1）。
         sys.stderr.write(f"失敗: {exc}\n")
         return _EXIT_FAILED
     except (ConfigError, KernelValueError, FileNotFoundError, ValueError) as exc:

@@ -12,8 +12,11 @@
 3. 自分自身を端末から切り離した別のプロセス（新しいセッション）として起動し直し、起動した側は
    すぐに終わる。子のプロセスの標準出力と標準エラーは ``launcher.log``。``--foreground`` を
    付けると切り離さない。
-4. ``caffeinate -i /usr/bin/time -l -o time.log uv run --frozen odyssey-fx experiment run …`` を
-   走らせる。標準出力と標準エラーは ``console.log`` に保存し、読まない（判定が画面に出るため）。
+4. ``caffeinate -i /usr/bin/time -l -o time.log uv run --frozen odyssey-fx experiment run …
+   --variant-mode <方式>`` を走らせる。標準出力と標準エラーは ``console.log`` に保存し、読まない
+   （判定が画面に出るため）。``caffeinate`` は新しいプロセスグループの先頭として起動し（``run_pid``
+   がそのグループの番号になる）、包み自身はそのグループに入らない（実行器がグループ全体に一時
+   停止・終了の合図を送っても、包みが 5・6 を行えるように。D26 §3.8 の 2、D14 §2.3.1）。
 5. ``exit_code.txt`` と ``finished_at_utc.txt``（開始と同じ ISO 8601 の形。仮置き 20）を書く。
 6. run の終了コードによらず研究の画面を作り直してブラウザで開き、結果を
    ``viewer_exit_code.txt`` と ``viewer.log`` に残す（仮置き 21）。画面の道具が失敗しても run の
@@ -26,6 +29,10 @@
 
     uv run python -m tools.ops.run_experiment \\
         --experiment configs/experiments/<名前>.yaml --repo <リポジトリ>
+
+組（標準・候補）の走らせ方は ``--variant-mode``（``parallel`` が既定、``serial`` は今の順番。
+D26-2 (a)・§3.8 の 1）。要求した方式を ``launch.json`` の ``variant_mode`` に書く（D26 仮置き 6。
+空きメモリの確かめで順番へ切り替えたかは ``console.log`` にだけ出る）。
 
 標準ライブラリと PyYAML、実験の名前の検査（`odyssey_fx.evaluation.domain.experiment`）だけを使う。
 """
@@ -53,6 +60,10 @@ from odyssey_fx.evaluation.domain.experiment import require_experiment_name
 EXIT_REFUSED = 2
 #: コマンドを起動できなかったときに書く終了コード（シェルの「見つからない」と同じ）。
 EXIT_NOT_STARTED = 127
+#: 組の走らせ方（`experiment run --variant-mode` の値。D26-2 (a)）。包みの既定は並列（D26 §3.8
+#: の 1）。
+VARIANT_MODES = ("parallel", "serial")
+DEFAULT_VARIANT_MODE = "parallel"
 
 
 class LaunchError(Exception):
@@ -70,6 +81,7 @@ class Plan:
     worktree: Path
     snapshots: Path
     version_dir: Path
+    variant_mode: str = DEFAULT_VARIANT_MODE
 
     @property
     def launch_path(self) -> Path:
@@ -113,11 +125,12 @@ def plan_from_args(args: argparse.Namespace) -> Plan:
         worktree=worktree,
         snapshots=snapshots,
         version_dir=version_dir,
+        variant_mode=args.variant_mode,
     )
 
 
 def build_run_command(plan: Plan) -> list[str]:
-    """run のコマンド（版 1・版 2 と同じ形）。"""
+    """run のコマンド（版 1・版 2 と同じ形に、組の走らせ方の引数を足したもの。D26 §7）。"""
     return [
         "caffeinate",
         "-i",
@@ -139,6 +152,8 @@ def build_run_command(plan: Plan) -> list[str]:
         str(plan.repo),
         "--repo-root",
         str(plan.worktree),
+        "--variant-mode",
+        plan.variant_mode,
     ]
 
 
@@ -191,6 +206,9 @@ def launch_facts(plan: Plan, started_at: str, *, mode: str) -> dict[str, Any]:
         "experiment_version": plan.experiment_version,
         "started_at_utc": started_at,
         "mode": mode,
+        # 要求した組の走らせ方（D26 仮置き 6。実際に並列で走ったかは run の中で決まり、ここには
+        # 書かない）。
+        "variant_mode": plan.variant_mode,
         "launcher_pid": None,
         "run_pid": None,
         "host": "local Mac",
@@ -248,12 +266,15 @@ def execute(plan: Plan) -> int:
     _update_launch(plan, launcher_pid=os.getpid())
     with (plan.version_dir / "console.log").open("wb") as console:
         try:
+            # `caffeinate` を新しいプロセスグループの先頭にする（`run_pid` = グループの番号）。
+            # `experiment run` とその組の子はこのグループに入り、包みは入らない（D26 §3.8 の 2）。
             process = subprocess.Popen(
                 build_run_command(plan),
                 cwd=plan.worktree,
                 stdin=subprocess.DEVNULL,
                 stdout=console,
                 stderr=subprocess.STDOUT,
+                process_group=0,
             )
         except OSError as exc:
             console.write(f"run を起動できない: {exc}\n".encode())
@@ -303,6 +324,8 @@ def child_command(plan: Plan) -> list[str]:
         str(plan.worktree),
         "--snapshots",
         str(plan.snapshots),
+        "--variant-mode",
+        plan.variant_mode,
         "--child",
     ]
 
@@ -334,6 +357,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--snapshots", type=Path, help="snapshot の置き場（既定: <repo>/data/snapshots）"
+    )
+    parser.add_argument(
+        "--variant-mode",
+        choices=VARIANT_MODES,
+        default=DEFAULT_VARIANT_MODE,
+        help="組（標準・候補）の走らせ方（既定: parallel。serial は今の順番。D26-2 (a)）",
     )
     parser.add_argument("--foreground", action="store_true", help="端末から切り離さずに走らせる")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)

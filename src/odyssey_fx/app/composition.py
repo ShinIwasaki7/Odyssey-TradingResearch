@@ -19,6 +19,7 @@ snapshot になる（D03 §3.7.1）。
 from __future__ import annotations
 
 import bisect
+import gc
 import platform
 import secrets
 import subprocess
@@ -29,7 +30,7 @@ from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import odyssey_fx
 from odyssey_fx.app.config import ConfigError, DataSourceConfig
@@ -54,6 +55,18 @@ from odyssey_fx.app.conversion import (
 )
 from odyssey_fx.app.final_pending import pending_final_validation
 from odyssey_fx.app.mt5_run import DEFAULT_APPROVED_LIST, build_mt5_run_parts, publication_rows
+from odyssey_fx.app.parallel_search import (
+    ExecutionLock,
+    ExecutionLocked,
+    ParallelVariantsFailed,
+    VariantJob,
+    VariantMode,
+    execution_lock,
+    parallel_memory_shortfall,
+    run_variant_jobs,
+)
+from odyssey_fx.app.parallel_search import dumps as parallel_dumps
+from odyssey_fx.app.parallel_search import loads as parallel_loads
 from odyssey_fx.backtest.application.run_backtest import ConversionSupply, RunBacktest
 from odyssey_fx.backtest.domain.policies import RunConfig, RunEndMode
 from odyssey_fx.backtest.engine.loop import EngineContext, TraceOutputSink
@@ -84,7 +97,9 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultRepository,
     FileSystemResultWriter,
     FileSystemTraceSink,
+    ensure_experiment_directory,
     evaluation_directory,
+    experiment_directory,
     read_experiment_manifest,
     read_experiment_outcome,
     read_ledger_binding_records,
@@ -126,6 +141,7 @@ from odyssey_fx.evaluation.application.run_experiment import (
     ReproductionVerdict,
     RunExperiment,
     TrialLedgerStop,
+    VariantRun,
     judge_reproduction,
     overall_reproduction,
 )
@@ -261,12 +277,15 @@ from odyssey_fx.strategy.runtime.evaluator import StrategyEvaluator
 __all__ = [
     "AcceptanceService",
     "EvaluationOutcome",
+    "ExecutionLocked",
     "ExperimentRunOutcome",
+    "ParallelVariantsFailed",
     "ReproductionOutcome",
     "ReviewRunWiring",
     "RunOutcome",
     "SnapshotInputs",
     "TrialLedgerStop",
+    "VariantMode",
     "acceptance_service",
     "build_conversion_record",
     "build_experiment_manifest",
@@ -1580,6 +1599,8 @@ def run_experiment(
     snapshots_root: Path,
     artifacts_root: Path,
     repo_root: Path,
+    variant_mode: VariantMode = VariantMode.SERIAL,
+    notify: Callable[[str], None] | None = None,
 ) -> ExperimentRunOutcome:
     """書式 v2 の実験設定から1つの実験を進める（D07 §19.4、`experiment run`）。
 
@@ -1587,7 +1608,8 @@ def run_experiment(
     事後検査の順序と拒否の判断は `RunExperiment` が持つ（ここは結線だけ）。
 
     探索の実験（`search_plan` / `split` が `NONE` でない）は `run_search_experiment` へ渡す
-    （D09 §4.1・§10.7）。
+    （D09 §4.1・§10.7）。`variant_mode` は探索の実験の組の走らせ方（D26-2 (a)）で、単一実行の
+    実験には意味を持たない（組が無い）。
     """
     if loaded.search is not None:
         return run_search_experiment(
@@ -1595,6 +1617,8 @@ def run_experiment(
             snapshots_root=snapshots_root,
             artifacts_root=artifacts_root,
             repo_root=repo_root,
+            variant_mode=variant_mode,
+            notify=notify,
         )
     environment = loaded.environment
     plan = _plan_run(
@@ -1867,16 +1891,44 @@ def _prepare_trial(
     )
 
 
+class _PerVariant[ValueT](Protocol):
+    """組ごとの値を組で引く口（両組の `Paired` か、並列の子の組 1 つの `_OneVariant`）。"""
+
+    def of(self, variant: Variant) -> ValueT:
+        """組の値。"""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class _OneVariant[ValueT]:
+    """組 1 つだけの値（並列の子が自分の組の読み取り面だけを持つ。D26 §3.2 の 2）。
+
+    ほかの組を引けば構造エラー（子は自分の組の単位しか走らせない）。
+    """
+
+    variant: Variant
+    value: ValueT
+
+    def of(self, variant: Variant) -> ValueT:
+        """組の値（自分の組だけ）。"""
+        if variant is not self.variant:
+            raise KernelValueError(
+                f"this process holds the {self.variant.value} variant only, not {variant.value}"
+                " (D26 §3.2)"
+            )
+        return self.value
+
+
 @dataclass(frozen=True, slots=True)
 class _SearchParts:
     """探索の実験の準備の結果と、単位の run の結線に使う材料（snapshot は組ごとに1回だけ開く）。"""
 
     prepared: PreparedSearch
-    inputs: Paired[SnapshotInputs]
+    inputs: _PerVariant[SnapshotInputs]
     spec: SymbolSpec
     refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]]
     #: 組ごとの換算の snapshot の入力一式（決済通貨が口座通貨と違う実験だけ。D06 §19.2）。
-    conversion_inputs: Paired[SnapshotInputs] | None = None
+    conversion_inputs: _PerVariant[SnapshotInputs] | None = None
 
 
 def prepare_search(
@@ -1899,49 +1951,52 @@ def prepare_search(
     ).prepared
 
 
-def _prepare_search(
-    *,
-    loaded: ExperimentV2,
-    snapshots_root: Path,
-    repo_root: Path,
-    registry: ComponentRegistry,
-) -> _SearchParts:
+def _open_variant_inputs(
+    loaded: ExperimentV2, snapshots_root: Path, variant: Variant
+) -> SnapshotInputs:
+    """組の snapshot を開く（研究履歴の partition だけを読める入力一式。D03 §6.3）。"""
     search = loaded.search
-    if search is None:
-        raise ConfigError("prepare_search は探索の実験（search_plan が NONE でない）だけを受ける")
+    if search is None:  # pragma: no cover - 呼び出し側が探索の実験だけを渡す
+        raise ConfigError("組の snapshot は探索の実験だけが持つ")
     experiment = loaded.body
     environment = loaded.environment
-
-    def open_inputs(variant: Variant) -> SnapshotInputs:
-        opened = open_snapshot_inputs(
-            snapshots_root=snapshots_root,
-            snapshot_id=str(search.snapshots.of(variant).snapshot_id),
-            calendar=environment.calendar,
-            timeframe_defs=environment.timeframe_defs,
-        )
-        if opened.schedules.get(experiment.execution_series) is None:
-            raise MarketDataValueError(
-                f"the {variant.value} snapshot does not carry the execution series"
-                f" {experiment.execution_series} (D03 §6.3)"
-            )
-        return opened
-
-    inputs = Paired.build(open_inputs)
-    conversion_refs = search.conversion_snapshots
-    conversion_inputs = (
-        None
-        if conversion_refs is None
-        else Paired.build(
-            lambda variant: open_conversion_inputs(
-                snapshots_root=snapshots_root,
-                conversion_ref=conversion_refs.of(variant),
-                execution=inputs.of(variant),
-                calendar=environment.calendar,
-                timeframe_defs=environment.timeframe_defs,
-            )
-        )
+    opened = open_snapshot_inputs(
+        snapshots_root=snapshots_root,
+        snapshot_id=str(search.snapshots.of(variant).snapshot_id),
+        calendar=environment.calendar,
+        timeframe_defs=environment.timeframe_defs,
     )
-    symbol = experiment.execution_series.symbol
+    if opened.schedules.get(experiment.execution_series) is None:
+        raise MarketDataValueError(
+            f"the {variant.value} snapshot does not carry the execution series"
+            f" {experiment.execution_series} (D03 §6.3)"
+        )
+    return opened
+
+
+def _open_variant_conversion(
+    loaded: ExperimentV2, snapshots_root: Path, variant: Variant, execution: SnapshotInputs
+) -> SnapshotInputs:
+    """組の換算の snapshot を開く（決済通貨が口座通貨と違う実験だけ。D06 §19.2）。"""
+    search = loaded.search
+    if search is None or search.conversion_snapshots is None:  # pragma: no cover
+        raise ConfigError("組の換算の snapshot は換算を持つ探索の実験だけが持つ")
+    environment = loaded.environment
+    return open_conversion_inputs(
+        snapshots_root=snapshots_root,
+        conversion_ref=search.conversion_snapshots.of(variant),
+        execution=execution,
+        calendar=environment.calendar,
+        timeframe_defs=environment.timeframe_defs,
+    )
+
+
+def _search_refs(
+    loaded: ExperimentV2,
+) -> tuple[SymbolSpec, tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]]]:
+    """執行の銘柄仕様と、run の設定のダイジェストの材料の参照（銘柄仕様・カレンダー・時間足）。"""
+    environment = loaded.environment
+    symbol = loaded.body.execution_series.symbol
     spec = environment.symbol_specs.get(symbol)
     if spec is None:
         raise MarketDataValueError(
@@ -1952,6 +2007,31 @@ def _prepare_search(
         calendar_ref_of(environment.calendar),
         tuple(sorted((d.ref for d in environment.timeframe_defs.values()), key=str)),
     )
+    return spec, refs
+
+
+def _prepare_search(
+    *,
+    loaded: ExperimentV2,
+    snapshots_root: Path,
+    repo_root: Path,
+    registry: ComponentRegistry,
+) -> _SearchParts:
+    search = loaded.search
+    if search is None:
+        raise ConfigError("prepare_search は探索の実験（search_plan が NONE でない）だけを受ける")
+    environment = loaded.environment
+    inputs = Paired.build(lambda variant: _open_variant_inputs(loaded, snapshots_root, variant))
+    conversion_inputs = (
+        None
+        if search.conversion_snapshots is None
+        else Paired.build(
+            lambda variant: _open_variant_conversion(
+                loaded, snapshots_root, variant, inputs.of(variant)
+            )
+        )
+    )
+    spec, refs = _search_refs(loaded)
     code = code_digest()
     lock = lock_digest(repo_root)
     env = env_digest()
@@ -2008,7 +2088,7 @@ def _prepare_search(
 def comparison_basis(
     prepared: PreparedSearch,
     refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]],
-    inputs: Paired[SnapshotInputs],
+    inputs: _PerVariant[SnapshotInputs],
 ) -> Paired[ComparisonBasis] | None:
     """組ごとの比較の前提を組み立てる（D09 §3・§10.10 の 2026-10-21 改訂。仮置き 27）。
 
@@ -2072,7 +2152,7 @@ class _SearchRunner:
     loaded: ExperimentV2
     parts: _SearchParts
     artifacts_root: Path
-    publication_logs: Paired[PublicationLog]
+    publication_logs: _PerVariant[PublicationLog]
     planned: dict[RunConfig, CompiledStrategy]
 
     def variant_of(self, config: RunConfig) -> Variant:
@@ -2197,7 +2277,7 @@ class _SearchDailyBars:
 
     loaded: ExperimentV2
     parts: _SearchParts
-    publication_logs: Paired[PublicationLog]
+    publication_logs: _PerVariant[PublicationLog]
     timeframe_id: str
 
     def daily_bars(
@@ -2251,23 +2331,31 @@ class _SearchDailyBars:
 
 
 def _search_wiring(
-    loaded: ExperimentV2, parts: _SearchParts, artifacts_root: Path
+    loaded: ExperimentV2, parts: _SearchParts, artifacts_root: Path, only: Variant | None = None
 ) -> tuple[_SearchRunner, _SegmentPlanner]:
-    """探索の実験の runner と経路の区間の設定の組み立てを結線する。"""
+    """探索の実験の runner と経路の区間の設定の組み立てを結線する。
+
+    `only` を渡すと、その組の公開記録だけを組み立てる（並列の子。D26 §3.2 の 2）。
+    """
     search = loaded.search
     if search is None:  # pragma: no cover - 呼び出し側が探索の実験だけを渡す
         raise KernelValueError("the search wiring requires a search experiment")
     prepared = parts.prepared
+
+    def log_of(variant: Variant) -> PublicationLog:
+        return _publication_log(
+            parts.inputs.of(variant),
+            loaded.body_of(variant).with_run_interval(search.standard.split.range),
+        )
+
+    logs: _PerVariant[PublicationLog] = (
+        Paired.build(log_of) if only is None else _OneVariant(only, log_of(only))
+    )
     runner = _SearchRunner(
         loaded=loaded,
         parts=parts,
         artifacts_root=artifacts_root,
-        publication_logs=Paired.build(
-            lambda variant: _publication_log(
-                parts.inputs.of(variant),
-                loaded.body_of(variant).with_run_interval(search.standard.split.range),
-            )
-        ),
+        publication_logs=logs,
         planned={
             config: trial.compiled
             for trial in prepared.trials
@@ -2276,6 +2364,193 @@ def _search_wiring(
         },
     )
     return runner, _SegmentPlanner(loaded=loaded, parts=parts, runner=runner)
+
+
+def _daily_bars_of(
+    loaded: ExperimentV2, parts: _SearchParts, runner: _SearchRunner
+) -> _SearchDailyBars | None:
+    """局面の付与に使う日足の読み出し（研究ポリシーの版 5 以上を指す実験だけ。D24 §5.2）。"""
+    standard = parts.prepared.manifest.evaluation_standard
+    if not isinstance(standard, EvaluationStandardV5):
+        return None
+    return _SearchDailyBars(
+        loaded=loaded,
+        parts=parts,
+        publication_logs=runner.publication_logs,
+        timeframe_id=_REGIME_TIMEFRAME_IDS[standard.regimes.timeframe],
+    )
+
+
+# --- 組ごとの並列の実行（D26 §3。改善 2）------------------------------------------------------
+
+
+class _ParentRunsNoUnit:
+    """並列の実行の親の runner（`BacktestRunner`）。親は単位を走らせない（D26 §3.2）。"""
+
+    def run(self, config: RunConfig, compiled: CompiledStrategy) -> BacktestResult:
+        del config, compiled
+        raise KernelValueError(
+            "the parent of a parallel search runs no unit; the variant children run them (D26 §3.2)"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchTask:
+    """組の子へ渡す、実験に共通の入力（足は持たない。D26 §3.5 の「子の入力」）。
+
+    `artifacts_root` は子が run と評価の成果物を書く基点（再現では別の基点）。
+    """
+
+    loaded: ExperimentV2
+    spec: SymbolSpec
+    refs: tuple[SymbolSpecRef, str, tuple[TimeframeRef, ...]]
+    snapshots_root: Path
+    artifacts_root: Path
+    repo_root: Path | None
+
+
+@dataclass(frozen=True, slots=True)
+class _VariantWork:
+    """組の子 1 つの入力。`recorded` は再現のときの組の保存済みの記録（D26 §3.2 の 6）。"""
+
+    task: _SearchTask
+    prepared: PreparedSearch
+    variant: Variant
+    recorded: RecordedSearch | None = None
+
+
+@dataclass(slots=True)
+class _HeldParts:
+    """親が準備で読んだ両組の足（を指す入力一式）。子を起こす前に手放す（D26 §3.3）。"""
+
+    parts: _SearchParts | None
+
+    def release(self) -> None:
+        """両組の読み込んだ足・照合の写し・それらを指す読み口への参照を手放す。"""
+        self.parts = None
+        gc.collect()
+
+
+def _child_parts(work: _VariantWork) -> _SearchParts:
+    """子が自分の組の読み取り面を組み立て直す（D26 §3.4 の子の表の K0）。"""
+    task = work.task
+    loaded = task.loaded
+    search = loaded.search
+    if search is None:  # pragma: no cover - 親が探索の実験だけを渡す
+        raise KernelValueError("a variant child requires a search experiment")
+    inputs = _open_variant_inputs(loaded, task.snapshots_root, work.variant)
+    conversion = (
+        None
+        if search.conversion_snapshots is None
+        else _OneVariant(
+            work.variant,
+            _open_variant_conversion(loaded, task.snapshots_root, work.variant, inputs),
+        )
+    )
+    return _SearchParts(
+        prepared=work.prepared,
+        inputs=_OneVariant(work.variant, inputs),
+        spec=task.spec,
+        refs=task.refs,
+        conversion_inputs=conversion,
+    )
+
+
+def _load_work(payload: bytes) -> _VariantWork:
+    work = parallel_loads(payload)
+    if not isinstance(work, _VariantWork):
+        raise KernelValueError("a variant child was given an unexpected input")
+    return work
+
+
+def _child_use_case(work: _VariantWork, runner: _SearchRunner) -> RunExperiment:
+    task = work.task
+    manifest = work.prepared.manifest
+    return RunExperiment(
+        store=FileSystemExperimentStore(
+            root=task.artifacts_root,
+            experiment_name=manifest.experiment_name,
+            experiment_version=manifest.experiment_version,
+            identity_of=recompute_experiment_id,
+            repo_root=task.repo_root,
+        ),
+        runner=runner,
+        repository=FileSystemResultRepository(root=task.artifacts_root),
+        evaluator=EvaluateRun(evaluation_code_digest=work.prepared.code_digest),
+    )
+
+
+def search_variant_work(payload: bytes, boundary: Callable[[], None]) -> VariantRun:
+    """探索の実験の組の子の仕事: 自分の組の全 fold・経路・局面の成果物（D26 §3.2 の 2・3）。"""
+    work = _load_work(payload)
+    parts = _child_parts(work)
+    runner, planner = _search_wiring(
+        work.task.loaded, parts, work.task.artifacts_root, only=work.variant
+    )
+    return _child_use_case(work, runner).execute_variant(
+        work.prepared,
+        work.variant,
+        segments=planner,
+        daily_bars=_daily_bars_of(work.task.loaded, parts, runner),
+        boundary=boundary,
+    )
+
+
+def reproduce_variant_work(
+    payload: bytes, boundary: Callable[[], None]
+) -> tuple[ReproductionRow, ...]:
+    """再現の組の子の仕事: 自分の組の単位・選定・経路の区間をやり直して照合する（D26-3 (a)）。"""
+    work = _load_work(payload)
+    if work.recorded is None:
+        raise KernelValueError("a reproduction child needs the recorded search of its variant")
+    parts = _child_parts(work)
+    runner, planner = _search_wiring(
+        work.task.loaded, parts, work.task.artifacts_root, only=work.variant
+    )
+    return _child_use_case(work, runner).reproduce_variant(
+        work.prepared, work.variant, work.recorded, planner, boundary=boundary
+    )
+
+
+@dataclass(slots=True)
+class _ParallelSearch:
+    """`SearchVariants`（D26 §3.2）: 束縛の記録の後に、足を手放してから組ごとの子を起こす。"""
+
+    task: _SearchTask
+    held: _HeldParts
+    lock: ExecutionLock
+    notify: Callable[[str], None] | None
+
+    def run_variants(self, prepared: PreparedSearch) -> Paired[VariantRun]:
+        self.held.release()
+        jobs = Paired.build(
+            lambda variant: VariantJob(
+                variant=variant,
+                work=search_variant_work,
+                payload=parallel_dumps(
+                    _VariantWork(task=self.task, prepared=prepared, variant=variant)
+                ),
+            )
+        )
+        returned = run_variant_jobs(jobs, lock=self.lock, notify=self.notify)
+        return returned.map(lambda variant, value: _variant_run(variant, value))
+
+
+def _variant_run(variant: Variant, value: object) -> VariantRun:
+    if not isinstance(value, VariantRun):
+        raise KernelValueError(f"the {variant.value} variant child returned {type(value).__name__}")
+    return value
+
+
+def _variant_rows(variant: Variant, value: object) -> tuple[ReproductionRow, ...]:
+    """再現の組の子が返した照合の行（組の名前で受け取り、取り違えたら構造エラー。D26 §3.5）。"""
+    if not isinstance(value, tuple) or not all(
+        isinstance(row, ReproductionRow) and row.variant is variant for row in value
+    ):
+        raise KernelValueError(
+            f"the {variant.value} reproduction child returned rows of another shape or variant"
+        )
+    return value
 
 
 def _lineage_request(
@@ -2315,6 +2590,8 @@ def run_search_experiment(
     snapshots_root: Path,
     artifacts_root: Path,
     repo_root: Path,
+    variant_mode: VariantMode = VariantMode.SERIAL,
+    notify: Callable[[str], None] | None = None,
 ) -> ExperimentRunOutcome:
     """探索の実験の1回の実行（D09 §4.1・§10.7・§10.12、`experiment run`）。
 
@@ -2330,7 +2607,52 @@ def run_search_experiment(
     読めない（Q37）に限らず、入力の読込の失敗と書き込みの失敗の全般）、結末記録と台帳の行は
     そのままでレポートを書かず、原因を `report_error` に入れて返す（CLI が終了コード 1 にする。
     D09 §11.4。§17.7.5 の8）。
+
+    **組の走らせ方**（D26 §3。改善 2）: `variant_mode` が `PARALLEL` なら、まず空きメモリを確かめ
+    （D26 §3.4 の S0。足りなければ今の順番へ切り替えて `notify` に表示する）、版のディレクトリの
+    実行中の印のロックを取り（取れなければ何も書かずに `ExecutionLocked`。順番のときも取る。D26
+    仮置き 11）、束縛の記録の後に読んだ両組の足を手放してから組ごとの子を起こす。結果は変わらない。
     """
+    mode = variant_mode
+    if mode is VariantMode.PARALLEL:
+        shortfall = parallel_memory_shortfall()
+        if shortfall is not None:
+            _notify(notify, shortfall)
+            mode = VariantMode.SERIAL
+    try:
+        require_experiment_name(loaded.body.experiment_id)
+    except KernelValueError as exc:
+        raise ConfigError(f"実験設定の `id` を保存先の名前に使えない: {exc}") from exc
+    directory = ensure_experiment_directory(
+        artifacts_root,
+        experiment_directory(artifacts_root, loaded.body.experiment_id, loaded.body.version),
+    )
+    with execution_lock(directory) as lock:
+        if mode is VariantMode.PARALLEL:
+            _notify(notify, "組（標準・候補）を 2 つの子プロセスで並列に走らせる（D26 §3）")
+        return _run_search_locked(
+            loaded=loaded,
+            snapshots_root=snapshots_root,
+            artifacts_root=artifacts_root,
+            repo_root=repo_root,
+            parallel=None if mode is VariantMode.SERIAL else (lock, notify),
+        )
+
+
+def _notify(notify: Callable[[str], None] | None, text: str) -> None:
+    if notify is not None:
+        notify(text)
+
+
+def _run_search_locked(
+    *,
+    loaded: ExperimentV2,
+    snapshots_root: Path,
+    artifacts_root: Path,
+    repo_root: Path,
+    parallel: tuple[ExecutionLock, Callable[[str], None] | None] | None,
+) -> ExperimentRunOutcome:
+    """実行中の印のロックを取った後の探索の実験の 1 回の実行（`run_search_experiment` の本体）。"""
     parts = _prepare_search(
         loaded=loaded,
         snapshots_root=snapshots_root,
@@ -2366,18 +2688,33 @@ def run_search_experiment(
             expected_run_id=None,
         )
     lineage = _lineage_request(loaded, store)
-    runner, planner = _search_wiring(loaded, parts, artifacts_root)
-    standard = manifest.evaluation_standard
-    daily_bars = (
-        _SearchDailyBars(
-            loaded=loaded,
-            parts=parts,
-            publication_logs=runner.publication_logs,
-            timeframe_id=_REGIME_TIMEFRAME_IDS[standard.regimes.timeframe],
+    basis = comparison_basis(prepared, parts.refs, parts.inputs)
+    runner: BacktestRunner
+    planner: _SegmentPlanner | None = None
+    daily_bars: _SearchDailyBars | None = None
+    variants: _ParallelSearch | None = None
+    if parallel is None:
+        runner, planner = _search_wiring(loaded, parts, artifacts_root)
+        daily_bars = _daily_bars_of(loaded, parts, runner)
+    else:
+        lock, notify = parallel
+        # 親は単位を走らせない（組の単位・経路は子が走らせる。D26 §3.2）。読んだ両組の足は束縛の
+        # 記録の後、子を起こす前に手放す（`_HeldParts.release`。D26 §3.3 の v0.5 の決定）。
+        runner = _ParentRunsNoUnit()
+        variants = _ParallelSearch(
+            task=_SearchTask(
+                loaded=loaded,
+                spec=parts.spec,
+                refs=parts.refs,
+                snapshots_root=snapshots_root,
+                artifacts_root=artifacts_root,
+                repo_root=repo_root,
+            ),
+            held=_HeldParts(parts),
+            lock=lock,
+            notify=notify,
         )
-        if isinstance(standard, EvaluationStandardV5)
-        else None
-    )
+    del parts
     use_case = RunExperiment(
         store=store,
         runner=runner,
@@ -2386,13 +2723,14 @@ def run_search_experiment(
     )
     result = use_case.execute_search(
         prepared,
-        basis=comparison_basis(prepared, parts.refs, parts.inputs),
+        basis=basis,
         execution_nonce=secrets.token_hex(16),
         out_base=str(artifacts_root),
         running=store.directory.relative_to(artifacts_root).as_posix(),
         segments=planner,
         lineage=lineage,
         daily_bars=daily_bars,
+        variants=variants,
     )
     report: Path | None = None
     report_error: str | None = None
@@ -2628,8 +2966,13 @@ def reproduce_experiment(
     snapshots_root: Path,
     out_root: Path,
     repo_root: Path,
+    variant_mode: VariantMode = VariantMode.SERIAL,
+    notify: Callable[[str], None] | None = None,
 ) -> ReproductionOutcome:
     """記録票と結末記録だけから run と評価をやり直し、判定を書く（D07 §21.2）。
+
+    探索の実験は `variant_mode` で組の走らせ方を選ぶ（D26-3 (a)。既定は今の順番）。探索の実験の
+    再現は、元の版のディレクトリの実行中の印のロックを取ってからやり直す（D26 仮置き 11）。
 
     受け取るのは実験の版のディレクトリ・snapshot の基点・出力の基点（と、現在の環境の lock を
     読むリポジトリの位置）だけで、元の実験設定ファイル・戦略ファイルは読まない（D07 §21.1）。
@@ -2658,14 +3001,24 @@ def reproduce_experiment(
     except KernelValueError as exc:
         raise ConfigError(f"記録票か結末記録を読めない: {exc}") from exc
     if manifest.is_search:
-        return _reproduce_search(
-            experiment_dir=experiment_dir,
-            manifest=manifest,
-            outcome=outcome,
-            snapshots_root=snapshots_root,
-            out_root=out_root,
-            repo_root=repo_root,
-        )
+        mode = variant_mode
+        if mode is VariantMode.PARALLEL:
+            shortfall = parallel_memory_shortfall()
+            if shortfall is not None:
+                _notify(notify, shortfall)
+                mode = VariantMode.SERIAL
+        with execution_lock(experiment_dir) as lock:
+            if mode is VariantMode.PARALLEL:
+                _notify(notify, "組（標準・候補）を 2 つの子プロセスで並列に再現する（D26-3 (a)）")
+            return _reproduce_search(
+                experiment_dir=experiment_dir,
+                manifest=manifest,
+                outcome=outcome,
+                snapshots_root=snapshots_root,
+                out_root=out_root,
+                repo_root=repo_root,
+                parallel=None if mode is VariantMode.SERIAL else (lock, notify),
+            )
     if outcome is None:
         raise ConfigError(
             f"{experiment_dir} に結末記録が無い。途中で止まった実験には再現する結果が無い"
@@ -2780,9 +3133,14 @@ def _reproduce_search(
     snapshots_root: Path,
     out_root: Path,
     repo_root: Path,
+    parallel: tuple[ExecutionLock, Callable[[str], None] | None] | None = None,
 ) -> ReproductionOutcome:
     """探索の実験の別プロセスでの再現（D07 §21 の 2026-10-21 改訂。D13-25 (a)、仮置き 20、
     実装 PR の仮置き 57）。
+
+    `parallel` を渡すと、組ごとの子が自分の組の単位・選定・経路の区間を今と同じ順でやり直し、
+    照合の行を親へ返す。親は両組がそろってから標準 → 候補の順に行をつなぎ、今と同じ再現の記録を
+    書く（D26 §3.2 の 6）。読んだ両組の足は子を起こす前に手放す（D26 §3.3）。
 
     手順1（記録票の改変・取り違え）と手順2（環境）は実験全体に 1 回当て、手順3〜5 を独立口座の
     単位・選定・経路の区間ごとに当てる。全体の判定は今の 5 値で、全行が一致すれば `REPRODUCED`
@@ -2847,18 +3205,6 @@ def _reproduce_search(
         )
     rebuilt = replace(prepared, manifest=manifest)
     parts = replace(parts, prepared=rebuilt)
-    runner, planner = _search_wiring(loaded, parts, out_root)
-    use_case = RunExperiment(
-        store=FileSystemExperimentStore(
-            root=out_root,
-            experiment_name=manifest.experiment_name,
-            experiment_version=manifest.experiment_version,
-            identity_of=recompute_experiment_id,
-        ),
-        runner=runner,
-        repository=FileSystemResultRepository(root=out_root),
-        evaluator=EvaluateRun(evaluation_code_digest=prepared.code_digest),
-    )
 
     def recorded_of(variant: Variant) -> RecordedSearch:
         _, runs = read_unit_records(experiment_dir, variant)
@@ -2879,7 +3225,51 @@ def _reproduce_search(
         recorded = Paired.build(recorded_of)
     except KernelValueError as exc:
         raise ConfigError(f"探索の記録を読めない: {exc}") from exc
-    rows = use_case.reproduce_search(rebuilt, recorded, planner)
+    if parallel is None:
+        runner, planner = _search_wiring(loaded, parts, out_root)
+        use_case = RunExperiment(
+            store=FileSystemExperimentStore(
+                root=out_root,
+                experiment_name=manifest.experiment_name,
+                experiment_version=manifest.experiment_version,
+                identity_of=recompute_experiment_id,
+            ),
+            runner=runner,
+            repository=FileSystemResultRepository(root=out_root),
+            evaluator=EvaluateRun(evaluation_code_digest=prepared.code_digest),
+        )
+        rows = use_case.reproduce_search(rebuilt, recorded, planner)
+    else:
+        lock, notify = parallel
+        task = _SearchTask(
+            loaded=loaded,
+            spec=parts.spec,
+            refs=parts.refs,
+            snapshots_root=snapshots_root,
+            artifacts_root=out_root,
+            repo_root=None,
+        )
+        held = _HeldParts(parts)
+        del parts
+        held.release()
+        jobs = Paired.build(
+            lambda variant: VariantJob(
+                variant=variant,
+                work=reproduce_variant_work,
+                payload=parallel_dumps(
+                    _VariantWork(
+                        task=task,
+                        prepared=rebuilt,
+                        variant=variant,
+                        recorded=recorded.of(variant),
+                    )
+                ),
+            )
+        )
+        returned = run_variant_jobs(jobs, lock=lock, notify=notify)
+        rows = tuple(
+            row for variant, value in returned.items() for row in _variant_rows(variant, value)
+        )
     return report(
         overall_reproduction(rows),
         "re-ran every recorded unit and path segment in a separate artifacts root and compared"
