@@ -46,6 +46,7 @@ import pytest
 
 from odyssey_fx.app import composition
 from odyssey_fx.app.cli.main import main
+from odyssey_fx.app.parallel_search import EXECUTION_LOCK_FILE
 from odyssey_fx.common.canonical import digest, encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
@@ -1013,7 +1014,11 @@ def test_an_unreadable_stored_metrics_table_refuses_the_search_before_anything_i
     code, output = _run(workspace, out, _experiment(workspace, f"metrics-{case}"))
     assert code == 5, output
     assert "cannot be read" in output
-    assert not _version(out, f"metrics-{case}").exists()
+    # 拒否でも、版のディレクトリと実行中の印（中身なし）だけは作る（D26 §3.9 の 2。「何も書かない」
+    # の例外）。記録票・結末記録・探索の記録は書かない。
+    assert [path.name for path in _version(out, f"metrics-{case}").iterdir()] == [
+        EXECUTION_LOCK_FILE
+    ]
     assert _ledger(workspace) == ()
     if case != "missing":
         assert target.is_file()
