@@ -8,9 +8,10 @@
   ならない（一部だけを書くと、決定と違う規則を選んだことになる）。
 - **登録簿の要素**は `ForwardRulesEntry`（採用審査の規則の登録簿と同じ形。D16 §10.3）。
 - **固定の記録**（`research/candidate_fixes/<experiment_id>/<execution>/<fix_no>.yaml`。
-  仮置き F1-2）の書式の型が `CandidateFix`。固定の記録の読込・固定の前の確かめ・前向き検証の
-  コマンドは要決定 F1-E（決定 75）で別の実装 PR に送ったので、本モジュールは型と、型だけで
-  決まる検査だけを持つ。
+  仮置き F1-2）の書式の型が `CandidateFix`。本モジュールは型と、型だけで決まる検査だけを持つ。
+  固定の記録の読込・固定の前の確かめ・長さと期間の計算は順 11 の PR 4c（人間の決定 189）で
+  `evaluation.domain.candidate_fixation`・`app.config.candidate_fix`・`app.candidate_fixation` に
+  置いた。前向き検証の申請のコマンドは別の実装 PR（決定 75 の注記）。
   固定の記録には `T_fix`・`S`・`W`・`S'`・`E` を書かない（D09 §9.11.3・§9.11.6）。
 
 どの値も成績・価格を含まない（日数・件数の下限・確率・時刻・ダイジェストだけ）。

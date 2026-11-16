@@ -48,11 +48,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Final, Protocol
 
-from odyssey_fx.app.config.final_validation import (
-    FIXATIONS_DIRECTORY,
-    Fixation,
-    fixation_path,
-    load_fixation,
+from odyssey_fx.app.candidate_fix_records import (
+    FixRecordStop,
+    reservations_at_origin,
+    valid_fix_at_origin,
+)
+from odyssey_fx.app.config.forward_validation import (
+    CANDIDATE_FIXES_DIRECTORY,
+    load_registered_forward_validation_rules,
 )
 from odyssey_fx.app.config.loader import ConfigError
 from odyssey_fx.app.config.research_policy import (
@@ -109,6 +112,7 @@ from odyssey_fx.evaluation.application.ports import (
     TrialLedgerReadFailure,
 )
 from odyssey_fx.evaluation.domain.adoption_review import AdoptionReviewLine, ReviewResult
+from odyssey_fx.evaluation.domain.candidate_fixation import ResolvedFix
 from odyssey_fx.evaluation.domain.experiment import ExperimentStatus
 from odyssey_fx.evaluation.domain.final_validation import (
     WINDOW_START,
@@ -128,6 +132,7 @@ from odyssey_fx.evaluation.domain.final_validation import (
     derive_final_window,
     judge_final_variant,
 )
+from odyssey_fx.evaluation.domain.forward_validation import FORWARD_VALIDATION_ID
 from odyssey_fx.evaluation.domain.research_policy import current_standard_version
 from odyssey_fx.evaluation.domain.search import (
     CombinedVerdict,
@@ -173,7 +178,10 @@ __all__ = [
     "FinalRunner",
     "FinalValidationOutcome",
     "FinalValidationRequest",
+    "derive_window",
     "final_validate",
+    "review_lines_at_origin",
+    "sealed_facts_at_origin",
 ]
 
 EXIT_OK: Final = 0
@@ -652,6 +660,14 @@ def _review_lines(log: GitHoldoutAccessLog) -> tuple[AdoptionReviewLine, ...]:
             f" {contents.detail}"
         )
     return contents.lines
+
+
+def review_lines_at_origin(log: GitHoldoutAccessLog) -> tuple[AdoptionReviewLine, ...]:
+    """origin の既定ブランチ上の採用審査の台帳（R3 の読込と同じ検査。読めなければ `ConfigError`）。
+
+    候補の固定の前の確かめ（D09 §9.11.10 の項目 1。順 11 の PR 4c）も同じ読み方で読む。
+    """
+    return _review_lines(log)
 
 
 def _review_key(line: AdoptionReviewLine) -> tuple[str, int]:
@@ -1214,15 +1230,15 @@ def _close_failed(ctx: _Context) -> FinalValidationOutcome:
 
 
 def _fixation_t_fix(ctx: _Context) -> str:
-    """origin の既定ブランチ上の候補の固定の記録の `T_fix`（読めなければ空の文字列）。"""
-    rel = fixation_path(ctx.key.experiment_id, ctx.key.execution)
-    data = ctx.log.read_at_origin(rel.as_posix())
-    if data is None:
-        return ""
+    """origin の既定ブランチ上の候補の固定の記録の `T_fix`（読めなければ空の文字列）。
+
+    固定時点は記録に書かず、first-parent の履歴から導く（D09 §9.11.3 の仮置き F1-3）。
+    """
     try:
-        return str(load_fixation(rel, text=data.decode("utf-8")).t_fix)
-    except (ConfigError, UnicodeDecodeError):
+        fix = valid_fix_at_origin(ctx.log, ctx.key.experiment_id, ctx.key.execution)
+    except (ConfigError, HoldoutAccessLogStop):
         return ""
+    return "" if fix is None else str(fix.t_fix)
 
 
 def _attempt_summary(attempts: Sequence[Mapping[str, Any]]) -> tuple[int, list[str]]:
@@ -1382,7 +1398,7 @@ def _resume(ctx: _Context, runner: FinalRunner) -> FinalValidationOutcome:
     )
 
 
-def _eligibility(ctx: _Context) -> Fixation:
+def _eligibility(ctx: _Context) -> ResolvedFix:
     """申請の資格（D09 §9.10.10 の 1〜5・7・8）。固定の記録を返す。
 
     資格 6（申告）は人間の決定 150（ADR-0045）で外した。"""
@@ -1480,29 +1496,57 @@ def _eligibility(ctx: _Context) -> Fixation:
             FinalReason.NOT_PROCEEDED_BY_REVIEW,
             f"no PROCEED row of this execution on {ADOPTION_REVIEWS_PATH} of origin",
         )
-    # 5. 候補の固定
-    rel = fixation_path(key.experiment_id, key.execution)
-    text = ctx.log.read_at_origin(rel.as_posix())
-    if text is None:
-        raise _reason(FinalReason.NOT_FIXED, f"{rel} is not on origin")
+    # 5. 候補の固定（D09 §9.10.10 の 5 の v0.10 案: 固定の記録は第9.11.3節の形と置き場で、固定時点は
+    #    版管理の履歴から導く。順 11 の PR 4c）
     try:
-        fixation = load_fixation(rel, text=text.decode("utf-8"))
-    except (ConfigError, UnicodeDecodeError) as exc:
-        raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
-    review_trials = _review_fixed_trials(proceeds[mine])
-    ctx.extras["review_row_sha256"] = hashlib.sha256(
-        review_line_bytes(proceeds[mine]).rstrip(b"\n")
-    ).hexdigest()
+        fixation = valid_fix_at_origin(ctx.log, key.experiment_id, key.execution)
+    except FixRecordStop as exc:
+        raise _reason(FinalReason.NOT_FIXED, str(exc)) from exc
+    if fixation is None:
+        raise _reason(
+            FinalReason.NOT_FIXED,
+            f"no fix record of this execution under {CANDIDATE_FIXES_DIRECTORY.as_posix()} on"
+            " origin",
+        )
+    text = ctx.log.read_at_origin(fixation.path) or b""
+    review_row = proceeds[mine]
+    review_trials = _review_fixed_trials(review_row)
+    review_sha = hashlib.sha256(review_line_bytes(review_row).rstrip(b"\n")).hexdigest()
+    ctx.extras["review_row_sha256"] = review_sha
     ctx.extras["fixation_sha256"] = hashlib.sha256(text).hexdigest()
+    review_pins = review_row.entry.fixed_trials
     if (
-        (fixation.experiment_id, fixation.execution) != (key.experiment_id, key.execution)
-        or review_trials is None
+        review_trials is None
         or review_trials != fixation.fixed_trials
+        or fixation.record.adoption_review_row_digest.hex != review_sha
+        or any(
+            pin is None
+            or pin.assignment_digest != fixation.record.fixed_trials.of(variant).assignment_digest
+            for variant, pin in review_pins.items()
+        )
     ):
         raise _reason(
             FinalReason.NOT_FIXED,
             "the fixation record does not match this execution, or the fixed trials of the review"
             " cannot be read or differ (D09 §9.10.10 の 5)",
+        )
+    # 長さ L は、固定の記録が指す前向き検証の規則の版の下限以上（D15-11 (a)。手書きの記録が merge
+    # されても、ここで止める）。
+    try:
+        rules = load_registered_forward_validation_rules(
+            ctx.request.repo_root, fixation.record.forward_rules.version
+        )
+    except ConfigError as exc:
+        raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
+    if (
+        rules.digest != fixation.record.forward_rules.digest
+        or fixation.length_days < rules.rules.length.min_days
+    ):
+        raise _reason(
+            FinalReason.NOT_FIXED,
+            f"the length L = {fixation.length_days} days of the fix record is below the minimum"
+            f" {rules.rules.length.min_days} days of {FORWARD_VALIDATION_ID} version"
+            f" {fixation.record.forward_rules.version}, or the rules digest differs (D15-11 (a))",
         )
     ctx.lines.append(f"候補の固定時点 T_fix: {fixation.t_fix}、長さ L: {fixation.length_days} 日")
     # 6. 申告: 人間の決定 150「申告を無くす」（ADR-0045）で外した（申告の撤去の PR 4b）
@@ -1527,8 +1571,57 @@ def _eligibility(ctx: _Context) -> Fixation:
     return fixation
 
 
+def derive_window(
+    facts_now: Sequence[SealedPartitionFact],
+    *,
+    facts: CandidateFacts,
+    preparation: FinalRunPreparation,
+    t_fix: UtcTime,
+    excluded: Sequence[Interval],
+    length_days: int,
+) -> FinalWindow | WindowRefusal:
+    """窓と消費の対象を導く（D09 §9.10.3。段 2 (b)。ウォームアップの長さの当て方を含む）。
+
+    `preparation.warmup_at` があれば、ウォームアップの長さを消費する範囲の始まりから数える（R4b の
+    仮置き）。範囲の始まりはウォームアップの長さによらないので、長さ 0 で範囲を導いてから数え直す。
+    候補の固定の前の確かめの項目 6（D09 §9.11.10。順 11 の PR 4c）も同じ定義で数える（要決定
+    R2-9 (a)）。
+    """
+
+    def derive(warmup: timedelta) -> FinalWindow | WindowRefusal:
+        return derive_final_window(
+            facts_now,
+            symbols=facts.symbols,
+            t_fix=t_fix,
+            excluded=excluded,
+            length_days=length_days,
+            warmup=warmup,
+            conversion_symbols=facts.conversion_symbols,
+        )
+
+    if preparation.warmup_at is None:
+        return derive(preparation.warmup)
+    first = derive(timedelta(0))
+    if isinstance(first, WindowRefusal) or first.consumption.start == WINDOW_START:
+        return first
+    return derive(preparation.warmup_at(first.consumption.start))
+
+
+def sealed_facts_at_origin(log: GitHoldoutAccessLog) -> list[SealedPartitionFact] | WindowRefusal:
+    """origin の既定ブランチ上の承認済みの封印の partition と状態（D09 §9.10.3 の 1）。
+
+    価格を読まない。
+    消費の記録が壊れているときは `WindowRefusal`（`CONSUMPTION_LOG_BROKEN`）。候補の固定の前の確かめ
+    （順 11 の PR 4c）が使う。
+    """
+    try:
+        return _sealed_facts(_origin_snapshots(log))
+    except _Stop as stop:
+        return WindowRefusal(stop.reason or FinalReason.CONSUMPTION_LOG_BROKEN, stop.detail)
+
+
 def _before_permit(
-    ctx: _Context, runner: FinalRunner, fixation: Fixation, resume_permit: str | None = None
+    ctx: _Context, runner: FinalRunner, fixation: ResolvedFix, resume_permit: str | None = None
 ) -> tuple[FinalEvaluationPermit, FinalRunPlan]:
     """段 2（何も書かない）。許可の値（まだ発行していない）と run の計画を返す。
 
@@ -1547,43 +1640,30 @@ def _before_permit(
             "the fixed trials differ from the trials recomputed from the research artifacts",
         )
     # (b) 窓と消費の対象
-    excluded: list[Interval] = []
-    for rel in ctx.log.list_at_origin(FIXATIONS_DIRECTORY.as_posix()):
-        if rel == fixation_path(ctx.key.experiment_id, ctx.key.execution).as_posix():
-            continue
-        text = ctx.log.read_at_origin(rel)
-        try:
-            other = load_fixation(Path(rel), text=(text or b"").decode("utf-8"))
-        except (ConfigError, UnicodeDecodeError) as exc:
-            raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
-        excluded.append(other.forward_period)
+    try:
+        excluded = [
+            item.period
+            for item in reservations_at_origin(
+                ctx.log,
+                (ctx.worktree, ctx.origin),
+                exclude=(ctx.key.experiment_id, ctx.key.execution),
+            )
+        ]
+    except ConfigError as exc:
+        raise _Stop(EXIT_READ_ERROR, None, str(exc)) from exc
     facts_now = _sealed_facts(ctx.snapshots, resume_permit)
 
-    def derive(warmup: timedelta) -> FinalWindow:
-        derived = derive_final_window(
-            facts_now,
-            symbols=facts.symbols,
-            t_fix=fixation.t_fix,
-            excluded=excluded,
-            length_days=fixation.length_days,
-            warmup=warmup,
-            conversion_symbols=facts.conversion_symbols,
-        )
-        if isinstance(derived, WindowRefusal):
-            raise _refuse(derived)
-        return derived
-
-    if prepared.warmup_at is None:
-        window = derive(prepared.warmup)
-    else:
-        # ウォームアップの長さは消費する範囲の始まりから数える（R4b の仮置き）。範囲の始まりは
-        # ウォームアップの長さによらないので、長さ 0 で範囲を導いてから数え直す。
-        first = derive(timedelta(0))
-        window = (
-            first
-            if first.consumption.start == WINDOW_START
-            else derive(prepared.warmup_at(first.consumption.start))
-        )
+    derived = derive_window(
+        facts_now,
+        facts=facts,
+        preparation=prepared,
+        t_fix=fixation.t_fix,
+        excluded=excluded,
+        length_days=fixation.length_days,
+    )
+    if isinstance(derived, WindowRefusal):
+        raise _refuse(derived)
+    window = derived
     holdout = facts.final_holdout
     assert holdout is not None  # noqa: S101 - 資格の確かめで済んでいる
     if not _covers(holdout.interval, window.consumption):
@@ -1816,7 +1896,7 @@ def _consume(ctx: _Context, permit: FinalEvaluationPermit, lock: Path) -> str:
 def _permit_payload(
     ctx: _Context,
     permit: FinalEvaluationPermit,
-    fixation: Fixation,
+    fixation: ResolvedFix,
     commit: str,
     prior: Sequence[Mapping[str, str]],
     declaration_sha: str,
@@ -1874,7 +1954,7 @@ def _publish_and_evaluate(
     runner: FinalRunner,
     permit: FinalEvaluationPermit,
     plan: FinalRunPlan,
-    fixation: Fixation,
+    fixation: ResolvedFix,
     commit: str,
     prior: Sequence[Mapping[str, str]],
     declaration_sha: str,
@@ -2051,7 +2131,7 @@ def _attempt_failed(ctx: _Context, attempt: int, reason: FinalReason) -> None:
 
 def _record_payload(
     permit: FinalEvaluationPermit,
-    fixation: Fixation,
+    fixation: ResolvedFix,
     commit: str,
     prior: Sequence[Mapping[str, str]],
     declaration_sha: str,
