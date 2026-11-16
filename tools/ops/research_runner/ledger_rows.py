@@ -10,7 +10,7 @@ import json
 from collections.abc import Iterator, Mapping
 from typing import Any, Final
 
-__all__ = ["REVIEW_RESULTS", "has_candidate_row", "review_result"]
+__all__ = ["REVIEW_RESULTS", "has_candidate_row", "has_consumption_row", "review_result"]
 
 REVIEW_RESULTS: Final = frozenset({"PROCEED", "DO_NOT_PROCEED", "DEFERRED"})
 
@@ -48,3 +48,18 @@ def review_result(data: bytes | None, experiment_id: str, execution: int) -> str
         if _matches(row, experiment_id, execution) and row.get("result") in REVIEW_RESULTS:
             return str(row["result"])
     return None
+
+
+def has_consumption_row(data: bytes | None, experiment_id: str, execution: int) -> bool:
+    """消費の記録（`access_log.jsonl`）のバイト列に、この実行の最終検証の消費の行があるか
+    （D09 §9.10.4 の書式の版 1。`kind` = `CONSUMED`・`reason` = `FINAL_EVALUATION`・`candidate`
+    の識別子だけを見る。区分・時刻・目的は読まない）。"""
+    if not data:
+        return False
+    return any(
+        row.get("kind") == "CONSUMED"
+        and row.get("reason") == "FINAL_EVALUATION"
+        and isinstance(row.get("candidate"), Mapping)
+        and _matches(row["candidate"], experiment_id, execution)
+        for row in _rows(data)
+    )

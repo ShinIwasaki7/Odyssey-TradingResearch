@@ -395,3 +395,58 @@ def test_the_wrapper_gets_the_same_snapshots_as_the_other_commands(rig: Rig) -> 
     `<repo>/data/snapshots` に頼らない）。"""
     _launch(rig)
     assert rig.wrapper.launched[0]["snapshots"] == rig.paths.snapshots
+
+
+# --- Codex 5 巡目 ----------------------------------------------------------------------------
+
+
+def _consumption_row() -> bytes:
+    """人工の消費の行（D09 §9.10.4 の版 1 の形。識別子だけ。区分・値は人工）。"""
+    import json
+
+    row = {
+        "schema_version": "1",
+        "row_id": "0" * 32,
+        "kind": "CONSUMED",
+        "partition": "artificial",
+        "reason": "FINAL_EVALUATION",
+        "permit_id": "1" * 32,
+        "candidate": {"experiment_id": "a" * 64, "execution": "1"},
+        "access_id": "",
+        "recorded_at": "2026-11-24T00:00:00Z",
+        "actor": "research_runner",
+        "purpose": "",
+    }
+    return (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def test_a_final_validation_that_consumed_before_failing_is_not_restarted(rig: Rig) -> None:
+    """最終検証が消費の行を origin に送った後、結果を書く前に終わった（台帳の行は無い）: 消費の
+    記録で消費済みと見て、状態 A として起動し直さない。答え「状態 A なので起動し直す」も受けない
+    （Codex 5 巡目の指摘 1）。"""
+    _inject(rig, "C12", reservations=["final"])
+    rig.step()
+    rig.world.put_on_main({"data/snapshots/s-artificial/access_log.jsonl": _consumption_row()})
+    rig.procs.finish("final-validate", 8)
+    rig.step()
+    assert _reasons(rig) == {"FINAL_VALIDATION_FAILED"}
+    rig.world.answer(rig.world.issue_for("FINAL_VALIDATION_FAILED").number, "3")
+    rig.step()
+    assert _reasons(rig) == {"FINAL_VALIDATION_FAILED"}
+    assert len([key for key in rig.procs.spawned if key.startswith("final-validate:")]) == 1
+
+
+def test_a_binding_repaired_after_the_stop_is_read_again(rig: Rig) -> None:
+    """run の終わりに束縛の記録が読めずに止まり、人間が直して「確かめからやり直す」と答えたら、
+    束縛を読み直して実行記録を作る（Codex 5 巡目の指摘 2）。"""
+    _launch(rig)
+    key = f"{EXPERIMENT}/v1"
+    rig.evaluation.bindings[key] = None  # type: ignore[assignment]
+    rig.wrapper.finish(0, 0, lines=2)
+    rig.step()
+    assert "LEDGER_CHECK_FAILED" in _reasons(rig)
+    del rig.evaluation.bindings[key]
+    rig.world.answer(rig.world.issue_for("LEDGER_CHECK_FAILED").number, "2")
+    _until(rig, "C7")
+    prs = _exec_prs(rig)
+    assert prs and prs[-1].ci_ok, prs[-1].ci_messages

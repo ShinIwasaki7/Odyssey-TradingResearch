@@ -65,7 +65,11 @@ from tools.ops.hypothesis_cards.queue import (
 from tools.ops.hypothesis_cards.repo import LOOPS_DIR, RepoView, ToolFailure
 from tools.ops.hypothesis_cards.screening import CARD_PREREG_REJECTED, check_change, screen_card
 from tools.ops.research_runner.events import EventLog
-from tools.ops.research_runner.ledger_rows import has_candidate_row, review_result
+from tools.ops.research_runner.ledger_rows import (
+    has_candidate_row,
+    has_consumption_row,
+    review_result,
+)
 from tools.ops.research_runner.ports import (
     ChangeOutput,
     Checks,
@@ -1551,11 +1555,35 @@ class Runner:
         path = self.paths.repo / FINAL_LEDGER
         return path.read_bytes() if path.is_file() else None
 
-    def _final_consumed_on_origin(self, ctx: _Context, card: CardState) -> bool:
+    def _final_recorded_on_origin(self, ctx: _Context, card: CardState) -> bool:
+        """最終検証の台帳のこの実行の行が origin にあるか（結果の記録が main に入った）。"""
         info = card.executions.get(str(card.version), {})
         data = self._view(ctx).read(FINAL_LEDGER)
         return has_candidate_row(
             data, str(info.get("experiment_id")), int(info.get("execution", 0))
+        )
+
+    def _snapshots_on_origin(self) -> str:
+        try:
+            return self.paths.snapshots.relative_to(self.paths.repo).as_posix()
+        except ValueError:
+            return "data/snapshots"
+
+    def _final_consumed_on_origin(self, ctx: _Context, card: CardState) -> bool:
+        """この実行の最終検証の消費が origin にあるか（D25 §4.7・T38）。正本は origin の既定の
+        ブランチの消費の記録（`<snapshots>/<snapshot>/access_log.jsonl` の消費の行。D09 §9.10.4）
+        で、消費の行を push した後、結果を書く前に止まった（状態 C）ときも消費済みと見る。結果の
+        台帳の行は消費の後にしか書かれないので、あれば消費済み。Codex 5 巡目の指摘 1。"""
+        if self._final_recorded_on_origin(ctx, card):
+            return True
+        info = card.executions.get(str(card.version), {})
+        eid, execution = str(info.get("experiment_id")), int(info.get("execution", 0))
+        view = self._view(ctx)
+        prefix = self._snapshots_on_origin()
+        return any(
+            has_consumption_row(view.read(path), eid, execution)
+            for path in view.list(prefix)
+            if path.endswith("/access_log.jsonl")
         )
 
     def _c12_final(self, ctx: _Context, card: CardState) -> None:
@@ -1665,9 +1693,13 @@ class Runner:
         if info is None:
             return False
         eid, execution = str(info.get("experiment_id")), int(info.get("execution", 0))
+        if self._final_consumed_on_origin(ctx, card) and not self._final_recorded_on_origin(
+            ctx, card
+        ):
+            return True  # 消費の後（状態 C）: 結果の記録が main に入るまで
         return has_candidate_row(
             self._main_final_ledger(), eid, execution
-        ) and not self._final_consumed_on_origin(ctx, card)
+        ) and not self._final_recorded_on_origin(ctx, card)
 
     def _begin_end(self, ctx: _Context, card: CardState, identifier: str) -> bool:
         if self._final_in_flight(ctx, card):
@@ -2173,6 +2205,7 @@ class Runner:
         version = int(request["version"])
         paths = [path for path in git.exec_dirty_paths() if path in _LEDGER_FILES]
         if request["purpose"] == "run":
+            self._fill_execution(card, version)
             record = self._run_record(card, version)
             if record is None:
                 # 要求を待ちに残すと、後ろの要求（他のカードの実行記録）がすべて止まる: 外して
@@ -2208,6 +2241,22 @@ class Runner:
         ctx.state.exec_sending["commit"] = commit
         self.store.save_global(ctx.state)
         return self._send_exec(ctx, card)
+
+    def _fill_execution(self, card: CardState, version: int) -> None:
+        """束縛の記録（記録票の識別子と実行番号）がまだ状態に無ければ読み直す（run の終わりに
+        読めずに止まり、人間が直して「確かめからやり直す」と答えたとき。Codex 5 巡目の指摘 2）。"""
+        if str(version) in card.executions:
+            return
+        run = card.run or {}
+        version_dir = Path(
+            str(run.get("version_dir") or self.paths.version_dir(card.experiment, version))
+        )
+        binding = self.ports.evaluation.binding(version_dir)
+        if binding is not None:
+            card.executions[str(version)] = {
+                "experiment_id": binding.experiment_id,
+                "execution": binding.execution,
+            }
 
     def _exec_failed(
         self, ctx: _Context, card: CardState, request: Mapping[str, Any], detail: str
