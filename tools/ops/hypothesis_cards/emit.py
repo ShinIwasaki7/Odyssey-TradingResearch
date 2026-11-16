@@ -36,7 +36,7 @@ _INDENT: Final = "  "
 def _key(key: object) -> str:
     if not isinstance(key, str):
         raise ToolFailure(f"YAML のキーは文字列だけを書く（{key!r}）")
-    return key if _PLAIN_KEY.match(key) else json.dumps(key, ensure_ascii=False)
+    return key if _PLAIN_KEY.fullmatch(key) else json.dumps(key, ensure_ascii=False)
 
 
 def _float_text(value: float) -> str:

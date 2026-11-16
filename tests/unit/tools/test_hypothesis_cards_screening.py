@@ -198,3 +198,43 @@ def test_an_unreadable_existing_declaration_is_a_tool_failure(tmp_path: Path) ->
     view = OverlayView(VIEW, {"configs/strategies/broken.yaml": b"schema_version: 1\n"})
     with pytest.raises(ToolFailure):
         known_rule_digests(view)
+
+
+def test_sharing_a_single_instance_differs_from_two_same_shaped_instances() -> None:
+    """値だけが違う 2 つの EMA を比べる接続と、同じ EMA を両方の入力に使う接続は別の規則
+    （Codex 1 巡目の指摘）。2 つの EMA の役を入れ替えただけなら同じ規則。"""
+    base = rule_digest(_body())
+    shared = _body()
+    shared["components"][3]["inputs"]["level"] = ["output:fast_ema.value"]
+    assert rule_digest(shared) != base
+    swapped = _body()
+    swapped["components"][3]["inputs"] = {
+        "price": ["output:slow_ema.value"],
+        "level": ["output:fast_ema.value"],
+    }
+    assert rule_digest(swapped) == base
+
+
+def test_a_huge_grid_is_rejected_without_enumerating_it() -> None:
+    """研究ポリシーの上限を大きく超える格子は、列挙とコンパイルの前に試行の数で落とす。"""
+    data = card_data()
+    data["grid"]["axes"] = [
+        {"instance": "slow_ema", "parameter": "period", "values": list(range(50, 250))},
+        {
+            "instance": "take_profit",
+            "parameter": "reward_risk",
+            "values": [1.5 + step / 10 for step in range(200)],
+        },
+        {"instance": "stop_level", "parameter": "lookback", "values": list(range(20, 220))},
+    ]
+    result = screen_card(VIEW, card_bytes(data))
+    assert result.reason == CARD_GRID_SIZE
+    assert result.verification is None
+
+
+def test_identifiers_with_a_trailing_newline_are_card_format() -> None:
+    """識別子は文字列の全体で照合する（`$` は末尾の改行の前でも合う。Codex 1 巡目の指摘）。"""
+    data = card_data()
+    data["id"] += "\n"
+    data["title"] += "\n"
+    assert _screen(data)[0] == CARD_FORMAT

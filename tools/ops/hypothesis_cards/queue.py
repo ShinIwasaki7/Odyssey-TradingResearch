@@ -100,7 +100,7 @@ def queued_cards(view: RepoView) -> tuple[str, ...]:
         if "/" in path[len(prefix) :] or not name.endswith(".yaml"):
             continue
         card_id = name[: -len(".yaml")]
-        if CARD_ID_PATTERN.match(card_id):
+        if CARD_ID_PATTERN.fullmatch(card_id):
             found.append(card_id)
     return tuple(sorted(found))
 
@@ -182,7 +182,7 @@ def available_card_id(view: RepoView, card_id: str) -> str:
     道具の失敗。返す識別子では、どの置き場にもカードが無い。実験と戦略の識別子の重なりは
     `screening` の検査 1 が見る。
     """
-    matched = CARD_ID_PATTERN.match(card_id)
+    matched = CARD_ID_PATTERN.fullmatch(card_id)
     if matched is None:
         raise ValueError(f"カードの識別子の形でない: {card_id!r}")
 
@@ -196,7 +196,7 @@ def available_card_id(view: RepoView, card_id: str) -> str:
     for suffix in range(2, 100):
         title = f"{matched['title']}-{suffix}"
         candidate = f"a-{matched['date']}-{title}"
-        if CARD_ID_PATTERN.match(candidate) is None:
+        if CARD_ID_PATTERN.fullmatch(candidate) is None:
             raise ToolFailure(f"{card_id} の短い名前に番号を足すと 24 字を超える")
         if not taken(candidate):
             return candidate

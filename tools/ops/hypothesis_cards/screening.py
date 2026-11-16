@@ -185,13 +185,16 @@ def verify_preregistration(view: RepoView, prereg: Preregistration) -> Verificat
     if search is None:
         return Verification(problems=("探索の実験として読めない",))
     problems: list[str] = []
-    assignments = enumerate_assignments(search.plan)
     limit = loaded.policy.trial_limit
-    if (
-        limit is None
-        or check_trial_count(len(assignments), limit).outcome is not CheckOutcome.PASSED
-    ):
-        problems.append("試行の数が研究ポリシーの上限を超える（事前検査 P7）")
+    count = search.plan.trial_count
+    if limit is None or check_trial_count(count, limit).outcome is not CheckOutcome.PASSED:
+        # 上限を超える格子は列挙もコンパイルもしない（直積を作らない）。
+        return Verification(
+            problems=("試行の数が研究ポリシーの上限を超える（事前検査 P7）",),
+            trial_count=count,
+            loaded=loaded,
+        )
+    assignments = enumerate_assignments(search.plan)
     timeframes = {
         definition.ref: definition for definition in loaded.environment.timeframe_defs.values()
     }
@@ -261,10 +264,15 @@ def _history_problems(verification: Verification) -> list[str]:
     return list(dict.fromkeys(problems))
 
 
-def _grid_problems(state: LoopState, view: RepoView) -> list[str]:
+def _count(state: LoopState) -> int:
     count = 1
     for axis in state.axes:
         count *= len(axis.values)
+    return count
+
+
+def _grid_problems(state: LoopState, view: RepoView) -> list[str]:
+    count = _count(state)
     problems: list[str] = []
     if count not in GRID_TRIALS:
         problems.append("格子の試行の数が 4〜6 でない（決定 99）")
@@ -400,13 +408,18 @@ def screen_card(
     unknown = _unknown_components(card.strategy)
     if unknown:
         return Screening(CARD_COMPONENT_UNKNOWN, tuple(unknown), card)
+    state, _ = state_at(card, 1, {})
+    grid = _grid_problems(state, view)
+    limit = select_policy(view).policy.trial_limit
+    if limit is not None and _count(state) > limit:
+        # 研究ポリシーの上限を超える格子は、履歴窓を測るための列挙とコンパイルをせずに 4 で落とす
+        # （3 は測れないので不合格にしない。検査 3 と 7 の順の仮置きと同じ扱い）。
+        return Screening(CARD_GRID_SIZE, tuple(grid), card)
     prereg = generate(view, card=raw, version=1, changes={})
     verification = verify_preregistration(view, prereg)
     history = _history_problems(verification)
     if history:
         return Screening(CARD_HISTORY_TOO_LONG, tuple(history), card, prereg, verification)
-    state, _ = state_at(card, 1, {})
-    grid = _grid_problems(state, view)
     if grid:
         return Screening(CARD_GRID_SIZE, tuple(grid), card, prereg, verification)
     if card.reaches_floor == "UNLIKELY":

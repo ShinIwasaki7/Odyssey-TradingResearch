@@ -184,14 +184,16 @@ def parse_change(raw: bytes, *, card_id: str, expected_from_version: int) -> Cha
     elif from_version != expected_from_version:
         problems.append("`from_version`: いま結果を読んだ版でない")
     memo = data.get("memo_sha256")
-    if not isinstance(memo, str) or _HEX64.match(memo) is None:
+    if not isinstance(memo, str) or _HEX64.fullmatch(memo) is None:
         problems.append("`memo_sha256`: SHA-256（16 進 64 文字の小文字）でない")
         memo = ""
     for key in ("reason", "prediction"):
         if key in data and not _nonempty_text(data[key]):
             problems.append(f"`{key}`: 空でない文字列でない")
     reason_id = data.get("reason_id")
-    if decision == "AMBIGUOUS" and (not isinstance(reason_id, str) or not _IDENT.match(reason_id)):
+    if decision == "AMBIGUOUS" and (
+        not isinstance(reason_id, str) or not _IDENT.fullmatch(reason_id)
+    ):
         problems.append("`reason_id`: 理由の識別子（英大文字・数字・_）でない")
     change_kind = data.get("change_kind")
     operations_raw = data.get("operations")

@@ -49,9 +49,11 @@ CARD_SCHEMA_VERSION: Final = 1
 #: 口の値と識別子の 1 文字（D23 §5.1、仮置き 4）。
 MOUTHS: Final[Mapping[str, str]] = {"human": "h", "ai": "a"}
 #: カードの識別子（仮置き 4）: `<口の 1 文字>-<YYYYMMDD>-<短い名前>`。
-CARD_ID_PATTERN: Final = re.compile(r"^(?P<mouth>[ha])-(?P<date>\d{8})-(?P<title>[a-z0-9-]{3,24})$")
+CARD_ID_PATTERN: Final = re.compile(
+    r"^(?P<mouth>[ha])-(?P<date>[0-9]{8})-(?P<title>[a-z0-9-]{3,24})$"
+)
 _TITLE_PATTERN: Final = re.compile(r"^[a-z0-9-]{3,24}$")
-_UTC_TIME: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_UTC_TIME: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _NUMBER: Final = re.compile(r"\d+(?:\.\d+)?")
 #: 承認済みの研究用 snapshot がある 8 通貨（D23 の仮置き 15）。
 SYMBOLS: Final = frozenset(
@@ -133,7 +135,7 @@ class Card:
 
 def experiment_id_of(card_id: str, symbol: str) -> str:
     """`c_<口の 1 文字><YYYYMMDD>_<title の - を _ に>_<通貨の小文字>`（第3.2節、仮置き 4）。"""
-    matched = CARD_ID_PATTERN.match(card_id)
+    matched = CARD_ID_PATTERN.fullmatch(card_id)
     if matched is None:
         raise ValueError(f"カードの識別子の形でない: {card_id!r}")
     title = matched["title"].replace("-", "_")
@@ -320,7 +322,7 @@ def _read_scope(
 
 def _created_at(data: Mapping[str, Any], problems: list[str]) -> str:
     value = data.get("created_at")
-    if not isinstance(value, str) or _UTC_TIME.match(value) is None:
+    if not isinstance(value, str) or _UTC_TIME.fullmatch(value) is None:
         problems.append("`created_at`: UTC の時刻（YYYY-MM-DDTHH:MM:SSZ の文字列）でない")
         return ""
     try:
@@ -364,13 +366,13 @@ def parse_card(
     if isinstance(version, bool) or version != CARD_SCHEMA_VERSION:
         problems.append(f"`schema_version`: {CARD_SCHEMA_VERSION} でない")
     card_id = data.get("id")
-    if not isinstance(card_id, str) or CARD_ID_PATTERN.match(card_id) is None:
+    if not isinstance(card_id, str) or CARD_ID_PATTERN.fullmatch(card_id) is None:
         problems.append("`id`: `<口の 1 文字>-<YYYYMMDD>-<短い名前>` の形でない（仮置き 4）")
         card_id = ""
     mouth = _one_of(data, "mouth", MOUTHS, problems)
     created_at = _created_at(data, problems)
     title = data.get("title")
-    if not isinstance(title, str) or _TITLE_PATTERN.match(title) is None:
+    if not isinstance(title, str) or _TITLE_PATTERN.fullmatch(title) is None:
         problems.append("`title`: 英小文字・数字・`-` の 3〜24 字でない")
         title = ""
     if card_id and mouth and created_at and title:

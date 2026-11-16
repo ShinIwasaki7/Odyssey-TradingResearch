@@ -66,6 +66,7 @@ def test_a_well_formed_proposal_reads() -> None:
         {"change_kind": "DATA"},
         {"operations": [{"op": "delete_everything"}]},
         {"memo_sha256": "x"},
+        {"memo_sha256": "cd" * 32 + "\n"},
         {"extra": "x"},
     ],
 )

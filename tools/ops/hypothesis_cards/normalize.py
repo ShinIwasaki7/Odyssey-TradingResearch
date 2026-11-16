@@ -18,8 +18,15 @@
 3. 役割（`roles`）は「接続元の形の印と出力の名前」に、取引機会の有効性の束縛（`opportunity_validity`
    の `source`）も同じに置き換える。入場の方針は種類（`entry_policy.kind`）だけを残す（期限などの
    値は外す）。同時の保持（`opportunity_concurrency`）は値なので外す。
-4. 使用箇所の形の印の多重集合（並べ替えた並び）と、役割・束縛・入場の方針の種類を、正規の JSON に
-   して SHA-256 をとる。
+4. **同じ形の印の使用箇所を区別する**（接続の共有を保つ）: 形の印だけでは、値だけが違う 2 つの
+   使用箇所（例: 短い EMA と長い EMA）が同じ印になり、「別々の EMA を比べる」と「同じ EMA を
+   両方の入力に使う」の区別が消える。そこで、同じ形の印の使用箇所に組の中の番号を振り、部品の
+   出力への接続・役割・束縛を「形の印・番号・出力の名前」で書く。番号の振り方は名前に依らない
+   ように、組ごとのすべての並べ方を試し、正規の JSON が辞書順で最小になる振り方を採る（値だけを
+   入れ替えた宣言は同じになり、接続の共有の仕方が違えば別になる）。並べ方の総数が
+   `MAX_ARRANGEMENTS` を超える宣言は正規化しない（同じ形の部品が極端に多い宣言だけ）。
+5. 使用箇所の並び（形の印・番号の順）と、役割・束縛・入場の方針の種類を、正規の JSON にして
+   SHA-256 をとる。
 
 入場の方針の種類と束縛の接続元を残すのは、仮置き 29 の列挙（部品・接続・起動・役割）の外である
 （本 PR の仮置き。確認待ちの有無で取引機会の扱いが変わるため、同じ規則として弾かない側に倒した）。
@@ -28,13 +35,17 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
-from collections.abc import Mapping
+import math
+from collections.abc import Iterator, Mapping
 from typing import Any, Final
 
-__all__ = ["NormalizationError", "rule_digest"]
+__all__ = ["MAX_ARRANGEMENTS", "NormalizationError", "rule_digest"]
 
 _OUTPUT_PREFIX: Final = "output:"
+#: 番号の振り方の総数の上限（同じ形の印の組ごとの並べ方の積。8 の階乗）。
+MAX_ARRANGEMENTS: Final = 40320
 
 
 class NormalizationError(ValueError):
@@ -120,35 +131,87 @@ class _Labeler:
         return self._labels[instance]
 
 
+def _arrangements(classes: list[list[str]]) -> Iterator[dict[str, int]]:
+    """同じ形の印の組ごとの番号の振り方をすべて列挙する。"""
+    per_class = [list(itertools.permutations(members)) for members in classes]
+    for choice in itertools.product(*per_class):
+        yield {
+            instance: position for ordering in choice for position, instance in enumerate(ordering)
+        }
+
+
 def rule_digest(body: Mapping[str, Any]) -> str:
     """戦略の宣言の本体（またはファイルの全体）の正規化した形のダイジェスト（16 進 64 文字）。"""
     components = body.get("components")
     if not isinstance(components, list) or not all(isinstance(c, Mapping) for c in components):
         raise NormalizationError("`components` が mapping の並びでない")
     labeler = _Labeler(components)
-    labels = sorted(labeler.label(instance) for instance in labeler.instances())
+    labels = {instance: labeler.label(instance) for instance in labeler.instances()}
+    grouped: dict[str, list[str]] = {}
+    for instance, label in labels.items():
+        grouped.setdefault(label, []).append(instance)
+    classes = [sorted(members) for _, members in sorted(grouped.items())]
+    total = 1
+    for members in classes:
+        total *= math.factorial(len(members))
+    if total > MAX_ARRANGEMENTS:
+        raise NormalizationError("同じ形の使用箇所が多すぎて正規化できない")
     roles = body.get("roles") or {}
     if not isinstance(roles, Mapping):
         raise NormalizationError("`roles` が mapping でない")
-    shaped_roles = {
-        str(role): (labeler.output(source) if isinstance(source, str) else source)
-        for role, source in roles.items()
-        if source is not None
-    }
     validity = body.get("opportunity_validity") or {}
     bindings = validity.get("bindings") if isinstance(validity, Mapping) else None
-    shaped_bindings = sorted(
-        _canonical(labeler.output(item["source"]))
+    binding_sources = [
+        item["source"]
         for item in (bindings if isinstance(bindings, list) else [])
         if isinstance(item, Mapping) and isinstance(item.get("source"), str)
-    )
+    ]
     entry = body.get("entry_policy")
     entry_kind = entry.get("kind") if isinstance(entry, Mapping) else None
-    return _sha(
-        {
-            "components": labels,
-            "roles": shaped_roles,
-            "validity_sources": shaped_bindings,
-            "entry_policy_kind": entry_kind,
-        }
-    )
+    by_id = {str(item["instance_id"]): item for item in components}
+
+    def reference(text: str, numbers: Mapping[str, int]) -> list[object]:
+        instance, port = _split_output(text)
+        if instance not in labels:
+            raise NormalizationError(f"接続先の使用箇所 {instance!r} が宣言に無い")
+        return [labels[instance], numbers[instance], port]
+
+    def source(value: object, numbers: Mapping[str, int]) -> object:
+        if isinstance(value, str) and value.startswith(_OUTPUT_PREFIX):
+            return ["output", *reference(value[len(_OUTPUT_PREFIX) :], numbers)]
+        return value
+
+    def encoded(numbers: Mapping[str, int]) -> str:
+        instances = []
+        for instance in sorted(labels, key=lambda name: (labels[name], numbers[name])):
+            inputs = by_id[instance].get("inputs") or {}
+            instances.append(
+                [
+                    labels[instance],
+                    numbers[instance],
+                    {
+                        str(name): [
+                            source(item, numbers)
+                            for item in (sources if isinstance(sources, list) else [sources])
+                        ]
+                        for name, sources in inputs.items()
+                    },
+                ]
+            )
+        return _canonical(
+            {
+                "components": instances,
+                "roles": {
+                    str(role): (reference(value, numbers) if isinstance(value, str) else value)
+                    for role, value in roles.items()
+                    if value is not None
+                },
+                "validity_sources": sorted(
+                    _canonical(reference(item, numbers)) for item in binding_sources
+                ),
+                "entry_policy_kind": entry_kind,
+            }
+        )
+
+    best = min(encoded(numbers) for numbers in _arrangements(classes))
+    return hashlib.sha256(best.encode("utf-8")).hexdigest()
