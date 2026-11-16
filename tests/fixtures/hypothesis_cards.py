@@ -129,7 +129,7 @@ def card_data(
         "title": title,
         "symbol": symbol,
         "rule": (
-            f"{symbol} の 1 時間足の短い EMA が長い EMA を上抜けたら成行で買い、"
+            f"{symbol} の時間足の短い EMA が長い EMA を上抜けたら成行で買い、"
             "直近の安値に損切り、損切りの幅の R 倍に利確を置く規則"
         ),
         "strategy": {

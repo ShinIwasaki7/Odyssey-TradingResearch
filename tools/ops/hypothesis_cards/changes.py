@@ -205,7 +205,8 @@ def parse_change(raw: bytes, *, card_id: str, expected_from_version: int) -> Cha
             problems.append("`operations`: 1 つ以上の並びでない")
         else:
             for index, operation in enumerate(operations_raw):
-                if not isinstance(operation, dict) or operation.get("op") not in OPERATION_KINDS:
+                name = operation.get("op") if isinstance(operation, dict) else None
+                if not isinstance(name, str) or name not in OPERATION_KINDS:
                     problems.append(f"`operations[{index}].op`: 操作の語彙の外")
                 else:
                     operations.append(operation)
@@ -240,6 +241,12 @@ def parse_change(raw: bytes, *, card_id: str, expected_from_version: int) -> Cha
         shape += _require(operation, ("op", *names), values)
     if missing:
         raise ChangeRejected(VALUE_MISSING, missing)
+    shape += [
+        f"`operations[{index}].{key}`: 空でない文字列でない"
+        for index, operation in enumerate(operations)
+        for key in _OPERATION_FIELDS[operation["op"]][0]
+        if key in operation and (not isinstance(operation[key], str) or not operation[key])
+    ]
     if shape:
         raise ChangeRejected(CHANGE_OUT_OF_RULES, [f"操作の項目: {item}" for item in shape])
     # (7) 自由文に数字が無い（仮置き 6）。

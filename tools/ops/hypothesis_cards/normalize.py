@@ -53,7 +53,10 @@ class NormalizationError(ValueError):
 
 
 def _canonical(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # YAML の安全な読込は日時などを返しうるので、JSON に無い型は字面（`repr`）で書く。
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=repr
+    )
 
 
 def _sha(value: object) -> str:

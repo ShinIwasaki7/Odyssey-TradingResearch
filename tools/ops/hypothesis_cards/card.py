@@ -172,9 +172,39 @@ def strategy_values(value: object) -> set[Decimal]:
     return set()
 
 
+def _parameter_values(strategy: object) -> set[Decimal]:
+    """各使用箇所の `parameters` に書いた値だけに現れる数（系列名・版・名前の数は入れない）。"""
+    if not isinstance(strategy, Mapping):
+        return set()
+    components = strategy.get("components")
+    found: set[Decimal] = set()
+    for component in components if isinstance(components, list) else []:
+        parameters = component.get("parameters") if isinstance(component, Mapping) else None
+        for spec in parameters.values() if isinstance(parameters, Mapping) else []:
+            if isinstance(spec, Mapping):
+                found |= strategy_values(spec.get("value"))
+    return found
+
+
+def _axis_values(grid: object) -> set[Decimal]:
+    """格子の各軸の `values` だけに現れる数。"""
+    axes = grid.get("axes") if isinstance(grid, Mapping) else None
+    return {
+        number
+        for axis in (axes if isinstance(axes, list) else [])
+        if isinstance(axis, Mapping)
+        for number in strategy_values(axis.get("values"))
+    }
+
+
 def rule_numbers_outside(rule: str, strategy: object, grid: object) -> set[Decimal]:
-    """`rule` の数のうち、戦略のパラメータにも格子の値にも無いもの（仮置き 6）。"""
-    return _numbers(rule) - (strategy_values(strategy) | strategy_values(grid))
+    """`rule` の数のうち、部品のパラメータの値にも格子の値にも無いもの（仮置き 6）。
+
+    許すのは、各使用箇所の `parameters` の値と格子の軸の `values` に現れる数だけ。系列名
+    （`1h`・`15m`）・部品の版・使用箇所の名前に現れる数は許さない（Codex 2 巡目の指摘。仮置き 6 の
+    字句「部品のパラメータか格子の値に現れる数だけ」のとおり）。
+    """
+    return _numbers(rule) - (_parameter_values(strategy) | _axis_values(grid))
 
 
 def _text(data: Mapping[str, Any], key: str, problems: list[str]) -> str:

@@ -65,6 +65,18 @@ def test_a_well_formed_proposal_reads() -> None:
         {"decision": "MAYBE"},
         {"change_kind": "DATA"},
         {"operations": [{"op": "delete_everything"}]},
+        {"operations": [{"op": []}]},
+        {
+            "change_kind": "STRATEGY_CODE",
+            "operations": [
+                {
+                    "op": "set_parameter",
+                    "instance": "stop_level",
+                    "parameter": ["lookback"],
+                    "value": {"type": "INT", "value": 30},
+                }
+            ],
+        },
         {"memo_sha256": "x"},
         {"memo_sha256": "cd" * 32 + "\n"},
         {"extra": "x"},

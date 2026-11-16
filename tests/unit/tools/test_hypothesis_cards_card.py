@@ -89,6 +89,15 @@ def test_numbers_in_the_rule_must_be_parameters_or_grid_values() -> None:
     assert any("`rule` の数" in item for item in _problems(data))
 
 
+@pytest.mark.parametrize("rule", ["1 時間足で上抜けたら買う規則", "取引が 15 倍になる規則"])
+def test_numbers_in_series_names_and_versions_are_not_allowed_in_the_rule(rule: str) -> None:
+    """系列名（`1h`・`15m`）・部品の版の数は許さない（仮置き 6。Codex 2 巡目の指摘）。"""
+    data = card_data()
+    data["strategy"]["components"][0]["inputs"]["prices"] = ["market:GBPUSD/15m/bid:CLOSE"]
+    data["rule"] = rule
+    assert any("`rule` の数" in item for item in _problems(data))
+
+
 def test_the_written_axis_parameter_must_be_the_first_grid_value() -> None:
     data = card_data()
     data["grid"]["axes"][0]["values"] = [100, 50]
