@@ -23,11 +23,12 @@ from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import RunId
 from odyssey_fx.common.money import Money
 from odyssey_fx.common.refs import ConfigDigest, ContentDigest, SnapshotRef
-from odyssey_fx.common.time import Interval
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.application.manifest import EvaluationTable, RunEvaluationId
 from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
 from odyssey_fx.evaluation.domain.metrics import MetricRecord
 from odyssey_fx.evaluation.domain.path import PathSegmentEnd, PathSegmentStart
+from odyssey_fx.evaluation.domain.regimes import RegimeReport
 from odyssey_fx.evaluation.domain.search import (
     FoldSelection,
     TrialLedgerBinding,
@@ -40,6 +41,7 @@ from odyssey_fx.evaluation.domain.search import (
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.evaluation.domain.variant import Variant
 from odyssey_fx.marketdata.domain.access import AccessClass
+from odyssey_fx.marketdata.domain.bar import Bar
 from odyssey_fx.marketdata.domain.consumption_log import ConsumptionRow
 from odyssey_fx.marketdata.domain.quality_access import (
     QualityAccessLogContents,
@@ -58,6 +60,8 @@ if TYPE_CHECKING:  # pragma: no cover - 型検査のためだけの参照
 __all__ = [
     "BacktestRunner",
     "ColumnValueKind",
+    "DailyBarSource",
+    "DailyBarsUnavailable",
     "EvaluationReadFailure",
     "ExperimentStore",
     "HoldoutAccessLog",
@@ -486,6 +490,14 @@ class ExperimentStore(Protocol):
         """
         ...
 
+    def write_regimes(self, report: RegimeReport) -> None:
+        """組の局面の成果物 `search/regimes_<組>.json` を書く（D24 §5.4・§9.3、仮置き 15）。
+
+        正規化エンコード（D02 §9.3）の JSON で書く。結末記録にはその値のダイジェストだけを入れる。
+        既にあれば何も書かずに失敗する（R4）。研究ポリシーの版 5 以上を指す探索の実験だけが呼ぶ。
+        """
+        ...
+
     def write_ledger_binding(self, binding: TrialLedgerBinding) -> None:
         """実行番号の束縛の記録 `search/ledger_execution.json` を書く（D09 §10.12.3 の2）。"""
         ...
@@ -652,3 +664,39 @@ class HoldoutAccessLog(Protocol):
         origin に尋ね直し、届いていれば成功、尋ねられなければ `PushOutcomeUnknown`。
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class DailyBarsUnavailable:
+    """局面の付与に使う日足を読めなかったこと（理由つき。D24 §5.2・§9.2 の局面の行）。
+
+    系列が snapshot に無い・日足が 1 本も無いなど、読みの制限の内側で読めなかったときの値。
+    局面の成果物に「出せない（理由）」を書き、判定は変わらない。読みの制限の外への要求
+    （封印・隔離の partition）はこの値にせず、構造エラーで止める（RP5-15）。
+    """
+
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, str) or not self.reason:
+            raise KernelValueError("DailyBarsUnavailable.reason must be a non-empty str")
+
+
+@runtime_checkable
+class DailyBarSource(Protocol):
+    """局面の付与に使う日足の読み出し（D24 §5.2、決定 164。実装は合成が結線する）。
+
+    組ごとの snapshot の、執行系列の通貨の日足（bid。ニューヨーク 17 時の日足）を、snapshot の
+    最初の日足から、`bar_start` が `until` より前の日足まで `bar_start` の昇順で返す。各日足の
+    `available_at` は、その実験の遅延シナリオを当てた公開時刻（run と同じ公開予定と遅延。
+    D24 §5.1）。局面の関数は参照時点ごとにこの公開時刻で足を選ぶ。
+
+    **読みの制限**（D24 §5.2。既存の検査 P2 と同じ）: 読むのは研究履歴の partition だけで、
+    `until` までの日足が研究履歴の外（封印・隔離の partition）に及ぶ要求は、足を 1 本も読まずに
+    `HoldoutAccessViolation`（`marketdata.domain.errors`。構造エラー）で止める（RP5-15）。
+    読みの制限の内側で読めないときは `DailyBarsUnavailable`。
+    """
+
+    def daily_bars(
+        self, variant: Variant, until: UtcTime
+    ) -> tuple[Bar, ...] | DailyBarsUnavailable: ...

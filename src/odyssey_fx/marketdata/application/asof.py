@@ -323,6 +323,18 @@ class AsOfView:
             return None
         return BarKey(series=series, bar_start=start)
 
+    def publication_time(self, bar: Bar) -> UtcTime:
+        """読める足の公開時刻（遅延シナリオを当てた実現の `available_at`。D03 §3.5・§3.6・§6.2）。
+
+        価格を返さず、足の値も変えない。足を読む側が参照時点ごとに公開済みの足を自分で選ぶ
+        ときに使う（研究ポリシー第 5 版の局面の付与。D24 §5.1・§5.2）。読める partition の外の足
+        （範囲の外）は `HoldoutAccessViolation`（構造エラー。D03 §6.1）。
+        """
+        if not isinstance(bar, Bar):
+            raise MarketDataValueError("publication_time requires a Bar")
+        self._bars().require_covered(bar.series, bar.bar_start)
+        return self._available_at(bar)
+
     def latest_available(self, series: SeriesId, at: UtcTime) -> Bar | MissingInput:
         """`available_at <= at` の足のうち、期待される最新足（D03 §6.2）。
 

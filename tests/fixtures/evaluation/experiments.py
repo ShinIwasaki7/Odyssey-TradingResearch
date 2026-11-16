@@ -276,6 +276,9 @@ class _Store:
     ) -> None:
         raise NotImplementedError
 
+    def write_regimes(self, report: object) -> None:  # pragma: no cover - 使わない
+        raise NotImplementedError
+
     def write_ledger_binding(self, binding: object) -> None:  # pragma: no cover - 使わない
         raise NotImplementedError
 

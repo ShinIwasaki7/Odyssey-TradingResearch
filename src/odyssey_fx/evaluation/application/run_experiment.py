@@ -56,6 +56,7 @@ from odyssey_fx.evaluation.application.evaluate_run import (
 from odyssey_fx.evaluation.application.manifest import RunEvaluationId, run_evaluation_id
 from odyssey_fx.evaluation.application.ports import (
     BacktestRunner,
+    DailyBarSource,
     EvaluationReadFailure,
     ExperimentStore,
     ManifestReadFailure,
@@ -69,10 +70,12 @@ from odyssey_fx.evaluation.application.ports import (
     TrialLedgerContents,
     TrialLedgerReadFailure,
 )
+from odyssey_fx.evaluation.application.regimes import path_regime_report
 from odyssey_fx.evaluation.domain.experiment import (
     ExperimentManifest,
     ExperimentOutcome,
     ExperimentStatus,
+    RegimeDigest,
 )
 from odyssey_fx.evaluation.domain.metrics import MetricRecord
 from odyssey_fx.evaluation.domain.path import (
@@ -86,6 +89,7 @@ from odyssey_fx.evaluation.domain.path import (
     path_metrics,
     plan_segments,
 )
+from odyssey_fx.evaluation.domain.regimes import RegimeLabel
 from odyssey_fx.evaluation.domain.research_policy import (
     PolicyCheck,
     PolicyCheckResult,
@@ -99,6 +103,7 @@ from odyssey_fx.evaluation.domain.search import (
     TRIAL_LEDGER_SCHEMA_VERSION,
     ChangeKind,
     ComparisonBasis,
+    EvaluationStandardV5,
     FoldEvidence,
     FoldSelection,
     LedgerResults,
@@ -301,6 +306,10 @@ class PreparedSearch:
     env_digest: EnvDigest
     git_commit: str
     git_dirty: bool
+    #: 得意な局面の宣言（実験設定の任意のキー `favored_regimes`。判定に使わない。決定 141、D24 の
+    #: 仮置き 16）。宣言は実験設定の値として記録票の識別の入力と保存した実験設定の本文に入っている
+    #: （実装 PR 4-1 の仮置き 10）。ここでは局面の成果物に写すために合成が渡す。
+    favored_regimes: tuple[RegimeLabel, ...] | None = None
 
     def __post_init__(self) -> None:
         for label, expected in (
@@ -323,6 +332,17 @@ class PreparedSearch:
         if tuple(trial.plan for trial in self.trials) != self.manifest.trials:
             raise KernelValueError(
                 "PreparedSearch.trials must follow the trials fixed in the manifest (D09 §10.2)"
+            )
+        favored = self.favored_regimes
+        if favored is not None and (
+            not isinstance(favored, tuple)
+            or not favored
+            or not all(isinstance(item, RegimeLabel) for item in favored)
+            or getattr(self.manifest.evaluation_standard, "regimes", None) is None
+        ):
+            raise KernelValueError(
+                "PreparedSearch.favored_regimes は局面を定義する研究ポリシー（版 5 以上）を指す"
+                "探索の実験の局面の名前の列（D24 §8.1 の検査 E12）"
             )
 
 
@@ -591,6 +611,7 @@ class RunExperiment:
         running: str,
         segments: SegmentPlanner,
         lineage: LineageRequest | None = None,
+        daily_bars: DailyBarSource | None = None,
     ) -> ExperimentOutcome | ExperimentRefusal:
         """探索の実験の1回の実行を進める（D09 §10.7 の状態×出来事表。2026-10-21 改訂）。
 
@@ -601,6 +622,8 @@ class RunExperiment:
           パス（成果物からの逆照合 L11 と数え直し待ちの判定に使う。D09 §10.12.2）。
         - `segments`: 連続口座の検証経路の区間の run の設定を組み立てる合成の口（D13 §4.7）。
         - `lineage`: 実験設定の系譜（書かなければ `None`。D13 §7.1）。
+        - `daily_bars`: 局面の付与に使う日足の読み出し（研究ポリシーの版 5 以上を指す実験だけが
+          使う。D24 §5.2）。`None` なら版 5 以上の実験の局面の成果物は「出せない（理由）」になる。
 
         1 回の実行で標準 → 候補の両組を評価し、組ごとに全 fold の後にその組の経路の区間を
         区間 0 から順に走らせる（改訂 PR の仮置き 35 (a)）。両組の全 fold と経路が終端した後に、
@@ -665,10 +688,15 @@ class RunExperiment:
         # （D09 §5.4 の改訂。改訂 PR の仮置き 35 (a)）。同じ `RunId` の評価は組をまたいで共有する。
         cache: dict[RunId, _Evaluated] = {}
         runs: dict[Variant, _VariantRun] = {}
+        regimes: list[RegimeDigest] = []
         for variant in VARIANTS:
             folds = self._run_folds(prepared, variant, cache)
             path = self._run_path(prepared, variant, folds.selections, segments, cache)
             runs[variant] = _VariantRun(folds=folds, path=path)
+            if isinstance(standard, EvaluationStandardV5):
+                # 局面の成果物は組の経路が終端した直後、結末記録より前に書く（D24 §5.2・仮置き 15、
+                # D26 §3.8 の 4）。判定の関数には渡さない（決定 134。RP5-16）。
+                regimes.append(self._write_regimes(prepared, standard, variant, path, daily_bars))
 
         outcomes = Paired.build(
             lambda variant: build_variant_outcome(
@@ -693,6 +721,7 @@ class RunExperiment:
             preregistration=preregistration,
             failed=failed,
             search=search,
+            regimes=tuple(regimes),
         )
         self._store.write_outcome(outcome)
         self._finish_ledger(
@@ -708,6 +737,32 @@ class RunExperiment:
             ),
         )
         return outcome
+
+    def _write_regimes(
+        self,
+        prepared: PreparedSearch,
+        standard: EvaluationStandardV5,
+        variant: Variant,
+        path: _PathRun,
+        daily_bars: DailyBarSource | None,
+    ) -> RegimeDigest:
+        """組の局面の成果物を書き、そのダイジェストを返す（D24 §5.2〜§5.4・§9.3、仮置き 15）。
+
+        局面の付与の失敗は判定を変えず、成果物に「出せない（理由）」を書く（D24 §5.2）。読みの
+        制限の外への要求（封印・隔離の partition）は構造エラーで止まる（RP5-15）。
+        """
+        report = path_regime_report(
+            variant=variant,
+            spec=standard.regimes,
+            favored_regimes=prepared.favored_regimes,
+            summary=path.summary,
+            ends=path.ends,
+            daily_bars=daily_bars,
+            calendar=prepared.calendar,
+            repository=self._repository,
+        )
+        self._store.write_regimes(report)
+        return RegimeDigest(variant=variant, digest=digest(report))
 
     def _read_ledger(self, purpose: str) -> TrialLedgerContents:
         contents = self._store.read_trial_ledger()
@@ -1591,8 +1646,12 @@ class RunExperiment:
         preregistration: PolicyCheckResult,
         failed: tuple[PolicyCheck, ...],
         search: SearchOutcome | None,
+        regimes: tuple[RegimeDigest, ...] = (),
     ) -> ExperimentOutcome:
-        """探索の実験の結末記録（D09 §10.6 の表）。単数の run・評価の項目は `None`。"""
+        """探索の実験の結末記録（D09 §10.6 の表）。単数の run・評価の項目は `None`。
+
+        `regimes` は組ごとの局面の成果物のダイジェスト（版 5 以上を指す実験だけ。D24 §9.3）。
+        """
         return ExperimentOutcome(
             experiment_id=prepared.manifest.experiment_id,
             status=status,
@@ -1611,6 +1670,7 @@ class RunExperiment:
             outcome_checks=(preregistration,),
             failed_checks=() if status is ExperimentStatus.COMPLETED else failed,
             search=search,
+            regimes=regimes,
         )
 
     # --- 既存の成果物（D07 §19.6）---------------------------------------------

@@ -61,6 +61,7 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     read_experiment_outcome,
     read_ledger_binding,
     read_path_records,
+    read_regime_report,
     read_selections,
     read_trial_ledger_file,
     read_trial_metrics,
@@ -109,6 +110,12 @@ from odyssey_fx.evaluation.domain.metrics import (
     trading_day_ends,
 )
 from odyssey_fx.evaluation.domain.path import PathEnd, PathSegmentEnd, PathSegmentStart
+from odyssey_fx.evaluation.domain.regimes import (
+    RegimeLabel,
+    RegimeReport,
+    RegimeReportStatus,
+    UnlabeledReason,
+)
 from odyssey_fx.evaluation.domain.research_policy import RegistryEntry, current_standard_version
 from odyssey_fx.evaluation.domain.search import (
     CandidateStatus,
@@ -117,6 +124,7 @@ from odyssey_fx.evaluation.domain.search import (
     ConditionResult,
     ConditionScope,
     EvaluationStandard,
+    EvaluationStandardV5,
     EvidenceAxis,
     FoldSelection,
     FoldVerdict,
@@ -579,6 +587,9 @@ class _Inputs:
     segment_ends: Mapping[int, PathSegmentEnd]
     #: 取引カレンダー（診断の年率化・日替わりの数え方に使う。無ければ `None`）。
     calendar: TradingCalendar | None
+    #: 局面の成果物（研究ポリシーの版 5 以上を指す実験だけ。結末記録のダイジェストと照合済み。
+    #: 表示できなければ理由。版 4 以下は `None` で、局面の小見出しを出さない。D24 §5.4）。
+    regimes: RegimeReport | str | None = None
 
     @property
     def purpose(self) -> StandardPurpose:
@@ -2271,7 +2282,189 @@ def _diagnosis_lines(inputs: _Inputs) -> list[str]:
     lines.extend(["", "### fold ごとの選定", ""])
     lines.extend(_selection_rows(inputs))
     lines.extend(["", _INDEPENDENT_RUN_NOTE])
+    if inputs.regimes is not None and not inputs.stopped:
+        lines.extend(["", "### 局面（判定に使わない）", ""])
+        lines.extend(_regime_lines(inputs.regimes))
     return lines
+
+
+# --- 順9 診断の小見出し「局面」（研究ポリシー第 5 版。D24 §5.4、決定 141・165）----------------
+
+#: 局面の表示名（D24 §5.1 の 6 局面と付けられないとき。仮置き 13 の名前を括弧書きする）。
+_REGIME_NAMES: Final[Mapping[RegimeLabel, str]] = {
+    RegimeLabel.UP_HIGH: "上昇・値動き大（UP_HIGH）",
+    RegimeLabel.UP_LOW: "上昇・値動き小（UP_LOW）",
+    RegimeLabel.FLAT_HIGH: "横ばい・値動き大（FLAT_HIGH）",
+    RegimeLabel.FLAT_LOW: "横ばい・値動き小（FLAT_LOW）",
+    RegimeLabel.DOWN_HIGH: "下降・値動き大（DOWN_HIGH）",
+    RegimeLabel.DOWN_LOW: "下降・値動き小（DOWN_LOW）",
+    RegimeLabel.UNLABELED: "付けられない（UNLABELED）",
+}
+
+_UNLABELED_NAMES: Final[Mapping[UnlabeledReason, str]] = {
+    UnlabeledReason.WARMUP_INSUFFICIENT: "準備の日足が足りない",
+    UnlabeledReason.ZERO_ATR: "ATR が 0",
+    UnlabeledReason.NO_PUBLISHED_BAR: "公開済みの日足が無い",
+}
+
+#: 局面の小見出しの定型の注記（D24 §5.4 の表の「定型の注記」）。
+_REGIME_NOTE: Final = (
+    "局面は判定に使わない。局面の定義は研究ポリシーの `regimes` の値で、結果を見て変えない"
+)
+
+
+def _regime_reasons(report: RegimeReport) -> str:
+    """付けられない取引日・取引の理由の件数（D24 §9.2 の局面の行の「理由つき」）。"""
+    counts: Counter[UnlabeledReason] = Counter()
+    for day in report.days:
+        if day.reason is not None:
+            counts[day.reason] += 1
+    trade_counts: Counter[UnlabeledReason] = Counter()
+    for trade in report.trades:
+        if trade.reason is not None:
+            trade_counts[trade.reason] += 1
+    if not counts and not trade_counts:
+        return "なし"
+    parts = [
+        f"{_UNLABELED_NAMES[reason]}（取引日 {counts[reason]} 日・取引 {trade_counts[reason]} 件）"
+        for reason in UnlabeledReason
+        if counts[reason] or trade_counts[reason]
+    ]
+    return "、".join(parts)
+
+
+def _regime_lines(regimes: RegimeReport | str) -> list[str]:
+    """順9 の小見出し「局面（判定に使わない）」の本文（D24 §5.4。保存済みの成果物を写す）。"""
+    lines = [_REGIME_NOTE + "（D24 §5.4、決定 134・141）。", ""]
+    if isinstance(regimes, str):
+        lines.append(f"局面の成果物を表示できない: {regimes}")
+        return lines
+    spec = regimes.spec
+    direction = spec.direction
+    volatility = spec.volatility
+    lines.append(
+        f"- 局面の値: 向きは日足の終値の EMA {direction.ema_bars} 本の {direction.slope_bars} 本の"
+        f"変化を ATR {direction.atr_bars} 本で割り、±{_fixed(direction.dead_band_atr_multiple)}"
+        f" で区切る。値動きは ATR {volatility.atr_bars} 本 ÷ 終値を、その日を含む直前"
+        f" {volatility.median_window_bars} 個の中央値と比べる"
+    )
+    if regimes.status is RegimeReportStatus.UNAVAILABLE:
+        lines.append(f"- 局面を出せない: {regimes.reason}（判定は変わらない。D24 §5.2）")
+        return lines
+    lines.append(
+        f"- 日足の系列: {_code(regimes.daily_series)}（取引は入場の時点に公開済みの最後の日足の"
+        "局面、取引日はその取引日の始まりの時点に公開済みの最後の日足の局面で付ける）"
+    )
+    lines.append(f"- 付けられない取引日・取引の理由: {_regime_reasons(regimes)}")
+    lines.append("")
+    if regimes.status is RegimeReportStatus.NOT_RECONCILED:
+        lines.append(f"局面ごとの損益の表は出さない: {regimes.reason}")
+    else:
+        lines.append(
+            "局面ごとの損益（連続口座の検証経路の取引。区間の終わりに仮に閉じた建玉を含む。"
+            "率は経路の初期資金に対する率）:"
+        )
+        lines.append("")
+        lines.extend(
+            _table(
+                [
+                    "局面",
+                    "完了取引",
+                    "区間末の仮決済",
+                    "勝ち",
+                    "負け",
+                    "損益の合計",
+                    "初期資金に対する率",
+                    "平均利益 ÷ 平均損失",
+                ],
+                [
+                    [
+                        _REGIME_NAMES[row.label],
+                        row.closed_count,
+                        row.settled_count,
+                        row.win_count,
+                        row.loss_count,
+                        _money_text(row.total.amount),
+                        _fixed(row.total_rate),
+                        _fixed(row.average_win_loss)
+                        if row.average_win_loss is not None
+                        else f"値なし（{_code(row.average_win_loss_unavailable.value)}）"
+                        if row.average_win_loss_unavailable is not None
+                        else "値なし",
+                    ]
+                    for row in regimes.table
+                ],
+            )
+        )
+        if regimes.regime_net is not None and regimes.path_net is not None:
+            lines.append("")
+            lines.append(
+                f"- 局面の損益の和 {_money_text(regimes.regime_net.amount)}"
+                f"（経路の純損益 {_money_text(regimes.path_net.amount)} と一致）"
+            )
+    lines.extend(["", "局面の時間の割合（経路の取引日。件数と時間の表示で、成績ではない）:", ""])
+    lines.extend(
+        _table(
+            ["局面", "日数", "割合"],
+            [
+                [_REGIME_NAMES[row.label], row.days, _optional_fixed(row.share)]
+                for row in regimes.day_table
+            ],
+        )
+    )
+    lines.append("")
+    if regimes.favored_regimes is None:
+        lines.append("- 得意な局面の確かめ: 宣言なし")
+    elif regimes.favored is None:
+        lines.append("- 得意な局面の確かめ: 局面ごとの損益の表を出さないので確かめない")
+    else:
+        check = regimes.favored
+        declared = "、".join(_REGIME_NAMES[label] for label in check.declared)
+        lines.append(
+            f"- 得意な局面の確かめ（実験設定の `favored_regimes`。判定に使わない。決定 141）:"
+            f" 宣言した局面 {declared}"
+        )
+        lines.append(
+            f"  - 宣言した局面の損益の合計 {_money_text(check.favored_total.amount)}"
+            f"（{check.favored_count} 件）、それ以外の局面（付けられないを含む）の合計"
+            f" {_money_text(check.other_total.amount)}（{check.other_count} 件）"
+        )
+        lines.append(
+            "  - 宣言した局面の合計は正か: "
+            + ("正" if check.favored_total_positive else "正でない")
+        )
+    return lines
+
+
+def _regimes_of(
+    directory: Path,
+    outcome: ExperimentOutcome | None,
+    variant: Variant,
+    standard: EvaluationStandard,
+    roots: tuple[Path, ...],
+) -> RegimeReport | str | None:
+    """組の局面の成果物を読み、結末記録のダイジェストと照合する（D24 §5.4・§9.3、仮置き 15）。
+
+    研究ポリシーの版 5 以上を指す実験でなければ `None`（局面の小見出しを出さない）。読めない・
+    ダイジェストが一致しないときは理由（判定の節は結末記録から作るので変わらない。RP5-16）。
+    """
+    if not isinstance(standard, EvaluationStandardV5):
+        return None
+    try:
+        report = read_regime_report(directory, variant)
+    except KernelValueError as exc:
+        return f"局面の成果物を読めない（{_scrub(str(exc), roots)}）"
+    if report is None:
+        return "局面の成果物が無い"
+    if outcome is None:
+        return report
+    recorded = {item.variant: item.digest for item in outcome.regimes}
+    expected = recorded.get(variant)
+    if expected is None:
+        return "結末記録に局面の成果物のダイジェストが無い"
+    if digest(report) != expected:
+        return "局面の成果物が結末記録のダイジェストと一致しない（成果物が書き換わった）"
+    return report
 
 
 # --- 組み立て ------------------------------------------------------------------------
@@ -2471,6 +2664,7 @@ def build_search_report(
             segment_starts=segment_starts,
             segment_ends=segment_ends,
             calendar=calendar,
+            regimes=_regimes_of(directory, outcome, variant, standard, roots),
         )
 
     report = _Report(variants=Paired.build(inputs_of))
