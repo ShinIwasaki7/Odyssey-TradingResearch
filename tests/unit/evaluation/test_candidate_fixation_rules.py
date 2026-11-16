@@ -225,3 +225,26 @@ def test_the_verdict_defers_only_when_item_6_alone_fails_with_a_deferrable_reaso
     assert fix_verdict(both) is FixVerdict.REFUSED
     with pytest.raises(KernelValueError):
         fix_verdict(_all()[:7])
+
+
+def test_the_verdict_defers_when_only_an_earlier_pending_candidate_blocks_items_6_and_7() -> None:
+    """人間の決定 210: 先の候補の最終検証が終わっていないことだけが理由なら延期。"""
+    pending = FixCheckReason.EARLIER_CANDIDATE_PENDING
+    only = _all(WINDOW_LONG_ENOUGH=(pending,), RESERVATIONS_ENDED=(pending,))
+    assert fix_verdict(only) is FixVerdict.DEFERRED
+    # 先の候補の予約と、それ以外の候補の終わっていない予約が混じれば固定しない。
+    mixed = _all(
+        WINDOW_LONG_ENOUGH=(pending,),
+        RESERVATIONS_ENDED=(FixCheckReason.RESERVATION_NOT_ENDED, pending),
+    )
+    assert fix_verdict(mixed) is FixVerdict.REFUSED
+    # 他の項目が 1 つでも外れれば固定しない。
+    other = _all(
+        RESEARCH_POLICY_CURRENT=(FixCheckReason.RESEARCH_POLICY_NOT_CURRENT,),
+        WINDOW_LONG_ENOUGH=(pending,),
+        RESERVATIONS_ENDED=(pending,),
+    )
+    assert fix_verdict(other) is FixVerdict.REFUSED
+    # 項目 7 の延期にする理由は「先の候補が終わっていない」だけ（窓の理由は延期にしない）。
+    misplaced = _all(RESERVATIONS_ENDED=(FixCheckReason.WINDOW_SHORTER_THAN_L,))
+    assert fix_verdict(misplaced) is FixVerdict.REFUSED

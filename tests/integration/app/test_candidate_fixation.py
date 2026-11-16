@@ -661,17 +661,11 @@ def test_f5_item_6_an_earlier_pending_candidate_defers_the_fix(tmp_path: Path) -
     assert _reasons(outcome) == {6: (FixCheckReason.EARLIER_CANDIDATE_PENDING.value,)}
 
 
-def test_f5_item_6_and_7_another_candidates_reservation(tmp_path: Path) -> None:
-    ws, keys = _workspace(tmp_path, names=("early", "cand"))
-    early = keys["early"]
-    # 先の候補を固定して main に入れ（固定時点 2025-01-20）、最終検証を「満たす（両組）」で終えた
-    # ことにする（予約は続く。決定 74）。
-    made = _fix(ws, key=early, now=UtcTime.parse("2025-01-20T00:00:00Z"))
-    assert made.written, made.lines
-    ws.commit_and_push("early fixed", date=UtcTime.parse("2025-01-20T00:00:00Z"))
-    row = {
+def _final_row(key: CandidateKey, verdict: SearchVerdict) -> dict[str, object]:
+    """最終検証の台帳の「完了」の行（人工。組の判定だけを変える）。"""
+    return {
         "result": "COMPLETED",
-        "candidate": candidate_payload(early),
+        "candidate": candidate_payload(key),
         "permit_id": "p" * 32,
         "t_fix": "2025-01-20T00:00:00Z",
         "consumption_start": "2024-01-01T00:00:00Z",
@@ -679,7 +673,7 @@ def test_f5_item_6_and_7_another_candidates_reservation(tmp_path: Path) -> None:
         "partition_count": 1,
         "partitions_digest": "0" * 64,
         "consumption_commit": "0" * 40,
-        "combined_verdict": SearchVerdict.MEETS_STANDARD.value,
+        "combined_verdict": verdict.value,
         "resume_count": 0,
         "resume_failures": [],
         "prior_final_validations": 0,
@@ -689,7 +683,22 @@ def test_f5_item_6_and_7_another_candidates_reservation(tmp_path: Path) -> None:
         "recorded_at": "2025-01-25T00:00:00Z",
         "actor": "人工の実行者",
     }
-    append_ledger_row(ws.repo, row)
+
+
+def _fix_early(ws: FinalWorkspace, early: CandidateKey) -> None:
+    """先の候補を固定して main に入れる（固定時点 2025-01-20。最終検証はまだ）。"""
+    made = _fix(ws, key=early, now=UtcTime.parse("2025-01-20T00:00:00Z"))
+    assert made.written, made.lines
+    ws.commit_and_push("early fixed", date=UtcTime.parse("2025-01-20T00:00:00Z"))
+
+
+def test_f5_item_6_and_7_another_candidates_reservation(tmp_path: Path) -> None:
+    ws, keys = _workspace(tmp_path, names=("early", "cand"))
+    early = keys["early"]
+    # 先の候補を固定して main に入れ（固定時点 2025-01-20）、最終検証を「満たす（両組）」で終えた
+    # ことにする（予約は続く。決定 74）。
+    _fix_early(ws, early)
+    append_ledger_row(ws.repo, _final_row(early, SearchVerdict.MEETS_STANDARD))
     ws.commit_and_push("early validated")
     outcome = _fix(ws)
     assert outcome.exit_code == EXIT_REFUSED, outcome.lines
@@ -698,6 +707,57 @@ def test_f5_item_6_and_7_another_candidates_reservation(tmp_path: Path) -> None:
     # 予約した期間 [2025-01-26, …) は窓から除かれ、使える窓はその前で終わる。
     assert 6 not in reasons
     assert any("2025-01-26T22:00:00Z)" in line for line in outcome.lines)
+
+
+# --- 決定 210: 先の候補の最終検証が終わっていないだけなら延期 ----------------------------
+
+
+def test_d210_an_earlier_fixed_candidate_pending_its_final_validation_defers(
+    tmp_path: Path,
+) -> None:
+    ws, keys = _workspace(tmp_path, names=("early", "cand"))
+    early = keys["early"]
+    _fix_early(ws, early)
+    # 先の候補の最終検証が終わっていない（台帳の行が無い）: 項目 6 と、その候補の予約による
+    # 項目 7 がどちらも「先の候補が終わっていない」だけで外れる → 延期（前は固定しない）。
+    outcome = _fix(ws)
+    assert (outcome.exit_code, outcome.verdict) == (EXIT_DEFERRED, FixVerdict.DEFERRED), (
+        outcome.lines
+    )
+    assert _reasons(outcome) == {
+        6: (FixCheckReason.EARLIER_CANDIDATE_PENDING.value,),
+        7: (FixCheckReason.EARLIER_CANDIDATE_PENDING.value,),
+    }
+    assert not outcome.written
+    assert any("先の候補の最終検証が終わっていない" in line for line in outcome.lines)
+    _no_numbers(outcome)
+    # 確かめだけ（`--dry-run`）も同じ。
+    dry = _fix(ws, mode=FixMode.DRY_RUN)
+    assert dry.exit_code == EXIT_DEFERRED and not dry.written
+    # 先の候補の最終検証が「満たさない」で終わると予約が解かれ（決定 74）、固定できる。
+    append_ledger_row(ws.repo, _final_row(early, SearchVerdict.INSUFFICIENT_EVIDENCE))
+    ws.commit_and_push("early validated: not met")
+    later = _fix(ws)
+    assert (later.exit_code, later.verdict) == (EXIT_OK, FixVerdict.PASSED), later.lines
+
+
+def test_d210_an_earlier_pending_candidate_with_another_reason_is_refused(
+    tmp_path: Path,
+) -> None:
+    ws, keys = _workspace(tmp_path, names=("early", "cand"))
+    _fix_early(ws, keys["early"])
+    # 他の理由（研究ポリシーの新しい版が登録された。項目 4）が 1 つでも混じれば固定しない。
+    _research_registry(ws, versions=(3, 4))
+    ws.commit_and_push("research policy version 4 registered")
+    outcome = _fix(ws)
+    assert (outcome.exit_code, outcome.verdict) == (EXIT_REFUSED, FixVerdict.REFUSED)
+    assert _reasons(outcome) == {
+        4: (FixCheckReason.RESEARCH_POLICY_NOT_CURRENT.value,),
+        6: (FixCheckReason.EARLIER_CANDIDATE_PENDING.value,),
+        7: (FixCheckReason.EARLIER_CANDIDATE_PENDING.value,),
+    }
+    assert any("固定しない" in line for line in outcome.lines)
+    assert not outcome.written
 
 
 def test_f5_item_8_a_tampered_or_unreadable_record_is_refused(tmp_path: Path) -> None:
