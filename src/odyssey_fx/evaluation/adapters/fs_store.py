@@ -728,12 +728,21 @@ class FileSystemResultWriter:
         """
         directory = run_directory(self.root, manifest.run_id)
         directory.mkdir(parents=True, exist_ok=True)
+        manifest_payload = _manifest_payload(manifest)
         (directory / "manifest.json").write_text(
-            json.dumps(_manifest_payload(manifest), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        # 能力検査の結果は manifest と結果の両方に全体のまま入れる（D06 §9.4）。両方が同じ報告
+        # （同じオブジェクト）なら、manifest 用に作った正規化エンコードの文字列をそのまま結果にも
+        # 使う（D26 §2.1 の 1）。別の報告なら従来どおり結果の側でも作る。
+        capability = (
+            manifest_payload["capability_report"]
+            if result.capability_report is manifest.capability_report
+            else None
+        )
         (directory / "result.json").write_text(
-            json.dumps(_result_payload(result), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(_result_payload(result, capability), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -951,15 +960,23 @@ def _conversion_of(
     )
 
 
-def _result_payload(result: BacktestResult) -> dict[str, Any]:
-    """結果 DTO を JSON へ落とす（D06 §9.4）。"""
+def _result_payload(
+    result: BacktestResult, capability: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """結果 DTO を JSON へ落とす（D06 §9.4）。
+
+    `capability` は、同じ能力検査の報告から manifest 用に作った JSON（D26 §2.1 の 1）。`None` なら
+    ここで作る。
+    """
     summaries = result.summaries
     return {
         "run_id": str(result.run_id),
         "status": result.status.value,
         "manifest_ref": result.manifest_ref,
         "trace_tables": {table.value: path for table, path in result.trace_tables.items()},
-        "capability_report": _capability_payload(result.capability_report),
+        "capability_report": _capability_payload(result.capability_report)
+        if capability is None
+        else capability,
         "swap_modeled": result.swap_modeled,
         "unresolved_intrabar_count": result.unresolved_intrabar_count,
         "trade_count": result.trade_count,

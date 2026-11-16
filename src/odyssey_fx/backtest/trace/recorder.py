@@ -357,8 +357,25 @@ def _variants(annotation: Any) -> tuple[type, ...]:
     return ()
 
 
+#: 型ごとに解決した注釈（`_hints` の覚え書き）。
+_RESOLVED_HINTS: dict[type, Mapping[str, Any]] = {}
+
+
 def _hints(cls: type) -> Mapping[str, Any]:
-    return typing.get_type_hints(cls)
+    """型の注釈を解決した結果（型ごとに 1 回だけ求める。D26 §2.1 の 2）。
+
+    判断履歴の表の各行で同じ型を調べ直すと、`typing.get_type_hints` が文字列の注釈を毎回
+    評価し直す。型の定義は実行中に変わらないので、答えは毎回同じである。
+
+    働きは `functools.cache` と同じで、型を鍵にした辞書で書いている（`functools.cache` の型の
+    定義では、`type(value)` を渡す呼び出しが mypy の検査を通らないため）。覚えた辞書を呼び出し側が
+    書き換えられないよう、読み取り専用の写しで返す。解決できない注釈の例外は覚えず、毎回送出する。
+    """
+    cached = _RESOLVED_HINTS.get(cls)
+    if cached is None:
+        cached = types.MappingProxyType(typing.get_type_hints(cls))
+        _RESOLVED_HINTS[cls] = cached
+    return cached
 
 
 def canonical_text(value: object) -> str:

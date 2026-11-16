@@ -13,11 +13,13 @@ JSON として書かれること、十進数が文字列列のまま保存され
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+from odyssey_fx.backtest.trace.manifest import DataCapabilityReport
 from odyssey_fx.backtest.trace.recorder import (
     CompositeRow,
     ManagementApplication,
@@ -38,6 +40,7 @@ from odyssey_fx.common.ids import (
 from odyssey_fx.common.money import Price, decimal_from_str
 from odyssey_fx.common.reason import MissingInputReason, Reason, ReasonCode
 from odyssey_fx.common.time import ProcessingPoint, UtcTime
+from odyssey_fx.evaluation.adapters import fs_store
 from odyssey_fx.evaluation.adapters.fs_store import (
     FileSystemResultWriter,
     FileSystemTraceSink,
@@ -393,3 +396,59 @@ def test_a_blocked_run_explains_itself(tmp_path: Path) -> None:
             runnable=False,
             reason=Reason(ReasonCode.DATA_ERROR),
         )
+
+
+def _counting_capability_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[object]:
+    """`_capability_payload` を呼ばれた報告を数える形に差し替える（作る回数だけを見る）。"""
+    seen: list[object] = []
+    original = fs_store._capability_payload
+
+    def counting(report: DataCapabilityReport) -> dict[str, object]:
+        seen.append(report)
+        return original(report)
+
+    monkeypatch.setattr(fs_store, "_capability_payload", counting)
+    return seen
+
+
+def test_the_shared_capability_report_is_encoded_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D26 §2.1 の 1: manifest と結果が同じ能力検査の報告を持つなら、正規化エンコードの文字列を
+    1 回だけ作り、両方に同じ中身を書く（D06 §9.4 の「両方が同じ内容を持つ」は変えない）。"""
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(conflict=CONFLICT_BAR),
+        run_interval=RUN_INTERVAL,
+    )
+    assert output.result.capability_report is output.manifest.capability_report
+    seen = _counting_capability_payload(monkeypatch)
+    FileSystemResultWriter(root=tmp_path).write(output.result, output.manifest)
+    assert seen == [output.manifest.capability_report]
+    directory = run_directory(tmp_path, output.result.run_id)
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
+    assert manifest["capability_report"] == result["capability_report"]
+
+
+def test_different_capability_reports_are_encoded_separately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D26 §2.1 の 1: 2 つの報告が同じオブジェクトでなければ、等しい値の写しでも従来どおり別々に
+    作る（使い回すのは同じオブジェクトのときだけ。PR-A の仮置き 1）。"""
+    output = run_backtest(
+        signal_bars=signal_bars(),
+        execution_bars=execution_bars(conflict=CONFLICT_BAR),
+        run_interval=RUN_INTERVAL,
+    )
+    other = replace(output.manifest.capability_report)
+    assert other == output.manifest.capability_report
+    assert other is not output.manifest.capability_report
+    result = replace(output.result, capability_report=other)
+    seen = _counting_capability_payload(monkeypatch)
+    FileSystemResultWriter(root=tmp_path).write(result, output.manifest)
+    assert len(seen) == 2
+    assert seen[0] is output.manifest.capability_report
+    assert seen[1] is other
