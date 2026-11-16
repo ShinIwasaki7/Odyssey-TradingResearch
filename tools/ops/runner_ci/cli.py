@@ -5,7 +5,8 @@ GitHub Actions では出来事のファイルから読む::
     uv run python -m tools.ops.runner_ci --repo . \\
         --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH"
 
-- `pull_request`: 基点は `pull_request.base.sha`、先頭は取り出した merge のコミット（`HEAD`）。
+- `pull_request`: 基点は `pull_request.base.sha` と先頭の合流の基点、先頭は取り出した merge の
+  コミット（`HEAD`）。
   枝・題・本文・自動 merge の指定は出来事のファイルから読む。検査 1〜8 を当てる。
 - `push`（main）: 基点は `before`（新しい枝で基点が無ければ追記だけの確かめは当てない）、先頭は
   `HEAD`。検査 1 だけを当てる（2〜8 は PR の検査）。
@@ -35,6 +36,7 @@ from tools.ops.runner_ci.model import (
     PullRequest,
     Status,
     git_changes,
+    merge_base,
     resolve,
 )
 from tools.ops.runner_ci.records import changed_records, check_formats, check_free_text
@@ -111,7 +113,9 @@ def input_from_event(repo: Path, event_name: str, payload: Mapping[str, Any]) ->
     head = resolve(repo, "HEAD")
     if event_name == "pull_request":
         pr = _field(payload, "pull_request")
-        base = resolve(repo, str(_field(pr, "base", "sha")))
+        # 出来事の base.sha は merge のコミットを作った後に進んでいることがあるので、先頭との
+        # 合流の基点（merge のコミットなら最初の親）と比べる。
+        base = merge_base(repo, resolve(repo, str(_field(pr, "base", "sha"))), head)
         request = PullRequest(
             branch=str(_field(pr, "head", "ref")),
             title=str(_field(pr, "title")),

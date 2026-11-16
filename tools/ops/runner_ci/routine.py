@@ -35,6 +35,8 @@ from tools.ops.runner_ci.records import (
 
 RUNNER_PREFIX: Final = "runner/"
 CANDIDATE_FIXES: Final = "research/candidate_fixes/"
+#: この段の設定と道具（定型 PR に入れない。入れると検査を自分で書き換えられる）。
+CI_GUARD: Final = (".github/", "tools/ops/runner_ci/")
 LEDGER_PATHS: Final = (
     "research/trial_ledger.jsonl",
     "research/adoption_reviews.jsonl",
@@ -289,6 +291,8 @@ def _routine_paths(given: CheckInput, routine: Routine) -> list[str]:
             problems.append(
                 f"{path}: 候補の固定の記録は定型 PR に入れない（人間が merge する関所 1）"
             )
+        elif path.startswith(CI_GUARD):
+            problems.append(f"{path}: CI の設定と CI の道具は定型 PR に入れない")
         elif path not in allowed:
             problems.append(f"{path}: この種類の定型 PR に許されたパスでない")
         elif change.status is ChangeStatus.DELETED and path not in sources:
@@ -365,9 +369,9 @@ def _body_values(
     given: CheckInput, routine: Routine, seen: dict[str, str], hashes: dict[str, str]
 ) -> list[str]:
     problems: list[str] = []
-    required = ["種類", "カード", "時刻", "定型の文", "SHA-256"]
+    required = ["種類", "カード", "時刻", "件数", "定型の文", "SHA-256"]
     if routine.form is not Form.CARDS:
-        required.append("版")
+        required += ["版", "実験"]
     problems += [f"本文に項目「{key}」が無い" for key in required if key not in seen]
     if "種類" in seen and seen["種類"] != routine.kind.value:
         problems.append("本文の「種類」が題と違う")

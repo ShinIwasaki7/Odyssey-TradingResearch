@@ -75,7 +75,16 @@ _UTC_TIME_RE: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}
 _HEX64_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENT_RE: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _EXPERIMENT_ID_RE: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
-_NUMBER_RE: Final = re.compile(r"\d+(?:\.\d+)?")
+_NUMBER_RE: Final = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+#: 記録の置き場の下でも記録として読まない説明のファイル（ディレクトリの README と空の印）。
+_PLACE_FILES: Final = frozenset({"README.md", ".gitkeep"})
+_PLACE_DIRECTORIES: Final = frozenset(
+    {
+        "research/hypotheses",
+        "research/loops",
+        *(f"research/hypotheses/{place}" for place in ("queue", "taken", "done")),
+    }
+)
 
 
 def experiment_id_of(card: str, symbol: str) -> str:
@@ -124,8 +133,14 @@ def card_path(place: str, card: str) -> str:
     return f"{HYPOTHESES}{place}/{card}.yaml"
 
 
+def is_place_file(path: str) -> bool:
+    """置き場のディレクトリの README・`.gitkeep`（記録ではない。検査 5 で許す）。"""
+    directory, _, name = path.rpartition("/")
+    return name in _PLACE_FILES and directory in _PLACE_DIRECTORIES
+
+
 def is_record_path(path: str) -> bool:
-    return path.startswith((HYPOTHESES, LOOPS))
+    return path.startswith((HYPOTHESES, LOOPS)) and not is_place_file(path)
 
 
 # --- 書式の検査の部品 -----------------------------------------------------------------
@@ -601,6 +616,17 @@ def _rule_numbers(path: str, data: Mapping[str, Any]) -> list[str]:
     rule = data.get("rule")
     if not isinstance(rule, str):
         return []
+    unreadable = [
+        character
+        for character in rule
+        if unicodedata.category(character).startswith("N")
+        and _NUMBER_RE.fullmatch(unicodedata.normalize("NFKC", character)) is None
+    ]
+    if unreadable:
+        return [
+            f"{path}: `rule` に、半角・全角の数字として読めない数字（ローマ数字・丸数字の一部など）"
+            "がある（D25 の仮置き 6）"
+        ]
     allowed = _scalar_numbers(data.get("strategy")) | _scalar_numbers(data.get("grid"))
     if _numbers(rule) - allowed:
         return [

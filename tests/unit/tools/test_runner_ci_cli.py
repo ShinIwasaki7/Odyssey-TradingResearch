@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.fixtures.git_origin import isolate_git
 from tests.fixtures.runner_ci import CARD_ID, TRIAL, card_bytes, ledgers, trial_ledger
@@ -183,3 +184,40 @@ def test_bad_input_exits_with_two(repo: Path, tmp_path: Path) -> None:
         )
         == 2
     )
+
+
+def test_the_pull_request_base_is_the_merge_base(repo: Path, tmp_path: Path) -> None:
+    """出来事の base.sha が先頭の作られた後に進んでいても、合流の基点と比べる。"""
+    start = _commit(repo, ledgers(tmp_path / "l"), "base")
+    _git(repo, "checkout", "-q", "-b", "docs/x")
+    _commit(repo, {"docs/design/D99.md": b"# d99\n"}, "design")
+    _git(repo, "checkout", "-q", "main")
+    advanced = _commit(repo, {TRIAL: trial_ledger(4)}, "main advances")
+    _git(repo, "checkout", "-q", "docs/x")
+    assert _git(repo, "merge-base", advanced, "HEAD") == start
+    payload = {
+        "pull_request": {
+            "base": {"sha": advanced},
+            "head": {"ref": "docs/x"},
+            "title": "docs: D99",
+            "body": "",
+            "auto_merge": None,
+        }
+    }
+    event = _event(tmp_path, payload)
+    assert main(["--repo", str(repo), "--event-name", "pull_request", "--event-path", event]) == 0
+
+
+def test_the_workflow_runs_the_trusted_copy_of_the_checks() -> None:
+    """検査の道具は基点から取り出したものを走らせ、PR の中身は --repo の入力にするだけ。"""
+    workflow = Path(__file__).resolve().parents[3] / ".github/workflows/ledger.yml"
+    loaded = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    steps = loaded["jobs"]["ledger"]["steps"]
+    trusted = next(step for step in steps if step.get("id") == "trusted")
+    assert "merge-base" in trusted["run"] and "worktree add" in trusted["run"]
+    check = steps[-1]
+    assert check["working-directory"] == "${{ steps.trusted.outputs.dir }}"
+    assert '--repo "$GITHUB_WORKSPACE/pr"' in check["run"]
+    assert steps[0]["with"]["path"] == "pr"
+    events = loaded[True]["pull_request"]["types"]
+    assert {"edited", "auto_merge_enabled", "auto_merge_disabled"} <= set(events)

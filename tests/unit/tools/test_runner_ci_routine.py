@@ -102,6 +102,7 @@ def test_a_report_routine_pr_moves_the_card_to_done(base: dict[str, bytes]) -> N
         title=f"[runner] 一巡の報告 {CARD_ID} v2",
         kind="一巡の報告",
         version=2,
+        experiment=EXPERIMENT,
         auto_merge=True,
     )
     results = run_checks(given)
@@ -192,6 +193,8 @@ def test_a_card_rewritten_after_the_note_fails_the_hash_check(base: dict[str, by
         "configs/policies/research/registry.yaml",
         ".github/workflows/ci.yml",
         "research/candidate_fixes/x/1/1.yaml",
+        ".github/workflows/ledger.yml",
+        "tools/ops/runner_ci/routine.py",
     ],
 )
 def test_a_routine_pr_with_a_path_outside_its_kind_fails(base: dict[str, bytes], path: str) -> None:
@@ -298,6 +301,7 @@ def test_digits_in_report_text_fail(base: dict[str, bytes]) -> None:
         title=f"[runner] 一巡の報告 {CARD_ID} v2",
         kind="一巡の報告",
         version=2,
+        experiment=EXPERIMENT,
     )
     assert 6 in _failed(run_checks(given))
 
@@ -514,3 +518,53 @@ def test_axis_names_are_identifiers(base: dict[str, bytes]) -> None:
         base, **{f"research/hypotheses/queue/{HUMAN_CARD_ID}.yaml": card_bytes("human", grid=axes)}
     )
     assert 5 in _failed(run_checks(make_input(base, head, branch="docs/card")))
+
+
+# --- 設計適合レビューの反映 ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("item", ["実験", "件数"])
+def test_the_body_needs_the_experiment_and_the_counts(base: dict[str, bytes], item: str) -> None:
+    clean = _exec_pr(base).pull_request
+    assert clean is not None
+    text = "\n".join(line for line in clean.body.splitlines() if not line.startswith(f"{item}: "))
+    results = _by_number(run_checks(_exec_pr(base, body_text=text)))
+    assert any(f"「{item}」が無い" in message for message in results[7].messages)
+
+
+@pytest.mark.parametrize(
+    ("rule", "fails"),
+    [
+        ("期間 ⑤ の EMA", True),
+        ("期間 Ⅱ の EMA", True),
+        ("期間 ١٠ の EMA", True),
+        ("期間 １０ の EMA", False),
+        ("期間十の EMA", False),
+    ],
+)
+def test_rule_digits_use_the_same_classes_as_free_text(
+    base: dict[str, bytes], rule: str, fails: bool
+) -> None:
+    head = dict(
+        base, **{f"research/hypotheses/queue/{HUMAN_CARD_ID}.yaml": card_bytes("human", rule=rule)}
+    )
+    assert (6 in _failed(run_checks(make_input(base, head, branch="docs/card")))) is fails
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "research/hypotheses/README.md",
+        "research/hypotheses/queue/.gitkeep",
+        "research/hypotheses/done/.gitkeep",
+        "research/loops/README.md",
+    ],
+)
+def test_place_readmes_and_keep_files_are_not_records(base: dict[str, bytes], path: str) -> None:
+    head = dict(base, **{path: b"# place\n"})
+    assert _failed(run_checks(make_input(base, head, branch="docs/places"))) == set()
+
+
+def test_a_readme_inside_a_card_folder_is_still_checked(base: dict[str, bytes]) -> None:
+    head = dict(base, **{f"{LOOPS}README.md": b"# memo\n"})
+    assert 5 in _failed(run_checks(make_input(base, head, branch="docs/places")))

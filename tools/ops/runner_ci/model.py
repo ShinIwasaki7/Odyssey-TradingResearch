@@ -89,6 +89,16 @@ def resolve(repo: Path, rev: str) -> str:
     return completed.stdout.decode().strip()
 
 
+def merge_base(repo: Path, first: str, second: str) -> str:
+    """2 つのコミットの合流の基点（PR の差分と台帳の比べる相手。無ければ `GitError`）。"""
+    completed = _git(repo, "merge-base", first, second)
+    if completed.returncode != 0:
+        raise GitError(
+            f"no merge base of {first} and {second}: {completed.stderr.decode().strip()}"
+        )
+    return completed.stdout.decode().strip()
+
+
 def git_changes(repo: Path, base: str, head: str) -> tuple[Change, ...]:
     """基点から先頭までの変更の一覧（移動を削除と追加に分ける。パスの辞書順）。"""
     completed = _git(repo, "diff", "--name-status", "--no-renames", "-z", base, head)
