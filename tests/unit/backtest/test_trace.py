@@ -355,3 +355,18 @@ def test_a_magnitude_too_large_for_fixed_point_is_refused() -> None:
     """D06 §9.1 の規則4: 固定小数で書けない大きさは、黙って別表記へ落とさず失敗させる。"""
     with pytest.raises(KernelValueError, match="fixed-point decimal"):
         plain_decimal(decimal_from_str("1E+5000"))
+
+
+def test_type_hints_are_resolved_once_per_type() -> None:
+    """D26 §2.1 の 2: 型の注釈は型ごとに 1 回だけ解決し、答えは `typing.get_type_hints` と同じ。
+    覚えた答えは読み取り専用で、呼び出し側が書き換えられない。"""
+    import typing
+
+    from odyssey_fx.backtest.domain.fills import FillRecord
+    from odyssey_fx.backtest.trace import recorder
+
+    first = recorder._hints(FillRecord)
+    assert recorder._hints(FillRecord) is first
+    assert dict(first) == typing.get_type_hints(FillRecord)
+    with pytest.raises(TypeError):
+        first["extra"] = int  # type: ignore[index]

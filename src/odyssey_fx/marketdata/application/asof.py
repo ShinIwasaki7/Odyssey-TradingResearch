@@ -22,12 +22,13 @@ from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 
 from odyssey_fx.common.money import Price
 from odyssey_fx.common.reason import MissingInputReason
-from odyssey_fx.common.time import UtcTime
+from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.marketdata.application.mt5_observation import Mt5Observation
 from odyssey_fx.marketdata.application.snapshot_access import (
     FinalSources,
@@ -37,11 +38,13 @@ from odyssey_fx.marketdata.application.snapshot_access import (
     require_readable_snapshot,
 )
 from odyssey_fx.marketdata.domain.bar import Bar, BarKey
+from odyssey_fx.marketdata.domain.calendar import TradingCalendar
 from odyssey_fx.marketdata.domain.errors import MarketDataValueError
 from odyssey_fx.marketdata.domain.publication_log import PublicationLog
 from odyssey_fx.marketdata.domain.schedule import SeriesSchedule
 from odyssey_fx.marketdata.domain.series import SeriesId
 from odyssey_fx.marketdata.domain.snapshot import PartitionId, SnapshotManifest
+from odyssey_fx.marketdata.domain.timeframe_def import TimeframeDefinition
 
 __all__ = [
     "AsOfView",
@@ -59,6 +62,11 @@ __all__ = [
 #: 15分足ならおよそ52日ぶんに当たる。run 区間より長い休場は扱わないので、これを超えたら
 #: 「次の予定は無い」として `None` を返す。
 _SCHEDULE_PROBE_LIMIT: Final = 5000
+
+#: 予定上の足をたどる計算の覚え書き（`_ScheduleWalk`）を持つ、時間足定義とカレンダーの組の数の
+#: 上限。1 つの run が使う組は系列の時間足の数（数個）なので、テストで多くのカレンダーを作っても
+#: 覚え書きが際限なく増えないための上限である。
+_WALK_CACHE_SIZE: Final = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,9 +658,10 @@ def window_starts(
     空のタプル。`history`・`history_ending_at` と、表22 の準備不足の時刻の計算（D12-127）が同じ
     関数を使う（読み取りの条件と記録を一致させる）。
     """
+    walk = _walk_of(schedule, base_start)
     # 期待される足の開始時刻を新しい順に並べる。欠損を飛ばさず、期待どおりの並びを作る。
     expected_starts = _expected_starts_backwards(
-        schedule, base_start, _needed_bars(window, end_offset_bars)
+        walk, base_start, _needed_bars(window, end_offset_bars)
     )
     if expected_starts is None:
         return None
@@ -664,7 +673,82 @@ def window_starts(
         if len(expected_starts) < window.count:
             return None
         return expected_starts[: window.count]
-    return _duration_selection(schedule, expected_starts, window)
+    return _duration_selection(walk, expected_starts, window)
+
+
+class _ScheduleWalk:
+    """1 組の時間足定義とカレンダーで、予定上の足を古い側へたどる計算の覚え書き（D26 §2.2 の 3）。
+
+    窓の期待足の開始時刻（`window_starts`）は、判断時点ごとに基準の足から古い側へ足を 1 本ずつ
+    たどり、各足の取るべき区間（`TimeframeDefinition.expected_interval`）を求める。隣り合う判断
+    時点の窓はほとんど同じ足をたどるので、従来は同じ答えを判断時点ごとに作り直していた（実データの
+    run で単位ごとの時間の約 59%。D26 §1.4 の手順 0）。
+
+    2 つの計算はどちらも時間足定義とカレンダー（どちらも不変の値）と時刻だけから決まる純粋な計算
+    なので、時刻ごとに答えを覚えて引く。
+
+    - 覚える答えは、従来と同じ関数を同じ引数で呼んだ結果そのもの（不変の値）である。
+    - 呼ぶ順番は従来の走査のままで、覚えていない時刻だけを計算する。したがって、従来は計算しなかった
+      時刻を先回りして計算することは無い。
+    - 計算が例外を送出したら何も覚えず、そのまま送出する（次に同じ時刻を引いても同じ例外になる）。
+    """
+
+    __slots__ = ("_calendar", "_definition", "_intervals", "_previous")
+
+    def __init__(self, definition: TimeframeDefinition, calendar: TradingCalendar) -> None:
+        self._definition = definition
+        self._calendar = calendar
+        self._intervals: dict[UtcTime, Interval | None] = {}
+        self._previous: dict[UtcTime, UtcTime] = {}
+
+    def expected_interval(self, probe: UtcTime) -> Interval | None:
+        """`probe` を含む足が実際に取るべき区間（`TimeframeDefinition.expected_interval`）。"""
+        try:
+            return self._intervals[probe]
+        except KeyError:
+            pass
+        interval = self._definition.expected_interval(self._calendar, probe)
+        self._intervals[probe] = interval
+        return interval
+
+    def previous_start(self, probe: UtcTime) -> UtcTime:
+        """`probe` の直前の瞬間を含む整列上の足の開始時刻（1 本古い側の足）。"""
+        try:
+            return self._previous[probe]
+        except KeyError:
+            pass
+        start = self._definition.boundaries(probe - timedelta(microseconds=1)).start
+        self._previous[probe] = start
+        return start
+
+
+@lru_cache(maxsize=_WALK_CACHE_SIZE)
+def _remembered_walk(definition: TimeframeDefinition, calendar: TradingCalendar) -> _ScheduleWalk:
+    """時間足定義とカレンダーの組ごとに 1 つの覚え書き（等しい組は同じ答えを持つので共有する）。
+
+    覚え書きはカレンダーや時間足定義の外に置く（`calendar._closure_interval_of` と同じく、不変の
+    値型の中身を問い合わせの有無で変えないため）。
+    """
+    return _ScheduleWalk(definition, calendar)
+
+
+def _walk_of(schedule: SeriesSchedule, base_start: UtcTime) -> _ScheduleWalk:
+    """`window_starts` の 1 回の呼び出しで使う覚え書き。
+
+    覚えた答えを共有するのは、基準の時刻・時間足定義・カレンダーがどれも本来の型のときだけである。
+    それ以外（型の誤り）は、この呼び出しの中だけの覚え書きを使い、従来と同じ順に同じ計算をして同じ
+    例外を送出する（1 回の呼び出しの中で同じ時刻を 2 度たどるのは、成功した計算の答えを引くとき
+    だけである）。
+    """
+    definition = schedule.timeframe_def
+    calendar = schedule.calendar
+    if (
+        isinstance(base_start, UtcTime)
+        and isinstance(definition, TimeframeDefinition)
+        and isinstance(calendar, TradingCalendar)
+    ):
+        return _remembered_walk(definition, calendar)
+    return _ScheduleWalk(definition, calendar)
 
 
 def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:
@@ -679,7 +763,7 @@ def _needed_bars(window: HistoryWindowLike, end_offset_bars: int) -> int:
 
 
 def _expected_starts_backwards(
-    schedule: SeriesSchedule, latest_start: UtcTime, count: int
+    walk: _ScheduleWalk, latest_start: UtcTime, count: int
 ) -> tuple[UtcTime, ...] | None:
     """期待される足の開始時刻を、新しい順に `count` 本ぶん返す。
 
@@ -688,20 +772,19 @@ def _expected_starts_backwards(
     """
     starts: list[UtcTime] = []
     probe = latest_start
-    definition = schedule.timeframe_def
     guard = max(count * 50, 500)
     for _ in range(guard):
-        interval = definition.expected_interval(schedule.calendar, probe)
+        interval = walk.expected_interval(probe)
         if interval is not None:
             starts.append(interval.start)
             if len(starts) >= count:
                 return tuple(starts)
-        probe = definition.boundaries(probe - timedelta(microseconds=1)).start
+        probe = walk.previous_start(probe)
     return None
 
 
 def _duration_selection(
-    schedule: SeriesSchedule,
+    walk: _ScheduleWalk,
     expected_starts: tuple[UtcTime, ...],
     window: DurationWindowLike,
 ) -> tuple[UtcTime, ...] | None:
@@ -713,8 +796,7 @@ def _duration_selection(
     """
     if not expected_starts:  # pragma: no cover - 呼び出し側が空でないことを保証する
         return ()
-    definition = schedule.timeframe_def
-    last_interval = definition.expected_interval(schedule.calendar, expected_starts[0])
+    last_interval = walk.expected_interval(expected_starts[0])
     if last_interval is None:  # pragma: no cover - 期待足なので必ず存在する
         return ()
     lower_bound = last_interval.end - window.duration
@@ -723,12 +805,12 @@ def _duration_selection(
     probe = expected_starts[0]
     guard = 100000
     for _ in range(guard):
-        interval = definition.expected_interval(schedule.calendar, probe)
+        interval = walk.expected_interval(probe)
         if interval is not None:
             if interval.end <= lower_bound:
                 return tuple(selected)
             selected.append(interval.start)
-        probe = definition.boundaries(probe - timedelta(microseconds=1)).start
+        probe = walk.previous_start(probe)
     return None  # pragma: no cover - guard に達するほど長い窓は使わない
 
 
