@@ -10,8 +10,11 @@
   変更の提案 `change_v<版>.yaml`（D25 §3.9）、実行記録 `run_v<版>.yaml`、一巡の報告 `report.yaml`:
   D25 §2.3 の中身の説明から本 PR が置いた形（本 PR の仮置き。書き手は PR 7・PR 8a）。
 
-検証の正規表現は `fullmatch` で当て、数字は ASCII の `[0-9]` だけにする（`$` は末尾の改行の前にも
-一致し、`\\d` は全角などの数字にも一致するため）。
+文字列の項目は、閉じた形（識別子・語彙・パス・ハッシュ・時刻）か、数字の検査（検査 6）を当てる
+自由文のどちらかにする（数字が検査を通らずに入る項目を作らない）。検証の正規表現は `fullmatch` で
+当て、数字は ASCII の `[0-9]` だけにする（`$` は末尾の改行の前にも一致し、`\\d` は全角などの数字にも
+一致するため）。戦略の宣言の部品の中身と変更の提案の操作の中身は、部品のカタログで PR 7 の
+検査が見る。
 
 YAML は設定ファイルと同じ安全な読込（重複キー・anchor・alias を拒む。`app.config.loader`）で読む。
 """
@@ -29,6 +32,8 @@ from pathlib import Path
 from typing import Any, Final
 
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
+from odyssey_fx.common.errors import KernelValueError
+from odyssey_fx.evaluation.domain.regimes import favored_regimes_of
 from tools.ops.runner_ci.model import ChangeStatus, CheckInput, CheckResult, Status, result
 
 HYPOTHESES: Final = "research/hypotheses/"
@@ -186,6 +191,16 @@ def utc_time(value: object, where: str) -> list[str]:
     return []
 
 
+def favored_regimes(value: object, where: str) -> list[str]:
+    """得意と想定する局面: 研究ポリシー第 5 版の局面の名前（D24 §8.1 の検査 E12 と同じ関数）。"""
+    try:
+        favored_regimes_of(value, where)  # type: ignore[arg-type]
+    except KernelValueError:
+        # 理由の文は書かれた値を含むので書かない。
+        return [f"{where}: 局面の名前（UNLABELED を除く 6 つ）の重複の無い、空でない並びでない"]
+    return []
+
+
 HEX64: Final = pattern(_HEX64_RE, "SHA-256（16 進 64 文字の小文字）")
 IDENT: Final = pattern(_IDENT_RE, "理由の識別子（英大文字・数字・_）")
 
@@ -250,7 +265,8 @@ def mapping(required: Mapping[str, Check], optional: Mapping[str, Check] | None 
 
 # --- 各記録の形 ------------------------------------------------------------------
 
-_AXIS: Final = mapping({"instance": text, "parameter": text, "values": sequence(scalar, minimum=1)})
+NAME: Final = pattern(re.compile(r"[A-Za-z_][A-Za-z0-9_]*"), "名前（英字・数字・_）")
+_AXIS: Final = mapping({"instance": NAME, "parameter": NAME, "values": sequence(scalar, minimum=1)})
 #: カードの戦略は D04 の宣言の本体のうち 5 項目（D25 §3.1）。部品の中身は PR 7 の検査が見る。
 _STRATEGY: Final = mapping(
     {
@@ -281,7 +297,7 @@ _CARD_FIELDS: Final[dict[str, Check]] = {
     ),
 }
 _CARD_OPTIONAL: Final[dict[str, Check]] = {
-    "favored_regimes": sequence(text),
+    "favored_regimes": favored_regimes,
     "read_scope": sequence(relative_path, minimum=1),
 }
 CARD: Final = mapping(_CARD_FIELDS, _CARD_OPTIONAL)
@@ -343,7 +359,7 @@ RUN: Final = mapping(
         "finished_at": utc_time,
         "exit_code": integer(),
         "max_rss_bytes": nullable(integer(0)),
-        "record_id": text,
+        "record_id": HEX64,
         "artifacts": sequence(_FILE_HASH),
         "memo": nullable(_FILE_HASH),
     }

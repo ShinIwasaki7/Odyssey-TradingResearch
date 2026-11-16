@@ -154,7 +154,7 @@ def run_record(card_id: str = CARD_ID, version: int = 1) -> bytes:
             "finished_at": "2026-11-21T09:00:00Z",
             "exit_code": 0,
             "max_rss_bytes": 1,
-            "record_id": "record",
+            "record_id": "e" * 64,
             "artifacts": [{"path": "runs/experiments/x/v1/report.md", "sha256": "c" * 64}],
             "memo": None,
         }

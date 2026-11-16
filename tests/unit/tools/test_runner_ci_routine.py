@@ -449,3 +449,68 @@ def test_trailing_newlines_and_non_ascii_digits_fail(
 def test_a_title_with_a_trailing_newline_is_not_a_routine_title(base: dict[str, bytes]) -> None:
     results = _by_number(run_checks(_exec_pr(base, title=f"[runner] 実行記録 {CARD_ID} v1\n")))
     assert results[2].status is Status.FAIL
+
+
+# --- 文字列の項目は閉じた形か、数字の検査を当てる自由文（Codex 2 巡目）------------------------
+
+
+@pytest.mark.parametrize(
+    ("favored", "fails"),
+    [
+        (["UP_HIGH", "FLAT_LOW"], False),
+        (["SHARPE 1.75"], True),
+        (["UNLABELED"], True),
+        (["UP_HIGH", "UP_HIGH"], True),
+        ([], True),
+    ],
+)
+def test_favored_regimes_must_be_regime_names(
+    base: dict[str, bytes], favored: list[str], fails: bool
+) -> None:
+    head = dict(base, **{QUEUE: card_bytes(favored_regimes=favored)})
+    given = make_input(
+        base,
+        head,
+        branch="runner/cards-20261120T030000Z",
+        title="[runner] 事前登録 cards-20261120T030000Z",
+        kind="事前登録",
+        version=None,
+        auto_merge=True,
+    )
+    results = _by_number(run_checks(given))
+    assert (results[5].status is Status.FAIL) is fails
+    assert (results[8].status is Status.FAIL) is fails
+    assert not any("SHARPE" in message for message in results[5].messages)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (b"record_id: " + b"e" * 64, b"record_id: SHARPE 1.75"),
+        (b"artifacts:", b"artifacts: []\nunused:"),
+    ],
+)
+def test_run_record_strings_are_closed_forms(
+    base: dict[str, bytes], old: bytes, new: bytes
+) -> None:
+    bad = run_record().replace(old, new)
+    assert bad != run_record()
+    clean = _exec_pr(base)
+    head = dict(clean.head.files, **{f"{LOOPS}run_v1.yaml": bad})  # type: ignore[attr-defined]
+    given = make_input(
+        dict(clean.base.files),  # type: ignore[union-attr]
+        head,
+        branch="runner/exec",
+        title=f"[runner] 実行記録 {CARD_ID} v1",
+        kind="実行記録",
+        experiment=EXPERIMENT,
+    )
+    assert 5 in _failed(run_checks(given))
+
+
+def test_axis_names_are_identifiers(base: dict[str, bytes]) -> None:
+    axes = {"axes": [{"instance": "fast ema", "parameter": "period", "values": ["10", "20"]}]}
+    head = dict(
+        base, **{f"research/hypotheses/queue/{HUMAN_CARD_ID}.yaml": card_bytes("human", grid=axes)}
+    )
+    assert 5 in _failed(run_checks(make_input(base, head, branch="docs/card")))
