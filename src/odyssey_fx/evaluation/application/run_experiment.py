@@ -38,7 +38,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Final
+from typing import Final, Protocol
 
 from odyssey_fx.backtest.domain.policies import RunConfig, RunEndMode
 from odyssey_fx.backtest.trace.manifest import RunManifest
@@ -159,7 +159,10 @@ __all__ = [
     "ReproductionReport",
     "ReproductionVerdict",
     "RunExperiment",
+    "SearchVariants",
     "TrialLedgerStop",
+    "VariantRun",
+    "VariantStopped",
     "judge_reproduction",
 ]
 
@@ -455,11 +458,14 @@ class _PathRun:
 
 
 @dataclass(frozen=True, slots=True)
-class _VariantRun:
-    """組 1 つの実行の結果。"""
+class VariantRun:
+    """組 1 つの実行の結果（D26 §3.5 の「組の結果」。並列のときは子が親へ返す）。"""
 
     folds: _FoldsRun
     path: _PathRun
+    #: 組の局面の成果物のダイジェスト（研究ポリシーの版 5 以上を指す実験だけ。D24 §5.2・
+    #: 仮置き 15、D26 §3.8 の 4）。それ以外は `None`。
+    regimes: RegimeDigest | None = None
 
     @property
     def checks(self) -> tuple[PolicyCheckResult, ...]:
@@ -468,6 +474,30 @@ class _VariantRun:
             *(check for record in self.folds.records for check in record.outcome_checks),
             *(check for end in self.path.ends for check in end.outcome_checks),
         )
+
+
+class VariantStopped(Exception):
+    """単位の境目で、組の残りの単位・区間を始めずに止めたこと（D26 §3.4 の子の表の K2）。
+
+    境目の確かめ（`execute_variant` の `boundary`）が送出する。順番の実行では送出しない。
+    """
+
+
+def _no_boundary() -> None:
+    """順番の実行の境目の確かめ（何もしない）。"""
+
+
+class SearchVariants(Protocol):
+    """両組を別の書き手で走らせ、組ごとの結果を返す口（D26 §3.2。並列の実行。合成が渡す）。
+
+    束縛の記録を書いた後に 1 回だけ呼ぶ（D26 §3.4 の SP + E10）。両組が自分の組の全 fold と
+    経路を終えたときだけ組の結果を返す。どちらかの組が失敗・停止したら、動いている組がすべて
+    終わってから例外を送出する（D26-4 (a)。結末記録も台帳の結末の行も書かない）。
+    """
+
+    def run_variants(self, prepared: PreparedSearch) -> Paired[VariantRun]:
+        """両組を走らせ、組ごとの結果を組の順（標準 → 候補）で返す。"""
+        ...
 
 
 def _initial_balance(prepared: PreparedSearch, variant: Variant) -> Money:
@@ -613,9 +643,10 @@ class RunExperiment:
         execution_nonce: str,
         out_base: str,
         running: str,
-        segments: SegmentPlanner,
+        segments: SegmentPlanner | None,
         lineage: LineageRequest | None = None,
         daily_bars: DailyBarSource | None = None,
+        variants: SearchVariants | None = None,
     ) -> ExperimentOutcome | ExperimentRefusal:
         """探索の実験の1回の実行を進める（D09 §10.7 の状態×出来事表。2026-10-21 改訂）。
 
@@ -628,10 +659,14 @@ class RunExperiment:
         - `lineage`: 実験設定の系譜（書かなければ `None`。D13 §7.1）。
         - `daily_bars`: 局面の付与に使う日足の読み出し（研究ポリシーの版 5 以上を指す実験だけが
           使う。D24 §5.2）。`None` なら版 5 以上の実験の局面の成果物は「出せない（理由）」になる。
+        - `variants`: 両組を並列に走らせる口（D26 §3.2。`None` なら今の順番）。渡すときは
+          `segments` と `daily_bars` を使わない（組の単位・経路・局面の成果物は口の先の書き手が
+          `execute_variant` で進める）。
 
         1 回の実行で標準 → 候補の両組を評価し、組ごとに全 fold の後にその組の経路の区間を
         区間 0 から順に走らせる（改訂 PR の仮置き 35 (a)）。両組の全 fold と経路が終端した後に、
-        組ごとの判定と組の判定を決め、集約表 → 結末記録 → 台帳の結末の行を書く。
+        組ごとの判定と組の判定を決め、集約表 → 結末記録 → 台帳の結末の行を書く。並列のときも
+        組の中の順序と、親が書く終端の書き込みの順は変わらない（D26 §3.2 の 4）。
 
         台帳が読めない・追記が断られた・照合が合わないときは `TrialLedgerStop`（終了コード 1）。
         """
@@ -678,7 +713,7 @@ class RunExperiment:
             return outcome
         if not isinstance(basis, Paired):
             raise KernelValueError("a search that passed the pre-run checks needs its basis")
-        if not isinstance(segments, SegmentPlanner):
+        if variants is None and not isinstance(segments, SegmentPlanner):
             raise KernelValueError("execute_search requires a SegmentPlanner")
 
         started, binding = self._start_ledger(
@@ -690,17 +725,42 @@ class RunExperiment:
 
         # 探索中: 組（標準 → 候補）→ 組の中は fold → 局面 → 試行、組の全 fold の後に経路の区間
         # （D09 §5.4 の改訂。改訂 PR の仮置き 35 (a)）。同じ `RunId` の評価は組をまたいで共有する。
-        cache: dict[RunId, _Evaluated] = {}
-        runs: dict[Variant, _VariantRun] = {}
+        # 並列のときは両組を口の先の書き手が同時に進め、組の中の順序は変わらない（D26 §3.2）。
+        runs: dict[Variant, VariantRun] = {}
+        if variants is None:
+            planner = segments
+            if not isinstance(planner, SegmentPlanner):  # pragma: no cover - 上で確かめた
+                raise KernelValueError("execute_search requires a SegmentPlanner")
+            cache: dict[RunId, _Evaluated] = {}
+            for variant in VARIANTS:
+                runs[variant] = self.execute_variant(
+                    prepared, variant, segments=planner, daily_bars=daily_bars, cache=cache
+                )
+        else:
+            returned = variants.run_variants(prepared)
+            if not isinstance(returned, Paired):
+                raise KernelValueError("SearchVariants.run_variants must return a Paired")
+            returned.require(VariantRun, "the variant runs")
+            for variant, run in returned.items():
+                # 組の名前で受け取り、取り違えたら構造エラーで止める（D26 §3.5 の「組の結果」）。
+                if any(record.unit.variant is not variant for record in run.folds.records) or any(
+                    end.key.variant is not variant for end in run.path.ends
+                ):
+                    raise KernelValueError(
+                        f"the {variant.value} variant run carries records of another variant"
+                        " (D26 §3.5)"
+                    )
+                runs[variant] = run
         regimes: list[RegimeDigest] = []
-        for variant in VARIANTS:
-            folds = self._run_folds(prepared, variant, cache)
-            path = self._run_path(prepared, variant, folds.selections, segments, cache)
-            runs[variant] = _VariantRun(folds=folds, path=path)
-            if isinstance(standard, EvaluationStandardV5):
-                # 局面の成果物は組の経路が終端した直後、結末記録より前に書く（D24 §5.2・仮置き 15、
-                # D26 §3.8 の 4）。判定の関数には渡さない（決定 134。RP5-16）。
-                regimes.append(self._write_regimes(prepared, standard, variant, path, daily_bars))
+        if isinstance(standard, EvaluationStandardV5):
+            for variant in VARIANTS:
+                written = runs[variant].regimes
+                if not isinstance(written, RegimeDigest) or written.variant is not variant:
+                    raise KernelValueError(
+                        f"the {variant.value} variant run carries no regime digest of its own"
+                        " (D24 §5.2, D26 §3.8 の 4)"
+                    )
+                regimes.append(written)
 
         judged = {variant: self._judged_path(prepared, runs[variant]) for variant in VARIANTS}
         outcomes = Paired.build(
@@ -743,6 +803,40 @@ class RunExperiment:
         )
         return outcome
 
+    def execute_variant(
+        self,
+        prepared: PreparedSearch,
+        variant: Variant,
+        *,
+        segments: SegmentPlanner,
+        daily_bars: DailyBarSource | None = None,
+        cache: dict[RunId, _Evaluated] | None = None,
+        boundary: Callable[[], None] = _no_boundary,
+    ) -> VariantRun:
+        """組 1 つの全 fold → その組の経路の区間 → 局面の成果物（版 5 以上）を進める。
+
+        順番の実行は `execute_search` が組ごとに呼ぶ。並列の実行は組の子が自分の組について呼ぶ
+        （D26 §3.2 の 2）。束縛の記録の後にだけ呼ぶ（台帳・記録票・束縛の記録・集約表・結末記録は
+        書かない。D26 §3.4 の後の注記）。
+
+        `boundary` は単位の境目の確かめ（D26 §3.4 の子の表の K2）: 最初の単位の前と、単位 1 つ・
+        経路の区間 1 つを終えるごとに呼ぶ。止めるときは `VariantStopped`（か中断）を送出し、次の
+        単位・区間と、まだ書いていない選定記録・局面の成果物を書かずに終わる。
+        """
+        standard = prepared.manifest.evaluation_standard
+        if standard is None:  # pragma: no cover - 探索の記録票は評価基準を持つ
+            raise KernelValueError("a search manifest carries its evaluation standard")
+        shared: dict[RunId, _Evaluated] = {} if cache is None else cache
+        boundary()
+        folds = self._run_folds(prepared, variant, shared, boundary)
+        path = self._run_path(prepared, variant, folds.selections, segments, shared, boundary)
+        regimes: RegimeDigest | None = None
+        if isinstance(standard, EvaluationStandardV5):
+            # 局面の成果物は組の経路が終端した直後、結末記録より前に書く（D24 §5.2・仮置き 15、
+            # D26 §3.8 の 4）。判定の関数には渡さない（決定 134。RP5-16）。
+            regimes = self._write_regimes(prepared, standard, variant, path, daily_bars)
+        return VariantRun(folds=folds, path=path, regimes=regimes)
+
     def _write_regimes(
         self,
         prepared: PreparedSearch,
@@ -770,7 +864,7 @@ class RunExperiment:
         return RegimeDigest(variant=variant, digest=digest(report))
 
     def _judged_path(
-        self, prepared: PreparedSearch, run: _VariantRun
+        self, prepared: PreparedSearch, run: VariantRun
     ) -> tuple[PathSummary, LossSideEvidence | None]:
         """判定に渡す経路の要約と、版 5 以上の判定の追加の入力（D24 §3.3・§4。実装 PR 4-2）。
 
@@ -945,9 +1039,17 @@ class RunExperiment:
         self._append(TrialLedgerLine.of(entry, last_digest(contents.lines)), stopped)
 
     def _run_folds(
-        self, prepared: PreparedSearch, variant: Variant, cache: dict[RunId, _Evaluated]
+        self,
+        prepared: PreparedSearch,
+        variant: Variant,
+        cache: dict[RunId, _Evaluated],
+        boundary: Callable[[], None] = _no_boundary,
     ) -> _FoldsRun:
-        """組の fold ごとに選定区間の全単位 → 選定記録 → 検証区間の単位（D09 §4.1 の4・§6.6）。"""
+        """組の fold ごとに選定区間の全単位 → 選定記録 → 検証区間の単位（D09 §4.1 の4・§6.6）。
+
+        単位を 1 つ終えるごとに `boundary` を呼ぶ（D26 §3.4 の子の表の K2）。fold の最後の選定区間の
+        単位の後の境目で止まれば、その fold の選定記録は書かない（D26 §3.4 の表の後の注記）。
+        """
         manifest = prepared.manifest
         split = manifest.split
         standard = manifest.evaluation_standard
@@ -986,6 +1088,7 @@ class RunExperiment:
                 records.append(done.record)
                 metrics[unit] = done.metrics
                 train_units.append(_train_unit(done))
+                boundary()
             # 選定区間の結果だけから選び、検証区間の単位より前に選定記録を保存する（D09 §7.5）。
             selection = select_trial(fold.fold_index, standard.selection, train_units)
             self._store.write_selection(variant, selection)
@@ -1003,6 +1106,7 @@ class RunExperiment:
                 records.append(done.record)
                 metrics[unit] = done.metrics
                 validation = _validation_unit(done)
+                boundary()
             evidence.append(
                 FoldEvidence(
                     fold=fold,
@@ -1025,8 +1129,11 @@ class RunExperiment:
         selections: tuple[FoldSelection, ...],
         planner: SegmentPlanner,
         cache: dict[RunId, _Evaluated],
+        boundary: Callable[[], None] = _no_boundary,
     ) -> _PathRun:
         """組の連続口座の検証経路を区間 0 から順に走らせる（D13 §4.5〜§4.7 の表 2）。
+
+        区間の run を 1 つ終えるごとに `boundary` を呼ぶ（D26 §3.4 の子の表の K2）。
 
         区間の列は全 fold の選定記録から決める（仮置き 11・14・15）。選んだ試行のある区間は、
         開始記録 → 既存の成果物の確認（無ければ run、一致すれば再利用、一致しない・読めなければ
@@ -1072,6 +1179,7 @@ class RunExperiment:
                 continue
             done = self._run_segment(prepared, variant, segment, balance, planner, cache)
             ends.append(done)
+            boundary()
             row = PathSegmentRow(
                 segment_index=segment.segment_index,
                 fold_indices=segment.fold_indices,
@@ -1388,6 +1496,33 @@ class RunExperiment:
         を読んで使わない。仮置き 20）、各区間の `RunId`・結果のダイジェスト・終わりの残高を区間の
         開始記録・終端の記録と照合する。記録は書かない（run と評価の成果物だけを別の基点に書く）。
         """
+        return self._reproduce(prepared, dict(recorded.items()), VARIANTS, segments, _no_boundary)
+
+    def reproduce_variant(
+        self,
+        prepared: PreparedSearch,
+        variant: Variant,
+        recorded: RecordedSearch,
+        segments: SegmentPlanner,
+        *,
+        boundary: Callable[[], None] = _no_boundary,
+    ) -> tuple[ReproductionRow, ...]:
+        """組 1 つを `reproduce_search` と同じ順でやり直し、その組の照合の行を返す。
+
+        並列の再現で組の子が呼ぶ（D26-3 (a)、§3.2 の 6）。親は両組の行を組の順（標準 → 候補）に
+        つないで、順番の再現と同じ行の列にする。`boundary` は単位の境目の確かめ（`execute_variant`
+        と同じ。D26 §3.4 の子の表の K2）。
+        """
+        return self._reproduce(prepared, {variant: recorded}, (variant,), segments, boundary)
+
+    def _reproduce(
+        self,
+        prepared: PreparedSearch,
+        recorded: Mapping[Variant, RecordedSearch],
+        variants: tuple[Variant, ...],
+        segments: SegmentPlanner,
+        boundary: Callable[[], None],
+    ) -> tuple[ReproductionRow, ...]:
         manifest = prepared.manifest
         split = manifest.split
         standard = manifest.evaluation_standard
@@ -1397,6 +1532,7 @@ class RunExperiment:
         cache: dict[RunId, _Evaluated] = {}
         results: dict[RunId, BacktestResult] = {}
         rows: list[ReproductionRow] = []
+        boundary()
 
         def rerun(
             config: RunConfig, compiled: CompiledStrategy, run_id: RunId
@@ -1409,8 +1545,8 @@ class RunExperiment:
                 results[result.run_id] = result
             return result, self._evaluate_unit(prepared, result, None, cache)
 
-        for variant in VARIANTS:
-            record = recorded.of(variant)
+        for variant in variants:
+            record = recorded[variant]
             selections: list[int | None] = []
             for fold in split.folds:
                 train_units: list[TrainUnitEvaluation] = []
@@ -1439,6 +1575,7 @@ class RunExperiment:
                     done = self._reproduce_unit(prepared, trial, unit, record, rerun, version)
                     rows.append(done[0])
                     train_units.append(_train_unit(done[1]))
+                    boundary()
                 selection = select_trial(fold.fold_index, standard.selection, train_units)
                 saved = record.selections.get(fold.fold_index)
                 concluded = record.outcome_selections.get(fold.fold_index)
@@ -1475,8 +1612,11 @@ class RunExperiment:
                     rows.append(
                         self._reproduce_unit(prepared, chosen, unit, record, rerun, version)[0]
                     )
+                    boundary()
             rows.extend(
-                self._reproduce_path(prepared, variant, split, selections, record, segments, rerun)
+                self._reproduce_path(
+                    prepared, variant, split, selections, record, segments, rerun, boundary
+                )
             )
         return tuple(rows)
 
@@ -1555,6 +1695,7 @@ class RunExperiment:
         record: RecordedSearch,
         planner: SegmentPlanner,
         rerun: Callable[[RunConfig, CompiledStrategy, RunId], tuple[BacktestResult, _Evaluated]],
+        boundary: Callable[[], None] = _no_boundary,
     ) -> list[ReproductionRow]:
         """経路の区間を区間 0 から順にやり直し、残高を計算し直して照合する（仮置き 20）。
 
@@ -1631,6 +1772,7 @@ class RunExperiment:
                     verdict=verdict,
                 )
             )
+            boundary()
             if settled is None:
                 end, final = PathEnd.INCOMPLETE, None
                 break
