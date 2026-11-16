@@ -361,3 +361,119 @@ def test_ending_a_running_card_terminates_its_process_groups(rig: Rig) -> None:
     assert (run_pid, signal.SIGTERM) in rig.procs.signals
     assert _phase(rig) == "C14"
     assert issue.closed
+
+
+# --- 送信の失敗・状態を保存する前の停止（Codex 3 巡目の指摘と同じ型の点検） ------------------
+
+
+class _Crash(BaseException):
+    """実行器のプロセスが途中で止まった（停電・強制終了の代わり。`ToolFailure` ではない）。"""
+
+
+def _fail_first_push(monkeypatch: pytest.MonkeyPatch, prefix: str) -> dict[str, int]:
+    """`prefix` の枝への最初の push だけを一時的に失敗させる。"""
+    from tests.fixtures.research_runner import FakeGit
+    from tools.ops.hypothesis_cards.repo import ToolFailure
+
+    original = FakeGit.push_branch
+    calls = {"push": 0}
+
+    def flaky(self: FakeGit, commit: str, branch: str) -> None:
+        if branch.startswith(prefix):
+            calls["push"] += 1
+            if calls["push"] == 1:
+                raise ToolFailure("push が一時的に失敗した（試験）")
+        original(self, commit, branch)
+
+    monkeypatch.setattr(FakeGit, "push_branch", flaky)
+    return calls
+
+
+def test_a_final_record_pr_is_sent_again_after_a_failed_push(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """最終検証が終わった後に記録の PR の push が一時的に失敗しても、次の 1 歩が同じコミットを
+    送り直し、台帳の戻しまで進む（Codex 3 巡目の指摘 1）。"""
+    _inject(rig, "C12", reservations=["final"])
+    rig.step()
+    (rig.world.repo / FINAL).write_bytes(final_ledger(rig.world.repo / "tmp", 1))
+    rig.procs.finish("final-validate", 0)
+    calls = _fail_first_push(monkeypatch, "runner/final-")
+    rig.step()
+    assert calls["push"] == 1
+    assert not [pr for pr in rig.world.prs.values() if pr.branch.startswith("runner/final-")]
+    for _ in range(3):
+        rig.step()
+    finals = [pr for pr in rig.world.prs.values() if pr.branch.startswith("runner/final-")]
+    assert len(finals) == 1 and finals[0].ci_ok, [pr.ci_messages for pr in finals]
+    assert _phase(rig) == "C14"
+    assert rig.card(CARD_ID)["outcome"] == "FINAL_VALIDATED"
+    assert len([key for key in rig.procs.spawned if key.startswith("final-validate:")]) == 1
+
+
+def test_a_fixation_record_pr_is_sent_again_after_a_failed_push(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """固定の記録の PR の push が一時的に失敗しても、固定の前の確かめを走らせ直さずに、同じ
+    コミットを送り直す（固定の記録は作業木から消した後なので、作り直せない）。"""
+    _inject(rig, "C11")
+    rig.step()
+    record = rig.world.exec_dir / "research/candidate_fixes" / ("a" * 64) / "1" / "1.yaml"
+    record.parent.mkdir(parents=True)
+    record.write_text("schema_version: 1\n", encoding="utf-8")
+    rig.procs.finish("fix", 0)
+    _fail_first_push(monkeypatch, "candidate-fix/")
+    rig.step()
+    assert not [pr for pr in rig.world.prs.values() if pr.branch.startswith("candidate-fix/")]
+    rig.step()
+    fix = [pr for pr in rig.world.prs.values() if pr.branch.startswith("candidate-fix/")]
+    assert len(fix) == 1 and fix[0].ci_ok, fix[0].ci_messages
+    assert rig.card(CARD_ID)["checks"]["fix_pr"] == fix[0].number
+    assert len([key for key in rig.procs.spawned if key.startswith("fix:")]) == 1
+
+
+def test_a_gate_failure_is_not_forgotten_after_a_failed_push(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """関門の不合格で棄却の PR の push が失敗しても、次の 1 歩は確かめ役へ進まずに棄却を
+    送り直す。"""
+    rig.gate.passed = False
+    _inject(rig, "C9", place="taken")
+    _fail_first_push(monkeypatch, "runner/report-")
+    rig.step()
+    rig.step()
+    rejected = [pr for pr in rig.world.prs.values() if pr.branch.startswith("runner/report-")]
+    assert len(rejected) == 1 and rejected[0].ci_ok, rejected[0].ci_messages
+    assert rig.card(CARD_ID)["outcome"] == "GATE_FAILED"
+    assert not [request for request in rig.workers.launched if request.role == "verifier"]
+
+
+def test_a_detached_process_whose_pid_was_not_saved_is_found_by_its_pid_file(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """切り離した処理の PID を状態に保存する前に実行器が止まっても、包みの `pid.txt` から生きて
+    いるとわかり、猶予の 10 分の後も消えたと扱わない（Codex 3 巡目の指摘 3）。"""
+    from tests.fixtures.research_runner import FakeProcs
+
+    _inject(rig, "C10", reservations=["review"])
+    original = FakeProcs.spawn
+
+    def spawn_then_stop(self: FakeProcs, command: Any, *, cwd: Path, state_dir: Path) -> int:
+        original(self, command, cwd=cwd, state_dir=state_dir)
+        raise _Crash
+
+    monkeypatch.setattr(FakeProcs, "spawn", spawn_then_stop)
+    with pytest.raises(_Crash):
+        rig.step()
+    monkeypatch.undo()
+    assert rig.card(CARD_ID)["procs"]["review"]["pid"] is None
+    pid = rig.procs.by_kind("review")["pid"]
+    rig.step(minutes=30)
+    assert len([key for key in rig.procs.spawned if key.startswith("review:")]) == 1
+    assert "REVIEW_FAILED" not in rig.card(CARD_ID)["retries"]
+    assert rig.card(CARD_ID)["procs"]["review"]["pid"] == pid
+    (rig.world.exec_dir / REVIEW).write_bytes(review_ledger(1))
+    rig.procs.finish("review", 7)
+    for _ in range(3):
+        rig.step()
+    assert _phase(rig) == "C14"

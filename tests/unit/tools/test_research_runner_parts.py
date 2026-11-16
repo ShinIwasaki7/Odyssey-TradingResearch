@@ -154,7 +154,7 @@ def test_the_wrapper_contract_needs_pr_b() -> None:
     serial_only = types.ModuleType("serial_only")
     serial_only.VARIANT_MODES = ("serial",)  # type: ignore[attr-defined]
     assert not probe_contract(serial_only).ready
-    after = types.ModuleType("after")  # PR #194 の head 170bb91 の包みの形
+    after = types.ModuleType("after")  # PR #194 の head 9b1daf0（170bb91 から同じ）の包みの形
     after.VARIANT_MODES = ("parallel", "serial")  # type: ignore[attr-defined]
     after.DEFAULT_VARIANT_MODE = "parallel"  # type: ignore[attr-defined]
     contract = probe_contract(after)

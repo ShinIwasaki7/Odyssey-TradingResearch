@@ -78,14 +78,19 @@ def _run(
     env: Mapping[str, str] | None = None,
     stdin: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(  # noqa: S603 - 固定の部分命令と実行器が決めた引数
-        list(args),
-        cwd=cwd,
-        env=None if env is None else dict(env),
-        input=stdin,
-        capture_output=True,
-        check=False,
-    )
+    """コマンドを走らせる。コマンドが無い・起動できない（macOS の外の `vm_stat` など）ときも
+    例外にせず、終了コード 127 の失敗として返す（呼び手が道具の失敗か安全側の値に直す）。"""
+    try:
+        return subprocess.run(  # noqa: S603 - 固定の部分命令と実行器が決めた引数
+            list(args),
+            cwd=cwd,
+            env=None if env is None else dict(env),
+            input=stdin,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(list(args), 127, b"", str(exc).encode())
 
 
 def _ok(completed: subprocess.CompletedProcess[bytes], what: str) -> str:

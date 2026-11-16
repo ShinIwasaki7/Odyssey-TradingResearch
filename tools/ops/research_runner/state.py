@@ -156,6 +156,9 @@ class CardState:
     ending: str | None = None
     #: 理由の集合が空になったときに戻る先（答えの指す状態。既定は `return_phase`）。
     resume_to: str | None = None
+    #: コミットを作った後、push と PR の作成がまだ終わっていない PR（`commit`・`branch`・`title`・
+    #: `body`・`auto`・`record`）。次の 1 歩は同じコミットを送り直す（作り直さない）。
+    sending: dict[str, Any] | None = None
 
     @property
     def phase_enum(self) -> CardPhase:
@@ -195,14 +198,18 @@ class GlobalState:
     exec_pr: dict[str, Any] | None = None
     #: 実行記録の PR を待つ要求（`card`・`version`・`purpose`）。
     exec_queue: list[dict[str, Any]] = field(default_factory=list)
-    #: 実行用の作業木でコミットした後、push と PR の作成がまだ終わっていない実行記録
-    #: （`card`・`version`・`purpose`・`paths`）。次の 1 歩は push から続ける。
+    #: 実行用の作業木でコミットする直前から、push と PR の作成が終わるまでの実行記録
+    #: （`card`・`version`・`purpose`・`paths`・`parent`（コミットの前の先頭）・`commit`（コミット。
+    #: 書く前に止まったなら `None`））。次の 1 歩は push から続ける。
     exec_sending: dict[str, Any] | None = None
     #: 発想役（`running`・`attempt`・`after_done`（done/ に移った後の起動の予約の数）・
     #: `queue_empty_used`（空のときの 1 回を使ったか）・`extra`（人間の答えの 1 回））。
     ideator: dict[str, Any] = field(default_factory=dict)
     #: 発想役のカードの定型 PR（`runner/cards-<時刻>`）。
     cards_pr: dict[str, Any] | None = None
+    #: 発想役のカードの定型 PR のうち、コミットの後に送信がまだ終わっていないもの（カードの
+    #: `sending` と同じ形）。
+    cards_sending: dict[str, Any] | None = None
     last_human_answer_at: str | None = None
     four_week_notice_for: str | None = None
     weekly_issue: int | None = None

@@ -265,6 +265,95 @@ def test_a_committed_run_record_is_sent_after_a_failed_push(
     _until(rig, "C7")  # merge → 分析へ
 
 
+class _Crash(BaseException):
+    """実行器のプロセスが途中で止まった（停電・強制終了の代わり。`ToolFailure` ではない）。"""
+
+
+def test_the_run_record_pr_body_is_made_from_the_committed_files(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """コミットの後に台帳へ行が足されても（別の run の追記など）、実行記録の PR の本文の SHA-256 と
+    行数はコミットした中身から作り、CI の照合を通る（Codex 3 巡目の指摘 2）。"""
+    from tests.fixtures.research_runner import TRIAL, FakeGit
+
+    _launch(rig)
+    original = FakeGit.exec_commit
+    calls = {"commit": 0}
+
+    def commit_then_append(self: FakeGit, paths: Any, message: str) -> str:
+        head = original(self, paths, message)
+        calls["commit"] += 1
+        if calls["commit"] == 1:
+            rig.wrapper.append_lines(1)  # コミットの直後に台帳へ 1 行足された
+        return head
+
+    monkeypatch.setattr(FakeGit, "exec_commit", commit_then_append)
+    rig.wrapper.finish(0, 0, lines=2)
+    rig.step()
+    exec_prs = [pr for pr in rig.world.routine() if pr.branch == "runner/exec"]
+    assert len(exec_prs) == 1
+    assert exec_prs[0].ci_ok, exec_prs[0].ci_messages
+    assert "行 2" in exec_prs[0].body
+    committed = rig.world.files(exec_prs[0].commit)[TRIAL]
+    assert len(committed.splitlines()) == 2
+
+
+def test_a_run_record_committed_just_before_the_runner_stopped_is_sent(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """実行記録をコミットした直後（送信待ちの印を書く前）に実行器が止まっても、次の 1 歩は
+    そのコミットを送る（merge 済みと取り違えず、コミットし直さない）。"""
+    from tests.fixtures.research_runner import FakeGit
+
+    _launch(rig)
+    original = FakeGit.exec_commit
+
+    def commit_then_stop(self: FakeGit, paths: Any, message: str) -> str:
+        original(self, paths, message)
+        raise _Crash
+
+    monkeypatch.setattr(FakeGit, "exec_commit", commit_then_stop)
+    rig.wrapper.finish(0, 0, lines=2)
+    with pytest.raises(_Crash):
+        rig.step()
+    monkeypatch.undo()
+    committed = rig.world.exec_head
+    rig.step()
+    assert rig.world.exec_head == committed
+    exec_prs = [pr for pr in rig.world.routine() if pr.branch == "runner/exec"]
+    assert len(exec_prs) == 1 and exec_prs[0].commit == committed
+    _assert_ci_passed(rig)
+    _until(rig, "C7")
+
+
+def test_a_run_launched_just_before_the_runner_stopped_is_adopted(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """包みが run を起動した直後（状態を保存する前）に実行器が止まっても、次の 1 歩は包みの
+    `launch.json` からその run を引き取り、起動し直さない（枠も数える）。"""
+    from tests.fixtures.research_runner import FakeWrapper
+
+    rig.step()
+    original = FakeWrapper.launch
+
+    def launch_then_stop(self: FakeWrapper, **kw: Any) -> int:
+        original(self, **kw)
+        raise _Crash
+
+    monkeypatch.setattr(FakeWrapper, "launch", launch_then_stop)
+    with pytest.raises(_Crash):
+        rig.step()
+    monkeypatch.undo()
+    assert _phase(rig) == "C3"
+    rig.step()
+    assert _phase(rig) == "C4"
+    assert len(rig.wrapper.launched) == 1
+    assert "TOOL_FAILURE" not in rig.card(CARD_ID)["retries"]
+    rig.wrapper.finish(0, 0, lines=2)
+    _until(rig, "C7")
+    _assert_ci_passed(rig)
+
+
 def test_a_rejected_card_is_moved_to_done_and_three_in_a_row_stop(tmp_path: Path) -> None:
     rig = make_rig(tmp_path)
     for index, title in enumerate(("bad-one", "bad-two", "bad-three")):
@@ -581,3 +670,33 @@ def test_an_ambiguous_change_stops_the_card_and_another_change_resumes(rig: Rig)
     _until(rig, "C2")
     assert rig.card(CARD_ID)["version"] == 2
     assert rig.workers.launched[-1].extra.get("note")
+
+
+def test_a_change_proposal_is_kept_when_its_pr_cannot_be_sent(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """改善後の事前登録の PR の push が一時的に失敗しても、分析役を起動し直さずに、受け取った
+    変更の提案のまま送り直す（提案を失わない）。"""
+    from tests.fixtures.research_runner import FakeGit
+    from tools.ops.hypothesis_cards.repo import ToolFailure
+
+    rig.workers.add("analyst_change", _analysis(FIRST))
+    _launch(rig)
+    _run_version(rig, 1)
+    _until(rig, "C7")
+    original = FakeGit.push_branch
+    calls = {"push": 0}
+
+    def flaky(self: FakeGit, commit: str, branch: str) -> None:
+        if branch.endswith("-v2"):
+            calls["push"] += 1
+            if calls["push"] == 1:
+                raise ToolFailure("push が一時的に失敗した（試験）")
+        original(self, commit, branch)
+
+    monkeypatch.setattr(FakeGit, "push_branch", flaky)
+    _until(rig, "C3", limit=8)
+    assert calls["push"] == 2
+    assert len([item for item in rig.workers.launched if item.role == "analyst_change"]) == 1
+    assert rig.card(CARD_ID)["version"] == 2
+    _assert_ci_passed(rig)

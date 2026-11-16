@@ -162,3 +162,12 @@ def test_the_system_reads_disk_and_memory() -> None:
     assert system.free_disk_bytes(Path(".")) > 0
     assert system.free_memory_bytes() >= 0
     assert isinstance(system.boot_id(), str)
+
+
+def test_a_missing_command_is_a_failed_command_not_an_exception(tmp_path: Path) -> None:
+    """コマンドが無い（macOS の外の `vm_stat` など）ときも例外にせず、失敗として扱う
+    （空きメモリは 0 の安全側。CI の Linux でも落ちない）。"""
+    from tools.ops.research_runner.adapters import _run
+
+    completed = _run([str(tmp_path / "no-such-command")])
+    assert completed.returncode == 127 and completed.stdout == b""

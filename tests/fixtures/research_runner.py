@@ -431,6 +431,9 @@ class FakeProcs:
         pid = next(self.pids)
         self.alive_pids.add(pid)
         self.leaders.add(pid)
+        # 切り離した処理の小さな包み（`detached.py`）と同じく、最初に自身の PID を書く。
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "pid.txt").write_text(f"{pid}\n", encoding="utf-8")
         parts = list(command)
         subcommand = parts[5] if len(parts) > 5 and parts[3] == "odyssey-fx" else parts[0]
         self.spawned[f"{subcommand}:{pid}"] = {

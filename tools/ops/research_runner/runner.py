@@ -25,8 +25,10 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
 import re
 import shutil
 import signal
@@ -310,7 +312,10 @@ class Runner:
         return [
             card
             for card in ctx.cards.values()
-            if card.phase not in _TERMINAL or card.pr is not None or card.ending is not None
+            if card.phase not in _TERMINAL
+            or card.pr is not None
+            or card.ending is not None
+            or card.sending is not None
         ]
 
     def _view(self, ctx: _Context) -> RepoView:
@@ -540,6 +545,7 @@ class Runner:
                 return False  # 分析・改善の段で止まったときだけ選べる
             card.redo_note = f"{identifier}: 前の変更の提案は規則で決められなかった"
             card.procs.pop("worker", None)
+            card.checks.pop("pending_change", None)
             self._release_card(ctx, card, identifier, to=CardPhase.C7.name)
             return True
         if action is Action.RERUN_SAME_VERSION:
@@ -547,6 +553,7 @@ class Runner:
         if action is Action.REDO_STAGE:
             card.retries.pop(identifier, None)
             card.procs.pop("worker", None)
+            card.checks.pop("pending_change", None)
             self._release_card(ctx, card, identifier)
             return True
         if action is Action.LEDGER_REDO:
@@ -684,6 +691,7 @@ class Runner:
         handlers: dict[CardPhase, Callable[[_Context, CardState], None]] = {
             CardPhase.C1: self._c1_screen,
             CardPhase.C2: self._c2_prereg_pr,
+            CardPhase.C3: self._c3_waiting,
             CardPhase.C4: self._c4_running,
             CardPhase.C5: self._c5_paused,
             CardPhase.C7: self._c7_analysis,
@@ -696,14 +704,18 @@ class Runner:
         }
         try:
             self._poll_repro(ctx, card)
+            # 前の 1 歩がコミットの後に送れなかった PR を先に送る（送れるまで段を進めない）。
+            self._flush(ctx, card)
             if card.ending is not None:
                 self._finish_end(ctx, card)
+                self._flush(ctx, card)
                 return
             for _ in range(6):
                 before = card.phase
                 handler = handlers.get(_phase(card))
                 if handler is not None:
                     handler(ctx, card)
+                self._flush(ctx, card)
                 self._settle(ctx, card)
                 if card.phase == before:
                     break
@@ -748,8 +760,9 @@ class Runner:
         files[prereg_note_path(card.card_id, 1)] = prereg_note(prereg, checks)
         files[card_path("taken", card.card_id)] = raw
         files[queue_path] = None
-        number = self._open_routine_pr(
+        self._queue_pr(
             ctx,
+            card,
             files,
             prereg_pull(
                 card=card.card_id,
@@ -759,10 +772,10 @@ class Runner:
                 trials=prereg.trial_count,
                 files={path: body for path, body in files.items() if body is not None},
             ),
+            record={"kind": "prereg", "version": 1},
         )
         card.version = 1
         card.trial_counts["1"] = prereg.trial_count
-        card.pr = {"kind": "prereg", "number": number, "version": 1}
         card.retries.pop("TOOL_FAILURE", None)
         card.phase = CardPhase.C2.name
 
@@ -772,10 +785,13 @@ class Runner:
             ctx.notes.append(f"{card.card_id}: 道具の失敗（やり直す）: {detail}")
 
     def _reject(self, ctx: _Context, card: CardState, identifier: str, *, source: str) -> None:
-        """棄却の型（T3・T23・T25）: カードを done/ に移す定型 PR を作り、次のカードへ。"""
+        """棄却の型（T3・T23・T25）: カードを done/ に移す定型 PR を作り、次のカードへ。
+
+        PR のコミットを作ってから数える（コミットが作れずにやり直すとき、同じ棄却を 2 回数えない）。
+        """
+        self._open_done_pr(ctx, card, identifier, source=source)
         if identifier == CARD_PREREG_REJECTED:
             self._count_failure(ctx, FAIL_PREREG)
-        self._open_done_pr(ctx, card, identifier, source=source)
         card.outcome = identifier
         card.phase = CardPhase.C14.name
         self.events.add(ctx.now, "card_rejected", card=card.card_id, reason=identifier)
@@ -816,6 +832,15 @@ class Runner:
         return status
 
     # C3 起動待ち → C4（T7）は `_schedule` が行う。
+
+    def _c3_waiting(self, ctx: _Context, card: CardState) -> None:
+        """包みを呼んだ直後（状態を保存する前）に実行器が止まった run を引き取る（D25 §2.4 の
+        照合）。包みは `launch.json` を書いた後に戻るので、印があれば起動し直さない。"""
+        run = card.run or {}
+        if not run.get("launching_at") or run.get("version") != card.version:
+            return
+        if read_run(Path(run["version_dir"])).launched:
+            self._adopt_run(card)
 
     # C4 実行中（T8・T9・T10）
 
@@ -976,10 +1001,14 @@ class Runner:
                 "started_at": format_time(ctx.now),
                 "extra": dict(extra or {}),
             }
+            # 起動の前に「起動した」の印を保存する（起動の後に止まっても、次の 1 歩は同じ作業役の
+            # 終わりを見る。起動し直さない。D25 §2.4 の照合の (0)）。
             if card is not None:
                 card.procs[key] = proc
+                self.store.save_card(card)
             else:
                 ctx.state.ideator["running"] = proc
+                self.store.save_global(ctx.state)
             try:
                 self.ports.workers.launch(request)
             except WorkerUnavailable as exc:
@@ -1016,6 +1045,12 @@ class Runner:
             ctx.notes.append(f"{card.card_id}: 作業役 {role} をやり直す")
 
     def _c7_analysis(self, ctx: _Context, card: CardState) -> None:
+        pending = card.checks.get("pending_change")
+        if isinstance(pending, str):
+            # 前の 1 歩が受け取った変更の提案（事前登録の PR のコミットを作る前に道具が失敗した）:
+            # 分析役を起動し直さずに同じ提案から続ける。
+            self._improve(ctx, card, base64.b64decode(pending))
+            return
         extra = {"note": card.redo_note} if card.redo_note else None
         poll = self._worker(ctx, card, "analyst_change", extra)
         if poll is None:
@@ -1048,10 +1083,15 @@ class Runner:
         if card.version >= 3:
             self._stop_card(ctx, card, "CHANGE_OUT_OF_RULES", "版 3 の後は改善しない（決定 103）")
             return
+        card.checks["pending_change"] = base64.b64encode(output.raw).decode("ascii")
         self._improve(ctx, card, output.raw)
 
     def _improve(self, ctx: _Context, card: CardState, raw_change: bytes) -> None:
-        """段 6: 変更の提案を検査し、改善後の事前登録の定型 PR を作る（T17・T18）。"""
+        """段 6: 変更の提案を検査し、改善後の事前登録の定型 PR を作る（T17・T18）。
+
+        道具の失敗で戻るときは、受け取った提案（`checks["pending_change"]`）を残す。それ以外
+        （止まる・PR のコミットを作った）は提案を使い終えたものとして消す。
+        """
         view = self._view(ctx)
         raw_card = view.read(card_path("taken", card.card_id))
         if raw_card is None:
@@ -1065,6 +1105,7 @@ class Runner:
             self._tool_failure(ctx, card, str(exc))
             return
         if not screened.passed or screened.prereg is None or screened.verification is None:
+            card.checks.pop("pending_change", None)
             identifier = screened.reason or "CHANGE_OUT_OF_RULES"
             if identifier == "CHANGE_PREREG_REJECTED":
                 self._count_failure(ctx, FAIL_PREREG)
@@ -1073,6 +1114,7 @@ class Runner:
         try:
             checks = self.ports.evaluation.prepare(self.paths.exec_worktree, screened.verification)
         except PrepareFailed:
+            card.checks.pop("pending_change", None)
             self._count_failure(ctx, FAIL_PREREG)
             self._stop_card(ctx, card, "CHANGE_PREREG_REJECTED", "準備の確かめに通らない")
             return
@@ -1084,8 +1126,9 @@ class Runner:
         files: dict[str, bytes | None] = dict(prereg.files)
         files[change_path(card.card_id, version)] = raw_change
         files[prereg_note_path(card.card_id, version)] = prereg_note(prereg, checks)
-        number = self._open_routine_pr(
+        self._queue_pr(
             ctx,
+            card,
             files,
             prereg_pull(
                 card=card.card_id,
@@ -1095,10 +1138,11 @@ class Runner:
                 trials=prereg.trial_count,
                 files={path: body for path, body in files.items() if body is not None},
             ),
+            record={"kind": "prereg", "version": version},
         )
+        card.checks.pop("pending_change", None)
         card.version = version
         card.trial_counts[str(version)] = prereg.trial_count
-        card.pr = {"kind": "prereg", "number": number, "version": version}
         card.run = None
         card.phase = CardPhase.C2.name
 
@@ -1140,10 +1184,12 @@ class Runner:
                 self._tool_failure(ctx, card, str(exc))
                 return
             card.checks["gate"] = [[item, ok] for item, ok in result.items]
-            if not result.passed:
-                self.events.add(ctx.now, "gate_fail", card=card.card_id)
-                self._reject(ctx, card, "GATE_FAILED", source="taken")
-                return
+        # 結果は状態に残してから当てる（棄却の PR のコミットが作れずにやり直すとき、関門の不合格を
+        # 忘れて確かめ役へ進まない）。
+        if not all(ok for _, ok in card.checks["gate"]):
+            self._reject(ctx, card, "GATE_FAILED", source="taken")
+            self.events.add(ctx.now, "gate_fail", card=card.card_id)
+            return
         if "verifier" not in card.checks:
             poll = self._worker(ctx, card, "verifier")
             if poll is None:
@@ -1159,13 +1205,17 @@ class Runner:
                     card.checks.pop("gate", None)
                     card.phase = CardPhase.C8.name
                     return
-                self.events.add(ctx.now, "gate_fail", card=card.card_id)
-                self._reject(ctx, card, "VERIFIER_FAILED", source="taken")
-                return
-            card.checks["verifier"] = {"result": "PASS", "reasons": list(output.reasons)}
+            card.checks["verifier"] = {
+                "result": "PASS" if output.passed else "FAIL",
+                "reasons": list(output.reasons),
+            }
+        if card.checks["verifier"].get("result") != "PASS":
+            self._reject(ctx, card, "VERIFIER_FAILED", source="taken")
+            self.events.add(ctx.now, "gate_fail", card=card.card_id)
+            return
+        self._open_report_pr(ctx, card)
         self.events.add(ctx.now, "gate_pass", card=card.card_id)
         card.checks["gate_passed"] = True
-        self._open_report_pr(ctx, card)
         if "review" not in card.reservations:
             card.reservations.append("review")
         card.phase = CardPhase.C10.name
@@ -1209,8 +1259,9 @@ class Runner:
         if raw is not None:
             files[card_path("done", card.card_id)] = raw
             files[card_path("taken", card.card_id)] = None
-        number = self._open_routine_pr(
+        self._queue_pr(
             ctx,
+            card,
             files,
             report_pull(
                 card=card.card_id,
@@ -1219,9 +1270,9 @@ class Runner:
                 at=format_time(ctx.now),
                 files={path: body for path, body in files.items() if body is not None},
             ),
+            record={"kind": "report", "version": card.version},
         )
         card.outcome = "REPORTED"
-        card.pr = {"kind": "report", "number": number, "version": card.version}
         self._after_done(ctx)
 
     # C10 入口・審査中（T26〜T30）
@@ -1339,7 +1390,8 @@ class Runner:
                 card.procs.pop("fix", None)
                 self._tool_failure(ctx, card, "固定の前の確かめが途中で止まった")
             return
-        card.procs.pop("fix", None)
+        if code != 0:
+            card.procs.pop("fix", None)
         if code == 8:
             card.fix_retry_after = format_time(ctx.now + FIX_DEFER)
             return
@@ -1351,11 +1403,11 @@ class Runner:
             return
         records = self.ports.git.exec_untracked(CANDIDATE_FIXES)
         if len(records) != 1:
+            card.procs.pop("fix", None)
             self._stop_card(ctx, card, "FIXATION_CHECK_FAILED", "固定の記録が 1 つに決まらない")
             return
         record = self.paths.exec_worktree / records[0]
         body = record.read_bytes()
-        record.unlink()
         output = Path(proc["state_dir"]) / "output.log"
         lines = output.read_text(encoding="utf-8").splitlines() if output.is_file() else []
         text = fix_pull(
@@ -1365,12 +1417,19 @@ class Runner:
             at=format_time(ctx.now),
             check_lines=lines,
         )
-        commit = self.ports.git.commit_files(
-            base=ctx.origin, files={records[0]: body}, message=text.title
+        # 固定の記録をコミットにして送信待ちを状態に残してから、処理を外し、作業木から消す
+        # （送信が失敗しても、固定の前の確かめを走らせ直さずに同じコミットを送り直す）。
+        self._queue_pr(
+            ctx,
+            card,
+            {records[0]: body},
+            text,
+            record={"target": "fix"},
+            auto=False,
         )
-        self.ports.git.push_branch(commit, text.branch)
-        number = self.ports.github.create_pr(branch=text.branch, title=text.title, body=text.body)
-        card.checks["fix_pr"] = number
+        card.procs.pop("fix", None)
+        self.store.save_card(card)
+        record.unlink()
 
     # C12 最終検証中（T35〜T38）
 
@@ -1396,9 +1455,13 @@ class Runner:
             card.checks["final_merged"] = True
         if card.checks.get("final_merged"):
             git = self.ports.git
-            if git.main_file_matches(FINAL_LEDGER, ctx.origin):
+            matches = git.main_file_matches(FINAL_LEDGER, ctx.origin)
+            if matches:
                 git.main_restore(FINAL_LEDGER)
-                checkout = git.main_checkout()
+            checkout = git.main_checkout()
+            # 戻しの後に（早送りの前に）実行器が止まったときは、主の作業木に変更が無い
+            # （戻しは済んでいる）ので、そのまま早送りへ進む。
+            if matches or checkout.clean:
                 if checkout.clean and git.is_ancestor(checkout.head, ctx.origin):
                     git.main_fast_forward(ctx.origin)
                 card.checks.pop("final_merged", None)
@@ -1409,7 +1472,7 @@ class Runner:
         self._poll_done_pr(ctx, card)
         info = card.executions.get(str(card.version), {})
         eid, execution = str(info.get("experiment_id")), int(info.get("execution", 0))
-        if card.checks.pop("final_recovered", False):
+        if card.checks.get("final_recovered"):
             self._open_final_pr(ctx, card, execution)
             return
         proc = card.procs.get("final")
@@ -1425,10 +1488,13 @@ class Runner:
                 card.procs.pop("final", None)
                 self._stop_card(ctx, card, "FINAL_VALIDATION_FAILED", "プロセスが消えた")
                 return
-        card.procs.pop("final", None)
         if code == 0:
+            # 記録の PR のコミットと送信待ちを状態に残してから処理を外す（コミットか送信が
+            # 失敗しても、次の 1 歩が同じ終わりから作り直すか送り直す。Codex 3 巡目の指摘 1）。
             self._open_final_pr(ctx, card, execution)
+            card.procs.pop("final", None)
             return
+        card.procs.pop("final", None)
         if code in FINAL_STATE_A and not self._final_consumed_on_origin(ctx, card):
             if self._retry_or_stop(ctx, card, "FINAL_VALIDATION_FAILED", key="FINAL_STATE_A"):
                 card.reservations.append("final")
@@ -1452,8 +1518,8 @@ class Runner:
             lines=len(data.splitlines()) - len(before.splitlines()),
             files={FINAL_LEDGER: data},
         )
-        number = self._open_pr(ctx, files, text, auto=True)
-        card.pr = {"kind": "final", "number": number, "version": card.version}
+        self._queue_pr(ctx, card, files, text, record={"kind": "final", "version": card.version})
+        card.checks.pop("final_recovered", None)
 
     # C14 終わり
 
@@ -1479,7 +1545,8 @@ class Runner:
         card.ending = identifier
         card.reservations = []
         self._terminate(card)
-        self._finish_end(ctx, card)
+        # 終わりの確かめと done/ への PR は、同じ 1 歩のカードの段（`_advance`）が行う（送信待ちの
+        # PR を先に送り、道具の失敗もカードの段で数える）。
         return True
 
     def _groups(self, card: CardState) -> list[int]:
@@ -1490,8 +1557,8 @@ class Runner:
             if files.run_pid is not None:
                 groups.append(files.run_pid)
         for proc in card.procs.values():
-            pid = proc.get("pid")
-            if isinstance(pid, int):
+            pid = self._proc_pid(proc)
+            if pid is not None:
                 groups.append(pid)
         return groups
 
@@ -1507,7 +1574,6 @@ class Runner:
         if any(self.ports.procs.alive(group) for group in self._groups(card)):
             return  # 終わったことを確かめられるまで C13 のまま
         outcome = card.ending or "HUMAN_ENDED"
-        card.ending = None
         card.procs = {}
         if card.run is not None:
             interrupted = bool(card.run.get("launched_at")) and not card.run.get("finished")
@@ -1528,6 +1594,8 @@ class Runner:
             card.pr = None
         if source is not None:
             self._open_done_pr(ctx, card, outcome, source=source)
+        # PR のコミットを作った後に「終える」の途中の印を外す（作れなければ次の 1 歩でやり直す）。
+        card.ending = None
         card.outcome = outcome
         self._finish(ctx, card, outcome)
         self._after_done(ctx)
@@ -1551,8 +1619,9 @@ class Runner:
                 experiment = parse_card(raw).experiment_id
             except CardFormatError:
                 experiment = ""
-        number = self._open_routine_pr(
+        self._queue_pr(
             ctx,
+            card,
             files,
             report_pull(
                 card=card.card_id,
@@ -1561,8 +1630,8 @@ class Runner:
                 at=format_time(ctx.now),
                 files={path: body for path, body in files.items() if body is not None},
             ),
+            record={"kind": "done", "version": card.version},
         )
-        card.pr = {"kind": "done", "number": number, "version": card.version}
 
     # --- 元の実験の再現（決定 107。T16） -------------------------------------------------
 
@@ -1627,28 +1696,97 @@ class Runner:
         except (OSError, ValueError):
             return None
 
-    def _proc_alive(self, ctx: _Context, proc: Mapping[str, Any]) -> bool:
+    def _proc_pid(self, proc: dict[str, Any]) -> int | None:
+        """処理の PID。状態に無ければ（起動の後、保存の前に実行器が止まった）、包みが最初に書く
+        `pid.txt` から補う（D25 §2.4 の起動し直したときの照合）。"""
         pid = proc.get("pid")
-        if isinstance(pid, int) and self.ports.procs.alive(pid):
-            return True
-        return ctx.now - parse_time(str(proc["started_at"])) < LAUNCH_GRACE and pid is None
+        if isinstance(pid, int):
+            return pid
+        state_dir = proc.get("state_dir")
+        if not state_dir:
+            return None
+        try:
+            found = int((Path(str(state_dir)) / "pid.txt").read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+        proc["pid"] = found
+        return found
+
+    def _proc_alive(self, ctx: _Context, proc: dict[str, Any]) -> bool:
+        pid = self._proc_pid(proc)
+        if pid is not None:
+            return self.ports.procs.alive(pid)
+        # 包みがまだ PID を書いていない（起動の直後）: 猶予の間だけ生きているとみなす（仮置き 5）。
+        return ctx.now - parse_time(str(proc["started_at"])) < LAUNCH_GRACE
 
     # --- 定型 PR -------------------------------------------------------------------------
 
-    def _open_pr(
-        self, ctx: _Context, files: Mapping[str, bytes | None], text: PullText, *, auto: bool
-    ) -> int:
+    def _prepare_pr(
+        self,
+        ctx: _Context,
+        files: Mapping[str, bytes | None],
+        text: PullText,
+        *,
+        auto: bool,
+        record: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """PR のコミットを作り（作業木に触れない）、送るための記録を返す。送るのは `_deliver`。"""
         commit = self.ports.git.commit_files(base=ctx.origin, files=files, message=text.title)
-        self.ports.git.push_branch(commit, text.branch)
-        number = self.ports.github.create_pr(branch=text.branch, title=text.title, body=text.body)
-        if auto:
+        return {
+            "commit": commit,
+            "branch": text.branch,
+            "title": text.title,
+            "body": text.body,
+            "auto": auto,
+            "record": dict(record),
+        }
+
+    def _deliver(self, sending: Mapping[str, Any]) -> int:
+        """記録したコミットを push して PR を作る（同じ枝の開いた PR があればそれを使う）。何度
+        呼んでも同じ結果になる（push は同じコミット、自動 merge の指定は何度でもよい）。"""
+        self.ports.git.push_branch(str(sending["commit"]), str(sending["branch"]))
+        number = self.ports.github.create_pr(
+            branch=str(sending["branch"]), title=str(sending["title"]), body=str(sending["body"])
+        )
+        if sending.get("auto"):
             self.ports.github.enable_auto_merge(number)
         return number
 
-    def _open_routine_pr(
-        self, ctx: _Context, files: Mapping[str, bytes | None], text: PullText
-    ) -> int:
-        return self._open_pr(ctx, files, text, auto=True)
+    def _queue_pr(
+        self,
+        ctx: _Context,
+        card: CardState,
+        files: Mapping[str, bytes | None],
+        text: PullText,
+        *,
+        record: Mapping[str, Any],
+        auto: bool = True,
+    ) -> None:
+        """カードの PR のコミットを作り、送信待ちとして状態に置く（送るのは同じ段の後の `_flush`）。
+
+        段の状態の変化（次の段への移り）は呼び手が続けて行い、送信が失敗しても状態に残る
+        （次の 1 歩が同じコミットを送り直す。作り直さない）。
+        """
+        if card.sending is not None:
+            raise ToolFailure(f"{card.card_id}: 前の PR の送信が終わっていない")
+        card.sending = self._prepare_pr(ctx, files, text, auto=auto, record=record)
+
+    def _flush(self, ctx: _Context, card: CardState) -> None:
+        """送信待ちの PR を送る。送る前に状態を保存する（push の後に止まっても同じコミットを
+        送る）。"""
+        sending = card.sending
+        if sending is None:
+            return
+        self.store.save_card(card)
+        number = self._deliver(sending)
+        record = dict(sending.get("record") or {})
+        target = record.pop("target", "pr")
+        if target == "fix":
+            card.checks["fix_pr"] = number
+        else:
+            card.pr = {**record, "number": number}
+        card.sending = None
+        card.retries.pop("TOOL_FAILURE", None)
 
     # --- 実行記録の定型 PR（枝 runner/exec。D25 §6.1） ---------------------------------------
 
@@ -1697,6 +1835,22 @@ class Runner:
                 if self._retry_or_stop(ctx, card, "CI_FAILED", key=f"CI_FAILED:{number}"):
                     self.ports.github.rerun_checks(number)
             return
+        if state.exec_sending is not None and state.exec_sending.get("commit") is None:
+            # コミットの直前に印を書いた後に止まった: コミットが出来ていれば（先頭が印の前の先頭の
+            # 子で、origin に無い）それを送る。出来ていなければ印を外し、要求から作り直す。
+            sending = state.exec_sending
+            git = self.ports.git
+            head = git.exec_head()
+            parent = str(sending.get("parent") or "")
+            if (
+                parent
+                and head != parent
+                and git.is_ancestor(parent, head)
+                and not git.is_ancestor(head, ctx.origin)
+            ):
+                sending["commit"] = head
+            else:
+                state.exec_sending = None
         if state.exec_sending is not None:
             # 前の 1 歩がコミットした後に push か PR の作成で止まった: コミットし直さずに続ける。
             sending = state.exec_sending
@@ -1761,27 +1915,41 @@ class Runner:
         if not paths:
             card.checks["ledger_committed"] = True
             return False
-        git.exec_commit(paths, f"[runner] {card.card_id} v{version} の実行記録")
+        # コミットの直前に印を書き残す（コミットの後、印にコミットを書く前に止まっても、次の
+        # 1 歩がそのコミットを見つけて送る。merge 済みと取り違えない）。
+        ctx.state.exec_sending = {
+            **dict(request),
+            "paths": list(paths),
+            "parent": git.exec_head(),
+            "commit": None,
+        }
+        self.store.save_global(ctx.state)
+        commit = git.exec_commit(paths, f"[runner] {card.card_id} v{version} の実行記録")
+        committed = git.snapshot(commit)
         for path in paths:
-            data = self._exec_file(path)
+            data = committed.read(path)
             if path in _LEDGER_FILES and data and not data.endswith(b"\n"):
                 git.exec_undo_commit()
+                ctx.state.exec_sending = None
                 return None
-        # コミットした後の送信の段を先に書き残す（push・PR の作成が止まっても、次の 1 歩が
+        # コミットを送信待ちに書き残す（push・PR の作成が止まっても、次の 1 歩が
         # コミットし直さずに push から続ける）。
-        ctx.state.exec_sending = {**dict(request), "paths": list(paths)}
+        ctx.state.exec_sending["commit"] = commit
         self.store.save_global(ctx.state)
         return self._send_exec(ctx, card)
 
     def _send_exec(self, ctx: _Context, card: CardState) -> bool:
         """コミット済みの実行記録を push し、実行記録の定型 PR を作る（同じ枝の開いた PR が
-        あればそれを使う）。"""
+        あればそれを使う）。本文の SHA-256 と行数は、作業木ではなくコミットの中身から作る
+        （コミットの後に台帳へ行が足されても、push した中身と本文が食い違わない。Codex 3 巡目の
+        指摘 2）。"""
         git = self.ports.git
         sending = ctx.state.exec_sending or {}
         paths = [str(path) for path in sending.get("paths", [])]
         version = int(sending["version"])
+        committed = git.snapshot(str(sending["commit"]))
         git.exec_push()
-        files = {path: self._exec_file(path) or b"" for path in paths}
+        files = {path: committed.read(path) or b"" for path in paths}
         view = self._view(ctx)
         lines = sum(
             len((files[path]).splitlines()) - len((view.read(path) or b"").splitlines())
@@ -1928,6 +2096,9 @@ class Runner:
         git = self.ports.git
         if not self._ledger_quiet():
             return False
+        if ctx.state.exec_sending is not None:
+            # 実行記録のコミットか送信の途中: 先頭を早送りしない（送信待ちのコミットを見失わない）。
+            return False
         dirty = [path for path in git.exec_dirty_paths() if path in _LEDGER_FILES]
         running = [
             card
@@ -1986,20 +2157,14 @@ class Runner:
         version_dir = self.paths.version_dir(card.experiment, card.version)
         trials = int(card.trial_counts.get(str(card.version), 1))
         estimate = estimate_seconds(trials)
-        code = self.ports.wrapper.launch(
-            experiment=experiment_path(card.experiment, card.version),
-            worktree=self.paths.exec_worktree,
-            repo=self.paths.repo,
-            mode=mode,
-        )
-        if code != 0:
-            self._tool_failure(ctx, card, f"実行の包みが起動を拒否した（終了コード {code}）")
-            return
+        # 包みを呼ぶ前に「起動する」の印を書き残す（包みが run を起動した後、状態を保存する前に
+        # 実行器が止まっても、次の 1 歩が `launch.json` から引き取る。`_c3_waiting`）。
         card.run = {
             "version": card.version,
             "attempt": int(run.get("attempt", 1)) if run.get("version") == card.version else 1,
             "version_dir": str(version_dir),
-            "launched_at": format_time(ctx.now),
+            "launched_at": None,
+            "launching_at": format_time(ctx.now),
             "launch_commit": head,
             "paused_since": None,
             "paused_seconds": 0,
@@ -2010,6 +2175,24 @@ class Runner:
             "run_pid": None,
             "finished": False,
         }
+        self.store.save_card(card)
+        code = self.ports.wrapper.launch(
+            experiment=experiment_path(card.experiment, card.version),
+            worktree=self.paths.exec_worktree,
+            repo=self.paths.repo,
+            mode=mode,
+        )
+        if code != 0:
+            card.run.pop("launching_at", None)
+            self._tool_failure(ctx, card, f"実行の包みが起動を拒否した（終了コード {code}）")
+            return
+        self._adopt_run(card)
+
+    def _adopt_run(self, card: CardState) -> None:
+        """起動した run を状態に入れる（C3 → C4。T7）。"""
+        run = card.run or {}
+        run["launched_at"] = run.pop("launching_at")
+        card.run = run
         card.retries.pop("TOOL_FAILURE", None)
         card.phase = CardPhase.C4.name
 
@@ -2119,6 +2302,8 @@ class Runner:
 
     def _auto_delete(self, ctx: _Context) -> None:
         listed: list[dict[str, Any]] = []
+        stamp = ctx.now.strftime("%Y%m%dT%H%M%SZ")
+        listing = self.paths.deleted_dir / f"{stamp}.jsonl"
         for card_id in ctx.state.cards:
             card = ctx.cards.get(card_id)
             if card is None or not card.checks.get("gate_passed"):
@@ -2128,7 +2313,7 @@ class Runner:
             for version in range(1, card.version + 1):
                 if version in deleted or (version == card.version and last_open):
                     continue
-                listed += self._delete_version(card, version)
+                listed += self._delete_version(card, version, listing)
                 deleted.add(version)
                 card.checks["deleted_versions"] = sorted(deleted)
                 if self.ports.system.free_disk_bytes(self.paths.repo) >= DISK_FLOOR_BYTES:
@@ -2136,12 +2321,6 @@ class Runner:
             if self.ports.system.free_disk_bytes(self.paths.repo) >= DISK_FLOOR_BYTES:
                 break
         if listed:
-            stamp = ctx.now.strftime("%Y%m%dT%H%M%SZ")
-            self.paths.deleted_dir.mkdir(parents=True, exist_ok=True)
-            path = self.paths.deleted_dir / f"{stamp}.jsonl"
-            with path.open("a", encoding="utf-8") as handle:
-                for item in listed:
-                    handle.write(_json_line(item))
             self.events.add(
                 ctx.now,
                 "deleted",
@@ -2149,7 +2328,9 @@ class Runner:
                 bytes=sum(int(item["size"]) for item in listed),
             )
 
-    def _delete_version(self, card: CardState, version: int) -> list[dict[str, Any]]:
+    def _delete_version(self, card: CardState, version: int, listing: Path) -> list[dict[str, Any]]:
+        """版の中間の出力を消す。消す前に一覧（パス・大きさ・SHA-256）を書き足す（消した後、
+        一覧を書く前に実行器が止まっても、一覧を失わない。決定 147）。"""
         version_dir = self.paths.version_dir(card.experiment, version)
         targets = [
             self.paths.repo / "runs" / run_id
@@ -2160,16 +2341,24 @@ class Runner:
         for target in targets:
             if not target.is_dir():
                 continue
+            items = []
             for path in sorted(item for item in target.rglob("*") if item.is_file()):
                 data = path.read_bytes()
-                listed.append(
+                items.append(
                     {
                         "path": path.relative_to(self.paths.repo).as_posix(),
                         "size": len(data),
                         "sha256": _sha(data),
                     }
                 )
+            listing.parent.mkdir(parents=True, exist_ok=True)
+            with listing.open("a", encoding="utf-8") as handle:
+                for item in items:
+                    handle.write(_json_line(item))
+                handle.flush()
+                os.fsync(handle.fileno())
             shutil.rmtree(target)
+            listed += items
         return listed
 
     # --- 取り出し（D25 §3.6。決定 151） ---------------------------------------------------------
@@ -2213,7 +2402,11 @@ class Runner:
         ideator = ctx.state.ideator
         running = ideator.get("running")
         if running is None:
-            if self._stopped(ctx) or ctx.state.cards_pr is not None:
+            if (
+                self._stopped(ctx)
+                or ctx.state.cards_pr is not None
+                or ctx.state.cards_sending is not None
+            ):
                 return
             view = self._view(ctx)
             capacity = ai_capacity(view)
@@ -2270,8 +2463,12 @@ class Runner:
                 at=format_time(ctx.now),
                 files={path: body for path, body in files.items() if body is not None},
             )
-            number = self._open_pr(ctx, files, text, auto=True)
-            ctx.state.cards_pr = {"number": number, "cards": sorted(accepted)}
+            # コミットと送信待ちを全体の状態に残してから送る（送信が失敗しても、受け取ったカードを
+            # 失わずに次の 1 歩が送り直す。`_cards_pr`）。
+            ctx.state.cards_sending = self._prepare_pr(
+                ctx, files, text, auto=True, record={"cards": sorted(accepted)}
+            )
+            self._flush_cards(ctx)
         elif trigger in {"queue_empty", "extra"} and not self._has_takeable(ctx):
             self._stop_global(ctx, "QUEUE_EMPTY")
 
@@ -2315,7 +2512,18 @@ class Runner:
             return None
         return card_id, raw
 
+    def _flush_cards(self, ctx: _Context) -> None:
+        sending = ctx.state.cards_sending
+        if sending is None:
+            return
+        self.store.save_global(ctx.state)
+        number = self._deliver(sending)
+        cards = list((sending.get("record") or {}).get("cards", []))
+        ctx.state.cards_pr = {"number": number, "cards": cards}
+        ctx.state.cards_sending = None
+
     def _cards_pr(self, ctx: _Context) -> None:
+        self._flush_cards(ctx)
         pull = ctx.state.cards_pr
         if pull is None:
             return
