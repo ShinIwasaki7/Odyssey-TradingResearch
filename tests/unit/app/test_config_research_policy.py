@@ -71,6 +71,7 @@ def test_the_repository_policies_match_the_repository_registry() -> None:
 
     2026-10-21 改訂: 版 3（研究ポリシー第 3 版。用途 STANDARD）を登録した（D13 §8.4 の (4)）。
     2026-11-05 改訂: 版 4（研究ポリシー第 4 版。用途 STANDARD）を登録した（D18 §1.2）。
+    2026-11-17 改訂: 版 5（研究ポリシー第 5 版。用途 STANDARD）を登録した（D24 §8.2）。
     """
     entries = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
     assert [(item.policy_id, item.version, item.purpose) for item in entries] == [
@@ -78,6 +79,7 @@ def test_the_repository_policies_match_the_repository_registry() -> None:
         ("research_policy", 2, None),
         ("research_policy", 3, StandardPurpose.STANDARD),
         ("research_policy", 4, StandardPurpose.STANDARD),
+        ("research_policy", 5, StandardPurpose.STANDARD),
     ]
     v1 = load_research_policy(
         research_policy_path(REPO_ROOT, "research_policy", 1),
@@ -111,7 +113,15 @@ def test_the_repository_policies_match_the_repository_registry() -> None:
         repo_root=REPO_ROOT,
     )
     assert verify_registered(v4, entries, registry_path=registry).version == 4
-    assert current_standard_version(entries, "research_policy") == 4
+    # 版 5（D24 の決定）の登録で、現行の版は版 5 になった（版 4 は旧版。決定 142）。
+    v5 = load_research_policy(
+        research_policy_path(REPO_ROOT, "research_policy", 5),
+        policy_id="research_policy",
+        version=5,
+        repo_root=REPO_ROOT,
+    )
+    assert verify_registered(v5, entries, registry_path=registry).version == 5
+    assert current_standard_version(entries, "research_policy") == 5
 
 
 _V1 = (

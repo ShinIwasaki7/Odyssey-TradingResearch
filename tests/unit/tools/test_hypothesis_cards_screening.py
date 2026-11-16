@@ -1,8 +1,8 @@
 """カードの機械の検査 1〜7（D25 §3.5、決定 173、仮置き 29）と、既出の規則の正規化の試験。
 
-人工のカード（`tests/fixtures/hypothesis_cards.py`）を、本物のリポジトリの設定（研究ポリシー
-第 4 版・型板・部品のカタログ・既存の戦略の宣言）に当てる。生成物はファイルに書かない。snapshot も
-成績も読まない。
+人工のカード（`tests/fixtures/hypothesis_cards.py`）を、本物のリポジトリの設定（研究ポリシーの
+現行の版（2026-11-17 の登録の後は第 5 版）・型板・部品のカタログ・既存の戦略の宣言）に当てる。
+生成物はファイルに書かない。snapshot も成績も読まない。
 """
 
 from __future__ import annotations
@@ -112,11 +112,27 @@ def test_a_declaration_that_does_not_compile_is_rejected_at_check_seven() -> Non
     assert any("コンパイル" in item or "読込" in item for item in problems)
 
 
+def _registry_without_v5() -> bytes:
+    """リポジトリの登録簿から第 5 版の行を除いた本文（第 5 版の登録の前の時点。D24 §8.2）。"""
+    path = "configs/policies/research/registry.yaml"
+    lines = (REPO_ROOT / path).read_bytes().splitlines(keepends=True)
+    kept = [line for line in lines if b"version: 5," not in line]
+    assert len(kept) == len(lines) - 1
+    return b"".join(kept)
+
+
 def test_favored_regimes_need_policy_version_five() -> None:
-    """第 4 版を指す実験は得意な局面を書けない（D24 の検査 E12）ので、今の登録簿では 7 で落ちる。"""
+    """第 4 版を指す実験は得意な局面を書けない（D24 の検査 E12）ので、第 5 版の登録の前は
+    検査 7 で落ちる。
+
+    2026-11-17 改訂: 第 5 版を登録した（D24 §8.2）ので、今の登録簿では検査 7 を通る。登録の前の
+    時点は、登録簿から第 5 版の行を除いた時点で確かめる。
+    """
     data = card_data()
     data["favored_regimes"] = ["UP_HIGH"]
-    assert _screen(data)[0] == CARD_PREREG_REJECTED
+    before = OverlayView(VIEW, {"configs/policies/research/registry.yaml": _registry_without_v5()})
+    assert _screen(data, before)[0] == CARD_PREREG_REJECTED
+    assert _screen(data)[0] is None
 
 
 def test_identifier_collisions_are_card_format() -> None:

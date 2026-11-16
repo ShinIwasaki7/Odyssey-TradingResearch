@@ -139,18 +139,21 @@ def _h2_started(experiment: str) -> TrialLedgerEntry:
 def test_r5_the_step5_h2_executions_also_point_at_a_policy_version_that_is_not_current(
     experiment: str,
 ) -> None:
-    """R5: H2 は第 3 版を指し、版管理の登録簿の「現行の版」は第 4 版（決定 40）。
+    """R5: H2 は第 3 版を指し、版管理の登録簿の「現行の版」は第 4 版以降（決定 40）。
 
     判定を `MEETS_STANDARD` に置いた人工の結末の行でも、入口の順 6 で
     `ENTRY_POLICY_NOT_CURRENT` により止まる。第 4 版の要素を除いた登録簿では順 6 を通る
     （止まる原因が第 4 版の登録であることの対照）。実際の拒否の理由（順 5）は
     `test_the_step5_h2_executions_do_not_proceed` が確かめる。
+
+    2026-11-17 改訂: 第 5 版を登録した（D24 §8.2、決定 142）ので現行の版は第 5 版になり、
+    対照は第 4 版と第 5 版の要素を除いた登録簿にした。
     """
     opening = _h2_started(experiment)
     refs = {basis.research_policy_ref for _, basis in opening.basis.items()}
     assert {(ref.policy_id, ref.version) for ref in refs} == {("research_policy", 3)}
     registry = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
-    assert current_standard_version(registry, "research_policy") == 4
+    assert current_standard_version(registry, "research_policy") == 5
     lines = chain([opening, finished(opening, verdict=SearchVerdict.MEETS_STANDARD)])
     rules = load_adoption_review_registry(adoption_review_registry_path(REPO_ROOT))
     target = ExperimentId(ContentDigest.sha256(experiment))
@@ -166,7 +169,7 @@ def test_r5_the_step5_h2_executions_also_point_at_a_policy_version_that_is_not_c
         )
 
     assert entrance(registry) == EntranceRejected(ReviewReason.ENTRY_POLICY_NOT_CURRENT)
-    without_v4 = tuple(item for item in registry if item.version != 4)
+    without_v4 = tuple(item for item in registry if item.version not in (4, 5))
     assert isinstance(entrance(without_v4), EntranceAccepted)
 
 

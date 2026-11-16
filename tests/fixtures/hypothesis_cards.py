@@ -7,7 +7,8 @@
 - `workspace`: テストの中のリポジトリの根に、`configs/` の全体と、現行の研究ポリシーの前提のファイル
   を写す（`load_experiment_v2` が実ファイルと照合する。D18 §3.4）。
 - `install_policy_v5`: 作業場に試験用の第 5 版を置き、登録簿に足す（第 4 版の本文に、第 5 版の
-  損失の側の 3 群と局面の値を足したもの。研究ポリシーではない）。
+  損失の側の 3 群と局面の値を足したもの。研究ポリシーではない）。作業場の登録簿に第 5 版が既に
+  登録されていれば何もしない（登録の PR の後。D24 §8.2）。
 - `run_record`: 一巡の実行記録 `run_v<版>.yaml` の人工の本文（系譜の材料）。
 """
 
@@ -19,6 +20,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from odyssey_fx.app.config.loader import load_yaml_mapping
+from odyssey_fx.app.config.research_policy import (
+    load_research_policy_registry,
+    research_policy_registry_path,
+)
 from tests.fixtures.evaluation.research_policies import (
     TEST_REGIMES,
     TEST_VALIDATION_V5_GROUPS,
@@ -180,7 +185,18 @@ def workspace(root: Path) -> Path:
 
 
 def install_policy_v5(root: Path) -> None:
-    """試験用の第 5 版を置き、登録簿に用途 STANDARD で足す（研究ポリシーではない）。"""
+    """試験用の第 5 版を置き、登録簿に用途 STANDARD で足す（研究ポリシーではない）。
+
+    作業場の登録簿に第 5 版の行が既にある（`workspace` が写したリポジトリの登録簿に、登録の PR で
+    第 5 版を足した後。D24 §8.2）なら、何も足さずに登録済みの第 5 版を使う（同じ版の行を 2 つ
+    作らない。D09 §10.9 の主キー）。
+    """
+    registry = research_policy_registry_path(root)
+    if registry.exists() and any(
+        (entry.policy_id, entry.version) == ("research_policy", 5)
+        for entry in load_research_policy_registry(registry)
+    ):
+        return
     text = (root / _POLICY_V4).read_text(encoding="utf-8")
     assert text.count("\nversion: 4\n") == 1
     text = text.replace("\nversion: 4\n", "\nversion: 5\n")
