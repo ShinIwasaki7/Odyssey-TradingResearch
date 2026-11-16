@@ -19,7 +19,9 @@ Codex 応答の取得は [tools/ops/codex_review_poll.py](../../../tools/ops/cod
 ## 手順
 
 1. **PR 種別を判定する**（設計文書のみ / 骨格・ツール / 実装）。**Codex review はどの種別でも必須**。
-   → 方針文書 §2
+   例外は 2 つだけ: 研究の実行器の定型 PR（枝が `runner/`）は Codex を求めず CI の合格で merge
+   （ADR-0043）。候補の固定の記録の PR（枝が `candidate-fix/`）は Codex を求めず人間が merge
+   （決定 187）。どちらもこの手順の 2 以降を当てない。→ 方針文書 §2・§7 の 2026-11-15・2026-11-16 の例外
 2. **PR を作る**。`gh pr create --base main`。本文に成果物一覧・検証結果・仮置き事項・レビュー対象範囲を書く。
    → 方針文書 §3.1（範囲の書き方）・§6（仮置き）
 3. **検証を通す**。`uv sync` → `uv run ruff check .` → `uv run ruff format --check .`

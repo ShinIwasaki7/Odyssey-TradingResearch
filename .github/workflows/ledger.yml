@@ -1,0 +1,54 @@
+name: Ledger and routine PR
+
+# 台帳と定型 PR の CI の段（D25 §6.3 の 8 項目。ADR-0043 第2項の 2・4。順 11 の PR 6）。
+# 中身は tools/ops/runner_ci/。既存の CI（ci.yml）と別のワークフローにするのは、PR の題・本文の
+# 編集と自動 merge の指定・外しの出来事でもこの段だけを走らせ直す（検査 7・8）ためである
+# （ci.yml の取り消しの組に入れると、編集のたびに走っている試験が取り消される）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - auto_merge_enabled
+      - auto_merge_disabled
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ledger-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    name: ledger / routine PR checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # 基点（PR の base、push の before）の台帳をバイト単位で比べるため、履歴を取る。
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12.13
+        run: uv python install 3.12.13
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: ledger and routine PR checks (D25 §6.3)
+        run: >-
+          uv run python -m tools.ops.runner_ci
+          --repo .
+          --event-name "${{ github.event_name }}"
+          --event-path "$GITHUB_EVENT_PATH"
