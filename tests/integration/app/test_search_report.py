@@ -74,7 +74,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialPhase,
     TrialUnitKey,
 )
-from odyssey_fx.evaluation.domain.variant import Variant
+from odyssey_fx.evaluation.domain.variant import VARIANTS, Variant
 from tests.fixtures.acceptance.t02_workspace import (
     T02Workspace,
     build_workspace,
@@ -119,6 +119,12 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> T02Workspace:
     text = policy_v3_text(
         version=6,
         replace={"split": TWO_FOLD_SPLIT, "purpose": "  purpose: STANDARD", "basis": basis},
+    )
+    # 版 6 は版 5 の形。経路の全体の水準に PROFIT_FACTOR ≥ 1.2（D24 §7.1 の値の写し）も書く。
+    line = '        - {metric: NET_RETURN_RATE, comparator: GE, threshold: "-1"}'
+    assert text.count(line) == 1
+    text = text.replace(
+        line, line + '\n        - {metric: PROFIT_FACTOR, comparator: GE, threshold: "1.2"}'
     )
     write_policy(built.repo, "research_policy", 6, text)
     append_registry_entry(built.repo, "research_policy", 6)
@@ -889,3 +895,45 @@ def test_reproduce_refuses_a_search_experiment_without_an_outcome(
     assert code == 2, stdout + stderr
     assert "結末記録が無い" in stderr
     assert not (target / "reproduction.json").exists()
+
+
+# --- 研究ポリシーの版 5 以上の判定と表示（D24 §3・§4・§9。実装 PR 4-2）-------------------------
+
+
+def test_a_v5_search_records_the_loss_side_conditions_and_shows_them(
+    workspace: T02Workspace, base: _Base, tmp_path: Path
+) -> None:
+    """版 5 の形の試験用の版 6 で、実際の run の成果物から経路の取引の集合（恒等式つき）・近傍の
+    床・損失の集中・割り引いた確率を組み立てて結末記録に残し、レポートの順 2・3・5 に出す。
+    判定の値そのもの（人工データの成績）は確かめない。"""
+    out = _seeded(base, tmp_path)
+    code, output = _run(workspace, out, "lossside", policy_version=6)
+    assert code == 0, output
+    directory = _version(out, "lossside")
+    outcome = read_experiment_outcome(directory)
+    assert outcome is not None and outcome.search is not None
+    for variant in VARIANTS:
+        result = outcome.search.variants.of(variant)
+        kinds = {type(item).__name__ for item in result.condition_results}
+        assert {
+            "NeighborConditionResult",
+            "ProfitFactorResult",
+            "LossConcentrationResult",
+            "DeflatedDownsideResult",
+        } <= kinds
+        path = result.path
+        assert type(path).__name__ == "PathSummaryV5"
+        trades = getattr(path, "trades", None)
+        assert trades is not None
+        assert trades.closed_count == path.trade_count
+        assert trades.settlement_count == sum(row.settlement_count for row in path.segments)
+    text = (directory / "report.md").read_text(encoding="utf-8")
+    assert "当てなかった条件" in _section(text, 2)
+    assert "近傍の床（選定区間。判定に使う。D24 §3.5）" in _section(text, 3)
+    aggregate = _section(text, 5)
+    for heading in (
+        "経路の取引の集合と PROFIT_FACTOR",
+        "損失の集中（D24 §3.4）",
+        "試行数で割り引いた確率",
+    ):
+        assert heading in aggregate

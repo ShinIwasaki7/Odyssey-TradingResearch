@@ -35,6 +35,7 @@ from odyssey_fx.common.refs import CompiledStrategyRef, ConfigDigest, ContentDig
 from odyssey_fx.common.refs import run_id as run_id_of
 from odyssey_fx.common.time import Interval
 from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, equity_series
+from odyssey_fx.evaluation.application.loss_side import loss_side_evidence, path_summary_v5
 from odyssey_fx.evaluation.application.manifest import RunEvaluationId
 from odyssey_fx.evaluation.application.ports import ResultRepository, StoredEvaluation
 from odyssey_fx.evaluation.application.run_experiment import segment_failure
@@ -56,11 +57,14 @@ from odyssey_fx.evaluation.domain.path import (
 from odyssey_fx.evaluation.domain.search import (
     FoldEvidence,
     FoldSelection,
+    LossSideEvidence,
+    SearchPlan,
     TrainUnitEvaluation,
     TrialPhase,
     TrialRunRecord,
     TrialStatus,
     TrialUnitKey,
+    ValidationRuleV5,
     ValidationUnitEvaluation,
     build_search_outcome,
     build_variant_outcome,
@@ -337,8 +341,30 @@ def _recompute(research: _Research, recorded: Paired[RecordedResearch]) -> Paire
                 )
             )
             selected.append(chosen)
-        path = _recompute_path(research, variant, split, selected, record)
-        outcomes[variant] = build_variant_outcome(standard, variant, evidence, path)
+        path: PathSummary = _recompute_path(research, variant, split, selected, record)
+        loss_side: LossSideEvidence | None = None
+        if isinstance(standard.validation, ValidationRuleV5):
+            # 研究ポリシーの版 5 以上: 探索の実行と同じ関数で判定の追加の入力を組み立て直す
+            # （D24 §3.3・§4。実装 PR 4-2）。
+            search_plan = manifest.search_plan
+            if not isinstance(search_plan, SearchPlan):
+                raise _Mismatch("the manifest of a v5 search has no search plan")
+            ends = dict(record.segment_ends)
+            path = path_summary_v5(path, research.repository, ends)
+            loss_side = loss_side_evidence(
+                plan=search_plan,
+                folds=evidence,
+                train_runs={
+                    (unit.fold_index, unit.trial_index): run.run_id
+                    for unit, run in record.runs.items()
+                    if unit.phase is TrialPhase.TRAIN
+                },
+                summary=path,
+                ends=ends,
+                repository=research.repository,
+                calendar=research.calendar,
+            )
+        outcomes[variant] = build_variant_outcome(standard, variant, evidence, path, loss_side)
         last = selected[-1] if selected else None
         if last is None:
             raise _Mismatch(f"the last fold of {variant.value} selected no trial (Q12)")

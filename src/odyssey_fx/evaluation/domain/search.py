@@ -62,7 +62,7 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from decimal import Decimal, localcontext
+from decimal import Context, Decimal, localcontext
 from enum import Enum
 from typing import TYPE_CHECKING, Final
 
@@ -87,6 +87,11 @@ from odyssey_fx.common.refs import (
 from odyssey_fx.common.symbol import SymbolSpecRef
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.common.timeframe import TimeframeRef
+from odyssey_fx.evaluation.domain.deflated_downside import (
+    DeflatedDownsideDetail,
+    DeflatedDownsideInputs,
+    deflated_downside,
+)
 from odyssey_fx.evaluation.domain.metrics import (
     METRIC_KINDS,
     METRIC_SET_VERSIONS,
@@ -101,7 +106,13 @@ from odyssey_fx.evaluation.domain.metrics import (
     Unavailable,
     metric_ids_of,
 )
-from odyssey_fx.evaluation.domain.path import PATH_METRICS, PathEnd, PathSummary
+from odyssey_fx.evaluation.domain.path import (
+    PATH_METRICS,
+    PathEnd,
+    PathSummary,
+    PathSummaryV5,
+    PathTradeTotals,
+)
 from odyssey_fx.evaluation.domain.policy_basis import (
     FixedComparisonBasis,
     PerSymbolComparisonBasis,
@@ -144,6 +155,7 @@ __all__ = [
     "ComparisonBasis",
     "Comparator",
     "ConditionOutcome",
+    "DeflatedDownsideResult",
     "DeflatedDownsideRule",
     "DeflationMethod",
     "ConditionResult",
@@ -161,8 +173,12 @@ __all__ = [
     "LedgerResults",
     "Lineage",
     "LineageSource",
+    "LossConcentrationDetail",
+    "LossConcentrationResult",
     "LossConcentrationRule",
+    "LossSideEvidence",
     "MetricCondition",
+    "NeighborConditionResult",
     "NeighborFloorRule",
     "NeighborInterval",
     "Neighborhood",
@@ -172,6 +188,7 @@ __all__ = [
     "PathRule",
     "PathRuleV5",
     "PriorExecution",
+    "ProfitFactorResult",
     "ProfitabilityAxis",
     "SearchOutcome",
     "SearchPlan",
@@ -215,6 +232,7 @@ __all__ = [
     "finished_entry",
     "finished_line_of",
     "frequency_class_of",
+    "grid_neighbors",
     "has_finished_line",
     "hold_mark_of",
     "path_condition_results",
@@ -1522,20 +1540,61 @@ class ConditionScope(Enum):
     PATH_FLOOR = "PATH_FLOOR"
     #: 連続口座の検証経路の全体の水準（`validation.path.aggregate`）。
     PATH_AGGREGATE = "PATH_AGGREGATE"
+    #: 版 5 以上: 各 fold で選んだ試行の近傍の、その fold の選定の区間の床（D24 §3.5。決定 139）。
+    NEIGHBOR_FLOOR = "NEIGHBOR_FLOOR"
+    #: 版 5 以上: 損失の集中（最悪の fold の損失と経路の純利益。D24 §3.4。決定 136）。
+    LOSS_CONCENTRATION = "LOSS_CONCENTRATION"
+    #: 版 5 以上: 試行数で割り引いた下側偏差の比率の確率（D24 §4。決定 140）。
+    DEFLATED_DOWNSIDE_RATIO = "DEFLATED_DOWNSIDE_RATIO"
 
 
 class ConditionOutcome(Enum):
-    """条件1件の結果（D09 §7.3。v0.2）。"""
+    """条件1件の結果（D09 §7.3。v0.2。版 5 で 2 値を足した。D24 §3.6・§9.2、仮置き 17）。"""
 
     MET = "MET"
     NOT_MET = "NOT_MET"
     #: 観測が足りないことによる値なしで比べられない（理由は `unavailable_reason`）。
     UNCOMPUTABLE = "UNCOMPUTABLE"
+    #: 版 5 以上: 当てない（損失の集中で経路の純利益が当てる閾に届かない、判定に使える近傍が無い
+    #: fold。D24 の仮置き 17）。「満たす」と書かない（値なしを成功値に置き換えない考え方）。
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    #: 版 5 以上: 判定できない（入力が無い値なし・近傍の run の失敗。理由は `INPUT_NOT_AVAILABLE`。
+    #: D24 §3.6 の手順 2・§9.2）。
+    NOT_JUDGED = "NOT_JUDGED"
+
+
+#: 版 5 以上の条件の当て先（それぞれ専用の結果の型だけが持つ。D24 §9.3）。
+_V5_SCOPES: Final = frozenset(
+    {
+        ConditionScope.NEIGHBOR_FLOOR,
+        ConditionScope.LOSS_CONCENTRATION,
+        ConditionScope.DEFLATED_DOWNSIDE_RATIO,
+    }
+)
+
+#: 版 5 以上の結果の値（版 5 の条件の結果の型だけが持つ。D24 の仮置き 17）。
+_V5_OUTCOMES: Final = frozenset({ConditionOutcome.NOT_APPLICABLE, ConditionOutcome.NOT_JUDGED})
+
+
+def _exact_product(left: Decimal, right: Decimal) -> Decimal:
+    """2 つの十進数の積を丸めずに求める（乗算の形の比較に使う。D24 §3.3・§3.4）。
+
+    積の桁数は両方の桁数の和を超えないので、その精度のコンテキストで掛ければ厳密である。
+    """
+    digits = len(left.as_tuple().digits) + len(right.as_tuple().digits) + 2
+    with localcontext(Context(prec=digits)):
+        return left * right
 
 
 @dataclass(frozen=True, slots=True)
 class ConditionResult:
-    """条件1件の結果（D09 §3・§7.3。v0.2）。"""
+    """条件1件の結果（D09 §3・§7.3。v0.2）。
+
+    版 5 以上の条件（D24 §3・§4）は、この型を継承した専用の型で記録する（近傍の床
+    `NeighborConditionResult`、経路の `PROFIT_FACTOR` の `ProfitFactorResult`、損失の集中
+    `LossConcentrationResult`、割り引いた確率 `DeflatedDownsideResult`）。版 4 以下の結果はこの型の
+    まま（結末記録の形を変えない）。
+    """
 
     scope: ConditionScope
     fold_index: int | None
@@ -1548,29 +1607,71 @@ class ConditionResult:
     unavailable_reason: MetricUnavailableReason | None
 
     def __post_init__(self) -> None:
+        self._check_shape()
+        if not isinstance(self.outcome, ConditionOutcome):
+            raise KernelValueError("ConditionResult.outcome must be a ConditionOutcome")
+        self._check_outcome()
+
+    def _check_shape(self) -> None:
         if not isinstance(self.scope, ConditionScope):
             raise KernelValueError("ConditionResult.scope must be a ConditionScope")
-        if self.scope is ConditionScope.FOLD_FLOOR:
+        expected = {
+            ConditionScope.NEIGHBOR_FLOOR: NeighborConditionResult,
+            ConditionScope.LOSS_CONCENTRATION: LossConcentrationResult,
+            ConditionScope.DEFLATED_DOWNSIDE_RATIO: DeflatedDownsideResult,
+        }.get(self.scope)
+        if expected is not None and not isinstance(self, expected):
+            raise KernelValueError(
+                f"a {self.scope.value} ConditionResult is a {expected.__name__} (D24 §9.3)"
+            )
+        if expected is None and isinstance(
+            self, (NeighborConditionResult, LossConcentrationResult, DeflatedDownsideResult)
+        ):
+            raise KernelValueError(f"{type(self).__name__} の scope が違う: {self.scope.value}")
+        if self.scope in (ConditionScope.FOLD_FLOOR, ConditionScope.NEIGHBOR_FLOOR):
             _require_index(self.fold_index, "ConditionResult.fold_index")
             if self.statistic is not None:
-                raise KernelValueError("a FOLD_FLOOR ConditionResult has no statistic")
-        elif self.scope in (ConditionScope.PATH_FLOOR, ConditionScope.PATH_AGGREGATE):
-            if self.fold_index is not None or self.statistic is not None:
-                raise KernelValueError(
-                    "a path ConditionResult has no fold_index and no statistic (D09 §7.3 の改訂)"
-                )
-        else:
+                raise KernelValueError(f"a {self.scope.value} ConditionResult has no statistic")
+        elif self.scope is ConditionScope.AGGREGATE:
             if self.fold_index is not None:
                 raise KernelValueError("an AGGREGATE ConditionResult has no fold_index")
             if not isinstance(self.statistic, FoldStatistic):
                 raise KernelValueError("an AGGREGATE ConditionResult needs a FoldStatistic")
+        elif self.fold_index is not None or self.statistic is not None:
+            raise KernelValueError(
+                "a path ConditionResult has no fold_index and no statistic (D09 §7.3 の改訂)"
+            )
         if not isinstance(self.metric, MetricId):
             raise KernelValueError("ConditionResult.metric must be a MetricId")
         if not isinstance(self.comparator, Comparator):
             raise KernelValueError("ConditionResult.comparator must be a Comparator")
         _require_decimal(self.threshold, "ConditionResult.threshold")
-        if not isinstance(self.outcome, ConditionOutcome):
-            raise KernelValueError("ConditionResult.outcome must be a ConditionOutcome")
+
+    def _check_outcome(self) -> None:
+        if self.outcome in _V5_OUTCOMES:
+            raise KernelValueError(
+                f"{self.outcome.value} は版 5 以上の条件の結果の型だけが持つ（D24 の仮置き 17）"
+            )
+        self._check_compared()
+
+    def _check_unjudged(self) -> None:
+        """「判定できない」の形（観測値なし・理由は入力が無い値なし。D24 §9.2）。"""
+        if self.observed is not None:
+            raise KernelValueError("a NOT_JUDGED ConditionResult has no observed value")
+        if self.unavailable_reason is not MetricUnavailableReason.INPUT_NOT_AVAILABLE:
+            raise KernelValueError(
+                "a NOT_JUDGED ConditionResult carries INPUT_NOT_AVAILABLE (D24 §9.2)"
+            )
+
+    def _check_uncomputable(self) -> None:
+        if self.observed is not None:
+            raise KernelValueError("an UNCOMPUTABLE ConditionResult has no observed value")
+        if self.unavailable_reason not in OBSERVATION_SHORTFALL_REASONS:
+            raise KernelValueError(
+                "an UNCOMPUTABLE ConditionResult carries an observation-shortfall reason (D09 §7.3)"
+            )
+
+    def _check_compared(self) -> None:
         if self.outcome is ConditionOutcome.UNCOMPUTABLE:
             if self.observed is not None:
                 raise KernelValueError("an UNCOMPUTABLE ConditionResult has no observed value")
@@ -1590,6 +1691,211 @@ class ConditionResult:
                     f"ConditionResult.outcome {self.outcome.value} contradicts"
                     f" {self.observed} {self.comparator.value} {self.threshold}"
                 )
+
+
+@dataclass(frozen=True, slots=True)
+class NeighborConditionResult(ConditionResult):
+    """近傍の床 1 件の結果（D24 §3.5・§9.3。決定 139、仮置き 5・17）。
+
+    `scope` は `NEIGHBOR_FLOOR`、`fold_index` はその fold、`neighbor_trial_index` は近傍の試行
+    （判定に使える近傍が無い fold の「当てない」は `None`）。`metric`・`comparator`・`threshold` は
+    `neighbor_floors.floors` の 1 件（書いた順）。結果の値: 比べて `MET` / `NOT_MET`、観測不足の
+    値なしは `UNCOMPUTABLE`、近傍の run の失敗や入力が無い値なしは `NOT_JUDGED`、近傍が無い fold は
+    `NOT_APPLICABLE`。主キーは組ごとに `(scope, fold_index, neighbor_trial_index, 条件の書いた順)`。
+    """
+
+    neighbor_trial_index: int | None
+
+    def _check_outcome(self) -> None:
+        if self.outcome is ConditionOutcome.NOT_APPLICABLE:
+            if (
+                self.neighbor_trial_index is not None
+                or self.observed is not None
+                or self.unavailable_reason is not None
+            ):
+                raise KernelValueError(
+                    "近傍の床の「当てない」は近傍の試行・観測値・理由を持たない（D24 §3.5）"
+                )
+            return
+        _require_index(self.neighbor_trial_index, "NeighborConditionResult.neighbor_trial_index")
+        if self.outcome is ConditionOutcome.NOT_JUDGED:
+            self._check_unjudged()
+            return
+        self._check_compared()
+
+
+@dataclass(frozen=True, slots=True)
+class ProfitFactorResult(ConditionResult):
+    """経路の `PROFIT_FACTOR` の条件の結果（D24 §3.3。決定 137・166、仮置き 4）。
+
+    経路の取引の集合の要約 `profit_factor`（`W`・`L`・件数）から、乗算の形「`W ≥ 閾値 × L`」で
+    当てる（割り算の丸めで結果が変わらないように比べる）。負けの取引が無い経路（`L = 0`）は満たす
+    （決定 166）。取引も仮決済も 0 件なら観測不足（`UNCOMPUTABLE`・`NO_TRADES`）。`observed` は
+    表示用の `W ÷ L`（カーネルの精度で 1 回割る。`L = 0` なら `None`）。
+    `scope` は `PATH_AGGREGATE`。
+    """
+
+    profit_factor: PathTradeTotals
+
+    def _check_outcome(self) -> None:
+        if self.scope is not ConditionScope.PATH_AGGREGATE or self.metric not in PATH_TRADE_METRICS:
+            raise KernelValueError("ProfitFactorResult は経路の全体の水準の PROFIT_FACTOR の結果")
+        if self.comparator is not Comparator.GE:
+            raise KernelValueError("ProfitFactorResult は下限の条件（GE）だけ（D24 §2.1）")
+        totals = self.profit_factor
+        if not isinstance(totals, PathTradeTotals):
+            raise KernelValueError("ProfitFactorResult.profit_factor must be a PathTradeTotals")
+        if self.outcome is ConditionOutcome.UNCOMPUTABLE:
+            if totals.trade_count != 0:
+                raise KernelValueError("取引のある経路の PROFIT_FACTOR は値を持つ（D24 §3.3）")
+            self._check_uncomputable()
+            if self.unavailable_reason is not MetricUnavailableReason.NO_TRADES:
+                raise KernelValueError("取引も仮決済も無い経路の PROFIT_FACTOR は NO_TRADES")
+            return
+        if self.outcome not in (ConditionOutcome.MET, ConditionOutcome.NOT_MET):
+            raise KernelValueError(f"ProfitFactorResult は {self.outcome.value} を持たない")
+        if totals.trade_count == 0:
+            raise KernelValueError("取引も仮決済も無い経路の PROFIT_FACTOR は値なし（D24 §3.3）")
+        if self.unavailable_reason is not None:
+            raise KernelValueError("a MET / NOT_MET ConditionResult has no unavailable_reason")
+        wins = totals.wins.amount
+        losses = totals.losses.amount
+        if losses == 0:
+            if self.observed is not None:
+                raise KernelValueError("負けの取引が無い経路の PROFIT_FACTOR は表示の値を持たない")
+            met = True
+        else:
+            with localcontext(kernel_context()):
+                shown = wins / losses
+            if self.observed != shown:
+                raise KernelValueError("ProfitFactorResult.observed は W ÷ L（カーネルの精度）")
+            met = wins >= _exact_product(self.threshold, losses)
+        if met is not (self.outcome is ConditionOutcome.MET):
+            raise KernelValueError(
+                f"ProfitFactorResult.outcome {self.outcome.value} contradicts"
+                f" W {wins} >= {self.threshold} × L {losses}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class LossConcentrationDetail:
+    """損失の集中の材料（D24 §3.4・§9.3。決定 136・160、仮置き 3）。
+
+    - `worst_fold_loss`: 最悪の fold の損失 `Lw = max_k max(0, −R_k)`（`R_k` は検証結果のある
+      fold の独立口座の run の `worst_fold_metric`。求まらなければ `None`）。
+    - `worst_fold_index`: `Lw > 0` のときその fold（同じ値なら番号の小さい fold）。それ以外は
+      `None`。
+    - `path_net_return`: 経路の全体の純収益率 `P`（値なしなら `None`）。
+    - `applies_when_at_least`: 当てる閾（`applies_when_path_net_return_at_least`）。
+    - `folds`: `Lw` に入れた fold の数。
+    """
+
+    worst_fold_loss: Decimal | None
+    worst_fold_index: int | None
+    path_net_return: Decimal | None
+    applies_when_at_least: Decimal
+    folds: int
+
+    def __post_init__(self) -> None:
+        for label in ("worst_fold_loss", "path_net_return"):
+            value = getattr(self, label)
+            if value is not None:
+                _require_decimal(value, f"LossConcentrationDetail.{label}")
+        if self.worst_fold_loss is not None and self.worst_fold_loss < 0:
+            raise KernelValueError("LossConcentrationDetail.worst_fold_loss は 0 以上")
+        _require_decimal(
+            self.applies_when_at_least, "LossConcentrationDetail.applies_when_at_least"
+        )
+        _require_count(self.folds, "LossConcentrationDetail.folds")
+        if self.worst_fold_index is not None:
+            _require_index(self.worst_fold_index, "LossConcentrationDetail.worst_fold_index")
+            if self.worst_fold_loss is None or self.worst_fold_loss == 0:
+                raise KernelValueError("最悪の fold は損失が正のときだけ持つ")
+
+
+@dataclass(frozen=True, slots=True)
+class LossConcentrationResult(ConditionResult):
+    """損失の集中の結果（D24 §3.4。決定 136・160）。
+
+    `scope` は `LOSS_CONCENTRATION`、`metric` は `worst_fold_metric`、`comparator` は `LE`、
+    `threshold` は倍数（`max_multiple_of_path_net`）、`observed` は `Lw`。比べ方は乗算の形
+    「`Lw ≤ 倍数 × P`」（丸めない）。`P` が当てる閾に届かなければ `NOT_APPLICABLE`（理由「経路の
+    純利益が当てる閾に届かない」。仮置き 17）。`P` か `R_k` の値なしは、その理由に従う
+    （観測不足は `UNCOMPUTABLE`、入力が無ければ `NOT_JUDGED`）。
+    """
+
+    loss_concentration: LossConcentrationDetail
+
+    def _check_outcome(self) -> None:
+        detail = self.loss_concentration
+        if not isinstance(detail, LossConcentrationDetail):
+            raise KernelValueError("LossConcentrationResult.loss_concentration の型が違う")
+        if self.comparator is not Comparator.LE:
+            raise KernelValueError("損失の集中は LE で比べる（D24 §3.4）")
+        if self.observed != detail.worst_fold_loss and not (
+            self.outcome in (ConditionOutcome.UNCOMPUTABLE, ConditionOutcome.NOT_JUDGED)
+            and self.observed is None
+        ):
+            raise KernelValueError("LossConcentrationResult.observed は最悪の fold の損失")
+        if self.outcome is ConditionOutcome.NOT_APPLICABLE:
+            if self.unavailable_reason is not None:
+                raise KernelValueError("損失の集中の「当てない」は値なしの理由を持たない")
+            net = detail.path_net_return
+            if net is None or net >= detail.applies_when_at_least:
+                raise KernelValueError(
+                    "損失の集中を当てないのは経路の純収益率が当てる閾に届かないときだけ（D24 §3.4）"
+                )
+            return
+        if self.outcome is ConditionOutcome.NOT_JUDGED:
+            self._check_unjudged()
+            return
+        if self.outcome is ConditionOutcome.UNCOMPUTABLE:
+            self._check_uncomputable()
+            return
+        if self.unavailable_reason is not None:
+            raise KernelValueError("a MET / NOT_MET ConditionResult has no unavailable_reason")
+        loss = detail.worst_fold_loss
+        net = detail.path_net_return
+        if loss is None or net is None or net < detail.applies_when_at_least:
+            raise KernelValueError("損失の集中を比べるのは Lw と P があり P が閾以上のときだけ")
+        met = loss <= _exact_product(self.threshold, net)
+        if met is not (self.outcome is ConditionOutcome.MET):
+            raise KernelValueError(
+                f"LossConcentrationResult.outcome {self.outcome.value} contradicts"
+                f" Lw {loss} <= {self.threshold} × P {net}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class DeflatedDownsideResult(ConditionResult):
+    """試行数で割り引いた確率の結果（D24 §4。決定 140・161〜163、仮置き 6〜10）。
+
+    `scope` は `DEFLATED_DOWNSIDE_RATIO`、`metric` は材料の指標 `ANNUALIZED_DOWNSIDE_RATIO`（#23。
+    条件には書けない指標で、ここでは材料の名前として持つ）、`comparator` は `GE`、`threshold` は
+    `min_probability`、`observed` は確率 `P_d`。`deflated_downside` は材料と結果（M・ρ̄・外した対の
+    数・N・V・S・σ・S*・P_d）。
+    """
+
+    deflated_downside: DeflatedDownsideDetail
+
+    def _check_outcome(self) -> None:
+        detail = self.deflated_downside
+        if not isinstance(detail, DeflatedDownsideDetail):
+            raise KernelValueError("DeflatedDownsideResult.deflated_downside の型が違う")
+        if self.metric is not MetricId.ANNUALIZED_DOWNSIDE_RATIO or self.comparator is not (
+            Comparator.GE
+        ):
+            raise KernelValueError("割り引いた確率の結果は #23 を材料に GE で比べる（D24 §4.4）")
+        if self.outcome is ConditionOutcome.NOT_APPLICABLE:
+            raise KernelValueError("割り引いた確率は「当てない」を持たない（D24 §9.2）")
+        if self.unavailable_reason is not detail.unavailable_reason:
+            raise KernelValueError("DeflatedDownsideResult の値なしの理由が材料と違う")
+        if self.outcome is ConditionOutcome.NOT_JUDGED:
+            self._check_unjudged()
+            return
+        if self.observed != detail.probability:
+            raise KernelValueError("DeflatedDownsideResult.observed は確率 P_d")
+        self._check_compared()
 
 
 class SufficiencyShortfallKind(Enum):
@@ -2068,6 +2374,69 @@ class FoldEvidence:
         return (*(item.status for item in self.train_units), *validation)
 
 
+@dataclass(frozen=True, slots=True)
+class LossSideEvidence:
+    """研究ポリシーの版 5 以上の判定の追加の入力（D24 §3.5・§4。実装 PR 4-2）。
+
+    - `neighbors`: 試行ごとの近傍の試行の番号（添字が `trial_index`。`grid_neighbors` の値）。
+    - `deflated`: 割り引いた確率の入力（経路の日次の収益率・試行の数・選定の区間の試行ごとの日次の
+      収益率）。経路が判定できないで終えた組は `None`（経路の条件を作らない）。
+
+    **局面を持たない**（D24 の仮置き 15、RP5-16）。判定の関数はこの型と評価基準・fold の入力・経路の
+    要約だけを受け取り、局面の付与の結果を渡す経路が無い。
+    """
+
+    neighbors: tuple[tuple[int, ...], ...]
+    deflated: DeflatedDownsideInputs | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.neighbors, tuple) or not self.neighbors:
+            raise KernelValueError("LossSideEvidence.neighbors must be a non-empty tuple")
+        count = len(self.neighbors)
+        for index, entry in enumerate(self.neighbors):
+            if not isinstance(entry, tuple):
+                raise KernelValueError("LossSideEvidence.neighbors holds tuples of trial indices")
+            for item in entry:
+                _require_index(item, "LossSideEvidence.neighbors")
+                if item >= count or item == index:
+                    raise KernelValueError(f"試行 {index} の近傍 {item} が試行の範囲の外か自分自身")
+            if len(set(entry)) != len(entry):
+                raise KernelValueError(f"試行 {index} の近傍に同じ試行が 2 回ある")
+        if self.deflated is not None and not isinstance(self.deflated, DeflatedDownsideInputs):
+            raise KernelValueError("LossSideEvidence.deflated must be DeflatedDownsideInputs")
+
+
+def grid_neighbors(plan: SearchPlan) -> tuple[tuple[int, ...], ...]:
+    """格子の試行ごとの近傍（D09 §8 の 2、D24 §3.5。決定 139）。
+
+    近傍は、選んだ試行と格子の 1 つの軸だけが書いた順で 1 段隣（直前・直後）の試行（値の大小では
+    並べない。端の値は隣が 1 つ）。並びは軸の順（`(instance_id, parameter)` の昇順）に、各軸で
+    直前 → 直後。試行の番号は `enumerate_assignments` と同じ直積の順（後ろの軸ほど速く変わる）から
+    計算する。
+    探索しない計画（`NONE`）は試行 1 つで近傍を持たない。
+    """
+    if not isinstance(plan, SearchPlan):
+        raise KernelValueError("grid_neighbors requires a SearchPlan")
+    sizes = [len(axis.values) for axis in plan.axes]
+    strides: list[int] = []
+    stride = 1
+    for size in reversed(sizes):
+        strides.append(stride)
+        stride *= size
+    strides.reverse()
+    found: list[tuple[int, ...]] = []
+    for index in range(plan.trial_count):
+        positions = [(index // step) % size for step, size in zip(strides, sizes, strict=True)]
+        neighbors: list[int] = []
+        for position, size, step in zip(positions, sizes, strides, strict=True):
+            if position > 0:
+                neighbors.append(index - step)
+            if position < size - 1:
+                neighbors.append(index + step)
+        found.append(tuple(neighbors))
+    return tuple(found)
+
+
 # --- 内部の小道具 -------------------------------------------------------------
 
 
@@ -2462,12 +2831,120 @@ def _no_candidate_shortfalls(
     return tuple(found)
 
 
+def _neighbor_results(
+    evidence: FoldEvidence, rule: NeighborFloorRule, neighbors: tuple[int, ...]
+) -> tuple[NeighborConditionResult, ...]:
+    """選んだ試行の近傍の、その fold の選定の区間の床（D24 §3.5。決定 139、仮置き 5）。
+
+    近傍の区分（D09 §7.4）で扱いを分ける: コンパイル拒否（`EXCLUDED_TRIAL_FAILED`）は判定から外す
+    （表示はレポート）。完走していない・事後検査が合格でない（`EXCLUDED_NOT_COMPLETED`・
+    `EXCLUDED_POST_RUN_CHECK`）は「判定できない」（`NOT_JUDGED`）。それ以外は床を当てる（選定の指標
+    が値なしでもドローダウン率と #21 は値を持つ）。判定に使える近傍が無い fold は床ごとに
+    「当てない」（`NOT_APPLICABLE`）を 1 件ずつ記録する。利益の側（近傍も稼ぐこと）は求めない。
+    """
+    fold_index = evidence.fold.fold_index
+    status_of = {entry[0]: entry[2] for entry in evidence.selection.inputs}
+    units = {item.trial_index: item for item in evidence.train_units}
+    results: list[NeighborConditionResult] = []
+    used = False
+    for trial in neighbors:
+        status = status_of.get(trial)
+        if status is None:
+            raise KernelValueError(
+                f"fold {fold_index} の選定記録に近傍の試行 {trial} が無い（D24 §3.5）"
+            )
+        if status is CandidateStatus.EXCLUDED_TRIAL_FAILED:
+            continue
+        used = True
+        unit = units.get(trial)
+        failed = (
+            status
+            in (CandidateStatus.EXCLUDED_NOT_COMPLETED, CandidateStatus.EXCLUDED_POST_RUN_CHECK)
+            or unit is None
+            or not unit.has_valid_result
+        )
+        for condition in rule.floors:
+            observed: Decimal | None = None
+            reason: MetricUnavailableReason | None = MetricUnavailableReason.INPUT_NOT_AVAILABLE
+            outcome = ConditionOutcome.NOT_JUDGED
+            if not failed:
+                assert unit is not None  # noqa: S101  直前で確かめた
+                value = unit.value_of(condition.metric)
+                observed = _numeric(value)
+                reason = _unavailable_reason(value)
+                if observed is not None:
+                    outcome = (
+                        ConditionOutcome.MET
+                        if _compare(observed, condition.comparator, condition.threshold)
+                        else ConditionOutcome.NOT_MET
+                    )
+                elif reason in OBSERVATION_SHORTFALL_REASONS:
+                    outcome = ConditionOutcome.UNCOMPUTABLE
+            results.append(
+                NeighborConditionResult(
+                    scope=ConditionScope.NEIGHBOR_FLOOR,
+                    fold_index=fold_index,
+                    metric=condition.metric,
+                    statistic=None,
+                    comparator=condition.comparator,
+                    threshold=condition.threshold,
+                    observed=observed,
+                    outcome=outcome,
+                    unavailable_reason=reason,
+                    neighbor_trial_index=trial,
+                )
+            )
+    if not used:
+        results.extend(
+            NeighborConditionResult(
+                scope=ConditionScope.NEIGHBOR_FLOOR,
+                fold_index=fold_index,
+                metric=condition.metric,
+                statistic=None,
+                comparator=condition.comparator,
+                threshold=condition.threshold,
+                observed=None,
+                outcome=ConditionOutcome.NOT_APPLICABLE,
+                unavailable_reason=None,
+                neighbor_trial_index=None,
+            )
+            for condition in rule.floors
+        )
+    return tuple(results)
+
+
+def _neighbor_shortfalls(
+    results: Sequence[ConditionResult],
+) -> tuple[SufficiencyShortfall, ...]:
+    """近傍の床の観測不足の値なし（近傍の試行・指標・理由ごとに 1 件。D24 §3.7）。"""
+    return tuple(
+        SufficiencyShortfall(
+            kind=SufficiencyShortfallKind.METRIC_UNCOMPUTABLE,
+            fold_index=item.fold_index,
+            trial_index=item.neighbor_trial_index,
+            metric=item.metric,
+            reason=item.unavailable_reason,
+            required=None,
+            observed=None,
+        )
+        for item in results
+        if isinstance(item, NeighborConditionResult)
+        and item.outcome is ConditionOutcome.UNCOMPUTABLE
+    )
+
+
 def _judge_fold(
     evidence: FoldEvidence,
     standard: EvaluationStandard,
     requirement: FrequencyClass | None,
+    loss_side: LossSideEvidence | None,
 ) -> _FoldJudgement:
-    """fold の判定（D09 §7.3 の fold の判定の手順1〜6。最初に当てはまるもの）。"""
+    """fold の判定（D09 §7.3 の fold の判定の手順1〜6。最初に当てはまるもの）。
+
+    版 5 以上は、検証結果のある fold に近傍の床（D24 §3.5）を足す。近傍の床の違反は fold の床の
+    違反と同じ扱い（手順 3・4）。近傍の run の失敗（`NOT_JUDGED`）は、床の違反が無ければその fold を
+    「判定できない」にする（手順 3 の前。実装 PR 4-2 の仮置き）。観測不足の近傍は手順 5。
+    """
     fold_index = evidence.fold.fold_index
     selection = evidence.selection
     rule = standard.validation
@@ -2500,10 +2977,25 @@ def _judge_fold(
         return _FoldJudgement(FoldVerdict.INCOMPLETE, (), (), None)
     if requirement is None:
         raise KernelValueError("選んだ試行のある fold があるのに頻度区分が無い（D09 §7.8）")
-    floors = _floor_results(fold_index, rule, unit)
+    neighbor: tuple[NeighborConditionResult, ...] = ()
+    if isinstance(rule, ValidationRuleV5):
+        if loss_side is None:  # build_variant_outcome が確かめる
+            raise KernelValueError("a v5 fold judgement needs its LossSideEvidence")
+        selected = selection.selected_trial_index
+        if selected >= len(loss_side.neighbors):
+            raise KernelValueError(f"試行 {selected} の近傍が LossSideEvidence に無い")
+        neighbor = _neighbor_results(evidence, rule.neighbor_floors, loss_side.neighbors[selected])
+    floors: tuple[ConditionResult, ...] = (*_floor_results(fold_index, rule, unit), *neighbor)
     trades = _trade_count(unit)
-    uncomputable = _uncomputable_shortfalls(fold_index, rule, unit)
+    uncomputable = (
+        *_uncomputable_shortfalls(fold_index, rule, unit),
+        *_neighbor_shortfalls(neighbor),
+    )
     breached = any(item.outcome is ConditionOutcome.NOT_MET for item in floors)
+    if not breached and any(item.outcome is ConditionOutcome.NOT_JUDGED for item in neighbor):
+        # 近傍の run の失敗を証拠不足と呼ばない（D09 §7.3、D24 §3.5 の表。仮置き 5）。検証の run は
+        # 有効なので、その取引件数は検証の合計に数える（D13-20 (a)。手順 1 の件数の判定に使う）。
+        return _FoldJudgement(FoldVerdict.INCOMPLETE, floors, (), trades)
     # 手順3: 取引が少ない fold（Q16 決定。最低条件を割っても証拠不足。結果は NOT_MET のまま残す）。
     if trades < requirement.min_validation_trades_per_fold:
         shortfall = SufficiencyShortfall(
@@ -2541,6 +3033,203 @@ def _path_results(rule: PathRule, path: PathSummary) -> tuple[ConditionResult, .
     if path.end is PathEnd.INCOMPLETE:
         return ()
     return path_condition_results(rule, path.metric)
+
+
+#: 実験の判定の手順 4（全体の水準）で当てる経路の条件の当て先（D24 §3.6 の手順 4）。
+_OVERALL_SCOPES: Final = frozenset(
+    {
+        ConditionScope.PATH_AGGREGATE,
+        ConditionScope.LOSS_CONCENTRATION,
+        ConditionScope.DEFLATED_DOWNSIDE_RATIO,
+    }
+)
+
+
+def _profit_factor_result(condition: MetricCondition, path: PathSummaryV5) -> ProfitFactorResult:
+    """経路の `PROFIT_FACTOR` の条件（D24 §3.3。乗算の形、負け無しは満たす。決定 166）。"""
+    totals = path.trades
+    if totals is None:  # PathSummaryV5 が保証する（判定できない経路はここに来ない）
+        raise KernelValueError("the path has no trade totals (D24 §3.3)")
+    observed: Decimal | None = None
+    reason: MetricUnavailableReason | None = None
+    if totals.trade_count == 0:
+        outcome = ConditionOutcome.UNCOMPUTABLE
+        reason = MetricUnavailableReason.NO_TRADES
+    elif totals.losses.amount == 0:
+        outcome = ConditionOutcome.MET
+    else:
+        with localcontext(kernel_context()):
+            observed = totals.wins.amount / totals.losses.amount
+        met = totals.wins.amount >= _exact_product(condition.threshold, totals.losses.amount)
+        outcome = ConditionOutcome.MET if met else ConditionOutcome.NOT_MET
+    return ProfitFactorResult(
+        scope=ConditionScope.PATH_AGGREGATE,
+        fold_index=None,
+        metric=condition.metric,
+        statistic=None,
+        comparator=condition.comparator,
+        threshold=condition.threshold,
+        observed=observed,
+        outcome=outcome,
+        unavailable_reason=reason,
+        profit_factor=totals,
+    )
+
+
+def _loss_concentration_result(
+    rule: LossConcentrationRule, evidence: Sequence[FoldEvidence], path: PathSummary
+) -> LossConcentrationResult:
+    """損失の集中（D24 §3.4。決定 136・160、仮置き 3・17）。
+
+    `Lw` は検証結果のある fold（選んだ試行のある fold）の独立口座の run の `worst_fold_metric` から
+    作る。`P` は経路の全体の純収益率。`P` の値なしはその理由に従い、`P` が閾に届かなければ
+    「当てない」、閾以上で `R_k` が値なしならその理由に従い、そろえば `Lw ≤ 倍数 × P` で比べる。
+    """
+    net_value = path.metric(MetricId.NET_RETURN_RATE)
+    if net_value is None:  # 判定できない経路はここに来ない
+        raise KernelValueError("the path has no NET_RETURN_RATE (D24 §3.4)")
+    net = _numeric(net_value)
+    net_reason = _unavailable_reason(net_value)
+    losses: list[tuple[int, Decimal]] = []
+    fold_reasons: list[MetricUnavailableReason] = []
+    for item in evidence:
+        if item.selection.selected_trial_index is None:
+            continue
+        unit = item.validation
+        if unit is None or not unit.has_valid_result:
+            fold_reasons.append(MetricUnavailableReason.INPUT_NOT_AVAILABLE)
+            continue
+        value = unit.value_of(rule.worst_fold_metric)
+        observed = _numeric(value)
+        if observed is None:
+            fold_reasons.append(
+                _unavailable_reason(value) or MetricUnavailableReason.INPUT_NOT_AVAILABLE
+            )
+            continue
+        losses.append((item.fold.fold_index, observed))
+    worst: Decimal | None = None
+    worst_index: int | None = None
+    if not fold_reasons:
+        worst = decimal_from_int(0)
+        for fold_index, rate in losses:
+            # 符号の反転は呼び出し側の精度で丸めない（`copy_negate` は厳密。D07 §5.5）。
+            loss = rate.copy_negate() if rate < 0 else decimal_from_int(0)
+            if loss > worst:
+                worst = loss
+                worst_index = fold_index
+    detail = LossConcentrationDetail(
+        worst_fold_loss=worst,
+        worst_fold_index=worst_index,
+        path_net_return=net,
+        applies_when_at_least=rule.applies_when_path_net_return_at_least,
+        folds=len(losses),
+    )
+    reason: MetricUnavailableReason | None = None
+    observed_loss: Decimal | None = worst
+    if net is None:
+        reason = net_reason or MetricUnavailableReason.INPUT_NOT_AVAILABLE
+    elif net < rule.applies_when_path_net_return_at_least:
+        outcome = ConditionOutcome.NOT_APPLICABLE
+    elif worst is None:
+        reason = (
+            MetricUnavailableReason.INPUT_NOT_AVAILABLE
+            if MetricUnavailableReason.INPUT_NOT_AVAILABLE in fold_reasons
+            else fold_reasons[0]
+        )
+    else:
+        met = worst <= _exact_product(rule.max_multiple_of_path_net, net)
+        outcome = ConditionOutcome.MET if met else ConditionOutcome.NOT_MET
+    if reason is not None:
+        outcome = (
+            ConditionOutcome.NOT_JUDGED
+            if reason is MetricUnavailableReason.INPUT_NOT_AVAILABLE
+            else ConditionOutcome.UNCOMPUTABLE
+        )
+        observed_loss = None
+    return LossConcentrationResult(
+        scope=ConditionScope.LOSS_CONCENTRATION,
+        fold_index=None,
+        metric=rule.worst_fold_metric,
+        statistic=None,
+        comparator=Comparator.LE,
+        threshold=rule.max_multiple_of_path_net,
+        observed=observed_loss,
+        outcome=outcome,
+        unavailable_reason=reason,
+        loss_concentration=detail,
+    )
+
+
+def _deflated_result(
+    rule: DeflatedDownsideRule, inputs: DeflatedDownsideInputs
+) -> DeflatedDownsideResult:
+    """試行数で割り引いた確率（D24 §4。決定 140）。`P_d ≥ min_probability` で満たす。"""
+    detail = deflated_downside(inputs)
+    reason = detail.unavailable_reason
+    if reason is MetricUnavailableReason.INPUT_NOT_AVAILABLE:
+        outcome = ConditionOutcome.NOT_JUDGED
+    elif reason is not None:
+        outcome = ConditionOutcome.UNCOMPUTABLE
+    else:
+        assert detail.probability is not None  # noqa: S101  値なしの理由が無ければ値がある
+        outcome = (
+            ConditionOutcome.MET
+            if detail.probability >= rule.min_probability
+            else ConditionOutcome.NOT_MET
+        )
+    return DeflatedDownsideResult(
+        scope=ConditionScope.DEFLATED_DOWNSIDE_RATIO,
+        fold_index=None,
+        metric=MetricId.ANNUALIZED_DOWNSIDE_RATIO,
+        statistic=None,
+        comparator=Comparator.GE,
+        threshold=rule.min_probability,
+        observed=detail.probability,
+        outcome=outcome,
+        unavailable_reason=reason,
+        deflated_downside=detail,
+    )
+
+
+def _path_results_v5(
+    rule: ValidationRuleV5,
+    evidence: Sequence[FoldEvidence],
+    path: PathSummaryV5,
+    loss_side: LossSideEvidence,
+) -> tuple[ConditionResult, ...]:
+    """版 5 以上の経路の条件（最低条件 → 全体の水準 → 損失の集中 → 割り引いた確率。D24 §3.1）。
+
+    経路が「判定できない」で終わった組は結果を作らない（版 4 と同じ）。全体の水準の
+    `PROFIT_FACTOR` は経路の取引の集合から乗算の形で当て（`PathRuleV5` の印。D24 §2.1 の注）、他の
+    指標は版 4 と同じく経路の指標の値で比べる。
+    """
+    if path.end is PathEnd.INCOMPLETE:
+        return ()
+    if loss_side.deflated is None:  # build_variant_outcome が確かめる
+        raise KernelValueError("a judged v5 path needs its deflated inputs")
+    generic = path_condition_results(
+        replace(
+            rule.path,
+            aggregate=tuple(
+                item for item in rule.path.aggregate if item.metric not in PATH_TRADE_METRICS
+            ),
+        ),
+        path.metric,
+    )
+    floors = [item for item in generic if item.scope is ConditionScope.PATH_FLOOR]
+    plain = iter(item for item in generic if item.scope is ConditionScope.PATH_AGGREGATE)
+    overall: list[ConditionResult] = []
+    for condition in rule.path.aggregate:
+        if condition.metric in PATH_TRADE_METRICS:
+            overall.append(_profit_factor_result(condition, path))
+        else:
+            overall.append(next(plain))
+    return (
+        *floors,
+        *overall,
+        _loss_concentration_result(rule.loss_concentration, evidence, path),
+        _deflated_result(rule.deflated_downside_ratio, loss_side.deflated),
+    )
 
 
 def path_condition_results(
@@ -2588,6 +3277,7 @@ def build_variant_outcome(
     variant: Variant,
     folds: Sequence[FoldEvidence],
     path: PathSummary,
+    loss_side: LossSideEvidence | None,
 ) -> VariantOutcome:
     """組ごとに、頻度区分・fold の判定・経路の条件・実験の判定・2 軸・保留の印を決める。
 
@@ -2607,6 +3297,13 @@ def build_variant_outcome(
     数える取引件数は独立口座の fold の run の検証区間の件数の合計（D13-20 (a)）。経路の条件の
     結果は経路が判定できないで終わったとき以外は常に記録し（手順 3 で止まっても収益性の軸の
     観測値として残す。R-16 (4)）、fold の集約条件は手順 4 に来たときだけ結果を作る。
+
+    **研究ポリシーの版 5 以上**（D24 §3.6、仮置き 17・18。`loss_side` が必須で、版 4 以下は
+    `None`）: fold の純損失の床（`fold_floors` の #21）と近傍の床は手順 1（件数不足なら手順 3 で
+    違反の事実を残す）。経路の `PROFIT_FACTOR`（乗算の形）・損失の集中・割り引いた確率は経路の条件と
+    して常に記録し、手順 4 で当てる（「当てない」は満たさない側に数えない）。入力が無い値なし
+    （`NOT_JUDGED`）は手順 2、観測不足（`UNCOMPUTABLE`）は手順 3。収益性・リスクの軸は全条件が
+    「満たす」か「当てない」のときだけ `MET`。**局面は入力に取らない**（RP5-16）。
     """
     if not isinstance(standard, EvaluationStandard):
         raise KernelValueError("build_variant_outcome requires an EvaluationStandard")
@@ -2614,6 +3311,22 @@ def build_variant_outcome(
         raise KernelValueError("build_variant_outcome requires a Variant")
     if not isinstance(path, PathSummary):
         raise KernelValueError("build_variant_outcome requires a PathSummary")
+    v5 = isinstance(standard.validation, ValidationRuleV5)
+    if v5:
+        if not isinstance(loss_side, LossSideEvidence):
+            raise KernelValueError(
+                "研究ポリシーの版 5 以上の判定は LossSideEvidence を受け取る（D24 §3・§4）"
+            )
+        if not isinstance(path, PathSummaryV5):
+            raise KernelValueError(
+                "研究ポリシーの版 5 以上の経路の要約は PathSummaryV5（D24 §3.3）"
+            )
+        if (loss_side.deflated is None) is not (path.end is PathEnd.INCOMPLETE):
+            raise KernelValueError(
+                "割り引いた確率の入力は、判定できないで終えた経路のほかは必ず持つ（D24 §4）"
+            )
+    elif loss_side is not None or isinstance(path, PathSummaryV5):
+        raise KernelValueError("版 4 以下の判定は版 5 の入力を受け取らない（D24 §2.1）")
     items = tuple(folds)
     if not all(isinstance(item, FoldEvidence) for item in items):
         raise KernelValueError("build_variant_outcome requires FoldEvidence values")
@@ -2632,11 +3345,17 @@ def build_variant_outcome(
         selections, tuple(item.fold for item in evidence), standard.sufficiency
     )
     requirement = None if frequency is None else frequency_class_of(frequency, standard.sufficiency)
-    judgements = [_judge_fold(item, standard, requirement) for item in evidence]
+    judgements = [_judge_fold(item, standard, requirement, loss_side) for item in evidence]
     verdicts = [item.verdict for item in judgements]
     conditions: list[ConditionResult] = [c for item in judgements for c in item.conditions]
     shortfalls: list[SufficiencyShortfall] = [s for item in judgements for s in item.shortfalls]
-    path_conditions = _path_results(standard.validation.path, path)
+    path_conditions = (
+        _path_results_v5(standard.validation, evidence, path, loss_side)
+        if isinstance(standard.validation, ValidationRuleV5)
+        and isinstance(path, PathSummaryV5)
+        and loss_side is not None
+        else _path_results(standard.validation.path, path)
+    )
 
     total = sum(item.validation_trades or 0 for item in judgements)
     total_short = requirement is not None and total < requirement.min_validation_trades_total
@@ -2659,9 +3378,12 @@ def build_variant_outcome(
         if judgement.verdict is FoldVerdict.FLOOR_BREACHED and item.validation is not None:
             for result in judgement.conditions:
                 if result.outcome is ConditionOutcome.NOT_MET:
-                    breaches.append(
-                        (item.fold.fold_index, item.validation.trial_index, result.metric)
+                    trial = (
+                        result.neighbor_trial_index
+                        if isinstance(result, NeighborConditionResult)
+                        else item.validation.trial_index
                     )
+                    breaches.append((item.fold.fold_index, trial, result.metric))
     for result in path_conditions:
         if result.scope is ConditionScope.PATH_FLOOR and result.outcome is ConditionOutcome.NOT_MET:
             breaches.append((None, None, result.metric))
@@ -2701,7 +3423,14 @@ def build_variant_outcome(
     aggregate_conditions: list[ConditionResult] = []
     if FoldVerdict.NO_ELIGIBLE_TRIAL in verdicts or (breaches and not total_short):
         verdict = SearchVerdict.BELOW_STANDARD
-    elif FoldVerdict.INCOMPLETE in verdicts or path.end is PathEnd.INCOMPLETE:
+    elif (
+        FoldVerdict.INCOMPLETE in verdicts
+        or path.end is PathEnd.INCOMPLETE
+        or any(item.outcome is ConditionOutcome.NOT_JUDGED for item in path_conditions)
+        # 床を割った fold の近傍の run が失敗していて、検証の合計が最低件数に届かないとき
+        # （手順 1 に入らない）は、手順 2 の「判定できない」が手順 3 より先（D24 §3.6）。
+        or any(item.outcome is ConditionOutcome.NOT_JUDGED for item in conditions)
+    ):
         verdict = SearchVerdict.INCOMPLETE
     elif (
         FoldVerdict.INSUFFICIENT_EVIDENCE in verdicts
@@ -2797,8 +3526,12 @@ def _aggregate_verdict(
             )
         )
     for result in path_conditions:
-        if result.scope is ConditionScope.PATH_AGGREGATE:
-            all_met = all_met and result.outcome is ConditionOutcome.MET
+        if result.scope in _OVERALL_SCOPES:
+            # 「当てない」は満たさない側に数えない（D24 §3.6 の手順 4、仮置き 17）。
+            all_met = all_met and result.outcome in (
+                ConditionOutcome.MET,
+                ConditionOutcome.NOT_APPLICABLE,
+            )
     if not all_met:
         return SearchVerdict.BELOW_STANDARD
     # 用途を見るのはこの1か所だけ（D09 §7.3 の手順4。Q33 決定）。

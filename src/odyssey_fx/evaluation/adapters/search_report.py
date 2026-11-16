@@ -109,7 +109,12 @@ from odyssey_fx.evaluation.domain.metrics import (
     annualized_sharpe_ratio,
     trading_day_ends,
 )
-from odyssey_fx.evaluation.domain.path import PathEnd, PathSegmentEnd, PathSegmentStart
+from odyssey_fx.evaluation.domain.path import (
+    PathEnd,
+    PathSegmentEnd,
+    PathSegmentStart,
+    PathSummaryV5,
+)
 from odyssey_fx.evaluation.domain.regimes import (
     RegimeLabel,
     RegimeReport,
@@ -123,14 +128,18 @@ from odyssey_fx.evaluation.domain.search import (
     ConditionOutcome,
     ConditionResult,
     ConditionScope,
+    DeflatedDownsideResult,
     EvaluationStandard,
     EvaluationStandardV5,
     EvidenceAxis,
     FoldSelection,
     FoldVerdict,
+    LossConcentrationResult,
     MetricCondition,
+    NeighborConditionResult,
     ParameterAssignment,
     ProfitabilityAxis,
+    ProfitFactorResult,
     SearchOutcome,
     SearchPlan,
     SearchVerdict,
@@ -145,6 +154,7 @@ from odyssey_fx.evaluation.domain.search import (
     TrialRunRecord,
     TrialStatus,
     TrialUnitKey,
+    ValidationRuleV5,
     ValidationUnitEvaluation,
     VariantOutcome,
     count_prior_executions,
@@ -152,6 +162,7 @@ from odyssey_fx.evaluation.domain.search import (
     derive_trial_status,
     finished_line_of,
     frequency_class_of,
+    grid_neighbors,
     interim_floor_results,
     longest_idle_period,
     median_of,
@@ -375,8 +386,36 @@ def _result_text(result: ConditionResult) -> str:
     if result.outcome is ConditionOutcome.UNCOMPUTABLE:
         reason = None if result.unavailable_reason is None else result.unavailable_reason.value
         return f"値なし（{reason}）→ {_code(result.outcome.value)}"
+    if result.outcome is ConditionOutcome.NOT_JUDGED:
+        reason = None if result.unavailable_reason is None else result.unavailable_reason.value
+        return f"判定できない（{reason}）→ {_code(result.outcome.value)}"
+    if isinstance(result, DeflatedDownsideResult) and result.observed is not None:
+        # 確率は保存値のまま出す（閾値の近くで表示の丸めが結果と食い違わないように）。
+        return f"{format(result.observed, 'f')} → {_code(result.outcome.value)}"
+    if isinstance(result, ProfitFactorResult) and result.observed is None:
+        return f"負け取引なし → {_code(result.outcome.value)}"
     observed = "" if result.observed is None else _decimal_text(result.metric, result.observed)
+    if result.outcome is ConditionOutcome.NOT_APPLICABLE:
+        prefix = f"{observed}（観測値）" if observed else ""
+        return f"{prefix}当てない → {_code(result.outcome.value)}"
     return f"{observed} → {_code(result.outcome.value)}"
+
+
+def _is_v5(inputs: _Inputs) -> bool:
+    """研究ポリシーの版 5 以上の評価基準か（D24。版 4 以下の表示は変えない）。"""
+    return isinstance(inputs.standard.validation, ValidationRuleV5)
+
+
+def _scope_label(result: ConditionResult) -> str:
+    """結果の範囲（fold・近傍の試行・全体）の表示。"""
+    if isinstance(result, NeighborConditionResult):
+        neighbor = (
+            "近傍なし"
+            if result.neighbor_trial_index is None
+            else f"近傍の試行 {result.neighbor_trial_index}"
+        )
+        return f"fold {result.fold_index}（{neighbor}）"
+    return "全体" if result.fold_index is None else str(result.fold_index)
 
 
 def _scrub(text: str, roots: Sequence[Path]) -> str:
@@ -1028,7 +1067,10 @@ def _verdict_lines(inputs: _Inputs) -> list[str]:
     if total_breaches:
         lines.append("")
         lines.append(
-            "**検証の合計の取引件数が最低件数に届かないまま、ドローダウンの条件を割った"
+            "**検証の合計の取引件数が最低件数に届かないまま、損失の床（ドローダウン・区間末の評価を"
+            "含む純損失・近傍の床）を割った（判定は証拠不足。D13-14 (a)、D24 §3.6）**:"
+            if _is_v5(inputs)
+            else "**検証の合計の取引件数が最低件数に届かないまま、ドローダウンの条件を割った"
             "（判定は証拠不足。D13-14 (a)）**:"
         )
         lines.append("")
@@ -1046,11 +1088,31 @@ def _verdict_lines(inputs: _Inputs) -> list[str]:
                 and result.fold_index == item.fold_index
                 and result.metric is item.metric
                 and result.outcome is ConditionOutcome.NOT_MET
+                and (
+                    not _is_v5(inputs)
+                    or result.fold_index is None
+                    or inputs.selections[result.fold_index].selected_trial_index == item.trial_index
+                )
             ]
+            found.extend(
+                result
+                for result in search.condition_results
+                if isinstance(result, NeighborConditionResult)
+                and result.fold_index == item.fold_index
+                and result.neighbor_trial_index == item.trial_index
+                and result.metric is item.metric
+                and result.outcome is ConditionOutcome.NOT_MET
+            )
             for result in found:
                 rows.append(
                     [
-                        "経路" if item.fold_index is None else f"fold {item.fold_index}",
+                        "経路"
+                        if item.fold_index is None
+                        else (
+                            f"fold {item.fold_index}（近傍の試行 {item.trial_index}）"
+                            if isinstance(result, NeighborConditionResult)
+                            else f"fold {item.fold_index}"
+                        ),
                         result.metric.value,
                         ""
                         if result.observed is None
@@ -1108,7 +1170,7 @@ def _reason_lines(inputs: _Inputs) -> list[str]:
     failed = [
         [
             item.scope.value,
-            "全体" if item.fold_index is None else item.fold_index,
+            _scope_label(item),
             item.metric.value,
             "" if item.observed is None else _decimal_text(item.metric, item.observed),
             f"{item.comparator.value} {_decimal_text(item.metric, item.threshold)}",
@@ -1121,6 +1183,8 @@ def _reason_lines(inputs: _Inputs) -> list[str]:
         lines.extend(_table(["範囲", "fold", "指標", "値", "閾値", "注記"], failed))
     else:
         lines.append("なし。")
+    if _is_v5(inputs):
+        lines.extend(_v5_reason_lines(search))
     lines.extend(["", "### 証拠不足の理由", ""])
     if search.shortfalls:
         lines.extend(
@@ -1172,6 +1236,21 @@ def _reason_lines(inputs: _Inputs) -> list[str]:
         unit = _unit(inputs.variant, index, TrialPhase.VALIDATION, selection.selected_trial_index)
         record = inputs.runs.get(unit)
         cause = _invalid_cause(record)
+        failed_neighbors = sorted(
+            {
+                item.neighbor_trial_index
+                for item in search.condition_results
+                if isinstance(item, NeighborConditionResult)
+                and item.fold_index == index
+                and item.outcome is ConditionOutcome.NOT_JUDGED
+                and item.neighbor_trial_index is not None
+            }
+        )
+        if not cause and failed_neighbors:
+            cause = (
+                f"近傍の試行 {'、'.join(str(item) for item in failed_neighbors)} の選定区間の"
+                "run・評価・事後検査の結果が欠けた（近傍の床を判定できない。D24 §3.5）"
+            )
         if not cause:
             missing = [
                 metric.value
@@ -1192,6 +1271,43 @@ def _reason_lines(inputs: _Inputs) -> list[str]:
                 "集約条件は判定していない（理由: 実験の判定が手順1〜3 で決まったため。D09 §7.3）。",
             ]
         )
+    return lines
+
+
+def _v5_reason_lines(search: VariantOutcome) -> list[str]:
+    """版 5 以上の「当てない」と「判定できない」の条件（D24 §3.6・§9.2。仮置き 17）。"""
+    lines = ["", "### 当てなかった条件（D24 §3.4・§3.5。「満たす」とは書かない）", ""]
+    skipped = [
+        [
+            item.scope.value,
+            _scope_label(item),
+            item.metric.value,
+            "経路の純利益が当てる閾に届かない"
+            if isinstance(item, LossConcentrationResult)
+            else "判定に使える近傍が無い",
+        ]
+        for item in search.condition_results
+        if item.outcome is ConditionOutcome.NOT_APPLICABLE
+    ]
+    if skipped:
+        lines.extend(_table(["範囲", "fold", "指標", "理由"], skipped))
+    else:
+        lines.append("なし。")
+    lines.extend(["", "### 判定できなかった条件（D24 §3.6 の手順 2）", ""])
+    unjudged = [
+        [
+            item.scope.value,
+            _scope_label(item),
+            item.metric.value,
+            "なし" if item.unavailable_reason is None else item.unavailable_reason.value,
+        ]
+        for item in search.condition_results
+        if item.outcome is ConditionOutcome.NOT_JUDGED
+    ]
+    if unjudged:
+        lines.extend(_table(["範囲", "fold", "指標", "値なしの理由"], unjudged))
+    else:
+        lines.append("なし。")
     return lines
 
 
@@ -1303,6 +1419,9 @@ def _fold_lines(inputs: _Inputs) -> list[str]:
         *(f"最低条件 {_condition_label(condition)}" for condition in floors),
     ]
     lines = _table(header, _fold_rows(inputs))
+    if _is_v5(inputs):
+        lines.extend(["", "### 近傍の床（選定区間。判定に使う。D24 §3.5）", ""])
+        lines.extend(_neighbor_floor_lines(inputs))
     lines.extend(
         [
             "",
@@ -1313,6 +1432,43 @@ def _fold_lines(inputs: _Inputs) -> list[str]:
         ]
     )
     return lines
+
+
+def _neighbor_floor_lines(inputs: _Inputs) -> list[str]:
+    """近傍の床の結果（fold・近傍の試行・条件ごと）とコンパイル拒否で外した近傍（D24 §3.5）。"""
+    search = inputs.search
+    if search is None:
+        return [_STOPPED + "。"]
+    neighbors = grid_neighbors(inputs.plan)
+    rows: list[list[object]] = []
+    for fold in inputs.folds:
+        selection = inputs.selections.get(fold.fold_index)
+        if selection is None or selection.selected_trial_index is None:
+            continue
+        status_of = {entry[0]: entry[2] for entry in selection.inputs}
+        for trial in neighbors[selection.selected_trial_index]:
+            if status_of.get(trial) is CandidateStatus.EXCLUDED_TRIAL_FAILED:
+                rows.append(
+                    [fold.fold_index, trial, "なし", "判定から外した（コンパイル拒否）", "なし"]
+                )
+        for item in search.condition_results:
+            if isinstance(item, NeighborConditionResult) and item.fold_index == fold.fold_index:
+                rows.append(
+                    [
+                        fold.fold_index,
+                        "近傍なし"
+                        if item.neighbor_trial_index is None
+                        else item.neighbor_trial_index,
+                        item.metric.value,
+                        _result_text(item),
+                        f"{item.comparator.value} {_decimal_text(item.metric, item.threshold)}",
+                    ]
+                )
+    if not rows:
+        return [
+            "近傍の床の結果は無い（検証結果のある fold が無い、または fold の判定の前に止まった）。"
+        ]
+    return _table(["fold", "近傍の試行", "指標", "値 → 結果", "閾値"], rows)
 
 
 def _fold_state(inputs: _Inputs, fold: int) -> str:
@@ -1539,6 +1695,126 @@ def _aggregate_lines(inputs: _Inputs) -> list[str]:
         lines.extend(_table(["区分", "指標", "値 → 結果", "閾値"], rows))
     else:
         lines.append("経路の条件は無い（評価基準の validation.path が空）。")
+    if _is_v5(inputs):
+        lines.extend(_v5_overall_lines(search))
+    return lines
+
+
+def _v5_overall_lines(search: VariantOutcome) -> list[str]:
+    """版 5 以上の経路の全体の水準の材料（PROFIT_FACTOR・損失の集中・割り引いた確率。D24 §3.3・
+    §3.4・§4。値は結末記録の写しで、計算し直さない）。"""
+    lines: list[str] = ["", "#### 経路の取引の集合と PROFIT_FACTOR（D24 §3.3。乗算の形）", ""]
+    path = search.path
+    totals = path.trades if isinstance(path, PathSummaryV5) else None
+    if totals is None:
+        lines.append("経路の取引の集合の要約が無い。")
+    else:
+        lines.extend(
+            _table(
+                [
+                    "勝ちの合計 W",
+                    "負けの合計の絶対値 L",
+                    "完了取引",
+                    "区間の終わりの仮決済",
+                    "勝ち",
+                    "負け",
+                ],
+                [
+                    [
+                        _money_text(totals.wins.amount),
+                        _money_text(totals.losses.amount),
+                        totals.closed_count,
+                        totals.settlement_count,
+                        totals.win_count,
+                        totals.loss_count,
+                    ]
+                ],
+            )
+        )
+        lines.append("")
+        lines.append(
+            "- 判定は「W ≥ 閾値 × L」で比べる（負けの取引が無い経路は満たす。決定 166）。経路の"
+            "条件の表の値 W ÷ L は表示で、比べ方には使わない。"
+        )
+    lines.extend(["", "#### 損失の集中（D24 §3.4）", ""])
+    concentration = [
+        item for item in search.condition_results if isinstance(item, LossConcentrationResult)
+    ]
+    for item in concentration:
+        detail = item.loss_concentration
+        lines.extend(
+            _table(
+                [
+                    "最悪の fold の損失 Lw",
+                    "最悪の fold",
+                    "経路の純収益率 P",
+                    "当てる閾",
+                    "倍数",
+                    "結果",
+                ],
+                [
+                    [
+                        _optional_fixed(detail.worst_fold_loss),
+                        "なし" if detail.worst_fold_index is None else detail.worst_fold_index,
+                        _optional_fixed(detail.path_net_return),
+                        _fixed(detail.applies_when_at_least),
+                        _fixed(item.threshold),
+                        _result_text(item),
+                    ]
+                ],
+            )
+        )
+    lines.extend(["", "#### 試行数で割り引いた確率（D24 §4。台帳の累計は使わない）", ""])
+    deflated = [
+        item for item in search.condition_results if isinstance(item, DeflatedDownsideResult)
+    ]
+    for result in deflated:
+        found = result.deflated_downside
+        lines.extend(
+            _table(
+                ["材料", "値"],
+                [
+                    ["試行の数 M（コンパイル拒否を除く）", found.trial_count],
+                    [
+                        "経路の取引日の数 T",
+                        "なし" if found.observations is None else found.observations,
+                    ],
+                    ["経路の下側偏差の比率 S（日次）", _optional_fixed(found.ratio)],
+                    ["推定量の標準誤差 σ（デルタ法）", _optional_fixed(found.sigma)],
+                    [
+                        "試行どうしの平均の相関 ρ̄（0〜1 に切る）",
+                        _optional_fixed(found.mean_correlation),
+                    ],
+                    [
+                        "相関に入れた対・外した対",
+                        f"{found.correlation_pairs}・{found.excluded_pairs}",
+                    ],
+                    ["有効な試行の数 N", _optional_fixed(found.effective_trials)],
+                    [
+                        "試行どうしの比率のばらつき V（fold の数）",
+                        f"{_optional_fixed(found.variance)}（{found.variance_folds}）",
+                    ],
+                    ["基準値 S*", _optional_fixed(found.benchmark)],
+                    [
+                        "確率 P_d",
+                        "定まらない"
+                        if found.probability is None
+                        else format(found.probability, "f"),
+                    ],
+                    [
+                        "結果",
+                        f"{_result_text(result)}"
+                        f"（閾値 {result.comparator.value} {_fixed(result.threshold)}）",
+                    ],
+                ],
+            )
+        )
+        lines.append("")
+        lines.append(
+            "- 仮定（D24 §4.5）: 日次の収益率が独立同分布（自己相関があると σ を過小に見積もる）。"
+            "選定区間での試行どうしのばらつきと相関が、選んだ試行の経路にも当てはまる。Z(N) は"
+            "独立な試行の最大の近似。取引が少なく大半の日が建玉なしだと σ が大きく、確率は下がる。"
+        )
     return lines
 
 
