@@ -1519,3 +1519,152 @@ def test_ct28_a_resume_reads_the_usdjpy_week_another_candidate_consumed_meanwhil
     other = _run_as(ws, gbp, _converting_runner(ws, warmup=timedelta(0)), mode=FinalMode.DRY_RUN)
     assert other.exit_code == EXIT_OK, other.detail
     assert any("消費する範囲: [2024-01-07T22:00:00Z" in line for line in other.lines), other.lines
+
+
+# --- 研究ポリシー第 5 版の条件の当て方（D09 §9.10.16。決定 212〜220）の記録の側 ---------------
+#
+# 判定の関数の側（FV5-T1〜FV5-T5）は `tests/unit/evaluation/test_final_validation_v5.py`。ここは
+# 記録・台帳・消費の対象（FV5-T1 の記録の固定値、FV5-T5 の記録、FV5-T6、FV5-T7）を、人工の run
+# （`FakeRunner`）で確かめる。
+
+#: 版 4 以下の候補の最終検証の記録の組の項目（今の形。FV5-T1 の固定値）。
+_V4_VARIANT_KEYS = {
+    "run_id",
+    "run_evaluation_id",
+    "result_digest",
+    "verdict",
+    "profitability",
+    "evidence",
+    "reasons",
+    "hold",
+}
+
+
+def _v5_facts(ws: FinalWorkspace) -> CandidateFacts:
+    from tests.fixtures.evaluation.loss_side_units import v5_standard
+
+    rule = v5_standard()
+    return ws.facts(
+        standard=rule,
+        requirements=Paired.build(lambda variant: rule.sufficiency.classes[0]),
+    )
+
+
+def _v5_runner(ws: FinalWorkspace) -> FakeRunner:
+    from decimal import Decimal
+
+    return FakeRunner(research=ws.research, v5_settled=Decimal("1050000"))
+
+
+def test_fv5_t1_the_record_of_a_v4_candidate_keeps_its_shape(ws: FinalWorkspace) -> None:
+    assert _run(ws).exit_code == EXIT_OK
+    record = json.loads((_final(ws) / FINAL_EVALUATION_FILE).read_text())
+    assert record["schema_version"] == 1
+    for block in record["variants"].values():
+        assert set(block) == _V4_VARIANT_KEYS
+    assert "研究ポリシー第 5 版" not in (_final(ws) / REPORT_FILE).read_text()
+
+
+def test_fv5_t5_the_record_of_a_v5_candidate_holds_the_condition_results(
+    ws: FinalWorkspace,
+) -> None:
+    """版 2 の記録: 経路の条件（PROFIT_FACTOR は取引の集合つき）・区間の損失の床・研究期間だけの
+    条件の一覧。局面の表は出さない。画面に指標の値を出さない（D09 §9.10.7）。"""
+    outcome = _run(ws, _v5_runner(ws), facts=_v5_facts(ws))
+    assert outcome.exit_code == EXIT_OK, outcome.detail
+    _no_price(outcome)
+    final = _final(ws)
+    record = json.loads((final / FINAL_EVALUATION_FILE).read_text())
+    assert record["schema_version"] == 2
+    assert record["combined_verdict"]["verdict"] == "MEETS_STANDARD"
+    for block in record["variants"].values():
+        assert set(block) == {
+            *_V4_VARIANT_KEYS,
+            "conditions",
+            "interval_floors",
+            "research_only_conditions",
+        }
+        assert block["research_only_conditions"] == [
+            "NEIGHBOR_FLOOR",
+            "LOSS_CONCENTRATION",
+            "DEFLATED_DOWNSIDE_RATIO",
+        ]
+        scopes = {item["scope"] for item in block["conditions"]}
+        assert scopes == {"PATH_FLOOR", "PATH_AGGREGATE"}  # 当てない条件の結果を作らない
+        (factor,) = [item for item in block["conditions"] if item["metric"] == "PROFIT_FACTOR"]
+        assert factor["outcome"] == "MET" and factor["profit_factor"]["settlement_count"] == 1
+        floors = block["interval_floors"]
+        assert [item["interval_index"] for item in floors] == list(range(len(floors)))
+        assert floors[0]["start"] == record["scoring_start"]
+        assert floors[-1]["end"] == record["consumption"]["end"]
+        assert {item["outcome"] for item in floors} == {"MET"}
+    text = (final / FINAL_EVALUATION_FILE).read_text() + (final / REPORT_FILE).read_text()
+    assert "regime" not in text.lower() and "局面の表を出す" not in text
+    report = (final / REPORT_FILE).read_text()
+    assert "研究期間だけの条件" in report and "LOSS_CONCENTRATION" in report
+
+
+def test_fv5_t6_the_ledger_row_of_a_v5_candidate_has_the_same_shape(tmp_path: Path) -> None:
+    """台帳の行の形と鎖は版 4 の候補と同じ（決定 219）。"""
+    v4 = build_workspace(tmp_path / "v4")
+    v5 = build_workspace(tmp_path / "v5")
+    assert _run(v4).exit_code == EXIT_OK
+    assert _run(v5, _v5_runner(v5), facts=_v5_facts(v5)).exit_code == EXIT_OK
+    (row4,) = read_final_ledger(v4.repo).rows
+    (row5,) = read_final_ledger(v5.repo).rows
+    assert set(row5.payload) == set(row4.payload)
+    assert row5.payload["schema_version"] == row4.payload["schema_version"]
+    assert row5.payload["prev"] == row4.payload["prev"]  # 鎖の始まりも同じ
+
+
+@pytest.mark.parametrize("v5", [False, True])
+def test_fv5_t6_a_record_without_a_schema_version_is_read_as_version_1(
+    ws: FinalWorkspace, v5: bool
+) -> None:
+    """書式の版の無い既存の記録（版 1 として読む）と版 2 の記録から、台帳の行と report.md を
+    書き足せる（FV5-6）。"""
+    if v5:
+        assert _run(ws, _v5_runner(ws), facts=_v5_facts(ws)).exit_code == EXIT_OK
+    else:
+        assert _run(ws).exit_code == EXIT_OK
+    final = _final(ws)
+    if not v5:
+        record = json.loads((final / FINAL_EVALUATION_FILE).read_text())
+        del record["schema_version"]
+        (final / FINAL_EVALUATION_FILE).write_text(json.dumps(record))
+    (final / REPORT_FILE).unlink()
+    (ws.repo / "research" / "final_validations.jsonl").write_bytes(b"")
+    outcome = _run(ws)
+    assert outcome.reason is FinalReason.ALREADY_VALIDATED, outcome.detail
+    assert _ledger(ws) == ["COMPLETED"]
+    assert (final / REPORT_FILE).exists()
+
+
+def test_fv5_t6_a_record_of_an_unknown_schema_version_is_not_read(ws: FinalWorkspace) -> None:
+    assert _run(ws).exit_code == EXIT_OK
+    final = _final(ws)
+    record = json.loads((final / FINAL_EVALUATION_FILE).read_text())
+    record["schema_version"] = 3
+    (final / FINAL_EVALUATION_FILE).write_text(json.dumps(record))
+    (ws.repo / "research" / "final_validations.jsonl").write_bytes(b"")
+    outcome = _run(ws)
+    assert outcome.exit_code == EXIT_FAILED and "schema_version" in outcome.detail
+    assert _ledger(ws) == []
+
+
+def test_fv5_t7_the_window_prediction_and_consumption_are_made_as_for_a_v4_candidate(
+    tmp_path: Path,
+) -> None:
+    """消費の対象・窓・予測 RunId・読む並び・run の呼び出しは版 4 の候補と同じ（封印の読みと run が
+    増えない）。"""
+    v4 = build_workspace(tmp_path / "v4")
+    v5 = build_workspace(tmp_path / "v5")
+    runner4 = FakeRunner(research=v4.research)
+    runner5 = _v5_runner(v5)
+    assert _run(v4, runner4).exit_code == EXIT_OK
+    assert _run(v5, runner5, facts=_v5_facts(v5)).exit_code == EXIT_OK
+    permits = [json.loads((_final(item) / PERMIT_FILE).read_text()) for item in (v4, v5)]
+    for key in ("targets", "reads", "predicted", "consumption", "scoring_start", "t_fix"):
+        assert permits[0][key] == permits[1][key], key
+    assert runner4.calls == runner5.calls == ["prepare", "plan", "run:standard", "run:candidate"]
+    assert len(_rows(v4)) == len(_rows(v5)) == _TARGETS

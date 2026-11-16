@@ -92,15 +92,21 @@ from odyssey_fx.evaluation.adapters.fs_store import (
     read_unit_records,
     run_directory,
 )
-from odyssey_fx.evaluation.application.evaluate_run import EvaluateRun, equity_series
+from odyssey_fx.evaluation.application.evaluate_run import (
+    EvaluateRun,
+    equity_points,
+    equity_series,
+)
 from odyssey_fx.evaluation.application.final_recompute import (
     RecordedResearch,
     recompute_research,
 )
+from odyssey_fx.evaluation.application.loss_side import run_trade_totals
 from odyssey_fx.evaluation.domain.experiment import ExperimentManifest, ExperimentOutcome
 from odyssey_fx.evaluation.domain.final_validation import (
     WINDOW_START,
     FinalEvaluationPermit,
+    FinalLossSideMaterial,
     FinalReason,
     FinalRunSummary,
     FinalWindow,
@@ -109,6 +115,7 @@ from odyssey_fx.evaluation.domain.final_validation import (
 )
 from odyssey_fx.evaluation.domain.metrics import METRIC_SET_VERSIONS
 from odyssey_fx.evaluation.domain.path import path_metrics
+from odyssey_fx.evaluation.domain.search import ValidationRuleV5
 from odyssey_fx.evaluation.domain.status import EvaluationStatus
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
 from odyssey_fx.marketdata.adapters.parquet_store import ParquetSnapshotStore
@@ -649,7 +656,15 @@ class RecordedFinalRunner:
         manifest = repository.read_manifest(result.run_id)
         if not isinstance(manifest, RunManifest):
             raise KernelValueError("the run manifest of the final-validation run cannot be read")
-        summary = _summary(result, report.status, repository, planned.config)
+        summary = _summary(
+            result,
+            report.status,
+            repository,
+            planned.config,
+            scoring=permit.window.scoring
+            if isinstance(facts.standard.validation, ValidationRuleV5)
+            else None,
+        )
         return FinalRunOutput(
             run_id=str(result.run_id),
             run_evaluation_id=str(report.manifest.run_evaluation_id),
@@ -904,8 +919,16 @@ def _summary(
     status: EvaluationStatus,
     repository: FileSystemResultRepository,
     config: RunConfig,
+    *,
+    scoring: Interval | None = None,
 ) -> FinalRunSummary:
-    """組の run の要約（仮置き R4b-7: 終わりの決済の費用を引いた後の資産の点を系列に足す）。"""
+    """組の run の要約（仮置き R4b-7: 終わりの決済の費用を引いた後の資産の点を系列に足す）。
+
+    `scoring` は研究ポリシーの版 5 を指す候補の run の採点区間（D09 §9.10.16。版 4 以下は `None`）。
+    そのときだけ、損失の側の材料（時刻付きの資産の系列、費用を引いた後の終わりの資産、完了取引と
+    run の終わりの仮決済の集合の要約。決定 212・214）を同じ run の成果物から足す。版 4 以下は今の
+    まま（FV5-T1）。
+    """
     summaries = result.summaries
     if (
         result.status is not RunStatus.COMPLETED
@@ -917,11 +940,30 @@ def _summary(
         )
     initial = config.account.initial_balance
     settled = initial + summaries.realized + summaries.hypothetical_closed
-    equities = equity_series(repository, result.run_id)
-    if isinstance(equities, str):
-        raise KernelValueError(equities)
-    metrics = path_metrics(initial, [*equities, settled.amount], settled)
-    return FinalRunSummary(metrics=metrics, trade_count=result.trade_count)
+    if scoring is None:
+        equities = equity_series(repository, result.run_id)
+        if isinstance(equities, str):
+            raise KernelValueError(equities)
+        metrics = path_metrics(initial, [*equities, settled.amount], settled)
+        return FinalRunSummary(metrics=metrics, trade_count=result.trade_count)
+    points = equity_points(repository, result.run_id)
+    if isinstance(points, str):
+        raise KernelValueError(points)
+    metrics = path_metrics(initial, [*(amount for _, amount in points), settled.amount], settled)
+    material = FinalLossSideMaterial(
+        scoring=scoring,
+        initial_balance=initial,
+        equity_points=points,
+        settled_equity=settled,
+        trades=run_trade_totals(
+            repository,
+            result.run_id,
+            initial_balance=initial,
+            settled_equity=settled,
+            settlement_lines=summaries.hypothetical_close_lines,
+        ),
+    )
+    return FinalRunSummary(metrics=metrics, trade_count=result.trade_count, loss_side=material)
 
 
 def _warmup(

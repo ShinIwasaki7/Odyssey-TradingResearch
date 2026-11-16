@@ -44,6 +44,7 @@ import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -69,6 +70,8 @@ from odyssey_fx.app.final_validation_records import (
     FINAL_LEDGER_PATH,
     FINAL_LOCK_FILE,
     PERMIT_FILE,
+    RECORD_SCHEMA_VERSION_V4,
+    RECORD_SCHEMA_VERSION_V5,
     REPORT_FILE,
     FinalLedger,
     FinalLedgerError,
@@ -80,10 +83,12 @@ from odyssey_fx.app.final_validation_records import (
     parse_final_ledger,
     read_attempts,
     read_final_ledger,
+    record_schema_version,
     write_json_once,
 )
 from odyssey_fx.app.holdout_access_log import ACCESS_LOG_FILE, MANIFEST_FILE, GitHoldoutAccessLog
 from odyssey_fx.app.sealed_intake import parse_consumption_bytes
+from odyssey_fx.backtest.trace.recorder import plain_decimal
 from odyssey_fx.common.canonical import encode
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.common.ids import ExperimentId
@@ -124,6 +129,7 @@ from odyssey_fx.evaluation.domain.final_validation import (
     FinalRunSummary,
     FinalVariantOutcome,
     FinalWindow,
+    IntervalFloorResult,
     PredictedRun,
     SealedPartitionFact,
     WindowRefusal,
@@ -136,11 +142,14 @@ from odyssey_fx.evaluation.domain.forward_validation import FORWARD_VALIDATION_I
 from odyssey_fx.evaluation.domain.research_policy import current_standard_version
 from odyssey_fx.evaluation.domain.search import (
     CombinedVerdict,
+    ConditionResult,
     EvaluationStandard,
     FrequencyClass,
+    ProfitFactorResult,
     SearchVerdict,
     StandardPurpose,
     TrialLedgerEvent,
+    ValidationRuleV5,
     finished_line_of,
     frequency_class_of,
     started_line_of,
@@ -1115,6 +1124,8 @@ def _backfill_completed(ctx: _Context) -> None:
         return
     try:
         record = json.loads(data.decode("utf-8"))
+        # 版 1・2 のどちらの記録からも同じ形の台帳の行を書き足す（決定 219。FV5-6）。
+        record_schema_version(record)
         consumption = Interval(
             start=UtcTime.parse(record["consumption"]["start"]),
             end=UtcTime.parse(record["consumption"]["end"]),
@@ -2155,11 +2166,15 @@ def _record_payload(
             "evidence": item.evidence.value,
             "reasons": list(item.reasons),
             "hold": item.hold,
+            **(_v5_variant_payload(item) if v5 else {}),
         }
 
+    # 研究ポリシーの版 5 を指す候補は記録の書式の版 2（第 5 版の条件ごとの結果を足す。D09
+    # §9.10.16.5 の FV5-6、決定 219・220）。版 4 以下は今の形のまま版 1（FV5-T1）。
+    v5 = isinstance(facts.standard.validation, ValidationRuleV5)
     window = permit.window
     return {
-        "schema_version": 1,
+        "schema_version": RECORD_SCHEMA_VERSION_V5 if v5 else RECORD_SCHEMA_VERSION_V4,
         "permit_id": permit.permit_id,
         "candidate": candidate_payload(permit.candidate),
         "t_fix": str(fixation.t_fix),
@@ -2182,6 +2197,70 @@ def _record_payload(
         },
         "checks": {"P2F": "PASSED", "P4F": "PASSED", "P5": "PASSED"},
         **extras,
+    }
+
+
+def _decimal_text(value: Decimal | None) -> str | None:
+    return None if value is None else plain_decimal(value)
+
+
+def _condition_payload(item: ConditionResult) -> dict[str, Any]:
+    """版 5 の経路の条件 1 件の結果（記録の書式の版 2。D09 §9.10.16.2）。"""
+    payload: dict[str, Any] = {
+        "scope": item.scope.value,
+        "metric": item.metric.value,
+        "comparator": item.comparator.value,
+        "threshold": plain_decimal(item.threshold),
+        "observed": _decimal_text(item.observed),
+        "outcome": item.outcome.value,
+        "unavailable_reason": None
+        if item.unavailable_reason is None
+        else item.unavailable_reason.value,
+    }
+    if isinstance(item, ProfitFactorResult):
+        totals = item.profit_factor
+        payload["profit_factor"] = {
+            "currency": str(totals.wins.currency),
+            "wins": plain_decimal(totals.wins.amount),
+            "losses": plain_decimal(totals.losses.amount),
+            "closed_count": totals.closed_count,
+            "settlement_count": totals.settlement_count,
+            "win_count": totals.win_count,
+            "loss_count": totals.loss_count,
+        }
+    return payload
+
+
+def _interval_payload(item: IntervalFloorResult) -> dict[str, Any]:
+    """区間の損失の床 1 件の結果（決定 212。FV5-2・FV5-3）。"""
+    return {
+        "interval_index": item.interval.interval_index,
+        "start": str(item.interval.interval.start),
+        "end": str(item.interval.interval.end),
+        "partial": item.interval.partial,
+        "metric": item.metric.value,
+        "comparator": item.comparator.value,
+        "threshold": plain_decimal(item.threshold),
+        "start_equity": plain_decimal(item.start_equity),
+        "end_equity": plain_decimal(item.end_equity),
+        "observed": _decimal_text(item.observed),
+        "outcome": item.outcome.value,
+        "unavailable_reason": None
+        if item.unavailable_reason is None
+        else item.unavailable_reason.value,
+    }
+
+
+def _v5_variant_payload(item: FinalVariantOutcome) -> dict[str, Any]:
+    """版 5 を指す候補の組の記録に足す項目（D09 §9.10.16.2・§9.10.16.5 の FV5-5。決定 213〜217）。
+
+    経路の条件の結果（`PROFIT_FACTOR` は取引の集合の要約つき）、区間の損失の床の結果、研究期間
+    だけの条件の名前の一覧（結果は作らない）。局面の表は出さない（決定 217）。
+    """
+    return {
+        "conditions": [_condition_payload(condition) for condition in item.conditions],
+        "interval_floors": [_interval_payload(result) for result in item.interval_floors],
+        "research_only_conditions": [scope.value for scope in item.research_only],
     }
 
 
@@ -2210,6 +2289,23 @@ def _report_text(record: Mapping[str, Any]) -> str:
             f"証拠の軸 {block['evidence']}、run {block['run_id']}）"
         )
     lines.append(f"- 組の判定: {record['combined_verdict']['verdict']}")
+    if record_schema_version(record) == RECORD_SCHEMA_VERSION_V5:
+        lines.extend(["", "## 研究ポリシー第 5 版の条件（D09 §9.10.16）", ""])
+        for variant, block in record["variants"].items():
+            floors = block["interval_floors"]
+            missed = sum(1 for item in floors if item["outcome"] != "MET")
+            lines.append(
+                f"- {variant}: 区間の損失の床 {len(floors)} 件のうち満たさない・値なし"
+                f" {missed} 件、経路の条件 "
+                + "、".join(f"{item['metric']} {item['outcome']}" for item in block["conditions"])
+            )
+        names: list[str] = []
+        for block in record["variants"].values():
+            names.extend(name for name in block["research_only_conditions"] if name not in names)
+        lines.append(
+            f"- 研究期間だけの条件（最終検証では当てない。結果を作らない）: {'、'.join(names)}"
+        )
+        lines.append("- 値は final_evaluation.json に書く（局面の表は出さない）")
     lines.append("")
     lines.append("最終検証の結果も、実運用で利益が出ることの証明ではない（D09 §9.9 の規則 4）。")
     return "\n".join(lines) + "\n"

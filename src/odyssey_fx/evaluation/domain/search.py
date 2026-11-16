@@ -236,6 +236,7 @@ __all__ = [
     "has_finished_line",
     "hold_mark_of",
     "path_condition_results",
+    "path_condition_results_v5",
     "interim_floor_results",
     "is_selectable_metric",
     "last_digest",
@@ -3045,11 +3046,16 @@ _OVERALL_SCOPES: Final = frozenset(
 )
 
 
-def _profit_factor_result(condition: MetricCondition, path: PathSummaryV5) -> ProfitFactorResult:
-    """経路の `PROFIT_FACTOR` の条件（D24 §3.3。乗算の形、負け無しは満たす。決定 166）。"""
-    totals = path.trades
-    if totals is None:  # PathSummaryV5 が保証する（判定できない経路はここに来ない）
-        raise KernelValueError("the path has no trade totals (D24 §3.3)")
+def _profit_factor_result(
+    condition: MetricCondition, totals: PathTradeTotals
+) -> ProfitFactorResult:
+    """`PROFIT_FACTOR` の条件（D24 §3.3。乗算の形、負け無しは満たす。決定 166）。
+
+    `totals` は経路の取引の集合の要約（探索の経路）か、最終検証の 1 本の run の完了取引と run の
+    終わりの仮決済の集合の要約（D09 §9.10.16。決定 214）。
+    """
+    if not isinstance(totals, PathTradeTotals):
+        raise KernelValueError("the PROFIT_FACTOR condition requires a PathTradeTotals")
     observed: Decimal | None = None
     reason: MetricUnavailableReason | None = None
     if totals.trade_count == 0:
@@ -3207,29 +3213,48 @@ def _path_results_v5(
         return ()
     if loss_side.deflated is None:  # build_variant_outcome が確かめる
         raise KernelValueError("a judged v5 path needs its deflated inputs")
+    totals = path.trades
+    if totals is None:  # PathSummaryV5 が保証する（判定できない経路はここに来ない）
+        raise KernelValueError("the path has no trade totals (D24 §3.3)")
+    return (
+        *path_condition_results_v5(rule.path, path.metric, totals),
+        _loss_concentration_result(rule.loss_concentration, evidence, path),
+        _deflated_result(rule.deflated_downside_ratio, loss_side.deflated),
+    )
+
+
+def path_condition_results_v5(
+    rule: PathRule,
+    metric_of: Callable[[MetricId], MetricValue | None],
+    totals: PathTradeTotals,
+) -> tuple[ConditionResult, ...]:
+    """版 5 以上の経路の条件（最低条件 → 全体の水準）を当てる（D24 §3.1・§3.3）。
+
+    全体の水準の `PROFIT_FACTOR` は取引の集合の要約 `totals` から乗算の形で当て（負け無しは満たす。
+    決定 166）、他の条件は `path_condition_results` と同じく指標の値で比べる。結果は書いた順。
+    探索の経路（`_path_results_v5`）と、版 5 を指す候補の最終検証の 1 本の run（D09 §9.10.16。
+    決定 214。取引の集合は run の完了取引と run の終わりの仮決済）が共有する。
+    """
+    if not isinstance(rule, PathRuleV5):
+        raise KernelValueError("path_condition_results_v5 requires a PathRuleV5 (D24 §2.1)")
     generic = path_condition_results(
         replace(
-            rule.path,
+            rule,
             aggregate=tuple(
-                item for item in rule.path.aggregate if item.metric not in PATH_TRADE_METRICS
+                item for item in rule.aggregate if item.metric not in PATH_TRADE_METRICS
             ),
         ),
-        path.metric,
+        metric_of,
     )
     floors = [item for item in generic if item.scope is ConditionScope.PATH_FLOOR]
     plain = iter(item for item in generic if item.scope is ConditionScope.PATH_AGGREGATE)
     overall: list[ConditionResult] = []
-    for condition in rule.path.aggregate:
+    for condition in rule.aggregate:
         if condition.metric in PATH_TRADE_METRICS:
-            overall.append(_profit_factor_result(condition, path))
+            overall.append(_profit_factor_result(condition, totals))
         else:
             overall.append(next(plain))
-    return (
-        *floors,
-        *overall,
-        _loss_concentration_result(rule.loss_concentration, evidence, path),
-        _deflated_result(rule.deflated_downside_ratio, loss_side.deflated),
-    )
+    return (*floors, *overall)
 
 
 def path_condition_results(

@@ -32,6 +32,7 @@ from odyssey_fx.app.final_validation import (
     FinalRunPreparation,
 )
 from odyssey_fx.common.ids import ExperimentId
+from odyssey_fx.common.money import CurrencyCode, Money
 from odyssey_fx.common.refs import CompiledStrategyRef, ContentDigest
 from odyssey_fx.common.time import Interval, UtcTime
 from odyssey_fx.evaluation.adapters.review_store import (
@@ -43,6 +44,7 @@ from odyssey_fx.evaluation.domain.adoption_review import FixedTrial, ReviewResul
 from odyssey_fx.evaluation.domain.final_validation import (
     CandidateKey,
     FinalEvaluationPermit,
+    FinalLossSideMaterial,
     FinalRunSummary,
     FinalWindow,
     PredictedRun,
@@ -57,6 +59,7 @@ from odyssey_fx.evaluation.domain.forward_validation import (
     VersionedRef,
 )
 from odyssey_fx.evaluation.domain.metrics import MetricId, RatioValue
+from odyssey_fx.evaluation.domain.path import PathTradeTotals
 from odyssey_fx.evaluation.domain.search import SearchVerdict, StandardPurpose
 from odyssey_fx.evaluation.domain.splits import FinalHoldoutSpec
 from odyssey_fx.evaluation.domain.variant import VARIANTS, Paired, Variant
@@ -98,6 +101,7 @@ __all__ = [
     "fixation_record",
     "forward_rules_config",
     "review_row_sha256",
+    "synthetic_loss_side",
     "write_fixation",
 ]
 
@@ -248,6 +252,9 @@ class FakeRunner:
     #: 研究履歴の換算の脚の partition（USDJPY の 1 分足）を読む snapshot（組ごと。円以外の決済
     #: 通貨の候補の人工の run。D06 v1.20 案 §19.14。`None` は換算の snapshot を読まない）。
     conversion_research: Paired[str] | None = None
+    #: 研究ポリシーの版 5 を指す候補の人工の run の、費用を引いた後の終わりの資産（初期残高
+    #: 1,000,000 円）。`None` は版 4 以下の候補の要約（損失の側の材料を持たない。D09 §9.10.16）。
+    v5_settled: Decimal | None = None
 
     def prepare(self, facts: CandidateFacts, experiment_dir: Path) -> FinalRunPreparation:
         self.calls.append("prepare")
@@ -325,8 +332,30 @@ class FakeRunner:
                     (MetricId.MAX_DRAWDOWN_MTM_RATE_PEAK, RatioValue(DRAWDOWN)),
                 ),
                 trade_count=self.trade_count,
+                loss_side=None
+                if self.v5_settled is None
+                else synthetic_loss_side(permit.window.scoring, self.v5_settled),
             ),
         )
+
+
+def synthetic_loss_side(scoring: Interval, settled: Decimal) -> FinalLossSideMaterial:
+    """人工の版 5 の損失の側の材料（資産の点なし: 途中の境目は初期残高、終わりは `settled`）。"""
+    yen = CurrencyCode("JPY")
+    return FinalLossSideMaterial(
+        scoring=scoring,
+        initial_balance=Money(Decimal("1000000"), yen),
+        equity_points=(),
+        settled_equity=Money(settled, yen),
+        trades=PathTradeTotals(
+            wins=Money(Decimal("60000"), yen),
+            losses=Money(Decimal("10000"), yen),
+            closed_count=39,
+            settlement_count=1,
+            win_count=30,
+            loss_count=10,
+        ),
+    )
 
 
 @dataclass
