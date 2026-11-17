@@ -14,7 +14,8 @@
 5. カードごとに今の段を進める（表 2-1）。実行記録の定型 PR（枝 `runner/exec`）を進める。
 6. 空き（スロット）を、起動待ち（C3）→ 審査の予約 → 最終検証の予約 → 再現の予約 の順に渡す
    （起動の前の確かめ。D25 §4.4・§4.5）。
-7. 取り出し（D25 §3.6）、発想役（§3.7）、週の要約（§7）。
+7. 取り出し（D25 §3.6）、発想役（§3.7）、週の要約（§7）。取り出しと発想役の起動は、口ごとの
+   上限（`configs/runner/intake.yaml`。人間の決定 256、D27 §4.6。`intake`）に従う。
 
 全体の停止（G1）の間は、走っている処理の見張り・PR の状態・答えの読込と自動の確かめだけを行い、
 新しい起動（run・審査・最終検証・再現・作業役・取り出し）をしない（表 2-2）。
@@ -67,6 +68,7 @@ from tools.ops.hypothesis_cards.repo import LOOPS_DIR, RepoView, ToolFailure
 from tools.ops.hypothesis_cards.screening import CARD_PREREG_REJECTED, check_change, screen_card
 from tools.ops.research_runner.commands import unlisted_command
 from tools.ops.research_runner.events import EventLog
+from tools.ops.research_runner.intake import full_mouths, mouth_limits, mouth_of_card
 from tools.ops.research_runner.ledger_rows import (
     finished_verdict,
     has_candidate_row,
@@ -3016,8 +3018,15 @@ class Runner:
         if MAX_SLOTS - used < 1 or waiting:
             return
         view = self._view(ctx)
+        # 口ごとの上限（決定 256、D27 §4.6）: 上限に達した口のカードは取り出さない。設定が壊れて
+        # いれば `ToolFailure`（この 1 歩では取り出さない。上限なしに倒さない）。
+        full = self._full_mouths(ctx, view)
         known = set(ctx.state.cards)
-        candidates = [card_id for card_id in queued_cards(view) if card_id not in known]
+        candidates = [
+            card_id
+            for card_id in queued_cards(view)
+            if card_id not in known and mouth_of_card(card_id) not in full
+        ]
         if not candidates:
             return
         times = self.ports.git.first_seen_times(ctx.origin, candidates)
@@ -3037,6 +3046,10 @@ class Runner:
         self.events.add(ctx.now, "card_taken", card=card.card_id, mouth=card.mouth)
         self._advance(ctx, card)
 
+    def _full_mouths(self, ctx: _Context, view: RepoView) -> frozenset[str]:
+        """上限に達した口（D27 の仮置き 21: 状態に取り出されたカードすべてを口ごとに数える）。"""
+        return full_mouths(mouth_limits(view), (card.mouth for card in ctx.cards.values()))
+
     # --- 発想役（D25 §3.7・§5.3。決定 153） ----------------------------------------------------
 
     def _ideator(self, ctx: _Context) -> None:
@@ -3051,6 +3064,10 @@ class Runner:
             ):
                 return
             view = self._view(ctx)
+            # AI の口が上限に達している間は起動しない（決定 256、D27 の仮置き 22）。きっかけは
+            # 使わずに残す。設定が壊れていれば `ToolFailure`（起動しない）。
+            if "ai" in self._full_mouths(ctx, view):
+                return
             capacity = ai_capacity(view)
             if capacity <= 0:
                 return
@@ -3073,6 +3090,14 @@ class Runner:
             self.events.add(ctx.now, "ideator_run")
             self._worker(ctx, None, "ideator", {"capacity": str(capacity)})
             return
+        # 走っている間に AI の口が上限に達したなら、書けなくても `QUEUE_EMPTY` で止めない（D27 の
+        # 仮置き 22。止まる条件を増やさない）。設定が壊れていても終わりは読む（作業役は同時に 1 つ
+        # までなので、読まないとカードの作業役を待たせる）。そのときも止まりを足さない。
+        try:
+            ai_full = "ai" in self._full_mouths(ctx, self._view(ctx))
+        except ToolFailure as exc:
+            ctx.notes.append(f"道具の失敗（次の 1 歩でやり直す）: {exc}")
+            ai_full = True
         poll = self._worker(ctx, None, "ideator", running.get("extra"))
         if poll is None:
             return
@@ -3111,7 +3136,7 @@ class Runner:
                 ctx, files, text, auto=True, record={"cards": sorted(accepted)}
             )
             self._flush_cards(ctx)
-        elif trigger in {"queue_empty", "extra"} and not self._has_takeable(ctx):
+        elif trigger in {"queue_empty", "extra"} and not ai_full and not self._has_takeable(ctx):
             self._stop_global(ctx, "QUEUE_EMPTY")
 
     @staticmethod
