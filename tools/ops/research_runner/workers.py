@@ -14,8 +14,9 @@
    道具は `--tools Read,Glob,Grep,Write` に絞り、確認なしで許すのは束の中の読み取り
    `Read(./**)` と `out/` への書き込み `Edit(./out/**)` だけ（D25 §5.2、#200 の仮置き 8。
    書き込みの規則は Claude Code では `Edit(...)` が `Write` にも当たる）。コマンドの実行（Bash）・
-   ネットワーク・ほかのエージェントの起動は道具の一覧に無い。MCP の道具も読まない
-   （`--strict-mcp-config`。本 PR の仮置き G2）。
+   ネットワーク・ほかのエージェントの起動は道具の一覧に無い。MCP の道具も、利用者・手元の
+   設定（束の外の読み取りの許可を含みうる）も読まない（`--strict-mcp-config`・
+   `--setting-sources project`。本 PR の仮置き G2）。
 
 **様子と出力の検査**（`poll`。D25 §5.6）: 終わったら、結果の JSON の終わり方（成功・誤り・
 利用上限）だけを読み、作業役の文の中身は `out/` のファイルとして形を検査する（中身の良し悪しは
@@ -151,6 +152,10 @@ def worker_command(program: str, agent: str, prompt: str) -> list[str]:
         "--output-format",
         "json",
         "--no-session-persistence",
+        # 利用者・手元の設定（`~/.claude/settings.json` の束の外の読み取りの許可・追加の
+        # ディレクトリなど）を読まない。束の中の `.claude/`（定義）だけを読む（仮置き G2）。
+        "--setting-sources",
+        "project",
         "--strict-mcp-config",
         "--tools",
         AVAILABLE_TOOLS,
@@ -219,7 +224,7 @@ def _bundle_problem(bundle: Path, manifest: Mapping[str, Any]) -> str | None:
             return f"写しが消えた: {path}"
         if not stat.S_ISREG(mode) or _sha(target.read_bytes()) != digest:
             return f"写しが変わった: {path}"
-    for place in (*PLACES, ".claude"):
+    for place in PLACES:
         base = bundle / place
         if not os.path.lexists(base):
             continue

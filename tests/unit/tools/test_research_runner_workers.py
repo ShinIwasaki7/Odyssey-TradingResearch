@@ -202,6 +202,8 @@ def test_the_launch_uses_the_design_tools_and_the_bundle_as_cwd(
     allowed = command[command.index("--allowedTools") + 1].split(",")
     assert allowed == ["Read(./**)", "Edit(./out/**)"]
     assert "--strict-mcp-config" in command
+    # 利用者の設定（束の外の読み取りの許可を含みうる）を読まない。
+    assert command[command.index("--setting-sources") + 1] == "project"
     assert spawned["cwd"] == bundle
     # 包みの状態（終了コード・結果の JSON）は束の外（作業役から見えない）。
     assert bundle not in Path(spawned["state_dir"]).parents
