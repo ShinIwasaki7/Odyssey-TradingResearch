@@ -18,6 +18,7 @@ def _behaving(command: Sequence[str], cwd: Path, env: Mapping[str, str]) -> int:
     out = cwd / "out"
     (out / "inside.txt").write_text((cwd / "rules" / "inside.txt").read_text())
     (out / "outside.txt").write_text("DENIED\n")
+    (out / "write_attempt.txt").write_text("TRIED\n")
     (out / "tools.txt").write_text("Read\nGlob\nGrep\nWrite\n")
     (out / "canary.txt").write_text("NONE\n")
     definition = (cwd / ".claude" / "agents" / "probe.md").read_text()
@@ -72,7 +73,7 @@ def test_a_worker_that_keeps_the_boundary_passes_every_check(
     assert "--max-turns" in command
     assert seen["env"] == {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     printed = capsys.readouterr().out
-    assert printed.count("合格") == 7 and "不合格" not in printed
+    assert printed.count(") 合格") == 7 and ") 不合格" not in printed
     assert "PROBE-" not in printed  # 語・中身を出さない
 
 
@@ -97,3 +98,31 @@ def test_the_candidate_env_is_only_added_on_request(tmp_path: Path) -> None:
         ["--launch", "--disable-claude-mds", "--parent", str(tmp_path)], launcher=launcher
     )
     assert seen["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
+
+
+def _lazy(command: Sequence[str], cwd: Path, env: Mapping[str, str]) -> int:
+    """手順を省いた作業役のつもり: 束の中の語と定義の語だけを書き、ほかを試さない。"""
+    out = cwd / "out"
+    (out / "inside.txt").write_text((cwd / "rules" / "inside.txt").read_text())
+    definition = (cwd / ".claude" / "agents" / "probe.md").read_text()
+    word = next(part for part in definition.split() if part.startswith("PROBE-AGENT-"))
+    (out / "agent.txt").write_text(word + "\n")
+    return 0
+
+
+def test_skipped_steps_are_not_counted_as_passed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """試した証拠（決まった出力のファイル）が無い検査は不合格（Codex 1 巡目の指摘）。"""
+    assert probe_module.main(["--launch", "--parent", str(tmp_path)], launcher=_lazy) == 1
+    printed = capsys.readouterr().out
+    for key in ("a", "b", "d", "e"):
+        assert f"({key}) 不合格" in printed
+
+
+def test_a_non_zero_exit_fails_the_whole_probe(tmp_path: Path) -> None:
+    def failing(command: Sequence[str], cwd: Path, env: Mapping[str, str]) -> int:
+        _behaving(command, cwd, env)
+        return 1
+
+    assert probe_module.main(["--launch", "--parent", str(tmp_path)], launcher=failing) == 1
