@@ -14,8 +14,17 @@ import pytest
 from tests.fixtures.hypothesis_cards import card_bytes, card_data
 from tests.fixtures.research_runner import FINAL, REVIEW, Rig, make_rig
 from tests.fixtures.runner_ci import final_ledger, review_ledger
-from tools.ops.research_runner.adapters import NotYetGate, NotYetWorkers
-from tools.ops.research_runner.ports import ReportOutput, VerdictOutput
+from tools.ops.hypothesis_cards.repo import ToolFailure
+from tools.ops.research_runner.ports import (
+    GateInputs,
+    GateResult,
+    ReportOutput,
+    VerdictOutput,
+    WorkerPoll,
+    WorkerRequest,
+    WorkerStatus,
+    WorkerUnavailable,
+)
 from tools.ops.research_runner.runner import Ports, Runner
 from tools.ops.research_runner.state import CardState, GlobalState, StateStore, format_time
 
@@ -85,16 +94,31 @@ def test_the_verifier_rewrites_once_then_rejects(rig: Rig) -> None:
     assert rig.card(CARD_ID)["outcome"] == "VERIFIER_FAILED"
 
 
+class _NoWorkers:
+    """定義が無い作業役（`WorkerUnavailable`）。"""
+
+    def launch(self, request: WorkerRequest) -> None:
+        raise WorkerUnavailable(f"試験: 作業役 {request.role} の定義が無い")
+
+    def poll(self, request: WorkerRequest) -> WorkerPoll:
+        return WorkerPoll(WorkerStatus.LOST)
+
+
+class _NoGate:
+    def check(self, inputs: GateInputs) -> GateResult:
+        raise ToolFailure("試験: 関門の道具が動かない")
+
+
 def test_the_worker_not_yet_available_is_a_tool_failure(rig: Rig) -> None:
-    """作業役の実物は PR 8b。本 PR の実物では道具の失敗（1 回やり直した後に停止）。"""
+    """作業役の定義が無ければ道具の失敗（1 回やり直した後に停止）。"""
     _inject(rig, "C8", place="taken")
     runner = rig.runner()
     ports = runner.ports
     replaced = Ports(
         **{**{name: getattr(ports, name) for name in ports.__dataclass_fields__}},
     )
-    object.__setattr__(replaced, "workers", NotYetWorkers())
-    object.__setattr__(replaced, "gate", NotYetGate())
+    object.__setattr__(replaced, "workers", _NoWorkers())
+    object.__setattr__(replaced, "gate", _NoGate())
     rig.clock.advance(minutes=5)
     Runner(rig.paths, replaced).step()
     rig.clock.advance(minutes=5)

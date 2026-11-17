@@ -79,8 +79,10 @@ from tools.ops.research_runner.ports import (
     ChangeOutput,
     Checks,
     Clock,
+    CommandNotAllowed,
     Evaluation,
     GateCheck,
+    GateInputs,
     Git,
     GitHub,
     IdeatorOutput,
@@ -1165,6 +1167,22 @@ class Runner:
                     card=card.card_id if card is not None else None,
                 )
                 return None
+            except CommandNotAllowed as exc:
+                # 起動のコマンドが許可の一覧に無い（D25 §4.6 の `COST_RISK`。`_spawn` と同じ
+                # 確かめを作業役の口が起動の前に当てた）: 起動せず、当たったカードを添えて
+                # 全体の停止。
+                if card is not None:
+                    card.procs.pop(key, None)
+                else:
+                    ctx.state.ideator.pop("running", None)
+                    self._ideator_keep_trigger(ctx.state.ideator)
+                self._stop_global(
+                    ctx,
+                    "COST_RISK",
+                    f"{role}: {exc}",
+                    card=card.card_id if card is not None else None,
+                )
+                return None
             except WorkerUnavailable as exc:
                 if card is not None:
                     card.procs.pop(key, None)
@@ -1395,8 +1413,19 @@ class Runner:
         if "gate" not in card.checks:
             if card.repro is None:
                 return  # 元の実験の再現を待つ（関門の機械の項目の 4）
+            inputs = GateInputs(
+                card_id=card.card_id,
+                experiment=card.experiment,
+                versions=tuple(range(1, card.version + 1)),
+                prereg_commits=dict(card.prereg_commits),
+                executions={key: dict(value) for key, value in card.executions.items()},
+                repro=card.repro,
+            )
             try:
-                result = self.ports.gate.check(card.card_id, list(range(1, card.version + 1)))
+                result = self.ports.gate.check(inputs)
+            except CommandNotAllowed as exc:
+                self._stop_global(ctx, "COST_RISK", f"gate: {exc}", card=card.card_id)
+                return
             except ToolFailure as exc:
                 self._tool_failure(ctx, card, str(exc))
                 return

@@ -31,6 +31,7 @@ from tools.ops.research_runner.ports import (
     Binding,
     Checks,
     Comment,
+    GateInputs,
     GateResult,
     MainCheckout,
     PrState,
@@ -622,9 +623,11 @@ class FakeWorkers:
 class FakeGate:
     passed: bool = True
     calls: int = 0
+    seen: list[GateInputs] = field(default_factory=list)
 
-    def check(self, card_id: str, versions: Sequence[int]) -> GateResult:
+    def check(self, inputs: GateInputs) -> GateResult:
         self.calls += 1
+        self.seen.append(inputs)
         return GateResult(tuple((item, self.passed or item != 3) for item in range(1, 6)))
 
 

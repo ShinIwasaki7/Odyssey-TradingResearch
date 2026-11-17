@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 __all__ = [
     "REVIEW_RESULTS",
+    "LedgerLineage",
     "finished_verdict",
     "has_candidate_row",
     "has_consumption_row",
+    "lineage_of_execution",
     "review_result",
     "review_row_count",
 ]
@@ -113,3 +116,48 @@ def has_consumption_row(data: bytes | None, experiment_id: str, execution: int) 
         and _matches(row["candidate"], experiment_id, execution)
         for row in _rows(data)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerLineage:
+    """試行台帳のある実行の開始・結末の行の有無と、開始の行の系譜の識別子だけ（関門の機械の項目の
+    2。D25 §5.5）。判定の値・指標・区間は読まない。"""
+
+    started: bool
+    finished: bool
+    #: 系譜の元の実行 `(記録票の識別子, 実行番号)`（無ければ `None`）。
+    derived_from: tuple[str, int] | None
+    change_kinds: tuple[str, ...]
+    has_note_digest: bool
+
+
+def lineage_of_execution(data: bytes | None, experiment_id: str, execution: int) -> LedgerLineage:
+    """試行台帳のこの実行の行から、開始・結末の有無と系譜の識別子を読む。"""
+    started = finished = False
+    derived: tuple[str, int] | None = None
+    kinds: tuple[str, ...] = ()
+    note = False
+    for row in _rows(data or b""):
+        body = _body(row)
+        if not _matches(row, experiment_id, execution):
+            continue
+        if body.get("event") == "FINISHED":
+            finished = True
+            continue
+        if body.get("event") != "STARTED":
+            continue
+        started = True
+        lineage = body.get("lineage")
+        if not isinstance(lineage, Mapping):
+            continue
+        source = lineage.get("derived_from")
+        if isinstance(source, Mapping) and source.get("experiment_id") is not None:
+            try:
+                derived = (str(source["experiment_id"]), int(source.get("execution", 0)))
+            except (TypeError, ValueError):
+                derived = None
+        raw_kinds = lineage.get("change_kinds")
+        if isinstance(raw_kinds, list):
+            kinds = tuple(str(item) for item in raw_kinds)
+        note = isinstance(lineage.get("note_digest"), str) and bool(lineage.get("note_digest"))
+    return LedgerLineage(started, finished, derived, kinds, note)
