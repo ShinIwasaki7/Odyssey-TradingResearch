@@ -27,6 +27,7 @@ from tests.fixtures.runner_ci import trial_ledger
 from tools.ops.hypothesis_cards.generate import PreregChecks
 from tools.ops.hypothesis_cards.repo import DirView, OverlayView, RepoView
 from tools.ops.hypothesis_cards.screening import Verification
+from tools.ops.research_runner.intake import INTAKE_PATH
 from tools.ops.research_runner.ports import (
     Binding,
     Checks,
@@ -121,6 +122,9 @@ class World:
         self.clock = clock
         self.workspace = workspace(root / "workspace")
         install_policy_v5(self.workspace)
+        # 口ごとの上限の設定（決定 256）は、リポジトリの通しの値を写さず「設定なし」（上限なし。
+        # いまの動き）から始める。上限を確かめる試験は `put_on_main` で main に置く。
+        (self.workspace / INTAKE_PATH).unlink(missing_ok=True)
         self.base = DirView(self.workspace)
         self.repo = root / "repo"
         self.exec_dir = root / "repo" / ".claude" / "worktrees" / "runner-exec"
