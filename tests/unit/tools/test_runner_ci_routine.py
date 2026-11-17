@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tests.fixtures.hypothesis_cards import card_bytes as hc_card_bytes
+from tests.fixtures.hypothesis_cards import card_data
 from tests.fixtures.runner_ci import (
     CARD_ID,
     EXPERIMENT,
@@ -27,6 +30,7 @@ from tests.fixtures.runner_ci import (
     run_record,
     trial_ledger,
 )
+from tools.ops.hypothesis_cards.card import CardFormatError, parse_card
 from tools.ops.runner_ci.cli import run_checks
 from tools.ops.runner_ci.model import CheckInput, CheckResult, Snapshot, Status
 
@@ -317,6 +321,90 @@ def test_numbers_in_the_rule_must_be_parameters_or_grid_values(base: dict[str, b
     }
     assert 6 not in _failed(run_checks(make_input(base, ok, **options)))  # type: ignore[arg-type]
     assert 6 in _failed(run_checks(make_input(base, bad, **options)))  # type: ignore[arg-type]
+
+
+# --- rule の数: CI と仮説カードの道具の判定を揃える（D25 §3.1・§6.3 の 6、仮置き 6） ------------
+
+_D04_CARD_ID = "a-20261120-dual-ema"
+
+
+def _d04_card(
+    rule: str, *, series: str | None = None, version: int | None = None
+) -> dict[str, Any]:
+    """D04 の形の部品を持つ人工のカード（仮説カードの道具の試験と同じもの）。`series` は速い EMA が
+    読む系列の足の名前を、`version` は速い EMA の部品の版を差し替える。"""
+    data = card_data(mouth="ai")
+    data["rule"] = rule
+    fast = data["strategy"]["components"][0]
+    if series is not None:
+        name = f"GBPUSD/{series}/bid"
+        fast["inputs"] = {"prices": [f"market:{name}:CLOSE"]}
+        fast["triggers"] = [{"name": "bar", "when": "bar_close", "series": name}]
+    if version is not None:
+        fast["component_version"] = version
+    return data
+
+
+def _ci_rule_messages(base: Mapping[str, bytes], data: dict[str, Any]) -> list[str]:
+    head = dict(base, **{f"research/hypotheses/queue/{_D04_CARD_ID}.yaml": hc_card_bytes(data)})
+    given = make_input(
+        base,
+        head,
+        branch="runner/cards-20261120T030000Z",
+        title="[runner] 事前登録 cards-20261120T030000Z",
+        kind="事前登録",
+        version=None,
+    )
+    return [message for message in _by_number(run_checks(given))[6].messages if "`rule`" in message]
+
+
+def _tool_rule_problems(data: dict[str, Any]) -> list[str]:
+    try:
+        parse_card(hc_card_bytes(data))
+    except CardFormatError as error:
+        return [problem for problem in error.problems if "`rule`" in problem]
+    return []
+
+
+@pytest.mark.parametrize(
+    ("rule", "series", "version"),
+    [
+        ("15 分足の短い EMA が長い EMA を上抜けたら買う規則", "15m", None),
+        ("1 時間足の短い EMA が長い EMA を上抜けたら買う規則", None, None),
+        ("版 2 の EMA が長い EMA を上抜けたら買う規則", None, 2),
+    ],
+)
+def test_numbers_only_in_series_names_or_versions_fail_the_rule_check(
+    base: dict[str, bytes], rule: str, series: str | None, version: int | None
+) -> None:
+    assert _ci_rule_messages(base, _d04_card(rule, series=series, version=version))
+
+
+def test_numbers_in_parameter_values_and_grid_values_pass_the_rule_check(
+    base: dict[str, bytes],
+) -> None:
+    rule = "期間 20 の EMA が期間 50 か 100 の EMA を上抜けたら買い、利確は損切りの幅の 1.5 か 3 倍"
+    assert _ci_rule_messages(base, _d04_card(rule)) == []
+
+
+@pytest.mark.parametrize(
+    ("rule", "series", "version"),
+    [
+        ("期間 20 の EMA が期間 50 か 100 の EMA を上抜けたら買う規則", None, None),
+        ("期間 ２０ の EMA が上抜けたら買う規則", None, None),
+        ("損切りの幅の 1.50 倍に利確を置く規則", None, None),
+        ("期間 21 の EMA が上抜けたら買う規則", None, None),
+        ("15 分足の短い EMA が長い EMA を上抜けたら買う規則", "15m", None),
+        ("1 時間足の短い EMA が長い EMA を上抜けたら買う規則", None, None),
+        ("版 2 の EMA が長い EMA を上抜けたら買う規則", None, 2),
+        ("Ⅱ の局面で買う規則", None, None),
+    ],
+)
+def test_the_ci_and_the_card_tool_judge_the_rule_numbers_alike(
+    base: dict[str, bytes], rule: str, series: str | None, version: int | None
+) -> None:
+    data = _d04_card(rule, series=series, version=version)
+    assert bool(_ci_rule_messages(base, data)) == bool(_tool_rule_problems(data))
 
 
 @pytest.mark.parametrize(
