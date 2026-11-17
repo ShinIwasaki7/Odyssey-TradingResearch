@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Final
 
 __all__ = [
+    "BOUNDARY_QUESTION",
     "Action",
     "Option",
     "Reason",
@@ -91,6 +92,14 @@ class Reason:
     options: tuple[Option, ...]
     auto: bool = False
 
+
+#: 作業役の境目の破れで全体を止めたとき（`TOOL_FAILURE_GLOBAL`。人間の決定 245、後追いの PR の
+#: 仮置き H1）の問いの文。選択肢は `TOOL_FAILURE_GLOBAL` の行のまま。
+BOUNDARY_QUESTION: Final = (
+    "作業役の後に、読むだけのはずの束の写しが変わっていた・増えていた・減っていた"
+    "（作業役の書き込みの絞りが効いていない形跡。作業役の出力は使っていない）。"
+    "止めたまま原因を調べるか"
+)
 
 _KEEP_INVESTIGATE: Final = Option(
     "止めたまま（推奨）", "司令塔・実装役が原因を調べるまで、このまま止まる", Action.KEEP

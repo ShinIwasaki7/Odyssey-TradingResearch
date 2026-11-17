@@ -1195,3 +1195,182 @@ def test_a_worker_left_behind_that_hit_the_usage_limit_stops_everything(rig: Rig
     assert "USAGE_LIMIT" in _global_reasons(rig)
     assert "worker" not in rig.card(CARD_ID)["procs"]
     assert _launched(rig) == [("analyst_report", CARD_ID)]
+
+
+# --- 後追いの PR 2: 作業役の境目の破れは全体を止める（人間の決定 245） ---------------------------
+
+
+def _tool_global(rig: Rig) -> dict[str, Any]:
+    (item,) = [row for row in rig.state()["reasons"] if row["reason"] == "TOOL_FAILURE_GLOBAL"]
+    return dict(item)
+
+
+@pytest.mark.parametrize(
+    "found",
+    ["写しが変わった: rules/d25_3_1.md", "束に増えたファイル: notes.md", "写しが消えた: x.md"],
+)
+def test_a_boundary_breach_stops_everything_without_a_retry(rig: Rig, found: str) -> None:
+    """作業役の後に読むだけの束が書き換わっていた・増えていた・減っていたら、やり直さずに全体の
+    停止（`TOOL_FAILURE_GLOBAL`。自動の確かめでは外れない）。人間の「続ける」で外れ、段がもう
+    一度当たって起動する。"""
+    _inject(rig, "C8")
+    rig.workers.add("analyst_report", status=WorkerStatus.BOUNDARY_BROKEN, reason=found)
+    rig.step()
+    rig.step()
+    item = _tool_global(rig)
+    assert item["hold"] is True and item["card"] == CARD_ID
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
+    assert "worker" not in rig.card(CARD_ID)["procs"]
+    assert _phase(rig) == "C8" and not _reasons(rig)
+    assert rig.card(CARD_ID)["retries"].get("worker:analyst_report", 0) == 0
+    issue = rig.world.issue_for("TOOL_FAILURE")
+    assert "書き込みの絞り" in issue.body and found not in issue.body
+    for _ in range(3):
+        rig.step(minutes=30)  # 前提はそろっているが、自動では外れない
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
+    rig.world.answer(issue.number, "1")  # 止めたまま
+    rig.step()
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
+    rig.world.answer(issue.number, "2")  # 続ける
+    rig.step()
+    assert "TOOL_FAILURE_GLOBAL" not in _global_reasons(rig)
+    assert _launched(rig) == [("analyst_report", CARD_ID), ("analyst_report", CARD_ID)]
+
+
+def test_a_breach_by_a_worker_left_behind_also_stops_everything(rig: Rig) -> None:
+    """結果を捨てる作業役（段の外に残った印）でも、境目の破れは捨てずに全体の停止。"""
+    _inject(rig, "C8")
+    _second_card(rig)
+    rig.workers.hold.add("analyst_report")
+    rig.step()
+    _stop_by_hand(rig, "REPRO_MISMATCH", back_to="C8")
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", status=WorkerStatus.BOUNDARY_BROKEN, reason="x")
+    rig.step()
+    assert _tool_global(rig)["hold"] is True
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
+
+
+def test_a_breach_by_the_ideator_stops_everything(rig: Rig) -> None:
+    rig.world.put_on_main({QUEUE: None})
+    rig.workers.add("ideator", status=WorkerStatus.BOUNDARY_BROKEN, reason="x")
+    rig.step()
+    rig.step()
+    item = _tool_global(rig)
+    assert item["hold"] is True and item["card"] is None
+    assert [role for role, _ in _launched(rig)] == ["ideator"]
+
+
+def test_a_breach_replaces_an_open_precondition_stop_so_the_human_is_told(rig: Rig) -> None:
+    """前提の不足で `TOOL_FAILURE_GLOBAL` が開いている間に破れが見つかったら、その問いを閉じて
+    破れの問いを開く。前提がそろっても自動では外れない。"""
+    _inject(rig, "C8")
+    rig.workers.hold.add("analyst_report")
+    rig.step()
+    rig.wrapper.ready = False
+    rig.step()
+    first = rig.world.issue_for("TOOL_FAILURE")
+    assert _tool_global(rig)["hold"] is False
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", status=WorkerStatus.BOUNDARY_BROKEN, reason="x")
+    rig.step()
+    assert rig.world.issues[first.number].closed
+    second = rig.world.issue_for("TOOL_FAILURE")
+    assert second.number != first.number and "書き込みの絞り" in second.body
+    rig.wrapper.ready = True
+    rig.step()
+    assert _tool_global(rig)["hold"] is True
+
+
+# --- 後追いの PR 7: 軽い点 ---------------------------------------------------------------------
+
+
+def test_auto_deletion_keeps_everything_when_runs_itself_is_a_link(
+    rig: Rig, tmp_path: Path
+) -> None:
+    """`runs/` そのものがシンボリックリンクなら、何も消さない（残す側。#201 の仮置き F6 を
+    改めた）。"""
+    import shutil
+
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict.BELOW_STANDARD)
+    runs = rig.world.repo / "runs"
+    elsewhere = tmp_path / "elsewhere-runs"
+    shutil.move(str(runs), str(elsewhere))
+    runs.symlink_to(elsewhere, target_is_directory=True)
+    _low_disk_step(rig)
+    inside = [Path(path) for path in paths.values() if Path(path).is_relative_to(runs)]
+    assert inside
+    for path in inside:
+        assert (elsewhere / path.relative_to(runs)).exists(), path
+
+
+@pytest.mark.parametrize(
+    ("phase", "fields", "subcommand"),
+    [
+        ("C10", {"reservations": ["review"], "checks": {"gate_passed": True}}, "review"),
+        ("C11", {}, "fix"),
+        ("C12", {"reservations": ["final"]}, "final-validate"),
+        ("C8", {"reservations": ["reproduce"], "repro": None}, "reproduce"),
+    ],
+)
+def test_each_detached_launch_checks_the_allowed_list(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, phase: str, fields: dict[str, Any], subcommand: str
+) -> None:
+    """切り離して起動する 4 経路（審査・固定・最終検証・再現）のどれも、一覧に無ければ起動せずに
+    当たったカードを添えて全体の停止（`COST_RISK`）。"""
+    from tools.ops.research_runner import commands
+
+    rig.workers.hold.add("analyst_report")
+    _inject(rig, phase, **fields)
+    monkeypatch.setattr(
+        commands,
+        "ALLOWED_EXPERIMENT_COMMANDS",
+        commands.ALLOWED_EXPERIMENT_COMMANDS - {subcommand},
+    )
+    rig.step()
+    (item,) = [row for row in rig.state()["reasons"] if row["reason"] == "COST_RISK"]
+    assert item["card"] == CARD_ID
+    assert not [key for key in rig.procs.spawned if key.startswith(f"{subcommand}:")]
+    rig.step()
+    assert not [key for key in rig.procs.spawned if key.startswith(f"{subcommand}:")]
+
+
+@pytest.mark.parametrize("role", ["card", "ideator"])
+def test_ending_the_card_after_sealed_needed_follows_the_design(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    """封印データが要る（`SEALED_NEEDED`）で止まった後の答え「そのカードを終えて続ける」
+    （D25 §4.7: 当たったカードに T41 を当て、G0 へ）。発想役（カードなし）なら G0 へ戻すだけ。"""
+    from tests.fixtures.research_runner import FakeWorkers
+    from tools.ops.research_runner.ports import BundleOutOfScope, WorkerRequest
+
+    original = FakeWorkers.launch
+    calls = {"n": 0}
+
+    def out_of_scope_once(self: FakeWorkers, request: WorkerRequest) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise BundleOutOfScope("data/ の下のファイル")
+        original(self, request)
+
+    monkeypatch.setattr(FakeWorkers, "launch", out_of_scope_once)
+    if role == "card":
+        _inject(rig, "C8")
+        rig.workers.hold.add("analyst_report")
+    else:
+        rig.world.put_on_main({QUEUE: None})
+        rig.workers.hold.add("ideator")
+    rig.step()
+    (item,) = [row for row in rig.state()["reasons"] if row["reason"] == "SEALED_NEEDED"]
+    assert item["card"] == (CARD_ID if role == "card" else None)
+    rig.world.answer(rig.world.issue_for("SEALED_NEEDED").number, "2")
+    for _ in range(2):
+        rig.step()
+    assert "SEALED_NEEDED" not in _global_reasons(rig)
+    if role == "card":
+        assert _phase(rig) == "C14"
+        assert _launched(rig) == []
+    else:
+        assert [name for name, _ in _launched(rig)] == ["ideator"]

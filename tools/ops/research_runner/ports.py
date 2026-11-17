@@ -208,9 +208,22 @@ class Processes(Protocol):
 
     def signal_group(self, group: int, signal: int) -> None: ...
 
-    def spawn(self, command: Sequence[str], *, cwd: Path, state_dir: Path) -> int:
+    def spawn(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        state_dir: Path,
+        env: Mapping[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> int:
         """`command` を端末から切り離し、終了コードと終了時刻を `state_dir` に書く小さな包みで
-        起動する（D25 §2.4）。包みの PID を返す。"""
+        起動する（D25 §2.4）。包みの PID を返す。
+
+        `env` は `command` にだけ足す環境変数、`timeout_seconds` は壁時計の時間の上限（包みが
+        超えたら `command` のプロセスだけを自分が起動した PID で止め、時間切れの終了コードを書く。
+        作業役だけが使う）。
+        """
         ...
 
 
@@ -329,6 +342,9 @@ class WorkerStatus(Enum):
     USAGE_LIMIT = "USAGE_LIMIT"
     #: 起動の印はあるが、プロセスも結果も無い（起動し直したときの照合の (4)）。
     LOST = "LOST"
+    #: 読むだけのはずの束の写しが変わった・増えた・減った（書き込みの絞りが効いていない形跡）。
+    #: 実行器はやり直さずに全体を止め、出力は使わない（人間の決定 245）。理由の説明は `reason`。
+    BOUNDARY_BROKEN = "BOUNDARY_BROKEN"
 
 
 @dataclass(frozen=True, slots=True)

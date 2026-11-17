@@ -127,6 +127,8 @@ class Entry:
     origin: str
     data: bytes | None = None
     source: Path | None = None
+    #: `runs/` の根（`runs:` の出どころだけ）。写すときに根から 1 段ずつリンクを辿らずに開く。
+    root: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,19 +282,58 @@ def check_plan(plan: BundlePlan) -> None:
 
 
 def _plain_runs_file(runs: Path, relative: str) -> Path | None:
-    """`runs/<relative>` が、途中にリンクの無い普通のファイルなら、そのパス（中身は開かない）。"""
+    """`runs/<relative>` が、途中にリンクの無い普通のファイルで、ほかの名前からの hardlink でない
+    （リンクの数が 1）なら、そのパス（中身は開かない。hardlink は後追いの PR の仮置き H8）。"""
     current = runs
     try:
         if stat.S_ISLNK(os.lstat(current).st_mode):
             return None
+        info = os.lstat(current)
         for part in PurePosixPath(relative).parts:
             current = current / part
-            mode = os.lstat(current).st_mode
-            if stat.S_ISLNK(mode):
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode):
                 return None
-        return current if stat.S_ISREG(mode) else None
+        return current if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 else None
     except OSError:
         return None
+
+
+_DIR_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_FILE_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+def read_plain_runs_file(root: Path, relative: str) -> bytes | None:
+    """`runs/<relative>` を、根から 1 段ずつリンクを辿らずに開いて読む（後追いの PR の仮置き H8）。
+
+    計画の段の `lstat` から読むまでの間に、途中のディレクトリやファイルがリンクに差し替えられて
+    いたら開けない（`O_NOFOLLOW`）。開いたものが普通のファイルでない・リンクの数が 1 でない
+    （hardlink）なら読まない。どれでも `None`（写さない側）。
+    """
+    parts = PurePosixPath(relative).parts
+    if not parts or ".." in parts or relative.startswith("/"):
+        return None
+    opened: list[int] = []
+    try:
+        current = os.open(root, _DIR_FLAGS)
+        opened.append(current)
+        for part in parts[:-1]:
+            current = os.open(part, _DIR_FLAGS, dir_fd=current)
+            opened.append(current)
+        handle = os.open(parts[-1], _FILE_FLAGS, dir_fd=current)
+        opened.append(handle)
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        chunks: list[bytes] = []
+        while chunk := os.read(handle, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
 
 
 def _plain_dir(path: Path) -> bool:
@@ -334,7 +375,7 @@ def _runs_entries(
     def add(dest: str, relative: str) -> None:
         source = _plain_runs_file(runs, relative)
         if source is not None:
-            entries.append(Entry(dest=dest, origin=f"runs:{relative}", source=source))
+            entries.append(Entry(dest=dest, origin=f"runs:{relative}", source=source, root=runs))
         elif os.path.lexists(runs / relative):
             skipped.append(relative)
 
@@ -490,7 +531,9 @@ def plan_bundle(
         relative = f"experiments/{scope.experiment}/v{last}/{ANALYSIS_DIR}/{REPORT_TEXT}"
         source = _plain_runs_file(runs, relative)
         if source is not None:
-            entries.append(Entry(f"records/{REPORT_TEXT}", f"runs:{relative}", source=source))
+            entries.append(
+                Entry(f"records/{REPORT_TEXT}", f"runs:{relative}", source=source, root=runs)
+            )
         elif os.path.lexists(runs / relative):
             skipped.append(relative)
     entries.extend(_record_entries(scope, view))
@@ -594,12 +637,18 @@ def write_bundle(
     _safe_remove(target)
     target.mkdir(parents=True)
     files: list[dict[str, str]] = []
+    skipped = list(plan.skipped)
     for entry in plan.entries:
         data = entry.data
         if data is None:
-            if entry.source is None:
+            kind, _, relative = entry.origin.partition(":")
+            if entry.source is None or entry.root is None or kind != "runs":
                 raise ToolFailure(f"{entry.dest}: 写す元が無い")
-            data = entry.source.read_bytes()
+            data = read_plain_runs_file(entry.root, relative)
+            if data is None:
+                # 計画の後にリンク・hardlink に変わった: 写さない側に倒し、名前だけ残す。
+                skipped.append(relative)
+                continue
         destination = target / entry.dest
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("xb") as handle:  # 新しいファイルとして書く（リンクを辿らない）
@@ -618,9 +667,85 @@ def write_bundle(
         "versions": list(plan.scope.versions),
         "agent": {"path": f".claude/agents/{agent}.md", "sha256": _sha(definition)},
         "files": sorted(files, key=lambda item: item["path"]),
-        "skipped": list(plan.skipped),
+        "skipped": sorted(set(skipped)),
     }
     (target / MANIFEST).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
     return manifest
+
+
+# --- 束の一覧の控え（束の外に置く。後追いの PR の項目 2） ------------------------------------
+
+
+def _outside_out(relative: str) -> bool:
+    return relative != OUT_DIR and not relative.startswith(f"{OUT_DIR}/")
+
+
+def bundle_listing(bundle: Path) -> dict[str, Any]:
+    """束の `out/` の中を除く全部（`manifest.json`・定義・束の直下と `.claude/` を含む）の一覧。
+
+    ファイルはパスと SHA-256、ディレクトリはパスだけ。実行器は起動の前にこれを束の**外**（作業役の
+    状態の置き場）に控え、作業役の後に `listing_problem` で比べる（束の中の `manifest.json` は
+    作業役が書き換えうるので、比べる元にしない）。リンク・普通でないファイルがあれば道具の失敗。
+    """
+    files: dict[str, str] = {}
+    dirs: list[str] = []
+    for root, names_dirs, names in os.walk(bundle, followlinks=False):
+        base = Path(root)
+        for name in sorted([*names_dirs, *names]):
+            full = base / name
+            relative = full.relative_to(bundle).as_posix()
+            mode = os.lstat(full).st_mode
+            if stat.S_ISDIR(mode):
+                dirs.append(relative)
+            elif stat.S_ISREG(mode):
+                if _outside_out(relative):
+                    files[relative] = _sha(full.read_bytes())
+            else:
+                raise ToolFailure(f"束の中にリンク・普通でないファイル: {relative}")
+        # `out/` の中は作業役の出力なので一覧に入れない（`out/` そのものは入れる）。
+        names_dirs[:] = [
+            name
+            for name in names_dirs
+            if _outside_out((base / name).relative_to(bundle).as_posix())
+        ]
+    return {
+        "schema_version": 1,
+        "files": dict(sorted(files.items())),
+        "dirs": sorted(dirs),
+    }
+
+
+def listing_problem(bundle: Path, listing: Mapping[str, Any]) -> str | None:
+    """束の `out/` の外が控えと違えば、その短い説明（書き込みの絞りが効いていない形跡）。
+
+    見るもの: 控えのファイルが消えた・中身が変わった・普通のファイルでなくなった、控えに無い
+    ファイル・ディレクトリが増えた（束の直下・`.claude/`・写しの置き場のどこでも）、控えの
+    ディレクトリが消えた、リンク・普通でないファイルがある。`out/` の中だけは増えてよい。
+    """
+    expected_files = listing.get("files")
+    expected_dirs = listing.get("dirs")
+    if not isinstance(expected_files, dict) or not isinstance(expected_dirs, list):
+        return "束の一覧の控えの形が違う"
+    try:
+        current = bundle_listing(bundle)
+    except ToolFailure as exc:
+        return str(exc)
+    except OSError as exc:
+        return f"束を読めない: {type(exc).__name__}"
+    now_files: dict[str, str] = current["files"]
+    now_dirs = set(current["dirs"])
+    for path in sorted(set(expected_files) - set(now_files)):
+        return f"写しが消えた: {path}"
+    for path in sorted(set(now_files) - set(expected_files)):
+        return f"束に増えたファイル: {path}"
+    for path in sorted(expected_files):
+        if now_files[path] != expected_files[path]:
+            return f"写しが変わった: {path}"
+    for path in sorted(set(map(str, expected_dirs)) - now_dirs):
+        return f"束のディレクトリが消えた: {path}"
+    for path in sorted(now_dirs - set(map(str, expected_dirs))):
+        if _outside_out(path):
+            return f"束に増えたディレクトリ: {path}"
+    return None

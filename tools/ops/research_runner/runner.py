@@ -100,7 +100,13 @@ from tools.ops.research_runner.ports import (
     WorkerUnavailable,
     Wrapper,
 )
-from tools.ops.research_runner.reasons import Action, Scope, options_for, reason
+from tools.ops.research_runner.reasons import (
+    BOUNDARY_QUESTION,
+    Action,
+    Scope,
+    options_for,
+    reason,
+)
 from tools.ops.research_runner.resources import (
     DISK_FLOOR_BYTES,
     MAX_SLOTS,
@@ -422,11 +428,19 @@ class Runner:
 
     # --- 止まる・問う --------------------------------------------------------------------
 
-    def _ask(self, ctx: _Context, identifier: str, card: CardState | None, detail: str) -> int:
+    def _ask(
+        self,
+        ctx: _Context,
+        identifier: str,
+        card: CardState | None,
+        detail: str,
+        *,
+        question: str | None = None,
+    ) -> int:
         row = reason(identifier)
         stage = CardPhase[card.phase].value if card is not None else "全体"
         body = question_body(
-            question=row.question,
+            question=question or row.question,
             reason=identifier,
             card=card.card_id if card is not None else None,
             stage=stage,
@@ -452,6 +466,35 @@ class Runner:
             OpenReason(identifier, issue, detail, format_time(ctx.now), card=card)
         )
         ctx.notes.append(f"全体の停止: {identifier}")
+
+    def _stop_boundary(self, ctx: _Context, card: CardState | None, role: str, detail: str) -> None:
+        """作業役の境目の破れ（読むだけの束の写しが変わった・増えた・減った）: やり直さずに全体の
+        停止（人間の決定 245）。
+
+        理由の識別子は、D25 §4.7 の表に合うものが無いので、全体の道具の失敗
+        `TOOL_FAILURE_GLOBAL`（PR #193 の仮置き 45）を使う（新しい識別子を作らない。後追いの PR
+        の仮置き H1）。前提の確かめの自動の解除で外れないよう `hold` を付け、人間の答え
+        「続ける」（前提がそろっているときだけ外れる）でだけ外す。前提の不足で同じ理由が開いて
+        いれば、その問いを閉じて、破れの問いを開き直す（人間に破れを知らせる）。
+        """
+        existing = ctx.state.find_reason("TOOL_FAILURE_GLOBAL")
+        if existing is not None and existing.hold:
+            return
+        if existing is not None:
+            self._release_global(ctx, "TOOL_FAILURE_GLOBAL")
+        text = f"{role}: {detail}"
+        issue = self._ask(ctx, "TOOL_FAILURE_GLOBAL", None, text, question=BOUNDARY_QUESTION)
+        ctx.state.reasons.append(
+            OpenReason(
+                "TOOL_FAILURE_GLOBAL",
+                issue,
+                text,
+                format_time(ctx.now),
+                card=card.card_id if card is not None else None,
+                hold=True,
+            )
+        )
+        ctx.notes.append("全体の停止: TOOL_FAILURE_GLOBAL（作業役の境目の破れ）")
 
     def _stop_card(self, ctx: _Context, card: CardState, identifier: str, detail: str = "") -> None:
         """カードの停止（C13。C4・C5 では状態を変えずに理由の集合に足す。T16）。"""
@@ -688,7 +731,9 @@ class Runner:
 
     def _auto_checks(self, ctx: _Context) -> None:
         state = ctx.state
-        if state.find_reason("TOOL_FAILURE_GLOBAL") is not None and self._preconditions_ok(ctx):
+        tool = state.find_reason("TOOL_FAILURE_GLOBAL")
+        # 作業役の境目の破れの停止（`hold`）は、前提がそろっていても自動では外さない（決定 245）。
+        if tool is not None and not tool.hold and self._preconditions_ok(ctx):
             self._release_global(ctx, "TOOL_FAILURE_GLOBAL")
         if state.find_reason("DISK_LOW") is not None:
             if self.ports.system.free_disk_bytes(self.paths.repo) >= DISK_FLOOR_BYTES:
@@ -1214,6 +1259,13 @@ class Runner:
                 self._ideator_keep_trigger(ctx.state.ideator)
             self._stop_global(ctx, "USAGE_LIMIT")
             return None
+        if poll.status is WorkerStatus.BOUNDARY_BROKEN:
+            # 読むだけの束が変わっていた: やり直さず（再試行の数も使わず）、出力を使わずに全体の
+            # 停止（決定 245）。人間が「続ける」と答えれば、段がもう一度当たって起動する。
+            if card is None:
+                self._ideator_keep_trigger(ctx.state.ideator)
+            self._stop_boundary(ctx, card, role, poll.reason or "")
+            return None
         return poll
 
     def _worker_request(self, card: CardState, proc: Mapping[str, Any]) -> WorkerRequest:
@@ -1263,6 +1315,9 @@ class Runner:
                 # 結果は捨てても、利用上限の応答は捨てない（最初の上限の応答で全体の停止。
                 # D25 §4.6。同じ 1 歩の中で次の作業役を起動しない。Codex 1 巡目の指摘）。
                 self._stop_global(ctx, "USAGE_LIMIT")
+            elif poll.status is WorkerStatus.BOUNDARY_BROKEN:
+                # 結果を捨てる作業役でも、境目の破れは捨てない（決定 245）。
+                self._stop_boundary(ctx, card, str(proc.get("role")), poll.reason or "")
 
     def _worker_busy(self, ctx: _Context, card: CardState | None) -> bool:
         """ほかに起動の印のある作業役（発想役・ほかのカードの作業役）があるか。"""
@@ -2906,7 +2961,8 @@ class Runner:
     def _deletable_files(self, target: Path) -> list[Path] | None:
         """消してよい置き場の中のファイル（名前の順）。消さないなら `None`。
 
-        シンボリックリンクは先を読まず、消さない（残す側）: `runs/` から置き場までの途中の
+        シンボリックリンクは先を読まず、消さない（残す側）: `runs/` そのもの（後追いの PR。#201 の
+        仮置き F6 の「`runs/` のリンクは見ない」を残す側に改めた）、`runs/` から置き場までの途中の
         ディレクトリ・置き場そのもの・中のどれか 1 つでもリンクなら、その置き場を丸ごと残す。
         普通のファイルとディレクトリのほか（名前付きパイプなど）があるときも残す。置き場が無い・
         ディレクトリでないときも `None`。
@@ -2917,6 +2973,11 @@ class Runner:
         except ValueError:
             return None
         if not relative.parts or ".." in relative.parts:
+            return None
+        try:
+            if not stat.S_ISDIR(runs.lstat().st_mode):
+                return None  # `runs/` そのものがリンク（か、ディレクトリでない）: 丸ごと残す
+        except OSError:
             return None
         current = runs
         for part in relative.parts:
