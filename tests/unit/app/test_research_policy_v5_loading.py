@@ -525,8 +525,11 @@ def test_e12_favored_regimes_on_a_v4_search_are_refused(tmp_path: Path) -> None:
 
 
 def test_rp5_17_the_registered_v1_to_v4_digests_are_unchanged() -> None:
-    entries = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
-    assert [item.version for item in entries] == [1, 2, 3, 4]
+    # 第 5 版は登録の PR で足した（D24 §8.2。ファイルと行の試験は
+    # `test_research_policy_v5_file.py`）。版 1〜4 の行とファイルは変わらない。
+    registered = load_research_policy_registry(research_policy_registry_path(REPO_ROOT))
+    assert [item.version for item in registered] == [1, 2, 3, 4, 5]
+    entries = [item for item in registered if item.version <= 4]
     for entry in entries:
         policy = load_research_policy(
             research_policy_path(REPO_ROOT, "research_policy", entry.version),

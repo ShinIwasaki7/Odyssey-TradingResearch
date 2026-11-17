@@ -95,7 +95,8 @@ def test_version_1_loads_with_the_policy_checks_and_every_trial_compiles(
     assert set(prereg.files) == {prereg.strategy_path, prereg.experiment_path}
     _write(root, dict(prereg.files))
     loaded = _load(root, prereg.experiment_path)
-    assert loaded.policy.version == 4 and loaded.metric_set_version == 3
+    # 登録簿の現行の版（第 5 版。D24 §8.2）と、その条件の指標を持つ指標集合 v4 を選ぶ。
+    assert loaded.policy.version == 5 and loaded.metric_set_version == 4
     assert _compile_all(loaded) == 4
     search = loaded.search
     assert search is not None and search.final_holdout is not None
@@ -123,7 +124,7 @@ def test_regeneration_is_byte_identical_and_reads_only_the_given_view(root: Path
     # 同じファイルを辞書で持つ時点（git のコミットの代わり）からも同じバイト列になる。
     needed = [
         "configs/policies/research/registry.yaml",
-        "configs/policies/research/research_policy_v4.yaml",
+        "configs/policies/research/research_policy_v5.yaml",
         "configs/runner/experiment_templates/GBPUSD.yaml",
     ]
     snapshot = DictView({path: (root / path).read_bytes() for path in needed})

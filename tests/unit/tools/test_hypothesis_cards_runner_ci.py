@@ -25,7 +25,7 @@ TAKEN = f"research/hypotheses/taken/{CARD_ID}.yaml"
 #: 生成の道具が読む設定（登録簿・研究ポリシー・型板）。
 _INPUTS = (
     "configs/policies/research/registry.yaml",
-    "configs/policies/research/research_policy_v4.yaml",
+    "configs/policies/research/research_policy_v5.yaml",
     "configs/runner/experiment_templates/GBPUSD.yaml",
 )
 
