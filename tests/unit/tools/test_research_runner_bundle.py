@@ -375,3 +375,24 @@ def test_the_listing_covers_everything_outside_out(runs: Path, tmp_path: Path) -
     assert listing_problem(target, listing) is None
     (target / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
     assert "増えた" in str(listing_problem(target, listing))
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root は読めないディレクトリを作れない"
+)
+def test_an_unreadable_directory_is_not_skipped_silently(runs: Path, tmp_path: Path) -> None:
+    """読めないディレクトリは黙って飛ばさず、一覧づくりは道具の失敗・比べると破れ（破れ側に倒す）。"""
+    from tools.ops.hypothesis_cards.repo import ToolFailure
+    from tools.ops.research_runner.bundle import bundle_listing, listing_problem
+
+    target = tmp_path / "bundle"
+    write_bundle(_plan("verifier", runs), target=target, agent="x", definition=b"d\n")
+    listing = bundle_listing(target)
+    locked = target / "rules"
+    locked.chmod(0)
+    try:
+        with pytest.raises(ToolFailure, match="読めないディレクトリ: rules"):
+            bundle_listing(target)
+        assert "読めないディレクトリ" in str(listing_problem(target, listing))
+    finally:
+        locked.chmod(0o755)
