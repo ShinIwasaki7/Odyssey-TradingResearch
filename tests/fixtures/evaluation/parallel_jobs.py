@@ -35,9 +35,13 @@ def _options(payload: bytes) -> Mapping[str, Any]:
 
 
 def _write_pid(options: Mapping[str, Any]) -> None:
+    """PID を別名に書いてから置き換える（ファイルがあれば読む試験に空の中身を見せない）。"""
     path = options.get("pid_file")
     if isinstance(path, str):
-        Path(path).write_text(str(os.getpid()), encoding="ascii")
+        target = Path(path)
+        partial = target.with_name(f"{target.name}.{os.getpid()}.partial")
+        partial.write_text(str(os.getpid()), encoding="ascii")
+        os.replace(partial, target)
 
 
 def wait_for_stop(payload: bytes, boundary: Callable[[], None]) -> object:
