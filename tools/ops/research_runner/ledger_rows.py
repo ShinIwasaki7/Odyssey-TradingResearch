@@ -131,6 +131,14 @@ class LedgerLineage:
     has_note_digest: bool
 
 
+def _has_digest(value: object) -> bool:
+    """理由の文のダイジェストがあるか（台帳は `{"algorithm": "sha256", "hex": "…"}` の形で書く。
+    `fs_store` の `_cdigest_of`。16 進の文字列だけの形も受ける）。"""
+    if isinstance(value, Mapping):
+        value = value.get("hex")
+    return isinstance(value, str) and bool(value)
+
+
 def lineage_of_execution(data: bytes | None, experiment_id: str, execution: int) -> LedgerLineage:
     """試行台帳のこの実行の行から、開始・結末の有無と系譜の識別子を読む。"""
     started = finished = False
@@ -159,5 +167,5 @@ def lineage_of_execution(data: bytes | None, experiment_id: str, execution: int)
         raw_kinds = lineage.get("change_kinds")
         if isinstance(raw_kinds, list):
             kinds = tuple(str(item) for item in raw_kinds)
-        note = isinstance(lineage.get("note_digest"), str) and bool(lineage.get("note_digest"))
+        note = _has_digest(lineage.get("note_digest"))
     return LedgerLineage(started, finished, derived, kinds, note)

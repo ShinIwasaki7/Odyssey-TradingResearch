@@ -488,6 +488,15 @@ def test_the_verdict_pass_and_fail_are_read() -> None:
         _verdict(checks={"reason_from_memo": "PASS"}),
         _verdict(result="MAYBE"),
         _verdict(extra="x"),
+        _verdict(result=[]),  # 型の違う値（Codex 1 巡目の指摘）
+        _verdict(
+            checks={
+                "reason_from_memo": ["PASS"],
+                "content_matches_reason": "PASS",
+                "prediction_before_change": "PASS",
+                "no_digits_in_report_text": "PASS",
+            }
+        ),
     ],
 )
 def test_a_broken_verdict_is_no_output(raw: bytes, world: World) -> None:
@@ -581,3 +590,12 @@ def test_the_launch_grace_counts_from_the_launch_time(world: World) -> None:
     assert world.workers.poll(request).status is WorkerStatus.RUNNING
     world.clock.moment += timedelta(minutes=11)
     assert world.workers.poll(request).status is WorkerStatus.LOST
+
+
+@pytest.mark.parametrize("decision", [[], ["CHANGE"], {"a": 1}, 3])
+def test_a_decision_of_the_wrong_type_is_no_output(world: World, decision: object) -> None:
+    request, bundle = _launch(world, "analyst_change")
+    (bundle / "out" / "analysis_memo.md").write_bytes(MEMO)
+    (bundle / "out" / "change.yaml").write_bytes(_change(decision=decision))
+    _finish(world, request)
+    assert world.workers.poll(request).status is WorkerStatus.FAILED

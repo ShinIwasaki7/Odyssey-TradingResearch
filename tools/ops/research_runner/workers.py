@@ -321,6 +321,10 @@ def with_memo_sha256(raw_change: bytes, memo: bytes) -> bytes | None:
         return None
 
 
+def _verdict_word(value: object) -> bool:
+    return isinstance(value, str) and value in {"PASS", "FAIL"}
+
+
 def verdict_of(raw: bytes, card_id: str) -> VerdictOutput | None:
     """確かめ役の判定ファイル（#200 の仮置き 6 の書式）。形が合わなければ `None`（出力なし）。"""
     data = _yaml(raw, "verdict.yaml")
@@ -330,11 +334,12 @@ def verdict_of(raw: bytes, card_id: str) -> VerdictOutput | None:
         return None
     checks = data["checks"]
     reasons = data["reasons"]
-    if data["card"] != card_id or data["result"] not in {"PASS", "FAIL"}:
+    # 値の型を先に確かめる（リストなどを集合の判定に渡すと例外になる。Codex 1 巡目の指摘）。
+    if data["card"] != card_id or not _verdict_word(data["result"]):
         return None
     if not isinstance(checks, dict) or set(checks) != set(VERDICT_CHECKS):
         return None
-    if any(value not in {"PASS", "FAIL"} for value in checks.values()):
+    if not all(_verdict_word(value) for value in checks.values()):
         return None
     if not isinstance(reasons, list) or not all(isinstance(item, str) for item in reasons):
         return None
@@ -526,7 +531,14 @@ class ClaudeWorkers:
         self._record(state, inspection)
         if inspection.problem is not None:
             return WorkerPoll(WorkerStatus.FAILED, reason=inspection.problem)
-        return self._output(request, meta, inspection)
+        try:
+            return self._output(request, meta, inspection)
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            # 作業役の出力の形の想定外（型の違う値など）は、実行器を止めずに出力なしにする
+            # （D25 §5.6。1 回やり直して止まる）。
+            return WorkerPoll(
+                WorkerStatus.FAILED, reason=f"出力の形が合わない: {type(exc).__name__}"
+            )
 
     def _ending(self, log: Path, code: int) -> WorkerPoll | None:
         """結果の JSON の終わり方（成功なら `None`）。作業役の文の中身は読まない（形だけ）。"""
@@ -640,7 +652,8 @@ class ClaudeWorkers:
         # analyst_change
         memo = files["analysis_memo.md"]
         data = _yaml(files["change.yaml"], "change.yaml")
-        if _text(memo) is None or data is None or data.get("decision") not in _DECISIONS:
+        decision = None if data is None else data.get("decision")
+        if _text(memo) is None or not isinstance(decision, str) or decision not in _DECISIONS:
             return WorkerPoll(WorkerStatus.FAILED, reason="分析メモ・変更の提案の形が合わない")
         raw = with_memo_sha256(files["change.yaml"], memo)
         if raw is None:

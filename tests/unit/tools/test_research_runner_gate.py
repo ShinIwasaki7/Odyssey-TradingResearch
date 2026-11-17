@@ -29,7 +29,8 @@ def _ledger(*, derived: str = RECORD_1, kinds: Sequence[str] = ("PARAMETERS",)) 
         "derived_from": {"experiment_id": derived, "execution": 1},
         "change_kinds": list(kinds),
         "viewed_before": [],
-        "note_digest": "d" * 64,
+        # 台帳の実際の形（`fs_store` の `_cdigest_of`）。
+        "note_digest": {"algorithm": "sha256", "hex": "d" * 64},
     }
     rows = [
         _row("STARTED", RECORD_1, 1),
@@ -127,6 +128,7 @@ def test_a_dirty_tree_fails_item_1(world: _World) -> None:
             b'"FINISHED", "experiment_id": "' + RECORD_2.encode(), b'"OTHER", "experiment_id": "'
         ),
         b"",
+        _ledger().replace(b'{"algorithm": "sha256", "hex": "' + b"d" * 64 + b'"}', b"null"),
     ],
 )
 def test_ledger_problems_fail_item_2(world: _World, ledger: bytes) -> None:
