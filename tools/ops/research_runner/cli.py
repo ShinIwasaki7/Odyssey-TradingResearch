@@ -22,20 +22,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from tools.ops.hypothesis_cards.repo import ToolFailure
+from tools.ops.hypothesis_cards.repo import RepoView, ToolFailure
 from tools.ops.research_runner.adapters import (
     GhGitHub,
     LocalEvaluation,
     LocalGit,
     LocalProcesses,
     LocalSystem,
-    NotYetGate,
-    NotYetWorkers,
     SystemClock,
 )
+from tools.ops.research_runner.gate import LocalGate
 from tools.ops.research_runner.runner import Paths, Ports, Runner
 from tools.ops.research_runner.runs import WrapperProcess
 from tools.ops.research_runner.state import StateStore
+from tools.ops.research_runner.workers import ClaudeWorkers
 
 __all__ = ["build_runner", "main", "plist_text"]
 
@@ -45,16 +45,26 @@ LABEL = "local.odyssey.research-runner"
 
 def build_runner(repo: Path, exec_worktree: Path, snapshots: Path) -> Runner:
     paths = Paths(repo=repo, exec_worktree=exec_worktree, snapshots=snapshots)
+    git = LocalGit(repo, exec_worktree)
+    clock = SystemClock()
+    procs = LocalProcesses()
+
+    def view() -> RepoView:
+        # 束と関門は `origin/main` の時点の版管理のファイルを読む（作業木の汚れを写さない）。
+        return git.snapshot(git.origin_main())
+
     ports = Ports(
-        clock=SystemClock(),
-        git=LocalGit(repo, exec_worktree),
+        clock=clock,
+        git=git,
         github=GhGitHub(repo),
-        procs=LocalProcesses(),
+        procs=procs,
         system=LocalSystem(),
         wrapper=WrapperProcess(),
         evaluation=LocalEvaluation(snapshots),
-        workers=NotYetWorkers(),
-        gate=NotYetGate(),
+        workers=ClaudeWorkers(repo=repo, view=view, procs=procs, clock=clock),
+        gate=LocalGate(
+            repo=repo, exec_worktree=exec_worktree, view=view, is_ancestor=git.is_ancestor
+        ),
     )
     return Runner(paths, ports)
 

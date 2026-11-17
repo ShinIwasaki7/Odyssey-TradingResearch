@@ -1,8 +1,7 @@
 """実行器の本体が外の世界に触れる口（差し替えられる。試験は偽物を渡す）。
 
-実物は `adapters`（git・`gh`・プロセス・`vm_stat`・`odyssey-fx` のコマンド）にある。作業役
-（発想役・分析役・確かめ役）の起動と出力の検査、関門の機械の項目は PR 8b が実物を入れる
-（本 PR の実物は「まだ無い」を返し、実行器は道具の失敗として止まる）。
+実物は `adapters`（git・`gh`・プロセス・`vm_stat`・`odyssey-fx` のコマンド）、`workers`（作業役の
+起動と出力の検査。PR 8b の 2 本目）、`gate`（関門の機械の項目。同）にある。
 
 どの口も成績の数値を返さない（識別子・時刻・終了コード・合否・件数・ハッシュだけ）。
 """
@@ -26,9 +25,11 @@ __all__ = [
     "ChangeOutput",
     "Checks",
     "Clock",
+    "CommandNotAllowed",
     "Comment",
     "Evaluation",
     "GateCheck",
+    "GateInputs",
     "GateResult",
     "Git",
     "GitHub",
@@ -284,11 +285,17 @@ class Evaluation(Protocol):
         ...
 
 
-# --- 作業役（PR 8b が実物を入れる） ---------------------------------------------------------
+# --- 作業役（実物は `workers`） -----------------------------------------------------------
 
 
 class WorkerUnavailable(Exception):
-    """作業役を起動できない（定義が無い・PR 8b の前）。"""
+    """作業役を起動できない（定義が無い・役の名前が無い）。"""
+
+
+class CommandNotAllowed(Exception):
+    """口の実物が起動しようとしたコマンドが許可の一覧（`commands`）に無い（D25 §4.6 の
+    `COST_RISK`）。口は起動せずにこの例外で知らせ、実行器は当たったカードを添えて全体の停止に
+    する（`Runner._spawn` と同じ確かめ。作業役の起動と関門の機械の項目の 3 が通る）。"""
 
 
 class BundleOutOfScope(Exception):
@@ -370,7 +377,7 @@ class WorkerPoll:
 
 
 class Workers(Protocol):
-    """作業役の起動の口（中身は PR 8b）。
+    """作業役の起動の口（実物は `workers.ClaudeWorkers`）。
 
     利用上限で終わった作業役は、回復の答えの後に**同じ** `request`（役・カード・版・試みの番号）で
     もう一度 `launch` されることがある。`launch` はその前の出力・結果を捨てて新しく起動し、`poll`
@@ -379,7 +386,8 @@ class Workers(Protocol):
 
     def launch(self, request: WorkerRequest) -> None:
         """起動する。束を作れない（定義が無い）なら `WorkerUnavailable`、束に許可の一覧の外の
-        ファイルが要るなら写さずに `BundleOutOfScope`（`SEALED_NEEDED`）。"""
+        ファイルが要るなら写さずに `BundleOutOfScope`（`SEALED_NEEDED`）、起動のコマンドが許可の
+        一覧に無ければ起動せずに `CommandNotAllowed`（`COST_RISK`）。"""
         ...
 
     def poll(self, request: WorkerRequest) -> WorkerPoll: ...
@@ -396,5 +404,23 @@ class GateResult:
         return all(ok for _, ok in self.items)
 
 
+@dataclass(frozen=True, slots=True)
+class GateInputs:
+    """関門の機械の項目に渡す、実行器の状態のうちの識別子だけ（成績の数値を持たない）。"""
+
+    card_id: str
+    experiment: str
+    versions: tuple[int, ...]
+    #: 版 → 事前登録の merge のコミット。
+    prereg_commits: Mapping[str, str] = field(default_factory=dict)
+    #: 版 → `{"experiment_id": <記録票の識別子>, "execution": <実行番号>}`。
+    executions: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    #: 元の実験の再現の結果（`MATCH`・`MISMATCH`・`None`）。
+    repro: str | None = None
+
+
 class GateCheck(Protocol):
-    def check(self, card_id: str, versions: Sequence[int]) -> GateResult: ...
+    def check(self, inputs: GateInputs) -> GateResult:
+        """項目 1〜5 の合否。道具が動かなければ `ToolFailure`、項目 3 のコマンドが許可の一覧に
+        無ければ `CommandNotAllowed`。"""
+        ...

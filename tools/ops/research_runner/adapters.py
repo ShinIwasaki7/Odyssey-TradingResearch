@@ -4,8 +4,7 @@
   枝を書くのは `runner/`・`candidate-fix/` だけ。管理者の権限で検査を飛ばす merge はしない。
 - `gh`: PR の作成・様子・自動 merge の指定（merge のコミットの方式）・issue の問いとコメント。
 - プロセス: 切り離した処理は新しいセッション（プロセスグループの先頭）で起動する。
-- 作業役と関門の機械の項目は PR 8b が入れる。本 PR の実物は「まだ無い」で、実行器は道具の失敗と
-  して止まる。
+- 作業役の起動と出力の検査は `workers`、関門の機械の項目は `gate`（PR 8b の 2 本目）。
 
 どの実物も成績の数値を読まない（`console.log`・評価の結果・指標・取引表を開かない）。
 """
@@ -37,15 +36,10 @@ from tools.ops.research_runner.ports import (
     Binding,
     Checks,
     Comment,
-    GateResult,
     MainCheckout,
     PrepareFailed,
     PrState,
     PullStatus,
-    WorkerPoll,
-    WorkerRequest,
-    WorkerStatus,
-    WorkerUnavailable,
 )
 from tools.ops.research_runner.resources import free_memory_from_vm_stat
 from tools.ops.runner_ci.model import GitSnapshot
@@ -56,12 +50,12 @@ __all__ = [
     "LocalGit",
     "LocalProcesses",
     "LocalSystem",
-    "NotYetGate",
-    "NotYetWorkers",
     "SystemClock",
 ]
 
 _OWNED_BRANCHES: Final = ("runner/", "candidate-fix/")
+#: 実行器のコードの根（`tools/ops/research_runner/adapters.py` の 3 つ上。包みの import 元）。
+_CODE_ROOT: Final = Path(__file__).resolve().parents[3]
 _PR_URL: Final = re.compile(r"/pull/([0-9]+)\s*$")
 _ISSUE_URL: Final = re.compile(r"/issues/([0-9]+)\s*$")
 
@@ -394,10 +388,12 @@ class LocalProcesses:
             return
 
     def spawn(self, command: Sequence[str], *, cwd: Path, state_dir: Path) -> int:
+        """包みは実行器のコードの根（`tools` を import できる場所）から起動し、`command` だけを
+        `cwd` で走らせる（作業役の束には `tools/` が無い。Codex 2 巡目の指摘）。"""
         state_dir.mkdir(parents=True, exist_ok=True)
         process = subprocess.Popen(  # noqa: S603 - 実行器が組み立てた固定のコマンド
             command_line(state_dir, cwd, command),
-            cwd=cwd,
+            cwd=_CODE_ROOT,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -507,20 +503,3 @@ class LocalEvaluation:
         if spec is None or spec.origin is None:
             return True
         return '"--declaration"' in Path(spec.origin).read_text(encoding="utf-8")
-
-
-class NotYetWorkers:
-    """作業役の実物は PR 8b で入る（本 PR では起動できない）。"""
-
-    def launch(self, request: WorkerRequest) -> None:
-        raise WorkerUnavailable(f"作業役 {request.role} の定義は PR 8b で入る")
-
-    def poll(self, request: WorkerRequest) -> WorkerPoll:
-        return WorkerPoll(WorkerStatus.LOST)
-
-
-class NotYetGate:
-    """関門の機械の項目（D25 §5.5）の実物は PR 8b で入る。"""
-
-    def check(self, card_id: str, versions: Sequence[int]) -> GateResult:
-        raise ToolFailure("関門の機械の項目は PR 8b で入る")
