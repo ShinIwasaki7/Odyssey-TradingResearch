@@ -24,7 +24,13 @@ from tools.ops.hypothesis_cards.card import parse_card
 from tools.ops.hypothesis_cards.changes import parse_change
 from tools.ops.hypothesis_cards.repo import DictView
 from tools.ops.research_runner import workers as workers_module
-from tools.ops.research_runner.bundle import BundlePlan, Entry, plan_bundle
+from tools.ops.research_runner.bundle import (
+    AGENT_OF_ROLE,
+    ROLE_PLACES,
+    BundlePlan,
+    Entry,
+    plan_bundle,
+)
 from tools.ops.research_runner.ports import (
     BundleOutOfScope,
     ChangeOutput,
@@ -42,7 +48,10 @@ from tools.ops.research_runner.ports import (
 from tools.ops.research_runner.runner import Ports, Runner
 from tools.ops.research_runner.state import CardState, GlobalState, StateStore, format_time
 from tools.ops.research_runner.workers import (
+    AVAILABLE_TOOLS,
     MAX_FILE_BYTES,
+    REQUIRED_OUTPUTS,
+    VERDICT_CHECKS,
     ClaudeWorkers,
     verdict_of,
 )
@@ -599,3 +608,46 @@ def test_a_decision_of_the_wrong_type_is_no_output(world: World, decision: objec
     (bundle / "out" / "change.yaml").write_bytes(_change(decision=decision))
     _finish(world, request)
     assert world.workers.poll(request).status is WorkerStatus.FAILED
+
+
+# --- main の作業役の定義（PR #200）との突き合わせ -----------------------------------------------
+
+REPO_ROOT: Final = Path(__file__).resolve().parents[3]
+
+
+def _definition(agent: str) -> tuple[dict[str, Any], str]:
+    text = (REPO_ROOT / ".claude" / "agents" / f"{agent}.md").read_text(encoding="utf-8")
+    _, front, body = text.split("---\n", 2)
+    loaded = yaml.safe_load(front)
+    assert isinstance(loaded, dict)
+    return loaded, body
+
+
+@pytest.mark.parametrize("role", sorted(AGENT_OF_ROLE))
+def test_the_launch_matches_the_definition_on_main(role: str) -> None:
+    """起動の実物（役の名前・道具・出力のファイル・束の置き場）が、定義の書いたとおり。"""
+    agent = AGENT_OF_ROLE[role]
+    front, body = _definition(agent)
+    assert front["name"] == agent
+    assert {item.strip() for item in str(front["tools"]).split(",")} == set(
+        AVAILABLE_TOOLS.split(",")
+    )
+    for name in REQUIRED_OUTPUTS[role]:
+        assert f"out/{name}" in body, (agent, name)
+    if role == "ideator":
+        assert "out/cards/" in body
+    for place in ROLE_PLACES[role]:
+        assert f"`{place}/" in body, (agent, place)
+
+
+def test_the_verdict_names_match_the_verifier_definition() -> None:
+    _, body = _definition("verifier")
+    for check, reason in VERDICT_CHECKS.items():
+        assert f"`{check}`" in body and f"`{reason}`" in body
+
+
+def test_the_report_text_keys_match_the_analyst_definition() -> None:
+    _, body = _definition("analyst")
+    for key in ("schema_version", "card", "prediction", "change_reasons", "change_contents"):
+        assert f"{key}:" in body
+    assert "memo_sha256" in body and "この行は書かない" in body

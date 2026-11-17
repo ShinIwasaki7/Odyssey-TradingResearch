@@ -54,6 +54,8 @@ __all__ = [
 ]
 
 _OWNED_BRANCHES: Final = ("runner/", "candidate-fix/")
+#: 実行器のコードの根（`tools/ops/research_runner/adapters.py` の 3 つ上。包みの import 元）。
+_CODE_ROOT: Final = Path(__file__).resolve().parents[3]
 _PR_URL: Final = re.compile(r"/pull/([0-9]+)\s*$")
 _ISSUE_URL: Final = re.compile(r"/issues/([0-9]+)\s*$")
 
@@ -386,10 +388,12 @@ class LocalProcesses:
             return
 
     def spawn(self, command: Sequence[str], *, cwd: Path, state_dir: Path) -> int:
+        """包みは実行器のコードの根（`tools` を import できる場所）から起動し、`command` だけを
+        `cwd` で走らせる（作業役の束には `tools/` が無い。Codex 2 巡目の指摘）。"""
         state_dir.mkdir(parents=True, exist_ok=True)
         process = subprocess.Popen(  # noqa: S603 - 実行器が組み立てた固定のコマンド
             command_line(state_dir, cwd, command),
-            cwd=cwd,
+            cwd=_CODE_ROOT,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

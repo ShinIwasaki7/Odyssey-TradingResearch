@@ -157,6 +157,23 @@ def test_spawn_runs_the_command_through_the_detached_wrapper(tmp_path: Path) -> 
     assert (state / "exit_code.txt").read_text() == "0\n"
 
 
+def test_spawn_runs_the_command_in_a_directory_without_the_tools_package(tmp_path: Path) -> None:
+    """作業役の束（`tools/` の無いディレクトリ）でも包みが起動し、コマンドだけが束で走る
+    （Codex 2 巡目の指摘）。走らせるのは `pwd` を書くだけの小さなコマンド。"""
+    procs = LocalProcesses()
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    state = tmp_path / "proc"
+    command = [sys.executable, "-c", "import os; print(os.getcwd())"]
+    procs.spawn(command, cwd=bundle, state_dir=state)
+    for _ in range(200):
+        if (state / "exit_code.txt").is_file():
+            break
+        time.sleep(0.05)
+    assert (state / "exit_code.txt").read_text() == "0\n"
+    assert Path((state / "output.log").read_text().strip()).resolve() == bundle.resolve()
+
+
 def test_the_system_reads_disk_and_memory() -> None:
     system = LocalSystem()
     assert system.free_disk_bytes(Path(".")) > 0
