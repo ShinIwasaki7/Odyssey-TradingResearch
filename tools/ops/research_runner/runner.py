@@ -66,6 +66,7 @@ from tools.ops.hypothesis_cards.repo import LOOPS_DIR, RepoView, ToolFailure
 from tools.ops.hypothesis_cards.screening import CARD_PREREG_REJECTED, check_change, screen_card
 from tools.ops.research_runner.events import EventLog
 from tools.ops.research_runner.ledger_rows import (
+    finished_verdict,
     has_candidate_row,
     has_consumption_row,
     review_result,
@@ -1101,7 +1102,9 @@ class Runner:
         key = "worker"
         proc = holder.get(key) if card is not None else ctx.state.ideator.get("running")
         if not isinstance(proc, dict) or proc.get("role") != role:
-            if self._stopped(ctx):
+            if self._stopped(ctx) or self._worker_busy(ctx, card):
+                # 作業役のセッションは同時に 1 つまで（D25 §4.4・仮置き 15）。待つ側は何も使わずに
+                # 戻り、次の 1 歩で同じ段がもう一度当たって起動する。
                 return None
             attempt = int(card.retries.get(f"worker:{role}", 0)) + 1 if card is not None else 1
             request = WorkerRequest(
@@ -1159,6 +1162,16 @@ class Runner:
             self._stop_global(ctx, "USAGE_LIMIT")
             return None
         return poll
+
+    def _worker_busy(self, ctx: _Context, card: CardState | None) -> bool:
+        """ほかに起動の印のある作業役（発想役・ほかのカードの作業役）があるか。"""
+        if card is not None and isinstance(ctx.state.ideator.get("running"), dict):
+            return True
+        return any(
+            isinstance(other.procs.get("worker"), dict)
+            for other in ctx.cards.values()
+            if card is None or other.card_id != card.card_id
+        )
 
     def _worker_failed(self, ctx: _Context, card: CardState, role: str) -> None:
         """出力なし・異常終了: 同じ段を 1 回だけやり直し、2 回目で停止（T20、D25 §5.6）。"""
@@ -2686,7 +2699,7 @@ class Runner:
             if card is None or not card.checks.get("gate_passed"):
                 continue
             deleted = set(card.checks.get("deleted_versions", []))
-            last_open = card.review not in {"NOT_ADVANCE"}
+            last_open = not self._cannot_enter_review(card)
             for version in range(1, card.version + 1):
                 if version in deleted or (version == card.version and last_open):
                     continue
@@ -2704,6 +2717,20 @@ class Runner:
                 files=len(listed),
                 bytes=sum(int(item["size"]) for item in listed),
             )
+
+    def _cannot_enter_review(self, card: CardState) -> bool:
+        """最後の版が審査の入口を通りえないか（D25 §4.5 の 2「台帳の結末の行の判定が『満たす』で
+        ない」）。結末の行が無い・判定が読めないときは通りうるとみなして消さない（残す側）。機構の
+        確認の「満たす」（`MET_IN_MECHANISM_CHECK`）も「満たす」として残す（本 PR の仮置き 16）。"""
+        info = card.executions.get(str(card.version), {})
+        if not info.get("experiment_id"):
+            return False
+        verdict = finished_verdict(
+            self._exec_file(TRIAL_LEDGER),
+            str(info["experiment_id"]),
+            int(info.get("execution", 0)),
+        )
+        return verdict is not None and verdict not in _MEETS
 
     def _delete_version(self, card: CardState, version: int, listing: Path) -> list[dict[str, Any]]:
         """版の中間の出力を消す。消す前に一覧（パス・大きさ・SHA-256）を書き足す（消した後、
@@ -2783,6 +2810,7 @@ class Runner:
                 self._stopped(ctx)
                 or ctx.state.cards_pr is not None
                 or ctx.state.cards_sending is not None
+                or self._worker_busy(ctx, None)  # きっかけを使う前に確かめる（使い切らない）
             ):
                 return
             view = self._view(ctx)
@@ -3033,6 +3061,8 @@ class Runner:
 
 
 _LEDGER_FILES: Final = frozenset({TRIAL_LEDGER, REVIEW_LEDGER})
+#: 試行台帳の結末の行の判定のうち「満たす」（自動の削除で最後の版を残す。D25 §4.5 の 2）。
+_MEETS: Final = frozenset({"MEETS_STANDARD", "MET_IN_MECHANISM_CHECK"})
 
 
 def _json_line(item: Mapping[str, Any]) -> str:

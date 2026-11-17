@@ -39,6 +39,7 @@ from tools.ops.research_runner.ports import (
     WorkerPoll,
     WorkerRequest,
     WorkerStatus,
+    WorkerUnavailable,
     WrapperContract,
 )
 from tools.ops.research_runner.runner import Paths, Ports, Runner
@@ -598,6 +599,14 @@ class FakeWorkers:
         self.script.setdefault(role, []).append(WorkerPoll(status, output, **kw))
 
     def launch(self, request: WorkerRequest) -> None:
+        if (
+            request.role == "ideator"
+            and not self.script.get("ideator")
+            and "ideator" not in self.hold
+        ):
+            # 台本の無い発想役は「定義が無い」（起動の印を残さない）。作業役は同時に 1 つまで
+            # （D25 §4.4）なので、走り続ける発想役がカードの作業役を待たせないようにする。
+            raise WorkerUnavailable("試験: 発想役の台本が無い")
         self.launched.append(request)
 
     def poll(self, request: WorkerRequest) -> WorkerPoll:

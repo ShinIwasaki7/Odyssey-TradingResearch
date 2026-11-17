@@ -646,3 +646,319 @@ def test_card_workers_stopped_by_the_usage_limit_are_launched_again(rig: Rig, st
     roles = [request.role for request in rig.workers.launched if request.role == role]
     assert roles == [role, role]
     assert _phase(rig) == stage
+
+
+# --- 設計適合のレビュー: 自動の削除の範囲と一覧（D25 §4.5。取り消せない操作） -----------------
+
+
+def _hex(seed: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+
+def _put(path: Path, text: str = "x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _deletion_world(rig: Rig, last_verdict: Any) -> dict[str, Any]:
+    """確かめを通ったカード A（版 2）と、確かめを通っていないカード B の世界を作る。A の最後の版の
+    試行台帳の結末の行の判定は `last_verdict`（人工の値）。"""
+    from odyssey_fx.evaluation.adapters.fs_store import ledger_line_bytes
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+    from tests.fixtures.evaluation.trial_ledger import chain, finished, started
+
+    one = started("del1", nonce="1" * 32)
+    two = started("del2", nonce="2" * 32)
+    rows = [
+        one,
+        finished(one, verdict=SearchVerdict.BELOW_STANDARD),
+        two,
+        finished(two, verdict=last_verdict),
+    ]
+    ledger = b"".join(ledger_line_bytes(line) for line in chain(rows))
+    rig.world.put_on_main({"research/trial_ledger.jsonl": ledger})
+    rig.world.exec_head = rig.world.main
+    (rig.world.exec_dir / "research/trial_ledger.jsonl").write_bytes(ledger)
+    executions = {
+        "1": {"experiment_id": str(one.experiment_id), "execution": one.execution},
+        "2": {"experiment_id": str(two.experiment_id), "execution": two.execution},
+    }
+    _inject(
+        rig,
+        "C10",
+        reservations=["review"],
+        executions=executions,
+        checks={"gate_passed": True},
+    )
+    store = StateStore(rig.paths.state_dir)
+    other = CardState(
+        card_id="h-20261120-other",
+        mouth="human",
+        phase="C7",
+        taken_at=format_time(rig.clock.now()),
+        experiment="c_other",
+        version=1,
+    )
+    store.save_card(other)
+    state = GlobalState(
+        boot_id="boot-1", cards=[CARD_ID, other.card_id], weekly_last_week="2026-11-16"
+    )
+    store.save_global(state)
+    repo = rig.world.repo
+    runs = {version: _hex(f"run-{version}") for version in ("a1", "a2", "b1")}
+    version_dirs = {
+        "a1": rig.paths.version_dir(EXPERIMENT, 1),
+        "a2": rig.paths.version_dir(EXPERIMENT, 2),
+        "b1": rig.paths.version_dir("c_other", 1),
+    }
+    by_dir = {str(path): (runs[key],) for key, path in version_dirs.items()}
+    rig.evaluation.run_ids = lambda version_dir: by_dir.get(str(version_dir), ())  # type: ignore[method-assign]
+    paths = {
+        "run_a1": _put(repo / "runs" / runs["a1"] / "trades.parquet"),
+        "run_a2": _put(repo / "runs" / runs["a2"] / "trades.parquet"),
+        "run_b1": _put(repo / "runs" / runs["b1"] / "trades.parquet"),
+        "repro_a1": _put(rig.paths.repro_out(EXPERIMENT, 1) / "out.json"),
+        "repro_a2": _put(rig.paths.repro_out(EXPERIMENT, 2) / "out.json"),
+        "record_a1": _put(version_dirs["a1"] / "record.json"),
+        "search_a1": _put(version_dirs["a1"] / "search" / "trial_units.parquet"),
+        "fix": _put(rig.world.exec_dir / "research/candidate_fixes" / ("a" * 64) / "1" / "1.yaml"),
+        "runner": _put(rig.paths.runner_dir / "state" / "keep.txt"),
+        "not_hex": _put(repo / "runs" / "not-a-run-id" / "trades.parquet"),
+    }
+    return paths
+
+
+def _low_disk_step(rig: Rig) -> None:
+    rig.system.disk = 10 * 1000**3  # 消しても足りない（全部を消そうとする）
+    rig.step()
+
+
+@pytest.mark.parametrize("verdict", ["BELOW_STANDARD", "INSUFFICIENT_EVIDENCE"])
+def test_auto_deletion_removes_only_what_the_design_allows(rig: Rig, verdict: str) -> None:
+    """消してよいもの（確かめを通ったカードの最後でない版と、判定が「満たす」でない最後の版の
+    `runs/<run_id>/` と再現の出力）だけが消え、ほか（記録票・探索の記録・固定の記録・台帳・
+    `runs/runner/`・確かめを通っていないカードの出力・64 桁の 16 進でない名前）は残る。"""
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict[verdict])
+    ledgers = {
+        name: (rig.world.exec_dir / name).read_bytes() for name in ("research/trial_ledger.jsonl",)
+    }
+    _low_disk_step(rig)
+    assert "DISK_LOW" in _global_reasons(rig)
+    gone = {"run_a1", "run_a2", "repro_a1", "repro_a2"}
+    for name, path in paths.items():
+        assert path.exists() is (name not in gone), name
+    for name, data in ledgers.items():
+        assert (rig.world.exec_dir / name).read_bytes() == data
+
+
+def test_auto_deletion_keeps_a_last_version_that_meets_the_standard(rig: Rig) -> None:
+    """最後の版の判定が「満たす」なら、審査で「進めない」でも審査の入口を通りうるので残す（D25 §4.5
+    の 2。直す前は審査の結果だけで消していた）。最後でない版は消す。"""
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict.MEETS_STANDARD)
+    card = StateStore(rig.paths.state_dir).load_card(CARD_ID)
+    card.review = "NOT_ADVANCE"
+    StateStore(rig.paths.state_dir).save_card(card)
+    _low_disk_step(rig)
+    assert not paths["run_a1"].exists() and not paths["repro_a1"].exists()
+    assert paths["run_a2"].exists() and paths["repro_a2"].exists()
+
+
+def test_auto_deletion_keeps_a_last_version_without_an_outcome_row(rig: Rig) -> None:
+    """最後の版の結末の行が無い（判定が読めない）なら、残す側に倒す。"""
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict.BELOW_STANDARD)
+    card = StateStore(rig.paths.state_dir).load_card(CARD_ID)
+    card.executions["2"] = {"experiment_id": "f" * 64, "execution": 1}
+    StateStore(rig.paths.state_dir).save_card(card)
+    _low_disk_step(rig)
+    assert paths["run_a2"].exists() and paths["repro_a2"].exists()
+    assert not paths["run_a1"].exists()
+
+
+def test_the_deletion_list_is_written_before_each_removal(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """消す前に一覧（パス・大きさ・SHA-256）を `runs/runner/deleted/` に書く（消した後、一覧を
+    書く前に止まっても一覧を失わない）。"""
+    import hashlib
+    import json
+    import shutil
+
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict.BELOW_STANDARD)
+    expected = {
+        path.relative_to(rig.world.repo).as_posix(): path.read_bytes()
+        for name, path in paths.items()
+        if name in {"run_a1", "run_a2", "repro_a1", "repro_a2"}
+    }
+    original = shutil.rmtree
+    seen: list[set[str]] = []
+
+    def checked(target: Any, *args: Any, **kwargs: Any) -> None:
+        listed = set()
+        for listing in rig.paths.deleted_dir.glob("*.jsonl"):
+            listed |= {json.loads(line)["path"] for line in listing.read_text().splitlines()}
+        root = Path(target)
+        if root.is_relative_to(rig.world.repo / "runs") and not root.is_relative_to(
+            rig.paths.runner_dir
+        ):
+            inside = {
+                item.relative_to(rig.world.repo).as_posix()
+                for item in root.rglob("*")
+                if item.is_file()
+            }
+            assert inside <= listed, inside - listed
+            seen.append(inside)
+        original(target, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", checked)
+    _low_disk_step(rig)
+    assert set().union(*seen) == set(expected)
+    (listing,) = rig.paths.deleted_dir.glob("*.jsonl")
+    rows = [json.loads(line) for line in listing.read_text().splitlines()]
+    assert {row["path"] for row in rows} == set(expected)
+    for row in rows:
+        data = expected[row["path"]]
+        assert row["size"] == len(data)
+        assert row["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_run_ids_that_are_not_64_hex_digits_are_never_listed(tmp_path: Path) -> None:
+    """消す対象の `runs/<run_id>/` は、探索の記録の `run_id` が 64 桁の 16 進のものだけ（`..` や
+    別の名前で `runs/` の外や別の置き場を消さない）。"""
+    import polars as pl
+
+    from tools.ops.research_runner.adapters import LocalEvaluation
+
+    good = _hex("good")
+    table = tmp_path / "v1" / "search" / "s1" / "trial_units.parquet"
+    table.parent.mkdir(parents=True)
+    pl.DataFrame({"run_id": [good, "..", "runner", good.upper(), good[:63], ""]}).write_parquet(
+        table
+    )
+    assert LocalEvaluation(snapshots=tmp_path).run_ids(tmp_path / "v1") == (good,)
+
+
+# --- 設計適合のレビュー: 作業役のセッションは同時に 1 つまで（D25 §4.4、仮置き 15） -----------
+
+
+def _report() -> Any:
+    from tools.ops.research_runner.ports import ReportOutput
+
+    return ReportOutput("予想の文", ("理由の文",), ("中身の文",), "analysis/c.md", "ef" * 32)
+
+
+def _verdict() -> Any:
+    from tools.ops.research_runner.ports import VerdictOutput
+
+    return VerdictOutput(True)
+
+
+def _load_global(rig: Rig) -> GlobalState:
+    whole = StateStore(rig.paths.state_dir).load_global()
+    assert whole is not None
+    return whole
+
+
+def test_a_card_worker_waits_for_the_running_ideator_and_keeps_its_stage(tmp_path: Path) -> None:
+    """発想役が走っている間、カードの分析役は起動しない。発想役が終われば、待っていた段がもう一度
+    当たって起動する（待たされた側は何も失わない）。"""
+    from tools.ops.research_runner.ports import IdeatorOutput
+
+    rig = make_rig(tmp_path)
+    StateStore(rig.paths.state_dir).save_global(
+        GlobalState(
+            boot_id="boot-1",
+            weekly_last_week="2026-11-16",
+            ideator={"after_done": 1, "queue_empty_used": True},
+        )
+    )
+    rig.workers.hold.add("ideator")
+    rig.step()  # done/ に移った後の 1 回 → 発想役を起動（走り続ける）
+    assert [item.role for item in rig.workers.launched] == ["ideator"]
+    ideator = dict(rig.state()["ideator"])
+    _inject(rig, "C8")
+    store = StateStore(rig.paths.state_dir)
+    whole = _load_global(rig)
+    whole.ideator = ideator  # 走っている発想役の起動の印を残す
+    store.save_global(whole)
+    for _ in range(2):
+        rig.step()
+    assert [item.role for item in rig.workers.launched] == ["ideator"]
+    assert _phase(rig) == "C8"
+    rig.workers.hold.discard("ideator")
+    rig.workers.add("ideator", IdeatorOutput((), ()))
+    rig.workers.hold.add("analyst_report")
+    for _ in range(2):
+        rig.step()
+    assert [item.role for item in rig.workers.launched] == ["ideator", "analyst_report"]
+
+
+def test_the_ideator_waits_for_a_card_worker_without_using_its_trigger(tmp_path: Path) -> None:
+    """カードの作業役が走っている間、発想役は起動せず、待ち行列が空のときの 1 回を使い切らない。
+    カードの作業役が終われば発想役が起動する。"""
+    rig = make_rig(tmp_path)
+    _inject(rig, "C8")
+    rig.workers.hold.add("analyst_report")
+    rig.workers.hold.add("ideator")
+    rig.step()
+    assert [item.role for item in rig.workers.launched] == ["analyst_report"]
+    assert "queue_empty_used" not in rig.state()["ideator"]
+    rig.step()
+    assert [item.role for item in rig.workers.launched] == ["analyst_report"]
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", _report())
+    rig.workers.add("verifier", _verdict())
+    for _ in range(4):
+        rig.step()
+    roles = [item.role for item in rig.workers.launched]
+    assert roles == ["analyst_report", "verifier", "ideator"]
+
+
+def test_two_cards_do_not_run_workers_at_the_same_time(rig: Rig) -> None:
+    """カード同士でも作業役は同時に 1 つ。先のカードの作業役が終われば、後のカードが起動する。"""
+    _inject(rig, "C8")
+    store = StateStore(rig.paths.state_dir)
+    other = CardState(
+        card_id="h-20261120-other",
+        mouth="human",
+        phase="C8",
+        taken_at=format_time(rig.clock.now()),
+        experiment="c_other",
+        version=2,
+    )
+    store.save_card(other)
+    whole = _load_global(rig)
+    whole.cards.append(other.card_id)
+    store.save_global(whole)
+    rig.workers.hold.add("analyst_report")
+    for _ in range(2):
+        rig.step()
+    first = [(item.role, item.card_id) for item in rig.workers.launched]
+    assert first == [("analyst_report", CARD_ID)]
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", _report())
+    rig.workers.add("verifier", _verdict())
+    rig.workers.hold.add("verifier")
+    for _ in range(3):
+        rig.step()
+    # 先のカードの確かめ役が走っている間、後のカードの分析役は待つ
+    assert [(item.role, item.card_id) for item in rig.workers.launched] == [
+        ("analyst_report", CARD_ID),
+        ("verifier", CARD_ID),
+    ]
+    rig.workers.hold.discard("verifier")
+    rig.workers.add("analyst_report", _report())
+    for _ in range(3):
+        rig.step()
+    cards = [item.card_id for item in rig.workers.launched if item.role == "analyst_report"]
+    assert cards == [CARD_ID, other.card_id]

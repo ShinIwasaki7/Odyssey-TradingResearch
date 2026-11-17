@@ -2,6 +2,7 @@
 
 審査台帳・最終検証の台帳に、ある実行（記録票の識別子と実行番号）の行があるかだけを見る。行の
 判定の値・指標は読まない（審査の結果の語彙 `PROCEED`・`DO_NOT_PROCEED`・`DEFERRED` だけを返す）。
+例外は自動の削除の確かめ（D25 §4.5 の 2）で、試行台帳の結末の行の判定の語彙だけを読む。
 
 行の形: 審査台帳は `{digest, entry, prev}`（識別子と結果は `entry` の中。`review_store` の
 `review_line_bytes`）、最終検証の台帳は最上位に `candidate`、消費の記録は最上位に `candidate`。
@@ -15,6 +16,7 @@ from typing import Any, Final
 
 __all__ = [
     "REVIEW_RESULTS",
+    "finished_verdict",
     "has_candidate_row",
     "has_consumption_row",
     "review_result",
@@ -83,6 +85,19 @@ def review_result(
     """
     results = _review_results(data, experiment_id, execution)[after:]
     return results[-1] if results else None
+
+
+def finished_verdict(data: bytes | None, experiment_id: str, execution: int) -> str | None:
+    """試行台帳のこの実行の結末の行（`event` = `FINISHED`）のうち最新の行の判定の語彙（無ければ
+    `None`）。自動の削除の「審査の入口を通りえない」の確かめ（D25 §4.5 の 2）だけに使う。判定の
+    語彙のほかは読まない。"""
+    found: str | None = None
+    for row in _rows(data or b""):
+        body = _body(row)
+        if body.get("event") == "FINISHED" and _matches(row, experiment_id, execution):
+            verdict = body.get("verdict")
+            found = str(verdict) if isinstance(verdict, str) else None
+    return found
 
 
 def has_consumption_row(data: bytes | None, experiment_id: str, execution: int) -> bool:
