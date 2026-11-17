@@ -268,7 +268,10 @@ def _routine_paths(given: CheckInput, routine: Routine) -> list[str]:
             required.append(f"{loops}change_v{version}.yaml")
         experiment = _experiment_id(given, card)
         if experiment is not None:
-            allowed.add(f"configs/experiments/{experiment}.yaml")
+            # 実験設定の置き場は版 1 が `<実験>.yaml`、改善の版 n が `<実験>_v<n>.yaml`（順 11 の
+            # PR 7 の `generate.experiment_path`。PR 8a で合わせた）。
+            suffix = "" if version == 1 else f"_v{version}"
+            allowed.add(f"configs/experiments/{experiment}{suffix}.yaml")
             strategies = re.compile(
                 rf"^configs/strategies/{re.escape(experiment)}_v[1-9][0-9]*\.yaml$"
             )
