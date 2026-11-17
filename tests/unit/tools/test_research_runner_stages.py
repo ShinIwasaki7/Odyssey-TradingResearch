@@ -347,6 +347,25 @@ def test_a_research_policy_before_version_five_stops_the_intake(rig: Rig) -> Non
     assert not rig.world.prs
 
 
+def test_a_registry_whose_current_version_is_four_stops_everything(rig: Rig) -> None:
+    """登録の前の振る舞い（仮置き 2）: 試験の中で作った登録簿から第 5 版の行を外し、現行を第 4 版に
+    すると、既定の下限（第 5 版）のまま何も起動せずに全体を止める（PR #198 で本物の登録簿は第 5 版が
+    現行になったので、登録の前の形は試験の中で作る）。"""
+    registry = rig.world.workspace / "configs/policies/research/registry.yaml"
+    lines = registry.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [line for line in lines if "{id: research_policy, version: 5," not in line]
+    assert len(kept) == len(lines) - 1
+    registry.write_text("".join(kept), encoding="utf-8")
+    rig.world.put_on_main({f"research/hypotheses/queue/{CARD_ID}.yaml": RAW})
+    runner = rig.runner()
+    assert runner.policy_floor == 5
+    rig.clock.advance(minutes=5)
+    runner.step()
+    assert rig.state()["reasons"][0]["detail"].startswith("研究ポリシーの現行が第 5 版より前")
+    assert not rig.world.prs
+    assert not rig.wrapper.launched
+
+
 def test_ending_a_running_card_terminates_its_process_groups(rig: Rig) -> None:
     rig.world.put_on_main({f"research/hypotheses/queue/{CARD_ID}.yaml": RAW})
     for _ in range(2):
