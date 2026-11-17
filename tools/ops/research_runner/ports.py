@@ -22,6 +22,7 @@ from tools.ops.hypothesis_cards.screening import Verification
 
 __all__ = [
     "Binding",
+    "BundleOutOfScope",
     "ChangeOutput",
     "Checks",
     "Clock",
@@ -290,6 +291,15 @@ class WorkerUnavailable(Exception):
     """作業役を起動できない（定義が無い・PR 8b の前）。"""
 
 
+class BundleOutOfScope(Exception):
+    """読む束を作る段で、許可の一覧の外（`data/`・最終検証と前向き検証の出力・手元の旧データの
+    CSV など）のファイルを求められた（D25 §4.6 の `SEALED_NEEDED` の検出の仕方、§5.2 の表）。
+
+    判定は束を作る道具（PR 8b の `Workers.launch` の中身）が行い、写す前にこの例外で知らせる。
+    実行器は作業役を起動せず、当たったカードを添えて全体の停止（`SEALED_NEEDED`）にする。
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerRequest:
     """作業役 1 回の起動（`role` は `ideator`・`analyst_change`・`analyst_report`・`verifier`）。"""
@@ -367,7 +377,10 @@ class Workers(Protocol):
     が前の起動の利用上限の結果を返さないようにする（本 PR の仮置き）。
     """
 
-    def launch(self, request: WorkerRequest) -> None: ...
+    def launch(self, request: WorkerRequest) -> None:
+        """起動する。束を作れない（定義が無い）なら `WorkerUnavailable`、束に許可の一覧の外の
+        ファイルが要るなら写さずに `BundleOutOfScope`（`SEALED_NEEDED`）。"""
+        ...
 
     def poll(self, request: WorkerRequest) -> WorkerPoll: ...
 
