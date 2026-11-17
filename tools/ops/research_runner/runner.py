@@ -3136,8 +3136,15 @@ class Runner:
                 ctx, files, text, auto=True, record={"cards": sorted(accepted)}
             )
             self._flush_cards(ctx)
-        elif trigger in {"queue_empty", "extra"} and not ai_full and not self._has_takeable(ctx):
-            self._stop_global(ctx, "QUEUE_EMPTY")
+        elif trigger in {"queue_empty", "extra"} and not self._has_takeable(ctx):
+            if ai_full:
+                # 止まりを足さない代わりに、使ったきっかけを戻す（上限を上げた・設定を直した後の
+                # 1 歩で発想役を起動し直し、書けなければそのとき `QUEUE_EMPTY` で止まる。Codex
+                # 1 巡目の指摘 1）。上限の間は起動の側が起動しない。
+                ideator["trigger"] = trigger
+                self._ideator_keep_trigger(ideator)
+            else:
+                self._stop_global(ctx, "QUEUE_EMPTY")
 
     @staticmethod
     def _ideator_keep_trigger(ideator: dict[str, Any]) -> None:

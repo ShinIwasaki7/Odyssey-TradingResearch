@@ -108,6 +108,16 @@ def test_the_repository_config_has_the_values_of_the_end_to_end_check() -> None:
     assert mouth_limits(DictView({INTAKE_PATH: raw})) == MouthLimits({"human": 1, "ai": 1})
 
 
+def test_the_limits_do_not_follow_the_given_mapping() -> None:
+    """作るときに写すので、渡した辞書を後で変えても上限は変わらない（Codex 1 巡目の指摘 2）。"""
+    caps = {"human": 1}
+    limits = MouthLimits(caps)
+    caps.clear()
+    assert limits.cap("human") == 1
+    with pytest.raises(TypeError):
+        limits.caps["ai"] = 1  # type: ignore[index]
+
+
 def test_full_mouths_counts_every_taken_card() -> None:
     limits = MouthLimits({"human": 1, "ai": 2})
     assert intake.full_mouths(limits, []) == frozenset()
@@ -315,3 +325,16 @@ def test_an_ideator_finishing_after_the_ai_mouth_filled_does_not_stop(
     reasons = [item["reason"] for item in rig.state()["reasons"]]
     assert reasons == (["QUEUE_EMPTY"] if config == "none" else [])
     assert "running" not in rig.state()["ideator"]
+    if config == "none":
+        return
+    # 止まりを足さなかった代わりに、待ち行列が空のときの 1 回を戻した: 上限を上げる（設定を直す）と
+    # 発想役を起動し直し、書けなければそのとき `QUEUE_EMPTY` で止まる（Codex 1 巡目の指摘 1）。
+    assert "queue_empty_used" not in rig.state()["ideator"]
+    rig.step()
+    assert rig.workers.launched == []  # 上限の間・壊れている間は起動しない
+    rig.world.put_on_main({INTAKE_PATH: _config(ai=2)})
+    rig.workers.add("ideator", IdeatorOutput((), ()))
+    rig.step()
+    assert [request.role for request in rig.workers.launched] == ["ideator"]
+    rig.step()
+    assert rig.world.issue_for("QUEUE_EMPTY")

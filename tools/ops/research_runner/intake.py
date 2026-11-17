@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
@@ -46,9 +47,13 @@ _TOP_KEYS: Final = frozenset({"schema_version", "max_cards_per_mouth"})
 
 @dataclass(frozen=True, slots=True)
 class MouthLimits:
-    """口 → 上限の枚数（口が無ければ上限なし）。"""
+    """口 → 上限の枚数（口が無ければ上限なし）。作るときに写して読み取り専用にする（渡した辞書を
+    後で変えても上限は変わらない）。"""
 
     caps: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "caps", MappingProxyType(dict(self.caps)))
 
     def cap(self, mouth: str) -> int | None:
         return self.caps.get(mouth)
