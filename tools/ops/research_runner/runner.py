@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -64,6 +65,7 @@ from tools.ops.hypothesis_cards.queue import (
 )
 from tools.ops.hypothesis_cards.repo import LOOPS_DIR, RepoView, ToolFailure
 from tools.ops.hypothesis_cards.screening import CARD_PREREG_REJECTED, check_change, screen_card
+from tools.ops.research_runner.commands import unlisted_command
 from tools.ops.research_runner.events import EventLog
 from tools.ops.research_runner.ledger_rows import (
     finished_verdict,
@@ -73,6 +75,7 @@ from tools.ops.research_runner.ledger_rows import (
     review_row_count,
 )
 from tools.ops.research_runner.ports import (
+    BundleOutOfScope,
     ChangeOutput,
     Checks,
     Clock,
@@ -165,6 +168,14 @@ FAIL_LEDGER: Final = "ledger"
 FAIL_CI: Final = "ci"
 _MAX_RSS: Final = re.compile(r"([0-9]+)\s+maximum resident set size")
 _TERMINAL: Final = frozenset({CardPhase.C14.name})
+#: カードの作業役の役と、その終わりを見る段（`_worker` を呼ぶ段。D25 §5.1 の表）。
+_WORKER_PHASES: Final = {
+    "analyst_change": CardPhase.C7,
+    "analyst_report": CardPhase.C8,
+    "verifier": CardPhase.C9,
+}
+#: 自動の削除の置き場に使う実験名（D07 §19.1 の実験の名前の字種。D25 の仮置き 4）。
+_EXPERIMENT_NAME: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +308,7 @@ class Runner:
         self._pause_request(ctx)
         self._answers(ctx)
         self._auto_checks(ctx)
+        self._sweep_workers(ctx)
         for card in self._active(ctx):
             self._advance(ctx, card)
         for stage in (
@@ -601,7 +613,7 @@ class Runner:
             if identifier == "AMBIGUOUS_RULE" and card.return_phase != CardPhase.C7.name:
                 return False  # 分析・改善の段で止まったときだけ選べる
             card.redo_note = f"{identifier}: 前の変更の提案は規則で決められなかった"
-            card.procs.pop("worker", None)
+            self._discard_worker(card)
             card.checks.pop("pending_change", None)
             self._release_card(ctx, card, identifier, to=CardPhase.C7.name)
             return True
@@ -610,7 +622,7 @@ class Runner:
         if action is Action.REDO_STAGE:
             card.retries.pop(identifier, None)
             card.retries.pop("reproduce_lost", None)
-            card.procs.pop("worker", None)
+            self._discard_worker(card)
             card.checks.pop("pending_change", None)
             self._release_card(ctx, card, identifier)
             return True
@@ -626,7 +638,7 @@ class Runner:
         if action is Action.REWRITE_REPORT:
             card.verifier_failures = 0
             card.checks = {}
-            card.procs.pop("worker", None)
+            self._discard_worker(card)
             self._release_card(ctx, card, identifier, to=CardPhase.C8.name)
             return True
         if action is Action.REDO_REVIEW:
@@ -1101,6 +1113,14 @@ class Runner:
         holder = card.procs if card is not None else ctx.state.ideator
         key = "worker"
         proc = holder.get(key) if card is not None else ctx.state.ideator.get("running")
+        if (
+            card is not None
+            and isinstance(proc, dict)
+            and (proc.get("stale") or proc.get("role") != role)
+        ):
+            # 前の段の作業役・答えで捨てた作業役の印が残っている: 終わるまで待つ（終われば
+            # `_sweep_workers` が外す）。同じカードで 2 つ目を起動しない（D25 §4.4・仮置き 15）。
+            return None
         if not isinstance(proc, dict) or proc.get("role") != role:
             if self._stopped(ctx) or self._worker_busy(ctx, card):
                 # 作業役のセッションは同時に 1 つまで（D25 §4.4・仮置き 15）。待つ側は何も使わずに
@@ -1130,6 +1150,21 @@ class Runner:
                 self.store.save_global(ctx.state)
             try:
                 self.ports.workers.launch(request)
+            except BundleOutOfScope as exc:
+                # 読む束に許可の一覧の外のファイルが要る（D25 §4.6 の `SEALED_NEEDED`。束は
+                # 写していない）: 起動せず、当たったカードを添えて全体の停止。
+                if card is not None:
+                    card.procs.pop(key, None)
+                else:
+                    ctx.state.ideator.pop("running", None)
+                    self._ideator_keep_trigger(ctx.state.ideator)
+                self._stop_global(
+                    ctx,
+                    "SEALED_NEEDED",
+                    f"{role}: {exc}",
+                    card=card.card_id if card is not None else None,
+                )
+                return None
             except WorkerUnavailable as exc:
                 if card is not None:
                     card.procs.pop(key, None)
@@ -1162,6 +1197,50 @@ class Runner:
             self._stop_global(ctx, "USAGE_LIMIT")
             return None
         return poll
+
+    def _worker_request(self, card: CardState, proc: Mapping[str, Any]) -> WorkerRequest:
+        return WorkerRequest(
+            role=str(proc.get("role")),
+            attempt=int(proc.get("attempt", 1)),
+            card_id=card.card_id,
+            version=card.version,
+            extra=dict(proc.get("extra") or {}),
+        )
+
+    def _discard_worker(self, card: CardState) -> None:
+        """答え・「終える」で今の作業役の結果を使わないことにする。印はすぐには外さず、捨てる印を
+        付ける（走っている間に外すと、次の作業役が同時に起動しうる。D25 §4.4・仮置き 15）。"""
+        proc = card.procs.get("worker")
+        if isinstance(proc, dict):
+            proc["stale"] = True
+
+    def _sweep_workers(self, ctx: _Context) -> None:
+        """終わりを見る段の外に残ったカードの作業役の起動の印を片づける。
+
+        作業役が走っている間にカードが停止（C13）に移る・別の段に移る・「終える」になる・答えで
+        結果を捨てると、その役の段（`_worker`）はもう終わりを見ないので、印が残り、ほかの作業役が
+        人間の解除まで待つ。ここで終わりを見て、終わっていれば印を外す（結果は使わない。段が
+        もう一度当たれば同じ要求で起動し直す。PR #193 の仮置き 44）。走っている間は印を残す
+        （作業役は同時に 1 つまで。D25 §4.4・仮置き 15）。
+        """
+        for card in ctx.cards.values():
+            proc = card.procs.get("worker")
+            if not isinstance(proc, dict):
+                continue
+            owner = _WORKER_PHASES.get(str(proc.get("role")))
+            if not proc.get("stale") and card.ending is None and owner is _phase(card):
+                continue  # 役の段が自分で終わりを見る
+            try:
+                poll = self.ports.workers.poll(self._worker_request(card, proc))
+            except ToolFailure as exc:
+                ctx.notes.append(f"{card.card_id}: 作業役の様子を読めない（次の 1 歩）: {exc}")
+                continue  # 読めなければ印を残す（走っているとみなす）
+            if poll.status is WorkerStatus.RUNNING:
+                continue
+            card.procs.pop("worker", None)
+            ctx.notes.append(
+                f"{card.card_id}: 段の外に残った作業役 {proc.get('role')} の印を外した"
+            )
 
     def _worker_busy(self, ctx: _Context, card: CardState | None) -> bool:
         """ほかに起動の印のある作業役（発想役・ほかのカードの作業役）があるか。"""
@@ -1530,6 +1609,9 @@ class Runner:
                 card.procs.pop("fix", None)
                 self._tool_failure(ctx, card, "固定の前の確かめが途中で止まった")
             return
+        # 終了コード: 0 = 固定の記録を書いた、8 = 延期（窓の長さだけ・先の候補の最終検証が
+        # 終わっていないだけ。決定 210）、7 = 固定の前の確かめの不合格。ほか（7・8 以外の 0 でない
+        # 値）はすべて道具の失敗（PR #193 の仮置き 6）。
         if code != 0:
             card.procs.pop("fix", None)
         if code == 8:
@@ -1737,6 +1819,7 @@ class Runner:
                 self.ports.github.close_issue(item.issue)
         card.ending = identifier
         card.reservations = []
+        self._discard_worker(card)
         self._terminate(card)
         # 終わりの確かめと done/ への PR は、同じ 1 歩のカードの段（`_advance`）が行う（送信待ちの
         # PR を先に送り、道具の失敗もカードの段で数える）。
@@ -1766,6 +1849,9 @@ class Runner:
     def _finish_end(self, ctx: _Context, card: CardState) -> None:
         if any(self.ports.procs.alive(group) for group in self._groups(card)):
             return  # 終わったことを確かめられるまで C13 のまま
+        if isinstance(card.procs.get("worker"), dict):
+            # 作業役が終わるまで待つ（印を消すと次の作業役が同時に起動しうる。`_sweep_workers`）
+            return
         outcome = card.ending or "HUMAN_ENDED"
         self._resend_failed_exec(ctx, card)
         card.procs = {}
@@ -1872,7 +1958,16 @@ class Runner:
         cwd: Path,
         marks: Mapping[str, Any] | None = None,
     ) -> None:
-        """`marks` は起動の印に一緒に書く照合の材料（起動の前に保存する）。"""
+        """`marks` は起動の印に一緒に書く照合の材料（起動の前に保存する）。
+
+        起動の前に、コマンドが許可の一覧（`commands`）にあるかを確かめる。無ければ起動せず、
+        当たったカードを添えて全体の停止（`COST_RISK`。D25 §4.6）。予約は呼び出し側が外して
+        いても、止まりが外れた後の照らし合わせ（`_reconcile`）で戻る。
+        """
+        unlisted = unlisted_command(command, self.ports.odyssey)
+        if unlisted is not None:
+            self._stop_global(ctx, "COST_RISK", f"{name}: {unlisted}", card=card.card_id)
+            return
         attempt = int(card.retries.get(f"spawn:{name}", 0)) + 1
         card.retries[f"spawn:{name}"] = attempt
         state_dir = self.paths.proc_dir(card.card_id, name, attempt)
@@ -2698,6 +2793,12 @@ class Runner:
             card = ctx.cards.get(card_id)
             if card is None or not card.checks.get("gate_passed"):
                 continue
+            if not _EXPERIMENT_NAME.fullmatch(card.experiment or ""):
+                # 置き場の名前に使えない実験名（空・`..`・区切り文字など）: 消さない（残す側）。
+                ctx.notes.append(
+                    f"{card.card_id}: 実験名が置き場の名前でないので自動の削除をしない"
+                )
+                continue
             deleted = set(card.checks.get("deleted_versions", []))
             last_open = not self._cannot_enter_review(card)
             for version in range(1, card.version + 1):
@@ -2735,18 +2836,22 @@ class Runner:
     def _delete_version(self, card: CardState, version: int, listing: Path) -> list[dict[str, Any]]:
         """版の中間の出力を消す。消す前に一覧（パス・大きさ・SHA-256）を書き足す（消した後、
         一覧を書く前に実行器が止まっても、一覧を失わない。決定 147）。"""
+        if not _EXPERIMENT_NAME.fullmatch(card.experiment or "") or version < 1:
+            return []  # 置き場の名前に使えない値: 消さない（残す側）
         version_dir = self.paths.version_dir(card.experiment, version)
         targets = [
             self.paths.repo / "runs" / run_id
             for run_id in self.ports.evaluation.run_ids(version_dir)
+            if re.fullmatch(r"[0-9a-f]{64}", run_id)
         ]
         targets.append(self.paths.repro_out(card.experiment, version))
         listed: list[dict[str, Any]] = []
         for target in targets:
-            if not target.is_dir():
+            files = self._deletable_files(target)
+            if files is None:
                 continue
             items = []
-            for path in sorted(item for item in target.rglob("*") if item.is_file()):
+            for path in files:
                 data = path.read_bytes()
                 items.append(
                     {
@@ -2764,6 +2869,44 @@ class Runner:
             shutil.rmtree(target)
             listed += items
         return listed
+
+    def _deletable_files(self, target: Path) -> list[Path] | None:
+        """消してよい置き場の中のファイル（名前の順）。消さないなら `None`。
+
+        シンボリックリンクは先を読まず、消さない（残す側）: `runs/` から置き場までの途中の
+        ディレクトリ・置き場そのもの・中のどれか 1 つでもリンクなら、その置き場を丸ごと残す。
+        普通のファイルとディレクトリのほか（名前付きパイプなど）があるときも残す。置き場が無い・
+        ディレクトリでないときも `None`。
+        """
+        runs = self.paths.repo / "runs"
+        try:
+            relative = target.relative_to(runs)
+        except ValueError:
+            return None
+        if not relative.parts or ".." in relative.parts:
+            return None
+        current = runs
+        for part in relative.parts:
+            current = current / part
+            try:
+                mode = current.lstat().st_mode
+            except OSError:
+                return None
+            if not stat.S_ISDIR(mode):
+                return None  # リンク・ファイル・無い
+        found: list[Path] = []
+        for root, dirs, names in os.walk(target, followlinks=False):
+            for name in [*dirs, *names]:
+                path = Path(root) / name
+                try:
+                    mode = path.lstat().st_mode
+                except OSError:
+                    return None
+                if stat.S_ISREG(mode):
+                    found.append(path)
+                elif not stat.S_ISDIR(mode):
+                    return None  # リンク・パイプなど: 丸ごと残す
+        return sorted(found)
 
     # --- 取り出し（D25 §3.6。決定 151） ---------------------------------------------------------
 

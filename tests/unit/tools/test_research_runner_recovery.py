@@ -27,7 +27,7 @@ from tests.fixtures.research_runner import (
     make_rig,
 )
 from tests.fixtures.runner_ci import final_ledger, review_ledger
-from tools.ops.research_runner.ports import PrState
+from tools.ops.research_runner.ports import PrState, WorkerStatus
 from tools.ops.research_runner.state import CardState, GlobalState, StateStore, format_time
 
 CARD_ID = "h-20261120-dual-ema"
@@ -631,8 +631,6 @@ def test_an_ideator_that_could_not_be_launched_keeps_its_trigger(
 def test_card_workers_stopped_by_the_usage_limit_are_launched_again(rig: Rig, stage: str) -> None:
     """同じ型の点検: カードの作業役（報告を書く分析役・確かめ役）は、利用上限の停止の答えの後に
     段がもう一度当たって起動し直す（きっかけを失わない）。"""
-    from tools.ops.research_runner.ports import WorkerStatus
-
     role = {"C8": "analyst_report", "C9": "verifier"}[stage]
     checks = {"gate": [[item, True] for item in range(1, 6)]} if stage == "C9" else {}
     _inject(rig, stage, checks=checks)
@@ -962,3 +960,222 @@ def test_two_cards_do_not_run_workers_at_the_same_time(rig: Rig) -> None:
         rig.step()
     cards = [item.card_id for item in rig.workers.launched if item.role == "analyst_report"]
     assert cards == [CARD_ID, other.card_id]
+
+
+# --- 後追いの PR: 段の外に残った作業役の起動の印（作業役は同時に 1 つのまま） -------
+
+
+def _second_card(rig: Rig, phase: str = "C8") -> CardState:
+    store = StateStore(rig.paths.state_dir)
+    other = CardState(
+        card_id="h-20261120-other",
+        mouth="human",
+        phase=phase,
+        taken_at=format_time(rig.clock.now()),
+        experiment="c_other",
+        version=2,
+    )
+    store.save_card(other)
+    whole = _load_global(rig)
+    whole.cards.append(other.card_id)
+    store.save_global(whole)
+    return other
+
+
+def _stop_by_hand(rig: Rig, identifier: str, *, back_to: str) -> int:
+    """作業役が走っている間に、カードを停止（C13）に移す（遅れて届いた止まりの理由の代わり）。"""
+    from tools.ops.research_runner.state import OpenReason
+
+    number = rig.github.create_issue(
+        title=f"[runner] 止まった: {identifier} {CARD_ID}", body="", label="runner-stop"
+    )
+    store = StateStore(rig.paths.state_dir)
+    card = store.load_card(CARD_ID)
+    card.phase = "C13"
+    card.return_phase = back_to
+    card.reasons.append(OpenReason(identifier, number, "", format_time(rig.clock.now())))
+    store.save_card(card)
+    return number
+
+
+def _launched(rig: Rig) -> list[tuple[str, str | None]]:
+    return [(item.role, item.card_id) for item in rig.workers.launched]
+
+
+def test_a_worker_left_behind_by_a_stopped_card_is_cleared_when_it_ends(rig: Rig) -> None:
+    """作業役が走っている間にカードが停止（C13）に移っても、作業役が終われば起動の印が外れ、
+    ほかのカードの作業役が人間の解除を待たずに起動する。走っている間は待つ（同時に 1 つ）。"""
+    _inject(rig, "C8")
+    other = _second_card(rig)
+    rig.workers.hold.add("analyst_report")
+    rig.step()
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
+    _stop_by_hand(rig, "REPRO_MISMATCH", back_to="C8")
+    for _ in range(2):
+        rig.step()
+    assert _launched(rig) == [("analyst_report", CARD_ID)]  # 走っている間は待つ
+    assert "worker" in rig.card(CARD_ID)["procs"]
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", _report())  # 止まったカードの作業役が終わる
+    rig.step()
+    assert "worker" not in rig.card(CARD_ID)["procs"]
+    assert _launched(rig) == [("analyst_report", CARD_ID), ("analyst_report", other.card_id)]
+    assert _phase(rig) == "C13"
+
+
+def test_an_answer_that_discards_a_running_worker_waits_for_it_to_end(rig: Rig) -> None:
+    """答え（範囲を変えずに別の変更を選ぶ）で走っている作業役の結果を捨てても、その作業役が
+    終わるまで次の作業役を起動しない（すぐに印を外すと 2 つ同時に動く）。"""
+    _inject(rig, "C7")
+    rig.workers.hold.add("analyst_change")
+    rig.step()
+    assert _launched(rig) == [("analyst_change", CARD_ID)]
+    issue = _stop_by_hand(rig, "CHANGE_OUT_OF_RULES", back_to="C7")
+    rig.world.answer(issue, "1")
+    rig.step()
+    assert _phase(rig) == "C7"
+    assert rig.card(CARD_ID)["procs"]["worker"]["stale"] is True
+    rig.step()
+    assert _launched(rig) == [("analyst_change", CARD_ID)]  # 前の作業役が走っている間は待つ
+    rig.workers.hold.discard("analyst_change")
+    rig.workers.add("analyst_change", status=WorkerStatus.FAILED)  # 前の作業役が終わる（捨てる）
+    rig.step()
+    assert _launched(rig) == [("analyst_change", CARD_ID), ("analyst_change", CARD_ID)]
+
+
+def test_ending_a_card_waits_for_its_running_worker(rig: Rig) -> None:
+    """「このカードを終える」は、走っている作業役が終わるまで終わりにしない（印を消すと、ほかの
+    カードの作業役が同時に起動しうる）。終われば終わり、ほかのカードの作業役が起動する。"""
+    _inject(rig, "C8")
+    other = _second_card(rig)
+    rig.workers.hold.add("analyst_report")
+    rig.step()
+    issue = _stop_by_hand(rig, "REPRO_MISMATCH", back_to="C8")
+    rig.world.answer(issue, "2")  # このカードを終える
+    for _ in range(2):
+        rig.step()
+    assert _phase(rig) == "C13"
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", _report())
+    for _ in range(2):
+        rig.step()
+    assert _phase(rig) == "C14"
+    assert ("analyst_report", other.card_id) in _launched(rig)
+
+
+# --- 後追いの PR: 自動の削除の名前とシンボリックリンク（取り消せない操作は残す側） ---
+
+
+@pytest.mark.parametrize("bad", ["", "..", ".", "a/b", "../c_other", "x\\y", "-x"])
+def test_auto_deletion_keeps_everything_when_the_experiment_name_is_not_a_place_name(
+    rig: Rig, bad: str
+) -> None:
+    """実験名が置き場の名前でない（空・`..`・区切り文字など）なら、そのカードの出力を何も消さない。"""
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict.BELOW_STANDARD)
+    store = StateStore(rig.paths.state_dir)
+    card = store.load_card(CARD_ID)
+    card.experiment = bad
+    store.save_card(card)
+    runs = {_hex(f"run-{key}") for key in ("a1", "a2")}
+    rig.evaluation.run_ids = lambda version_dir: tuple(sorted(runs))  # type: ignore[method-assign]
+    escaped = _put(rig.world.repo / "runs" / "v1" / "keep.txt")
+    _low_disk_step(rig)
+    for path in (*paths.values(), escaped):
+        assert path.exists(), path
+    assert not list(rig.paths.deleted_dir.glob("*.jsonl")) or not any(
+        listing.read_text() for listing in rig.paths.deleted_dir.glob("*.jsonl")
+    )
+
+
+def test_auto_deletion_does_not_follow_or_remove_symbolic_links(rig: Rig, tmp_path: Path) -> None:
+    """置き場の中にリンクがあれば、その置き場を丸ごと残し、リンクの先を一覧にも書かない。置き場
+    そのものがリンクでも残す。リンクの無い置き場は従来どおり消す。"""
+    import json
+    import shutil
+
+    from odyssey_fx.evaluation.domain.search import SearchVerdict
+
+    paths = _deletion_world(rig, SearchVerdict.BELOW_STANDARD)
+    outside = tmp_path / "outside"
+    secret = _put(outside / "sealed.csv", "outside")
+    (paths["run_a1"].parent / "link.csv").symlink_to(secret)
+    run_a2 = paths["run_a2"].parent
+    shutil.move(str(run_a2), str(outside / "a2"))
+    run_a2.symlink_to(outside / "a2", target_is_directory=True)
+    _low_disk_step(rig)
+    assert paths["run_a1"].exists() and (paths["run_a1"].parent / "link.csv").is_symlink()
+    assert run_a2.is_symlink() and (outside / "a2" / "trades.parquet").exists()
+    assert secret.read_text() == "outside"
+    assert not paths["repro_a1"].exists() and not paths["repro_a2"].exists()
+    listed = set()
+    for listing in rig.paths.deleted_dir.glob("*.jsonl"):
+        listed |= {json.loads(line)["path"] for line in listing.read_text().splitlines()}
+    assert listed and not any("link.csv" in item or "a2" in item.split("/")[1] for item in listed)
+
+
+# --- 後追いの PR: 止まる条件の検出（費用の危険・封印が要る。D25 §4.6） ---------------------------
+
+
+def test_a_command_outside_the_allowed_list_stops_everything_before_launching(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """段が許可の一覧に無いコマンドを要したら（ここでは一覧から審査を外して真似る）、起動せずに
+    当たったカードを添えて全体の停止（`COST_RISK`）。「そのカードを終えて続ける」で終えて外れる。"""
+    from tools.ops.research_runner import commands
+
+    _inject(rig, "C10", reservations=["review"], checks={"gate_passed": True})
+    monkeypatch.setattr(
+        commands, "ALLOWED_EXPERIMENT_COMMANDS", commands.ALLOWED_EXPERIMENT_COMMANDS - {"review"}
+    )
+    rig.step()
+    assert "COST_RISK" in _global_reasons(rig)
+    (item,) = [row for row in rig.state()["reasons"] if row["reason"] == "COST_RISK"]
+    assert item["card"] == CARD_ID
+    assert not [key for key in rig.procs.spawned if key.startswith("review:")]
+    rig.step()
+    assert not [key for key in rig.procs.spawned if key.startswith("review:")]
+    rig.world.answer(rig.world.issue_for("COST_RISK").number, "2")
+    for _ in range(2):
+        rig.step()
+    assert "COST_RISK" not in _global_reasons(rig)
+    assert _phase(rig) == "C14"
+
+
+def test_the_allowed_list_names_the_design_commands_only() -> None:
+    from tools.ops.research_runner.commands import unlisted_command
+
+    head = ("uv", "run", "--frozen", "odyssey-fx")
+    for sub in ("run", "report", "ledger", "reproduce", "review", "final-validate", "fix"):
+        assert unlisted_command([*head, "experiment", sub, "--x"], head) is None
+    for program in ("git", "gh", "claude"):
+        assert unlisted_command([program, "status"], head) is None
+    assert unlisted_command([*head, "data", "fetch"], head) == "odyssey-fx data fetch"
+    assert unlisted_command([*head, "experiment", "purchase"], head) == (
+        "odyssey-fx experiment purchase"
+    )
+    assert unlisted_command(["aws", "s3", "cp"], head) == "aws"
+    assert unlisted_command([], head) == "（空のコマンド）"
+
+
+def test_a_bundle_that_needs_files_outside_the_allowed_list_stops_everything(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """読む束を作る段で許可の一覧の外のファイルを求められたら（束を作る道具が知らせる）、作業役を
+    起動せず、当たったカードを添えて全体の停止（`SEALED_NEEDED`）。起動の印を残さない。"""
+    from tests.fixtures.research_runner import FakeWorkers
+    from tools.ops.research_runner.ports import BundleOutOfScope, WorkerRequest
+
+    def out_of_scope(self: FakeWorkers, request: WorkerRequest) -> None:
+        raise BundleOutOfScope("data/ の下のファイル")
+
+    _inject(rig, "C8")
+    monkeypatch.setattr(FakeWorkers, "launch", out_of_scope)
+    rig.step()
+    (item,) = [row for row in rig.state()["reasons"] if row["reason"] == "SEALED_NEEDED"]
+    assert item["card"] == CARD_ID
+    assert "worker" not in rig.card(CARD_ID)["procs"]
+    assert _phase(rig) == "C8"
+    assert "data/" not in rig.world.issue_for("SEALED_NEEDED").body
