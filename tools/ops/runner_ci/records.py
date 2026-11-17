@@ -26,7 +26,6 @@ import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final
@@ -34,6 +33,7 @@ from typing import Any, Final
 from odyssey_fx.app.config.loader import ConfigError, load_yaml_mapping
 from odyssey_fx.common.errors import KernelValueError
 from odyssey_fx.evaluation.domain.regimes import favored_regimes_of
+from tools.ops.hypothesis_cards.card import rule_numbers_outside, unreadable_digits
 from tools.ops.runner_ci.model import ChangeStatus, CheckInput, CheckResult, Status, result
 
 HYPOTHESES: Final = "research/hypotheses/"
@@ -75,7 +75,6 @@ _UTC_TIME_RE: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}
 _HEX64_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENT_RE: Final = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _EXPERIMENT_ID_RE: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
-_NUMBER_RE: Final = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 #: 記録の置き場の下でも記録として読まない説明のファイル（ディレクトリの README と空の印）。
 _PLACE_FILES: Final = frozenset({"README.md", ".gitkeep"})
 _PLACE_DIRECTORIES: Final = frozenset(
@@ -587,48 +586,20 @@ def _free_texts(kind: RecordKind, data: Mapping[str, Any]) -> Iterator[tuple[str
                     yield f"text.{key}[{index}]", item
 
 
-def _numbers(value: str) -> set[Decimal]:
-    found: set[Decimal] = set()
-    for token in _NUMBER_RE.findall(unicodedata.normalize("NFKC", value)):
-        try:
-            found.add(Decimal(token).normalize())
-        except InvalidOperation:  # pragma: no cover - 正規表現が数だけを拾う
-            continue
-    return found
-
-
-def _scalar_numbers(value: object) -> set[Decimal]:
-    """宣言・格子の値に現れる数（数の値と、文字列の値の中の数）。"""
-    if isinstance(value, bool):
-        return set()
-    if isinstance(value, int | float):
-        return _numbers(str(value))
-    if isinstance(value, str):
-        return _numbers(value)
-    if isinstance(value, dict):
-        return {number for item in value.values() for number in _scalar_numbers(item)}
-    if isinstance(value, list):
-        return {number for item in value for number in _scalar_numbers(item)}
-    return set()
-
-
 def _rule_numbers(path: str, data: Mapping[str, Any]) -> list[str]:
+    """`rule` の数の検査。判定は仮説カードの道具（`tools.ops.hypothesis_cards.card`）の関数を
+    そのまま使い、CI と道具の判定が 2 か所でずれないようにする（D25 §3.1・§6.3 の 6、仮置き 6）。
+    許すのは、部品の各使用箇所の `parameters` の値と格子の軸の `values` に現れる数だけで、系列名
+    （`1h`・`15m`）・部品の版・使用箇所の名前に現れる数は許さない。"""
     rule = data.get("rule")
     if not isinstance(rule, str):
         return []
-    unreadable = [
-        character
-        for character in rule
-        if unicodedata.category(character).startswith("N")
-        and _NUMBER_RE.fullmatch(unicodedata.normalize("NFKC", character)) is None
-    ]
-    if unreadable:
+    if unreadable_digits(rule):
         return [
             f"{path}: `rule` に、半角・全角の数字として読めない数字（ローマ数字・丸数字の一部など）"
             "がある（D25 の仮置き 6）"
         ]
-    allowed = _scalar_numbers(data.get("strategy")) | _scalar_numbers(data.get("grid"))
-    if _numbers(rule) - allowed:
+    if rule_numbers_outside(rule, data.get("strategy"), data.get("grid")):
         return [
             f"{path}: `rule` の数に、戦略のパラメータにも格子の値にも無いものがある"
             "（D25 の仮置き 6）"
