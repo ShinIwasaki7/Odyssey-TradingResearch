@@ -688,10 +688,20 @@ def bundle_listing(bundle: Path) -> dict[str, Any]:
     ファイルはパスと SHA-256、ディレクトリはパスだけ。実行器は起動の前にこれを束の**外**（作業役の
     状態の置き場）に控え、作業役の後に `listing_problem` で比べる（束の中の `manifest.json` は
     作業役が書き換えうるので、比べる元にしない）。リンク・普通でないファイルがあれば道具の失敗。
+    読めないディレクトリも黙って飛ばさず道具の失敗にする（起動の前なら起動しない、作業役の後なら
+    `listing_problem` が境目の破れとして全体を止める。破れ側に倒す。仮置き J3）。
     """
     files: dict[str, str] = {}
     dirs: list[str] = []
-    for root, names_dirs, names in os.walk(bundle, followlinks=False):
+
+    def unreadable(exc: OSError) -> None:
+        try:
+            where = Path(exc.filename).relative_to(bundle).as_posix()
+        except (TypeError, ValueError):
+            where = "?"
+        raise ToolFailure(f"束の中に読めないディレクトリ: {where}") from exc
+
+    for root, names_dirs, names in os.walk(bundle, onerror=unreadable, followlinks=False):
         base = Path(root)
         for name in sorted([*names_dirs, *names]):
             full = base / name

@@ -462,9 +462,11 @@ def test_the_launch_passes_the_limits_and_the_worker_env(world: World) -> None:
     command: list[str] = spawned["command"]
     assert command[command.index("--max-turns") + 1] == "100"
     assert spawned["timeout_seconds"] == 60 * 60
-    assert spawned["env"] == {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
-    # CLAUDE.md を読ませない変数は、`--agent` の定義が読まれ続けると文書で確かめられないので無い。
-    assert "CLAUDE_CODE_DISABLE_CLAUDE_MDS" not in spawned["env"]
+    # 自動の記憶と CLAUDE.md を読ませない（人間の決定 250。定義の読み込みは実機で確かめた）。
+    assert spawned["env"] == {
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+    }
     assert "--bare" not in command
 
 

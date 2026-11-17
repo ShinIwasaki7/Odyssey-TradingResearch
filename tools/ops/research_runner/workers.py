@@ -19,7 +19,8 @@
    `--setting-sources project`。本 PR の仮置き G2）。
 5. 上限（後追いの PR）: やり取りの回数（`--max-turns`）と壁時計の時間（包みの
    `--timeout-seconds`）を `configs/runner/workers.yaml`（`origin/main` の時点）から読む。自動の
-   記憶（MEMORY.md）を読ませない環境変数 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` を作業役にだけ足す。
+   記憶（MEMORY.md）を読ませない環境変数 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` と、CLAUDE.md を
+   読ませない環境変数 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`（人間の決定 250）を作業役にだけ足す。
 6. 束を写した直後に、束の `out/` の外の全部（`manifest.json`・定義を含む）の一覧とハッシュを束の
    **外**（`runs/runner/workers/<起動の識別子>/bundle_listing.json`）に控える。
 
@@ -104,10 +105,12 @@ __all__ = [
     "LIMITS_PATH",
     "MAX_FILE_BYTES",
     "MAX_OUT_BYTES",
+    "MAX_TURNS_SUBTYPE",
     "REQUIRED_OUTPUTS",
     "VERDICT_CHECKS",
     "WORKER_ENV",
     "WorkerLimits",
+    "ended_by_max_turns",
     "inspect_out",
     "worker_command",
     "worker_limits",
@@ -151,13 +154,22 @@ _LOG_READ_BYTES: Final = 1024 * 1024
 LISTING_FILE: Final = "bundle_listing.json"
 #: 作業役の上限の設定（`origin/main` の時点。後追いの PR の仮置き H4・H5）。
 LIMITS_PATH: Final = "configs/runner/workers.yaml"
-#: 作業役にだけ足す環境変数（後追いの PR の仮置き H6）。自動の記憶（MEMORY.md）を読ませない。
-#: 公式の文書（env-vars）: 「Set to `1` to disable auto memory ... When disabled, Claude does not
-#: create or load auto memory files」。sub-agents の文書: 自動の記憶を切っても定義の `memory` の
-#: 項目が効かなくなるだけで、エージェントは起動する。CLAUDE.md を読ませない
-#: `CLAUDE_CODE_DISABLE_CLAUDE_MDS` は、`--agent` の定義の読み込みが止まらないことを文書で
-#: 確かめられなかったので入れない（実機の確かめの道具 `probe` で確かめてから決める）。
-WORKER_ENV: Final[Mapping[str, str]] = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+#: 作業役にだけ足す環境変数（後追いの PR の仮置き H6）。
+#:
+#: - 自動の記憶（MEMORY.md）を読ませない。公式の文書（env-vars）: 「Set to `1` to disable auto
+#:   memory ... When disabled, Claude does not create or load auto memory files」。sub-agents の
+#:   文書: 自動の記憶を切っても定義の `memory` の項目が効かなくなるだけで、エージェントは起動する。
+#: - CLAUDE.md を読ませない（人間の決定 250「読ませない設定を入れる（推奨）」）。公式の文書
+#:   （env-vars）: 「prevent loading any CLAUDE.md memory files into context, including user,
+#:   project, and auto memory files」。束の上のリポジトリの根の CLAUDE.md・利用者の CLAUDE.md が
+#:   作業役の文脈に入らない。`--agent` の定義が読み込まれ続け、守りが効くことは実機の確かめ
+#:   （人間の決定 249。実機の確かめの道具 `probe` の 2 回目）で確かめた。
+WORKER_ENV: Final[Mapping[str, str]] = {
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+}
+#: やり取りの回数の上限（`--max-turns`）で終わったときの結果の JSON の `subtype`（仮置き H7）。
+MAX_TURNS_SUBTYPE: Final = "error_max_turns"
 #: 上限の既定の値（設定のファイルが無いとき。仮置き H4・H5。根拠は設定のファイルの注記）。
 DEFAULT_MAX_TURNS: Final = 100
 DEFAULT_TIMEOUT_MINUTES: Final = 60
@@ -196,6 +208,14 @@ def worker_limits(view: RepoView) -> WorkerLimits:
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def ended_by_max_turns(envelope: object) -> bool:
+    """結果の JSON が、やり取りの回数の上限（`--max-turns`）で終わったことを示すか。
+
+    実行器の様子の検査（`ClaudeWorkers.poll`）と実機の確かめの道具（`probe`）が同じ見分けを使う。
+    """
+    return isinstance(envelope, dict) and envelope.get("subtype") == MAX_TURNS_SUBTYPE
 
 
 def worker_command(
@@ -649,7 +669,7 @@ class ClaudeWorkers:
             )
         else:
             said = text
-        if isinstance(envelope, dict) and envelope.get("subtype") == "error_max_turns":
+        if ended_by_max_turns(envelope):
             # やり取りの回数の上限（`--max-turns`）で終わった: 作業役の失敗（利用上限ではない）。
             return WorkerPoll(WorkerStatus.FAILED, reason="やり取りの回数の上限で終わった")
         if _USAGE_LIMIT.search(said):
