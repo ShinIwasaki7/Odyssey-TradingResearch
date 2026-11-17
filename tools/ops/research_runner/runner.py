@@ -1241,6 +1241,10 @@ class Runner:
             ctx.notes.append(
                 f"{card.card_id}: 段の外に残った作業役 {proc.get('role')} の印を外した"
             )
+            if poll.status is WorkerStatus.USAGE_LIMIT:
+                # 結果は捨てても、利用上限の応答は捨てない（最初の上限の応答で全体の停止。
+                # D25 §4.6。同じ 1 歩の中で次の作業役を起動しない。Codex 1 巡目の指摘）。
+                self._stop_global(ctx, "USAGE_LIMIT")
 
     def _worker_busy(self, ctx: _Context, card: CardState | None) -> bool:
         """ほかに起動の印のある作業役（発想役・ほかのカードの作業役）があるか。"""

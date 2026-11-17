@@ -1179,3 +1179,19 @@ def test_a_bundle_that_needs_files_outside_the_allowed_list_stops_everything(
     assert "worker" not in rig.card(CARD_ID)["procs"]
     assert _phase(rig) == "C8"
     assert "data/" not in rig.world.issue_for("SEALED_NEEDED").body
+
+
+def test_a_worker_left_behind_that_hit_the_usage_limit_stops_everything(rig: Rig) -> None:
+    """段の外に残った作業役が利用上限で終わったら、印を外すだけでなく全体の停止（`USAGE_LIMIT`）
+    にし、同じ 1 歩でほかのカードの作業役を起動しない（Codex 1 巡目の指摘）。"""
+    _inject(rig, "C8")
+    _second_card(rig)
+    rig.workers.hold.add("analyst_report")
+    rig.step()
+    _stop_by_hand(rig, "REPRO_MISMATCH", back_to="C8")
+    rig.workers.hold.discard("analyst_report")
+    rig.workers.add("analyst_report", status=WorkerStatus.USAGE_LIMIT)
+    rig.step()
+    assert "USAGE_LIMIT" in _global_reasons(rig)
+    assert "worker" not in rig.card(CARD_ID)["procs"]
+    assert _launched(rig) == [("analyst_report", CARD_ID)]
