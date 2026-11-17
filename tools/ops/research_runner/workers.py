@@ -17,13 +17,21 @@
    ネットワーク・ほかのエージェントの起動は道具の一覧に無い。MCP の道具も、利用者・手元の
    設定（束の外の読み取りの許可を含みうる）も読まない（`--strict-mcp-config`・
    `--setting-sources project`。本 PR の仮置き G2）。
+5. 上限（後追いの PR）: やり取りの回数（`--max-turns`）と壁時計の時間（包みの
+   `--timeout-seconds`）を `configs/runner/workers.yaml`（`origin/main` の時点）から読む。自動の
+   記憶（MEMORY.md）を読ませない環境変数 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` を作業役にだけ足す。
+6. 束を写した直後に、束の `out/` の外の全部（`manifest.json`・定義を含む）の一覧とハッシュを束の
+   **外**（`runs/runner/workers/<起動の識別子>/bundle_listing.json`）に控える。
 
-**様子と出力の検査**（`poll`。D25 §5.6）: 終わったら、結果の JSON の終わり方（成功・誤り・
-利用上限）だけを読み、作業役の文の中身は `out/` のファイルとして形を検査する（中身の良し悪しは
-判断しない）。
+**様子と出力の検査**（`poll`。D25 §5.6）: 終わったら、まず束を控えと比べ、次に結果の JSON の
+終わり方（成功・誤り・利用上限・回数の上限・時間切れ）を読み、作業役の文の中身は `out/` の
+ファイルとして形を検査する（中身の良し悪しは判断しない）。
 
-- 束の中の写し（`manifest.json` の各ファイル・定義）が変わった、写しの置き場にファイルが増えた
-  （`out/` の外への書き込み）→ 出力なし（`FAILED`）。
+- 束の `out/` の外が控えと違う（写しが変わった・消えた、ファイルやディレクトリが増えた・消えた。
+  束の直下と `.claude/` も見る）→ 境目の破れ（`BOUNDARY_BROKEN`）。終わり方にかかわらず出力を
+  使わず、実行器はやり直さずに全体を止める（人間の決定 245）。
+- 控えが無い・読めない → 出力なし（`FAILED`。確かめられないので使わない）。
+- 回数の上限・時間切れで終わった → 出力なし（`FAILED`。1 回やり直して止まる）。
 - `out/` の中にリンク・普通でないファイルがある、大きさが上限を超える → 出力なし。
 - 決まったファイルが無い・YAML として読めない・項目と型が合わない → 出力なし。
 - 自由文に数字がある（仮置き 6）、変更の提案の静的な検査（D25 §3.9 の (1)〜(4)・(6)・(7)）に
@@ -63,14 +71,16 @@ from tools.ops.research_runner.bundle import (
     ANALYSIS_DIR,
     MANIFEST,
     OUT_DIR,
-    PLACES,
     REPORT_TEXT,
     BundleScope,
+    bundle_listing,
     check_plan,
+    listing_problem,
     plan_bundle,
     write_bundle,
 )
 from tools.ops.research_runner.commands import unlisted_command
+from tools.ops.research_runner.detached import EXIT_TIMED_OUT, TIMED_OUT_FILE
 from tools.ops.research_runner.ports import (
     ChangeOutput,
     Clock,
@@ -91,12 +101,16 @@ __all__ = [
     "ALLOWED_TOOLS",
     "AVAILABLE_TOOLS",
     "ClaudeWorkers",
+    "LIMITS_PATH",
     "MAX_FILE_BYTES",
     "MAX_OUT_BYTES",
     "REQUIRED_OUTPUTS",
     "VERDICT_CHECKS",
+    "WORKER_ENV",
+    "WorkerLimits",
     "inspect_out",
     "worker_command",
+    "worker_limits",
 ]
 
 #: 作業役に見せる組み込みの道具（D25 §5.2。Bash・ネットワーク・エージェントの起動は無い）。
@@ -133,14 +147,65 @@ _USAGE_LIMIT: Final = re.compile(
     re.IGNORECASE,
 )
 _LOG_READ_BYTES: Final = 1024 * 1024
+#: 束の外に控える束の一覧（作業役の状態の置き場の中）。
+LISTING_FILE: Final = "bundle_listing.json"
+#: 作業役の上限の設定（`origin/main` の時点。後追いの PR の仮置き H4・H5）。
+LIMITS_PATH: Final = "configs/runner/workers.yaml"
+#: 作業役にだけ足す環境変数（後追いの PR の仮置き H6）。自動の記憶（MEMORY.md）を読ませない。
+#: 公式の文書（env-vars）: 「Set to `1` to disable auto memory ... When disabled, Claude does not
+#: create or load auto memory files」。sub-agents の文書: 自動の記憶を切っても定義の `memory` の
+#: 項目が効かなくなるだけで、エージェントは起動する。CLAUDE.md を読ませない
+#: `CLAUDE_CODE_DISABLE_CLAUDE_MDS` は、`--agent` の定義の読み込みが止まらないことを文書で
+#: 確かめられなかったので入れない（実機の確かめの道具 `probe` で確かめてから決める）。
+WORKER_ENV: Final[Mapping[str, str]] = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+#: 上限の既定の値（設定のファイルが無いとき。仮置き H4・H5。根拠は設定のファイルの注記）。
+DEFAULT_MAX_TURNS: Final = 100
+DEFAULT_TIMEOUT_MINUTES: Final = 60
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerLimits:
+    """作業役 1 回の上限（やり取りの回数と壁時計の時間）。"""
+
+    max_turns: int = DEFAULT_MAX_TURNS
+    timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES
+
+
+_LIMIT_RANGES: Final = {"max_turns": (1, 500), "timeout_minutes": (1, 24 * 60)}
+
+
+def worker_limits(view: RepoView) -> WorkerLimits:
+    """`configs/runner/workers.yaml` の上限（無ければ既定の値）。形が違えば `ToolFailure`。"""
+    raw = view.read(LIMITS_PATH)
+    if raw is None:
+        return WorkerLimits()
+    try:
+        data = load_yaml_mapping(Path(LIMITS_PATH), text=raw.decode("utf-8"))
+    except (ConfigError, UnicodeDecodeError) as exc:
+        raise ToolFailure(f"{LIMITS_PATH} を読めない: {exc}") from exc
+    if set(data) != {"schema_version", *_LIMIT_RANGES} or data["schema_version"] != 1:
+        raise ToolFailure(f"{LIMITS_PATH} の項目が違う")
+    values: dict[str, int] = {}
+    for key, (low, high) in _LIMIT_RANGES.items():
+        value = data[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ToolFailure(f"{LIMITS_PATH} の {key} が {low}〜{high} の整数でない")
+        values[key] = value
+    return WorkerLimits(**values)
 
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def worker_command(program: str, agent: str, prompt: str) -> list[str]:
-    """作業役の起動のコマンド（D25 §5.1 の形。`tools/ops/claude_review.py` の前例）。"""
+def worker_command(
+    program: str, agent: str, prompt: str, *, max_turns: int = DEFAULT_MAX_TURNS
+) -> list[str]:
+    """作業役の起動のコマンド（D25 §5.1 の形。`tools/ops/claude_review.py` の前例）。
+
+    `--max-turns` は公式の文書（cli-reference）の「Limit the number of agentic turns (print mode
+    only)」。`claude --help` の一覧には出ないが、実行ファイルに `--max-turns <turns>` がある。
+    """
     return [
         program,
         "-p",
@@ -161,6 +226,8 @@ def worker_command(program: str, agent: str, prompt: str) -> list[str]:
         AVAILABLE_TOOLS,
         "--allowedTools",
         ",".join(ALLOWED_TOOLS),
+        "--max-turns",
+        str(int(max_turns)),
     ]
 
 
@@ -209,48 +276,21 @@ class Inspection:
     problem: str | None = None
 
 
-def _bundle_problem(bundle: Path, manifest: Mapping[str, Any]) -> str | None:
-    """束の中の写しが変わった・増えたなら、その短い説明（`out/` の外への書き込み）。"""
-    expected: dict[str, str] = {
-        str(item["path"]): str(item["sha256"]) for item in manifest.get("files", [])
-    }
-    agent = manifest.get("agent") or {}
-    expected[str(agent.get("path"))] = str(agent.get("sha256"))
-    for path, digest in expected.items():
-        target = bundle / path
-        try:
-            mode = os.lstat(target).st_mode
-        except OSError:
-            return f"写しが消えた: {path}"
-        if not stat.S_ISREG(mode) or _sha(target.read_bytes()) != digest:
-            return f"写しが変わった: {path}"
-    for place in PLACES:
-        base = bundle / place
-        if not os.path.lexists(base):
-            continue
-        for root, dirs, names in os.walk(base, followlinks=False):
-            for name in [*dirs, *names]:
-                full = Path(root) / name
-                relative = full.relative_to(bundle).as_posix()
-                mode = os.lstat(full).st_mode
-                if stat.S_ISLNK(mode):
-                    return f"写しの置き場にリンク: {relative}"
-                if stat.S_ISREG(mode) and relative not in expected:
-                    return f"写しの置き場に増えたファイル: {relative}"
-    return None
+def load_listing(state: Path) -> dict[str, Any] | None:
+    """束の外に控えた束の一覧（無い・読めない・形が違えば `None`）。"""
+    try:
+        data = json.loads((state / LISTING_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def inspect_out(bundle: Path, role: str) -> Inspection:
-    """束の `out/` の形を検査する（D25 §5.6。中身の良し悪しは判断しない）。"""
-    try:
-        manifest = json.loads((bundle / MANIFEST).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return Inspection({}, problem="manifest.json を読めない")
-    if not isinstance(manifest, dict):
-        return Inspection({}, problem="manifest.json が mapping でない")
-    problem = _bundle_problem(bundle, manifest)
-    if problem is not None:
-        return Inspection({}, problem=problem)
+    """束の `out/` の形を検査する（D25 §5.6。中身の良し悪しは判断しない）。
+
+    `out/` の外（写し・`manifest.json`・定義・束の直下と `.claude/`）は、この前に束の外の控えと
+    比べてある（`bundle.listing_problem`。違えば境目の破れ）。
+    """
     out = bundle / OUT_DIR
     try:
         if not stat.S_ISDIR(os.lstat(out).st_mode):
@@ -460,8 +500,14 @@ class ClaudeWorkers:
         except (ToolFailure, ValueError) as exc:
             raise WorkerUnavailable(f"束を作れない: {exc}") from exc
         check_plan(plan)  # 一覧の外が要れば、写す前に `BundleOutOfScope`
+        try:
+            limits = worker_limits(view)
+        except ToolFailure as exc:
+            raise WorkerUnavailable(f"作業役の上限を読めない: {exc}") from exc
         now = format_time(self.clock.now())
-        command = worker_command(self.program, agent, worker_prompt(request, now=now))
+        command = worker_command(
+            self.program, agent, worker_prompt(request, now=now), max_turns=limits.max_turns
+        )
         unlisted = unlisted_command(command, self.odyssey)
         if unlisted is not None:
             raise CommandNotAllowed(unlisted)
@@ -475,6 +521,12 @@ class ClaudeWorkers:
                 for child in state.iterdir():
                     child.unlink()
             state.mkdir(parents=True, exist_ok=True)
+            # 束の一覧とハッシュを束の外に控える（作業役は束の外に書けない。比べる元を作業役が
+            # 書き換えられる束の中の `manifest.json` にしない）。
+            (state / LISTING_FILE).write_text(
+                json.dumps(bundle_listing(bundle), ensure_ascii=False, indent=1) + "\n",
+                encoding="utf-8",
+            )
             (state / "request.json").write_text(
                 json.dumps(
                     {
@@ -484,15 +536,23 @@ class ClaudeWorkers:
                         "version": request.version,
                         "experiment": scope.experiment,
                         "launched_at": now,
+                        "max_turns": limits.max_turns,
+                        "timeout_minutes": limits.timeout_minutes,
                     },
                     ensure_ascii=False,
                 )
                 + "\n",
                 encoding="utf-8",
             )
-        except OSError as exc:
+        except (OSError, ToolFailure) as exc:
             raise WorkerUnavailable(f"束を写せない: {exc}") from exc
-        self.procs.spawn(command, cwd=bundle, state_dir=state)
+        self.procs.spawn(
+            command,
+            cwd=bundle,
+            state_dir=state,
+            env=dict(WORKER_ENV),
+            timeout_seconds=limits.timeout_minutes * 60,
+        )
 
     # --- 様子 ---------------------------------------------------------------------------
 
@@ -511,23 +571,36 @@ class ClaudeWorkers:
             meta = json.loads(meta_text)
         except ValueError:
             return WorkerPoll(WorkerStatus.LOST)
+        bundle = self.bundle_dir(request)
         code_text = self._read(state / "exit_code.txt")
         if code_text is None:
             pid_text = self._read(state / "pid.txt")
             if pid_text is not None and pid_text.isdigit():
                 alive = self.procs.alive(int(pid_text))
-                return WorkerPoll(WorkerStatus.RUNNING if alive else WorkerStatus.LOST)
-            launched = parse_time(str(meta.get("launched_at")))
-            within = self.clock.now() - launched < LAUNCH_GRACE
-            return WorkerPoll(WorkerStatus.RUNNING if within else WorkerStatus.LOST)
+            else:
+                launched = parse_time(str(meta.get("launched_at")))
+                alive = self.clock.now() - launched < LAUNCH_GRACE
+            if alive:
+                return WorkerPoll(WorkerStatus.RUNNING)
+            # 結果なしで消えた作業役も、やり直す前に束を控えと比べる（やり直しで束を作り直すと、
+            # 破れの形跡が消える）。
+            return self._boundary(state, bundle) or WorkerPoll(WorkerStatus.LOST)
+        broken = self._boundary(state, bundle)
+        if broken is not None:
+            return broken  # 終わり方（誤り・上限）にかかわらず、出力を使わずに全体の停止
+        if load_listing(state) is None:
+            return WorkerPoll(WorkerStatus.FAILED, reason="束の一覧の控えが無い（確かめられない）")
         try:
             code = int(code_text)
         except ValueError:
             return WorkerPoll(WorkerStatus.FAILED, reason="終了コードを読めない")
+        if code == EXIT_TIMED_OUT and os.path.lexists(state / TIMED_OUT_FILE):
+            minutes = meta.get("timeout_minutes")
+            return WorkerPoll(WorkerStatus.FAILED, reason=f"時間切れ（上限 {minutes} 分）")
         ended = self._ending(state / "output.log", code)
         if ended is not None:
             return ended
-        inspection = inspect_out(self.bundle_dir(request), request.role)
+        inspection = inspect_out(bundle, request.role)
         self._record(state, inspection)
         if inspection.problem is not None:
             return WorkerPoll(WorkerStatus.FAILED, reason=inspection.problem)
@@ -539,6 +612,17 @@ class ClaudeWorkers:
             return WorkerPoll(
                 WorkerStatus.FAILED, reason=f"出力の形が合わない: {type(exc).__name__}"
             )
+
+    def _boundary(self, state: Path, bundle: Path) -> WorkerPoll | None:
+        """束の `out/` の外が控えと違えば境目の破れ（控えが無ければ比べない）。"""
+        listing = load_listing(state)
+        if listing is None:
+            return None
+        problem = listing_problem(bundle, listing)
+        if problem is None:
+            return None
+        self._record(state, Inspection({}, problem=f"境目の破れ: {problem}"))
+        return WorkerPoll(WorkerStatus.BOUNDARY_BROKEN, reason=problem)
 
     def _ending(self, log: Path, code: int) -> WorkerPoll | None:
         """結果の JSON の終わり方（成功なら `None`）。作業役の文の中身は読まない（形だけ）。"""
@@ -565,6 +649,9 @@ class ClaudeWorkers:
             )
         else:
             said = text
+        if isinstance(envelope, dict) and envelope.get("subtype") == "error_max_turns":
+            # やり取りの回数の上限（`--max-turns`）で終わった: 作業役の失敗（利用上限ではない）。
+            return WorkerPoll(WorkerStatus.FAILED, reason="やり取りの回数の上限で終わった")
         if _USAGE_LIMIT.search(said):
             return WorkerPoll(WorkerStatus.USAGE_LIMIT)
         return WorkerPoll(

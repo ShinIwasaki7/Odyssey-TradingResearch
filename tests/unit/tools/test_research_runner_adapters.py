@@ -188,3 +188,43 @@ def test_a_missing_command_is_a_failed_command_not_an_exception(tmp_path: Path) 
 
     completed = _run([str(tmp_path / "no-such-command")])
     assert completed.returncode == 127 and completed.stdout == b""
+
+
+def _wait_exit(state: Path, rounds: int = 400) -> str:
+    for _ in range(rounds):
+        if (state / "exit_code.txt").is_file():
+            return (state / "exit_code.txt").read_text()
+        time.sleep(0.05)
+    raise AssertionError("包みが終了コードを書かなかった")
+
+
+def test_the_wrapper_adds_the_env_only_to_the_command(tmp_path: Path) -> None:
+    procs = LocalProcesses()
+    state = tmp_path / "proc"
+    command = [sys.executable, "-c", "import os; print(os.environ.get('RUNNER_PROBE_X', '-'))"]
+    procs.spawn(command, cwd=tmp_path, state_dir=state, env={"RUNNER_PROBE_X": "1"})
+    assert _wait_exit(state) == "0\n"
+    assert (state / "output.log").read_text().strip() == "1"
+
+
+def test_the_wrapper_stops_only_its_command_when_the_time_is_up(tmp_path: Path) -> None:
+    """時間切れ: 包みが自分で起動したコマンドだけを止め、時間切れの印と終了コード 124 を書く。"""
+    from tools.ops.research_runner.detached import EXIT_TIMED_OUT, TIMED_OUT_FILE
+
+    procs = LocalProcesses()
+    state = tmp_path / "proc"
+    command = [sys.executable, "-c", "import time; time.sleep(60)"]
+    procs.spawn(command, cwd=tmp_path, state_dir=state, timeout_seconds=1)
+    assert _wait_exit(state) == f"{EXIT_TIMED_OUT}\n"
+    assert (state / TIMED_OUT_FILE).is_file()
+
+
+def test_the_wrapper_command_line_carries_the_options(tmp_path: Path) -> None:
+    from tools.ops.research_runner.detached import command_line
+
+    line = command_line(tmp_path, tmp_path, ["claude", "-p"], env={"A": "1"}, timeout_seconds=9)
+    split = line.index("--")
+    assert line[split + 1 :] == ["claude", "-p"]
+    assert line[line.index("--env") + 1] == "A=1"
+    assert line[line.index("--timeout-seconds") + 1] == "9"
+    assert "--env" not in command_line(tmp_path, tmp_path, ["x"])

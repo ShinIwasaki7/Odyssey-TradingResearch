@@ -92,6 +92,9 @@ class OpenReason:
     answer: int | None = None
     #: 全体の理由に当たったカード（`COST_RISK` の「そのカードを終えて続ける」の相手）。
     card: str | None = None
+    #: 自動の確かめで外さない（人間の答えでだけ外す）。作業役の境目の破れで止めた
+    #: `TOOL_FAILURE_GLOBAL`（人間の決定 245。後追いの PR の仮置き H1）。
+    hold: bool = False
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> OpenReason:

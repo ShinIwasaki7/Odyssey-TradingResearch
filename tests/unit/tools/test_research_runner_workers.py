@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -92,11 +92,27 @@ class _Procs:
     def signal_group(self, group: int, signal: int) -> None:
         return None
 
-    def spawn(self, command: Sequence[str], *, cwd: Path, state_dir: Path) -> int:
+    def spawn(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        state_dir: Path,
+        env: Mapping[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> int:
         pid = 7000 + len(self.spawned)
         self.alive_pids.add(pid)
         (state_dir / "pid.txt").write_text(f"{pid}\n", encoding="utf-8")
-        self.spawned.append({"command": list(command), "cwd": cwd, "state_dir": state_dir})
+        self.spawned.append(
+            {
+                "command": list(command),
+                "cwd": cwd,
+                "state_dir": state_dir,
+                "env": dict(env or {}),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
         return pid
 
 
@@ -353,22 +369,161 @@ def test_a_link_in_out_is_rejected(world: World, tmp_path: Path) -> None:
     assert poll.status is WorkerStatus.FAILED and "リンク" in str(poll.reason)
 
 
-def test_a_write_outside_out_is_rejected(world: World) -> None:
+def _add(path: Path, text: str = "x: 1\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+#: 束の `out/` の外への手出し（書き換え・追加・削除）。どれも境目の破れ（決定 245）。
+BREACHES: Final[dict[str, Any]] = {
+    "copy_changed": lambda b: (b / "rules" / "d25_3_1.md").write_text("changed\n"),
+    "manifest_changed": lambda b: (b / "manifest.json").write_text('{"files": []}\n'),
+    "definition_changed": lambda b: (b / ".claude" / "agents" / "verifier.md").write_text("x"),
+    "file_added_in_a_place": lambda b: _add(b / "records" / "added.yaml"),
+    "file_added_at_the_root": lambda b: _add(b / "notes.md"),
+    "settings_added_in_claude": lambda b: _add(b / ".claude" / "settings.json", "{}"),
+    "dir_added_at_the_root": lambda b: (b / "extra").mkdir(),
+    "copy_deleted": lambda b: (b / "rules" / "d25_3_9.md").unlink(),
+    "manifest_deleted": lambda b: (b / "manifest.json").unlink(),
+    "link_added": lambda b: os.symlink("/etc/hosts", b / "rules" / "hosts"),
+}
+
+
+@pytest.mark.parametrize("breach", sorted(BREACHES))
+def test_a_change_outside_out_is_a_boundary_breach(world: World, breach: str) -> None:
+    """束の `out/` の外の書き換え・追加・削除（束の直下・`.claude/`・`manifest.json` を含む）は、
+    束の外に控えた一覧と比べて見つけ、出力を使わずに境目の破れにする（決定 245）。"""
     request, bundle = _launch(world, "verifier")
     (bundle / "out" / "verdict.yaml").write_bytes(_verdict())
-    (bundle / "records" / "added.yaml").parent.mkdir(parents=True, exist_ok=True)
-    (bundle / "records" / "added.yaml").write_text("x: 1\n", encoding="utf-8")
+    BREACHES[breach](bundle)
     _finish(world, request)
     poll = world.workers.poll(request)
-    assert poll.status is WorkerStatus.FAILED and "増えた" in str(poll.reason)
+    assert poll.status is WorkerStatus.BOUNDARY_BROKEN, poll
+    assert poll.output is None
 
 
-def test_a_changed_copy_in_the_bundle_is_rejected(world: World) -> None:
+def test_a_breach_wins_over_an_error_ending_and_a_vanished_worker(world: World) -> None:
+    """誤りで終わった・結果なしで消えた作業役も、束が変わっていれば境目の破れ（やり直す前に
+    見る。やり直しで束を作り直すと形跡が消える）。"""
+    request, bundle = _launch(world, "verifier")
+    _add(bundle / "rules" / "added.md")
+    _finish(world, request, code=1, log="not json")
+    assert world.workers.poll(request).status is WorkerStatus.BOUNDARY_BROKEN
+    request, bundle = _launch(world, "analyst_change")
+    _add(bundle / "rules" / "added.md")
+    world.procs.alive_pids.clear()
+    assert world.workers.poll(request).status is WorkerStatus.BOUNDARY_BROKEN
+
+
+def test_the_listing_is_kept_outside_the_bundle(world: World) -> None:
+    """束の一覧（`manifest.json`・定義を含む全部）は束の外の状態の置き場に控え、束の中の
+    `manifest.json` を書き換えて一覧を合わせても見つかる。`out/` の中は一覧に入れない。"""
+    request, bundle = _launch(world, "verifier")
+    state = world.workers.state_dir(request)
+    listing = json.loads((state / "bundle_listing.json").read_text(encoding="utf-8"))
+    assert bundle not in state.parents
+    assert "manifest.json" in listing["files"]
+    assert ".claude/agents/verifier.md" in listing["files"]
+    assert "out" in listing["dirs"] and not [p for p in listing["files"] if p.startswith("out")]
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    (bundle / "rules" / "d25_3_1.md").write_text("changed\n", encoding="utf-8")
+    for item in manifest["files"]:
+        if item["path"] == "rules/d25_3_1.md":
+            item["sha256"] = hashlib.sha256(b"changed\n").hexdigest()
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (bundle / "out" / "verdict.yaml").write_bytes(_verdict())
+    _finish(world, request)
+    assert world.workers.poll(request).status is WorkerStatus.BOUNDARY_BROKEN
+
+
+def test_writes_inside_out_are_not_a_breach(world: World) -> None:
     request, bundle = _launch(world, "verifier")
     (bundle / "out" / "verdict.yaml").write_bytes(_verdict())
-    (bundle / "rules" / "d25_3_1.md").write_text("changed\n", encoding="utf-8")
+    _add(bundle / "out" / "sub" / "notes.txt")
     _finish(world, request)
-    assert world.workers.poll(request).status is WorkerStatus.FAILED
+    assert world.workers.poll(request).status is WorkerStatus.DONE
+
+
+def test_a_missing_listing_is_no_output(world: World) -> None:
+    request, bundle = _launch(world, "verifier")
+    (bundle / "out" / "verdict.yaml").write_bytes(_verdict())
+    (world.workers.state_dir(request) / "bundle_listing.json").unlink()
+    _finish(world, request)
+    poll = world.workers.poll(request)
+    assert poll.status is WorkerStatus.FAILED and "控え" in str(poll.reason)
+
+
+# --- 上限（回数・時間）と文脈の絞り -------------------------------------------------------------
+
+
+def test_the_launch_passes_the_limits_and_the_worker_env(world: World) -> None:
+    request, _ = _launch(world, "verifier")
+    [spawned] = world.procs.spawned
+    command: list[str] = spawned["command"]
+    assert command[command.index("--max-turns") + 1] == "100"
+    assert spawned["timeout_seconds"] == 60 * 60
+    assert spawned["env"] == {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+    # CLAUDE.md を読ませない変数は、`--agent` の定義が読まれ続けると文書で確かめられないので無い。
+    assert "CLAUDE_CODE_DISABLE_CLAUDE_MDS" not in spawned["env"]
+    assert "--bare" not in command
+
+
+def test_the_limits_come_from_the_config_on_main(world: World) -> None:
+    files = _files()
+    files["configs/runner/workers.yaml"] = b"schema_version: 1\nmax_turns: 7\ntimeout_minutes: 3\n"
+    view = DictView(files)
+    world.workers.view = lambda: view
+    _launch(world, "verifier")
+    [spawned] = world.procs.spawned
+    command: list[str] = spawned["command"]
+    assert command[command.index("--max-turns") + 1] == "7"
+    assert spawned["timeout_seconds"] == 180
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        b"schema_version: 1\nmax_turns: 0\ntimeout_minutes: 3\n",
+        b"schema_version: 1\nmax_turns: true\ntimeout_minutes: 3\n",
+        b"schema_version: 1\nmax_turns: 5\ntimeout_minutes: 99999\n",
+        b"schema_version: 1\nmax_turns: 5\n",
+        b"schema_version: 1\nmax_turns: 5\ntimeout_minutes: 3\nextra: 1\n",
+    ],
+)
+def test_a_broken_limits_config_does_not_launch(world: World, text: bytes) -> None:
+    files = _files()
+    files["configs/runner/workers.yaml"] = text
+    view = DictView(files)
+    world.workers.view = lambda: view
+    with pytest.raises(WorkerUnavailable):
+        world.workers.launch(_request("verifier"))
+    assert world.procs.spawned == []
+
+
+def test_the_repository_limits_config_is_readable() -> None:
+    raw = (REPO_ROOT / "configs" / "runner" / "workers.yaml").read_bytes()
+    limits = workers_module.worker_limits(DictView({"configs/runner/workers.yaml": raw}))
+    assert limits == workers_module.WorkerLimits()
+
+
+def test_a_timed_out_worker_is_a_failure(world: World) -> None:
+    request, bundle = _launch(world, "verifier")
+    (bundle / "out" / "verdict.yaml").write_bytes(_verdict())
+    (world.workers.state_dir(request) / "timed_out.txt").write_text("3600\n", encoding="utf-8")
+    _finish(world, request, code=124, log="")
+    poll = world.workers.poll(request)
+    assert poll.status is WorkerStatus.FAILED and "時間切れ" in str(poll.reason)
+
+
+def test_a_worker_that_hit_the_turn_limit_is_a_failure_not_a_usage_limit(world: World) -> None:
+    request, bundle = _launch(world, "verifier")
+    (bundle / "out" / "verdict.yaml").write_bytes(_verdict())
+    log = json.dumps(
+        {"subtype": "error_max_turns", "is_error": True, "result": "limit reached: max turns"}
+    )
+    _finish(world, request, code=1, log=log)
+    poll = world.workers.poll(request)
+    assert poll.status is WorkerStatus.FAILED and "回数の上限" in str(poll.reason)
 
 
 def test_an_extra_file_is_discarded_and_recorded(world: World) -> None:

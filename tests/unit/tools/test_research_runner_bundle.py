@@ -313,3 +313,65 @@ def test_the_catalog_is_made_from_the_code() -> None:
     assert data["schema_version"] == 1 and data["components"]
     for item in data["components"]:
         assert set(item) == {"name", "version", "inputs", "outputs", "parameters"}
+
+
+# --- 後追いの PR: 計画と写しの間の差し替え・hardlink（写さない側。仮置き H8） ---------------------
+
+
+def test_a_hardlinked_runs_file_is_not_copied(runs: Path, tmp_path: Path) -> None:
+    """`runs/` の下のファイルが、ほかの名前（束の外の封印データなど）からの hardlink なら
+    写さない。"""
+    sealed = tmp_path / "sealed.bin"
+    sealed.write_bytes(SEALED)
+    report = runs / "experiments" / EXPERIMENT / "v1" / "report.md"
+    report.unlink()
+    os.link(sealed, report)
+    plan = _plan("analyst_change", runs)
+    assert f"reports/{EXPERIMENT}/v1/report.md" not in {entry.dest for entry in plan.entries}
+    assert f"experiments/{EXPERIMENT}/v1/report.md" in plan.skipped
+
+
+@pytest.mark.parametrize("swap", ["file_to_link", "dir_to_link", "file_to_hardlink"])
+def test_a_swap_after_the_plan_is_not_followed(runs: Path, tmp_path: Path, swap: str) -> None:
+    """計画の段の `lstat` の後、写す前にリンク・hardlink に差し替えられても、先を読まずに写さない
+    （名前だけ `skipped` に残す）。"""
+    import shutil
+
+    plan = _plan("analyst_change", runs)
+    sealed = tmp_path / "sealed_dir" / "report.md"
+    sealed.parent.mkdir()
+    sealed.write_bytes(SEALED)
+    report = runs / "experiments" / EXPERIMENT / "v1" / "report.md"
+    if swap == "file_to_link":
+        report.unlink()
+        os.symlink(sealed, report)
+    elif swap == "file_to_hardlink":
+        report.unlink()
+        os.link(sealed, report)
+    else:
+        version = report.parent
+        shutil.move(str(version), str(tmp_path / "moved_v1"))
+        shutil.copy(sealed, tmp_path / "moved_v1" / "report.md")
+        os.symlink(tmp_path / "moved_v1", version, target_is_directory=True)
+    target = tmp_path / "bundle"
+    manifest = write_bundle(plan, target=target, agent="x", definition=b"d\n")
+    files = _written(target)
+    assert not [path for path, data in files.items() if SEALED in data]
+    assert f"reports/{EXPERIMENT}/v1/report.md" not in files
+    assert f"experiments/{EXPERIMENT}/v1/report.md" in manifest["skipped"]
+
+
+def test_the_listing_covers_everything_outside_out(runs: Path, tmp_path: Path) -> None:
+    from tools.ops.research_runner.bundle import bundle_listing, listing_problem
+
+    target = tmp_path / "bundle"
+    write_bundle(_plan("verifier", runs), target=target, agent="x", definition=b"d\n")
+    listing = bundle_listing(target)
+    assert {"manifest.json", ".claude/agents/x.md"} <= set(listing["files"])
+    assert {".claude", ".claude/agents", "out", "rules"} <= set(listing["dirs"])
+    assert listing_problem(target, listing) is None
+    (target / "out" / "anything.md").write_text("ok\n", encoding="utf-8")
+    (target / "out" / "deep").mkdir()
+    assert listing_problem(target, listing) is None
+    (target / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+    assert "増えた" in str(listing_problem(target, listing))

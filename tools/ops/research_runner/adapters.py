@@ -387,12 +387,21 @@ class LocalProcesses:
         except ProcessLookupError:
             return
 
-    def spawn(self, command: Sequence[str], *, cwd: Path, state_dir: Path) -> int:
+    def spawn(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        state_dir: Path,
+        env: Mapping[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> int:
         """包みは実行器のコードの根（`tools` を import できる場所）から起動し、`command` だけを
-        `cwd` で走らせる（作業役の束には `tools/` が無い。Codex 2 巡目の指摘）。"""
+        `cwd` で走らせる（作業役の束には `tools/` が無い。Codex 2 巡目の指摘）。`env` と
+        `timeout_seconds` は包みに渡し、包みが `command` にだけ当てる。"""
         state_dir.mkdir(parents=True, exist_ok=True)
         process = subprocess.Popen(  # noqa: S603 - 実行器が組み立てた固定のコマンド
-            command_line(state_dir, cwd, command),
+            command_line(state_dir, cwd, command, env=env, timeout_seconds=timeout_seconds),
             cwd=_CODE_ROOT,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

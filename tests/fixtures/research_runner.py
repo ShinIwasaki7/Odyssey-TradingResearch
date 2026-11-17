@@ -436,7 +436,15 @@ class FakeProcs:
         if signal == signals.SIGTERM:
             self.alive_pids.discard(group)
 
-    def spawn(self, command: Sequence[str], *, cwd: Path, state_dir: Path) -> int:
+    def spawn(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        state_dir: Path,
+        env: Mapping[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> int:
         pid = next(self.pids)
         self.alive_pids.add(pid)
         self.leaders.add(pid)
