@@ -1,0 +1,175 @@
+schema_version: 1
+id: "h-20261117-daily-up-dip-turn"
+mouth: human
+created_at: "2026-11-17T13:00:00Z"
+title: "daily-up-dip-turn"
+symbol: USDJPY
+rule: "日足の終値が日足の EMA（期間 20）を上回る局面に限り、一時間足の終値が一時間足の EMA（期間 P。20 か 50）を下に割り込んだら押し目の取引機会とし、その後の十五分足の終値が十五分足の EMA（期間 20）を上回るまで入場の方針の期限まで待ち、上回ったら成行で買う。期限までに上回らなければ取引機会を捨てる。損切りは直近 20 本の一時間足の安値、利確は損切りまでの値幅の R 倍（1.5 か 2.0）。買いだけ。"
+strategy:
+  entry_policy:
+    kind: "AWAIT_CONFIRMATION"
+    deadline: {kind: "BARS", bars: 4}
+    on_deadline: "EXPIRE"
+  opportunity_validity:
+    bindings:
+      - source: "daily_above_ema.condition"
+        mode: "REQUIRE_UNTIL_ORDER_REQUEST"
+        on_missing: {kind: "SKIP_EVALUATION"}
+  components:
+    - instance_id: "daily_ema"
+      component: "ema"
+      component_version: 2
+      inputs:
+        prices:
+          - "market:USDJPY/1d_ny17/bid:CLOSE"
+      parameters:
+        period: {type: "INT", value: 20}
+        window_bars: {type: "INT", value: 60}
+      triggers:
+        - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+    - instance_id: "daily_above_ema"
+      component: "price_compare"
+      component_version: 2
+      inputs:
+        left:
+          - "market:USDJPY/1d_ny17/bid:CLOSE"
+        right:
+          - "output:daily_ema.value"
+      parameters:
+        operator: {type: "STR", value: "GT"}
+      triggers:
+        - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+    - instance_id: "no_short"
+      component: "constant_condition"
+      component_version: 1
+      parameters:
+        value: {type: "BOOL", value: false}
+      triggers:
+        - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+    - instance_id: "market_state"
+      component: "permission_from_condition"
+      component_version: 2
+      inputs:
+        long_allowed:
+          - "output:daily_above_ema.condition"
+        short_allowed:
+          - "output:no_short.condition"
+      triggers:
+        - {name: "d1", when: "bar_close", series: "USDJPY/1d_ny17/bid"}
+    - instance_id: "h1_ema"
+      component: "ema"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:USDJPY/1h/bid:CLOSE"
+      parameters:
+        period: {type: "INT", value: 20}
+        window_bars: {type: "INT", value: 150}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+    - instance_id: "entry_trigger"
+      component: "breakout_trigger"
+      component_version: 1
+      inputs:
+        price:
+          - "output:h1_ema.value"
+        level:
+          - "market:USDJPY/1h/bid:CLOSE"
+      parameters:
+        direction: {type: "STR", value: "LONG"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+    - instance_id: "m15_ema"
+      component: "ema"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:USDJPY/15m/bid:CLOSE"
+      parameters:
+        period: {type: "INT", value: 20}
+        window_bars: {type: "INT", value: 60}
+      triggers:
+        - {name: "m15", when: "bar_close", series: "USDJPY/15m/bid"}
+    - instance_id: "m15_above_ema"
+      component: "price_compare"
+      component_version: 1
+      inputs:
+        left:
+          - "market:USDJPY/15m/bid:CLOSE"
+        right:
+          - "output:m15_ema.value"
+      parameters:
+        operator: {type: "STR", value: "GT"}
+      triggers:
+        - {name: "m15", when: "bar_close", series: "USDJPY/15m/bid"}
+    - instance_id: "entry_filter"
+      component: "condition_filter"
+      component_version: 1
+      inputs:
+        condition:
+          - "output:m15_above_ema.condition"
+        opportunity:
+          - "runtime:OPPORTUNITY"
+      parameters:
+        include_start_bar: {type: "BOOL", value: false}
+      triggers:
+        - {name: "m15", when: "bar_close", series: "USDJPY/15m/bid"}
+    - instance_id: "entry_order"
+      component: "market_order_intent"
+      component_version: 2
+      inputs:
+        confirmation:
+          - "output:entry_filter.confirmation"
+        opportunity:
+          - "runtime:OPPORTUNITY"
+      triggers:
+        - {name: "conf", when: "input_event", input_name: "confirmation"}
+    - instance_id: "initial_stop"
+      component: "level_stop_loss"
+      component_version: 2
+      inputs:
+        confirmation:
+          - "output:entry_filter.confirmation"
+        level:
+          - "output:stop_level.level"
+      triggers:
+        - {name: "conf", when: "input_event", input_name: "confirmation"}
+    - instance_id: "stop_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:USDJPY/1h/bid:LOW"
+      parameters:
+        lookback: {type: "INT", value: 20}
+        mode: {type: "STR", value: "MIN"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "USDJPY/1h/bid"}
+    - instance_id: "take_profit"
+      component: "fixed_rr_take_profit"
+      component_version: 1
+      inputs:
+        position:
+          - "runtime:POSITION"
+      parameters:
+        reward_risk: {type: "FLOAT", value: 1.5}
+      triggers:
+        - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+  roles:
+    market_state: "market_state.permission"
+    trigger: "entry_trigger.opportunity"
+    execution_filter: "entry_filter.confirmation"
+    order: "entry_order.intent"
+    protection: "initial_stop.protection"
+    exit: "take_profit.action"
+  opportunity_concurrency:
+    max_active: 1
+    on_new_trigger: "KEEP_EXISTING"
+    on_order_accepted: "KEEP_OTHERS"
+grid:
+  axes:
+    - {instance: "h1_ema", parameter: "period", values: [20, 50]}
+    - {instance: "take_profit", parameter: "reward_risk", values: [1.5, 2.0]}
+prediction: "日足が上向きの局面でだけ取引が起き、日足が下向きの局面では取引が起きない。下げが続いて戻らない期間では、取引機会が期限切れで捨てられることが多くなる。"
+inspiration: "設計役が、一般に知られた考え方（大きな流れの向きに沿って、一時的な押し目から値動きが戻り始めたのを確かめてから入る）と部品のカタログの性質だけから案を作り、人間が案の中から選んだ。過去の実験の結果は読んでいない。"
+evidence_estimate: {frequency_band: MEDIUM, reaches_floor: LIKELY}
