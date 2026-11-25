@@ -51,6 +51,7 @@ __all__ = [
     "LocalProcesses",
     "LocalSystem",
     "SystemClock",
+    "checks_from_rollup",
 ]
 
 _OWNED_BRANCHES: Final = ("runner/", "candidate-fix/")
@@ -230,6 +231,65 @@ class LocalGit:
         self._git("checkout", "-q", "--", path)
 
 
+_FAILED_CONCLUSIONS: Final = frozenset(
+    {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
+)
+_PASSED_CONCLUSIONS: Final = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+
+
+def _check_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+    """検査の名前（Actions の検査は定義の名前とジョブの名前、外部の状態は文脈の名前）。"""
+    if item.get("context") is not None:
+        return ("status", "", str(item.get("context")))
+    return ("check", str(item.get("workflowName") or ""), str(item.get("name") or ""))
+
+
+def _run_verdict(item: Mapping[str, Any]) -> Checks:
+    """検査の実行 1 本の合否（落ち・まだ走っている・合格）。"""
+    conclusion = str(item.get("conclusion") or item.get("state") or "").upper()
+    status = str(item.get("status") or "COMPLETED").upper()
+    if conclusion in _FAILED_CONCLUSIONS:
+        return Checks.FAIL
+    if status != "COMPLETED" and conclusion not in _PASSED_CONCLUSIONS:
+        return Checks.PENDING
+    return Checks.PASS
+
+
+def checks_from_rollup(rollup: Sequence[Mapping[str, Any]]) -> Checks:
+    """PR の検査の一覧（`gh pr view --json statusCheckRollup`）から検査の合否を読む。
+
+    台帳の検査（`ledger.yml`）は「PR を開いた」と「自動 merge を有効にした」の両方で走り、前の
+    実行を取り消す。取り消された古い実行は、新しい実行が置き換えた検査であり、CI の落ちではない
+    （GitHub の必須の検査も新しい実行の結果で数える）。そこで、同じ名前の検査が複数あるときは
+    次のように読む:
+
+    - その検査の実行のどれかがまだ終わっていない（待ち・実行中。開始の時刻がまだ無くてもよい）
+      なら、その検査は「まだ」。新旧を時刻で決めない（置き換えの実行が待ちの間に、取り消された
+      古い実行を落ちと数えない。古い合格を合格とも数えない）。
+    - すべて終わっているなら、いちばん新しい実行（`startedAt`。無ければ `completedAt`。同じ時刻・
+      時刻なしは一覧で後のもの）だけを見る。それが取り消し・失敗なら、これまでどおり落ち。
+
+    全体は、どれかの検査が落ちなら落ち、そうでなくどれかが「まだ」なら「まだ」、ほかは合格。
+    """
+    runs: dict[tuple[str, str, str], list[tuple[str, int, Mapping[str, Any]]]] = {}
+    for index, item in enumerate(rollup):
+        moment = str(item.get("startedAt") or item.get("completedAt") or "")
+        runs.setdefault(_check_key(item), []).append((moment, index, item))
+    checks = Checks.PASS if runs else Checks.PENDING
+    for listed in runs.values():
+        verdicts = [_run_verdict(item) for _, _, item in listed]
+        if Checks.PENDING in verdicts:
+            verdict = Checks.PENDING
+        else:
+            _, _, newest = max(listed, key=lambda entry: (entry[0], entry[1]))
+            verdict = _run_verdict(newest)
+        if verdict is Checks.FAIL:
+            return Checks.FAIL
+        if verdict is Checks.PENDING:
+            checks = Checks.PENDING
+    return checks
+
+
 @dataclass(frozen=True, slots=True)
 class GhGitHub:
     """`gh` の呼び出し（リポジトリは `repo` の origin）。"""
@@ -271,16 +331,7 @@ class GhGitHub:
             )
         )
         state = PrState(str(data.get("state", "OPEN")))
-        rollup = data.get("statusCheckRollup") or []
-        checks = Checks.PASS if rollup else Checks.PENDING
-        for item in rollup:
-            conclusion = str(item.get("conclusion") or item.get("state") or "").upper()
-            status = str(item.get("status") or "COMPLETED").upper()
-            if conclusion in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}:
-                checks = Checks.FAIL
-                break
-            if status != "COMPLETED" and conclusion not in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
-                checks = Checks.PENDING
+        checks = checks_from_rollup(data.get("statusCheckRollup") or [])
         merge = data.get("mergeCommit") or {}
         closed = data.get("closedAt")
         return PullStatus(
