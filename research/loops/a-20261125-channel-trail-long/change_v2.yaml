@@ -1,0 +1,13 @@
+schema_version: 1
+card: "a-20261125-channel-trail-long"
+from_version: 1
+decision: "CHANGE"
+change_kind: "PARAMETERS"
+operations:
+  - op: "set_axis_values"
+    instance: "breakout_level"
+    parameter: "lookback"
+    values: [240, 480]
+reason: "収益性の軸が両組で条件に届かず、証拠は足りている。上抜けの範囲が短い側を選んだ区間は両組とも負けで、取引も多い傾向がある。もみ合いの上端を少し越えただけの弱い上抜けが小さな負けを積むという仮説を立て、上抜けの範囲の軸を長い側へ動かす。損切りの範囲は選ばれ方が組で割れるので動かさない。"
+prediction: "弱い上抜けでの入りが減って取引が少なくなり、短い範囲を選んでいた区間の負けが小さくなる。勝ちと負けの釣り合いは良くなる方向だが、横ばいの局面の負けは残り、割り引いた確率の条件には届かない見込みが高い。"
+memo_sha256: "fccc4d30f02add2c5179ba802f975fb42f45a39c1d7927632adba88e5e62b96e"
