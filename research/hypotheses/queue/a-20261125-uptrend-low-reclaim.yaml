@@ -1,0 +1,157 @@
+schema_version: 1
+id: "a-20261125-uptrend-low-reclaim"
+mouth: ai
+created_at: "2026-11-25T10:35:38Z"
+title: "uptrend-low-reclaim"
+symbol: EURJPY
+rule: "一時間足の短い EMA（期間 50）が長い EMA（期間 100）を上回る局面に限り、一時間足の終値が直近 N 本（12 か 24）の一時間足の安値の最小を「上回っていない」から「上回る」に変わったら（安値の更新がいったん止まったら）成行で買う。損切りは直近 120 本の一時間足の安値の最小、利確は損切りまでの値幅の R 倍（1.0 か 1.5）。どちらの水準も評価の時点の最新の足を除いて数える。買いだけ。"
+strategy:
+  entry_policy: {kind: "IMMEDIATE"}
+  opportunity_validity: {bindings: []}
+  components:
+    - instance_id: "mid_ema"
+      component: "ema"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:EURJPY/1h/bid:CLOSE"
+      parameters:
+        period: {type: "INT", value: 50}
+        window_bars: {type: "INT", value: 150}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "slow_ema"
+      component: "ema"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:EURJPY/1h/bid:CLOSE"
+      parameters:
+        period: {type: "INT", value: 100}
+        window_bars: {type: "INT", value: 300}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "uptrend"
+      component: "price_compare"
+      component_version: 1
+      inputs:
+        left:
+          - "output:mid_ema.value"
+        right:
+          - "output:slow_ema.value"
+      parameters:
+        operator: {type: "STR", value: "GT"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "no_short"
+      component: "constant_condition"
+      component_version: 1
+      parameters:
+        value: {type: "BOOL", value: false}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "market_state"
+      component: "permission_from_condition"
+      component_version: 1
+      inputs:
+        long_allowed:
+          - "output:uptrend.condition"
+        short_allowed:
+          - "output:no_short.condition"
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "dip_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:EURJPY/1h/bid:LOW"
+      parameters:
+        lookback: {type: "INT", value: 12}
+        mode: {type: "STR", value: "MIN"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "entry_trigger"
+      component: "breakout_trigger"
+      component_version: 1
+      inputs:
+        price:
+          - "market:EURJPY/1h/bid:CLOSE"
+        level:
+          - "output:dip_level.level"
+      parameters:
+        direction: {type: "STR", value: "LONG"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "entry_order"
+      component: "market_order_intent"
+      component_version: 1
+      inputs:
+        opportunity:
+          - "output:entry_trigger.opportunity"
+      triggers:
+        - {name: "opp", when: "input_event", input_name: "opportunity"}
+    - instance_id: "stop_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:EURJPY/1h/bid:LOW"
+      parameters:
+        lookback: {type: "INT", value: 120}
+        mode: {type: "STR", value: "MIN"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "EURJPY/1h/bid"}
+    - instance_id: "initial_stop"
+      component: "level_stop_loss"
+      component_version: 1
+      inputs:
+        opportunity:
+          - "output:entry_trigger.opportunity"
+        level:
+          - "output:stop_level.level"
+      triggers:
+        - {name: "opp", when: "input_event", input_name: "opportunity"}
+    - instance_id: "take_profit"
+      component: "fixed_rr_take_profit"
+      component_version: 1
+      inputs:
+        position:
+          - "runtime:POSITION"
+      parameters:
+        reward_risk: {type: "FLOAT", value: 1.0}
+      triggers:
+        - {name: "filled", when: "runtime_event", event: "POSITION_OPENED"}
+  roles:
+    market_state: "market_state.permission"
+    trigger: "entry_trigger.opportunity"
+    order: "entry_order.intent"
+    protection: "initial_stop.protection"
+    exit: "take_profit.action"
+  opportunity_concurrency:
+    max_active: 1
+    on_new_trigger: "KEEP_EXISTING"
+    on_order_accepted: "KEEP_OTHERS"
+grid:
+  axes:
+    - {instance: "dip_level", parameter: "lookback", values: [12, 24]}
+    - {instance: "take_profit", parameter: "reward_risk", values: [1.0, 1.5]}
+prediction: "上昇の局面の途中の一時的な下げの後に取引が起き、上昇が続く時期に勝ちが多い。上昇が終わって下げに変わる時期には負けが続く。上抜けで入る規則より勝率が高くなる。"
+inspiration: "過去の実験の分析メモで、上抜けや移動平均の交差の後に入る規則の勝率が損益分岐の付近にとどまったという読みと、部品のカタログから。上抜けの反対の場面（流れの中の下げの止まり）で、離れた損切りを置いて入る形を考えた。"
+evidence_estimate: {frequency_band: MEDIUM, reaches_floor: LIKELY}
+read_scope:
+  - "analysis/h2_daily_uptrend_h1_ema_cross/v2/analysis_memo.md"
+  - "analysis/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis_memo.md"
+  - "analysis/h7_h1_dual_ema_cross_eurusd/v2/analysis_memo.md"
+  - "catalog/components.json"
+  - "records/configs/experiments/h2_daily_uptrend_h1_ema_cross_v2.yaml"
+  - "records/configs/strategies/h2_daily_uptrend_h1_ema_cross_v1.yaml"
+  - "records/configs/strategies/h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml"
+  - "records/configs/strategies/h7_h1_dual_ema_cross_eurusd_v2.yaml"
+  - "records/configs/strategies/strategy_a_v1.yaml"
+  - "records/configs/strategies/strategy_b_v1.yaml"
+  - "records/docs/data/eurusd_step10_research_loop/README.md"
+  - "records/research/hypotheses/queue/h-20261117-daily-up-dip-turn.yaml"
+  - "rules/d25_3_1.md"
+  - "rules/d25_3_9.md"
+  - "rules/research_policy_v5.yaml"

@@ -1,0 +1,105 @@
+schema_version: 1
+id: "a-20261125-channel-trail-long"
+mouth: ai
+created_at: "2026-11-25T10:35:38Z"
+title: "channel-trail-long"
+symbol: GBPJPY
+rule: "一時間足の終値が、直近 N 本（120 か 240）の一時間足の高値の最大を上抜けたら成行で買う。損切りは直近 M 本（60 か 120）の一時間足の安値の最小に置き、保有中は一時間足の確定ごとに同じ水準へ損切りを引き上げる。利確は置かず、追従する損切りだけで出る。どちらの水準も評価の時点の最新の足を除いて数える。買いだけ。"
+strategy:
+  entry_policy: {kind: "IMMEDIATE"}
+  opportunity_validity: {bindings: []}
+  components:
+    - instance_id: "breakout_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:GBPJPY/1h/bid:HIGH"
+      parameters:
+        lookback: {type: "INT", value: 120}
+        mode: {type: "STR", value: "MAX"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "GBPJPY/1h/bid"}
+    - instance_id: "stop_level"
+      component: "extreme_price"
+      component_version: 1
+      inputs:
+        prices:
+          - "market:GBPJPY/1h/bid:LOW"
+      parameters:
+        lookback: {type: "INT", value: 60}
+        mode: {type: "STR", value: "MIN"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "GBPJPY/1h/bid"}
+    - instance_id: "entry_trigger"
+      component: "breakout_trigger"
+      component_version: 1
+      inputs:
+        price:
+          - "market:GBPJPY/1h/bid:CLOSE"
+        level:
+          - "output:breakout_level.level"
+      parameters:
+        direction: {type: "STR", value: "LONG"}
+      triggers:
+        - {name: "h1", when: "bar_close", series: "GBPJPY/1h/bid"}
+    - instance_id: "entry_order"
+      component: "market_order_intent"
+      component_version: 1
+      inputs:
+        opportunity:
+          - "output:entry_trigger.opportunity"
+      triggers:
+        - {name: "opp", when: "input_event", input_name: "opportunity"}
+    - instance_id: "initial_stop"
+      component: "level_stop_loss"
+      component_version: 1
+      inputs:
+        opportunity:
+          - "output:entry_trigger.opportunity"
+        level:
+          - "output:stop_level.level"
+      triggers:
+        - {name: "opp", when: "input_event", input_name: "opportunity"}
+    - instance_id: "trailing"
+      component: "trailing_stop"
+      component_version: 1
+      inputs:
+        position:
+          - "runtime:POSITION"
+        level:
+          - "output:stop_level.level"
+      triggers:
+        - {name: "h1", when: "bar_close", series: "GBPJPY/1h/bid"}
+  roles:
+    trigger: "entry_trigger.opportunity"
+    order: "entry_order.intent"
+    protection: "initial_stop.protection"
+    exit: "trailing.action"
+  opportunity_concurrency:
+    max_active: 1
+    on_new_trigger: "KEEP_EXISTING"
+    on_order_accepted: "KEEP_OTHERS"
+grid:
+  axes:
+    - {instance: "breakout_level", parameter: "lookback", values: [120, 240]}
+    - {instance: "stop_level", parameter: "lookback", values: [60, 120]}
+prediction: "長く続く上昇の局面で利益が伸び、横ばいの局面では小さな負けが続く。勝率は低く、利益は少数の大きな勝ちに寄る。"
+inspiration: "過去の実験の分析メモで、利確の倍率を動かしても勝率と利益の大きさが入れ替わるだけだったという読みと、部品のカタログから。倍率の利確をやめ、長い範囲の上抜けを追従する損切りで伸ばす形は既存の宣言に無い。"
+evidence_estimate: {frequency_band: MEDIUM, reaches_floor: LIKELY}
+read_scope:
+  - "analysis/h2_daily_uptrend_h1_ema_cross/v2/analysis_memo.md"
+  - "analysis/h6_h1_breakout_m15_ema_confirm_eurusd/v2/analysis_memo.md"
+  - "analysis/h7_h1_dual_ema_cross_eurusd/v2/analysis_memo.md"
+  - "catalog/components.json"
+  - "records/configs/experiments/h2_daily_uptrend_h1_ema_cross_v2.yaml"
+  - "records/configs/strategies/h2_daily_uptrend_h1_ema_cross_v1.yaml"
+  - "records/configs/strategies/h6_h1_breakout_m15_ema_confirm_eurusd_v1.yaml"
+  - "records/configs/strategies/h7_h1_dual_ema_cross_eurusd_v2.yaml"
+  - "records/configs/strategies/strategy_a_v1.yaml"
+  - "records/configs/strategies/strategy_b_v1.yaml"
+  - "records/docs/data/eurusd_step10_research_loop/README.md"
+  - "records/research/hypotheses/queue/h-20261117-daily-up-dip-turn.yaml"
+  - "rules/d25_3_1.md"
+  - "rules/d25_3_9.md"
+  - "rules/research_policy_v5.yaml"
