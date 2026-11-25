@@ -1,0 +1,20 @@
+schema_version: 1
+card: "h-20261117-daily-up-dip-turn"
+version: 1
+experiment_id: "c_h20261117_daily_up_dip_turn_usdjpy"
+card_sha256: "d203cdea293d5a41c1f52197d41fe9255e28c2906161b76785e736299cceedbe"
+change_sha256: null
+generator_digest: "fd0e939236bc18ce8f25618f0b2d9cb782893541367e1ccfe6d10016f29cc128"
+generated:
+  - path: "configs/experiments/c_h20261117_daily_up_dip_turn_usdjpy.yaml"
+    sha256: "9a0c7266b117763b645ab8f4607f54fc2b29639b1e979846c2a4f58d6d3f4378"
+  - path: "configs/strategies/c_h20261117_daily_up_dip_turn_usdjpy_v1.yaml"
+    sha256: "c779aece596ab7a53c8eee2a6a07dcdf024c2e60ead81729929c24378eb3afd2"
+checks:
+  load: "PASS"
+  compile: "PASS"
+  prepare: "PASS"
+  trial_count: 4
+  rejected_count: 0
+  seconds: 102
+  max_rss_bytes: 5211262976

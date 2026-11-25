@@ -1,0 +1,206 @@
+# generated-by: research_runner card=h-20261117-daily-up-dip-turn card_sha256=d203cdea293d5a41c1f52197d41fe9255e28c2906161b76785e736299cceedbe generator=fd0e939236bc18ce8f25618f0b2d9cb782893541367e1ccfe6d10016f29cc128
+# 順 11 の実行器が仮説カード h-20261117-daily-up-dip-turn から生成した戦略の宣言（D25 §3.8）。
+# 手で直さない（CI がカードから作り直してバイト単位で一致を確かめる。D25 §3.4）。
+# 成績の数値を書かない。
+
+schema_version: 1
+strategy_id: "c_h20261117_daily_up_dip_turn_usdjpy"
+version: 1
+entry_policy:
+  kind: "AWAIT_CONFIRMATION"
+  deadline:
+    kind: "BARS"
+    bars: 4
+  on_deadline: "EXPIRE"
+opportunity_validity:
+  bindings:
+    - source: "daily_above_ema.condition"
+      mode: "REQUIRE_UNTIL_ORDER_REQUEST"
+      on_missing:
+        kind: "SKIP_EVALUATION"
+components:
+  - instance_id: "daily_ema"
+    component: "ema"
+    component_version: 2
+    inputs:
+      prices: ["market:USDJPY/1d_ny17/bid:CLOSE"]
+    parameters:
+      period:
+        type: "INT"
+        value: 20
+      window_bars:
+        type: "INT"
+        value: 60
+    triggers:
+      - name: "d1"
+        when: "bar_close"
+        series: "USDJPY/1d_ny17/bid"
+  - instance_id: "daily_above_ema"
+    component: "price_compare"
+    component_version: 2
+    inputs:
+      left: ["market:USDJPY/1d_ny17/bid:CLOSE"]
+      right: ["output:daily_ema.value"]
+    parameters:
+      operator:
+        type: "STR"
+        value: "GT"
+    triggers:
+      - name: "d1"
+        when: "bar_close"
+        series: "USDJPY/1d_ny17/bid"
+  - instance_id: "no_short"
+    component: "constant_condition"
+    component_version: 1
+    parameters:
+      value:
+        type: "BOOL"
+        value: false
+    triggers:
+      - name: "d1"
+        when: "bar_close"
+        series: "USDJPY/1d_ny17/bid"
+  - instance_id: "market_state"
+    component: "permission_from_condition"
+    component_version: 2
+    inputs:
+      long_allowed: ["output:daily_above_ema.condition"]
+      short_allowed: ["output:no_short.condition"]
+    triggers:
+      - name: "d1"
+        when: "bar_close"
+        series: "USDJPY/1d_ny17/bid"
+  - instance_id: "h1_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices: ["market:USDJPY/1h/bid:CLOSE"]
+    parameters:
+      period:
+        type: "INT"
+        value: 20
+      window_bars:
+        type: "INT"
+        value: 150
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "USDJPY/1h/bid"
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 1
+    inputs:
+      price: ["output:h1_ema.value"]
+      level: ["market:USDJPY/1h/bid:CLOSE"]
+    parameters:
+      direction:
+        type: "STR"
+        value: "LONG"
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "USDJPY/1h/bid"
+  - instance_id: "m15_ema"
+    component: "ema"
+    component_version: 1
+    inputs:
+      prices: ["market:USDJPY/15m/bid:CLOSE"]
+    parameters:
+      period:
+        type: "INT"
+        value: 20
+      window_bars:
+        type: "INT"
+        value: 60
+    triggers:
+      - name: "m15"
+        when: "bar_close"
+        series: "USDJPY/15m/bid"
+  - instance_id: "m15_above_ema"
+    component: "price_compare"
+    component_version: 1
+    inputs:
+      left: ["market:USDJPY/15m/bid:CLOSE"]
+      right: ["output:m15_ema.value"]
+    parameters:
+      operator:
+        type: "STR"
+        value: "GT"
+    triggers:
+      - name: "m15"
+        when: "bar_close"
+        series: "USDJPY/15m/bid"
+  - instance_id: "entry_filter"
+    component: "condition_filter"
+    component_version: 1
+    inputs:
+      condition: ["output:m15_above_ema.condition"]
+      opportunity: ["runtime:OPPORTUNITY"]
+    parameters:
+      include_start_bar:
+        type: "BOOL"
+        value: false
+    triggers:
+      - name: "m15"
+        when: "bar_close"
+        series: "USDJPY/15m/bid"
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 2
+    inputs:
+      confirmation: ["output:entry_filter.confirmation"]
+      opportunity: ["runtime:OPPORTUNITY"]
+    triggers:
+      - name: "conf"
+        when: "input_event"
+        input_name: "confirmation"
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 2
+    inputs:
+      confirmation: ["output:entry_filter.confirmation"]
+      level: ["output:stop_level.level"]
+    triggers:
+      - name: "conf"
+        when: "input_event"
+        input_name: "confirmation"
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices: ["market:USDJPY/1h/bid:LOW"]
+    parameters:
+      lookback:
+        type: "INT"
+        value: 20
+      mode:
+        type: "STR"
+        value: "MIN"
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "USDJPY/1h/bid"
+  - instance_id: "take_profit"
+    component: "fixed_rr_take_profit"
+    component_version: 1
+    inputs:
+      position: ["runtime:POSITION"]
+    parameters:
+      reward_risk:
+        type: "FLOAT"
+        value: 1.5
+    triggers:
+      - name: "filled"
+        when: "runtime_event"
+        event: "POSITION_OPENED"
+roles:
+  market_state: "market_state.permission"
+  trigger: "entry_trigger.opportunity"
+  execution_filter: "entry_filter.confirmation"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "take_profit.action"
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
