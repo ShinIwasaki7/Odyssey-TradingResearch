@@ -1,0 +1,16 @@
+schema_version: 1
+card: "h-20261117-daily-up-dip-turn"
+from_version: 1
+decision: "CHANGE"
+change_kind: "PARAMETERS"
+operations:
+  - op: "remove_axis"
+    instance: "take_profit"
+    parameter: "reward_risk"
+  - op: "add_axis"
+    instance: "stop_level"
+    parameter: "lookback"
+    values: [20, 40, 80]
+reason: "押し目の後の入場は損切りが狭くなりやすく、建玉が大きくなって、固定の費用が損失の予算の大きな割合を占めると考えた。損切りの参照本数を軸に足して広い損切りを試す。試行の数の範囲に収めるため、利確の倍率の軸を外して宣言の値のままにする。"
+prediction: "参照本数の長い試行が選ばれることが多くなり、取引あたりの費用の負担が軽くなって、経路の損失とドローダウンが小さくなる。保有は長くなり、日替わりをまたぐ回数が増える。それでも共通基準に届く見込みは低い。短い参照本数ばかりが選ばれるか損失が減らなければ、仮説は支持されない。"
+memo_sha256: "84f39ba1420cb0784b9314e40d168d61dc2e16f64c37b1482787b8049b86cd27"

@@ -1,0 +1,69 @@
+# generated-by: research_runner card=h-20261117-daily-up-dip-turn card_sha256=d203cdea293d5a41c1f52197d41fe9255e28c2906161b76785e736299cceedbe generator=fd0e939236bc18ce8f25618f0b2d9cb782893541367e1ccfe6d10016f29cc128
+# 順 11 の実行器が仮説カード h-20261117-daily-up-dip-turn から生成した実験設定（D25 §3.8）。
+# 手で直さない（CI がカードから作り直してバイト単位で一致を確かめる。D25 §3.4）。
+# 成績の数値を書かない。
+
+schema_version: 2
+id: "c_h20261117_daily_up_dip_turn_usdjpy"
+version: 2
+lineage:
+  derived_from:
+    experiment_id: "fd7476dadcb70e0241666fa870dee70b36c9c4f3e965f670b0d709f53747905e"
+    execution: 1
+  change_kinds: ["PARAMETERS"]
+  note: "押し目の後の入場は損切りが狭くなりやすく、建玉が大きくなって、固定の費用が損失の予算の大きな割合を占めると考えた。損切りの参照本数を軸に足して広い損切りを試す。試行の数の範囲に収めるため、利確の倍率の軸を外して宣言の値のままにする。"
+hypothesis: "日足の終値が日足の EMA（期間 20）を上回る局面に限り、一時間足の終値が一時間足の EMA（期間 P。20 か 50）を下に割り込んだら押し目の取引機会とし、その後の十五分足の終値が十五分足の EMA（期間 20）を上回るまで入場の方針の期限まで待ち、上回ったら成行で買う。期限までに上回らなければ取引機会を捨てる。損切りは直近 20 本の一時間足の安値、利確は損切りまでの値幅の R 倍（1.5 か 2.0）。買いだけ。は、費用を引いた後も、両組で共通基準を満たす"
+research_policy:
+  id: "research_policy"
+  version: 5
+strategy: "configs/strategies/c_h20261117_daily_up_dip_turn_usdjpy_v1.yaml"
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+snapshots:
+  standard: "ecaaf53fcdedbc1977184b390c36e2714c658829341eed3ec5d71588d3bfc622"
+  candidate: "f5214ed8b5e4bc0ca669b1fdd770b8522cc3e924cb96e60f22b08e238c7f25ca"
+execution_series: "USDJPY/15m/bid"
+resolution_hierarchy: ["USDJPY/15m/bid", "USDJPY/1m/bid"]
+seed: 0
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    USDJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT30M"
+evaluation:
+  metric_set_version: 4
+search_plan:
+  kind: "GRID"
+  max_trials: 6
+  axes:
+    - instance: "h1_ema"
+      parameter: "period"
+      values: [20, 50]
+    - instance: "stop_level"
+      parameter: "lookback"
+      values: [20, 40, 80]
+split: "STANDARD"
+final_holdout:
+  interval:
+    start: "2024-01-01T00:00:00Z"
+    end: "2100-01-01T00:00:00Z"
+  purpose: "順 11 の実行器のカード h-20261117-daily-up-dip-turn の研究候補の最終検証（D09 §9.10）"
