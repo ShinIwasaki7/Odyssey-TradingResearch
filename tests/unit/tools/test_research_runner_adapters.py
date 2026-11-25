@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -17,8 +18,15 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.git_origin import git, isolate_git, publish_repo
-from tools.ops.research_runner.adapters import LocalGit, LocalProcesses, LocalSystem
+from tools.ops.research_runner.adapters import (
+    GhGitHub,
+    LocalGit,
+    LocalProcesses,
+    LocalSystem,
+    checks_from_rollup,
+)
 from tools.ops.research_runner.detached import main as detached_main
+from tools.ops.research_runner.ports import Checks, PrState
 
 TRIAL = "research/trial_ledger.jsonl"
 
@@ -228,3 +236,149 @@ def test_the_wrapper_command_line_carries_the_options(tmp_path: Path) -> None:
     assert line[line.index("--env") + 1] == "A=1"
     assert line[line.index("--timeout-seconds") + 1] == "9"
     assert "--env" not in command_line(tmp_path, tmp_path, ["x"])
+
+
+# --- PR の検査の一覧の読み方（`gh` は呼ばない） ---
+# 一覧の形は 2026-11-25 の実物の PR（#210・#212）の読み取りに合わせた。
+
+LEDGER = "ledger / routine PR checks"
+CI = "lint / types / imports / tests"
+
+
+def _run_item(
+    name: str, workflow: str, started: str, *, status: str = "COMPLETED", conclusion: str = ""
+) -> dict[str, str]:
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "workflowName": workflow,
+        "startedAt": started,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+def _ledger(started: str, conclusion: str, *, status: str = "COMPLETED") -> dict[str, str]:
+    return _run_item(LEDGER, "Ledger and routine PR", started, status=status, conclusion=conclusion)
+
+
+def _ci(started: str, conclusion: str = "", *, status: str = "COMPLETED") -> dict[str, str]:
+    return _run_item(CI, "CI", started, status=status, conclusion=conclusion)
+
+
+def test_a_cancelled_run_replaced_by_a_newer_run_is_not_a_failure() -> None:
+    # 実行器が PR を開いた直後に自動 merge を有効にすると、台帳の検査の 1 本目は取り消され、
+    # 2 本目が走る（`ledger.yml` の `cancel-in-progress`）。落ちた検査は無い。
+    rollup = [
+        _ledger("2026-11-25T10:35:35Z", "CANCELLED"),
+        _ci("2026-11-25T10:35:36Z", status="IN_PROGRESS"),
+        _ci("2026-11-25T10:35:27Z", status="IN_PROGRESS"),
+        _ledger("2026-11-25T10:35:42Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(rollup) is Checks.PENDING
+    done = [
+        _ledger("2026-11-25T10:35:35Z", "CANCELLED"),
+        _ci("2026-11-25T10:35:36Z", "SUCCESS"),
+        _ci("2026-11-25T10:35:27Z", "SUCCESS"),
+        _ledger("2026-11-25T10:35:42Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(done) is Checks.PASS
+
+
+def test_the_order_of_the_list_does_not_decide_which_run_is_newest() -> None:
+    rollup = [
+        _ledger("2026-11-25T10:35:42Z", "SUCCESS"),
+        _ledger("2026-11-25T10:35:35Z", "CANCELLED"),
+        _ci("2026-11-25T10:35:36Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(rollup) is Checks.PASS
+
+
+@pytest.mark.parametrize(
+    "conclusion", ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"]
+)
+def test_the_newest_run_of_a_check_still_fails_the_checks(conclusion: str) -> None:
+    rollup = [
+        _ledger("2026-11-25T10:35:35Z", "SUCCESS"),
+        _ledger("2026-11-25T10:35:42Z", conclusion),
+        _ci("2026-11-25T10:35:36Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(rollup) is Checks.FAIL
+
+
+def test_a_failure_of_one_check_is_not_hidden_by_another_check() -> None:
+    rollup = [
+        _ledger("2026-11-25T10:35:42Z", "SUCCESS"),
+        _ci("2026-11-25T10:35:27Z", "FAILURE"),
+    ]
+    assert checks_from_rollup(rollup) is Checks.FAIL
+    # 名前が同じでも定義（workflow）が違えば別の検査として数える。
+    other = [
+        _run_item("checks", "A", "2026-11-25T10:00:00Z", conclusion="FAILURE"),
+        _run_item("checks", "B", "2026-11-25T10:05:00Z", conclusion="SUCCESS"),
+    ]
+    assert checks_from_rollup(other) is Checks.FAIL
+
+
+def test_runs_at_the_same_time_use_the_later_one_in_the_list() -> None:
+    rollup = [
+        _ledger("2026-11-25T10:41:06Z", "CANCELLED"),
+        _ledger("2026-11-25T10:41:06Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(rollup) is Checks.PASS
+    assert checks_from_rollup(list(reversed(rollup))) is Checks.FAIL
+
+
+def test_no_checks_yet_and_running_checks_are_pending() -> None:
+    assert checks_from_rollup([]) is Checks.PENDING
+    assert checks_from_rollup([_ci("2026-11-25T10:35:27Z", status="QUEUED")]) is Checks.PENDING
+    assert (
+        checks_from_rollup([_ci("2026-11-25T10:35:27Z", "SKIPPED"), _ledger("", "NEUTRAL")])
+        is Checks.PASS
+    )
+
+
+def test_commit_statuses_are_read_by_their_context() -> None:
+    def status(state: str, started: str) -> dict[str, str]:
+        return {
+            "__typename": "StatusContext",
+            "context": "ci/outside",
+            "state": state,
+            "startedAt": started,
+        }
+
+    assert (
+        checks_from_rollup(
+            [status("FAILURE", "2026-11-25T10:00:00Z"), status("SUCCESS", "2026-11-25T10:05:00Z")]
+        )
+        is Checks.PASS
+    )
+    assert checks_from_rollup([status("ERROR", "2026-11-25T10:05:00Z")]) is Checks.FAIL
+
+
+def test_pr_status_reads_the_newest_run_of_each_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = {
+        "state": "OPEN",
+        "mergeCommit": None,
+        "closedAt": None,
+        "statusCheckRollup": [
+            _ledger("2026-11-25T10:35:35Z", "CANCELLED"),
+            _ledger("2026-11-25T10:35:42Z", "SUCCESS"),
+            _ci("2026-11-25T10:35:36Z", "SUCCESS"),
+        ],
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(self: GhGitHub, *args: str, stdin: bytes | None = None) -> str:
+        calls.append(args)
+        return json.dumps(answer)
+
+    monkeypatch.setattr(GhGitHub, "_gh", fake_gh)
+    status = GhGitHub(tmp_path).pr_status(210)
+    assert status.state is PrState.OPEN
+    assert status.checks is Checks.PASS
+    assert calls == [
+        ("pr", "view", "210", "--json", "state,mergeCommit,closedAt,statusCheckRollup")
+    ]
