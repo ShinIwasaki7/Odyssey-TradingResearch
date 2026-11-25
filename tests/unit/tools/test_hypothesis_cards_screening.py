@@ -203,12 +203,24 @@ def test_cycles_and_dangling_references_do_not_normalize() -> None:
 
 
 def test_every_existing_declaration_normalizes_and_currencies_stay_distinct() -> None:
+    # 既出の規則の出どころは、戦略の宣言と、`taken/`・`done/` のカードの 2 種類（D25 §3.5 の 6）。
+    # 実行器がカードを取り出すと `taken/` にカードが増えるので、宣言とカードを分けて数える
+    # （2026-11-25 の最初の事前登録の PR で、宣言の数だけと比べていた検査が落ちた）。
     known = known_rule_digests(VIEW)
-    assert known.skipped == ()
-    paths = [path for listed in known.digests.values() for path in listed]
-    assert len(paths) == len(list((REPO_ROOT / "configs/strategies").glob("*.yaml")))
-    by_path = {path: digest for digest, listed in known.digests.items() for path in listed}
     strategies = "configs/strategies/"
+    # 宣言はすべて正規化できる。書式で棄却されて `done/` に入ったカードが外れるのは設計どおり。
+    assert [note for note in known.skipped if note.startswith(strategies)] == []
+    paths = [path for listed in known.digests.values() for path in listed]
+    declared = [path for path in paths if path.startswith(strategies)]
+    assert len(declared) == len(list((REPO_ROOT / "configs/strategies").glob("*.yaml")))
+    cards = [
+        path
+        for place in ("taken", "done")
+        for path in (REPO_ROOT / "research/hypotheses" / place).glob("*.yaml")
+        if not path.name.endswith(".outcome.yaml")
+    ]
+    assert len(paths) - len(declared) + len(known.skipped) == len(cards)
+    by_path = {path: digest for digest, listed in known.digests.items() for path in listed}
     assert (
         by_path[strategies + "strategy_a_v1.yaml"]
         != by_path[strategies + "strategy_a_eurusd_v1.yaml"]
