@@ -1,0 +1,63 @@
+# generated-by: research_runner card=a-20261125-channel-trail-long card_sha256=0568980f7163798025195027bf1fcb989bbf38b72f2619e9e8b0954b6d43b064 generator=fd0e939236bc18ce8f25618f0b2d9cb782893541367e1ccfe6d10016f29cc128
+# 順 11 の実行器が仮説カード a-20261125-channel-trail-long から生成した実験設定（D25 §3.8）。
+# 手で直さない（CI がカードから作り直してバイト単位で一致を確かめる。D25 §3.4）。
+# 成績の数値を書かない。
+
+schema_version: 2
+id: "c_a20261125_channel_trail_long_gbpjpy"
+version: 1
+hypothesis: "一時間足の終値が、直近 N 本（120 か 240）の一時間足の高値の最大を上抜けたら成行で買う。損切りは直近 M 本（60 か 120）の一時間足の安値の最小に置き、保有中は一時間足の確定ごとに同じ水準へ損切りを引き上げる。利確は置かず、追従する損切りだけで出る。どちらの水準も評価の時点の最新の足を除いて数える。買いだけ。は、費用を引いた後も、両組で共通基準を満たす"
+research_policy:
+  id: "research_policy"
+  version: 5
+strategy: "configs/strategies/c_a20261125_channel_trail_long_gbpjpy_v1.yaml"
+environment:
+  calendar: "configs/calendars/fx_ny17_oanda_v1.yaml"
+  timeframes: "configs/calendars/timeframes_v2.yaml"
+  symbols: "configs/symbols"
+snapshots:
+  standard: "455d1d38f924f2711aea51eebea7d5d8d24708505e64c7085c7b099333fa5188"
+  candidate: "3141cedcd378652b1f66493b23b3e52be09efee0568d6929281704938ef6377b"
+execution_series: "GBPJPY/15m/bid"
+resolution_hierarchy: ["GBPJPY/15m/bid", "GBPJPY/1m/bid"]
+seed: 0
+account:
+  account_id: "ACC1"
+  currency: "JPY"
+  initial_balance: "1000000"
+risk_policy:
+  trial_risk_rate: "0.02"
+  account_risk_cap: "0.20"
+execution_policy:
+  entry_delay_bars: 0
+  entry_valid_for: "PT20M"
+  close_valid_for: "PT20M"
+  adverse_fill_limits:
+    GBPJPY: "0.05"
+  reference_quote_source: "EXECUTION_SERIES_LAST_CLOSE"
+cost_model:
+  commission_per_unit: "0.001"
+  entry_slippage: "0.01"
+  close_slippage: "0.01"
+  spread_offset: "0.02"
+conversion_policy:
+  pivot_currency: "USD"
+  max_observation_skew: "PT30M"
+evaluation:
+  metric_set_version: 4
+search_plan:
+  kind: "GRID"
+  max_trials: 4
+  axes:
+    - instance: "breakout_level"
+      parameter: "lookback"
+      values: [120, 240]
+    - instance: "stop_level"
+      parameter: "lookback"
+      values: [60, 120]
+split: "STANDARD"
+final_holdout:
+  interval:
+    start: "2024-01-01T00:00:00Z"
+    end: "2100-01-01T00:00:00Z"
+  purpose: "順 11 の実行器のカード a-20261125-channel-trail-long の研究候補の最終検証（D09 §9.10）"

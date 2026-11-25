@@ -1,0 +1,20 @@
+schema_version: 1
+card: "a-20261125-channel-trail-long"
+version: 1
+experiment_id: "c_a20261125_channel_trail_long_gbpjpy"
+card_sha256: "0568980f7163798025195027bf1fcb989bbf38b72f2619e9e8b0954b6d43b064"
+change_sha256: null
+generator_digest: "fd0e939236bc18ce8f25618f0b2d9cb782893541367e1ccfe6d10016f29cc128"
+generated:
+  - path: "configs/experiments/c_a20261125_channel_trail_long_gbpjpy.yaml"
+    sha256: "40180bd59e55b15cb7f07851fc5acee6857a01890267a1564d1f4a34e234985f"
+  - path: "configs/strategies/c_a20261125_channel_trail_long_gbpjpy_v1.yaml"
+    sha256: "f183b300a2be83c8d972cedcee36c1047b7ddbb5acf4ae8372ec50b24535d01a"
+checks:
+  load: "PASS"
+  compile: "PASS"
+  prepare: "PASS"
+  trial_count: 4
+  rejected_count: 0
+  seconds: 107
+  max_rss_bytes: 5172412416

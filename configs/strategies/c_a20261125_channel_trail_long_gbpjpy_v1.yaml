@@ -1,0 +1,97 @@
+# generated-by: research_runner card=a-20261125-channel-trail-long card_sha256=0568980f7163798025195027bf1fcb989bbf38b72f2619e9e8b0954b6d43b064 generator=fd0e939236bc18ce8f25618f0b2d9cb782893541367e1ccfe6d10016f29cc128
+# 順 11 の実行器が仮説カード a-20261125-channel-trail-long から生成した戦略の宣言（D25 §3.8）。
+# 手で直さない（CI がカードから作り直してバイト単位で一致を確かめる。D25 §3.4）。
+# 成績の数値を書かない。
+
+schema_version: 1
+strategy_id: "c_a20261125_channel_trail_long_gbpjpy"
+version: 1
+entry_policy:
+  kind: "IMMEDIATE"
+opportunity_validity:
+  bindings: []
+components:
+  - instance_id: "breakout_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices: ["market:GBPJPY/1h/bid:HIGH"]
+    parameters:
+      lookback:
+        type: "INT"
+        value: 120
+      mode:
+        type: "STR"
+        value: "MAX"
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "GBPJPY/1h/bid"
+  - instance_id: "stop_level"
+    component: "extreme_price"
+    component_version: 1
+    inputs:
+      prices: ["market:GBPJPY/1h/bid:LOW"]
+    parameters:
+      lookback:
+        type: "INT"
+        value: 60
+      mode:
+        type: "STR"
+        value: "MIN"
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "GBPJPY/1h/bid"
+  - instance_id: "entry_trigger"
+    component: "breakout_trigger"
+    component_version: 1
+    inputs:
+      price: ["market:GBPJPY/1h/bid:CLOSE"]
+      level: ["output:breakout_level.level"]
+    parameters:
+      direction:
+        type: "STR"
+        value: "LONG"
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "GBPJPY/1h/bid"
+  - instance_id: "entry_order"
+    component: "market_order_intent"
+    component_version: 1
+    inputs:
+      opportunity: ["output:entry_trigger.opportunity"]
+    triggers:
+      - name: "opp"
+        when: "input_event"
+        input_name: "opportunity"
+  - instance_id: "initial_stop"
+    component: "level_stop_loss"
+    component_version: 1
+    inputs:
+      opportunity: ["output:entry_trigger.opportunity"]
+      level: ["output:stop_level.level"]
+    triggers:
+      - name: "opp"
+        when: "input_event"
+        input_name: "opportunity"
+  - instance_id: "trailing"
+    component: "trailing_stop"
+    component_version: 1
+    inputs:
+      position: ["runtime:POSITION"]
+      level: ["output:stop_level.level"]
+    triggers:
+      - name: "h1"
+        when: "bar_close"
+        series: "GBPJPY/1h/bid"
+roles:
+  trigger: "entry_trigger.opportunity"
+  order: "entry_order.intent"
+  protection: "initial_stop.protection"
+  exit: "trailing.action"
+opportunity_concurrency:
+  max_active: 1
+  on_new_trigger: "KEEP_EXISTING"
+  on_order_accepted: "KEEP_OTHERS"
