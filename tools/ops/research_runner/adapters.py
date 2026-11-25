@@ -244,29 +244,48 @@ def _check_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
     return ("check", str(item.get("workflowName") or ""), str(item.get("name") or ""))
 
 
+def _run_verdict(item: Mapping[str, Any]) -> Checks:
+    """検査の実行 1 本の合否（落ち・まだ走っている・合格）。"""
+    conclusion = str(item.get("conclusion") or item.get("state") or "").upper()
+    status = str(item.get("status") or "COMPLETED").upper()
+    if conclusion in _FAILED_CONCLUSIONS:
+        return Checks.FAIL
+    if status != "COMPLETED" and conclusion not in _PASSED_CONCLUSIONS:
+        return Checks.PENDING
+    return Checks.PASS
+
+
 def checks_from_rollup(rollup: Sequence[Mapping[str, Any]]) -> Checks:
     """PR の検査の一覧（`gh pr view --json statusCheckRollup`）から検査の合否を読む。
 
-    同じ名前の検査が複数あるときは、いちばん新しい実行（`startedAt` が最も遅いもの。同じ時刻なら
-    一覧で後のもの）だけを見る。台帳の検査（`ledger.yml`）は「PR を開いた」と「自動 merge を有効に
-    した」の両方で走り、前の実行を取り消す。取り消された古い実行は、新しい実行が置き換えた検査で
-    あり、CI の落ちではない（GitHub の必須の検査も新しい実行の結果で数える）。いちばん新しい実行が
-    取り消し・失敗なら、これまでどおり落ちとして数える。
+    台帳の検査（`ledger.yml`）は「PR を開いた」と「自動 merge を有効にした」の両方で走り、前の
+    実行を取り消す。取り消された古い実行は、新しい実行が置き換えた検査であり、CI の落ちではない
+    （GitHub の必須の検査も新しい実行の結果で数える）。そこで、同じ名前の検査が複数あるときは
+    次のように読む:
+
+    - その検査の実行のどれかがまだ終わっていない（待ち・実行中。開始の時刻がまだ無くてもよい）
+      なら、その検査は「まだ」。新旧を時刻で決めない（置き換えの実行が待ちの間に、取り消された
+      古い実行を落ちと数えない。古い合格を合格とも数えない）。
+    - すべて終わっているなら、いちばん新しい実行（`startedAt`。無ければ `completedAt`。同じ時刻・
+      時刻なしは一覧で後のもの）だけを見る。それが取り消し・失敗なら、これまでどおり落ち。
+
+    全体は、どれかの検査が落ちなら落ち、そうでなくどれかが「まだ」なら「まだ」、ほかは合格。
     """
-    newest: dict[tuple[str, str, str], tuple[str, int, Mapping[str, Any]]] = {}
+    runs: dict[tuple[str, str, str], list[tuple[str, int, Mapping[str, Any]]]] = {}
     for index, item in enumerate(rollup):
-        key = _check_key(item)
-        started = str(item.get("startedAt") or "")
-        current = newest.get(key)
-        if current is None or (started, index) >= (current[0], current[1]):
-            newest[key] = (started, index, item)
-    checks = Checks.PASS if newest else Checks.PENDING
-    for _, _, item in newest.values():
-        conclusion = str(item.get("conclusion") or item.get("state") or "").upper()
-        status = str(item.get("status") or "COMPLETED").upper()
-        if conclusion in _FAILED_CONCLUSIONS:
+        moment = str(item.get("startedAt") or item.get("completedAt") or "")
+        runs.setdefault(_check_key(item), []).append((moment, index, item))
+    checks = Checks.PASS if runs else Checks.PENDING
+    for listed in runs.values():
+        verdicts = [_run_verdict(item) for _, _, item in listed]
+        if Checks.PENDING in verdicts:
+            verdict = Checks.PENDING
+        else:
+            _, _, newest = max(listed, key=lambda entry: (entry[0], entry[1]))
+            verdict = _run_verdict(newest)
+        if verdict is Checks.FAIL:
             return Checks.FAIL
-        if status != "COMPLETED" and conclusion not in _PASSED_CONCLUSIONS:
+        if verdict is Checks.PENDING:
             checks = Checks.PENDING
     return checks
 

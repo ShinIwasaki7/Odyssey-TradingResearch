@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -336,6 +337,63 @@ def test_no_checks_yet_and_running_checks_are_pending() -> None:
         checks_from_rollup([_ci("2026-11-25T10:35:27Z", "SKIPPED"), _ledger("", "NEUTRAL")])
         is Checks.PASS
     )
+
+
+def _queued(name: str, workflow: str) -> dict[str, str | None]:
+    # 待ちの実行は開始の時刻がまだ無いことがある。
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "workflowName": workflow,
+        "startedAt": None,
+        "status": "QUEUED",
+        "conclusion": "",
+    }
+
+
+@pytest.mark.parametrize("older", ["SUCCESS", "CANCELLED", "FAILURE"])
+def test_a_waiting_replacement_keeps_the_check_pending_whatever_the_older_run_was(
+    older: str,
+) -> None:
+    # 置き換えの実行が待ち・実行中の間は、古い実行の結果（合格・取り消し・失敗）で決めない。
+    waiting: list[Mapping[str, str | None]] = [
+        _ledger("2026-11-25T10:35:35Z", older),
+        _queued(LEDGER, "Ledger and routine PR"),
+        _ci("2026-11-25T10:35:36Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(waiting) is Checks.PENDING
+    assert checks_from_rollup(list(reversed(waiting))) is Checks.PENDING
+    running = [
+        _ledger("2026-11-25T10:35:35Z", older),
+        _ledger("2026-11-25T10:35:42Z", "", status="IN_PROGRESS"),
+        _ci("2026-11-25T10:35:36Z", "SUCCESS"),
+    ]
+    assert checks_from_rollup(running) is Checks.PENDING
+
+
+def test_a_failed_check_wins_over_another_check_that_is_still_running() -> None:
+    rollup = [
+        _ledger("2026-11-25T10:35:42Z", "FAILURE"),
+        _ci("2026-11-25T10:35:36Z", status="IN_PROGRESS"),
+    ]
+    assert checks_from_rollup(rollup) is Checks.FAIL
+
+
+def test_a_finished_run_without_a_start_time_is_ordered_by_its_end_time() -> None:
+    # 待ちのまま取り消された実行は開始の時刻が無いことがある。終わりの時刻で新旧を決める。
+    cancelled_later = {
+        "__typename": "CheckRun",
+        "name": LEDGER,
+        "workflowName": "Ledger and routine PR",
+        "startedAt": None,
+        "completedAt": "2026-11-25T10:36:00Z",
+        "status": "COMPLETED",
+        "conclusion": "CANCELLED",
+    }
+    passed = _ledger("2026-11-25T10:35:35Z", "SUCCESS")
+    assert checks_from_rollup([cancelled_later, passed]) is Checks.FAIL
+    cancelled_earlier = {**cancelled_later, "completedAt": "2026-11-25T10:35:00Z"}
+    assert checks_from_rollup([cancelled_earlier, passed]) is Checks.PASS
 
 
 def test_commit_statuses_are_read_by_their_context() -> None:
