@@ -1,0 +1,16 @@
+schema_version: 1
+card: "h-20261117-daily-up-dip-turn"
+version: 1
+experiment_id: "c_h20261117_daily_up_dip_turn_usdjpy"
+execution: 1
+started_at: "2026-11-25T16:44:23Z"
+finished_at: "2026-11-25T22:18:52Z"
+exit_code: 0
+max_rss_bytes: 5212549120
+record_id: "fd7476dadcb70e0241666fa870dee70b36c9c4f3e965f670b0d709f53747905e"
+artifacts:
+  - path: "runs/experiments/c_h20261117_daily_up_dip_turn_usdjpy/v1/experiment_manifest.json"
+    sha256: "c9d9434bde32163f85e008607f932512a41f3ddcee1d3a7d51a1ea5d74467ea4"
+  - path: "runs/experiments/c_h20261117_daily_up_dip_turn_usdjpy/v1/search/ledger_execution.json"
+    sha256: "d1fea23f821af62a60d870ef455c8d9a7b689e587eb6949a16053930756f9455"
+memo: null
