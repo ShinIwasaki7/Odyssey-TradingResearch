@@ -1,0 +1,16 @@
+schema_version: 1
+card: "a-20261125-channel-trail-long"
+version: 2
+experiment_id: "c_a20261125_channel_trail_long_gbpjpy"
+execution: 1
+started_at: "2026-11-25T22:50:27Z"
+finished_at: "2026-11-26T02:08:28Z"
+exit_code: 0
+max_rss_bytes: 5157720064
+record_id: "fef146aa27ce4d31f3dffe1e039405db1f2191ccba3b3a0c837e3a2b4e997250"
+artifacts:
+  - path: "runs/experiments/c_a20261125_channel_trail_long_gbpjpy/v2/experiment_manifest.json"
+    sha256: "078828acc41f33d1b65f0b572be4052c568efc5efc9926af3bc932f6a0b8cabd"
+  - path: "runs/experiments/c_a20261125_channel_trail_long_gbpjpy/v2/search/ledger_execution.json"
+    sha256: "017d101a331eccd1b5e20a04c0a48f60edee6327c83ce9e3ef4fdb2e8a7889cb"
+memo: null
